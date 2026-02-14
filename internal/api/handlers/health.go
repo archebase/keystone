@@ -2,10 +2,10 @@
 package handlers
 
 import (
-	"encoding/json"
-	"log"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // HealthHandler health check handler
@@ -24,22 +24,32 @@ func NewHealthHandler(db, storage interface{}) *HealthHandler {
 
 // ComponentHealth component health status
 type ComponentHealth struct {
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
+	Status  string `json:"status" example:"healthy"`
+	Message string `json:"message,omitempty" example:""`
 }
 
 // HealthResponse health check response
 type HealthResponse struct {
-	Status     string                       `json:"status"`
-	Timestamp  string                       `json:"timestamp"`
+	Status     string                       `json:"status" example:"healthy"`
+	Timestamp  string                       `json:"timestamp" example:"2025-02-14T10:30:00Z"`
 	Components map[string]ComponentHealth   `json:"components"`
+	Version    string                       `json:"version" example:"1.0.0"`
 }
 
-// Handler handles health check requests
-func (h *HealthHandler) Handler(w http.ResponseWriter, r *http.Request) {
+// Handler godoc
+//	@Summary		Health check
+//	@Description	Check if the API is running
+//	@Tags			health
+//	@Accept			json
+//	@Produce		json
+//	@Success		200	{object}	HealthResponse	"Service is healthy"
+//	@Failure		503	{object}	HealthResponse	"Service is unhealthy"
+//	@Router			/health [get]
+func (h *HealthHandler) Handler(c *gin.Context) {
 	response := HealthResponse{
 		Status:     "healthy",
 		Timestamp:  time.Now().Format(time.RFC3339),
+		Version:    "1.0.0",
 		Components: make(map[string]ComponentHealth),
 	}
 
@@ -58,13 +68,15 @@ func (h *HealthHandler) Handler(w http.ResponseWriter, r *http.Request) {
 		Status: "healthy",
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	c.JSON(http.StatusOK, response)
 }
 
 // Register registers routes
-func (h *HealthHandler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /health", h.Handler)
-	log.Println("[API] Registered health check endpoint: GET /health")
+func (h *HealthHandler) Register(r *gin.RouterGroup) {
+	r.GET("/health", h.Handler)
+}
+
+// RegisterAPI registers routes for API v1 group
+func (h *HealthHandler) RegisterAPI(r *gin.RouterGroup) {
+	r.GET("/health", h.Handler)
 }
