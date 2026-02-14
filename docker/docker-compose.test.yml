@@ -1,0 +1,107 @@
+# Docker Compose for CI/CD testing
+# Builds and tests the application in isolated environment
+services:
+  keystone-edge-test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: keystone-edge:test
+    container_name: keystone-edge-test
+    ports:
+      - "8080:8080"
+    environment:
+      - KEYSTONE_BIND_ADDR=:8080
+      - KEYSTONE_MINIO_ENDPOINT=http://minio:9000
+      - KEYSTONE_MINIO_ACCESS_KEY=minioadmin
+      - KEYSTONE_MINIO_SECRET_KEY=minioadmin
+      - KEYSTONE_MYSQL_HOST=mysql
+      - KEYSTONE_MYSQL_PASSWORD=keystone
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - keystone-test-net
+
+  mysql:
+    image: mysql:8.0
+    container_name: keystone-mysql-test
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=keystone
+      - MYSQL_USER=keystone
+      - MYSQL_PASSWORD=keystone
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    volumes:
+      - mysql-test-data:/var/lib/mysql
+    networks:
+      - keystone-test-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: keystone-minio-test
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - minio-test-data:/data
+    networks:
+      - keystone-test-net
+
+  # Test runner service
+  test-runner:
+    image: curlimages/curl:latest
+    container_name: keystone-test-runner
+    depends_on:
+      keystone-edge-test:
+        condition: service_healthy
+    networks:
+      - keystone-test-net
+    command: >
+      sh -c "
+        echo 'Running tests...'
+        echo 'Testing health endpoint...'
+        response=$$(curl -s -o /dev/null -w '%{http_code}' http://keystone-edge-test:8080/api/v1/health)
+        if [ '$$response' = '200' ]; then
+          echo 'Health check: PASSED'
+        else
+          echo 'Health check: FAILED (status $$response)'
+          exit 1
+        fi
+        echo 'Testing swagger docs...'
+        response=$$(curl -s -o /dev/null -w '%{http_code}' http://keystone-edge-test:8080/swagger/doc.json)
+        if [ '$$response' = '200' ]; then
+          echo 'Swagger docs: PASSED'
+        else
+          echo 'Swagger docs: FAILED (status $$response)'
+          exit 1
+        fi
+        echo 'All tests passed!'
+      "
+
+networks:
+  keystone-test-net:
+    driver: bridge
+
+volumes:
+  mysql-test-data:
+  minio-test-data:

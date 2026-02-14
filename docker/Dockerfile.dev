@@ -1,0 +1,26 @@
+# Development Dockerfile - uses volume mount for live coding
+FROM golang:1.24-alpine
+
+# Install dependencies
+RUN apk add --no-cache git ca-certificates tzdata && \
+    go install github.com/swaggo/swag/cmd/swag@latest
+
+# Add go bin to PATH
+ENV PATH="/root/go/bin:${PATH}"
+
+WORKDIR /app
+
+# Copy go mod files first (better layer caching)
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Don't copy source code - use volume mount instead
+# The source will be mounted at /app
+
+# Expose port
+EXPOSE 8080
+
+# Run the application directly with 'go run'
+CMD ["go", "run", "./cmd/keystone-edge/main.go"]

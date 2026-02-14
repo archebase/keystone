@@ -1,22 +1,66 @@
 # Docker Development Environment
 
-## Start development environment
+## Dockerfiles
+
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Production build - multi-stage, minimal final image |
+| `Dockerfile.dev` | Development - mounts source code for live coding |
+
+## Compose Files
+
+| File | Purpose |
+|------|---------|
+| `docker-compose.yml` | Infrastructure only (MySQL, MinIO, Redis, Adminer) |
+| `docker-compose.dev.yml` | Development mode with volume mounts |
+| `docker-compose.test.yml` | CI/CD testing with automated tests |
+
+## Development Mode
+
+Start Keystone with source code mounted for live development:
 
 ```bash
-# Start all services
+docker compose -f docker-compose.dev.yml up -d
+```
+
+Your code changes are reflected immediately. To rebuild inside container:
+
+```bash
+docker exec keystone-edge-dev go build ./cmd/keystone-edge
+```
+
+## Production Build
+
+Build and run the production image:
+
+```bash
+# Build image
+docker build -f docker/Dockerfile -t keystone-edge:latest .
+
+# Run with infrastructure
+docker compose -f docker-compose.yml up -d
+docker run -d --name keystone-edge \
+  --network keystone_keystone-net \
+  -p 8080:8080 \
+  --env KEYSTONE_BIND_ADDR=:8080 \
+  --env KEYSTONE_MYSQL_HOST=mysql \
+  --env KEYSTONE_MINIO_ENDPOINT=http://minio:9000 \
+  keystone-edge:latest
+```
+
+## Infrastructure Only
+
+Start just the dependencies (MySQL, MinIO, etc.):
+
+```bash
 docker compose up -d
+```
 
-# Check service status
-docker compose ps
+Then run Keystone locally:
 
-# View logs
-docker compose logs -f
-
-# Stop services
-docker compose down
-
-# Stop and remove data
-docker compose down -v
+```bash
+export $(cat docker/.env.example | xargs)
+go run cmd/keystone-edge/main.go
 ```
 
 ## Services
@@ -28,6 +72,7 @@ docker compose down -v
 | MinIO Console | 9001 | MinIO management UI |
 | Redis | 6379 | Cache (optional) |
 | Adminer | 8081 | Database management tool |
+| Keystone Edge | 8080 | Main API service |
 
 ## Access URLs
 
@@ -42,44 +87,44 @@ docker compose down -v
   - Password: `keystone`
   - Database: `keystone`
 
-## Run Keystone Edge locally
+- **Keystone Edge API**: http://localhost:8080
+- **Swagger UI**: http://localhost:8080/swagger/index.html
+
+## Quick Commands
 
 ```bash
-# Load environment variables
-export $(cat docker/.env.example | xargs)
+# Stop all services
+docker compose -f docker-compose.dev.yml down
 
-# Or use direnv
-cp docker/.env.example .env
-direnv allow
+# Stop and remove data
+docker compose -f docker-compose.dev.yml down -v
 
-# Run
-go run cmd/keystone-edge/main.go
+# View logs
+docker compose -f docker-compose.dev.yml logs -f keystone-edge-dev
+
+# Execute command in container
+docker exec -it keystone-edge-dev sh
 ```
 
-## Database connection
+## Testing
+
+Run the complete test suite:
 
 ```bash
-# Using MySQL client
-mysql -h 127.0.0.1 -P 3306 -u keystone -pkeystone keystone
-
-# Using Docker exec
-docker exec -it keystone-mysql mysql -ukeystone -pkeystone keystone
+# Automated testing with build + test
+./scripts/test.sh
 ```
 
-## MinIO operations
+The test script will:
+1. Build the Docker image
+2. Start all services (MySQL, MinIO, Keystone)
+3. Wait for services to be healthy
+4. Run automated tests against the API
+5. Collect logs
+6. Clean up
 
-```bash
-# Install MinIO client
-wget https://dl.min.io/client/mc/release/linux-amd64/mc
-chmod +x mc
-sudo mv mc /usr/local/bin/
-
-# Configure alias
-mc alias set local http://localhost:9000 minioadmin minioadmin
-
-# List buckets
-mc ls local
-
-# View bucket contents
-mc ls local/edge-factory-shanghai
-```
+Tests include:
+- Health check endpoint (`/api/v1/health`)
+- Swagger documentation (`/swagger/doc.json`)
+- Swagger UI (`/swagger/index.html`)
+- Response JSON validation

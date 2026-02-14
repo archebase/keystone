@@ -1,4 +1,6 @@
 # docker-compose.yml - Keystone Edge development environment
+# Usage: docker-compose -f docker/docker-compose.yml up -d
+
 services:
   # MySQL database
   mysql:
@@ -54,9 +56,10 @@ services:
       - -c
       - |
         mc alias set minio http://minio:9000 minioadmin minioadmin
-        mc mb minio/edge-factory-shanghai --ignore-existing
-        mc admin user add minio/ keystone keystone123
-        mc admin policy attach minio/ readwrite --user keystone
+        mc mb minio/edge-factory-shanghai
+        mc admin user add minio keystone keystone123
+        mc admin policy attach download minio/edge-factory-shanghai keystone
+        mc admin policy attach upload minio/edge-factory-shanghai keystone
         echo "MinIO initialized successfully"
 
   # Redis (optional, for caching)
