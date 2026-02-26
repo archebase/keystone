@@ -1,0 +1,104 @@
+name: Bug Report
+description: Report a problem or bug in Keystone
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug in Keystone! Please fill out the information below to help us reproduce and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug
+      placeholder: |
+        What happened? What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction Steps
+      description: Steps to reproduce the bug
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual Behavior
+      description: What actually happened
+    validations:
+      required: true
+
+  - type: input
+    id: keystone-version
+    attributes:
+      label: Keystone Version
+      description: The version of Keystone you are using
+      placeholder: "v0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: Your operating system and version
+      placeholder: "Ubuntu 22.04 LTS"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Paste any relevant log output or error messages
+    validations:
+      required: false
+
+  - type: textarea
+    id: minimal-reproduction
+    attributes:
+      label: Minimal Reproduction
+      description: If possible, provide a minimal code example or repository that reproduces the bug
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other relevant information about the bug
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Please complete the following steps
+      options:
+        - label: I have searched existing issues for similar bugs
+          required: true
+        - label: I have checked the [README](https://github.com/ArcheBase/Keystone/blob/main/README.md) and [ARCHITECTURE](https://github.com/ArcheBase/Keystone/blob/main/ARCHITECTURE.md) documentation
+          required: false
+        - label: I have verified the bug still occurs in the latest version
+          required: false

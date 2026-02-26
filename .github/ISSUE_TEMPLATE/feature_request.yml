@@ -1,0 +1,117 @@
+name: Feature Request
+description: Propose a new feature or enhancement for Keystone
+title: "[Feature]: "
+labels: ["enhancement"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a new feature for Keystone! Please provide as much detail as possible to help us understand and evaluate your proposal.
+
+  - type: textarea
+    id: problem-statement
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve? What pain point does it address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like this feature to work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions
+      description: What alternative solutions have you considered?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: feature-type
+    attributes:
+      label: Feature Type
+      description: What type of feature is this?
+      options:
+        - Core Functionality
+        - Performance Enhancement
+        - Developer Experience
+        - Documentation
+        - Testing
+        - Integration
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature to you?
+      options:
+        - Critical (blocking my work)
+        - High (would greatly improve workflow)
+        - Medium (nice to have)
+        - Low (minor improvement)
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: Use Cases
+      description: Describe specific use cases where this feature would be beneficial
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation-details
+    attributes:
+      label: Implementation Details (Optional)
+      description: If you have technical ideas about how to implement this feature, please share
+    validations:
+      required: false
+
+  - type: textarea
+    id: api-changes
+    attributes:
+      label: API Changes (Optional)
+      description: Would this feature require changes to the REST API?
+    validations:
+      required: false
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: Mockups or Examples (Optional)
+      description: If applicable, include mockups, diagrams, or code examples
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other relevant information about the feature request
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues for similar feature requests
+          required: true
+        - label: I have checked the [ROADMAP](https://github.com/ArcheBase/Keystone/blob/main/ROADMAP.md) for planned features
+          required: false
+        - label: This feature aligns with Keystone's design philosophy
+          required: false
+        - label: I am willing to contribute to implementing this feature
+          required: false
