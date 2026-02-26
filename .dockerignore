@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Docker
+Dockerfile
+.dockerignore
+docker/
+
+# Development
+.env
+.env.example
+run-dev.sh
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Build artifacts
+bin/
+*.log
+
+# Test
+*_test.go
+testdata/
+coverage.out

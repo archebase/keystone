@@ -1,0 +1,62 @@
+# Development mode - uses volume mounts for live coding
+services:
+  keystone-edge-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    image: keystone-edge:dev
+    container_name: keystone-edge-dev
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount source code for live development
+      - ../:/app
+      # Cache go modules
+      - go-modules:/root/go/pkg/mod
+    environment:
+      - KEYSTONE_BIND_ADDR=:8080
+      - KEYSTONE_MINIO_ENDPOINT=http://minio:9000
+      - KEYSTONE_MINIO_ACCESS_KEY=minioadmin
+      - KEYSTONE_MINIO_SECRET_KEY=minioadmin
+      - KEYSTONE_MYSQL_HOST=mysql
+      - KEYSTONE_MYSQL_PASSWORD=keystone
+    depends_on:
+      - mysql
+      - minio
+    restart: unless-stopped
+    networks:
+      - keystone-net
+
+  mysql:
+    image: mysql:8.0
+    container_name: keystone-mysql-dev
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=keystone
+      - MYSQL_USER=keystone
+      - MYSQL_PASSWORD=keystone
+    volumes:
+      - mysql-dev-data:/var/lib/mysql
+    networks:
+      - keystone-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: keystone-minio-dev
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio-dev-data:/data
+    networks:
+      - keystone-net
+
+networks:
+  keystone-net:
+    driver: bridge
+
+volumes:
+  mysql-dev-data:
+  minio-dev-data:
+  go-modules:
