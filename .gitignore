@@ -76,3 +76,8 @@ release/
 
 # Claude Code
 .claude/settings.local.json
+
+# swagger
+docs/docs.go
+docs/swagger.json
+docs/swagger.yaml
