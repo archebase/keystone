@@ -1,6 +1,10 @@
 # Build stage
 FROM golang:1.24-alpine AS builder
 
+# Go proxy
+ENV GO111MODULE=on
+ENV GOPROXY=https://goproxy.cn,direct
+
 # Install build dependencies and swag
 RUN apk add --no-cache git && \
     go install github.com/swaggo/swag/cmd/swag@latest
