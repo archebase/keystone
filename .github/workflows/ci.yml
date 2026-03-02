@@ -87,8 +87,5 @@ jobs:
           go install github.com/swaggo/swag/cmd/swag@latest
           swag init -g internal/server/server.go -o docs
       
-      - name: Set up Docker
-        uses: docker/setup-docker@v4
-        
       - name: Run integration tests
         run: bash scripts/test.sh
