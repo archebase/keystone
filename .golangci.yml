@@ -10,7 +10,7 @@ linters:
     - gosec
     - revive
 
-linters-settings:
+linters_settings:
   revive:
     confidence: 0.8
     rules:
