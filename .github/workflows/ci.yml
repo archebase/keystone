@@ -39,6 +39,11 @@ jobs:
         with:
           go-version: '1.24'
           
+      - name: Generate Swagger docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@latest
+          swag init -g internal/server/server.go -o docs
+      
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
