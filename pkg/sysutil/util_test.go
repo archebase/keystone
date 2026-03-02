@@ -25,7 +25,7 @@ func TestEnsureDir(t *testing.T) {
 		},
 		{
 			name:    "Create existing directory",
-			path:    os.TempDir(),
+			path:    filepath.Join(os.TempDir(), "keystone-test-existing"),
 			wantErr: false,
 		},
 	}
