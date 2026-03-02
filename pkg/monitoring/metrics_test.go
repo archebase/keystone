@@ -130,9 +130,9 @@ func TestMetricsGetUptime(t *testing.T) {
 
 func TestHealthStatus(t *testing.T) {
 	tests := []struct {
-		name  string
+		name   string
 		status HealthStatus
-		want  string
+		want   string
 	}{
 		{"Healthy status", HealthStatusHealthy, "healthy"},
 		{"Degraded status", HealthStatusDegraded, "degraded"},

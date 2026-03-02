@@ -1,5 +1,5 @@
-// util/util.go - Utility functions
-package util
+// Package sysutil provides common system utility functions
+package sysutil
 
 import (
 	"fmt"
@@ -9,7 +9,7 @@ import (
 
 // EnsureDir ensures directory exists
 func EnsureDir(path string) error {
-	return os.MkdirAll(path, 0755)
+	return os.MkdirAll(path, 0750)
 }
 
 // FileExists checks if file exists
@@ -25,20 +25,20 @@ func GetDiskUsage(path string) (DiskUsage, error) {
 	// TODO: Implement proper disk usage check using syscall.Statfs
 	// Simplified implementation, returns mock data
 	return DiskUsage{
-		Path:    path,
-		Total:   500 * 1024 * 1024 * 1024, // 500GB
-		Used:    100 * 1024 * 1024 * 1024, // 100GB
-		Free:    400 * 1024 * 1024 * 1024, // 400GB
+		Path:        path,
+		Total:       500 * 1024 * 1024 * 1024, // 500GB
+		Used:        100 * 1024 * 1024 * 1024, // 100GB
+		Free:        400 * 1024 * 1024 * 1024, // 400GB
 		UsedPercent: 20,
 	}, nil
 }
 
 // DiskUsage disk usage information
 type DiskUsage struct {
-	Path       string
-	Total      uint64
-	Used       uint64
-	Free       uint64
+	Path        string
+	Total       uint64
+	Used        uint64
+	Free        uint64
 	UsedPercent int
 }
 

@@ -1,4 +1,4 @@
-// database/mysql.go - MySQL database connection wrapper
+// Package database provides MySQL database connection wrapper
 package database
 
 import (
@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	// Register MySQL driver
 	_ "github.com/go-sql-driver/mysql"
 )
 

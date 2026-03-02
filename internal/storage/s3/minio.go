@@ -1,4 +1,4 @@
-// s3/minio.go - MinIO S3 storage wrapper
+// Package s3 provides MinIO S3 storage wrapper
 package s3
 
 import (
@@ -21,8 +21,8 @@ type Client struct {
 // Config S3 configuration
 type Config struct {
 	Endpoint  string
-	AccessKey string
-	SecretKey string
+	AccessKey string `json:"-"`
+	SecretKey string `json:"-"`
 	Bucket    string
 	UseSSL    bool
 }

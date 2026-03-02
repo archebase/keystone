@@ -11,7 +11,7 @@ This document outlines the development roadmap for the Edge Keystone project.
 First Release Implementation Order:
 
 1. **Code standards, testing & CI** 
-  - coding style(`gofmt` / `goimports`)
+  - coding style(`gofmt`)
   - linters(golangci-lint)
   - unit/integration tests
     - Unit tests for core logic (handlers, services, models);

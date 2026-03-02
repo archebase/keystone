@@ -1,5 +1,5 @@
-// util/util_test.go - Utility functions tests
-package util
+// sysutil/util_test.go - common system utility functions tests
+package sysutil
 
 import (
 	"os"

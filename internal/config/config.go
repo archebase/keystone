@@ -1,4 +1,4 @@
-// config/config.go - Configuration loading and validation
+// Package config provides configuration loading and validation
 package config
 
 import (
@@ -21,10 +21,10 @@ type Config struct {
 
 // ServerConfig server configuration
 type ServerConfig struct {
-	Mode           string
-	BindAddr       string
-	ReadTimeout    int // seconds
-	WriteTimeout   int // seconds
+	Mode            string
+	BindAddr        string
+	ReadTimeout     int // seconds
+	WriteTimeout    int // seconds
 	ShutdownTimeout int // seconds
 }
 
@@ -41,38 +41,38 @@ type DatabaseConfig struct {
 type StorageConfig struct {
 	Type      string // "s3"
 	Endpoint  string
-	AccessKey string
-	SecretKey string
+	AccessKey string `json:"-"`
+	SecretKey string `json:"-"`
 	Bucket    string
 	UseSSL    bool
 }
 
 // QAConfig QA engine configuration
 type QAConfig struct {
-	Enabled               bool
-	AutoApproveThreshold  float64
-	MaxWorkers            int
-	TimeoutPerEpisode     int // seconds
-	Checks                []string
+	Enabled              bool
+	AutoApproveThreshold float64
+	MaxWorkers           int
+	TimeoutPerEpisode    int // seconds
+	Checks               []string
 }
 
 // SyncConfig synchronization configuration
 type SyncConfig struct {
-	Enabled         bool
-	Endpoint        string
-	BatchSize       int
-	MaxBytes        int64
-	MaxRetries      int
-	CheckpointPath  string
+	Enabled        bool
+	Endpoint       string
+	BatchSize      int
+	MaxBytes       int64
+	MaxRetries     int
+	CheckpointPath string
 }
 
 // FeaturesConfig feature flags configuration
 type FeaturesConfig struct {
-	StrataEnabled   bool
-	SlateEnabled    bool
-	DagsterEnabled  bool
-	RayEnabled      bool
-	LanceDBEnabled  bool
+	StrataEnabled  bool
+	SlateEnabled   bool
+	DagsterEnabled bool
+	RayEnabled     bool
+	LanceDBEnabled bool
 }
 
 // MonitoringConfig monitoring configuration
@@ -86,8 +86,8 @@ type MonitoringConfig struct {
 
 // ResourceLimitsConfig resource limits configuration
 type ResourceLimitsConfig struct {
-	MaxMemoryMB      int
-	MaxCPUPercent    int
+	MaxMemoryMB       int
+	MaxCPUPercent     int
 	DiskWatermarkLow  int
 	DiskWatermarkHigh int
 }
@@ -96,15 +96,15 @@ type ResourceLimitsConfig struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
-			Mode:           getEnv("KEYSTONE_MODE", "edge"),
-			BindAddr:       getEnv("KEYSTONE_BIND_ADDR", ":8080"),
-			ReadTimeout:    getEnvInt("KEYSTONE_READ_TIMEOUT", 30),
-			WriteTimeout:   getEnvInt("KEYSTONE_WRITE_TIMEOUT", 30),
+			Mode:            getEnv("KEYSTONE_MODE", "edge"),
+			BindAddr:        getEnv("KEYSTONE_BIND_ADDR", ":8080"),
+			ReadTimeout:     getEnvInt("KEYSTONE_READ_TIMEOUT", 30),
+			WriteTimeout:    getEnvInt("KEYSTONE_WRITE_TIMEOUT", 30),
 			ShutdownTimeout: getEnvInt("KEYSTONE_SHUTDOWN_TIMEOUT", 10),
 		},
 		Database: DatabaseConfig{
-			Driver:          "mysql",
-			DSN:             fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=Local&charset=utf8mb4",
+			Driver: "mysql",
+			DSN: fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=Local&charset=utf8mb4",
 				getEnv("KEYSTONE_MYSQL_USER", "keystone"),
 				getEnv("KEYSTONE_MYSQL_PASSWORD", ""),
 				getEnv("KEYSTONE_MYSQL_HOST", "localhost"),
@@ -138,11 +138,11 @@ func Load() (*Config, error) {
 			CheckpointPath: getEnv("KEYSTONE_SYNC_CHECKPOINT_PATH", "/var/lib/keystone/.checkpoint"),
 		},
 		Features: FeaturesConfig{
-			StrataEnabled:   false,
-			SlateEnabled:    false,
-			DagsterEnabled:  false,
-			RayEnabled:      false,
-			LanceDBEnabled:  false,
+			StrataEnabled:  false,
+			SlateEnabled:   false,
+			DagsterEnabled: false,
+			RayEnabled:     false,
+			LanceDBEnabled: false,
 		},
 		Monitoring: MonitoringConfig{
 			Enabled:             getEnvBool("KEYSTONE_METRICS_ENABLED", true),
@@ -152,9 +152,9 @@ func Load() (*Config, error) {
 			LogOutput:           getEnv("KEYSTONE_LOG_OUTPUT", "/var/log/keystone-edge/"),
 		},
 		Resources: ResourceLimitsConfig{
-			MaxMemoryMB:      getEnvInt("KEYSTONE_MAX_MEMORY_MB", 6144),
-			MaxCPUPercent:    getEnvInt("KEYSTONE_MAX_CPU_PERCENT", 80),
-			DiskWatermarkLow: getEnvInt("KEYSTONE_DISK_WATERMARK_LOW", 20),
+			MaxMemoryMB:       getEnvInt("KEYSTONE_MAX_MEMORY_MB", 6144),
+			MaxCPUPercent:     getEnvInt("KEYSTONE_MAX_CPU_PERCENT", 80),
+			DiskWatermarkLow:  getEnvInt("KEYSTONE_DISK_WATERMARK_LOW", 20),
 			DiskWatermarkHigh: getEnvInt("KEYSTONE_DISK_WATERMARK_HIGH", 10),
 		},
 	}

@@ -89,10 +89,31 @@ docs/
 go install github.com/swaggo/swag/cmd/swag@latest
 
 # Generate docs
-swag init
+swag init -g cmd/keystone-edge/main.go -o docs
 
 # Format docs
 swag fmt
+```
+
+### Code Formatting
+
+```bash
+# Format code using go fmt
+go fmt ./...
+
+# Or use gofmt for more options
+gofmt -w .
+```
+
+### Code Linting
+
+```bash
+
+# Run linter
+golangci-lint run
+
+# Run linter with auto-fix
+golangci-lint run --fix
 ```
 
 ### Build

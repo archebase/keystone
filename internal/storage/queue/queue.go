@@ -1,4 +1,4 @@
-// queue/queue.go - Persistent queue (SQLite)
+// Package queue provides persistent queue implementation using SQLite
 package queue
 
 import (
@@ -8,6 +8,7 @@ import (
 	"log"
 	"sync"
 
+	// Register SQLite driver
 	_ "modernc.org/sqlite"
 )
 
