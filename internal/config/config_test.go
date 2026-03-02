@@ -9,12 +9,12 @@ import (
 func TestLoad(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                       os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_MYSQL_HOST":                  os.Getenv("KEYSTONE_MYSQL_HOST"),
-		"KEYSTONE_MYSQL_PASSWORD":              os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":            os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":            os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_FACTORY_ID":                  os.Getenv("KEYSTONE_FACTORY_ID"),
+		"KEYSTONE_MODE":             os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_MYSQL_HOST":       os.Getenv("KEYSTONE_MYSQL_HOST"),
+		"KEYSTONE_MYSQL_PASSWORD":   os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY": os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY": os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_FACTORY_ID":       os.Getenv("KEYSTONE_FACTORY_ID"),
 	}
 	defer func() {
 		// Restore original environment variables
@@ -82,13 +82,13 @@ func TestLoad(t *testing.T) {
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":              os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_BIND_ADDR":         os.Getenv("KEYSTONE_BIND_ADDR"),
-		"KEYSTONE_MYSQL_PASSWORD":    os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":  os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":  os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_QA_MAX_WORKERS":    os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
-		"KEYSTONE_MAX_MEMORY_MB":     os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
+		"KEYSTONE_MODE":             os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_BIND_ADDR":        os.Getenv("KEYSTONE_BIND_ADDR"),
+		"KEYSTONE_MYSQL_PASSWORD":   os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY": os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY": os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_QA_MAX_WORKERS":   os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
+		"KEYSTONE_MAX_MEMORY_MB":    os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
 	}
 	defer func() {
 		for k, v := range originalEnv {

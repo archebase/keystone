@@ -17,11 +17,11 @@ import (
 	"archebase.com/keystone-edge/internal/server"
 )
 
-// @title			Keystone Edge API
-// @version		1.0
-// @description	Backend for edge data collection scenarios.
-// @host			localhost:8080
-// @BasePath		/api/v1
+//	@title			Keystone Edge API
+//	@version		1.0
+//	@description	Backend for edge data collection scenarios.
+//	@host			localhost:8080
+//	@BasePath		/api/v1
 
 var (
 	version   = "dev"
@@ -30,7 +30,9 @@ var (
 
 func main() {
 	// Load .env file
-	godotenv.Load()
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: Failed to load .env file: %v", err)
+	}
 
 	// Command line flags
 	showVersion := flag.Bool("version", false, "Show version information")

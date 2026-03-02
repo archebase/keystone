@@ -1,4 +1,4 @@
-// monitoring/metrics.go - Monitoring metrics
+// Package monitoring provides monitoring metrics
 package monitoring
 
 import (
@@ -54,6 +54,7 @@ func (m *Metrics) GetUptime() time.Duration {
 // HealthStatus health status
 type HealthStatus string
 
+// Health status constants
 const (
 	HealthStatusHealthy   HealthStatus = "healthy"
 	HealthStatusDegraded  HealthStatus = "degraded"

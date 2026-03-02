@@ -1,4 +1,4 @@
-// services/task_manager.go - Task management service
+// Package services provides task management service
 package services
 
 import (
@@ -14,14 +14,14 @@ type TaskManager struct {
 
 // Task represents a task
 type Task struct {
-	ID           string
-	BatchID      string
-	SceneID      string
+	ID            string
+	BatchID       string
+	SceneID       string
 	WorkstationID string
-	RobotID      string
-	OperatorID   string
-	Status       string // pending, in_progress, completed, failed
-	Priority     int
+	RobotID       string
+	OperatorID    string
+	Status        string // pending, in_progress, completed, failed
+	Priority      int
 }
 
 // NewTaskManager creates a new task manager

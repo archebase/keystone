@@ -1,0 +1,30 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - gosec
+    - revive
+
+linters-settings:
+  revive:
+    confidence: 0.8
+    rules:
+      - name: var-naming
+      - name: blank-imports
+      - name: if-return
+      - name: increment-decrement
+      - name: context-as-argument
+      - name: unused-parameter
+      - name: unreachable-code
+      - name: early-return
+      - name: errorf
+      - name: error-return
+      - name: error-naming
+run:
+  timeout: 5m
+  tests: false

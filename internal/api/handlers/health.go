@@ -1,4 +1,4 @@
-// handlers/health.go - Health check handler
+// Package handlers provides health check handlers
 package handlers
 
 import (
@@ -30,13 +30,14 @@ type ComponentHealth struct {
 
 // HealthResponse health check response
 type HealthResponse struct {
-	Status     string                       `json:"status" example:"healthy"`
-	Timestamp  string                       `json:"timestamp" example:"2025-02-14T10:30:00Z"`
-	Components map[string]ComponentHealth   `json:"components"`
-	Version    string                       `json:"version" example:"1.0.0"`
+	Status     string                     `json:"status" example:"healthy"`
+	Timestamp  string                     `json:"timestamp" example:"2025-02-14T10:30:00Z"`
+	Components map[string]ComponentHealth `json:"components"`
+	Version    string                     `json:"version" example:"1.0.0"`
 }
 
 // Handler godoc
+//
 //	@Summary		Health check
 //	@Description	Check if the API is running
 //	@Tags			health

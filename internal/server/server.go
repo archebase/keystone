@@ -1,4 +1,4 @@
-// server/server.go - HTTP server for Keystone Edge API
+// Package server provides HTTP server for Keystone Edge API
 package server
 
 import (
@@ -10,20 +10,20 @@ import (
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
-	"github.com/swaggo/gin-swagger"
+	ginSwagger "github.com/swaggo/gin-swagger"
 
+	"archebase.com/keystone-edge/docs"
 	"archebase.com/keystone-edge/internal/api/handlers"
 	"archebase.com/keystone-edge/internal/config"
-	"archebase.com/keystone-edge/docs"
 )
 
 // Server represents the HTTP server
 type Server struct {
 	cfg        *config.Config
 	health     *handlers.HealthHandler
-	httpServer  *http.Server
-	shutdownMu  sync.RWMutex
-	isRunning   bool
+	httpServer *http.Server
+	shutdownMu sync.RWMutex
+	isRunning  bool
 	engine     *gin.Engine
 }
 
