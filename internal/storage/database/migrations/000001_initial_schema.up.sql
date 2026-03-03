@@ -436,3 +436,31 @@ CREATE TABLE IF NOT EXISTS sync_logs (
     INDEX idx_status (status),
     INDEX idx_started (started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+-- Sample Data
+-- ============================================================
+
+INSERT INTO organizations (name, slug) VALUES
+    ('RoboticsLab Internal', 'roboticslab')
+ON DUPLICATE KEY UPDATE name=VALUES(name);
+
+INSERT INTO factories (organization_id, name, slug, location) VALUES
+(1, 'Shanghai Factory', 'factory_shanghai', 'Shanghai, China'),
+(1, 'San Francisco Warehouse', 'factory_sf', 'San Francisco, CA, USA')
+ON DUPLICATE KEY UPDATE name=VALUES(name), location=VALUES(location);
+
+INSERT INTO skills (name, display_name, description) VALUES
+    ('pick', 'Pick', 'Grasp and lift an object'),
+    ('place', 'Place', 'Put an object at a target location'),
+    ('drop', 'Drop', 'Release an object without precision'),
+    ('push', 'Push', 'Move an object without grasping'),
+    ('wipe', 'Wipe', 'Clean a surface with wiping motion'),
+    ('navigate', 'Navigate', 'Move from one location to another'),
+    ('pour', 'Pour', 'Transfer liquid between containers')
+ON DUPLICATE KEY UPDATE display_name=VALUES(display_name);
+
+INSERT INTO sops (name, slug, skill_sequence) VALUES
+('Dish Cleaning SOP', 'sop_dish_cleaning_v2',
+ '["navigate", "pick", "place", "wipe", "navigate"]')
+ON DUPLICATE KEY UPDATE name=VALUES(name);

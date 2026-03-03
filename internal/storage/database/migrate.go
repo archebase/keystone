@@ -27,7 +27,9 @@ func Migrate(db *sql.DB) error {
 		return fmt.Errorf("failed to create migration source: %w", err)
 	}
 
-	driver, err := mysql.WithInstance(db, &mysql.Config{})
+	driver, err := mysql.WithInstance(db, &mysql.Config{
+		MigrationsTable: "schema_migrations",
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create migration driver: %w", err)
 	}
@@ -36,6 +38,9 @@ func Migrate(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("failed to create migrator: %w", err)
 	}
+
+	// Enable verbose logging for debugging
+	m.Log = &logWriter{}
 
 	if err := m.Up(); err != nil {
 		if errors.Is(err, migrate.ErrNoChange) {
@@ -52,4 +57,15 @@ func Migrate(db *sql.DB) error {
 
 	log.Printf("[DATABASE] Migrations applied successfully (version=%d, dirty=%v)", version, dirty)
 	return nil
+}
+
+// logWriter implements golang-migrate's Logger interface
+type logWriter struct{}
+
+func (l *logWriter) Printf(format string, v ...interface{}) {
+	log.Printf("[MIGRATE] "+format, v...)
+}
+
+func (l *logWriter) Verbose() bool {
+	return true
 }
