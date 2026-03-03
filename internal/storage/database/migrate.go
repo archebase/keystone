@@ -12,6 +12,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/mysql"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 
+	// MySQL driver is required for database/sql to work with MySQL
 	_ "github.com/go-sql-driver/mysql"
 )
 

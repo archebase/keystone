@@ -73,7 +73,11 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			logger.Printf("Failed to close database: %v", err)
+		}
+	}()
 
 	// Auto-run pending migrations on server start
 	if err := database.Migrate(db.DB); err != nil {
