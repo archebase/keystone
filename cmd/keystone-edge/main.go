@@ -15,6 +15,7 @@ import (
 
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/server"
+	"archebase.com/keystone-edge/internal/storage/database"
 )
 
 //	@title			Keystone Edge API
@@ -62,16 +63,32 @@ func main() {
 
 	logger.Printf("Config loaded: mode=%s, bind=%s", cfg.Server.Mode, cfg.Server.BindAddr)
 
+	// Initialize database connection
+	db, err := database.Connect(&database.Config{
+		DSN:             cfg.Database.DSN,
+		MaxOpenConns:    cfg.Database.MaxOpenConns,
+		MaxIdleConns:    cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+	})
+	if err != nil {
+		logger.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+
+	// Auto-run pending migrations on server start
+	if err := database.Migrate(db.DB); err != nil {
+		logger.Fatalf("Failed to run database migrations: %v", err)
+	}
+
+	// TODO: Initialize storage layer
+	// TODO: Start QA worker
+	// TODO: Start sync worker
+
 	// Initialize and start HTTP server
 	srv := server.New(cfg)
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("Failed to start server: %v", err)
 	}
-
-	// TODO: Initialize database connection
-	// TODO: Initialize storage layer
-	// TODO: Start QA worker
-	// TODO: Start sync worker
 
 	logger.Println("Keystone Edge started successfully")
 
