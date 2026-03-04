@@ -17,6 +17,7 @@ type Config struct {
 	Features   FeaturesConfig
 	Monitoring MonitoringConfig
 	Resources  ResourceLimitsConfig
+	Fleet      FleetManagerConfig
 }
 
 // ServerConfig server configuration
@@ -92,6 +93,14 @@ type ResourceLimitsConfig struct {
 	DiskWatermarkHigh int
 }
 
+// FleetManagerConfig Fleet Manager configuration
+type FleetManagerConfig struct {
+	WSPort          int
+	MaxEvents       int
+	ReadTimeout     int // seconds
+	RecorderRPCPort int
+}
+
 // Load loads configuration from environment variables and defaults
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -156,6 +165,12 @@ func Load() (*Config, error) {
 			MaxCPUPercent:     getEnvInt("KEYSTONE_MAX_CPU_PERCENT", 80),
 			DiskWatermarkLow:  getEnvInt("KEYSTONE_DISK_WATERMARK_LOW", 20),
 			DiskWatermarkHigh: getEnvInt("KEYSTONE_DISK_WATERMARK_HIGH", 10),
+		},
+		Fleet: FleetManagerConfig{
+			WSPort:          getEnvInt("KEYSTONE_FLEET_WS_PORT", 8090),
+			MaxEvents:       getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 10000),
+			ReadTimeout:     getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 30),
+			RecorderRPCPort: getEnvInt("KEYSTONE_FLEET_RECORDER_RPC_PORT", 8080),
 		},
 	}
 
