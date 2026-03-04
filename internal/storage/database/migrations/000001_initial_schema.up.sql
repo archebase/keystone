@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS robot_types (
 CREATE TABLE IF NOT EXISTS robots (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     robot_type_id BIGINT NOT NULL,
-    serial_number VARCHAR(100) NOT NULL UNIQUE,
+    device_id VARCHAR(100) NOT NULL UNIQUE,
     factory_id BIGINT NOT NULL,
     asset_id VARCHAR(100),
     status ENUM('active', 'maintenance', 'retired') DEFAULT 'active',
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS robots (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL,
-    UNIQUE INDEX idx_serial (serial_number),
+    UNIQUE INDEX idx_device_id (device_id),
     INDEX idx_type (robot_type_id),
     INDEX idx_factory (factory_id),
     INDEX idx_status (status),
