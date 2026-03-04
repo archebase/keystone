@@ -16,6 +16,7 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/server"
 	"archebase.com/keystone-edge/internal/storage/database"
+	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
 //	@title			Keystone Edge API
@@ -84,12 +85,24 @@ func main() {
 		logger.Fatalf("Failed to run database migrations: %v", err)
 	}
 
-	// TODO: Initialize storage layer
+	// Initialize S3/MinIO storage
+	s3Client, err := s3.Connect(&s3.Config{
+		Endpoint:  cfg.Storage.Endpoint,
+		AccessKey: cfg.Storage.AccessKey,
+		SecretKey: cfg.Storage.SecretKey,
+		Bucket:    cfg.Storage.Bucket,
+		UseSSL:    cfg.Storage.UseSSL,
+	})
+	if err != nil {
+		logger.Printf("Warning: Failed to connect to S3/MinIO: %v (Verified ACK will be skipped)", err)
+		s3Client = nil
+	}
+
 	// TODO: Start QA worker
 	// TODO: Start sync worker
 
 	// Initialize and start HTTP server
-	srv := server.New(cfg)
+	srv := server.New(cfg, db.DB, s3Client)
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("Failed to start server: %v", err)
 	}

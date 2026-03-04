@@ -168,8 +168,8 @@ func Load() (*Config, error) {
 		},
 		Fleet: FleetManagerConfig{
 			WSPort:          getEnvInt("KEYSTONE_FLEET_WS_PORT", 8090),
-			MaxEvents:       getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 10000),
-			ReadTimeout:     getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 30),
+			MaxEvents:       getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 500),
+			ReadTimeout:     getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 60),
 			RecorderRPCPort: getEnvInt("KEYSTONE_FLEET_RECORDER_RPC_PORT", 8080),
 		},
 	}

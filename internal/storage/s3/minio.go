@@ -81,3 +81,22 @@ func (c *Client) EndpointURL() string {
 func (c *Client) IsSecure() bool {
 	return c.useSSL
 }
+
+// HeadObject checks whether an object exists in the bucket.
+// Returns true if the object exists, false if it does not (404), or an error for other failures.
+func (c *Client) HeadObject(ctx context.Context, objectName string) (bool, error) {
+	_, err := c.StatObject(ctx, c.bucket, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		errResp := minio.ToErrorResponse(err)
+		if errResp.Code == "NoSuchKey" || errResp.StatusCode == 404 {
+			return false, nil
+		}
+		return false, fmt.Errorf("HeadObject %s: %w", objectName, err)
+	}
+	return true, nil
+}
+
+// Bucket returns the configured bucket name
+func (c *Client) Bucket() string {
+	return c.bucket
+}

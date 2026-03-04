@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"sync"
@@ -15,20 +16,24 @@ import (
 	"archebase.com/keystone-edge/docs"
 	"archebase.com/keystone-edge/internal/api/handlers"
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/services"
+	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
 // Server represents the HTTP server
 type Server struct {
 	cfg        *config.Config
 	health     *handlers.HealthHandler
+	transfer   *handlers.TransferHandler
 	httpServer *http.Server
 	shutdownMu sync.RWMutex
 	isRunning  bool
 	engine     *gin.Engine
 }
 
-// New creates a new server instance
-func New(cfg *config.Config) *Server {
+// New creates a new server instance.
+// db and s3Client are optional; pass nil to disable Verified ACK.
+func New(cfg *config.Config, db *sql.DB, s3Client *s3.Client) *Server {
 	// Create Gin engine
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -38,10 +43,15 @@ func New(cfg *config.Config) *Server {
 	// Create handlers
 	healthHandler := handlers.NewHealthHandler(nil, nil)
 
+	// Create TransferHub and TransferHandler for Fleet Manager
+	hub := services.NewTransferHub(cfg.Fleet.MaxEvents)
+	transferHandler := handlers.NewTransferHandler(hub, &cfg.Fleet, db, s3Client)
+
 	s := &Server{
-		cfg:    cfg,
-		health: healthHandler,
-		engine: engine,
+		cfg:      cfg,
+		health:   healthHandler,
+		transfer: transferHandler,
+		engine:   engine,
 	}
 
 	s.httpServer = &http.Server{
@@ -64,6 +74,9 @@ func (s *Server) buildRoutes() http.Handler {
 
 	// Health check - register only in API v1 group
 	s.health.RegisterAPI(v1)
+
+	// Fleet Manager: WebSocket + REST API
+	s.transfer.RegisterRoutes(s.engine, v1)
 
 	// Swagger documentation - serve at both root and api/v1 path
 	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
