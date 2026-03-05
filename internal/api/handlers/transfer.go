@@ -397,7 +397,7 @@ func (h *TransferHandler) onStatus(dc *services.DeviceConn, msg map[string]inter
 // @Tags         transfer
 // @Produce      json
 // @Success      200  {object}  map[string]interface{}
-// @Router       /api/v1/transfer/devices [get]
+// @Router       /transfer/devices [get]
 func (h *TransferHandler) ListDevices(c *gin.Context) {
 	devices := h.hub.ListDevices()
 	c.JSON(http.StatusOK, gin.H{"devices": devices})
@@ -413,7 +413,7 @@ func (h *TransferHandler) ListDevices(c *gin.Context) {
 // @Param        limit      query  int     false  "Max events to return (default 100)"
 // @Success      200  {object}  map[string]interface{}
 // @Failure      404  {object}  map[string]interface{}
-// @Router       /api/v1/transfer/{device_id}/events [get]
+// @Router       /transfer/{device_id}/events [get]
 func (h *TransferHandler) GetDeviceEvents(c *gin.Context) {
 	deviceID := c.Param("device_id")
 	limit := 100
@@ -441,7 +441,7 @@ func (h *TransferHandler) GetDeviceEvents(c *gin.Context) {
 // @Param        body       body  object  true  "task_id and priority"
 // @Success      200  {object}  map[string]interface{}
 // @Failure      404  {object}  map[string]interface{}
-// @Router       /api/v1/transfer/{device_id}/upload_request [post]
+// @Router       /transfer/{device_id}/upload_request [post]
 func (h *TransferHandler) UploadRequest(c *gin.Context) {
 	deviceID := c.Param("device_id")
 
@@ -474,7 +474,7 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 // @Param        device_id  path  string  true  "Device ID"
 // @Success      200  {object}  map[string]interface{}
 // @Failure      404  {object}  map[string]interface{}
-// @Router       /api/v1/transfer/{device_id}/upload_all [post]
+// @Router       /transfer/{device_id}/upload_all [post]
 func (h *TransferHandler) UploadAll(c *gin.Context) {
 	deviceID := c.Param("device_id")
 
@@ -515,7 +515,7 @@ func (h *TransferHandler) UploadAll(c *gin.Context) {
 // @Param        body       body  object  true  "task_id to cancel"
 // @Success      200  {object}  map[string]interface{}
 // @Failure      404  {object}  map[string]interface{}
-// @Router       /api/v1/transfer/{device_id}/cancel [post]
+// @Router       /transfer/{device_id}/cancel [post]
 func (h *TransferHandler) CancelUpload(c *gin.Context) {
 	deviceID := c.Param("device_id")
 
@@ -548,7 +548,7 @@ func (h *TransferHandler) CancelUpload(c *gin.Context) {
 // @Param        body       body  object  true  "task_id to acknowledge"
 // @Success      200  {object}  map[string]interface{}
 // @Failure      404  {object}  map[string]interface{}
-// @Router       /api/v1/transfer/{device_id}/upload_ack [post]
+// @Router       /transfer/{device_id}/upload_ack [post]
 func (h *TransferHandler) ManualACK(c *gin.Context) {
 	deviceID := c.Param("device_id")
 
@@ -581,8 +581,8 @@ func (h *TransferHandler) ManualACK(c *gin.Context) {
 // @Success      200
 // @Failure      404  {object}  map[string]interface{}
 // @Failure      502  {object}  map[string]interface{}
-// @Router       /api/v1/transfer/{device_id}/recorder/{rpc_path} [get]
-// @Router       /api/v1/transfer/{device_id}/recorder/{rpc_path} [post]
+// @Router       /transfer/{device_id}/recorder/{rpc_path} [get]
+// @Router       /transfer/{device_id}/recorder/{rpc_path} [post]
 func (h *TransferHandler) ForwardRecorderRPC(c *gin.Context) {
 	deviceID := c.Param("device_id")
 	rpcPath := c.Param("rpc_path")
