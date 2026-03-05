@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
 
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/services"
@@ -119,7 +119,11 @@ func (h *TransferHandler) HandleWebSocketRaw(w http.ResponseWriter, r *http.Requ
 		log.Printf("[TRANSFER] Device %s: WebSocket accept error: %v", deviceID, err)
 		return
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+			log.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
+		}
+	}()
 
 	// Create context for this connection
 	ctx := r.Context()
@@ -308,7 +312,11 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 		log.Printf("[TRANSFER] Device %s: DB begin transaction error for task=%s: %v", dc.DeviceID, taskID, err)
 		return
 	}
-	defer tx.Rollback()
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			log.Printf("[TRANSFER] Transaction rollback error: %v", err)
+		}
+	}()
 
 	// Check if mcap_path and sidecar_path already exist in database
 	var count int
@@ -651,7 +659,11 @@ func (h *TransferHandler) ForwardRecorderRPC(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("recorder unreachable: %v", err)})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Failed to close response body: %v", err)
+		}
+	}()
 
 	body, _ := io.ReadAll(resp.Body)
 	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)

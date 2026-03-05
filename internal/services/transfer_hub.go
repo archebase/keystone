@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // DeviceEvent represents a single event recorded for a device

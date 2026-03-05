@@ -3,6 +3,7 @@ module archebase.com/keystone-edge
 go 1.24.0
 
 require (
+	github.com/coder/websocket v1.8.12
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/golang-migrate/migrate/v4 v4.19.1
@@ -13,7 +14,6 @@ require (
 	github.com/swaggo/gin-swagger v1.6.1
 	github.com/swaggo/swag v1.16.6
 	modernc.org/sqlite v1.45.0
-	nhooyr.io/websocket v1.8.17
 )
 
 require (
