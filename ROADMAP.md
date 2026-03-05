@@ -11,17 +11,17 @@ This document outlines the development roadmap for the Edge Keystone project.
 First Release Implementation Order:
 
 1. **Code standards, testing & CI** 
-  - coding style(`gofmt`)
-  - linters(golangci-lint)
-  - unit/integration tests
-    - Unit tests for core logic (handlers, services, models);
-    - Integration tests for API endpoints;
-  - Test coverage goal
-  - CI pipeline: format check, lint, unit tests, integration tests (with DB)
-  - Docs: CONTRIBUTING.md, ARCHITECTURE.md, detailed design docs
+  - ✅coding style(`gofmt`)
+  - ✅linters(golangci-lint)
+  - ✅unit/integration tests
+    - ✅Unit tests for core logic (handlers, services, models);
+    - ✅Integration tests for API endpoints;
+  - ✅Test coverage goal
+  - ✅CI pipeline: format check, lint, unit tests, integration tests (with DB)
+  - ✅Docs: CONTRIBUTING.md, ARCHITECTURE.md, detailed design docs
 2. **Database Migration (Initial Schema)** 
-  - create initial tables and SQL migration files
-  - Auto-run pending migrations on server start
+  - ✅create initial tables and SQL migration files
+  - ✅Auto-run pending migrations on server start
 3. **Role-Based Access Control** 
   - System, Data Collector, Production Manager for now
   - JWT claim `role` validated on every protected route
@@ -34,8 +34,12 @@ First Release Implementation Order:
   - receive Axon Recorder notifications and record episodes
   - handle `/callbacks/start`、`/callbacks/finish`
   - episodes GET、PATCH
-7. **WebSocket: Axon Uploader ↔ Keystone** 
-  - long-lived connection for real-time upload control and status
+7. **WebSocket: Axon Uploader ↔ Keystone**
+   - WebSocket connection management via TransferHub
+   - Message protocol implementation
+   - Verified ACK flow
+   - REST API endpoints
+   - Recorder RPC forwarding
 
 ---
 
@@ -44,7 +48,7 @@ First Release Implementation Order:
 Second Release Implementation Order:
 1. **add new role Data Inspector**
   - approve or reject episodes
-2. **Complete the remaining APIs.** 
+2. **Complete the remaining APIs.**
   - Organization and factory CRUD
   - Scene & Subscene CRUD
   - Skill & sop CRUD
@@ -100,7 +104,7 @@ Third Release — Observability, Resilience & Production Readiness:
 
 We welcome contributions. Priority areas:
 
-1. **0.1.0 scope**: Code standards & CI → Database Migration → Role Management → Workstation Management → Task Management → Callback Endpoints & Episode Management → Uploader↔Keystone
+1. **0.1.0 scope**: Code standards & CI → Database Migration → Role Management → Workstation Management → Task Management → Callback Endpoints & Episode Management → Fleet Manager (WebSocket Upload Control)
 2. **Tests**: Unit and integration tests for API and callbacks
 3. **Documentation**: API examples and deployment guide
 4. **Bug fixes**: Any bug reports will be addressed promptly

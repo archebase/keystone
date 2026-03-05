@@ -3,8 +3,11 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,20 +18,25 @@ import (
 	"archebase.com/keystone-edge/docs"
 	"archebase.com/keystone-edge/internal/api/handlers"
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/services"
+	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
 // Server represents the HTTP server
 type Server struct {
 	cfg        *config.Config
 	health     *handlers.HealthHandler
+	transfer   *handlers.TransferHandler
 	httpServer *http.Server
+	wsServer   *http.Server
 	shutdownMu sync.RWMutex
 	isRunning  bool
 	engine     *gin.Engine
 }
 
-// New creates a new server instance
-func New(cfg *config.Config) *Server {
+// New creates a new server instance.
+// db and s3Client are optional; pass nil to disable Verified ACK.
+func New(cfg *config.Config, db *sql.DB, s3Client *s3.Client) *Server {
 	// Create Gin engine
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -38,10 +46,15 @@ func New(cfg *config.Config) *Server {
 	// Create handlers
 	healthHandler := handlers.NewHealthHandler(nil, nil)
 
+	// Create TransferHub and TransferHandler for Fleet Manager
+	hub := services.NewTransferHub(cfg.Fleet.MaxEvents)
+	transferHandler := handlers.NewTransferHandler(hub, &cfg.Fleet, db, s3Client, cfg.Storage.Bucket, cfg.Fleet.FactoryID)
+
 	s := &Server{
-		cfg:    cfg,
-		health: healthHandler,
-		engine: engine,
+		cfg:      cfg,
+		health:   healthHandler,
+		transfer: transferHandler,
+		engine:   engine,
 	}
 
 	s.httpServer = &http.Server{
@@ -49,6 +62,15 @@ func New(cfg *config.Config) *Server {
 		ReadTimeout:  time.Duration(cfg.Server.ReadTimeout) * time.Second,
 		WriteTimeout: time.Duration(cfg.Server.WriteTimeout) * time.Second,
 		Handler:      s.buildRoutes(),
+	}
+
+	// Create separate WebSocket server on WSPort
+	wsAddr := fmt.Sprintf(":%d", cfg.Fleet.WSPort)
+	s.wsServer = &http.Server{
+		Addr:         wsAddr,
+		ReadTimeout:  0, // Controlled by application-level readTimeout
+		WriteTimeout: 0, // Must be 0 for WebSocket long-lived connections
+		Handler:      s.buildWSRoutes(transferHandler),
 	}
 
 	return s
@@ -65,11 +87,34 @@ func (s *Server) buildRoutes() http.Handler {
 	// Health check - register only in API v1 group
 	s.health.RegisterAPI(v1)
 
+	// Fleet Manager: REST API only (WebSocket on separate port)
+	v1Transfer := v1.Group("/transfer")
+	s.transfer.RegisterRoutes(v1Transfer)
+
 	// Swagger documentation - serve at both root and api/v1 path
 	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	s.engine.GET("/api/v1/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	return s.engine
+}
+
+// buildWSRoutes constructs the WebSocket-only router using standard net/http
+// to avoid gin.ResponseWriter compatibility issues with nhooyr.io/websocket
+func (s *Server) buildWSRoutes(transferHandler *handlers.TransferHandler) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/transfer/", func(w http.ResponseWriter, r *http.Request) {
+		// Extract device_id from URL path
+		deviceID := strings.TrimPrefix(r.URL.Path, "/transfer/")
+		if deviceID == "" || deviceID == r.URL.Path {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Use the raw ResponseWriter - pass nil for gin context
+		transferHandler.HandleWebSocketRaw(w, r, deviceID)
+	})
+
+	return mux
 }
 
 // Start starts the HTTP server
@@ -84,6 +129,16 @@ func (s *Server) Start() error {
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("[SERVER] HTTP server error: %v", err)
+		}
+	}()
+
+	// Start WebSocket server on separate port
+	wsAddr := fmt.Sprintf(":%d", s.cfg.Fleet.WSPort)
+	log.Printf("[SERVER] Starting WebSocket server on %s", wsAddr)
+
+	go func() {
+		if err := s.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[SERVER] WebSocket server error: %v", err)
 		}
 	}()
 
@@ -105,7 +160,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.Server.ShutdownTimeout)*time.Second)
 	defer cancel()
 
-	return s.httpServer.Shutdown(ctx)
+	// Shutdown both servers
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		log.Printf("[SERVER] HTTP server shutdown error: %v", err)
+	}
+	if err := s.wsServer.Shutdown(ctx); err != nil {
+		log.Printf("[SERVER] WebSocket server shutdown error: %v", err)
+	}
+
+	return nil
 }
 
 // Addr returns the server address
