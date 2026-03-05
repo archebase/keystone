@@ -293,12 +293,18 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 			)
 			if dbErr != nil {
 				log.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
-				// Continue to send ACK even if DB insert fails to avoid blocking the device
+				// Do NOT send ACK when DB insert fails to avoid data loss
+				// Device will retry, and we can try DB insert again
+				return
 			}
+			log.Printf("[TRANSFER] Device %s: DB insert success for task=%s episode=%s", dc.DeviceID, taskID, episodeID)
 		}
 	}
 
-	// Step 3: Send upload_ack
+	// Step 3: Send upload_ack (only when S3 verified and DB insert succeeded (or DB not configured))
+	// If h.s3 is nil, we skip S3 verification and send ACK for backward compatibility
+	// If h.db is nil, we send ACK after S3 verification succeeds
+	// If h.db is configured but insert failed, we already returned above (no ACK sent)
 	ackMsg := map[string]interface{}{
 		"type":    "upload_ack",
 		"task_id": taskID,
