@@ -129,7 +129,7 @@ func Load() (*Config, error) {
 			Endpoint:  getEnv("KEYSTONE_MINIO_ENDPOINT", "http://localhost:9000"),
 			AccessKey: getEnv("KEYSTONE_MINIO_ACCESS_KEY", ""),
 			SecretKey: getEnv("KEYSTONE_MINIO_SECRET_KEY", ""),
-			Bucket:    getEnv("KEYSTONE_MINIO_BUCKET", "edge-factory-default"),
+			Bucket:    "edge-" + getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
 			UseSSL:    getEnvBool("KEYSTONE_MINIO_USE_SSL", false),
 		},
 		QA: QAConfig{
