@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 
@@ -271,24 +272,28 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 			return
 		}
 
-		// Step 2: Update episodes table (skip if DB not configured)
+		// Step 2: Insert into episodes table (skip if DB not configured)
 		if h.db != nil {
 			today := time.Now().Format("2006-01-02")
 			mcapKey := fmt.Sprintf("%s/%s/%s/%s.mcap", h.factoryID, dc.DeviceID, today, taskID)
 			jsonKey := fmt.Sprintf("%s/%s/%s/%s.json", h.factoryID, dc.DeviceID, today, taskID)
-			now := time.Now()
+			episodeID := uuid.New().String()
+
 			_, dbErr := h.db.ExecContext(ctx,
-				`UPDATE episodes
-				 SET cloud_synced = 1,
-				     cloud_synced_at = ?,
-				     cloud_mcap_path = ?,
-				     cloud_sidecar_path = ?
-				 WHERE task_id = (SELECT id FROM tasks WHERE task_id = ? LIMIT 1)`,
-				now, mcapKey, jsonKey, taskID,
+				`INSERT INTO episodes (
+					episode_id,
+					task_id,
+					batch_id,
+					order_id,
+					scene_id,
+					mcap_path,
+					sidecar_path
+				) VALUES (?, 0, 0, 0, 0, ?, ?)`,
+				episodeID, mcapKey, jsonKey,
 			)
 			if dbErr != nil {
-				log.Printf("[TRANSFER] Device %s: DB update failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
-				// Continue to send ACK even if DB update fails to avoid blocking the device
+				log.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
+				// Continue to send ACK even if DB insert fails to avoid blocking the device
 			}
 		}
 	}
