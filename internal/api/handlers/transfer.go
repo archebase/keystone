@@ -188,6 +188,8 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Device
 		h.onUploadComplete(ctx, dc, msg)
 	case "upload_failed":
 		h.onUploadFailed(dc, msg)
+	case "upload_not_found":
+		h.onUploadNotFound(dc, msg)
 	case "status":
 		h.onStatus(dc, msg)
 	default:
@@ -345,6 +347,17 @@ func (h *TransferHandler) onUploadFailed(dc *services.DeviceConn, msg map[string
 	if h.s3 != nil {
 		log.Printf("[UPLOAD_FAILED] Keystone configured bucket: %s", h.s3.Bucket())
 	}
+}
+
+// onUploadNotFound handles "upload_not_found" message
+func (h *TransferHandler) onUploadNotFound(dc *services.DeviceConn, msg map[string]interface{}) {
+	data, _ := msg["data"].(map[string]interface{})
+	if data == nil {
+		return
+	}
+	taskID := stringVal(data, "task_id")
+
+	log.Printf("[TRANSFER] Device %s: task=%s not found", dc.DeviceID, taskID)
 }
 
 // onStatus handles "status" message and updates the device status snapshot
