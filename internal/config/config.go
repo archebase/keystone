@@ -99,6 +99,7 @@ type FleetManagerConfig struct {
 	MaxEvents       int
 	ReadTimeout     int // seconds
 	RecorderRPCPort int
+	FactoryID       string
 }
 
 // Load loads configuration from environment variables and defaults
@@ -128,7 +129,7 @@ func Load() (*Config, error) {
 			Endpoint:  getEnv("KEYSTONE_MINIO_ENDPOINT", "http://localhost:9000"),
 			AccessKey: getEnv("KEYSTONE_MINIO_ACCESS_KEY", ""),
 			SecretKey: getEnv("KEYSTONE_MINIO_SECRET_KEY", ""),
-			Bucket:    "edge-" + getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
+			Bucket:    getEnv("KEYSTONE_MINIO_BUCKET", "edge-factory-default"),
 			UseSSL:    getEnvBool("KEYSTONE_MINIO_USE_SSL", false),
 		},
 		QA: QAConfig{
@@ -171,6 +172,7 @@ func Load() (*Config, error) {
 			MaxEvents:       getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 500),
 			ReadTimeout:     getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 60),
 			RecorderRPCPort: getEnvInt("KEYSTONE_FLEET_RECORDER_RPC_PORT", 8080),
+			FactoryID:       getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
 		},
 	}
 

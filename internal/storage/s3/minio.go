@@ -29,6 +29,8 @@ type Config struct {
 
 // Connect creates S3 client
 func Connect(cfg *Config) (*Client, error) {
+	log.Printf("[S3] Connecting to MinIO: endpoint=%s, bucket=%s, useSSL=%v", cfg.Endpoint, cfg.Bucket, cfg.UseSSL)
+
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: cfg.UseSSL,
@@ -85,9 +87,11 @@ func (c *Client) IsSecure() bool {
 // HeadObject checks whether an object exists in the bucket.
 // Returns true if the object exists, false if it does not (404), or an error for other failures.
 func (c *Client) HeadObject(ctx context.Context, objectName string) (bool, error) {
+	log.Printf("[S3] HeadObject called: bucket=%s, key=%s", c.bucket, objectName)
 	_, err := c.StatObject(ctx, c.bucket, objectName, minio.StatObjectOptions{})
 	if err != nil {
 		errResp := minio.ToErrorResponse(err)
+		log.Printf("[S3] HeadObject error: key=%s, err=%v, code=%s, status=%d", objectName, err, errResp.Code, errResp.StatusCode)
 		if errResp.Code == "NoSuchKey" || errResp.StatusCode == 404 {
 			return false, nil
 		}

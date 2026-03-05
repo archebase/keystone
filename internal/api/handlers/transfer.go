@@ -24,46 +24,54 @@ import (
 
 // TransferHandler handles WebSocket connections and REST API for Fleet Manager
 type TransferHandler struct {
-	hub    *services.TransferHub
-	cfg    *config.FleetManagerConfig
-	db     *sql.DB
-	s3     *s3.Client
-	client *http.Client
+	hub       *services.TransferHub
+	cfg       *config.FleetManagerConfig
+	db        *sql.DB
+	s3        *s3.Client
+	bucket    string
+	factoryID string
+	client    *http.Client
 }
 
 // NewTransferHandler creates a new TransferHandler.
 // db and s3Client may be nil; Verified ACK will be skipped if either is absent.
-func NewTransferHandler(hub *services.TransferHub, cfg *config.FleetManagerConfig, db *sql.DB, s3Client *s3.Client) *TransferHandler {
+func NewTransferHandler(hub *services.TransferHub, cfg *config.FleetManagerConfig, db *sql.DB, s3Client *s3.Client, bucket string, factoryID string) *TransferHandler {
 	return &TransferHandler{
-		hub: hub,
-		cfg: cfg,
-		db:  db,
-		s3:  s3Client,
+		hub:       hub,
+		cfg:       cfg,
+		db:        db,
+		s3:        s3Client,
+		bucket:    bucket,
+		factoryID: factoryID,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 	}
 }
 
-// RegisterRoutes registers all transfer-related routes
-func (h *TransferHandler) RegisterRoutes(wsEngine *gin.Engine, apiV1 *gin.RouterGroup) {
-	// WebSocket upgrade endpoint (on the main engine, not under /api/v1)
-	wsEngine.GET("/transfer/:device_id", h.HandleWebSocket)
+// RegisterRoutes registers all transfer-related REST routes
+func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
+	// Note: apiV1 is already /transfer (set by server.go)
+	// Devices list endpoint
+	apiV1.GET("/devices", h.ListDevices)
 
-	// REST API endpoints
-	transfer := apiV1.Group("/transfer")
+	transfer := apiV1.Group(":device_id")
 	{
-		transfer.GET("/devices", h.ListDevices)
-		transfer.GET("/:device_id/events", h.GetDeviceEvents)
-		transfer.POST("/:device_id/upload_request", h.UploadRequest)
-		transfer.POST("/:device_id/upload_all", h.UploadAll)
-		transfer.POST("/:device_id/cancel", h.CancelUpload)
-		transfer.POST("/:device_id/upload_ack", h.ManualACK)
+		transfer.GET("/events", h.GetDeviceEvents)
+		transfer.POST("/upload_request", h.UploadRequest)
+		transfer.POST("/upload_all", h.UploadAll)
+		transfer.POST("/cancel", h.CancelUpload)
+		transfer.POST("/upload_ack", h.ManualACK)
 
 		// Recorder RPC forwarding
-		transfer.GET("/:device_id/recorder/:rpc_path", h.ForwardRecorderRPC)
-		transfer.POST("/:device_id/recorder/:rpc_path", h.ForwardRecorderRPC)
+		transfer.GET("/recorder/:rpc_path", h.ForwardRecorderRPC)
+		transfer.POST("/recorder/:rpc_path", h.ForwardRecorderRPC)
 	}
+}
+
+// RegisterWebSocket registers the WebSocket endpoint
+func (h *TransferHandler) RegisterWebSocket(engine *gin.Engine) {
+	engine.GET("/transfer/:device_id", h.HandleWebSocket)
 }
 
 // HandleWebSocket upgrades the HTTP connection to WebSocket and manages the device session.
@@ -74,33 +82,64 @@ func (h *TransferHandler) RegisterRoutes(wsEngine *gin.Engine, apiV1 *gin.Router
 // @Param        device_id  path  string  true  "Device ID"
 // @Router       /transfer/{device_id} [get]
 func (h *TransferHandler) HandleWebSocket(c *gin.Context) {
-	deviceID := c.Param("device_id")
+	h.HandleWebSocketRaw(c.Writer, c.Request, c.Param("device_id"))
+}
+
+// HandleWebSocketRaw handles WebSocket connections using raw http.ResponseWriter
+// to avoid gin.ResponseWriter compatibility issues with nhooyr.io/websocket
+func (h *TransferHandler) HandleWebSocketRaw(w http.ResponseWriter, r *http.Request, deviceID string) {
+	log.Printf("[TRANSFER] WebSocket connection attempt for device: %s", deviceID)
 
 	// Validate device exists in robots table (if DB is configured)
 	if h.db != nil {
 		// Add independent 5s timeout to avoid blocking on slow DB queries
-		queryCtx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+		queryCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
 		var count int
 		err := h.db.QueryRowContext(queryCtx,
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		).Scan(&count)
-		if err != nil || count == 0 {
-			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		if err != nil {
+			log.Printf("[TRANSFER] Device %s: DB query error: %v", deviceID, err)
+		}
+		if count == 0 {
+			log.Printf("[TRANSFER] Device %s: robot not found in database", deviceID)
+			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 	}
 
-	conn, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true, // allow any origin in dev; tighten in production
 	})
 	if err != nil {
+		log.Printf("[TRANSFER] Device %s: WebSocket accept error: %v", deviceID, err)
 		return
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	remoteIP := extractIP(c.Request.RemoteAddr)
+	// Create context for this connection
+	ctx := r.Context()
+
+	// Start ping handler to automatically respond to client pings
+	// This prevents connection timeout due to idle connections
+	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.Ping(context.Background()); err != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	remoteIP := extractIP(r.RemoteAddr)
 
 	dc := h.hub.NewDeviceConn(conn, deviceID, remoteIP)
 	h.hub.Connect(deviceID, dc)
@@ -108,13 +147,12 @@ func (h *TransferHandler) HandleWebSocket(c *gin.Context) {
 
 	log.Printf("[TRANSFER] Device %s connected from %s", deviceID, remoteIP)
 
-	readTimeout := time.Duration(h.cfg.ReadTimeout) * time.Second
-	ctx := c.Request.Context()
-
+	// Read loop: use ctx directly for infinite wait.
+	// context.WithTimeout(ctx, 0) would set deadline=now and cause immediate timeout,
+	// so we must NOT wrap ctx with a zero timeout here.
+	// Ping keepalive is handled by the goroutine above.
 	for {
-		readCtx, cancel := context.WithTimeout(ctx, readTimeout)
-		_, raw, err := conn.Read(readCtx)
-		cancel()
+		_, raw, err := conn.Read(ctx)
 		if err != nil {
 			log.Printf("[TRANSFER] Device %s disconnected: %v", deviceID, err)
 			break
@@ -210,30 +248,34 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 
 	// Step 1: Verify S3 files exist (skip if S3 client not configured)
 	if h.s3 != nil {
-		mcapKey := fmt.Sprintf("%s/%s.mcap", dc.RemoteIP, taskID)
-		jsonKey := fmt.Sprintf("%s/%s.json", dc.RemoteIP, taskID)
+		today := time.Now().Format("2006-01-02")
+		mcapKey := fmt.Sprintf("%s/%s/%s/%s.mcap", h.factoryID, dc.DeviceID, today, taskID)
+		jsonKey := fmt.Sprintf("%s/%s/%s/%s.json", h.factoryID, dc.DeviceID, today, taskID)
 
 		mcapExists, err := h.s3.HeadObject(ctx, mcapKey)
 		if err != nil {
-			log.Printf("[TRANSFER] Device %s: S3 HeadObject error for %s: %v", dc.DeviceID, mcapKey, err)
+			log.Printf("[TRANSFER] Device %s: S3 HeadObject error for key=%s: %v", dc.DeviceID, mcapKey, err)
 			return
 		}
+		log.Printf("[TRANSFER] Device %s: S3 HeadObject result for key=%s: exists=%v", dc.DeviceID, mcapKey, mcapExists)
 		jsonExists, err := h.s3.HeadObject(ctx, jsonKey)
 		if err != nil {
-			log.Printf("[TRANSFER] Device %s: S3 HeadObject error for %s: %v", dc.DeviceID, jsonKey, err)
+			log.Printf("[TRANSFER] Device %s: S3 HeadObject error for key=%s: %v", dc.DeviceID, jsonKey, err)
 			return
 		}
+		log.Printf("[TRANSFER] Device %s: S3 HeadObject result for key=%s: exists=%v", dc.DeviceID, jsonKey, jsonExists)
 
 		if !mcapExists || !jsonExists {
-			log.Printf("[TRANSFER] Device %s: S3 files not found for task=%s (mcap=%v json=%v), skipping ACK",
-				dc.DeviceID, taskID, mcapExists, jsonExists)
+			log.Printf("[TRANSFER] Device %s: S3 files not found for task=%s (mcapKey=%s mcap=%v jsonKey=%s json=%v), skipping ACK",
+				dc.DeviceID, taskID, mcapKey, mcapExists, jsonKey, jsonExists)
 			return
 		}
 
 		// Step 2: Update episodes table (skip if DB not configured)
 		if h.db != nil {
-			mcapKey := fmt.Sprintf("%s/%s.mcap", dc.RemoteIP, taskID)
-			jsonKey := fmt.Sprintf("%s/%s.json", dc.RemoteIP, taskID)
+			today := time.Now().Format("2006-01-02")
+			mcapKey := fmt.Sprintf("%s/%s/%s/%s.mcap", h.factoryID, dc.DeviceID, today, taskID)
+			jsonKey := fmt.Sprintf("%s/%s/%s/%s.json", h.factoryID, dc.DeviceID, today, taskID)
 			now := time.Now()
 			_, dbErr := h.db.ExecContext(ctx,
 				`UPDATE episodes
@@ -275,8 +317,23 @@ func (h *TransferHandler) onUploadFailed(dc *services.DeviceConn, msg map[string
 	taskID := stringVal(data, "task_id")
 	reason := stringVal(data, "reason")
 	retryCount := intVal(data, "retry_count")
-	log.Printf("[TRANSFER] Device %s: upload failed task=%s reason=%q retries=%d",
-		dc.DeviceID, taskID, reason, retryCount)
+
+	// Log full message for debugging
+	log.Printf("[UPLOAD_FAILED] Received from device %s: full message=%+v", dc.DeviceID, msg)
+
+	// Try to extract bucket info if present
+	if bucket, ok := data["bucket"].(string); ok {
+		log.Printf("[UPLOAD_FAILED] Device %s: task=%s bucket=%s reason=%q retries=%d",
+			dc.DeviceID, taskID, bucket, reason, retryCount)
+	} else {
+		log.Printf("[UPLOAD_FAILED] Device %s: task=%s reason=%q retries=%d",
+			dc.DeviceID, taskID, reason, retryCount)
+	}
+
+	// Log configured S3 bucket for comparison
+	if h.s3 != nil {
+		log.Printf("[UPLOAD_FAILED] Keystone configured bucket: %s", h.s3.Bucket())
+	}
 }
 
 // onStatus handles "status" message and updates the device status snapshot
@@ -396,11 +453,31 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 // @Router       /api/v1/transfer/{device_id}/upload_all [post]
 func (h *TransferHandler) UploadAll(c *gin.Context) {
 	deviceID := c.Param("device_id")
+
+	log.Printf("[UPLOAD_ALL] Received upload_all request for device: %s", deviceID)
+
+	// Check if device is connected
+	dc := h.hub.Get(deviceID)
+	if dc == nil {
+		log.Printf("[UPLOAD_ALL] Device %s not connected - returning 404", deviceID)
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("device %s not connected", deviceID)})
+		return
+	}
+
+	log.Printf("[UPLOAD_ALL] Device %s is connected, remote_ip=%s", deviceID, dc.RemoteIP)
+	log.Printf("[UPLOAD_ALL] Device %s current status: pending=%d uploading=%d failed=%d waiting_ack=%d",
+		deviceID, dc.Status.PendingCount, dc.Status.UploadingCount, dc.Status.FailedCount, dc.Status.WaitingACKCount)
+
 	msg := map[string]interface{}{"type": "upload_all"}
+	log.Printf("[UPLOAD_ALL] Sending message to device %s: %+v", deviceID, msg)
+
 	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+		log.Printf("[UPLOAD_ALL] Failed to send message to device %s: %v", deviceID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+
+	log.Printf("[UPLOAD_ALL] Message sent successfully to device %s, returning 200 OK", deviceID)
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
 }
 
@@ -516,17 +593,23 @@ func (h *TransferHandler) ForwardRecorderRPC(c *gin.Context) {
 func (h *TransferHandler) sendToDevice(ctx context.Context, deviceID string, msg map[string]interface{}) error {
 	dc := h.hub.Get(deviceID)
 	if dc == nil {
+		log.Printf("[sendToDevice] Device %s not found in hub", deviceID)
 		return fmt.Errorf("device %s not connected", deviceID)
 	}
 
+	log.Printf("[sendToDevice] Acquiring write lock for device %s", deviceID)
 	dc.WriteMu.Lock()
 	defer dc.WriteMu.Unlock()
 
+	log.Printf("[sendToDevice] Writing message to device %s: %+v", deviceID, msg)
 	if err := wsjson.Write(ctx, dc.Conn, msg); err != nil {
+		log.Printf("[sendToDevice] wsjson.Write failed for device %s: %v", deviceID, err)
 		return fmt.Errorf("failed to send message to device %s: %w", deviceID, err)
 	}
 
+	log.Printf("[sendToDevice] Message written successfully, recording event for device %s", deviceID)
 	dc.RecordEvent("outbound", msg)
+	log.Printf("[sendToDevice] Successfully sent message to device %s", deviceID)
 	return nil
 }
 
