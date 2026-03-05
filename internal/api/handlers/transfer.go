@@ -539,8 +539,9 @@ func (h *TransferHandler) UploadAll(c *gin.Context) {
 	}
 
 	log.Printf("[UPLOAD_ALL] Device %s is connected, remote_ip=%s", deviceID, dc.RemoteIP)
+	status := dc.GetStatus()
 	log.Printf("[UPLOAD_ALL] Device %s current status: pending=%d uploading=%d failed=%d waiting_ack=%d",
-		deviceID, dc.Status.PendingCount, dc.Status.UploadingCount, dc.Status.FailedCount, dc.Status.WaitingACKCount)
+		deviceID, status.PendingCount, status.UploadingCount, status.FailedCount, status.WaitingACKCount)
 
 	msg := map[string]interface{}{"type": "upload_all"}
 	log.Printf("[UPLOAD_ALL] Sending message to device %s: %+v", deviceID, msg)
