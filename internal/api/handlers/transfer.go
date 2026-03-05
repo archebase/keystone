@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -244,79 +245,122 @@ func (h *TransferHandler) onUploadProgress(dc *services.DeviceConn, msg map[stri
 func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.DeviceConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
+		log.Printf("[TRANSFER] Device %s: upload complete data is nil", dc.DeviceID)
 		return
 	}
 	taskID := stringVal(data, "task_id")
+	if taskID == "" {
+		log.Printf("[TRANSFER] Device %s: upload complete taskID is empty", dc.DeviceID)
+		return
+	}
 	log.Printf("[TRANSFER] Device %s: upload complete task=%s", dc.DeviceID, taskID)
 
-	// Step 1: Verify S3 files exist (skip if S3 client not configured)
-	if h.s3 != nil {
-		today := time.Now().Format("2006-01-02")
-		mcapKey := fmt.Sprintf("%s/%s/%s/%s.mcap", h.factoryID, dc.DeviceID, today, taskID)
-		jsonKey := fmt.Sprintf("%s/%s/%s/%s.json", h.factoryID, dc.DeviceID, today, taskID)
-
-		mcapExists, err := h.s3.HeadObject(ctx, mcapKey)
-		if err != nil {
-			log.Printf("[TRANSFER] Device %s: S3 HeadObject error for key=%s: %v", dc.DeviceID, mcapKey, err)
-			return
-		}
-		log.Printf("[TRANSFER] Device %s: S3 HeadObject result for key=%s: exists=%v", dc.DeviceID, mcapKey, mcapExists)
-		jsonExists, err := h.s3.HeadObject(ctx, jsonKey)
-		if err != nil {
-			log.Printf("[TRANSFER] Device %s: S3 HeadObject error for key=%s: %v", dc.DeviceID, jsonKey, err)
-			return
-		}
-		log.Printf("[TRANSFER] Device %s: S3 HeadObject result for key=%s: exists=%v", dc.DeviceID, jsonKey, jsonExists)
-
-		if !mcapExists || !jsonExists {
-			log.Printf("[TRANSFER] Device %s: S3 files not found for task=%s (mcapKey=%s mcap=%v jsonKey=%s json=%v), skipping ACK",
-				dc.DeviceID, taskID, mcapKey, mcapExists, jsonKey, jsonExists)
-			return
-		}
-
-		// Step 2: Insert into episodes table (skip if DB not configured)
-		if h.db != nil {
-			today := time.Now().Format("2006-01-02")
-			mcapKey := fmt.Sprintf("%s/%s/%s/%s.mcap", h.factoryID, dc.DeviceID, today, taskID)
-			jsonKey := fmt.Sprintf("%s/%s/%s/%s.json", h.factoryID, dc.DeviceID, today, taskID)
-			episodeID := uuid.New().String()
-
-			_, dbErr := h.db.ExecContext(ctx,
-				`INSERT INTO episodes (
-					episode_id,
-					task_id,
-					batch_id,
-					order_id,
-					scene_id,
-					mcap_path,
-					sidecar_path
-				) VALUES (?, 0, 0, 0, 0, ?, ?)`,
-				episodeID, mcapKey, jsonKey,
-			)
-			if dbErr != nil {
-				log.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
-				// Do NOT send ACK when DB insert fails to avoid data loss
-				// Device will retry, and we can try DB insert again
-				return
-			}
-			log.Printf("[TRANSFER] Device %s: DB insert success for task=%s episode=%s", dc.DeviceID, taskID, episodeID)
-		}
+	if h.s3 == nil {
+		log.Printf("[TRANSFER] Device %s: S3 not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
+		return
+	}
+	if h.db == nil {
+		log.Printf("[TRANSFER] Device %s: DB not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
+		return
 	}
 
-	// Step 3: Send upload_ack (only when S3 verified and DB insert succeeded (or DB not configured))
-	// If h.s3 is nil, we skip S3 verification and send ACK for backward compatibility
-	// If h.db is nil, we send ACK after S3 verification succeeds
-	// If h.db is configured but insert failed, we already returned above (no ACK sent)
+	// Step 1: Verify S3 files exist (parallel execution)
+	today := time.Now().Format("2006-01-02")
+	mcapKey := fmt.Sprintf("%s/%s/%s/%s.mcap", h.factoryID, dc.DeviceID, today, taskID)
+	jsonKey := fmt.Sprintf("%s/%s/%s/%s.json", h.factoryID, dc.DeviceID, today, taskID)
+
+	var mcapExists, jsonExists bool
+	var mcapErr, jsonErr error
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		mcapExists, mcapErr = h.s3.HeadObject(ctx, mcapKey)
+	}()
+
+	go func() {
+		defer wg.Done()
+		jsonExists, jsonErr = h.s3.HeadObject(ctx, jsonKey)
+	}()
+
+	wg.Wait()
+
+	if mcapErr != nil {
+		log.Printf("[TRANSFER] Device %s: S3 HeadObject error for key=%s: %v", dc.DeviceID, mcapKey, mcapErr)
+		return
+	}
+	if jsonErr != nil {
+		log.Printf("[TRANSFER] Device %s: S3 HeadObject error for key=%s: %v", dc.DeviceID, jsonKey, jsonErr)
+		return
+	}
+
+	if !mcapExists || !jsonExists {
+		log.Printf("[TRANSFER] Device %s: S3 files not found for task=%s (mcapKey=%s mcap=%v jsonKey=%s json=%v), skipping ACK",
+			dc.DeviceID, taskID, mcapKey, mcapExists, jsonKey, jsonExists)
+		return
+	}
+
+	// Step 2: Insert into episodes table
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("[TRANSFER] Device %s: DB begin transaction error for task=%s: %v", dc.DeviceID, taskID, err)
+		return
+	}
+	defer tx.Rollback()
+
+	// Check if mcap_path and sidecar_path already exist in database
+	var count int
+	err = tx.QueryRowContext(ctx,
+		"SELECT COUNT(1) FROM episodes WHERE mcap_path = ? OR sidecar_path = ?", mcapKey, jsonKey,
+	).Scan(&count)
+	if err != nil {
+		log.Printf("[TRANSFER] Device %s: DB query error for task=%s: %v", dc.DeviceID, taskID, err)
+		return
+	}
+	if count > 0 {
+		log.Printf("[TRANSFER] Device %s: task=%s already exists in DB (by mcap_path or sidecar_path), skipping insert", dc.DeviceID, taskID)
+	} else {
+		// TODO: query the tasks table based on task_id (string) to get the corresponding id(int)
+		episodeID := uuid.New().String()
+		_, dbErr := tx.ExecContext(ctx,
+			`INSERT INTO episodes (
+				episode_id,
+				task_id,
+				batch_id,
+				order_id,
+				scene_id,
+				mcap_path,
+				sidecar_path
+			) VALUES (?, 0, 0, 0, 0, ?, ?)`,
+			episodeID, mcapKey, jsonKey,
+		)
+		if dbErr != nil {
+			log.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
+			return
+		}
+		log.Printf("[TRANSFER] Device %s: DB insert success for task=%s episode=%s", dc.DeviceID, taskID, episodeID)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		log.Printf("[TRANSFER] Device %s: DB commit error for task=%s: %v", dc.DeviceID, taskID, err)
+		return
+	}
+
+	// Step 3: Send upload_ack
 	ackMsg := map[string]interface{}{
 		"type":    "upload_ack",
 		"task_id": taskID,
 	}
 	dc.WriteMu.Lock()
-	defer dc.WriteMu.Unlock()
 	if err := wsjson.Write(ctx, dc.Conn, ackMsg); err != nil {
+		dc.WriteMu.Unlock()
 		log.Printf("[TRANSFER] Device %s: failed to send upload_ack for task=%s: %v", dc.DeviceID, taskID, err)
 		return
 	}
+	dc.WriteMu.Unlock()
 	dc.RecordEvent("outbound", ackMsg)
 	log.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
 }
