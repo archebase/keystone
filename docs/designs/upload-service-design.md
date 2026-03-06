@@ -269,14 +269,6 @@ axon_transfer          Fleet Manager          S3/MinIO       MySQL
 
 ## REST API
 
-### WebSocket Upgrade
-
-```
-GET /transfer/{device_id}
-Upgrade: websocket
-Connection: upgrade
-```
-
 ### Endpoints
 
 #### List Connected Devices

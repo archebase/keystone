@@ -66,24 +66,8 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	}
 }
 
-// RegisterWebSocket registers the WebSocket endpoint
-func (h *TransferHandler) RegisterWebSocket(engine *gin.Engine) {
-	engine.GET("/transfer/:device_id", h.HandleWebSocket)
-}
-
-// HandleWebSocket upgrades the HTTP connection to WebSocket and manages the device session.
-//
-// @Summary      WebSocket endpoint for axon_transfer devices
-// @Description  Upgrades to WebSocket; device_id identifies the connecting robot
-// @Tags         transfer
-// @Param        device_id  path  string  true  "Device ID"
-// @Router       /transfer/{device_id} [get]
-func (h *TransferHandler) HandleWebSocket(c *gin.Context) {
-	h.HandleWebSocketRaw(c.Writer, c.Request, c.Param("device_id"))
-}
-
-// HandleWebSocketRaw handles WebSocket connections using raw http.ResponseWriter
-func (h *TransferHandler) HandleWebSocketRaw(w http.ResponseWriter, r *http.Request, deviceID string) {
+// HandleWebSocket handles WebSocket connections using raw http.ResponseWriter
+func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request, deviceID string) {
 	log.Printf("[TRANSFER] WebSocket connection attempt for device: %s", deviceID)
 
 	// Validate device exists in robots table (if DB is configured)

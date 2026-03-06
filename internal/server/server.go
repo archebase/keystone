@@ -116,8 +116,7 @@ func (s *Server) buildWSRoutes(transferHandler *handlers.TransferHandler) http.H
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		// Use the raw ResponseWriter - pass nil for gin context
-		transferHandler.HandleWebSocketRaw(w, r, deviceID)
+		transferHandler.HandleWebSocket(w, r, deviceID)
 	})
 
 	return mux
