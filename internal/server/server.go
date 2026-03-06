@@ -81,6 +81,13 @@ func (s *Server) buildRoutes() http.Handler {
 	// Set basePath for swagger
 	docs.SwaggerInfo.BasePath = "/api/v1"
 
+	bindAddr := s.cfg.Server.BindAddr
+	if strings.HasPrefix(bindAddr, ":") {
+		docs.SwaggerInfo.Host = "localhost" + bindAddr
+	} else {
+		docs.SwaggerInfo.Host = bindAddr
+	}
+
 	// API v1 group
 	v1 := s.engine.Group("/api/v1")
 
@@ -99,7 +106,6 @@ func (s *Server) buildRoutes() http.Handler {
 }
 
 // buildWSRoutes constructs the WebSocket-only router using standard net/http
-// to avoid gin.ResponseWriter compatibility issues with nhooyr.io/websocket
 func (s *Server) buildWSRoutes(transferHandler *handlers.TransferHandler) http.Handler {
 	mux := http.NewServeMux()
 
@@ -110,8 +116,7 @@ func (s *Server) buildWSRoutes(transferHandler *handlers.TransferHandler) http.H
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		// Use the raw ResponseWriter - pass nil for gin context
-		transferHandler.HandleWebSocketRaw(w, r, deviceID)
+		transferHandler.HandleWebSocket(w, r, deviceID)
 	})
 
 	return mux

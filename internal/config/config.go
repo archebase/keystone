@@ -95,11 +95,10 @@ type ResourceLimitsConfig struct {
 
 // FleetManagerConfig Fleet Manager configuration
 type FleetManagerConfig struct {
-	WSPort          int
-	MaxEvents       int
-	ReadTimeout     int // seconds
-	RecorderRPCPort int
-	FactoryID       string
+	WSPort      int
+	MaxEvents   int
+	ReadTimeout int // seconds
+	FactoryID   string
 }
 
 // Load loads configuration from environment variables and defaults
@@ -168,11 +167,10 @@ func Load() (*Config, error) {
 			DiskWatermarkHigh: getEnvInt("KEYSTONE_DISK_WATERMARK_HIGH", 10),
 		},
 		Fleet: FleetManagerConfig{
-			WSPort:          getEnvInt("KEYSTONE_FLEET_WS_PORT", 8090),
-			MaxEvents:       getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 500),
-			ReadTimeout:     getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 60),
-			RecorderRPCPort: getEnvInt("KEYSTONE_FLEET_RECORDER_RPC_PORT", 8080),
-			FactoryID:       getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
+			WSPort:      getEnvInt("KEYSTONE_FLEET_WS_PORT", 8090),
+			MaxEvents:   getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 500),
+			ReadTimeout: getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 60),
+			FactoryID:   getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
 		},
 	}
 

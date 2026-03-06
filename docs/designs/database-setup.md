@@ -47,7 +47,7 @@ Defines what robots can do and how tasks are structured.
 The physical entities involved in a data collection session.
 
 - **`robot_types`**: Robot model definitions, including ROS topics and capabilities (JSON).
-- **`robots`**: Individual robot instances, identified by `serial_number`.
+- **`robots`**: Individual robot instances, identified by `device_id`.
 - **`data_collectors`**: Human operators who run collection sessions.
 - **`workstations`**: A pairing of a robot and a data collector at a factory. Contains denormalized fields (`robot_name`, `collector_name`, etc.) to avoid joins on hot query paths.
 - **`inspectors`**: QA reviewers with certification levels (`level_1`, `level_2`, `senior`).

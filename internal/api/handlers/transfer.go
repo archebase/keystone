@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -59,37 +58,16 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 	transfer := apiV1.Group(":device_id")
 	{
-		transfer.GET("/events", h.GetDeviceEvents)
 		transfer.POST("/upload_request", h.UploadRequest)
 		transfer.POST("/upload_all", h.UploadAll)
+		transfer.POST("/status_query", h.StatusQuery)
 		transfer.POST("/cancel", h.CancelUpload)
 		transfer.POST("/upload_ack", h.ManualACK)
-
-		// Recorder RPC forwarding
-		transfer.GET("/recorder/:rpc_path", h.ForwardRecorderRPC)
-		transfer.POST("/recorder/:rpc_path", h.ForwardRecorderRPC)
 	}
 }
 
-// RegisterWebSocket registers the WebSocket endpoint
-func (h *TransferHandler) RegisterWebSocket(engine *gin.Engine) {
-	engine.GET("/transfer/:device_id", h.HandleWebSocket)
-}
-
-// HandleWebSocket upgrades the HTTP connection to WebSocket and manages the device session.
-//
-// @Summary      WebSocket endpoint for axon_transfer devices
-// @Description  Upgrades to WebSocket; device_id identifies the connecting robot
-// @Tags         transfer
-// @Param        device_id  path  string  true  "Device ID"
-// @Router       /transfer/{device_id} [get]
-func (h *TransferHandler) HandleWebSocket(c *gin.Context) {
-	h.HandleWebSocketRaw(c.Writer, c.Request, c.Param("device_id"))
-}
-
-// HandleWebSocketRaw handles WebSocket connections using raw http.ResponseWriter
-// to avoid gin.ResponseWriter compatibility issues with nhooyr.io/websocket
-func (h *TransferHandler) HandleWebSocketRaw(w http.ResponseWriter, r *http.Request, deviceID string) {
+// HandleWebSocket handles WebSocket connections using raw http.ResponseWriter
+func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request, deviceID string) {
 	log.Printf("[TRANSFER] WebSocket connection attempt for device: %s", deviceID)
 
 	// Validate device exists in robots table (if DB is configured)
@@ -412,6 +390,7 @@ func (h *TransferHandler) onUploadNotFound(dc *services.DeviceConn, msg map[stri
 
 // onStatus handles "status" message and updates the device status snapshot
 func (h *TransferHandler) onStatus(dc *services.DeviceConn, msg map[string]interface{}) {
+	log.Printf("[TRANSFER] Device %s: received status update", dc.DeviceID)
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -451,34 +430,6 @@ func (h *TransferHandler) onStatus(dc *services.DeviceConn, msg map[string]inter
 func (h *TransferHandler) ListDevices(c *gin.Context) {
 	devices := h.hub.ListDevices()
 	c.JSON(http.StatusOK, gin.H{"devices": devices})
-}
-
-// GetDeviceEvents returns recent events for a device.
-//
-// @Summary      Get device events
-// @Description  Returns up to `limit` recent inbound/outbound events for the device
-// @Tags         transfer
-// @Produce      json
-// @Param        device_id  path   string  true   "Device ID"
-// @Param        limit      query  int     false  "Max events to return (default 100)"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      404  {object}  map[string]interface{}
-// @Router       /transfer/{device_id}/events [get]
-func (h *TransferHandler) GetDeviceEvents(c *gin.Context) {
-	deviceID := c.Param("device_id")
-	limit := 100
-	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
-		limit = l
-	}
-
-	dc := h.hub.Get(deviceID)
-	if dc == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "device not connected"})
-		return
-	}
-
-	events := dc.Events(limit)
-	c.JSON(http.StatusOK, gin.H{"device_id": deviceID, "events": events})
 }
 
 // UploadRequest sends an upload_request message to the device.
@@ -589,6 +540,33 @@ func (h *TransferHandler) CancelUpload(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
 }
 
+// StatusQuery sends a status_query message to the device to request current status.
+//
+// @Summary      Query device status
+// @Tags         transfer
+// @Produce      json
+// @Param        device_id  path  string  true  "Device ID"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      404  {object}  map[string]interface{}
+// @Router       /transfer/{device_id}/status_query [post]
+func (h *TransferHandler) StatusQuery(c *gin.Context) {
+	deviceID := c.Param("device_id")
+
+	// Check if device is connected
+	dc := h.hub.Get(deviceID)
+	if dc == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("device %s not connected", deviceID)})
+		return
+	}
+
+	msg := map[string]interface{}{"type": "status_query"}
+	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "sent"})
+}
+
 // ManualACK sends an upload_ack message to the device.
 //
 // @Summary      Manually acknowledge an upload
@@ -620,53 +598,6 @@ func (h *TransferHandler) ManualACK(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
-}
-
-// ForwardRecorderRPC proxies a request to the device's axon_recorder RPC server.
-//
-// @Summary      Forward RPC to device recorder
-// @Description  Proxies GET/POST to http://{device_ip}:{recorder_port}/rpc/{rpc_path}
-// @Tags         transfer
-// @Param        device_id  path  string  true  "Device ID"
-// @Param        rpc_path   path  string  true  "RPC path (e.g. status, config, begin)"
-// @Success      200
-// @Failure      404  {object}  map[string]interface{}
-// @Failure      502  {object}  map[string]interface{}
-// @Router       /transfer/{device_id}/recorder/{rpc_path} [get]
-// @Router       /transfer/{device_id}/recorder/{rpc_path} [post]
-func (h *TransferHandler) ForwardRecorderRPC(c *gin.Context) {
-	deviceID := c.Param("device_id")
-	rpcPath := c.Param("rpc_path")
-
-	dc := h.hub.Get(deviceID)
-	if dc == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "device not connected"})
-		return
-	}
-
-	targetURL := fmt.Sprintf("http://%s:%d/rpc/%s", dc.RemoteIP, h.cfg.RecorderRPCPort, rpcPath)
-
-	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, targetURL, c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	req.Header = c.Request.Header.Clone()
-
-	// #nosec G704 -- Set aside for now
-	resp, err := h.client.Do(req)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("recorder unreachable: %v", err)})
-		return
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			log.Printf("Failed to close response body: %v", err)
-		}
-	}()
-
-	body, _ := io.ReadAll(resp.Body)
-	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
 }
 
 // sendToDevice sends a JSON message to a connected device via WebSocket
