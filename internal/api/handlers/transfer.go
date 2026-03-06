@@ -59,7 +59,6 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 	transfer := apiV1.Group(":device_id")
 	{
-		transfer.GET("/events", h.GetDeviceEvents)
 		transfer.POST("/upload_request", h.UploadRequest)
 		transfer.POST("/upload_all", h.UploadAll)
 		transfer.POST("/status_query", h.StatusQuery)
@@ -452,34 +451,6 @@ func (h *TransferHandler) onStatus(dc *services.DeviceConn, msg map[string]inter
 func (h *TransferHandler) ListDevices(c *gin.Context) {
 	devices := h.hub.ListDevices()
 	c.JSON(http.StatusOK, gin.H{"devices": devices})
-}
-
-// GetDeviceEvents returns recent events for a device.
-//
-// @Summary      Get device events
-// @Description  Returns up to `limit` recent inbound/outbound events for the device
-// @Tags         transfer
-// @Produce      json
-// @Param        device_id  path   string  true   "Device ID"
-// @Param        limit      query  int     false  "Max events to return (default 100)"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      404  {object}  map[string]interface{}
-// @Router       /transfer/{device_id}/events [get]
-func (h *TransferHandler) GetDeviceEvents(c *gin.Context) {
-	deviceID := c.Param("device_id")
-	limit := 100
-	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
-		limit = l
-	}
-
-	dc := h.hub.Get(deviceID)
-	if dc == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "device not connected"})
-		return
-	}
-
-	events := dc.Events(limit)
-	c.JSON(http.StatusOK, gin.H{"device_id": deviceID, "events": events})
 }
 
 // UploadRequest sends an upload_request message to the device.
