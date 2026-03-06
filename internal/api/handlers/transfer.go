@@ -62,6 +62,7 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 		transfer.GET("/events", h.GetDeviceEvents)
 		transfer.POST("/upload_request", h.UploadRequest)
 		transfer.POST("/upload_all", h.UploadAll)
+		transfer.POST("/status_query", h.StatusQuery)
 		transfer.POST("/cancel", h.CancelUpload)
 		transfer.POST("/upload_ack", h.ManualACK)
 
@@ -411,6 +412,7 @@ func (h *TransferHandler) onUploadNotFound(dc *services.DeviceConn, msg map[stri
 
 // onStatus handles "status" message and updates the device status snapshot
 func (h *TransferHandler) onStatus(dc *services.DeviceConn, msg map[string]interface{}) {
+	log.Printf("[TRANSFER] Device %s: received status update", dc.DeviceID)
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -581,6 +583,33 @@ func (h *TransferHandler) CancelUpload(c *gin.Context) {
 		"type":    "cancel",
 		"task_id": body.TaskID,
 	}
+	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "sent"})
+}
+
+// StatusQuery sends a status_query message to the device to request current status.
+//
+// @Summary      Query device status
+// @Tags         transfer
+// @Produce      json
+// @Param        device_id  path  string  true  "Device ID"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      404  {object}  map[string]interface{}
+// @Router       /transfer/{device_id}/status_query [post]
+func (h *TransferHandler) StatusQuery(c *gin.Context) {
+	deviceID := c.Param("device_id")
+
+	// Check if device is connected
+	dc := h.hub.Get(deviceID)
+	if dc == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("device %s not connected", deviceID)})
+		return
+	}
+
+	msg := map[string]interface{}{"type": "status_query"}
 	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
