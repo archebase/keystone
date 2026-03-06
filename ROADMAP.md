@@ -24,6 +24,7 @@ First Release Implementation Order:
   - ✅ WebSocket long-lived connection and protocol interaction with axon_transfer
   - ✅ Upload-related REST API endpoints
   - ✅ Device connection state management(refactor when connection with axon_recorder is ready)
+  - Replace traditional database operations with GORM
 4. **task Scheduler**
   - task lifecycle management and config for Axon
   - handle `/callbacks/start`、`/callbacks/finish`
