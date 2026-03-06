@@ -81,6 +81,13 @@ func (s *Server) buildRoutes() http.Handler {
 	// Set basePath for swagger
 	docs.SwaggerInfo.BasePath = "/api/v1"
 
+	bindAddr := s.cfg.Server.BindAddr
+	if strings.HasPrefix(bindAddr, ":") {
+		docs.SwaggerInfo.Host = "localhost" + bindAddr
+	} else {
+		docs.SwaggerInfo.Host = bindAddr
+	}
+
 	// API v1 group
 	v1 := s.engine.Group("/api/v1")
 
