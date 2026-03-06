@@ -1,14 +1,8 @@
-# Fleet Manager Design
-
-**Date:** 2026-03-04
-**Status:** Design
-**Target Version:** 0.1.0
+# Upload Service Design
 
 ## Overview
 
-Fleet Manager is a Keystone Edge component that manages edge device data uploads. It communicates with [axon_transfer](https://github.com/ArcheBase/axon/tree/main/apps/axon_transfer) (a C++ upload daemon running on edge devices) via WebSocket to enable task scheduling, upload progress monitoring, and device state management.
-
-This design is implemented in Go using `nhooyr.io/websocket`, based on the [axon fleet_manager_example/server.py](https://github.com/ArcheBase/axon/tree/main/apps/axon_transfer/scripts/fleet_manager_example/server.py).
+Upload Service is a Keystone Edge component that manages edge device data uploads. It communicates with [axon_transfer](https://github.com/ArcheBase/axon/tree/main/apps/axon_transfer) (a C++ upload daemon running on edge devices) via WebSocket to enable **upload lifestyle management** and **device connection state tracking**.
 
 ## Architecture
 
@@ -18,35 +12,29 @@ This design is implemented in Go using `nhooyr.io/websocket`, based on the [axon
 │                                                                     │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌───────────────┐    │
 │  │  REST API       │    │  WebSocket Hub  │    │  Recorder RPC │    │
-│  │  (Gin)          │    │  (nhooyr.io)    │    │  Forwarder    │    │
+│  │  (Gin)          │    │                 │    │  Forwarder    │    | │  |                 |    |                 |    |               |    |
 │  └────────┬────────┘    └────────┬────────┘    └───────┬───────┘    │
-│           │                      │                    │             │
-│           ▼                      ▼                    ▼             │
+│           │                      │                     │            │
+│           ▼                      ▼                     ▼            │
 │  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    FleetManager Service                     │    │
-│  │  - Device Connection State (in-memory)                      │    │
-│  │  - Event History (ring buffer)                              │    │
-│  │  - Upload ACK Coordinator                                   │    │
+│  │                    Upload Service                           │    │
+│  │  - Device Connection State                                  │    │
+│  │  - upload lifestyle management                              │    │
 │  └─────────────────────────────────────────────────────────────┘    │
-│                              │                                      │
-│                              ▼                                      │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    MySQL Database                           │    │
-│  │  - episodes table (updated on upload_complete + ACK)        │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                              │                                      │
-│                              ▼                                      │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    S3 / MinIO                               │    │
-│  │  - Verify uploaded files before ACK                         │    │
-│  └─────────────────────────────────────────────────────────────┘    │
+│            │                                  │                     |
+│            ▼                                  ▼                     │
+│  ┌─────────────────────┐          ┌─────────────────────┐           │
+│  │   MySQL Database    │          │     S3 / MinIO      │           │
+│  │ - episodes table    │          │ - File storage      │           │
+│  │   (metadata)        │          │ - Verify files      │           │
+│  └─────────────────────┘          └─────────────────────┘           │
 └─────────────────────────────────────────────────────────────────────┘
-            │                                   │
-            │ WebSocket                         │ HTTP
-            ▼                                    ▼
+          │                                     │
+          │ WebSocket                           │ HTTP
+          ▼                                     ▼
 ┌─────────────────────┐              ┌─────────────────────┐
-│ axon_transfer (C++) │              │ axon_recorder (C++)│
-│ - WsClient          │              │ - RPC Server (8080)│
+│ axon_transfer (C++) │              │ axon_recorder (C++) │
+│ - WsClient          │              │ - RPC Server        │
 └─────────────────────┘              └─────────────────────┘
 ```
 
@@ -74,7 +62,7 @@ type FleetManagerConfig struct {
 
 ## Data Models
 
-### Connection State (In-Memory Only)
+### Connection State
 
 All device connection state is maintained **in-memory only**, not persisted to database.
 
@@ -82,7 +70,7 @@ All device connection state is maintained **in-memory only**, not persisted to d
 type DeviceConn struct {
     conn        *websocket.Conn
     deviceID    string
-    remoteIP    string        // extracted from TCP connection
+    remoteIP    string
     connectedAt time.Time
     lastSeenAt  time.Time
     events      *ringbuffer.RingBuffer
@@ -238,6 +226,19 @@ ws://{host}:{port}/transfer/{device_id}
 }
 ```
 
+#### upload_not_found
+
+```json
+{
+  "type": "upload_not_found",
+  "timestamp": "2026-02-28T10:00:00.100Z",
+  "data": {
+    "task_id": "task_abc123",
+    "detail": "No MCAP file matching task_abc123 in /data/recordings"
+  }
+}
+```
+
 #### status
 
 ```json
@@ -280,44 +281,6 @@ axon_transfer          Fleet Manager          S3/MinIO       MySQL
     │◄─────────────────────  │                    │              │
 ```
 
-### Implementation
-
-```go
-func (fm *FleetManager) handleUploadComplete(deviceID string, payload map[string]interface{}) {
-    taskID := payload["data"]["task_id"].(string)
-    
-    // Step 1: Verify S3 files exist
-    deviceConn := fm.hub.Get(deviceID)
-    mcapKey := fm.buildS3Key(deviceConn.remoteIP, taskID, ".mcap")
-    jsonKey := fm.buildS3Key(deviceConn.remoteIP, taskID, ".json")
-    
-    mcapExists, _ := fm.s3Client.HeadObject(mcapKey)
-    jsonExists, _ := fm.s3Client.HeadObject(jsonKey)
-    
-    if !mcapExists || !jsonExists {
-        log.Warnf("upload_complete for %s but S3 files not found, skipping ACK", taskID)
-        return
-    }
-    
-    // Step 2: Update episode
-    var episode models.Episode
-    if err := fm.db.Where("task_id = ?", taskID).First(&episode).Error; err == nil {
-        fm.db.Model(&episode).Updates(map[string]interface{}{
-            "cloud_synced":       true,
-            "cloud_synced_at":    time.Now(),
-            "cloud_mcap_path":    mcapKey,
-            "cloud_sidecar_path": jsonKey,
-        })
-    }
-    
-    // Step 3: Send ACK
-    fm.hub.Send(deviceID, map[string]interface{}{
-        "type":    "upload_ack",
-        "task_id": taskID,
-    })
-}
-```
-
 ## REST API
 
 ### WebSocket Upgrade
@@ -334,12 +297,6 @@ Connection: upgrade
 
 ```
 GET /api/v1/transfer/devices
-```
-
-#### Get Device Events
-
-```
-GET /api/v1/transfer/{device_id}/events?limit=100
 ```
 
 #### Request Upload
@@ -360,6 +317,12 @@ POST /api/v1/transfer/{device_id}/upload_all
 ```
 POST /api/v1/transfer/{device_id}/cancel
 {"task_id": "task_abc123"}
+```
+
+#### Query Status
+
+```
+POST /api/v1/transfer/{device_id}/status_query
 ```
 
 #### Manual ACK
@@ -383,72 +346,6 @@ Forward to recorder via HTTP:
 - `POST /api/v1/transfer/{device_id}/recorder/pause`
 - `POST /api/v1/transfer/{device_id}/recorder/resume`
 
-## Implementation
-
-### WebSocket Handler
-
-```go
-func (s *Server) handleTransferWS(c *gin.Context) {
-    deviceID := c.Param("device_id")
-    
-    // Validate device exists
-    var robot models.Robot
-    if err := s.db.Where("device_id = ?", deviceID).First(&robot).Error; err != nil {
-        c.JSON(404, gin.H{"error": "robot not found"})
-        return
-    }
-    
-    conn, err := websocket.Accept(c.Writer, c.Request, nil)
-    if err != nil {
-        return
-    }
-    defer conn.Close(websocket.StatusNormalClosure, "")
-    
-    // Extract client IP
-    remoteIP := extractIP(c.Request.RemoteAddr)
-    
-    // Create DeviceConn (in-memory only)
-    deviceConn := &DeviceConn{
-        conn:        conn,
-        deviceID:    deviceID,
-        remoteIP:    remoteIP,
-        connectedAt: time.Now(),
-        lastSeenAt:  time.Now(),
-        events:      ringbuffer.New(s.config.Fleet.MaxEventsPerDevice),
-    }
-    
-    // Register in Hub
-    s.hub.Connect(deviceID, deviceConn)
-    defer s.hub.Disconnect(deviceID)
-    
-    // Read loop with timeout
-    ctx := conn.CloseRead(context.Background())
-    for {
-        ctx, cancel := context.WithTimeout(ctx, s.config.Fleet.ReadTimeout)
-        _, message, err := conn.Read(ctx)
-        cancel()
-        if err != nil {
-            break
-        }
-        
-        var msg map[string]interface{}
-        json.Unmarshal(message, &msg)
-        
-        deviceConn.lastSeenAt = time.Now()
-        s.hub.RecordEvent(deviceID, "inbound", msg)
-        s.handleMessage(deviceID, msg)
-    }
-}
-```
-
-## Dependencies
-
-```go
-require (
-    nhooyr.io/websocket v0.3.0
-)
-```
-
 ## Security Considerations
 
 1. **Authentication**: Token-based auth (future enhancement)
@@ -456,8 +353,3 @@ require (
 3. **Rate Limiting**: Per-device rate limiting
 4. **Input Validation**: Validate all JSON payloads
 5. **Recorder RPC**: IP from TCP connection, port from config — no SSRF risk
-
-## Reference
-
-- [axon_transfer](https://github.com/ArcheBase/axon/tree/main/apps/axon_transfer)
-- [axon-transfer-design.md](https://github.com/ArcheBase/axon/blob/main/docs/designs/axon-transfer-design.md)
