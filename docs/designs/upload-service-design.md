@@ -10,12 +10,12 @@ Upload Service is a Keystone Edge component that manages edge device data upload
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Keystone Edge                                │
 │                                                                     │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌───────────────┐    │
-│  │  REST API       │    │  WebSocket Hub  │    │  Recorder RPC │    │
-│  │  (Gin)          │    │                 │    │  Forwarder    │    | │  |                 |    |                 |    |               |    |
-│  └────────┬────────┘    └────────┬────────┘    └───────┬───────┘    │
-│           │                      │                     │            │
-│           ▼                      ▼                     ▼            │
+│  ┌─────────────────┐    ┌─────────────────┐                         |
+│  │  REST API       │    │  WebSocket Hub  │                         |
+│  │  (Gin)          │    │                 │                         |
+│  └────────┬────────┘    └────────┬────────┘                         │
+│           │                      │                                  │
+│           ▼                      ▼                                  │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │                    Upload Service                           │    │
 │  │  - Device Connection State                                  │    │
@@ -29,13 +29,14 @@ Upload Service is a Keystone Edge component that manages edge device data upload
 │  │   (metadata)        │          │ - Verify files      │           │
 │  └─────────────────────┘          └─────────────────────┘           │
 └─────────────────────────────────────────────────────────────────────┘
-          │                                     │
-          │ WebSocket                           │ HTTP
-          ▼                                     ▼
-┌─────────────────────┐              ┌─────────────────────┐
-│ axon_transfer (C++) │              │ axon_recorder (C++) │
-│ - WsClient          │              │ - RPC Server        │
-└─────────────────────┘              └─────────────────────┘
+                            ▲
+                            │
+                            │ WebSocket
+                            ▼
+                  ┌─────────────────────┐
+                  │ axon_transfer (C++) │
+                  │ - WsClient          │
+                  └─────────────────────┘
 ```
 
 ## Configuration
@@ -47,7 +48,6 @@ type FleetManagerConfig struct {
     WebSocketPort      string        // WebSocket listen port (default: "8090")
     MaxEventsPerDevice int           // Max events per device in ring buffer (default: 500)
     ReadTimeout        time.Duration // WebSocket read timeout (default: 60s)
-    RecorderRPCPort    int           // Recorder RPC port (default: 8080)
 }
 ```
 
@@ -58,7 +58,6 @@ type FleetManagerConfig struct {
 | `KEYSTONE_FLEET_WS_PORT` | `8090` | WebSocket listen port |
 | `KEYSTONE_FLEET_MAX_EVENTS` | `500` | Max events stored per device |
 | `KEYSTONE_FLEET_READ_TIMEOUT` | `60` | WebSocket read timeout (seconds) |
-| `KEYSTONE_FLEET_RECORDER_RPC_PORT` | `8080` | Fixed recorder RPC port |
 
 ## Data Models
 
@@ -82,19 +81,6 @@ type TransferHub struct {
     mu          sync.RWMutex
 }
 ```
-
-### Recorder RPC URL
-
-The Recorder RPC URL is automatically constructed:
-
-- **IP**: Extracted from WebSocket TCP connection (`c.Request.RemoteAddr`)
-- **Port**: Configured via `KEYSTONE_FLEET_RECORDER_RPC_PORT` (default: 8080)
-- **Format**: `http://{remote_ip}:{port}`
-
-Benefits:
-1. No device-side configuration required
-2. No SSRF risk (IP from TCP connection, not user-supplied)
-3. Compatible with axon_transfer protocol
 
 ## WebSocket Protocol
 
@@ -332,24 +318,9 @@ POST /api/v1/transfer/{device_id}/upload_ack
 {"task_id": "task_abc123"}
 ```
 
-### Recorder RPC Forwarding
-
-Forward to recorder via HTTP:
-- URL: `http://{deviceConn.remoteIP}:{config.RecorderRPCPort}/rpc/{path}`
-
-#### Endpoints
-
-- `GET /api/v1/transfer/{device_id}/recorder/status`
-- `POST /api/v1/transfer/{device_id}/recorder/config`
-- `POST /api/v1/transfer/{device_id}/recorder/begin`
-- `POST /api/v1/transfer/{device_id}/recorder/finish`
-- `POST /api/v1/transfer/{device_id}/recorder/pause`
-- `POST /api/v1/transfer/{device_id}/recorder/resume`
-
 ## Security Considerations
 
 1. **Authentication**: Token-based auth (future enhancement)
 2. **TLS**: Use WSS in production
 3. **Rate Limiting**: Per-device rate limiting
 4. **Input Validation**: Validate all JSON payloads
-5. **Recorder RPC**: IP from TCP connection, port from config — no SSRF risk

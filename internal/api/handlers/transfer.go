@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -64,10 +63,6 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 		transfer.POST("/status_query", h.StatusQuery)
 		transfer.POST("/cancel", h.CancelUpload)
 		transfer.POST("/upload_ack", h.ManualACK)
-
-		// Recorder RPC forwarding
-		transfer.GET("/recorder/:rpc_path", h.ForwardRecorderRPC)
-		transfer.POST("/recorder/:rpc_path", h.ForwardRecorderRPC)
 	}
 }
 
@@ -619,53 +614,6 @@ func (h *TransferHandler) ManualACK(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
-}
-
-// ForwardRecorderRPC proxies a request to the device's axon_recorder RPC server.
-//
-// @Summary      Forward RPC to device recorder
-// @Description  Proxies GET/POST to http://{device_ip}:{recorder_port}/rpc/{rpc_path}
-// @Tags         transfer
-// @Param        device_id  path  string  true  "Device ID"
-// @Param        rpc_path   path  string  true  "RPC path (e.g. status, config, begin)"
-// @Success      200
-// @Failure      404  {object}  map[string]interface{}
-// @Failure      502  {object}  map[string]interface{}
-// @Router       /transfer/{device_id}/recorder/{rpc_path} [get]
-// @Router       /transfer/{device_id}/recorder/{rpc_path} [post]
-func (h *TransferHandler) ForwardRecorderRPC(c *gin.Context) {
-	deviceID := c.Param("device_id")
-	rpcPath := c.Param("rpc_path")
-
-	dc := h.hub.Get(deviceID)
-	if dc == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "device not connected"})
-		return
-	}
-
-	targetURL := fmt.Sprintf("http://%s:%d/rpc/%s", dc.RemoteIP, h.cfg.RecorderRPCPort, rpcPath)
-
-	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, targetURL, c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	req.Header = c.Request.Header.Clone()
-
-	// #nosec G704 -- Set aside for now
-	resp, err := h.client.Do(req)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("recorder unreachable: %v", err)})
-		return
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			log.Printf("Failed to close response body: %v", err)
-		}
-	}()
-
-	body, _ := io.ReadAll(resp.Body)
-	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), body)
 }
 
 // sendToDevice sends a JSON message to a connected device via WebSocket
