@@ -99,7 +99,6 @@ func (s *Server) buildRoutes() http.Handler {
 }
 
 // buildWSRoutes constructs the WebSocket-only router using standard net/http
-// to avoid gin.ResponseWriter compatibility issues with nhooyr.io/websocket
 func (s *Server) buildWSRoutes(transferHandler *handlers.TransferHandler) http.Handler {
 	mux := http.NewServeMux()
 

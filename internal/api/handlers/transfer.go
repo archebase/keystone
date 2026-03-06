@@ -88,7 +88,6 @@ func (h *TransferHandler) HandleWebSocket(c *gin.Context) {
 }
 
 // HandleWebSocketRaw handles WebSocket connections using raw http.ResponseWriter
-// to avoid gin.ResponseWriter compatibility issues with nhooyr.io/websocket
 func (h *TransferHandler) HandleWebSocketRaw(w http.ResponseWriter, r *http.Request, deviceID string) {
 	log.Printf("[TRANSFER] WebSocket connection attempt for device: %s", deviceID)
 
