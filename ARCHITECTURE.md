@@ -354,7 +354,7 @@ Each factory runs an **independent** Keystone edge instance:
 |---------|-----------|
 | Device → Edge | TLS 1.3, JWT authentication |
 | Edge → Cloud | Server-side encryption, IAM policies |
-| Storage access | Devices write only to `{factory_id}/{device_id}/` prefix |
+| Storage access | Devices write only to `{factory_id}/{device_id}/{date}` prefix |
 | Processing | VPC isolation, least-privilege access |
 
 ---
