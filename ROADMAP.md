@@ -2,44 +2,43 @@
 
 This document outlines the development roadmap for the Edge Keystone project.
 
-**Edge Keystone** is deployed per factory (`https://keystone.factory.internal`) and used by **Synapse**: robot/data collector management, task orchestration, local storage (MinIO), Axon integration, edge QA. Typically Go-only.
+**Keystone** is the edge backend for the ArcheBase ecosystem. It serves as the single source of truth for core business logic, state machines, and data models at the edge level. It is deployed per factory to manage data collection, QA validation, and sync to cloud.
 
 ---
 
-## Version 0.1.0 (In Planning)
+## Version 0.1.0 (working on)
 
 First Release Implementation Order:
 
 1. **Code standards, testing & CI** 
   - ✅coding style(`gofmt`)
-  - ✅linters(golangci-lint)
-  - ✅unit/integration tests
-    - ✅Unit tests for core logic (handlers, services, models);
-    - ✅Integration tests for API endpoints;
-  - ✅Test coverage goal
-  - ✅CI pipeline: format check, lint, unit tests, integration tests (with DB)
-  - ✅Docs: CONTRIBUTING.md, ARCHITECTURE.md, detailed design docs
+  - ✅linters(`golangci-lint`)
+  - ✅Unit tests for core logic (handlers, services, models);
+  - ✅Integration tests for API endpoints;
+  - ✅CI pipeline: format check, lint, unit tests, integration tests
 2. **Database Migration (Initial Schema)** 
   - ✅create initial tables and SQL migration files
   - ✅Auto-run pending migrations on server start
-3. **Role-Based Access Control** 
-  - System, Data Collector, Production Manager for now
-  - JWT claim `role` validated on every protected route
-4. **Workstation Management**
+3. **Upload Service**
+  - ✅ Upload lifecycle management
+  - ✅ WebSocket long-lived connection and protocol interaction with axon_transfer
+  - ✅ Upload-related REST API endpoints
+  - ✅ Device connection state management(refactor when connection with axon_recorder is ready)
+  - Replace traditional database operations with GORM
+4. **task Scheduler**
+  - task lifecycle management and config for Axon
+  - handle `/callbacks/start`、`/callbacks/finish`
+5. **record service**
+  - WebSocket long-lived connection with axon_recorder
+  - refactor device connection state management
+6. **episodes management**
+  - episodes CRUD
+7. **Workstation Management**
   - robots CRUD
   - workstations pairing
-5. **Task Scheduler** 
-  - task lifecycle management and config for Axon
-6. **Callback Endpoints & Episode Management**
-  - receive Axon Recorder notifications and record episodes
-  - handle `/callbacks/start`、`/callbacks/finish`
-  - episodes GET、PATCH
-7. **WebSocket: Axon Uploader ↔ Keystone**
-   - WebSocket connection management via TransferHub
-   - Message protocol implementation
-   - Verified ACK flow
-   - REST API endpoints
-   - Recorder RPC forwarding
+8. **Role-Based Access Control** 
+  - System, Data Collector for now
+  - JWT claim `role` validated on every protected route
 
 ---
 
@@ -47,7 +46,9 @@ First Release Implementation Order:
 
 Second Release Implementation Order:
 1. **add new role Data Inspector**
-  - approve or reject episodes
+  - add Data Inspector
+  - add Production Manager
+  - add corresponding actions and behaviours
 2. **Complete the remaining APIs.**
   - Organization and factory CRUD
   - Scene & Subscene CRUD
