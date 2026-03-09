@@ -71,7 +71,7 @@ go run cmd/keystone-edge/main.go
 | MinIO API | 9000 | Object storage API |
 | MinIO Console | 9001 | MinIO management UI |
 | Redis | 6379 | Cache (optional) |
-| Adminer | 8081 | Database management tool |
+| Adminer | 9002 | Database management tool |
 | Keystone Edge | 8080 | Main API service |
 
 ## Access URLs
@@ -80,7 +80,7 @@ go run cmd/keystone-edge/main.go
   - Username: `minioadmin`
   - Password: `minioadmin`
 
-- **Adminer**: http://localhost:8081
+- **Adminer**: http://localhost:9002
   - System: MySQL
   - Server: `mysql`
   - Username: `keystone`
