@@ -27,6 +27,7 @@ type Server struct {
 	cfg        *config.Config
 	health     *handlers.HealthHandler
 	transfer   *handlers.TransferHandler
+	episode    *handlers.EpisodeHandler
 	httpServer *http.Server
 	wsServer   *http.Server
 	shutdownMu sync.RWMutex
@@ -50,10 +51,14 @@ func New(cfg *config.Config, db *sql.DB, s3Client *s3.Client) *Server {
 	hub := services.NewTransferHub(cfg.Fleet.MaxEvents)
 	transferHandler := handlers.NewTransferHandler(hub, &cfg.Fleet, db, s3Client, cfg.Storage.Bucket, cfg.Fleet.FactoryID)
 
+	// Create EpisodeHandler for episode listing
+	episodeHandler := handlers.NewEpisodeHandler(db)
+
 	s := &Server{
 		cfg:      cfg,
 		health:   healthHandler,
 		transfer: transferHandler,
+		episode:  episodeHandler,
 		engine:   engine,
 	}
 
@@ -97,6 +102,10 @@ func (s *Server) buildRoutes() http.Handler {
 	// Fleet Manager: REST API only (WebSocket on separate port)
 	v1Transfer := v1.Group("/transfer")
 	s.transfer.RegisterRoutes(v1Transfer)
+
+	// Episodes API
+	v1Episodes := v1.Group("/episodes")
+	s.episode.RegisterRoutes(v1Episodes)
 
 	// Axon callbacks
 	v1Callbacks := v1.Group("/callbacks")
