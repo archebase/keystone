@@ -119,7 +119,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		for {
 			select {
 			case <-ticker.C:
-				if err := conn.Ping(context.Background()); err != nil {
+				if err := conn.Ping(ctx); err != nil {
 					return
 				}
 			case <-ctx.Done():
