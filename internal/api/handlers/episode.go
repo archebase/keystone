@@ -166,7 +166,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query episodes"})
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Parse results
 	episodes := []Episode{}
