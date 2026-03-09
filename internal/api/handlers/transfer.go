@@ -66,6 +66,10 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	}
 }
 
+func (h *TransferHandler) RegisterCallbackRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/finish", h.OnRecordingFinish)
+}
+
 // HandleWebSocket handles WebSocket connections using raw http.ResponseWriter
 func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request, deviceID string) {
 	log.Printf("[TRANSFER] WebSocket connection attempt for device: %s", deviceID)
@@ -663,4 +667,117 @@ func int64Val(m map[string]interface{}, key string) int64 {
 		return int64(v)
 	}
 	return 0
+}
+
+// RecordingFinishCallback represents the callback payload from axon recorder
+type RecordingFinishCallback struct {
+	TaskID        string   `json:"task_id"`
+	DeviceID      string   `json:"device_id"`
+	Status        string   `json:"status"`
+	StartedAt     string   `json:"started_at"`
+	FinishedAt    string   `json:"finished_at"`
+	DurationSec   float64  `json:"duration_sec"`
+	MessageCount  int64    `json:"message_count"`
+	FileSizeBytes int64    `json:"file_size_bytes"`
+	OutputPath    string   `json:"output_path"`
+	SidecarPath   string   `json:"sidecar_path"`
+	Topics        []string `json:"topics"`
+	Metadata      struct {
+		Scene    string   `json:"scene"`
+		Subscene string   `json:"subscene"`
+		Skills   []string `json:"skills"`
+		Factory  string   `json:"factory"`
+	} `json:"metadata"`
+	Error string `json:"error"`
+}
+
+// OnRecordingFinish handles the POST /callbacks/finish callback from axon recorder
+// This endpoint is called when a recording finishes, triggering the upload process
+// @Router       /callbacks/finish [post]
+func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
+	var callback RecordingFinishCallback
+	if err := c.ShouldBindJSON(&callback); err != nil {
+		log.Printf("[OnRecordingFinish] Failed to parse request body: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	log.Printf("[OnRecordingFinish] Received finish callback: task_id=%s, device_id=%s, status=%s, output_path=%s, file_size=%d, message_count=%d, duration_sec=%.2f",
+		callback.TaskID, callback.DeviceID, callback.Status, callback.OutputPath, callback.FileSizeBytes, callback.MessageCount, callback.DurationSec)
+	log.Printf("[OnRecordingFinish] Topics: %v", callback.Topics)
+	log.Printf("[OnRecordingFinish] Metadata: scene=%s, subscene=%s, skills=%v, factory=%s",
+		callback.Metadata.Scene, callback.Metadata.Subscene, callback.Metadata.Skills, callback.Metadata.Factory)
+
+	// Validate required fields
+	if callback.TaskID == "" {
+		log.Printf("[OnRecordingFinish] Missing task_id in callback")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Missing required field: task_id",
+		})
+		return
+	}
+
+	if callback.OutputPath == "" {
+		log.Printf("[OnRecordingFinish] No output_path provided for task_id=%s, skipping upload", callback.TaskID)
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "No output file to upload",
+		})
+		return
+	}
+
+	deviceID := callback.DeviceID
+	if deviceID == "" {
+		log.Printf("[OnRecordingFinish] Missing device_id in callback")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Missing required field: device_id",
+		})
+		return
+	}
+
+	dc := h.hub.Get(deviceID)
+	if dc == nil {
+		log.Printf("[OnRecordingFinish] Device %s not found in hub (task_id=%s), cannot trigger upload", deviceID, callback.TaskID)
+		c.JSON(http.StatusOK, gin.H{
+			"success":          true,
+			"message":          "Recording finished, device not connected for auto-upload",
+			"device_connected": false,
+			"task_id":          callback.TaskID,
+		})
+		return
+	}
+
+	log.Printf("[OnRecordingFinish] Found device %s, triggering upload for task_id=%s", deviceID, callback.TaskID)
+
+	uploadRequest := map[string]interface{}{
+		"type":     "upload_request",
+		"task_id":  callback.TaskID,
+		"priority": 1,
+	}
+
+	if err := h.sendToDevice(c.Request.Context(), deviceID, uploadRequest); err != nil {
+		log.Printf("[OnRecordingFinish] Failed to send upload_request to device %s: %v", deviceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to trigger upload: " + err.Error(),
+		})
+		return
+	}
+
+	log.Printf("[OnRecordingFinish] Successfully triggered upload for task_id=%s on device %s",
+		callback.TaskID, deviceID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":         true,
+		"message":         "Upload triggered successfully",
+		"task_id":         callback.TaskID,
+		"device_id":       deviceID,
+		"output_path":     callback.OutputPath,
+		"file_size_bytes": callback.FileSizeBytes,
+	})
 }
