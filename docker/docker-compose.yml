@@ -57,6 +57,7 @@ services:
         mc alias set minio http://minio:9000 minioadmin minioadmin
         mc mb minio/edge-factory-shanghai
         mc mb minio/mcap-files
+        mc anonymous set public minio/mcap-files
         mc admin user add minio keystone keystone123
         mc admin user add minio admin admin123456
 
