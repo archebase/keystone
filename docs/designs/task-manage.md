@@ -150,8 +150,10 @@ Data Collector → Synapse UI clicks "Make Ready"
 | `skills` | array | Skills list |
 | `sop_id` | string | Standard Operating Procedure ID |
 | `topics` | array | ROS Topics list |
+| `user_token` | string | JWT user token for authentication |
+| `initial_scene_layout` | string | Initial scene layout description |
 | `callback_urls` | object | start/finish callback URLs |
-| `initial_scene_layout` | object | Initial scene layout |
+| `recording_config` | object | Recording configuration (max_duration_sec, compression) |
 
 ### Phase 2: Recording Start Callback
 
@@ -253,13 +255,25 @@ Response 200:
     "task_id": "task_20241220_143052",
     "device_id": "robot_arm_001",
     "scene": "commercial_kitchen",
-    "subscene": "station_a",
-    "skills": ["pick", "place", "grasp"],
-    "sop_id": "sop_001",
-    "topics": ["/camera/rgb", "/joint_states", "/tf"],
+    "subscene": "dishwashing_station",
+    "initial_scene_layout": "A rectangular table (80cm x 120cm) in the center...",
+    "skills": ["pick", "place", "navigate"],
+    "sop_id": "sop_dish_cleaning_v2",
+    "topics": [
+      "/camera/color/image_raw",
+      "/camera/depth/image_rect_raw",
+      "/joint_states",
+      "/gripper/state",
+      "/odom"
+    ],
     "callback_urls": {
-      "start": "https://keystone/api/v1/callbacks/start",
-      "finish": "https://keystone/api/v1/callbacks/finish"
+      "start": "https://keystone.factory.internal/api/v1/callbacks/start",
+      "finish": "https://keystone.factory.internal/api/v1/callbacks/finish"
+    },
+    "user_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "recording_config": {
+      "max_duration_sec": 600,
+      "compression": "zstd"
     }
   }
 
