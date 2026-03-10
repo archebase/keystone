@@ -28,6 +28,7 @@ type Server struct {
 	health     *handlers.HealthHandler
 	transfer   *handlers.TransferHandler
 	episode    *handlers.EpisodeHandler
+	task       *handlers.TaskHandler
 	httpServer *http.Server
 	wsServer   *http.Server
 	shutdownMu sync.RWMutex
@@ -54,11 +55,15 @@ func New(cfg *config.Config, db *sql.DB, s3Client *s3.Client) *Server {
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db)
 
+	// Create TaskHandler for task configuration
+	taskHandler := handlers.NewTaskHandler(db)
+
 	s := &Server{
 		cfg:      cfg,
 		health:   healthHandler,
 		transfer: transferHandler,
 		episode:  episodeHandler,
+		task:     taskHandler,
 		engine:   engine,
 	}
 
@@ -106,6 +111,10 @@ func (s *Server) buildRoutes() http.Handler {
 	// Episodes API
 	v1Episodes := v1.Group("/episodes")
 	s.episode.RegisterRoutes(v1Episodes)
+
+	// Tasks API
+	v1Tasks := v1.Group("")
+	s.task.RegisterRoutes(v1Tasks)
 
 	// Axon callbacks
 	v1Callbacks := v1.Group("/callbacks")
