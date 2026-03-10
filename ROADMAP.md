@@ -26,8 +26,9 @@ First Release Implementation Order:
   - ✅ Device connection state management(refactor when connection with axon_recorder is ready)
   - Replace traditional database operations with GORM
 4. **task Scheduler**
-  - task lifecycle management and config for Axon
-  - handle `/callbacks/start`、`/callbacks/finish`
+  - support `GET /tasks/{id}/config` with mock data
+  - handle `/callbacks/start` & `/callbacks/finish`
+  - task lifecycle management
 5. **record service**
   - WebSocket long-lived connection with axon_recorder
   - refactor device connection state management
