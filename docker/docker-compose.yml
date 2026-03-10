@@ -56,9 +56,32 @@ services:
       - |
         mc alias set minio http://minio:9000 minioadmin minioadmin
         mc mb minio/edge-factory-shanghai
+        mc mb minio/mcap-files
         mc admin user add minio keystone keystone123
-        mc admin policy attach download minio/edge-factory-shanghai keystone
-        mc admin policy attach upload minio/edge-factory-shanghai keystone
+        mc admin user add minio admin admin123456
+
+        # Grant keystone user full read/write access to all buckets using built-in policy
+        mc admin policy attach minio readwrite --user keystone
+
+        # Create admin user policy: only allow read/write access to mcap-files bucket
+        cat > /tmp/policy-admin.json << 'EOF'
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:*"],
+              "Resource": [
+                "arn:aws:s3:::mcap-files",
+                "arn:aws:s3:::mcap-files/*"
+              ]
+            }
+          ]
+        }
+        EOF
+        mc admin policy create minio policy-admin /tmp/policy-admin.json
+        mc admin policy attach minio policy-admin --user admin
+
         echo "MinIO initialized successfully"
 
   # Redis (optional, for caching)
