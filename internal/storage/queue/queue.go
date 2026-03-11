@@ -8,6 +8,8 @@ import (
 	"log"
 	"sync"
 
+	"github.com/jmoiron/sqlx"
+
 	// Register SQLite driver
 	_ "modernc.org/sqlite"
 )
@@ -18,10 +20,17 @@ type Episode struct {
 	Data []byte
 }
 
+// queueRow represents a row in the sync_queue table
+type queueRow struct {
+	ID        string `db:"id"`
+	Data      []byte `db:"data"`
+	CreatedAt int    `db:"created_at"`
+}
+
 // SyncQueue persistent synchronization queue
 type SyncQueue struct {
 	memoryQueue chan *Episode
-	diskQueue   *sql.DB
+	diskQueue   *sqlx.DB
 	batchSize   int
 	maxBytes    int64
 	mu          sync.RWMutex
@@ -41,7 +50,7 @@ func New(cfg *Config) (*SyncQueue, error) {
 	// _pragma=journal_mode(WAL): Use WAL mode for concurrent read/write
 	// _timeout=5000: Set busy timeout
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=timeout(5000)", cfg.DBPath)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sqlx.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open queue database: %w", err)
 	}
@@ -104,9 +113,8 @@ func (q *SyncQueue) Pop() (*Episode, error) {
 		return ep, nil
 	default:
 		// Memory queue empty, try reading from disk
-		var id string
-		var data []byte
-		err := q.diskQueue.QueryRow("SELECT id, data FROM sync_queue ORDER BY created_at LIMIT 1").Scan(&id, &data)
+		var row queueRow
+		err := q.diskQueue.Get(&row, "SELECT id, data FROM sync_queue ORDER BY created_at LIMIT 1")
 		if err == sql.ErrNoRows {
 			return nil, nil // Queue empty
 		}
@@ -115,12 +123,12 @@ func (q *SyncQueue) Pop() (*Episode, error) {
 		}
 
 		// Delete read record
-		_, err = q.diskQueue.Exec("DELETE FROM sync_queue WHERE id = ?", id)
+		_, err = q.diskQueue.Exec("DELETE FROM sync_queue WHERE id = ?", row.ID)
 		if err != nil {
 			log.Printf("[QUEUE] Warning: failed to delete queued item: %v", err)
 		}
 
-		return &Episode{ID: id, Data: data}, nil
+		return &Episode{ID: row.ID, Data: row.Data}, nil
 	}
 }
 
@@ -129,7 +137,7 @@ func (q *SyncQueue) Size() (int, error) {
 	memorySize := len(q.memoryQueue)
 
 	var diskSize int
-	err := q.diskQueue.QueryRow("SELECT COUNT(*) FROM sync_queue").Scan(&diskSize)
+	err := q.diskQueue.Get(&diskSize, "SELECT COUNT(*) FROM sync_queue")
 	if err != nil {
 		return 0, fmt.Errorf("failed to count disk queue: %w", err)
 	}

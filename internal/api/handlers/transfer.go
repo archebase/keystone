@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/services"
@@ -27,7 +28,7 @@ import (
 type TransferHandler struct {
 	hub       *services.TransferHub
 	cfg       *config.FleetManagerConfig
-	db        *sql.DB
+	db        *sqlx.DB
 	s3        *s3.Client
 	bucket    string
 	factoryID string
@@ -36,7 +37,7 @@ type TransferHandler struct {
 
 // NewTransferHandler creates a new TransferHandler.
 // db and s3Client may be nil; Verified ACK will be skipped if either is absent.
-func NewTransferHandler(hub *services.TransferHub, cfg *config.FleetManagerConfig, db *sql.DB, s3Client *s3.Client, bucket string, factoryID string) *TransferHandler {
+func NewTransferHandler(hub *services.TransferHub, cfg *config.FleetManagerConfig, db *sqlx.DB, s3Client *s3.Client, bucket string, factoryID string) *TransferHandler {
 	return &TransferHandler{
 		hub:       hub,
 		cfg:       cfg,

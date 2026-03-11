@@ -2,24 +2,37 @@
 package handlers
 
 import (
-	"database/sql"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
 )
 
 // EpisodeHandler handles episode-related HTTP requests
 type EpisodeHandler struct {
-	db *sql.DB
+	db *sqlx.DB
 }
 
 // NewEpisodeHandler creates a new EpisodeHandler
-func NewEpisodeHandler(db *sql.DB) *EpisodeHandler {
+func NewEpisodeHandler(db *sqlx.DB) *EpisodeHandler {
 	return &EpisodeHandler{
 		db: db,
 	}
+}
+
+// Episode represents an episode in the database
+type episodeRow struct {
+	ID             string    `db:"episode_id"`
+	TaskID         string    `db:"task_id"`
+	McapPath       string    `db:"mcap_path"`
+	SidecarPath    string    `db:"sidecar_path"`
+	QaStatus       string    `db:"qa_status"`
+	QaScore        float64   `db:"qa_score"`
+	AutoApproved   bool      `db:"auto_approved"`
+	CloudProcessed bool      `db:"cloud_processed"`
+	CreatedAt      time.Time `db:"created_at"`
 }
 
 // Episode represents an episode in the API response
@@ -147,8 +160,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 
 	// Get total count
 	var total int
-	// #nosec G201 -- Query is constructed with parameterized inputs
-	err = h.db.QueryRow(countQuery, argsCount...).Scan(&total)
+	err = h.db.Get(&total, countQuery, argsCount...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count episodes"})
 		return
@@ -159,42 +171,29 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	query += " LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
-	// Execute query
+	// Execute query using sqlx.Select
 	// #nosec G201 -- Query is constructed with parameterized inputs
-	rows, err := h.db.Query(query, args...)
+	var rows []episodeRow
+	err = h.db.Select(&rows, query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query episodes"})
 		return
 	}
-	defer func() { _ = rows.Close() }()
 
-	// Parse results
-	episodes := []Episode{}
-	for rows.Next() {
-		var ep Episode
-		var createdAt time.Time
-		err := rows.Scan(
-			&ep.ID,
-			&ep.TaskID,
-			&ep.McapPath,
-			&ep.SidecarPath,
-			&ep.QaStatus,
-			&ep.QaScore,
-			&ep.AutoApproved,
-			&ep.CloudProcessed,
-			&createdAt,
-		)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan episode row: " + err.Error()})
-			return
+	// Convert to API response format
+	episodes := make([]Episode, len(rows))
+	for i, r := range rows {
+		episodes[i] = Episode{
+			ID:             r.ID,
+			TaskID:         r.TaskID,
+			McapPath:       r.McapPath,
+			SidecarPath:    r.SidecarPath,
+			QaStatus:       r.QaStatus,
+			QaScore:        r.QaScore,
+			AutoApproved:   r.AutoApproved,
+			CloudProcessed: r.CloudProcessed,
+			CreatedAt:      r.CreatedAt.UTC().Format(time.RFC3339),
 		}
-		ep.CreatedAt = createdAt.UTC().Format(time.RFC3339)
-		episodes = append(episodes, ep)
-	}
-
-	if err = rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to iterate episode rows: " + err.Error()})
-		return
 	}
 
 	// Return response
