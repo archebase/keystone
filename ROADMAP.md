@@ -24,7 +24,7 @@ First Release Implementation Order:
   - ✅ WebSocket long-lived connection and protocol interaction with axon_transfer
   - ✅ Upload-related REST API endpoints
   - ✅ Device connection state management(refactor when connection with axon_recorder is ready)
-  - Replace traditional database operations with sqlx
+  - ✅ Replace traditional database operations with sqlx
 4. **task Scheduler**
   - ✅ support `GET /tasks/{id}/config` with mocked data
   - ✅ handle `/callbacks/start` & `/callbacks/finish`

@@ -2,10 +2,11 @@
 package database
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 
 	// Register MySQL driver
 	_ "github.com/go-sql-driver/mysql"
@@ -13,7 +14,7 @@ import (
 
 // DB MySQL database connection
 type DB struct {
-	*sql.DB
+	*sqlx.DB
 }
 
 // Config database configuration
@@ -38,11 +39,11 @@ func Connect(cfg *Config) (*DB, error) {
 		retryInterval = 2 * time.Second
 	}
 
-	var db *sql.DB
+	var db *sqlx.DB
 	var err error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		db, err = sql.Open("mysql", cfg.DSN)
+		db, err = sqlx.Open("mysql", cfg.DSN)
 		if err != nil {
 			log.Printf("[DATABASE] Attempt %d/%d: Failed to open database: %v", attempt, maxRetries, err)
 			time.Sleep(retryInterval)

@@ -3,7 +3,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,6 +19,8 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // Server represents the HTTP server
@@ -38,7 +39,7 @@ type Server struct {
 
 // New creates a new server instance.
 // db and s3Client are optional; pass nil to disable Verified ACK.
-func New(cfg *config.Config, db *sql.DB, s3Client *s3.Client) *Server {
+func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	// Create Gin engine
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()

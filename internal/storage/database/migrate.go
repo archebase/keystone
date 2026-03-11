@@ -2,7 +2,6 @@
 package database
 
 import (
-	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/mysql"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/jmoiron/sqlx"
 
 	// MySQL driver is required for database/sql to work with MySQL
 	_ "github.com/go-sql-driver/mysql"
@@ -20,7 +20,7 @@ import (
 var migrationsFS embed.FS
 
 // Migrate runs all pending database migrations
-func Migrate(db *sql.DB) error {
+func Migrate(db *sqlx.DB) error {
 	log.Println("[DATABASE] Running database migrations...")
 
 	src, err := iofs.New(migrationsFS, "migrations")
@@ -28,7 +28,7 @@ func Migrate(db *sql.DB) error {
 		return fmt.Errorf("failed to create migration source: %w", err)
 	}
 
-	driver, err := mysql.WithInstance(db, &mysql.Config{
+	driver, err := mysql.WithInstance(db.DB, &mysql.Config{
 		MigrationsTable: "schema_migrations",
 	})
 	if err != nil {

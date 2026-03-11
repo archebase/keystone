@@ -8,15 +8,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
 )
 
 // TaskHandler handles task-related HTTP requests
 type TaskHandler struct {
-	db *sql.DB
+	db *sqlx.DB
 }
 
 // NewTaskHandler creates a new TaskHandler
-func NewTaskHandler(db *sql.DB) *TaskHandler {
+func NewTaskHandler(db *sqlx.DB) *TaskHandler {
 	return &TaskHandler{
 		db: db,
 	}
@@ -106,11 +107,13 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	}
 
 	// Query the database to check current task status
-	var currentStatus string
-	err := h.db.QueryRow(
+	var row struct {
+		Status string `db:"status"`
+	}
+	err := h.db.Get(&row,
 		"SELECT status FROM tasks WHERE task_id = ? AND deleted_at IS NULL",
 		callback.TaskID,
-	).Scan(&currentStatus)
+	)
 
 	if err == sql.ErrNoRows {
 		log.Printf("[OnRecordingStart] Task not found: task_id=%s", callback.TaskID)
@@ -131,13 +134,13 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	}
 
 	// Check if task status is 'ready'
-	if currentStatus != "ready" {
+	if row.Status != "ready" {
 		log.Printf("[OnRecordingStart] Task not in 'ready' state: task_id=%s, status=%s",
-			callback.TaskID, currentStatus)
+			callback.TaskID, row.Status)
 		c.JSON(http.StatusConflict, gin.H{
 			"error":         "INVALID_TASK_STATE",
 			"message":       "Task is not in 'ready' state",
-			"current_state": currentStatus,
+			"current_state": row.Status,
 		})
 		return
 	}
@@ -203,11 +206,13 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	taskID := c.Param("id")
 
 	// Query the database to check task status
-	var status string
-	err := h.db.QueryRow(
+	var statusRow struct {
+		Status string `db:"status"`
+	}
+	err := h.db.Get(&statusRow,
 		"SELECT status FROM tasks WHERE task_id = ? AND deleted_at IS NULL",
 		taskID,
-	).Scan(&status)
+	)
 
 	if err == sql.ErrNoRows {
 		// Task not found
@@ -225,7 +230,7 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	}
 
 	// Check if task status is 'ready'
-	if status != "ready" {
+	if statusRow.Status != "ready" {
 		c.JSON(http.StatusConflict, gin.H{
 			"error": "task not in 'ready' state",
 		})
