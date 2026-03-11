@@ -754,6 +754,26 @@ func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
 		return
 	}
 
+	// TODO: check task status is in_progress
+	// Update task status to 'completed' when recording finishes
+	if h.db != nil {
+		now := time.Now()
+		result, err := h.db.Exec(
+			"UPDATE tasks SET status = 'completed', updated_at = ? WHERE task_id = ? AND deleted_at IS NULL",
+			now, callback.TaskID,
+		)
+
+		if err != nil {
+			log.Printf("[OnRecordingFinish] Failed to update task status to completed: %v", err)
+			// Continue with upload even if status update fails
+		} else {
+			rowsAffected, _ := result.RowsAffected()
+			if rowsAffected > 0 {
+				log.Printf("[OnRecordingFinish] Successfully updated task status to 'completed': task_id=%s", callback.TaskID)
+			}
+		}
+	}
+
 	if callback.OutputPath == "" {
 		log.Printf("[OnRecordingFinish] No output_path provided for task_id=%s, skipping upload", callback.TaskID)
 		c.JSON(http.StatusOK, gin.H{
