@@ -253,6 +253,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 // @Success      200 {object}  TaskConfig
 // @Failure      404 {object}  map[string]string
 // @Failure      409 {object}  map[string]string
+// @Failure      500 {object}  map[string]string
 // @Router       /tasks/{id}/config [get]
 func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	taskID := c.Param("id")
@@ -269,24 +270,55 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	if err == sql.ErrNoRows {
 		// Task not found
 		c.JSON(http.StatusNotFound, gin.H{
-			"error": "task not found",
+			"error_msg": "task not found",
 		})
 		return
 	}
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "failed to query task",
+			"error_msg": "failed to query task",
 		})
 		return
 	}
 
-	// Check if task status is 'ready'
-	if statusRow.Status != "ready" {
+	// Allow repeated reads in the 'ready' state so clients can safely retry.
+	if statusRow.Status != "pending" && statusRow.Status != "ready" {
 		c.JSON(http.StatusConflict, gin.H{
-			"error": "task not in 'ready' state",
+			"error_msg": "task not in 'pending' or 'ready' state",
 		})
 		return
+	}
+
+	// Transition from pending to ready only once. Requests for tasks already in the
+	// ready state should keep returning the same config so GET remains retry-safe.
+	if statusRow.Status == "pending" {
+		now := time.Now()
+		result, err := h.db.Exec(
+			"UPDATE tasks SET status = 'ready', ready_at = ?, updated_at = ? WHERE task_id = ? AND status = 'pending' AND deleted_at IS NULL",
+			now, now, taskID,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error_msg": "failed to update task",
+			})
+			return
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error_msg": "failed to verify update",
+			})
+			return
+		}
+
+		if rowsAffected == 0 {
+			c.JSON(http.StatusConflict, gin.H{
+				"error_msg": "task status changed concurrently",
+			})
+			return
+		}
 	}
 
 	// Return mocked data
