@@ -52,7 +52,68 @@ type CallbackURLs struct {
 
 // RegisterRoutes registers task-related routes
 func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/tasks", h.CreateTask)
 	apiV1.GET("/tasks/:id/config", h.GetTaskConfig)
+}
+
+// CreateTaskResponse represents the response body for creating a task.
+type CreateTaskResponse struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+}
+
+// CreateTask handles task creation requests.
+//
+// @Summary      Create task
+// @Description  Creates a new task with pending status
+// @Tags         tasks
+// @Accept       json
+// @Produce      json
+// @Success      201  {object}  CreateTaskResponse
+// @Failure      500  {object}  map[string]string
+// @Router       /tasks [post]
+func (h *TaskHandler) CreateTask(c *gin.Context) {
+	now := time.Now().UTC()
+	taskID := now.Format("task_20060102_150405")
+
+	_, err := h.db.Exec(
+		`INSERT INTO tasks (
+			task_id,
+			batch_id,
+			order_id,
+			sop_id,
+			workstation_id,
+			scene_id,
+			subscene_id,
+			status,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		taskID,
+		0,
+		0,
+		0,
+		nil,
+		0,
+		0,
+		"pending",
+		now,
+		now,
+	)
+	if err != nil {
+		log.Printf("[CreateTask] Failed to insert task: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to create task",
+		})
+		return
+	}
+
+	c.JSON(http.StatusCreated, CreateTaskResponse{
+		ID:        taskID,
+		Status:    "pending",
+		CreatedAt: now.Format(time.RFC3339),
+	})
 }
 
 // RegisterCallbackRoutes registers callback routes for handling external events.
