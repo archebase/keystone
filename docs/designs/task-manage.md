@@ -278,7 +278,7 @@ Response 200:
   }
 
 Response 404: Task not found
-Response 409: Task not in 'ready' state
+Response 409: Task not in ready state
 ```
 
 #### POST /callbacks/start
@@ -299,7 +299,10 @@ Response 200:
     "acknowledged_at": "2024-12-20T14:30:53Z"
   }
 
-Response 409: Task not in 'ready' state
+Response 409:
+  {
+    "error_msg": "Task is not in ready state, current status: in_progress"
+  }
 ```
 
 #### POST /callbacks/finish
@@ -320,16 +323,23 @@ Request Body:
 
 Response 200 (success):
   {
-    "status": "success",
-    "task_status": "completed",
-    "episode_id": "ep_001"
+    "success": true,
+    "message": "Upload triggered successfully"
   }
 
-Response 200 (failure):
+Response 400:
   {
-    "status": "failed",
-    "task_status": "failed",
-    "error_recorded": true
+    "error_msg": "Missing required field: task_id"
+  }
+
+Response 409:
+  {
+    "error_msg": "Recording finished, device not connected for auto-upload"
+  }
+
+Response 500:
+  {
+    "error_msg": "Failed to trigger upload: ..."
   }
 ```
 

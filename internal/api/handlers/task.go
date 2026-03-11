@@ -87,8 +87,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	if err := c.ShouldBindJSON(&callback); err != nil {
 		log.Printf("[OnRecordingStart] Failed to parse request body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid request body: " + err.Error(),
+			"error_msg": "Invalid request body: " + err.Error(),
 		})
 		return
 	}
@@ -100,8 +99,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	if callback.TaskID == "" {
 		log.Printf("[OnRecordingStart] Missing task_id in callback")
 		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Missing required field: task_id",
+			"error_msg": "Missing required field: task_id",
 		})
 		return
 	}
@@ -118,8 +116,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	if err == sql.ErrNoRows {
 		log.Printf("[OnRecordingStart] Task not found: task_id=%s", callback.TaskID)
 		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"error":   "Task not found",
+			"error_msg": "Task not found",
 		})
 		return
 	}
@@ -127,8 +124,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	if err != nil {
 		log.Printf("[OnRecordingStart] Failed to query task status: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to query task status",
+			"error_msg": "Failed to query task status",
 		})
 		return
 	}
@@ -138,9 +134,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 		log.Printf("[OnRecordingStart] Task not in 'ready' state: task_id=%s, status=%s",
 			callback.TaskID, row.Status)
 		c.JSON(http.StatusConflict, gin.H{
-			"error":         "INVALID_TASK_STATE",
-			"message":       "Task is not in 'ready' state",
-			"current_state": row.Status,
+			"error_msg": "Task is not in 'ready' state, current status: " + row.Status,
 		})
 		return
 	}
@@ -155,8 +149,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	if err != nil {
 		log.Printf("[OnRecordingStart] Failed to update task status: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to update task status",
+			"error_msg": "Failed to update task status",
 		})
 		return
 	}
@@ -166,8 +159,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	if err != nil {
 		log.Printf("[OnRecordingStart] Failed to get rows affected: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to verify update",
+			"error_msg": "Failed to verify update",
 		})
 		return
 	}
@@ -175,8 +167,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	if rowsAffected == 0 {
 		log.Printf("[OnRecordingStart] No rows updated (concurrent modification): task_id=%s", callback.TaskID)
 		c.JSON(http.StatusConflict, gin.H{
-			"success": false,
-			"error":   "Task status changed concurrently",
+			"error_msg": "Task status changed concurrently",
 		})
 		return
 	}
