@@ -717,8 +717,15 @@ type RecordingFinishCallback struct {
 	Error string `json:"error"`
 }
 
-// OnRecordingFinish handles the POST /callbacks/finish callback from axon recorder
-// This endpoint is called when a recording finishes, triggering the upload process
+// OnRecordingFinish handles callback from axon recorder when recording finishes.
+// @Summary      Recording finish callback
+// @Description  Handles callback from axon recorder when recording finishes, triggers upload process if device is connected
+// @Tags         callbacks
+// @Accept       json
+// @Produce      json
+// @Param        body  body      RecordingFinishCallback  true  "Recording finish callback payload"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}
 // @Router       /callbacks/finish [post]
 func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
 	var callback RecordingFinishCallback

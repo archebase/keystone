@@ -3,7 +3,9 @@ package handlers
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -50,6 +52,140 @@ type CallbackURLs struct {
 // RegisterRoutes registers task-related routes
 func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/tasks/:id/config", h.GetTaskConfig)
+}
+
+// RegisterCallbackRoutes registers callback routes for handling external events.
+// It sets up POST /start endpoint to handle recording start callbacks.
+func (h *TaskHandler) RegisterCallbackRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/start", h.OnRecordingStart)
+}
+
+// RecordingStartCallback represents the callback payload from axon recorder
+type RecordingStartCallback struct {
+	TaskID    string   `json:"task_id"`
+	DeviceID  string   `json:"device_id"`
+	Status    string   `json:"status"`
+	StartedAt string   `json:"started_at"`
+	Topics    []string `json:"topics"`
+}
+
+// OnRecordingStart handles callback from axon recorder when recording starts.
+// @Summary      Recording start callback
+// @Description  Handles callback from axon recorder when recording starts, updates task status to in_progress if current status is ready
+// @Tags         callbacks
+// @Accept       json
+// @Produce      json
+// @Param        body  body      RecordingStartCallback  true  "Recording start callback payload"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      404  {object}  map[string]interface{}
+// @Failure      409  {object}  map[string]interface{}
+// @Router       /callbacks/start [post]
+func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
+	var callback RecordingStartCallback
+	if err := c.ShouldBindJSON(&callback); err != nil {
+		log.Printf("[OnRecordingStart] Failed to parse request body: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	log.Printf("[OnRecordingStart] Received start callback: task_id=%s, device_id=%s",
+		callback.TaskID, callback.DeviceID)
+
+	// Validate required fields
+	if callback.TaskID == "" {
+		log.Printf("[OnRecordingStart] Missing task_id in callback")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Missing required field: task_id",
+		})
+		return
+	}
+
+	// Query the database to check current task status
+	var currentStatus string
+	err := h.db.QueryRow(
+		"SELECT status FROM tasks WHERE task_id = ? AND deleted_at IS NULL",
+		callback.TaskID,
+	).Scan(&currentStatus)
+
+	if err == sql.ErrNoRows {
+		log.Printf("[OnRecordingStart] Task not found: task_id=%s", callback.TaskID)
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error":   "Task not found",
+		})
+		return
+	}
+
+	if err != nil {
+		log.Printf("[OnRecordingStart] Failed to query task status: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to query task status",
+		})
+		return
+	}
+
+	// Check if task status is 'ready'
+	if currentStatus != "ready" {
+		log.Printf("[OnRecordingStart] Task not in 'ready' state: task_id=%s, status=%s",
+			callback.TaskID, currentStatus)
+		c.JSON(http.StatusConflict, gin.H{
+			"error":         "INVALID_TASK_STATE",
+			"message":       "Task is not in 'ready' state",
+			"current_state": currentStatus,
+		})
+		return
+	}
+
+	// Update task status to 'in_progress'
+	now := time.Now()
+	result, err := h.db.Exec(
+		"UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE task_id = ? AND status = 'ready' AND deleted_at IS NULL",
+		now, callback.TaskID,
+	)
+
+	if err != nil {
+		log.Printf("[OnRecordingStart] Failed to update task status: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to update task status",
+		})
+		return
+	}
+
+	// Check if any row was updated
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Printf("[OnRecordingStart] Failed to get rows affected: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to verify update",
+		})
+		return
+	}
+
+	if rowsAffected == 0 {
+		log.Printf("[OnRecordingStart] No rows updated (concurrent modification): task_id=%s", callback.TaskID)
+		c.JSON(http.StatusConflict, gin.H{
+			"success": false,
+			"error":   "Task status changed concurrently",
+		})
+		return
+	}
+
+	log.Printf("[OnRecordingStart] Successfully updated task status to 'in_progress': task_id=%s", callback.TaskID)
+
+	nowStr := now.Format(time.RFC3339)
+	c.JSON(http.StatusOK, gin.H{
+		"status":          "acknowledged",
+		"task_status":     "in_progress",
+		"acknowledged_at": nowStr,
+	})
 }
 
 // GetTaskConfig returns the configuration for a task

@@ -120,6 +120,9 @@ func (s *Server) buildRoutes() http.Handler {
 	v1Callbacks := v1.Group("/callbacks")
 	s.transfer.RegisterCallbackRoutes(v1Callbacks)
 
+	// Task callbacks
+	s.task.RegisterCallbackRoutes(v1Callbacks)
+
 	// Swagger documentation - serve at both root and api/v1 path
 	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	s.engine.GET("/api/v1/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
