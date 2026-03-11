@@ -717,8 +717,15 @@ type RecordingFinishCallback struct {
 	Error string `json:"error"`
 }
 
-// OnRecordingFinish handles the POST /callbacks/finish callback from axon recorder
-// This endpoint is called when a recording finishes, triggering the upload process
+// OnRecordingFinish handles callback from axon recorder when recording finishes.
+// @Summary      Recording finish callback
+// @Description  Handles callback from axon recorder when recording finishes, triggers upload process if device is connected
+// @Tags         callbacks
+// @Accept       json
+// @Produce      json
+// @Param        body  body      RecordingFinishCallback  true  "Recording finish callback payload"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}
 // @Router       /callbacks/finish [post]
 func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
 	var callback RecordingFinishCallback
@@ -745,6 +752,26 @@ func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
 			"error":   "Missing required field: task_id",
 		})
 		return
+	}
+
+	// TODO: check task status is in_progress
+	// Update task status to 'completed' when recording finishes
+	if h.db != nil {
+		now := time.Now()
+		result, err := h.db.Exec(
+			"UPDATE tasks SET status = 'completed', updated_at = ? WHERE task_id = ? AND deleted_at IS NULL",
+			now, callback.TaskID,
+		)
+
+		if err != nil {
+			log.Printf("[OnRecordingFinish] Failed to update task status to completed: %v", err)
+			// Continue with upload even if status update fails
+		} else {
+			rowsAffected, _ := result.RowsAffected()
+			if rowsAffected > 0 {
+				log.Printf("[OnRecordingFinish] Successfully updated task status to 'completed': task_id=%s", callback.TaskID)
+			}
+		}
 	}
 
 	if callback.OutputPath == "" {
