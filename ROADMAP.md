@@ -26,17 +26,19 @@ First Release Implementation Order:
   - ✅ Device connection state management(refactor when connection with axon_recorder is ready)
   - Replace traditional database operations with GORM
 4. **task Scheduler**
-  - support `GET /tasks/{id}/config` with mock data
+  - ✅ support `GET /tasks/{id}/config` with mocked data
   - handle `/callbacks/start` & `/callbacks/finish`
   - task lifecycle management
-5. **record service**
-  - WebSocket long-lived connection with axon_recorder
-  - refactor device connection state management
-6. **episodes management**
-  - episodes CRUD
-7. **Workstation Management**
+5. **episodes Query adn Filter**
+  - episodes Query
+  - eposodes Filter
+6. **Workstation Management**
+  - robot_types CRUD
   - robots CRUD
   - workstations pairing
+7. **record service**
+  - WebSocket long-lived connection with axon_recorder
+  - refactor device connection state management
 8. **Role-Based Access Control** 
   - System, Data Collector for now
   - JWT claim `role` validated on every protected route
