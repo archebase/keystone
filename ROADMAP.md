@@ -37,7 +37,8 @@ First Release Implementation Order:
   - ✅ robot_types CRUD
   - ✅ robots CRUD
   - ✅ data_collectors CRUD
-  - workstations pairing
+  - ✅ workstations pairing
+  - workstations lifecycle
 7. **record service**
   - WebSocket long-lived connection with axon_recorder
   - refactor device connection state management

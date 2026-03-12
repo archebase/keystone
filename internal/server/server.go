@@ -34,6 +34,7 @@ type Server struct {
 	robot         *handlers.RobotHandler
 	factory       *handlers.FactoryHandler
 	dataCollector *handlers.DataCollectorHandler
+	station       *handlers.StationHandler
 	httpServer    *http.Server
 	wsServer      *http.Server
 	shutdownMu    sync.RWMutex
@@ -68,6 +69,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	var robotHandler *handlers.RobotHandler
 	var factoryHandler *handlers.FactoryHandler
 	var dataCollectorHandler *handlers.DataCollectorHandler
+	var stationHandler *handlers.StationHandler
 	if db != nil {
 		// Create RobotTypeHandler for robot type management
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
@@ -80,6 +82,9 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 
 		// Create DataCollectorHandler for data collector management
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
+
+		// Create StationHandler for station management
+		stationHandler = handlers.NewStationHandler(db)
 	}
 
 	s := &Server{
@@ -92,6 +97,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		robot:         robotHandler,
 		factory:       factoryHandler,
 		dataCollector: dataCollectorHandler,
+		station:       stationHandler,
 		engine:        engine,
 	}
 
@@ -154,6 +160,9 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.dataCollector != nil {
 		s.dataCollector.RegisterRoutes(v1Tasks)
+	}
+	if s.station != nil {
+		s.station.RegisterRoutes(v1Tasks)
 	}
 
 	// Axon callbacks
