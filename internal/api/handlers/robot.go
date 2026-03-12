@@ -116,8 +116,14 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	}
 
 	if robotTypeID != "" {
+		// Parse robot_type_id as numeric value
+		parsedRobotTypeID, err := strconv.ParseInt(robotTypeID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
+			return
+		}
 		query += " AND r.robot_type_id = ?"
-		args = append(args, robotTypeID)
+		args = append(args, parsedRobotTypeID)
 	}
 
 	query += " ORDER BY r.id DESC"
@@ -184,8 +190,8 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		return
 	}
 
-	// Parse robot_type_id - can be "rtype_001" format or direct number
-	robotTypeID, err := parseRobotTypeID(req.RobotTypeID)
+	// Parse robot_type_id as numeric value
+	robotTypeID, err := strconv.ParseInt(req.RobotTypeID, 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
 		return
@@ -256,22 +262,4 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		Status:      "active",
 		CreatedAt:   createdAt,
 	})
-}
-
-// parseRobotTypeID parses a robot_type_id string like "rtype_001" to numeric ID
-func parseRobotTypeID(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	// Try to parse as "rtype_XXX" format
-	if strings.HasPrefix(s, "rtype_") {
-		numStr := strings.TrimPrefix(s, "rtype_")
-		var id int64
-		_, err := fmt.Sscanf(numStr, "%d", &id)
-		if err == nil {
-			return id, nil
-		}
-	}
-	// Try to parse as direct number
-	var id int64
-	_, err := fmt.Sscanf(s, "%d", &id)
-	return id, err
 }
