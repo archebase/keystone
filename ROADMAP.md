@@ -36,6 +36,7 @@ First Release Implementation Order:
   - ✅ factory CRUD
   - ✅ robot_types CRUD
   - ✅ robots CRUD
+  - ✅ data_collectors CRUD
   - workstations pairing
 7. **record service**
   - WebSocket long-lived connection with axon_recorder
