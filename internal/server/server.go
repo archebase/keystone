@@ -30,6 +30,9 @@ type Server struct {
 	transfer   *handlers.TransferHandler
 	episode    *handlers.EpisodeHandler
 	task       *handlers.TaskHandler
+	robotType  *handlers.RobotTypeHandler
+	robot      *handlers.RobotHandler
+	factory    *handlers.FactoryHandler
 	httpServer *http.Server
 	wsServer   *http.Server
 	shutdownMu sync.RWMutex
@@ -59,13 +62,31 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	// Create TaskHandler for task configuration
 	taskHandler := handlers.NewTaskHandler(db)
 
+	// Create database-dependent handlers only when DB is available
+	var robotTypeHandler *handlers.RobotTypeHandler
+	var robotHandler *handlers.RobotHandler
+	var factoryHandler *handlers.FactoryHandler
+	if db != nil {
+		// Create RobotTypeHandler for robot type management
+		robotTypeHandler = handlers.NewRobotTypeHandler(db)
+
+		// Create RobotHandler for robot management
+		robotHandler = handlers.NewRobotHandler(db)
+
+		// Create FactoryHandler for factory management
+		factoryHandler = handlers.NewFactoryHandler(db)
+	}
+
 	s := &Server{
-		cfg:      cfg,
-		health:   healthHandler,
-		transfer: transferHandler,
-		episode:  episodeHandler,
-		task:     taskHandler,
-		engine:   engine,
+		cfg:       cfg,
+		health:    healthHandler,
+		transfer:  transferHandler,
+		episode:   episodeHandler,
+		task:      taskHandler,
+		robotType: robotTypeHandler,
+		robot:     robotHandler,
+		factory:   factoryHandler,
+		engine:    engine,
 	}
 
 	s.httpServer = &http.Server{
@@ -116,6 +137,15 @@ func (s *Server) buildRoutes() http.Handler {
 	// Tasks API
 	v1Tasks := v1.Group("")
 	s.task.RegisterRoutes(v1Tasks)
+	if s.robotType != nil {
+		s.robotType.RegisterRoutes(v1Tasks)
+	}
+	if s.robot != nil {
+		s.robot.RegisterRoutes(v1Tasks)
+	}
+	if s.factory != nil {
+		s.factory.RegisterRoutes(v1Tasks)
+	}
 
 	// Axon callbacks
 	v1Callbacks := v1.Group("/callbacks")

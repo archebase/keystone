@@ -33,8 +33,9 @@ First Release Implementation Order:
   - ✅ episodes Query
   - ✅ eposodes Filter
 6. **Workstation Management**
-  - robot_types CRUD
-  - robots CRUD
+  - ✅ factory CRUD
+  - ✅ robot_types CRUD
+  - ✅ robots CRUD
   - workstations pairing
 7. **record service**
   - WebSocket long-lived connection with axon_recorder
