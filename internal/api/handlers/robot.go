@@ -62,6 +62,17 @@ func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/robots", h.CreateRobot)
 }
 
+// robotRow represents a robot in the database
+type robotRow struct {
+	ID          int64          `db:"id"`
+	RobotTypeID int64          `db:"robot_type_id"`
+	DeviceID    string         `db:"device_id"`
+	FactoryID   int64          `db:"factory_id"`
+	Status      string         `db:"status"`
+	CreatedAt   sql.NullString `db:"created_at"`
+	FactorySlug string         `db:"factory_slug"`
+}
+
 // ListRobots handles robot listing requests with filtering.
 //
 // @Summary      List robots
@@ -111,35 +122,16 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 
 	query += " ORDER BY r.id DESC"
 
-	rows, err := h.db.Queryx(query, args...)
-	if err != nil {
+	// Use db.Select for cleaner code and automatic resource management
+	var dbRows []robotRow
+	if err := h.db.Select(&dbRows, query, args...); err != nil {
 		log.Printf("[ListRobots] Failed to query robots: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robots"})
 		return
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("[ListRobots] Failed to close rows: %v", err)
-		}
-	}()
 
 	robots := []RobotResponse{}
-	for rows.Next() {
-		var r struct {
-			ID          int64          `db:"id"`
-			RobotTypeID int64          `db:"robot_type_id"`
-			DeviceID    string         `db:"device_id"`
-			FactoryID   int64          `db:"factory_id"`
-			Status      string         `db:"status"`
-			CreatedAt   sql.NullString `db:"created_at"`
-			FactorySlug string         `db:"factory_slug"`
-		}
-
-		if err := rows.StructScan(&r); err != nil {
-			log.Printf("[ListRobots] Failed to scan robot: %v", err)
-			continue
-		}
-
+	for _, r := range dbRows {
 		robots = append(robots, RobotResponse{
 			ID:          fmt.Sprintf("%d", r.ID),
 			RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),

@@ -60,6 +60,16 @@ func (h *RobotTypeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/robot_types", h.CreateRobotType)
 }
 
+// robotTypeRow represents a robot type in the database
+type robotTypeRow struct {
+	ID        int64          `db:"id"`
+	Name      string         `db:"name"`
+	Model     string         `db:"model"`
+	ROSTopics sql.NullString `db:"ros_topics"`
+	CreatedAt sql.NullString `db:"created_at"`
+	UpdatedAt sql.NullString `db:"updated_at"`
+}
+
 // CreateRobotType handles robot type creation requests.
 //
 // @Summary      Create robot type
@@ -159,34 +169,16 @@ func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
 		ORDER BY id DESC
 	`
 
-	rows, err := h.db.Queryx(query)
-	if err != nil {
+	// Use db.Select for cleaner code and automatic resource management
+	var dbRows []robotTypeRow
+	if err := h.db.Select(&dbRows, query); err != nil {
 		log.Printf("[ListRobotTypes] Failed to query robot types: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robot types"})
 		return
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("[ListRobotTypes] Failed to close rows: %v", err)
-		}
-	}()
 
 	robotTypes := []RobotTypeResponse{}
-	for rows.Next() {
-		var rt struct {
-			ID        int64          `db:"id"`
-			Name      string         `db:"name"`
-			Model     string         `db:"model"`
-			ROSTopics sql.NullString `db:"ros_topics"`
-			CreatedAt sql.NullString `db:"created_at"`
-			UpdatedAt sql.NullString `db:"updated_at"`
-		}
-
-		if err := rows.StructScan(&rt); err != nil {
-			log.Printf("[ListRobotTypes] Failed to scan robot type: %v", err)
-			continue
-		}
-
+	for _, rt := range dbRows {
 		// Parse ROS topics from JSON array
 		var topics []string
 		if rt.ROSTopics.Valid && rt.ROSTopics.String != "" {

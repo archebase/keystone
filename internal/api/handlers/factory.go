@@ -64,6 +64,19 @@ func (h *FactoryHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/factories", h.CreateFactory)
 }
 
+// factoryRow represents a factory in the database
+type factoryRow struct {
+	ID             int64          `db:"id"`
+	OrganizationID int64          `db:"organization_id"`
+	Name           string         `db:"name"`
+	Slug           string         `db:"slug"`
+	Location       sql.NullString `db:"location"`
+	Timezone       sql.NullString `db:"timezone"`
+	Settings       sql.NullString `db:"settings"`
+	CreatedAt      sql.NullString `db:"created_at"`
+	UpdatedAt      sql.NullString `db:"updated_at"`
+}
+
 // ListFactories handles factory listing requests with filtering.
 //
 // @Summary      List factories
@@ -101,37 +114,17 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 
 	query += " ORDER BY id DESC"
 
-	rows, err := h.db.Queryx(query, args...)
-	if err != nil {
+	factories := []FactoryResponse{}
+
+	// Use db.Select for cleaner code and automatic resource management
+	var dbRows []factoryRow
+	if err := h.db.Select(&dbRows, query, args...); err != nil {
 		log.Printf("[ListFactories] Failed to query factories: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list factories"})
 		return
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("[ListFactories] Failed to close rows: %v", err)
-		}
-	}()
 
-	factories := []FactoryResponse{}
-	for rows.Next() {
-		var f struct {
-			ID             int64          `db:"id"`
-			OrganizationID int64          `db:"organization_id"`
-			Name           string         `db:"name"`
-			Slug           string         `db:"slug"`
-			Location       sql.NullString `db:"location"`
-			Timezone       sql.NullString `db:"timezone"`
-			Settings       sql.NullString `db:"settings"`
-			CreatedAt      sql.NullString `db:"created_at"`
-			UpdatedAt      sql.NullString `db:"updated_at"`
-		}
-
-		if err := rows.StructScan(&f); err != nil {
-			log.Printf("[ListFactories] Failed to scan factory: %v", err)
-			continue
-		}
-
+	for _, f := range dbRows {
 		location := ""
 		if f.Location.Valid {
 			location = f.Location.String
