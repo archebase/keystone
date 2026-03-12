@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -222,6 +223,9 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		return
 	}
 
+	// Generate created_at timestamp in application layer
+	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+
 	// Insert the robot
 	result, err := h.db.Exec(
 		`INSERT INTO robots (
@@ -231,11 +235,13 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 			status,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, NOW(), NOW())`,
+		) VALUES (?, ?, ?, ?, ?, ?)`,
 		robotTypeID,
 		req.DeviceID,
 		factoryID,
 		"active",
+		createdAt,
+		createdAt,
 	)
 	if err != nil {
 		log.Printf("[CreateRobot] Failed to insert robot: %v", err)
@@ -248,14 +254,6 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		log.Printf("[CreateRobot] Failed to get inserted id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create robot"})
 		return
-	}
-
-	// Get created_at timestamp
-	var createdAt string
-	err = h.db.Get(&createdAt, "SELECT created_at FROM robots WHERE id = ?", id)
-	if err != nil {
-		log.Printf("[CreateRobot] Failed to get created_at: %v", err)
-		createdAt = ""
 	}
 
 	c.JSON(http.StatusCreated, CreateRobotResponse{
