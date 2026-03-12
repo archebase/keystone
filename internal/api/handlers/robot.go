@@ -70,7 +70,6 @@ type robotRow struct {
 	FactoryID   int64          `db:"factory_id"`
 	Status      string         `db:"status"`
 	CreatedAt   sql.NullString `db:"created_at"`
-	FactorySlug string         `db:"factory_slug"`
 }
 
 // ListRobots handles robot listing requests with filtering.
@@ -138,12 +137,18 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 
 	robots := []RobotResponse{}
 	for _, r := range dbRows {
+		createdAt := ""
+		if r.CreatedAt.Valid {
+			createdAt = r.CreatedAt.String
+		}
+
 		robots = append(robots, RobotResponse{
 			ID:          fmt.Sprintf("%d", r.ID),
 			RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),
 			DeviceID:    r.DeviceID,
 			FactoryID:   fmt.Sprintf("%d", r.FactoryID),
 			Status:      r.Status,
+			CreatedAt:   createdAt,
 		})
 	}
 

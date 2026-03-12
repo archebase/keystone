@@ -62,14 +62,20 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	// Create TaskHandler for task configuration
 	taskHandler := handlers.NewTaskHandler(db)
 
-	// Create RobotTypeHandler for robot type management
-	robotTypeHandler := handlers.NewRobotTypeHandler(db)
+	// Create database-dependent handlers only when DB is available
+	var robotTypeHandler *handlers.RobotTypeHandler
+	var robotHandler *handlers.RobotHandler
+	var factoryHandler *handlers.FactoryHandler
+	if db != nil {
+		// Create RobotTypeHandler for robot type management
+		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 
-	// Create RobotHandler for robot management
-	robotHandler := handlers.NewRobotHandler(db)
+		// Create RobotHandler for robot management
+		robotHandler = handlers.NewRobotHandler(db)
 
-	// Create FactoryHandler for factory management
-	factoryHandler := handlers.NewFactoryHandler(db)
+		// Create FactoryHandler for factory management
+		factoryHandler = handlers.NewFactoryHandler(db)
+	}
 
 	s := &Server{
 		cfg:       cfg,
@@ -131,9 +137,15 @@ func (s *Server) buildRoutes() http.Handler {
 	// Tasks API
 	v1Tasks := v1.Group("")
 	s.task.RegisterRoutes(v1Tasks)
-	s.robotType.RegisterRoutes(v1Tasks)
-	s.robot.RegisterRoutes(v1Tasks)
-	s.factory.RegisterRoutes(v1Tasks)
+	if s.robotType != nil {
+		s.robotType.RegisterRoutes(v1Tasks)
+	}
+	if s.robot != nil {
+		s.robot.RegisterRoutes(v1Tasks)
+	}
+	if s.factory != nil {
+		s.factory.RegisterRoutes(v1Tasks)
+	}
 
 	// Axon callbacks
 	v1Callbacks := v1.Group("/callbacks")
