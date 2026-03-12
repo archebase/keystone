@@ -327,7 +327,44 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 		// #nosec G706 -- Set aside for now
 		log.Printf("[TRANSFER] Device %s: task=%s already exists in DB (by mcap_path or sidecar_path), skipping insert", dc.DeviceID, taskID)
 	} else {
-		// TODO: query the tasks table based on task_id (string) to get the corresponding id(int)
+		var taskRow struct {
+			ID             int64         `db:"id"`
+			BatchID        int64         `db:"batch_id"`
+			OrderID        int64         `db:"order_id"`
+			SceneID        int64         `db:"scene_id"`
+			SceneName      string        `db:"scene_name"`
+			WorkstationID  sql.NullInt64 `db:"workstation_id"`
+			FactoryID      sql.NullInt64 `db:"factory_id"`
+			OrganizationID sql.NullInt64 `db:"organization_id"`
+			SOPID          int64         `db:"sop_id"`
+		}
+
+		err = tx.QueryRowContext(ctx, `SELECT
+			id,
+			batch_id,
+			order_id,
+			scene_id,
+			COALESCE(scene_name, '') AS scene_name,
+			workstation_id,
+			factory_id,
+			organization_id,
+			sop_id
+		FROM tasks
+		WHERE task_id = ? AND deleted_at IS NULL`, taskID).Scan(
+			&taskRow.ID,
+			&taskRow.BatchID,
+			&taskRow.OrderID,
+			&taskRow.SceneID,
+			&taskRow.SceneName,
+			&taskRow.WorkstationID,
+			&taskRow.FactoryID,
+			&taskRow.OrganizationID,
+			&taskRow.SOPID,
+		)
+		if err != nil {
+			return
+		}
+
 		episodeID := uuid.New().String()
 		_, dbErr := tx.ExecContext(ctx,
 			`INSERT INTO episodes (
@@ -336,10 +373,26 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 				batch_id,
 				order_id,
 				scene_id,
+				scene_name,
+				workstation_id,
+				factory_id,
+				organization_id,
+				sop_id,
 				mcap_path,
 				sidecar_path
-			) VALUES (?, 0, 0, 0, 0, ?, ?)`,
-			episodeID, mcapKey, jsonKey,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			episodeID,
+			taskRow.ID,
+			taskRow.BatchID,
+			taskRow.OrderID,
+			taskRow.SceneID,
+			taskRow.SceneName,
+			taskRow.WorkstationID,
+			taskRow.FactoryID,
+			taskRow.OrganizationID,
+			taskRow.SOPID,
+			mcapKey,
+			jsonKey,
 		)
 		if dbErr != nil {
 			// #nosec G706 -- Set aside for now
@@ -373,6 +426,35 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 	dc.RecordEvent("outbound", ackMsg)
 	// #nosec G706 -- Set aside for now
 	log.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
+
+	// Step 4:
+	// Update task status to 'completed' only if it is currently 'in_progress'.
+	// Rely on rowsAffected to avoid a SELECT-then-UPDATE race window.
+	if h.db != nil {
+		now := time.Now()
+		result, err := h.db.Exec(
+			"UPDATE tasks SET status = 'completed', updated_at = ? WHERE task_id = ? AND status = 'in_progress' AND deleted_at IS NULL",
+			now, taskID,
+		)
+
+		if err != nil {
+			log.Printf("[TRANSFER] Failed to update task status to completed: task_id=%s, error=%v", taskID, err)
+			return
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			log.Printf("[TRANSFER] Failed to get rows affected: task_id=%s, error=%v", taskID, err)
+			return
+		}
+
+		if rowsAffected == 0 {
+			log.Printf("[TRANSFER] No rows updated - task not in 'in_progress' state or modified concurrently: task_id=%s", taskID)
+			return
+		}
+
+		log.Printf("[TRANSFER] Successfully updated task status to 'completed': task_id=%s", taskID)
+	}
 }
 
 // onUploadFailed handles "upload_failed" message
@@ -727,59 +809,32 @@ type RecordingFinishCallback struct {
 // @Param        body  body      RecordingFinishCallback  true  "Recording finish callback payload"
 // @Success      200  {object}  map[string]interface{}
 // @Failure      400  {object}  map[string]interface{}
+// @Failure      409  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
 // @Router       /callbacks/finish [post]
 func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
 	var callback RecordingFinishCallback
 	if err := c.ShouldBindJSON(&callback); err != nil {
 		log.Printf("[OnRecordingFinish] Failed to parse request body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid request body: " + err.Error(),
+			"error_msg": "Invalid request body: " + err.Error(),
 		})
 		return
 	}
-
-	log.Printf("[OnRecordingFinish] Received finish callback: task_id=%s, device_id=%s, status=%s, output_path=%s, file_size=%d, message_count=%d, duration_sec=%.2f",
-		callback.TaskID, callback.DeviceID, callback.Status, callback.OutputPath, callback.FileSizeBytes, callback.MessageCount, callback.DurationSec)
-	log.Printf("[OnRecordingFinish] Topics: %v", callback.Topics)
-	log.Printf("[OnRecordingFinish] Metadata: scene=%s, subscene=%s, skills=%v, factory=%s",
-		callback.Metadata.Scene, callback.Metadata.Subscene, callback.Metadata.Skills, callback.Metadata.Factory)
 
 	// Validate required fields
 	if callback.TaskID == "" {
 		log.Printf("[OnRecordingFinish] Missing task_id in callback")
 		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Missing required field: task_id",
+			"error_msg": "Missing required field: task_id",
 		})
 		return
 	}
 
-	// TODO: check task status is in_progress
-	// Update task status to 'completed' when recording finishes
-	if h.db != nil {
-		now := time.Now()
-		result, err := h.db.Exec(
-			"UPDATE tasks SET status = 'completed', updated_at = ? WHERE task_id = ? AND deleted_at IS NULL",
-			now, callback.TaskID,
-		)
-
-		if err != nil {
-			log.Printf("[OnRecordingFinish] Failed to update task status to completed: %v", err)
-			// Continue with upload even if status update fails
-		} else {
-			rowsAffected, _ := result.RowsAffected()
-			if rowsAffected > 0 {
-				log.Printf("[OnRecordingFinish] Successfully updated task status to 'completed': task_id=%s", callback.TaskID)
-			}
-		}
-	}
-
 	if callback.OutputPath == "" {
 		log.Printf("[OnRecordingFinish] No output_path provided for task_id=%s, skipping upload", callback.TaskID)
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "No output file to upload",
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error_msg": "Missing required field: output_path",
 		})
 		return
 	}
@@ -788,25 +843,22 @@ func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
 	if deviceID == "" {
 		log.Printf("[OnRecordingFinish] Missing device_id in callback")
 		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Missing required field: device_id",
+			"error_msg": "Missing required field: device_id",
 		})
 		return
 	}
+
+	log.Printf("[OnRecordingFinish] Received finish callback: task_id=%s, device_id=%s", callback.TaskID, callback.DeviceID)
 
 	dc := h.hub.Get(deviceID)
 	if dc == nil {
+		// TODO: add status pending_upload, when device reconnects, check for any pending_upload tasks and trigger upload then
 		log.Printf("[OnRecordingFinish] Device %s not found in hub (task_id=%s), cannot trigger upload", deviceID, callback.TaskID)
-		c.JSON(http.StatusOK, gin.H{
-			"success":          true,
-			"message":          "Recording finished, device not connected for auto-upload",
-			"device_connected": false,
-			"task_id":          callback.TaskID,
+		c.JSON(http.StatusConflict, gin.H{
+			"error_msg": "Recording finished, device not connected for auto-upload",
 		})
 		return
 	}
-
-	log.Printf("[OnRecordingFinish] Found device %s, triggering upload for task_id=%s", deviceID, callback.TaskID)
 
 	uploadRequest := map[string]interface{}{
 		"type":     "upload_request",
@@ -817,8 +869,7 @@ func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
 	if err := h.sendToDevice(c.Request.Context(), deviceID, uploadRequest); err != nil {
 		log.Printf("[OnRecordingFinish] Failed to send upload_request to device %s: %v", deviceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to trigger upload: " + err.Error(),
+			"error_msg": "Failed to trigger upload: " + err.Error(),
 		})
 		return
 	}
@@ -827,11 +878,7 @@ func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
 		callback.TaskID, deviceID)
 
 	c.JSON(http.StatusOK, gin.H{
-		"success":         true,
-		"message":         "Upload triggered successfully",
-		"task_id":         callback.TaskID,
-		"device_id":       deviceID,
-		"output_path":     callback.OutputPath,
-		"file_size_bytes": callback.FileSizeBytes,
+		"success": true,
+		"message": "Upload triggered successfully",
 	})
 }
