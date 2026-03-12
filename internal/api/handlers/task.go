@@ -57,6 +57,7 @@ type CallbackURLs struct {
 func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks", h.CreateTask)
 	apiV1.GET("/tasks", h.ListTasks)
+	apiV1.GET("/tasks/:id", h.GetTask)
 	apiV1.GET("/tasks/:id/config", h.GetTaskConfig)
 }
 
@@ -90,6 +91,33 @@ type ListTasksResponse struct {
 	Total  int            `json:"total"`
 	Limit  int            `json:"limit"`
 	Offset int            `json:"offset"`
+}
+
+// TaskEpisodeDetail represents the episode information attached to a task.
+type TaskEpisodeDetail struct {
+	ID string `json:"id" db:"id"`
+}
+
+// TaskDetailResponse represents the response body for getting a task by ID.
+type TaskDetailResponse struct {
+	ID             string             `json:"id" db:"id"`
+	BatchID        string             `json:"batch_id" db:"batch_id"`
+	BatchName      string             `json:"batch_name" db:"batch_name"`
+	OrderID        string             `json:"order_id" db:"order_id"`
+	SOPID          string             `json:"sop_id" db:"sop_id"`
+	WorkstationID  *string            `json:"workstation_id" db:"workstation_id"`
+	SceneID        string             `json:"scene_id" db:"scene_id"`
+	SceneName      string             `json:"scene_name" db:"scene_name"`
+	SubsceneID     string             `json:"subscene_id" db:"subscene_id"`
+	SubsceneName   string             `json:"subscene_name" db:"subscene_name"`
+	FactoryID      *string            `json:"factory_id" db:"factory_id"`
+	OrganizationID *int64             `json:"organization_id" db:"organization_id"`
+	Status         string             `json:"status" db:"status"`
+	AssignedAt     *string            `json:"assigned_at" db:"assigned_at"`
+	StartedAt      *string            `json:"started_at" db:"started_at"`
+	CompletedAt    *string            `json:"completed_at" db:"completed_at"`
+	Episode        *TaskEpisodeDetail `json:"episode"`
+	EpisodeID      *string            `json:"-" db:"episode_id"`
 }
 
 // ListTasks handles task listing requests with optional filtering.
@@ -193,6 +221,65 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		Limit:  limit,
 		Offset: offset,
 	})
+}
+
+// GetTask handles task detail requests.
+//
+// @Summary      Get task detail
+// @Description  Returns a task by ID
+// @Tags         tasks
+// @Produce      json
+// @Param        id   path      string  true  "Task ID"
+// @Success      200  {object}  TaskDetailResponse
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /tasks/{id} [get]
+func (h *TaskHandler) GetTask(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("id"))
+
+	var task TaskDetailResponse
+	query := `SELECT
+		t.task_id AS id,
+		CAST(t.batch_id AS CHAR) AS batch_id,
+		COALESCE(t.batch_name, '') AS batch_name,
+		CAST(t.order_id AS CHAR) AS order_id,
+		CAST(t.sop_id AS CHAR) AS sop_id,
+		CASE WHEN t.workstation_id IS NULL THEN NULL ELSE CAST(t.workstation_id AS CHAR) END AS workstation_id,
+		CAST(t.scene_id AS CHAR) AS scene_id,
+		COALESCE(t.scene_name, '') AS scene_name,
+		CAST(t.subscene_id AS CHAR) AS subscene_id,
+		COALESCE(t.subscene_name, '') AS subscene_name,
+		CASE WHEN t.factory_id IS NULL THEN NULL ELSE CAST(t.factory_id AS CHAR) END AS factory_id,
+		t.organization_id AS organization_id,
+		t.status,
+		CASE WHEN t.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at,
+		CASE WHEN t.started_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.started_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS started_at,
+		CASE WHEN t.completed_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.completed_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS completed_at,
+		e.episode_id AS episode_id
+		FROM tasks t
+		LEFT JOIN episodes e ON e.task_id = t.id AND e.deleted_at IS NULL
+		WHERE t.task_id = ? AND t.deleted_at IS NULL
+		LIMIT 1`
+
+	err := h.db.Get(&task, query, taskID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error_msg": "Task not found: " + taskID,
+		})
+		return
+	}
+
+	if err != nil {
+		log.Printf("[GetTask] Failed to query task: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task"})
+		return
+	}
+
+	if task.EpisodeID != nil {
+		task.Episode = &TaskEpisodeDetail{ID: *task.EpisodeID}
+	}
+
+	c.JSON(http.StatusOK, task)
 }
 
 // CreateTaskResponse represents the response body for creating a task.
