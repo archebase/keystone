@@ -31,6 +31,8 @@ type Server struct {
 	episode    *handlers.EpisodeHandler
 	task       *handlers.TaskHandler
 	robotType  *handlers.RobotTypeHandler
+	robot      *handlers.RobotHandler
+	factory    *handlers.FactoryHandler
 	httpServer *http.Server
 	wsServer   *http.Server
 	shutdownMu sync.RWMutex
@@ -63,6 +65,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	// Create RobotTypeHandler for robot type management
 	robotTypeHandler := handlers.NewRobotTypeHandler(db)
 
+	// Create RobotHandler for robot management
+	robotHandler := handlers.NewRobotHandler(db)
+
+	// Create FactoryHandler for factory management
+	factoryHandler := handlers.NewFactoryHandler(db)
+
 	s := &Server{
 		cfg:       cfg,
 		health:    healthHandler,
@@ -70,6 +78,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		episode:   episodeHandler,
 		task:      taskHandler,
 		robotType: robotTypeHandler,
+		robot:     robotHandler,
+		factory:   factoryHandler,
 		engine:    engine,
 	}
 
@@ -122,6 +132,8 @@ func (s *Server) buildRoutes() http.Handler {
 	v1Tasks := v1.Group("")
 	s.task.RegisterRoutes(v1Tasks)
 	s.robotType.RegisterRoutes(v1Tasks)
+	s.robot.RegisterRoutes(v1Tasks)
+	s.factory.RegisterRoutes(v1Tasks)
 
 	// Axon callbacks
 	v1Callbacks := v1.Group("/callbacks")

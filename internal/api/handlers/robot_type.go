@@ -38,8 +38,24 @@ type CreateRobotTypeResponse struct {
 	CreatedAt string   `json:"created_at"`
 }
 
+// RobotTypeResponse represents a robot type in the response.
+type RobotTypeResponse struct {
+	ID        int64    `json:"id"`
+	Name      string   `json:"name"`
+	Model     string   `json:"model"`
+	ROSTopics []string `json:"ros_topics"`
+	CreatedAt string   `json:"created_at,omitempty"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
+}
+
+// RobotTypeListResponse represents the response for listing robot types.
+type RobotTypeListResponse struct {
+	RobotTypes []RobotTypeResponse `json:"robot_types"`
+}
+
 // RegisterRoutes registers robot type related routes.
 func (h *RobotTypeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.GET("/robot_types", h.ListRobotTypes)
 	apiV1.POST("/robot_types", h.CreateRobotType)
 }
 
@@ -116,6 +132,120 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 		ROSTopics: req.ROSTopics,
 		CreatedAt: now.Format(time.RFC3339),
 	})
+}
+
+// ListRobotTypes handles robot type listing requests.
+//
+// @Summary      List robot types
+// @Description  Lists all robot types
+// @Tags         robot_types
+// @Accept       json
+// @Produce      json
+// @Success      200 {object} RobotTypeListResponse
+// @Failure      500 {object} map[string]string
+// @Router       /robot_types [get]
+func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
+	query := `
+		SELECT 
+			id,
+			name,
+			model,
+			ros_topics,
+			created_at,
+			updated_at
+		FROM robot_types
+		WHERE deleted_at IS NULL
+		ORDER BY id DESC
+	`
+
+	rows, err := h.db.Queryx(query)
+	if err != nil {
+		log.Printf("[ListRobotTypes] Failed to query robot types: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robot types"})
+		return
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("[ListRobotTypes] Failed to close rows: %v", err)
+		}
+	}()
+
+	robotTypes := []RobotTypeResponse{}
+	for rows.Next() {
+		var rt struct {
+			ID        int64          `db:"id"`
+			Name      string         `db:"name"`
+			Model     string         `db:"model"`
+			ROSTopics sql.NullString `db:"ros_topics"`
+			CreatedAt sql.NullString `db:"created_at"`
+			UpdatedAt sql.NullString `db:"updated_at"`
+		}
+
+		if err := rows.StructScan(&rt); err != nil {
+			log.Printf("[ListRobotTypes] Failed to scan robot type: %v", err)
+			continue
+		}
+
+		// Parse ROS topics from JSON array
+		var topics []string
+		if rt.ROSTopics.Valid && rt.ROSTopics.String != "" {
+			topics = parseJSONArray(rt.ROSTopics.String)
+		}
+
+		createdAt := ""
+		if rt.CreatedAt.Valid {
+			createdAt = rt.CreatedAt.String
+		}
+
+		updatedAt := ""
+		if rt.UpdatedAt.Valid {
+			updatedAt = rt.UpdatedAt.String
+		}
+
+		robotTypes = append(robotTypes, RobotTypeResponse{
+			ID:        rt.ID,
+			Name:      rt.Name,
+			Model:     rt.Model,
+			ROSTopics: topics,
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}
+
+	c.JSON(http.StatusOK, RobotTypeListResponse{
+		RobotTypes: robotTypes,
+	})
+}
+
+func parseJSONArray(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "null" {
+		return nil
+	}
+
+	// Simple JSON array parsing for string array
+	if len(s) < 2 || s[0] != '[' || s[len(s)-1] != ']' {
+		return nil
+	}
+
+	// Remove brackets
+	inner := s[1 : len(s)-1]
+	if inner == "" {
+		return nil
+	}
+
+	// Split by comma and clean up quotes
+	var result []string
+	parts := strings.Split(inner, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		part = strings.Trim(part, "\"")
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+
+	return result
 }
 
 func toNullableJSONArray(values []string) sql.NullString {
