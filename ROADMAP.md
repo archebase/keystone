@@ -28,10 +28,10 @@ First Release Implementation Order:
 4. **task Scheduler**
   - ✅ support `GET /tasks/{id}/config` with mocked data
   - ✅ handle `/callbacks/start` & `/callbacks/finish`
-  - task lifecycle management
-5. **episodes Query adn Filter**
-  - episodes Query
-  - eposodes Filter
+  - ✅ task lifecycle management
+5. **episodes Query and Filter**
+  - ✅ episodes Query
+  - ✅ eposodes Filter
 6. **Workstation Management**
   - robot_types CRUD
   - robots CRUD
