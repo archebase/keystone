@@ -362,11 +362,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 			&taskRow.SOPID,
 		)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				log.Printf("[TRANSFER] Device %s: task=%s not found in tasks table, skipping episode insert", dc.DeviceID, taskID)
-			} else {
-				log.Printf("[TRANSFER] Device %s: failed to query task row for task=%s: %v", dc.DeviceID, taskID, err)
-			}
 			return
 		}
 
