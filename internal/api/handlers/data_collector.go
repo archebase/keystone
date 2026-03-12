@@ -305,7 +305,7 @@ func (h *DataCollectorHandler) UpdateDataCollectorStatus(c *gin.Context) {
 
 	// Update the status
 	_, err = h.db.Exec(
-		`UPDATE data_collectors SET status = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE data_collectors SET status = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
 		req.Status,
 		updatedAt,
 		id,
