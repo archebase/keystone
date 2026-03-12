@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -222,29 +223,10 @@ func parseJSONArray(s string) []string {
 	if s == "" || s == "null" {
 		return nil
 	}
-
-	// Simple JSON array parsing for string array
-	if len(s) < 2 || s[0] != '[' || s[len(s)-1] != ']' {
-		return nil
-	}
-
-	// Remove brackets
-	inner := s[1 : len(s)-1]
-	if inner == "" {
-		return nil
-	}
-
-	// Split by comma and clean up quotes
 	var result []string
-	parts := strings.Split(inner, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		part = strings.Trim(part, "\"")
-		if part != "" {
-			result = append(result, part)
-		}
+	if err := json.Unmarshal([]byte(s), &result); err != nil {
+		return nil
 	}
-
 	return result
 }
 
