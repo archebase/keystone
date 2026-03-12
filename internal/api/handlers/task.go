@@ -58,6 +58,7 @@ func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks", h.CreateTask)
 	apiV1.GET("/tasks", h.ListTasks)
 	apiV1.GET("/tasks/:id", h.GetTask)
+	apiV1.PATCH("/tasks/:id", h.UpdateTask)
 	apiV1.GET("/tasks/:id/config", h.GetTaskConfig)
 }
 
@@ -118,6 +119,29 @@ type TaskDetailResponse struct {
 	CompletedAt    *string            `json:"completed_at" db:"completed_at"`
 	Episode        *TaskEpisodeDetail `json:"episode"`
 	EpisodeID      *string            `json:"-" db:"episode_id"`
+}
+
+// UpdateTaskRequest represents the request body for updating a task status.
+type UpdateTaskRequest struct {
+	Status    string `json:"status"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+// UpdateTaskResponse represents the response body for updating a task status.
+type UpdateTaskResponse struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+var validTaskStatusTransitions = map[string]map[string]struct{}{
+	"pending": {
+		"ready":     {},
+		"cancelled": {},
+	},
+	"ready": {
+		"pending": {},
+	},
 }
 
 // ListTasks handles task listing requests with optional filtering.
@@ -280,6 +304,116 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, task)
+}
+
+// UpdateTask handles task status update requests.
+//
+// @Summary      Update task
+// @Description  Updates task status with restricted state transitions
+// @Tags         tasks
+// @Accept       json
+// @Produce      json
+// @Param        id    path      string             true  "Task ID"
+// @Param        body  body      UpdateTaskRequest  true  "Task update payload"
+// @Success      200   {object}  UpdateTaskResponse
+// @Failure      400   {object}  map[string]string
+// @Failure      404   {object}  map[string]string
+// @Failure      409   {object}  map[string]string
+// @Failure      500   {object}  map[string]string
+// @Router       /tasks/{id} [patch]
+func (h *TaskHandler) UpdateTask(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("id"))
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "task id is required"})
+		return
+	}
+
+	var req UpdateTaskRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error_msg": "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	req.Status = strings.TrimSpace(req.Status)
+	req.UpdatedBy = strings.TrimSpace(req.UpdatedBy)
+
+	if req.Status == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "status is required"})
+		return
+	}
+
+	if _, ok := validTaskStatuses[req.Status]; !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid status"})
+		return
+	}
+
+	if req.UpdatedBy == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "updated_by is required"})
+		return
+	}
+
+	var taskRow struct {
+		Status string `db:"status"`
+	}
+	err := h.db.Get(&taskRow, "SELECT status FROM tasks WHERE task_id = ? AND deleted_at IS NULL", taskID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error_msg": "Task not found: " + taskID})
+		return
+	}
+	if err != nil {
+		log.Printf("[UpdateTask] Failed to query task: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task"})
+		return
+	}
+
+	if _, ok := validTaskStatusTransitions[taskRow.Status][req.Status]; !ok {
+		c.JSON(http.StatusConflict, gin.H{
+			"error_msg":        fmt.Sprintf("Cannot transition from '%s' to '%s'", taskRow.Status, req.Status),
+			"current_status":   taskRow.Status,
+			"requested_status": req.Status,
+		})
+		return
+	}
+
+	now := time.Now().UTC()
+	result, err := h.db.Exec(
+		"UPDATE tasks SET status = ?, updated_at = ?, ready_at = CASE WHEN ? = 'ready' THEN ? ELSE ready_at END WHERE task_id = ? AND status = ? AND deleted_at IS NULL",
+		req.Status,
+		now,
+		req.Status,
+		now,
+		taskID,
+		taskRow.Status,
+	)
+	if err != nil {
+		log.Printf("[UpdateTask] Failed to update task: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to update task"})
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Printf("[UpdateTask] Failed to get rows affected: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to verify update"})
+		return
+	}
+
+	if rowsAffected == 0 {
+		c.JSON(http.StatusConflict, gin.H{
+			"error_msg":        fmt.Sprintf("Cannot transition from '%s' to '%s'", taskRow.Status, req.Status),
+			"current_status":   taskRow.Status,
+			"requested_status": req.Status,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, UpdateTaskResponse{
+		ID:        taskID,
+		Status:    req.Status,
+		UpdatedAt: now.Format(time.RFC3339),
+	})
 }
 
 // CreateTaskResponse represents the response body for creating a task.
