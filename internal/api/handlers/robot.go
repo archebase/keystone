@@ -79,9 +79,9 @@ type robotRow struct {
 // @Tags         robots
 // @Accept       json
 // @Produce      json
-// @Param        factory_id    query     string  false  "Filter by factory slug (e.g., factory_shanghai)"
+// @Param        factory_id    query     string  false  "Filter by factory id"
 // @Param        status        query     string  false  "Filter by status (active, maintenance, retired)"
-// @Param        robot_type_id query     string  false  "Filter by robot type slug"
+// @Param        robot_type_id query     string  false  "Filter by robot type id"
 // @Success      200           {object}  RobotListResponse
 // @Failure      500           {object}  map[string]string
 // @Router       /robots [get]
@@ -105,8 +105,13 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	args := []interface{}{}
 
 	if factoryID != "" {
+		parsedFactoryID, err := strconv.ParseInt(factoryID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+			return
+		}
 		query += " AND r.factory_id = ?"
-		args = append(args, factoryID)
+		args = append(args, parsedFactoryID)
 	}
 
 	if status != "" {
