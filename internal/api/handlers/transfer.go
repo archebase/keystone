@@ -327,7 +327,49 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 		// #nosec G706 -- Set aside for now
 		log.Printf("[TRANSFER] Device %s: task=%s already exists in DB (by mcap_path or sidecar_path), skipping insert", dc.DeviceID, taskID)
 	} else {
-		// TODO: query the tasks table based on task_id (string) to get the corresponding id(int)
+		var taskRow struct {
+			ID             int64         `db:"id"`
+			BatchID        int64         `db:"batch_id"`
+			OrderID        int64         `db:"order_id"`
+			SceneID        int64         `db:"scene_id"`
+			SceneName      string        `db:"scene_name"`
+			WorkstationID  sql.NullInt64 `db:"workstation_id"`
+			FactoryID      sql.NullInt64 `db:"factory_id"`
+			OrganizationID sql.NullInt64 `db:"organization_id"`
+			SOPID          int64         `db:"sop_id"`
+		}
+
+		err = tx.QueryRowContext(ctx, `SELECT
+			id,
+			batch_id,
+			order_id,
+			scene_id,
+			COALESCE(scene_name, '') AS scene_name,
+			workstation_id,
+			factory_id,
+			organization_id,
+			sop_id
+		FROM tasks
+		WHERE task_id = ? AND deleted_at IS NULL`, taskID).Scan(
+			&taskRow.ID,
+			&taskRow.BatchID,
+			&taskRow.OrderID,
+			&taskRow.SceneID,
+			&taskRow.SceneName,
+			&taskRow.WorkstationID,
+			&taskRow.FactoryID,
+			&taskRow.OrganizationID,
+			&taskRow.SOPID,
+		)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				log.Printf("[TRANSFER] Device %s: task=%s not found in tasks table, skipping episode insert", dc.DeviceID, taskID)
+			} else {
+				log.Printf("[TRANSFER] Device %s: failed to query task row for task=%s: %v", dc.DeviceID, taskID, err)
+			}
+			return
+		}
+
 		episodeID := uuid.New().String()
 		_, dbErr := tx.ExecContext(ctx,
 			`INSERT INTO episodes (
@@ -336,10 +378,26 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 				batch_id,
 				order_id,
 				scene_id,
+				scene_name,
+				workstation_id,
+				factory_id,
+				organization_id,
+				sop_id,
 				mcap_path,
 				sidecar_path
-			) VALUES (?, 0, 0, 0, 0, ?, ?)`,
-			episodeID, mcapKey, jsonKey,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			episodeID,
+			taskRow.ID,
+			taskRow.BatchID,
+			taskRow.OrderID,
+			taskRow.SceneID,
+			taskRow.SceneName,
+			taskRow.WorkstationID,
+			taskRow.FactoryID,
+			taskRow.OrganizationID,
+			taskRow.SOPID,
+			mcapKey,
+			jsonKey,
 		)
 		if dbErr != nil {
 			// #nosec G706 -- Set aside for now
