@@ -48,6 +48,7 @@ type StationResponse struct {
 // RegisterRoutes registers station related routes.
 func (h *StationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/stations", h.CreateStation)
+	apiV1.GET("/stations", h.ListStations)
 }
 
 // robotInfoRow represents robot info retrieved from DB
@@ -281,4 +282,107 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		Name:                req.Name,
 		CreatedAt:           createdAtISO.Format(time.RFC3339),
 	})
+}
+
+// stationListRow represents a station row from DB for listing
+type stationListRow struct {
+	ID                  int64          `db:"id"`
+	RobotID             int64          `db:"robot_id"`
+	RobotName           string         `db:"robot_name"`
+	RobotSerial         string         `db:"robot_serial"`
+	DataCollectorID     int64          `db:"data_collector_id"`
+	CollectorName       string         `db:"collector_name"`
+	CollectorOperatorID string         `db:"collector_operator_id"`
+	FactoryID           int64          `db:"factory_id"`
+	Name                sql.NullString `db:"name"`
+	Status              string         `db:"status"`
+	CreatedAt           sql.NullString `db:"created_at"`
+}
+
+// ListStations handles listing all stations.
+//
+// @Summary      List stations
+// @Description  Returns a list of all workstations
+// @Tags         stations
+// @Produce      json
+// @Success      200  {object}  map[string][]StationResponse
+// @Failure      500  {object}  map[string]string
+// @Router       /stations [get]
+func (h *StationHandler) ListStations(c *gin.Context) {
+	var stations []stationListRow
+	err := h.db.Select(&stations, `
+		SELECT 
+			id, robot_id, robot_name, robot_serial,
+			data_collector_id, collector_name, collector_operator_id,
+			factory_id, name, status, created_at
+		FROM workstations 
+		WHERE deleted_at IS NULL
+		ORDER BY id DESC
+	`)
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("[ListStations] Failed to query stations: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})
+		return
+	}
+
+	if stations == nil {
+		stations = []stationListRow{}
+	}
+
+	// Get factory slugs for all unique factory IDs
+	factoryIDs := make([]int64, 0, len(stations))
+	existingFactoryIDs := make(map[int64]bool)
+	for _, s := range stations {
+		if !existingFactoryIDs[s.FactoryID] {
+			factoryIDs = append(factoryIDs, s.FactoryID)
+			existingFactoryIDs[s.FactoryID] = true
+		}
+	}
+
+	factorySlugs := make(map[int64]string)
+	if len(factoryIDs) > 0 {
+		// Use placeholder query for MySQL
+		query := "SELECT id, slug FROM factories WHERE id IN (" + strings.Repeat("?,", len(factoryIDs)-1) + "?)"
+		// Convert to []interface{} for sqlx
+		args := make([]interface{}, len(factoryIDs))
+		for i, id := range factoryIDs {
+			args[i] = id
+		}
+		var factoryRows []factoryInfoRow
+		err = h.db.Select(&factoryRows, query, args...)
+		if err != nil && err != sql.ErrNoRows {
+			log.Printf("[ListStations] Failed to query factories: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})
+			return
+		}
+		for _, f := range factoryRows {
+			factorySlugs[f.ID] = f.Slug
+		}
+	}
+
+	// Build response
+	response := make([]StationResponse, 0, len(stations))
+	for _, s := range stations {
+		var createdAtStr string
+		if s.CreatedAt.Valid {
+			createdAt, _ := time.Parse("2006-01-02 15:04:05", s.CreatedAt.String)
+			createdAtStr = createdAt.Format(time.RFC3339)
+		}
+
+		response = append(response, StationResponse{
+			ID:                  fmt.Sprintf("ws_%d", s.ID),
+			RobotID:             fmt.Sprintf("robot_%d", s.RobotID),
+			RobotName:           s.RobotName,
+			RobotSerial:         s.RobotSerial,
+			DataCollectorID:     fmt.Sprintf("dc_%d", s.DataCollectorID),
+			CollectorName:       s.CollectorName,
+			CollectorOperatorID: s.CollectorOperatorID,
+			FactoryID:           factorySlugs[s.FactoryID],
+			Status:              s.Status,
+			Name:                s.Name.String,
+			CreatedAt:           createdAtStr,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"stations": response})
 }
