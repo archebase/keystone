@@ -108,8 +108,13 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 	args := []interface{}{}
 
 	if orgID != "" {
+		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+			return
+		}
 		query += " AND organization_id = ?"
-		args = append(args, orgID)
+		args = append(args, parsedOrgID)
 	}
 
 	query += " ORDER BY id DESC"

@@ -25,19 +25,21 @@ import (
 
 // Server represents the HTTP server
 type Server struct {
-	cfg        *config.Config
-	health     *handlers.HealthHandler
-	transfer   *handlers.TransferHandler
-	episode    *handlers.EpisodeHandler
-	task       *handlers.TaskHandler
-	robotType  *handlers.RobotTypeHandler
-	robot      *handlers.RobotHandler
-	factory    *handlers.FactoryHandler
-	httpServer *http.Server
-	wsServer   *http.Server
-	shutdownMu sync.RWMutex
-	isRunning  bool
-	engine     *gin.Engine
+	cfg           *config.Config
+	health        *handlers.HealthHandler
+	transfer      *handlers.TransferHandler
+	episode       *handlers.EpisodeHandler
+	task          *handlers.TaskHandler
+	robotType     *handlers.RobotTypeHandler
+	robot         *handlers.RobotHandler
+	factory       *handlers.FactoryHandler
+	dataCollector *handlers.DataCollectorHandler
+	station       *handlers.StationHandler
+	httpServer    *http.Server
+	wsServer      *http.Server
+	shutdownMu    sync.RWMutex
+	isRunning     bool
+	engine        *gin.Engine
 }
 
 // New creates a new server instance.
@@ -66,6 +68,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	var robotTypeHandler *handlers.RobotTypeHandler
 	var robotHandler *handlers.RobotHandler
 	var factoryHandler *handlers.FactoryHandler
+	var dataCollectorHandler *handlers.DataCollectorHandler
+	var stationHandler *handlers.StationHandler
 	if db != nil {
 		// Create RobotTypeHandler for robot type management
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
@@ -75,18 +79,26 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 
 		// Create FactoryHandler for factory management
 		factoryHandler = handlers.NewFactoryHandler(db)
+
+		// Create DataCollectorHandler for data collector management
+		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
+
+		// Create StationHandler for station management
+		stationHandler = handlers.NewStationHandler(db)
 	}
 
 	s := &Server{
-		cfg:       cfg,
-		health:    healthHandler,
-		transfer:  transferHandler,
-		episode:   episodeHandler,
-		task:      taskHandler,
-		robotType: robotTypeHandler,
-		robot:     robotHandler,
-		factory:   factoryHandler,
-		engine:    engine,
+		cfg:           cfg,
+		health:        healthHandler,
+		transfer:      transferHandler,
+		episode:       episodeHandler,
+		task:          taskHandler,
+		robotType:     robotTypeHandler,
+		robot:         robotHandler,
+		factory:       factoryHandler,
+		dataCollector: dataCollectorHandler,
+		station:       stationHandler,
+		engine:        engine,
 	}
 
 	s.httpServer = &http.Server{
@@ -145,6 +157,12 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.factory != nil {
 		s.factory.RegisterRoutes(v1Tasks)
+	}
+	if s.dataCollector != nil {
+		s.dataCollector.RegisterRoutes(v1Tasks)
+	}
+	if s.station != nil {
+		s.station.RegisterRoutes(v1Tasks)
 	}
 
 	// Axon callbacks
