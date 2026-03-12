@@ -75,11 +75,11 @@ func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // @Failure      500           {object}  map[string]string
 // @Router       /robots [get]
 func (h *RobotHandler) ListRobots(c *gin.Context) {
-	factorySlug := c.Query("factory_id")
+	factoryID := c.Query("factory_id")
 	status := c.Query("status")
-	robotTypeSlug := c.Query("robot_type_id")
+	robotTypeID := c.Query("robot_type_id")
 
-	// Build query with optional joins to factories for slug lookup
+	// Build query with optional filters
 	query := `
 		SELECT 
 			r.id,
@@ -87,17 +87,15 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 			r.device_id,
 			r.factory_id,
 			r.status,
-			r.created_at,
-			COALESCE(f.slug, '') as factory_slug
+			r.created_at
 		FROM robots r
-		LEFT JOIN factories f ON r.factory_id = f.id AND f.deleted_at IS NULL
 		WHERE r.deleted_at IS NULL
 	`
 	args := []interface{}{}
 
-	if factorySlug != "" {
-		query += " AND f.slug = ?"
-		args = append(args, factorySlug)
+	if factoryID != "" {
+		query += " AND r.factory_id = ?"
+		args = append(args, factoryID)
 	}
 
 	if status != "" {
@@ -105,12 +103,9 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		args = append(args, status)
 	}
 
-	if robotTypeSlug != "" {
-		robotTypeID, err := parseRobotTypeID(robotTypeSlug)
-		if err == nil {
-			query += " AND r.robot_type_id = ?"
-			args = append(args, robotTypeID)
-		}
+	if robotTypeID != "" {
+		query += " AND r.robot_type_id = ?"
+		args = append(args, robotTypeID)
 	}
 
 	query += " ORDER BY r.id DESC"
