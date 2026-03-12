@@ -30,6 +30,11 @@ type CreateStationRequest struct {
 	Name            string `json:"name"`
 }
 
+// UpdateStationRequest represents the request body for updating a station.
+type UpdateStationRequest struct {
+	Status string `json:"status"`
+}
+
 // StationResponse represents a station in the response.
 type StationResponse struct {
 	ID                  string `json:"id"`
@@ -49,6 +54,7 @@ type StationResponse struct {
 func (h *StationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/stations", h.CreateStation)
 	apiV1.GET("/stations", h.ListStations)
+	apiV1.PATCH("/stations/:id", h.UpdateStation)
 }
 
 // robotInfoRow represents robot info retrieved from DB
@@ -385,4 +391,139 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"stations": response})
+}
+
+// validStationStatuses contains all valid station status values
+var validStationStatuses = map[string]bool{
+	"active":   true,
+	"inactive": true,
+	"break":    true,
+	"offline":  true,
+}
+
+// UpdateStation handles updating a station's status.
+//
+// @Summary      Update station
+// @Description  Updates a station's status by ID
+// @Tags         stations
+// @Accept       json
+// @Produce      json
+// @Param        id      path      string               true  "Station ID (e.g., ws_001)"
+// @Param        body    body      UpdateStationRequest true  "Status update payload"
+// @Success      200     {object}  StationResponse
+// @Failure      400     {object}  map[string]string
+// @Failure      404     {object}  map[string]string
+// @Failure      500     {object}  map[string]string
+// @Router       /stations/{id} [patch]
+func (h *StationHandler) UpdateStation(c *gin.Context) {
+	stationIDStr := c.Param("id")
+
+	// Parse station ID (format: ws_XXX)
+	if !strings.HasPrefix(stationIDStr, "ws_") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		return
+	}
+
+	idStr := strings.TrimPrefix(stationIDStr, "ws_")
+	var stationID int64
+	_, err := fmt.Sscanf(idStr, "%d", &stationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		return
+	}
+
+	var req UpdateStationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	// Validate status
+	req.Status = strings.TrimSpace(req.Status)
+	if req.Status == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status is required"})
+		return
+	}
+
+	if !validStationStatuses[req.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":  "invalid status value",
+			"valid":  []string{"active", "inactive", "break", "offline"},
+			"actual": req.Status,
+		})
+		return
+	}
+
+	// Check if station exists
+	var existingStatus string
+	err = h.db.Get(&existingStatus, `
+		SELECT status FROM workstations 
+		WHERE id = ? AND deleted_at IS NULL
+	`, stationID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "station not found"})
+		return
+	}
+	if err != nil {
+		log.Printf("[UpdateStation] Failed to query station: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+		return
+	}
+
+	// Update the station status
+	_, err = h.db.Exec(`
+		UPDATE workstations 
+		SET status = ?, updated_at = NOW()
+		WHERE id = ? AND deleted_at IS NULL
+	`, req.Status, stationID)
+	if err != nil {
+		log.Printf("[UpdateStation] Failed to update station: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+		return
+	}
+
+	// Fetch the updated station for response
+	var station stationListRow
+	err = h.db.Get(&station, `
+		SELECT 
+			id, robot_id, robot_name, robot_serial,
+			data_collector_id, collector_name, collector_operator_id,
+			factory_id, name, status, created_at
+		FROM workstations 
+		WHERE id = ? AND deleted_at IS NULL
+	`, stationID)
+	if err != nil {
+		log.Printf("[UpdateStation] Failed to fetch updated station: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+		return
+	}
+
+	// Get factory slug
+	var factory factoryInfoRow
+	var factorySlug string
+	err = h.db.Get(&factory, "SELECT id, slug FROM factories WHERE id = ?", station.FactoryID)
+	if err == nil {
+		factorySlug = factory.Slug
+	}
+
+	// Format response
+	var createdAtStr string
+	if station.CreatedAt.Valid {
+		createdAt, _ := time.Parse("2006-01-02 15:04:05", station.CreatedAt.String)
+		createdAtStr = createdAt.Format(time.RFC3339)
+	}
+
+	c.JSON(http.StatusOK, StationResponse{
+		ID:                  fmt.Sprintf("ws_%d", station.ID),
+		RobotID:             fmt.Sprintf("robot_%d", station.RobotID),
+		RobotName:           station.RobotName,
+		RobotSerial:         station.RobotSerial,
+		DataCollectorID:     fmt.Sprintf("dc_%d", station.DataCollectorID),
+		CollectorName:       station.CollectorName,
+		CollectorOperatorID: station.CollectorOperatorID,
+		FactoryID:           factorySlug,
+		Status:              station.Status,
+		Name:                station.Name.String,
+		CreatedAt:           createdAtStr,
+	})
 }
