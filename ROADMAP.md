@@ -30,21 +30,19 @@ First Release Implementation Order:
   - ✅ handle `/callbacks/start` & `/callbacks/finish`
   - ✅ task lifecycle management
 5. **episodes Query and Filter**
-  - ✅ episodes Query
-  - ✅ eposodes Filter
+  - ✅ episodes Query & Filter
 6. **Workstation Management**
   - ✅ factory CRUD
   - ✅ robot_types CRUD
   - ✅ robots CRUD
   - ✅ data_collectors CRUD
-  - ✅ workstations pairing
-  - workstations lifecycle
-7. **record service**
+  - ✅ workstations pairing and status management
+7. **Task Dispatching**
+  - Batch & Order manage
+  - Task Dispatch
+8. **record service**
   - WebSocket long-lived connection with axon_recorder
-  - refactor device connection state management
-8. **Role-Based Access Control** 
-  - System, Data Collector for now
-  - JWT claim `role` validated on every protected route
+  - refactor device connection state management(monitor both axon_recorder and axon_transfer)
 
 ---
 
@@ -59,7 +57,6 @@ Second Release Implementation Order:
   - Organization and factory CRUD
   - Scene & Subscene CRUD
   - Skill & sop CRUD
-  - Batch & order CRUD
 3. **API rate limiting and webhooks**
 4. **MCAP validator**
   - QA job triggering(dagster agent)(python)
