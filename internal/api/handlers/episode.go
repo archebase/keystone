@@ -2,6 +2,8 @@
 package handlers
 
 import (
+	"database/sql"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -24,28 +26,38 @@ func NewEpisodeHandler(db *sqlx.DB) *EpisodeHandler {
 
 // Episode represents an episode in the database
 type episodeRow struct {
-	ID             string    `db:"episode_id"`
-	TaskID         string    `db:"task_id"`
-	McapPath       string    `db:"mcap_path"`
-	SidecarPath    string    `db:"sidecar_path"`
-	QaStatus       string    `db:"qa_status"`
-	QaScore        float64   `db:"qa_score"`
-	AutoApproved   bool      `db:"auto_approved"`
-	CloudProcessed bool      `db:"cloud_processed"`
-	CreatedAt      time.Time `db:"created_at"`
+	ID                 string          `db:"episode_id"`
+	TaskID             string          `db:"task_id"`
+	McapPath           string          `db:"mcap_path"`
+	SidecarPath        string          `db:"sidecar_path"`
+	Checksum           sql.NullString  `db:"checksum"`
+	QaStatus           string          `db:"qa_status"`
+	QaScore            sql.NullFloat64 `db:"qa_score"`
+	AutoApproved       bool            `db:"auto_approved"`
+	InspectorID        sql.NullString  `db:"inspector_id"`
+	InspectionDecision sql.NullString  `db:"inspection_decision"`
+	InspectedAt        sql.NullTime    `db:"inspected_at"`
+	CloudProcessed     bool            `db:"cloud_processed"`
+	CloudSyncedAt      sql.NullTime    `db:"cloud_synced_at"`
+	CreatedAt          time.Time       `db:"created_at"`
 }
 
 // Episode represents an episode in the API response
 type Episode struct {
-	ID             string  `json:"id"`
-	TaskID         string  `json:"task_id"`
-	McapPath       string  `json:"mcap_path"`
-	SidecarPath    string  `json:"sidecar_path"`
-	QaStatus       string  `json:"qa_status"`
-	QaScore        float64 `json:"qa_score"`
-	AutoApproved   bool    `json:"auto_approved"`
-	CloudProcessed bool    `json:"cloud_processed"`
-	CreatedAt      string  `json:"created_at"`
+	ID                 string   `json:"id"`
+	TaskID             string   `json:"task_id"`
+	McapPath           string   `json:"mcap_path"`
+	SidecarPath        string   `json:"sidecar_path"`
+	Checksum           *string  `json:"checksum"`
+	QaStatus           string   `json:"qa_status"`
+	QaScore            *float64 `json:"qa_score"`
+	AutoApproved       bool     `json:"auto_approved"`
+	InspectorID        *string  `json:"inspector_id"`
+	InspectionDecision *string  `json:"inspection_decision"`
+	InspectedAt        *string  `json:"inspected_at"`
+	CloudProcessed     bool     `json:"cloud_processed"`
+	CloudSyncedAt      *string  `json:"cloud_synced_at"`
+	CreatedAt          string   `json:"created_at"`
 }
 
 // EpisodeListResponse represents the response for listing episodes
@@ -59,6 +71,34 @@ type EpisodeListResponse struct {
 // RegisterRoutes registers episode-related routes
 func (h *EpisodeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("", h.ListEpisodes)
+	apiV1.GET(":id", h.GetEpisode)
+}
+
+func nullableString(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+
+	v := value.String
+	return &v
+}
+
+func nullableFloat64(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+
+	v := value.Float64
+	return &v
+}
+
+func nullableTime(value sql.NullTime) *string {
+	if !value.Valid {
+		return nil
+	}
+
+	v := value.Time.UTC().Format(time.RFC3339)
+	return &v
 }
 
 // ListEpisodes returns a list of episodes with filtering and pagination
@@ -184,15 +224,20 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	episodes := make([]Episode, len(rows))
 	for i, r := range rows {
 		episodes[i] = Episode{
-			ID:             r.ID,
-			TaskID:         r.TaskID,
-			McapPath:       r.McapPath,
-			SidecarPath:    r.SidecarPath,
-			QaStatus:       r.QaStatus,
-			QaScore:        r.QaScore,
-			AutoApproved:   r.AutoApproved,
-			CloudProcessed: r.CloudProcessed,
-			CreatedAt:      r.CreatedAt.UTC().Format(time.RFC3339),
+			ID:                 r.ID,
+			TaskID:             r.TaskID,
+			McapPath:           r.McapPath,
+			SidecarPath:        r.SidecarPath,
+			Checksum:           nullableString(r.Checksum),
+			QaStatus:           r.QaStatus,
+			QaScore:            nullableFloat64(r.QaScore),
+			AutoApproved:       r.AutoApproved,
+			InspectorID:        nullableString(r.InspectorID),
+			InspectionDecision: nullableString(r.InspectionDecision),
+			InspectedAt:        nullableTime(r.InspectedAt),
+			CloudProcessed:     r.CloudProcessed,
+			CloudSyncedAt:      nullableTime(r.CloudSyncedAt),
+			CreatedAt:          r.CreatedAt.UTC().Format(time.RFC3339),
 		}
 	}
 
@@ -202,5 +247,74 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		Total:    total,
 		Limit:    limit,
 		Offset:   offset,
+	})
+}
+
+// GetEpisode returns episode details by episode ID.
+//
+// @Summary      Get episode details
+// @Description  Returns an episode by ID
+// @Tags         episodes
+// @Produce      json
+// @Param        id   path      string  true  "Episode ID"
+// @Success      200  {object}  Episode
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /episodes/{id} [get]
+func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
+	episodeID := c.Param("id")
+
+	var row episodeRow
+	query := `
+		SELECT
+			e.episode_id,
+			COALESCE(t.task_id, '') AS task_id,
+			e.mcap_path,
+			e.sidecar_path,
+			e.checksum,
+			COALESCE(e.qa_status, '') AS qa_status,
+			e.qa_score,
+			e.auto_approved,
+			CASE WHEN i.inspector_id IS NULL THEN NULL ELSE ins.inspector_id END AS inspector_id,
+			CASE WHEN i.decision IS NULL THEN NULL ELSE i.decision END AS inspection_decision,
+			i.inspected_at,
+			e.cloud_processed,
+			e.cloud_synced_at,
+			e.created_at
+		FROM episodes e
+		LEFT JOIN tasks t ON e.task_id = t.id
+		LEFT JOIN inspections i ON i.episode_id = e.id
+		LEFT JOIN inspectors ins ON ins.id = i.inspector_id
+		WHERE e.episode_id = ? AND e.deleted_at IS NULL
+		LIMIT 1
+	`
+
+	err := h.db.Get(&row, query, episodeID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		return
+	}
+
+	if err != nil {
+		log.Printf("[GetEpisode] Failed to query episode: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query episode"})
+		return
+	}
+
+	c.JSON(http.StatusOK, Episode{
+		ID:                 row.ID,
+		TaskID:             row.TaskID,
+		McapPath:           row.McapPath,
+		SidecarPath:        row.SidecarPath,
+		Checksum:           nullableString(row.Checksum),
+		QaStatus:           row.QaStatus,
+		QaScore:            nullableFloat64(row.QaScore),
+		AutoApproved:       row.AutoApproved,
+		InspectorID:        nullableString(row.InspectorID),
+		InspectionDecision: nullableString(row.InspectionDecision),
+		InspectedAt:        nullableTime(row.InspectedAt),
+		CloudProcessed:     row.CloudProcessed,
+		CloudSyncedAt:      nullableTime(row.CloudSyncedAt),
+		CreatedAt:          row.CreatedAt.UTC().Format(time.RFC3339),
 	})
 }
