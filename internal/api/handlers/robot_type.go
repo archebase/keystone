@@ -223,18 +223,12 @@ func parseJSONArray(s string) []string {
 }
 
 func toNullableJSONArray(values []string) sql.NullString {
-	cleaned := make([]string, 0, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed != "" {
-			cleaned = append(cleaned, trimmed)
-		}
-	}
-
-	if len(cleaned) == 0 {
+	if len(values) == 0 {
 		return sql.NullString{}
 	}
-
-	encoded := "[\"" + strings.Join(cleaned, "\",\"") + "\"]"
-	return sql.NullString{String: encoded, Valid: true}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(data), Valid: true}
 }
