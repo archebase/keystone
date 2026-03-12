@@ -30,6 +30,7 @@ type Server struct {
 	transfer   *handlers.TransferHandler
 	episode    *handlers.EpisodeHandler
 	task       *handlers.TaskHandler
+	robotType  *handlers.RobotTypeHandler
 	httpServer *http.Server
 	wsServer   *http.Server
 	shutdownMu sync.RWMutex
@@ -59,13 +60,17 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	// Create TaskHandler for task configuration
 	taskHandler := handlers.NewTaskHandler(db)
 
+	// Create RobotTypeHandler for robot type management
+	robotTypeHandler := handlers.NewRobotTypeHandler(db)
+
 	s := &Server{
-		cfg:      cfg,
-		health:   healthHandler,
-		transfer: transferHandler,
-		episode:  episodeHandler,
-		task:     taskHandler,
-		engine:   engine,
+		cfg:       cfg,
+		health:    healthHandler,
+		transfer:  transferHandler,
+		episode:   episodeHandler,
+		task:      taskHandler,
+		robotType: robotTypeHandler,
+		engine:    engine,
 	}
 
 	s.httpServer = &http.Server{
@@ -116,6 +121,7 @@ func (s *Server) buildRoutes() http.Handler {
 	// Tasks API
 	v1Tasks := v1.Group("")
 	s.task.RegisterRoutes(v1Tasks)
+	s.robotType.RegisterRoutes(v1Tasks)
 
 	// Axon callbacks
 	v1Callbacks := v1.Group("/callbacks")
