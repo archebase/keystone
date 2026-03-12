@@ -3,8 +3,11 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -53,7 +56,143 @@ type CallbackURLs struct {
 // RegisterRoutes registers task-related routes
 func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks", h.CreateTask)
+	apiV1.GET("/tasks", h.ListTasks)
 	apiV1.GET("/tasks/:id/config", h.GetTaskConfig)
+}
+
+var validTaskStatuses = map[string]struct{}{
+	"pending":     {},
+	"ready":       {},
+	"in_progress": {},
+	"completed":   {},
+	"failed":      {},
+	"cancelled":   {},
+}
+
+// TaskListItem represents a task item in list responses.
+type TaskListItem struct {
+	ID            string  `json:"id" db:"id"`
+	BatchID       string  `json:"batch_id" db:"batch_id"`
+	OrderID       string  `json:"order_id" db:"order_id"`
+	SOPID         string  `json:"sop_id" db:"sop_id"`
+	WorkstationID *string `json:"workstation_id" db:"workstation_id"`
+	SceneID       string  `json:"scene_id" db:"scene_id"`
+	SceneName     string  `json:"scene_name" db:"scene_name"`
+	SubsceneID    string  `json:"subscene_id" db:"subscene_id"`
+	SubsceneName  string  `json:"subscene_name" db:"subscene_name"`
+	Status        string  `json:"status" db:"status"`
+	AssignedAt    *string `json:"assigned_at" db:"assigned_at"`
+}
+
+// ListTasksResponse represents the response body for listing tasks.
+type ListTasksResponse struct {
+	Tasks  []TaskListItem `json:"tasks"`
+	Total  int            `json:"total"`
+	Limit  int            `json:"limit"`
+	Offset int            `json:"offset"`
+}
+
+// ListTasks handles task listing requests with optional filtering.
+//
+// @Summary      List tasks
+// @Description  Lists tasks with optional workstation and status filters
+// @Tags         tasks
+// @Produce      json
+// @Param        workstation_id  query     string  false  "Filter by workstation"
+// @Param        status          query     string  false  "Filter by status"
+// @Param        limit           query     int     false  "Max results"      default(50)
+// @Param        offset          query     int     false  "Pagination offset" default(0)
+// @Success      200             {object}  ListTasksResponse
+// @Failure      400             {object}  map[string]string
+// @Failure      500             {object}  map[string]string
+// @Router       /tasks [get]
+func (h *TaskHandler) ListTasks(c *gin.Context) {
+	const defaultLimit = 50
+
+	workstationID := strings.TrimSpace(c.Query("workstation_id"))
+	status := strings.TrimSpace(c.Query("status"))
+
+	limit := defaultLimit
+	if rawLimit := strings.TrimSpace(c.Query("limit")); rawLimit != "" {
+		parsedLimit, err := strconv.Atoi(rawLimit)
+		if err != nil || parsedLimit <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
+			return
+		}
+		limit = parsedLimit
+	}
+
+	offset := 0
+	if rawOffset := strings.TrimSpace(c.Query("offset")); rawOffset != "" {
+		parsedOffset, err := strconv.Atoi(rawOffset)
+		if err != nil || parsedOffset < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "offset must be a non-negative integer"})
+			return
+		}
+		offset = parsedOffset
+	}
+
+	if status != "" {
+		if _, ok := validTaskStatuses[status]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
+	}
+
+	conditions := []string{"deleted_at IS NULL"}
+	args := make([]interface{}, 0, 4)
+
+	if workstationID != "" {
+		conditions = append(conditions, "CAST(workstation_id AS CHAR) = ?")
+		args = append(args, workstationID)
+	}
+
+	if status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, status)
+	}
+
+	whereClause := strings.Join(conditions, " AND ")
+
+	var total int
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM tasks WHERE %s", whereClause)
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
+		log.Printf("[ListTasks] Failed to count tasks: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
+		return
+	}
+
+	queryArgs := append(append([]interface{}{}, args...), limit, offset)
+	listQuery := fmt.Sprintf(`SELECT
+		task_id AS id,
+		CAST(batch_id AS CHAR) AS batch_id,
+		CAST(order_id AS CHAR) AS order_id,
+		CAST(sop_id AS CHAR) AS sop_id,
+		CASE WHEN workstation_id IS NULL THEN NULL ELSE CAST(workstation_id AS CHAR) END AS workstation_id,
+		CAST(scene_id AS CHAR) AS scene_id,
+		COALESCE(scene_name, '') AS scene_name,
+		CAST(subscene_id AS CHAR) AS subscene_id,
+		COALESCE(subscene_name, '') AS subscene_name,
+		status,
+		CASE WHEN assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at
+		FROM tasks
+		WHERE %s
+		ORDER BY created_at DESC, id DESC
+		LIMIT ? OFFSET ?`, whereClause)
+
+	items := make([]TaskListItem, 0)
+	if err := h.db.Select(&items, listQuery, queryArgs...); err != nil {
+		log.Printf("[ListTasks] Failed to query tasks: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
+		return
+	}
+
+	c.JSON(http.StatusOK, ListTasksResponse{
+		Tasks:  items,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
 }
 
 // CreateTaskResponse represents the response body for creating a task.
