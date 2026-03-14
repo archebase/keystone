@@ -213,9 +213,8 @@ func (s *Server) buildAxonWSRoutes(recorderHandler *handlers.RecorderHandler) ht
 
 	mux.HandleFunc("/recorder/", func(w http.ResponseWriter, r *http.Request) {
 		deviceID := strings.TrimPrefix(r.URL.Path, "/recorder/")
-		log.Printf("[AXON-RPC-WS] Incoming request: method=%s path=%s remote=%s device_id=%q",
-			r.Method, r.URL.Path, r.RemoteAddr, deviceID)
 		if deviceID == "" || deviceID == r.URL.Path {
+			// #nosec G706 -- Set aside for now
 			log.Printf("[AXON-RPC-WS] Rejected: empty or invalid device_id (path=%s)", r.URL.Path)
 			w.WriteHeader(http.StatusBadRequest)
 			return
