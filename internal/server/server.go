@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ type Server struct {
 	cfg           *config.Config
 	health        *handlers.HealthHandler
 	transfer      *handlers.TransferHandler
+	axonRPC       *handlers.RecorderHandler
 	episode       *handlers.EpisodeHandler
 	task          *handlers.TaskHandler
 	robotType     *handlers.RobotTypeHandler
@@ -37,6 +39,7 @@ type Server struct {
 	station       *handlers.StationHandler
 	httpServer    *http.Server
 	wsServer      *http.Server
+	axonWSServer  *http.Server
 	shutdownMu    sync.RWMutex
 	isRunning     bool
 	engine        *gin.Engine
@@ -55,8 +58,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	healthHandler := handlers.NewHealthHandler(nil, nil)
 
 	// Create TransferHub and TransferHandler for Fleet Manager
-	hub := services.NewTransferHub(cfg.Fleet.MaxEvents)
-	transferHandler := handlers.NewTransferHandler(hub, &cfg.Fleet, db, s3Client, cfg.Storage.Bucket, cfg.Fleet.FactoryID)
+	transferHub := services.NewTransferHub(cfg.Fleet.MaxEvents)
+	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.Fleet, db, s3Client, cfg.Storage.Bucket, cfg.Fleet.FactoryID)
+
+	// Create recorderHub and RecorderHandler for Axon Recorder RPC
+	recorderHub := services.NewRecorderHub()
+	recorderHandler := handlers.NewRecorderHandler(recorderHub, &cfg.AxonRPC, db)
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db)
@@ -65,25 +72,18 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	taskHandler := handlers.NewTaskHandler(db)
 
 	// Create database-dependent handlers only when DB is available
-	var robotTypeHandler *handlers.RobotTypeHandler
-	var robotHandler *handlers.RobotHandler
-	var factoryHandler *handlers.FactoryHandler
-	var dataCollectorHandler *handlers.DataCollectorHandler
-	var stationHandler *handlers.StationHandler
+	var (
+		robotTypeHandler     *handlers.RobotTypeHandler
+		robotHandler         *handlers.RobotHandler
+		factoryHandler       *handlers.FactoryHandler
+		dataCollectorHandler *handlers.DataCollectorHandler
+		stationHandler       *handlers.StationHandler
+	)
 	if db != nil {
-		// Create RobotTypeHandler for robot type management
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
-
-		// Create RobotHandler for robot management
 		robotHandler = handlers.NewRobotHandler(db)
-
-		// Create FactoryHandler for factory management
 		factoryHandler = handlers.NewFactoryHandler(db)
-
-		// Create DataCollectorHandler for data collector management
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
-
-		// Create StationHandler for station management
 		stationHandler = handlers.NewStationHandler(db)
 	}
 
@@ -91,6 +91,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		cfg:           cfg,
 		health:        healthHandler,
 		transfer:      transferHandler,
+		axonRPC:       recorderHandler,
 		episode:       episodeHandler,
 		task:          taskHandler,
 		robotType:     robotTypeHandler,
@@ -115,6 +116,13 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		ReadTimeout:  0, // Controlled by application-level readTimeout
 		WriteTimeout: 0, // Must be 0 for WebSocket long-lived connections
 		Handler:      s.buildWSRoutes(transferHandler),
+	}
+
+	s.axonWSServer = &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.AxonRPC.WSPort),
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+		Handler:      s.buildAxonWSRoutes(recorderHandler),
 	}
 
 	return s
@@ -172,6 +180,9 @@ func (s *Server) buildRoutes() http.Handler {
 	// Task callbacks
 	s.task.RegisterCallbackRoutes(v1Callbacks)
 
+	v1Recorder := v1.Group("/recorder")
+	s.axonRPC.RegisterRoutes(v1Recorder)
+
 	// Swagger documentation - serve at both root and api/v1 path
 	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	s.engine.GET("/api/v1/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -191,6 +202,24 @@ func (s *Server) buildWSRoutes(transferHandler *handlers.TransferHandler) http.H
 			return
 		}
 		transferHandler.HandleWebSocket(w, r, deviceID)
+	})
+
+	return mux
+}
+
+// buildAxonWSRoutes constructs the WebSocket router for Axon Recorder RPC.
+func (s *Server) buildAxonWSRoutes(recorderHandler *handlers.RecorderHandler) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/recorder/", func(w http.ResponseWriter, r *http.Request) {
+		deviceID := strings.TrimPrefix(r.URL.Path, "/recorder/")
+		if deviceID == "" || deviceID == r.URL.Path {
+			// #nosec G706 -- Set aside for now
+			log.Printf("[AXON-RPC-WS] Rejected: empty or invalid device_id (path=%s)", r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		recorderHandler.HandleWebSocket(w, r, deviceID)
 	})
 
 	return mux
@@ -221,6 +250,21 @@ func (s *Server) Start() error {
 		}
 	}()
 
+	if s.axonWSServer != nil {
+		axonWSAddr := fmt.Sprintf(":%d", s.cfg.AxonRPC.WSPort)
+		ln, err := net.Listen("tcp", axonWSAddr)
+		if err != nil {
+			log.Printf("[SERVER] Axon RPC WebSocket server listen failed: %v", err)
+		} else {
+			log.Printf("[SERVER] Axon RPC WebSocket server listening on %s (path: /recorder/<device_id>)", ln.Addr())
+			go func() {
+				if err := s.axonWSServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+					log.Printf("[SERVER] Axon RPC WebSocket server error: %v", err)
+				}
+			}()
+		}
+	}
+
 	return nil
 }
 
@@ -245,6 +289,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if err := s.wsServer.Shutdown(ctx); err != nil {
 		log.Printf("[SERVER] WebSocket server shutdown error: %v", err)
+	}
+	if s.axonWSServer != nil {
+		if err := s.axonWSServer.Shutdown(ctx); err != nil {
+			log.Printf("[SERVER] Axon RPC WebSocket server shutdown error: %v", err)
+		}
 	}
 
 	return nil

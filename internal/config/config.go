@@ -18,6 +18,7 @@ type Config struct {
 	Monitoring MonitoringConfig
 	Resources  ResourceLimitsConfig
 	Fleet      FleetManagerConfig
+	AxonRPC    AxonRPCConfig
 }
 
 // ServerConfig server configuration
@@ -101,6 +102,13 @@ type FleetManagerConfig struct {
 	FactoryID   string
 }
 
+// AxonRPCConfig Axon Recorder RPC gateway configuration
+type AxonRPCConfig struct {
+	WSPort          int
+	PingInterval    int // seconds
+	ResponseTimeout int // seconds
+}
+
 // Load loads configuration from environment variables and defaults
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -171,6 +179,11 @@ func Load() (*Config, error) {
 			MaxEvents:   getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 500),
 			ReadTimeout: getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 60),
 			FactoryID:   getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
+		},
+		AxonRPC: AxonRPCConfig{
+			WSPort:          getEnvInt("KEYSTONE_AXON_RPC_WS_PORT", 8091),
+			PingInterval:    getEnvInt("KEYSTONE_AXON_RPC_PING_INTERVAL", 30),
+			ResponseTimeout: getEnvInt("KEYSTONE_AXON_RPC_RESPONSE_TIMEOUT", 15),
 		},
 	}
 

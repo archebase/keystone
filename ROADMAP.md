@@ -37,11 +37,8 @@ First Release Implementation Order:
   - ✅ robots CRUD
   - ✅ data_collectors CRUD
   - ✅ workstations pairing and status management
-7. **Task Dispatching**
-  - Batch & Order manage
-  - Task Dispatch
-8. **record service**
-  - WebSocket long-lived connection with axon_recorder
+7. **record service**
+  - ✅ WebSocket long-lived connection with axon_recorder
   - refactor device connection state management(monitor both axon_recorder and axon_transfer)
 
 ---
@@ -57,6 +54,7 @@ Second Release Implementation Order:
   - Organization and factory CRUD
   - Scene & Subscene CRUD
   - Skill & sop CRUD
+  - Order & batch & task dispatch
 3. **API rate limiting and webhooks**
 4. **MCAP validator**
   - QA job triggering(dagster agent)(python)

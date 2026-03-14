@@ -36,7 +36,8 @@ type TaskConfig struct {
 	Skills             []string        `json:"skills"`
 	SOPID              string          `json:"sop_id"`
 	Topics             []string        `json:"topics"`
-	CallbackURLs       CallbackURLs    `json:"callback_urls"`
+	StartCallbackURL   string          `json:"start_callback_url"`
+	FinishCallbackURL  string          `json:"finish_callback_url"`
 	UserToken          string          `json:"user_token"`
 	RecordingConfig    RecordingConfig `json:"recording_config"`
 }
@@ -45,12 +46,6 @@ type TaskConfig struct {
 type RecordingConfig struct {
 	MaxDurationSec int    `json:"max_duration_sec"`
 	Compression    string `json:"compression"`
-}
-
-// CallbackURLs represents callback URLs for task events
-type CallbackURLs struct {
-	Start  string `json:"start"`
-	Finish string `json:"finish"`
 }
 
 // RegisterRoutes registers task-related routes
@@ -493,7 +488,7 @@ type RecordingStartCallback struct {
 
 // OnRecordingStart handles callback from axon recorder when recording starts.
 // @Summary      Recording start callback
-// @Description  Handles callback from axon recorder when recording starts, updates task status to in_progress if current status is ready
+// @Description  Handles callback from axon recorder when recording starts and acknowledges the callback when task status is ready
 // @Tags         callbacks
 // @Accept       json
 // @Produce      json
@@ -525,80 +520,13 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 		return
 	}
 
-	// Query the database to check current task status
-	var row struct {
-		Status string `db:"status"`
-	}
-	err := h.db.Get(&row,
-		"SELECT status FROM tasks WHERE task_id = ? AND deleted_at IS NULL",
-		callback.TaskID,
-	)
-
-	if err == sql.ErrNoRows {
-		log.Printf("[OnRecordingStart] Task not found: task_id=%s", callback.TaskID)
-		c.JSON(http.StatusNotFound, gin.H{
-			"error_msg": "Task not found",
-		})
-		return
-	}
-
-	if err != nil {
-		log.Printf("[OnRecordingStart] Failed to query task status: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error_msg": "Failed to query task status",
-		})
-		return
-	}
-
-	// Check if task status is 'ready'
-	if row.Status != "ready" {
-		log.Printf("[OnRecordingStart] Task not in 'ready' state: task_id=%s, status=%s",
-			callback.TaskID, row.Status)
-		c.JSON(http.StatusConflict, gin.H{
-			"error_msg": "Task is not in 'ready' state, current status: " + row.Status,
-		})
-		return
-	}
-
-	// Update task status to 'in_progress'
 	now := time.Now()
-	result, err := h.db.Exec(
-		"UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE task_id = ? AND status = 'ready' AND deleted_at IS NULL",
-		now, callback.TaskID,
-	)
-
-	if err != nil {
-		log.Printf("[OnRecordingStart] Failed to update task status: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error_msg": "Failed to update task status",
-		})
-		return
-	}
-
-	// Check if any row was updated
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		log.Printf("[OnRecordingStart] Failed to get rows affected: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error_msg": "Failed to verify update",
-		})
-		return
-	}
-
-	if rowsAffected == 0 {
-		log.Printf("[OnRecordingStart] No rows updated (concurrent modification): task_id=%s", callback.TaskID)
-		c.JSON(http.StatusConflict, gin.H{
-			"error_msg": "Task status changed concurrently",
-		})
-		return
-	}
-
-	log.Printf("[OnRecordingStart] Successfully updated task status to 'in_progress': task_id=%s", callback.TaskID)
+	log.Printf("[OnRecordingStart] Acknowledged recording start callback without changing task status: task_id=%s", callback.TaskID)
 
 	nowStr := now.Format(time.RFC3339)
 	c.JSON(http.StatusOK, gin.H{
 		"status":          "acknowledged",
-		"task_status":     "in_progress",
+		"task_status":     "unknown",
 		"acknowledged_at": nowStr,
 	})
 }
@@ -618,69 +546,6 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	taskID := c.Param("id")
 
-	// Query the database to check task status
-	var statusRow struct {
-		Status string `db:"status"`
-	}
-	err := h.db.Get(&statusRow,
-		"SELECT status FROM tasks WHERE task_id = ? AND deleted_at IS NULL",
-		taskID,
-	)
-
-	if err == sql.ErrNoRows {
-		// Task not found
-		c.JSON(http.StatusNotFound, gin.H{
-			"error_msg": "task not found",
-		})
-		return
-	}
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error_msg": "failed to query task",
-		})
-		return
-	}
-
-	// Allow repeated reads in the 'ready' state so clients can safely retry.
-	if statusRow.Status != "pending" && statusRow.Status != "ready" {
-		c.JSON(http.StatusConflict, gin.H{
-			"error_msg": "task not in 'pending' or 'ready' state",
-		})
-		return
-	}
-
-	// Transition from pending to ready only once. Requests for tasks already in the
-	// ready state should keep returning the same config so GET remains retry-safe.
-	if statusRow.Status == "pending" {
-		now := time.Now()
-		result, err := h.db.Exec(
-			"UPDATE tasks SET status = 'ready', ready_at = ?, updated_at = ? WHERE task_id = ? AND status = 'pending' AND deleted_at IS NULL",
-			now, now, taskID,
-		)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error_msg": "failed to update task",
-			})
-			return
-		}
-
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error_msg": "failed to verify update",
-			})
-			return
-		}
-
-		if rowsAffected == 0 {
-			c.JSON(http.StatusConflict, gin.H{
-				"error_msg": "task status changed concurrently",
-			})
-			return
-		}
-	}
-
 	// Return mocked data
 	// #nosec G101 - This is a mock response for testing purposes.
 	taskConfig := TaskConfig{
@@ -692,11 +557,9 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		Skills:             []string{"pick", "place", "navigate"},
 		SOPID:              "sop_dish_cleaning_v2",
 		Topics:             []string{"/camera/color/image_raw", "/camera/depth/image_rect_raw", "/joint_states", "/gripper/state", "/odom"},
-		CallbackURLs: CallbackURLs{
-			Start:  "https://keystone.factory.internal/api/v1/callbacks/start",
-			Finish: "https://keystone.factory.internal/api/v1/callbacks/finish",
-		},
-		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzAwMSIsInNjb3BlIjpbImRldmljZSJdLCJleHAiOjE3MzY4MTIwMDB9.mock_signature",
+		StartCallbackURL:   "http://keystone.factory.internal/api/v1/callbacks/start",
+		FinishCallbackURL:  "http://keystone.factory.internal/api/v1/callbacks/finish",
+		UserToken:          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzAwMSIsInNjb3BlIjpbImRldmljZSJdLCJleHAiOjE3MzY4MTIwMDB9.mock_signature",
 		RecordingConfig: RecordingConfig{
 			MaxDurationSec: 600,
 			Compression:    "zstd",
