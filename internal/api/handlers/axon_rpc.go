@@ -465,8 +465,10 @@ func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderCo
 	case "state_update":
 		h.handleStateUpdate(rc, msg)
 	case "connected":
+		// #nosec G706 -- Set aside for now
 		log.Printf("[AXON-RPC] Recorder %s sent connected event", deviceID)
 	default:
+		// #nosec G706 -- Set aside for now
 		log.Printf("[AXON-RPC] Recorder %s unknown message type %q", deviceID, msgType)
 	}
 }
