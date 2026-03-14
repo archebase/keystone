@@ -144,13 +144,16 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		); err != nil {
 			log.Printf("[AXON-RPC] Device %s: DB query error: %v", deviceID, err)
-		} else if count == 0 {
+		}
+		// Check count regardless of DB error (count defaults to 0 on error)
+		if count == 0 {
 			log.Printf("[AXON-RPC] Device %s: robot not found in database", deviceID)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 	}
 
+	// Allow any origin in dev; tighten in production
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
 		log.Printf("[AXON-RPC] Device %s: WebSocket accept error: %v", deviceID, err)

@@ -89,7 +89,9 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		); err != nil {
 			log.Printf("[TRANSFER] Device %s: DB query error: %v", deviceID, err)
-		} else if count == 0 {
+		}
+		// Check count regardless of DB error (count defaults to 0 on error)
+		if count == 0 {
 			log.Printf("[TRANSFER] Device %s: robot not found in database", deviceID)
 			w.WriteHeader(http.StatusNotFound)
 			return
