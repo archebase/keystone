@@ -85,13 +85,11 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 		var count int
 		// #nosec G701 -- Set aside for now
-		err := h.db.QueryRowContext(queryCtx,
+		if err := h.db.GetContext(queryCtx, &count,
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
-		).Scan(&count)
-		if err != nil {
+		); err != nil {
 			log.Printf("[TRANSFER] Device %s: DB query error: %v", deviceID, err)
-		}
-		if count == 0 {
+		} else if count == 0 {
 			log.Printf("[TRANSFER] Device %s: robot not found in database", deviceID)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -427,34 +425,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 	// #nosec G706 -- Set aside for now
 	log.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
 
-	// Step 4:
-	// Update task status to 'completed' only if it is currently 'in_progress'.
-	// Rely on rowsAffected to avoid a SELECT-then-UPDATE race window.
-	if h.db != nil {
-		now := time.Now()
-		result, err := h.db.Exec(
-			"UPDATE tasks SET status = 'completed', updated_at = ? WHERE task_id = ? AND status = 'in_progress' AND deleted_at IS NULL",
-			now, taskID,
-		)
-
-		if err != nil {
-			log.Printf("[TRANSFER] Failed to update task status to completed: task_id=%s, error=%v", taskID, err)
-			return
-		}
-
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			log.Printf("[TRANSFER] Failed to get rows affected: task_id=%s, error=%v", taskID, err)
-			return
-		}
-
-		if rowsAffected == 0 {
-			log.Printf("[TRANSFER] No rows updated - task not in 'in_progress' state or modified concurrently: task_id=%s", taskID)
-			return
-		}
-
-		log.Printf("[TRANSFER] Successfully updated task status to 'completed': task_id=%s", taskID)
-	}
+	log.Printf("[TRANSFER] Upload completion acknowledged without changing task status: task_id=%s", taskID)
 }
 
 // onUploadFailed handles "upload_failed" message
