@@ -547,7 +547,7 @@ func recorderStateToTaskStatus(state string) (string, bool) {
 		return "ready", true
 	case "recording", "paused":
 		return "in_progress", true
-	case "idle":
+	case "finished", "idle":
 		return "completed", true
 	default:
 		return "", false
