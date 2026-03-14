@@ -143,16 +143,20 @@ func (h *RecorderHub) Disconnect(deviceID string) {
 	log.Printf("[AXON-RPC] RecorderHub: device %s disconnected", deviceID)
 
 	rc.PendingMu.Lock()
-	defer rc.PendingMu.Unlock()
 	for requestID, pending := range rc.Pending {
 		delete(rc.Pending, requestID)
-		pending.ResponseC <- &RPCResponse{
+		// Use non-blocking send to avoid panic if channel is already closed
+		select {
+		case pending.ResponseC <- &RPCResponse{
 			RequestID: requestID,
 			Success:   false,
 			Message:   ErrRecorderNotConnected.Error(),
+		}:
+		default:
+			// Channel already received or closed, skip
 		}
-		close(pending.ResponseC)
 	}
+	rc.PendingMu.Unlock()
 }
 
 // Get returns the recorder connection for a device, or nil if not connected.
