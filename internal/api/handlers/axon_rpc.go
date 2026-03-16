@@ -29,17 +29,6 @@ func NewRecorderHandler(hub *services.RecorderHub, cfg *config.AxonRPCConfig, db
 	return &RecorderHandler{hub: hub, cfg: cfg, db: db}
 }
 
-// AxonRPCRequest represents a REST-triggered RPC request.
-// @Description Request body for generic RPC calls
-type AxonRPCRequest struct {
-	// RPC action to execute (e.g., config, begin, pause, resume, finish, cancel, clear, quit, get_state, get_stats)
-	// @example config
-	Action string `json:"action"`
-	// Optional parameters for the action
-	// @example {"task_config": {"task_id": "task-001"}}
-	Params map[string]interface{} `json:"params,omitempty"`
-}
-
 // ConfigRequest represents the request body for config RPC.
 // @Description Request body for recorder config
 type ConfigRequest struct {
@@ -114,7 +103,6 @@ func (h *RecorderHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/devices", h.ListDevices)
 	apiV1.GET("/:device_id/state", h.GetState)
 	apiV1.GET("/:device_id/stats", h.GetStats)
-	apiV1.POST("/:device_id/rpc", h.CallRPC)
 	apiV1.POST("/:device_id/config", h.Config)
 	apiV1.POST("/:device_id/begin", h.Begin)
 	apiV1.POST("/:device_id/finish", h.Finish)
@@ -193,34 +181,6 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 		h.handleMessage(deviceID, rc, msg)
 	}
-}
-
-// CallRPC sends a generic RPC request to the recorder.
-// CallRPC handles POST /api/v1/recorder/:device_id/rpc.
-//
-// @Summary      Call recorder RPC
-// @Description  Sends a generic RPC (action + optional params) to the Axon recorder for the given device
-// @Tags         recorder
-// @Accept       json
-// @Produce      json
-// @Param        device_id  path      string           true  "Recorder device ID"
-// @Param        body       body      AxonRPCRequest   true  "RPC request with action and params"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      400  {object}  map[string]interface{}
-// @Failure      404  {object}  map[string]interface{}
-// @Failure      504  {object}  map[string]interface{}
-// @Router       /recorder/{device_id}/rpc [post]
-func (h *RecorderHandler) CallRPC(c *gin.Context) {
-	var req AxonRPCRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-	if req.Action == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "action is required"})
-		return
-	}
-	h.callRPC(c, req.Action, req.Params)
 }
 
 // Config sends config RPC to the recorder.
