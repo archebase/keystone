@@ -241,12 +241,11 @@ func (s *Server) Start() error {
 	}()
 
 	// Start WebSocket server on separate port
-	wsAddr := fmt.Sprintf(":%d", s.cfg.Fleet.WSPort)
-	log.Printf("[SERVER] Starting WebSocket server on %s", wsAddr)
+	log.Printf("[SERVER] Transfer WebSocket server listening on %d", s.cfg.Fleet.WSPort)
 
 	go func() {
 		if err := s.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[SERVER] WebSocket server error: %v", err)
+			log.Printf("[SERVER] Transfer WebSocket server error: %v", err)
 		}
 	}()
 
@@ -256,7 +255,7 @@ func (s *Server) Start() error {
 		if err != nil {
 			log.Printf("[SERVER] Axon RPC WebSocket server listen failed: %v", err)
 		} else {
-			log.Printf("[SERVER] Axon RPC WebSocket server listening on %s (path: /recorder/<device_id>)", ln.Addr())
+			log.Printf("[SERVER] Recorder WebSocket server listening on %d", s.cfg.AxonRPC.WSPort)
 			go func() {
 				if err := s.axonWSServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 					log.Printf("[SERVER] Axon RPC WebSocket server error: %v", err)

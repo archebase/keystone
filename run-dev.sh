@@ -8,8 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "[INFO] Starting Keystone Edge in development mode..."
-echo "[INFO] API: http://localhost:8080"
-echo "[INFO] Swagger: http://localhost:8080/swagger/index.html"
 echo ""
 
 # Load .env and export variables
