@@ -2,6 +2,7 @@
 package services
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -160,14 +161,26 @@ func (h *TransferHub) NewDeviceConn(conn *websocket.Conn, deviceID, remoteIP str
 func (h *TransferHub) Connect(deviceID string, dc *DeviceConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if old, exists := h.connections[deviceID]; exists && old != nil && old.Conn != nil && old != dc {
+		log.Printf("[TRANSFER] TransferHub: closing previous connection for device %s (replaced by new)", deviceID)
+		_ = old.Conn.Close(websocket.StatusPolicyViolation, "replaced by newer connection")
+	}
 	h.connections[deviceID] = dc
+	log.Printf("[TRANSFER] TransferHub: device %s registered, total connections=%d", deviceID, len(h.connections))
 }
 
 // Disconnect removes a device connection
 func (h *TransferHub) Disconnect(deviceID string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	dc := h.connections[deviceID]
 	delete(h.connections, deviceID)
+	h.mu.Unlock()
+
+	if dc == nil {
+		log.Printf("[TRANSFER] TransferHub: Disconnect called for unknown device %s", deviceID)
+		return
+	}
+	log.Printf("[TRANSFER] TransferHub: device %s disconnected", deviceID)
 }
 
 // Get returns the DeviceConn for a device, or nil if not connected

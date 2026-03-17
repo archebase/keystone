@@ -75,7 +75,6 @@ func (h *TransferHandler) RegisterCallbackRoutes(apiV1 *gin.RouterGroup) {
 
 // HandleWebSocket handles WebSocket connections using raw http.ResponseWriter
 func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request, deviceID string) {
-	log.Printf("[TRANSFER] WebSocket connection attempt for device: %s", deviceID)
 
 	// Validate device exists in robots table (if DB is configured)
 	if h.db != nil {
@@ -138,7 +137,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	defer h.hub.Disconnect(deviceID)
 
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s connected from %s", deviceID, remoteIP)
+	log.Printf("[TRANSFER] Transfer %s connected from %s", deviceID, remoteIP)
 
 	// Read loop: use ctx directly for infinite wait.
 	// context.WithTimeout(ctx, 0) would set deadline=now and cause immediate timeout,
@@ -205,7 +204,7 @@ func (h *TransferHandler) onConnected(dc *services.DeviceConn, msg map[string]in
 	}
 	dc.UpdateStatus(s)
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s connected: version=%s pending=%d uploading=%d failed=%d",
+	log.Printf("[TRANSFER] Transfer %s connected: version=%s pending=%d uploading=%d failed=%d",
 		dc.DeviceID, s.Version, s.PendingCount, s.UploadingCount, s.FailedCount)
 }
 

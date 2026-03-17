@@ -122,11 +122,11 @@ func (h *RecorderHub) Connect(deviceID string, rc *RecorderConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if old, exists := h.connections[deviceID]; exists && old != nil && old.Conn != nil && old != rc {
-		log.Printf("[AXON-RPC] RecorderHub: closing previous connection for device %s (replaced by new)", deviceID)
+		log.Printf("[RECORDER] RecorderHub: closing previous connection for device %s (replaced by new)", deviceID)
 		_ = old.Conn.Close(websocket.StatusPolicyViolation, "replaced by newer connection")
 	}
 	h.connections[deviceID] = rc
-	log.Printf("[AXON-RPC] RecorderHub: device %s registered, total connections=%d", deviceID, len(h.connections))
+	log.Printf("[RECORDER] RecorderHub: device %s registered, total connections=%d", deviceID, len(h.connections))
 }
 
 // Disconnect removes a recorder connection and closes pending waiters.
@@ -137,10 +137,10 @@ func (h *RecorderHub) Disconnect(deviceID string) {
 	h.mu.Unlock()
 
 	if rc == nil {
-		log.Printf("[AXON-RPC] RecorderHub: Disconnect called for unknown device %s", deviceID)
+		log.Printf("[RECORDER] RecorderHub: Disconnect called for unknown device %s", deviceID)
 		return
 	}
-	log.Printf("[AXON-RPC] RecorderHub: device %s disconnected", deviceID)
+	log.Printf("[RECORDER] RecorderHub: device %s disconnected", deviceID)
 
 	rc.PendingMu.Lock()
 	for requestID, pending := range rc.Pending {
