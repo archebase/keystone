@@ -98,7 +98,7 @@ type FinishRequest struct {
 	TaskID string `json:"task_id"`
 }
 
-// RegisterRoutes registers REST routes for Axon RPC.
+// RegisterRoutes registers REST routes for Axon Recorder RPC.
 func (h *RecorderHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/devices", h.ListDevices)
 	apiV1.GET("/:device_id/state", h.GetState)

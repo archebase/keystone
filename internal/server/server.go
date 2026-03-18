@@ -26,23 +26,23 @@ import (
 
 // Server represents the HTTP server
 type Server struct {
-	cfg           *config.Config
-	health        *handlers.HealthHandler
-	transfer      *handlers.TransferHandler
-	recorder      *handlers.RecorderHandler
-	episode       *handlers.EpisodeHandler
-	task          *handlers.TaskHandler
-	robotType     *handlers.RobotTypeHandler
-	robot         *handlers.RobotHandler
-	factory       *handlers.FactoryHandler
-	dataCollector *handlers.DataCollectorHandler
-	station       *handlers.StationHandler
-	httpServer    *http.Server
-	wsServer      *http.Server
-	axonWSServer  *http.Server
-	shutdownMu    sync.RWMutex
-	isRunning     bool
-	engine        *gin.Engine
+	cfg              *config.Config
+	health           *handlers.HealthHandler
+	transfer         *handlers.TransferHandler
+	recorder         *handlers.RecorderHandler
+	episode          *handlers.EpisodeHandler
+	task             *handlers.TaskHandler
+	robotType        *handlers.RobotTypeHandler
+	robot            *handlers.RobotHandler
+	factory          *handlers.FactoryHandler
+	dataCollector    *handlers.DataCollectorHandler
+	station          *handlers.StationHandler
+	httpServer       *http.Server
+	transferWSServer *http.Server
+	recorderWSServer *http.Server
+	shutdownMu       sync.RWMutex
+	isRunning        bool
+	engine           *gin.Engine
 }
 
 // New creates a new server instance.
@@ -111,14 +111,14 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 
 	// Create separate WebSocket server on WSPort
 	wsAddr := fmt.Sprintf(":%d", cfg.Fleet.WSPort)
-	s.wsServer = &http.Server{
+	s.transferWSServer = &http.Server{
 		Addr:         wsAddr,
 		ReadTimeout:  0, // Controlled by application-level readTimeout
 		WriteTimeout: 0, // Must be 0 for WebSocket long-lived connections
 		Handler:      s.buildWSRoutes(transferHandler),
 	}
 
-	s.axonWSServer = &http.Server{
+	s.recorderWSServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.AxonRecorder.WSPort),
 		ReadTimeout:  0,
 		WriteTimeout: 0,
@@ -244,12 +244,12 @@ func (s *Server) Start() error {
 	log.Printf("[SERVER] Transfer WebSocket server listening on %d", s.cfg.Fleet.WSPort)
 
 	go func() {
-		if err := s.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.transferWSServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("[SERVER] Transfer WebSocket server error: %v", err)
 		}
 	}()
 
-	if s.axonWSServer != nil {
+	if s.recorderWSServer != nil {
 		axonWSAddr := fmt.Sprintf(":%d", s.cfg.AxonRecorder.WSPort)
 		ln, err := net.Listen("tcp", axonWSAddr)
 		if err != nil {
@@ -257,7 +257,7 @@ func (s *Server) Start() error {
 		} else {
 			log.Printf("[SERVER] Recorder WebSocket server listening on %d", s.cfg.AxonRecorder.WSPort)
 			go func() {
-				if err := s.axonWSServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+				if err := s.recorderWSServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 					log.Printf("[SERVER] Axon RPC WebSocket server error: %v", err)
 				}
 			}()
@@ -286,12 +286,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		log.Printf("[SERVER] HTTP server shutdown error: %v", err)
 	}
-	if err := s.wsServer.Shutdown(ctx); err != nil {
-		log.Printf("[SERVER] WebSocket server shutdown error: %v", err)
+	if err := s.transferWSServer.Shutdown(ctx); err != nil {
+		log.Printf("[SERVER] Transfer WebSocket server shutdown error: %v", err)
 	}
-	if s.axonWSServer != nil {
-		if err := s.axonWSServer.Shutdown(ctx); err != nil {
-			log.Printf("[SERVER] Axon RPC WebSocket server shutdown error: %v", err)
+	if s.recorderWSServer != nil {
+		if err := s.recorderWSServer.Shutdown(ctx); err != nil {
+			log.Printf("[SERVER] Recorder WebSocket server shutdown error: %v", err)
 		}
 	}
 
