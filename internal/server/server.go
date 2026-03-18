@@ -29,7 +29,7 @@ type Server struct {
 	cfg           *config.Config
 	health        *handlers.HealthHandler
 	transfer      *handlers.TransferHandler
-	axonRPC       *handlers.RecorderHandler
+	recorder      *handlers.RecorderHandler
 	episode       *handlers.EpisodeHandler
 	task          *handlers.TaskHandler
 	robotType     *handlers.RobotTypeHandler
@@ -63,7 +63,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 
 	// Create recorderHub and RecorderHandler for Axon Recorder RPC
 	recorderHub := services.NewRecorderHub()
-	recorderHandler := handlers.NewRecorderHandler(recorderHub, &cfg.AxonRPC, db)
+	recorderHandler := handlers.NewRecorderHandler(recorderHub, &cfg.AxonRecorder, db)
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db)
@@ -91,7 +91,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		cfg:           cfg,
 		health:        healthHandler,
 		transfer:      transferHandler,
-		axonRPC:       recorderHandler,
+		recorder:      recorderHandler,
 		episode:       episodeHandler,
 		task:          taskHandler,
 		robotType:     robotTypeHandler,
@@ -119,7 +119,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	}
 
 	s.axonWSServer = &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.AxonRPC.WSPort),
+		Addr:         fmt.Sprintf(":%d", cfg.AxonRecorder.WSPort),
 		ReadTimeout:  0,
 		WriteTimeout: 0,
 		Handler:      s.buildAxonWSRoutes(recorderHandler),
@@ -181,7 +181,7 @@ func (s *Server) buildRoutes() http.Handler {
 	s.task.RegisterCallbackRoutes(v1Callbacks)
 
 	v1Recorder := v1.Group("/recorder")
-	s.axonRPC.RegisterRoutes(v1Recorder)
+	s.recorder.RegisterRoutes(v1Recorder)
 
 	// Swagger documentation - serve at both root and api/v1 path
 	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -215,7 +215,7 @@ func (s *Server) buildAxonWSRoutes(recorderHandler *handlers.RecorderHandler) ht
 		deviceID := strings.TrimPrefix(r.URL.Path, "/recorder/")
 		if deviceID == "" || deviceID == r.URL.Path {
 			// #nosec G706 -- Set aside for now
-			log.Printf("[AXON-RPC-WS] Rejected: empty or invalid device_id (path=%s)", r.URL.Path)
+			log.Printf("[RECORDER] Rejected: empty or invalid device_id (path=%s)", r.URL.Path)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -250,12 +250,12 @@ func (s *Server) Start() error {
 	}()
 
 	if s.axonWSServer != nil {
-		axonWSAddr := fmt.Sprintf(":%d", s.cfg.AxonRPC.WSPort)
+		axonWSAddr := fmt.Sprintf(":%d", s.cfg.AxonRecorder.WSPort)
 		ln, err := net.Listen("tcp", axonWSAddr)
 		if err != nil {
 			log.Printf("[SERVER] Axon RPC WebSocket server listen failed: %v", err)
 		} else {
-			log.Printf("[SERVER] Recorder WebSocket server listening on %d", s.cfg.AxonRPC.WSPort)
+			log.Printf("[SERVER] Recorder WebSocket server listening on %d", s.cfg.AxonRecorder.WSPort)
 			go func() {
 				if err := s.axonWSServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 					log.Printf("[SERVER] Axon RPC WebSocket server error: %v", err)

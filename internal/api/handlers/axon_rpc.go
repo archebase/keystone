@@ -20,12 +20,12 @@ import (
 // RecorderHandler handles REST and WebSocket traffic for Axon Recorder RPC.
 type RecorderHandler struct {
 	hub *services.RecorderHub
-	cfg *config.AxonRPCConfig
+	cfg *config.RecorderConfig
 	db  *sqlx.DB
 }
 
 // NewRecorderHandler creates a new RecorderHandler.
-func NewRecorderHandler(hub *services.RecorderHub, cfg *config.AxonRPCConfig, db *sqlx.DB) *RecorderHandler {
+func NewRecorderHandler(hub *services.RecorderHub, cfg *config.RecorderConfig, db *sqlx.DB) *RecorderHandler {
 	return &RecorderHandler{hub: hub, cfg: cfg, db: db}
 }
 

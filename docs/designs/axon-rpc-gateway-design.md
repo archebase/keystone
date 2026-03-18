@@ -9,7 +9,7 @@ Keystone receives connections from Axon Recorder via WebSocket and provides HTTP
 ## Architecture
 
 ```
-Client → HTTP API → RecorderHandler → RecorderHub → Axon WS Server → Recorder
+Client → HTTP API → RecorderHandler → RecorderHub → Axon Recorder WS Server → Recorder
                                                         ↓
                                               WebSocket Bidirectional Communication
 ```
@@ -23,7 +23,7 @@ Client → HTTP API → RecorderHandler → RecorderHub → Axon WS Server → R
 
 ### 1. Configuration
 
-`AxonRPCConfig` defined in [`internal/config/config.go`](internal/config/config.go:105):
+`RecorderConfig` defined in [`internal/config/config.go`](internal/config/config.go:105):
 
 | Field | Description | Default |
 |-------|-------------|---------|

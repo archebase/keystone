@@ -9,16 +9,16 @@ import (
 
 // Config represents the complete configuration for Keystone Edge
 type Config struct {
-	Server     ServerConfig
-	Database   DatabaseConfig
-	Storage    StorageConfig
-	QA         QAConfig
-	Sync       SyncConfig
-	Features   FeaturesConfig
-	Monitoring MonitoringConfig
-	Resources  ResourceLimitsConfig
-	Fleet      FleetManagerConfig
-	AxonRPC    AxonRPCConfig
+	Server       ServerConfig
+	Database     DatabaseConfig
+	Storage      StorageConfig
+	QA           QAConfig
+	Sync         SyncConfig
+	Features     FeaturesConfig
+	Monitoring   MonitoringConfig
+	Resources    ResourceLimitsConfig
+	Fleet        FleetManagerConfig
+	AxonRecorder RecorderConfig
 }
 
 // ServerConfig server configuration
@@ -102,8 +102,8 @@ type FleetManagerConfig struct {
 	FactoryID   string
 }
 
-// AxonRPCConfig Axon Recorder RPC gateway configuration
-type AxonRPCConfig struct {
+// RecorderConfig Axon Recorder RPC gateway configuration
+type RecorderConfig struct {
 	WSPort          int
 	PingInterval    int // seconds
 	ResponseTimeout int // seconds
@@ -180,10 +180,10 @@ func Load() (*Config, error) {
 			ReadTimeout: getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 60),
 			FactoryID:   getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
 		},
-		AxonRPC: AxonRPCConfig{
-			WSPort:          getEnvInt("KEYSTONE_AXON_RPC_WS_PORT", 8091),
-			PingInterval:    getEnvInt("KEYSTONE_AXON_RPC_PING_INTERVAL", 30),
-			ResponseTimeout: getEnvInt("KEYSTONE_AXON_RPC_RESPONSE_TIMEOUT", 15),
+		AxonRecorder: RecorderConfig{
+			WSPort:          getEnvInt("KEYSTONE_AXON_RECORDER_WS_PORT", 8091),
+			PingInterval:    getEnvInt("KEYSTONE_AXON_RECORDER_PING_INTERVAL", 30),
+			ResponseTimeout: getEnvInt("KEYSTONE_AXON_RECORDER_RESPONSE_TIMEOUT", 15),
 		},
 	}
 
