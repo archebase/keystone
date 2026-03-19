@@ -12,7 +12,7 @@ This document outlines the development roadmap for the Edge Keystone project.
 
 ---
 
-## Version 0.1.0 (working on)
+## Version 0.1.0 (Done))
 
 First Release Implementation Order:
 
@@ -45,11 +45,11 @@ First Release Implementation Order:
   - ✅ workstations pairing and status management
 7. **record service**
   - ✅ WebSocket long-lived connection with axon_recorder
-  - refactor device connection state management(monitor both axon_recorder and axon_transfer)
+  - ✅ refactor device connection state management(monitor both axon_recorder and axon_transfer)
 
 ---
 
-## Version 0.2.0 (Next)
+## Version 0.2.0 (Working on)
 
 Second Release Implementation Order:
 1. **add new role Data Inspector**
