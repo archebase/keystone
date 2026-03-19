@@ -4,11 +4,11 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
@@ -124,14 +124,14 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 		now,
 	)
 	if err != nil {
-		log.Printf("[CreateRobotType] Failed to insert robot type: %v", err)
+		logger.Printf("[ROBOT] Failed to insert robot type: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create robot type"})
 		return
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
-		log.Printf("[CreateRobotType] Failed to fetch inserted id: %v", err)
+		logger.Printf("[ROBOT] Failed to fetch inserted id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create robot type"})
 		return
 	}
@@ -172,7 +172,7 @@ func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
 	// Use db.Select for cleaner code and automatic resource management
 	var dbRows []robotTypeRow
 	if err := h.db.Select(&dbRows, query); err != nil {
-		log.Printf("[ListRobotTypes] Failed to query robot types: %v", err)
+		logger.Printf("[ROBOT] Failed to query robot types: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robot types"})
 		return
 	}

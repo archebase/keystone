@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
 )
 
@@ -131,11 +131,11 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		if err := h.db.GetContext(queryCtx, &count,
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		); err != nil {
-			log.Printf("[RECORDER] Device %s: DB query error: %v", deviceID, err)
+			logger.Printf("[RECORDER] Device %s: DB query error: %v", deviceID, err)
 		}
 		// Check count regardless of DB error (count defaults to 0 on error)
 		if count == 0 {
-			log.Printf("[RECORDER] Device %s: robot not found in database", deviceID)
+			logger.Printf("[RECORDER] Device %s: robot not found in database", deviceID)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -144,12 +144,12 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	// Allow any origin in dev; tighten in production
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
-		log.Printf("[RECORDER] Device %s: WebSocket accept error: %v", deviceID, err)
+		logger.Printf("[RECORDER] Device %s: WebSocket accept error: %v", deviceID, err)
 		return
 	}
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
-			log.Printf("[RECORDER] Device %s: WebSocket close error: %v", deviceID, err)
+			logger.Printf("[RECORDER] Device %s: WebSocket close error: %v", deviceID, err)
 		}
 	}()
 
@@ -162,12 +162,12 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	defer h.hub.Disconnect(deviceID)
 
 	// #nosec G706 -- Set aside for now
-	log.Printf("[RECORDER] Recorder %s connected from %s", deviceID, remoteIP)
+	logger.Printf("[RECORDER] Recorder %s connected from %s", deviceID, remoteIP)
 
 	for {
 		_, raw, err := conn.Read(ctx)
 		if err != nil {
-			log.Printf("[RECORDER] Recorder %s disconnected: %v", deviceID, err)
+			logger.Printf("[RECORDER] Recorder %s disconnected: %v", deviceID, err)
 			return
 		}
 
@@ -175,7 +175,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 		var msg map[string]interface{}
 		if err := json.Unmarshal(raw, &msg); err != nil {
-			log.Printf("[RECORDER] Recorder %s invalid JSON: %v", deviceID, err)
+			logger.Printf("[RECORDER] Recorder %s invalid JSON: %v", deviceID, err)
 			continue
 		}
 
@@ -429,10 +429,10 @@ func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderCo
 		h.handleStateUpdate(rc, msg)
 	case "connected":
 		// #nosec G706 -- Set aside for now
-		log.Printf("[RECORDER] Recorder %s sent connected event", deviceID)
+		logger.Printf("[RECORDER] Recorder %s sent connected event", deviceID)
 	default:
 		// #nosec G706 -- Set aside for now
-		log.Printf("[RECORDER] Recorder %s unknown message type %q", deviceID, msgType)
+		logger.Printf("[RECORDER] Recorder %s unknown message type %q", deviceID, msgType)
 	}
 }
 
@@ -445,7 +445,7 @@ func (h *RecorderHandler) handleRPCResponse(deviceID string, msg map[string]inte
 		Data:      mapValue(msg, "data"),
 	}
 	if !h.hub.HandleRPCResponse(deviceID, response) {
-		log.Printf("[RECORDER] Recorder %s unmatched response request_id=%s", deviceID, response.RequestID)
+		logger.Printf("[RECORDER] Recorder %s unmatched response request_id=%s", deviceID, response.RequestID)
 	}
 }
 
@@ -459,7 +459,7 @@ func (h *RecorderHandler) handleStateUpdate(rc *services.RecorderConn, msg map[s
 	rc.UpdateState(state)
 	h.syncTaskStatusFromRecorderState(rc.DeviceID, stringValue(data, "previous"), state.CurrentState, state.TaskID)
 	// #nosec G706 -- Set aside for now
-	log.Printf("[RECORDER] Recorder %s state=%s task=%s", rc.DeviceID, state.CurrentState, state.TaskID)
+	logger.Printf("[RECORDER] Recorder %s state=%s task=%s", rc.DeviceID, state.CurrentState, state.TaskID)
 }
 
 func (h *RecorderHandler) syncTaskStatusFromRecorderState(deviceID, previousState, currentState, taskID string) {
@@ -468,14 +468,14 @@ func (h *RecorderHandler) syncTaskStatusFromRecorderState(deviceID, previousStat
 	}
 	if taskID == "" {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[RECORDER] Recorder %s state update missing task_id, skip task sync", deviceID)
+		logger.Printf("[RECORDER] Recorder %s state update missing task_id, skip task sync", deviceID)
 		return
 	}
 
 	taskStatus, ok := recorderStateToTaskStatus(currentState)
 	if !ok {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[RECORDER] Recorder %s state update ignored: previous=%s current=%s task=%s", deviceID, previousState, currentState, taskID)
+		logger.Printf("[RECORDER] Recorder %s state update ignored: previous=%s current=%s task=%s", deviceID, previousState, currentState, taskID)
 		return
 	}
 
@@ -486,24 +486,24 @@ func (h *RecorderHandler) syncTaskStatusFromRecorderState(deviceID, previousStat
 	)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[RECORDER] Recorder %s failed to sync task status: task=%s status=%s error=%v", deviceID, taskID, taskStatus, err)
+		logger.Printf("[RECORDER] Recorder %s failed to sync task status: task=%s status=%s error=%v", deviceID, taskID, taskStatus, err)
 		return
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[RECORDER] Recorder %s failed to check sync result: task=%s error=%v", deviceID, taskID, err)
+		logger.Printf("[RECORDER] Recorder %s failed to check sync result: task=%s error=%v", deviceID, taskID, err)
 		return
 	}
 	if rowsAffected == 0 {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[RECORDER] Recorder %s task sync skipped, task not found: task=%s status=%s", deviceID, taskID, taskStatus)
+		logger.Printf("[RECORDER] Recorder %s task sync skipped, task not found: task=%s status=%s", deviceID, taskID, taskStatus)
 		return
 	}
 
 	// #nosec G706 -- Set aside for now
-	log.Printf("[RECORDER] Recorder %s synced task status from state_update: task=%s previous=%s current=%s mapped_status=%s", deviceID, taskID, previousState, currentState, taskStatus)
+	logger.Printf("[RECORDER] Recorder %s synced task status from state_update: task=%s previous=%s current=%s mapped_status=%s", deviceID, taskID, previousState, currentState, taskStatus)
 }
 
 func recorderStateToTaskStatus(state string) (string, bool) {

@@ -4,7 +4,6 @@ package handlers
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
 )
 
@@ -208,7 +208,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	var total int
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM tasks WHERE %s", whereClause)
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
-		log.Printf("[ListTasks] Failed to count tasks: %v", err)
+		logger.Printf("[TASK] Failed to count tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
 		return
 	}
@@ -233,7 +233,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 
 	items := make([]TaskListItem, 0)
 	if err := h.db.Select(&items, listQuery, queryArgs...); err != nil {
-		log.Printf("[ListTasks] Failed to query tasks: %v", err)
+		logger.Printf("[TASK] Failed to query tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
 		return
 	}
@@ -293,7 +293,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 	}
 
 	if err != nil {
-		log.Printf("[GetTask] Failed to query task: %v", err)
+		logger.Printf("[TASK] Failed to query task: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task"})
 		return
 	}
@@ -362,7 +362,7 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("[UpdateTask] Failed to query task: %v", err)
+		logger.Printf("[TASK] Failed to query task: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task"})
 		return
 	}
@@ -387,14 +387,14 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		taskRow.Status,
 	)
 	if err != nil {
-		log.Printf("[UpdateTask] Failed to update task: %v", err)
+		logger.Printf("[TASK] Failed to update task: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to update task"})
 		return
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		log.Printf("[UpdateTask] Failed to get rows affected: %v", err)
+		logger.Printf("[TASK] Failed to get rows affected: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to verify update"})
 		return
 	}
@@ -461,7 +461,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 		now,
 	)
 	if err != nil {
-		log.Printf("[CreateTask] Failed to insert task: %v", err)
+		logger.Printf("[TASK] Failed to insert task: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "failed to create task",
 		})
@@ -528,18 +528,18 @@ type RecordingFinishCallback struct {
 func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	var callback RecordingStartCallback
 	if err := c.ShouldBindJSON(&callback); err != nil {
-		log.Printf("[RECORDER] Failed to parse request body: %v", err)
+		logger.Printf("[RECORDER] Failed to parse request body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Invalid request body: " + err.Error(),
 		})
 		return
 	}
 
-	log.Printf("[RECORDER] Device %s: received start callback for task=%s", callback.DeviceID, callback.TaskID)
+	logger.Printf("[RECORDER] Device %s: received start callback for task=%s", callback.DeviceID, callback.TaskID)
 
 	// Validate required fields
 	if callback.TaskID == "" {
-		log.Printf("[RECORDER] Device %s: Missing task_id in callback", callback.DeviceID)
+		logger.Printf("[RECORDER] Device %s: Missing task_id in callback", callback.DeviceID)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Missing required field: task_id",
 		})
@@ -570,7 +570,7 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 	var callback RecordingFinishCallback
 	if err := c.ShouldBindJSON(&callback); err != nil {
-		log.Printf("[RECORDER] Failed to parse request body: %v", err)
+		logger.Printf("[RECORDER] Failed to parse request body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Invalid request body: " + err.Error(),
 		})
@@ -579,7 +579,7 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 
 	// Validate required fields
 	if callback.TaskID == "" {
-		log.Printf("[RECORDER] Missing task_id in callback")
+		logger.Printf("[RECORDER] Failed to parse callback: missing task_id")
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Missing required field: task_id",
 		})
@@ -587,7 +587,7 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 	}
 
 	if callback.OutputPath == "" {
-		log.Printf("[RECORDER] No output_path provided for task_id=%s, skipping upload", callback.TaskID)
+		logger.Printf("[RECORDER] Failed to parse callback: missing output_path for task_id=%s", callback.TaskID)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Missing required field: output_path",
 		})
@@ -596,19 +596,19 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 
 	deviceID := callback.DeviceID
 	if deviceID == "" {
-		log.Printf("[RECORDER] Missing device_id in callback")
+		logger.Printf("[RECORDER] Failed to parse callback: missing device_id")
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Missing required field: device_id",
 		})
 		return
 	}
 
-	log.Printf("[RECORDER] Device %s: received finish callback for task=%s", callback.DeviceID, callback.TaskID)
+	logger.Printf("[RECORDER] Device %s: received finish callback for task=%s", callback.DeviceID, callback.TaskID)
 
 	dc := h.hub.Get(deviceID)
 	if dc == nil {
 		// TODO: add status pending_upload, when device reconnects, check for any pending_upload tasks and trigger upload then
-		log.Printf("[RECORDER] Device %s: Not found in hub for task=%s, cannot trigger upload", deviceID, callback.TaskID)
+		logger.Printf("[RECORDER] Device %s: Not found in hub for task=%s, cannot trigger upload", deviceID, callback.TaskID)
 		c.JSON(http.StatusConflict, gin.H{
 			"error_msg": "Recording finished, device not connected for auto-upload",
 		})
@@ -622,14 +622,14 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 	}
 
 	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, uploadRequest); err != nil {
-		log.Printf("[RECORDER] Failed to send upload_request to device %s: %v", deviceID, err)
+		logger.Printf("[RECORDER] Failed to send upload_request to device %s: %v", deviceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error_msg": "Failed to trigger upload: " + err.Error(),
 		})
 		return
 	}
 
-	log.Printf("[RECORDER] Device %s: successfully triggered upload for task_id=%s", deviceID, callback.TaskID)
+	logger.Printf("[RECORDER] Device %s: successfully triggered upload for task_id=%s", deviceID, callback.TaskID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

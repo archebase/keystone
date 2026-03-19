@@ -3,13 +3,14 @@ package handlers
 
 import (
 	"database/sql"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+
+	"archebase.com/keystone-edge/internal/logger"
 )
 
 // EpisodeHandler handles episode-related HTTP requests
@@ -296,7 +297,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 	}
 
 	if err != nil {
-		log.Printf("[GetEpisode] Failed to query episode: %v", err)
+		logger.Printf("[EPISODE] Failed to query episode: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query episode"})
 		return
 	}

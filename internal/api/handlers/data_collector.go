@@ -4,7 +4,6 @@ package handlers
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+
+	"archebase.com/keystone-edge/internal/logger"
 )
 
 // DataCollectorHandler handles data collector related HTTP requests.
@@ -112,7 +113,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 	// Use db.Select for cleaner code and automatic resource management
 	var dbRows []dataCollectorRow
 	if err := h.db.Select(&dbRows, query, args...); err != nil {
-		log.Printf("[ListDataCollectors] Failed to query data collectors: %v", err)
+		logger.Printf("[DC] Failed to query data collectors: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list data collectors"})
 		return
 	}
@@ -186,7 +187,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 	var exists bool
 	err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM data_collectors WHERE operator_id = ? AND deleted_at IS NULL)", req.OperatorID)
 	if err != nil {
-		log.Printf("[CreateDataCollector] Failed to check operator_id: %v", err)
+		logger.Printf("[DC] Failed to check operator_id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create data collector"})
 		return
 	}
@@ -214,14 +215,14 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		createdAt,
 	)
 	if err != nil {
-		log.Printf("[CreateDataCollector] Failed to insert data collector: %v", err)
+		logger.Printf("[DC] Failed to insert data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create data collector"})
 		return
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
-		log.Printf("[CreateDataCollector] Failed to get inserted id: %v", err)
+		logger.Printf("[DC] Failed to get inserted id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create data collector"})
 		return
 	}
@@ -291,7 +292,7 @@ func (h *DataCollectorHandler) UpdateDataCollectorStatus(c *gin.Context) {
 	var exists bool
 	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM data_collectors WHERE id = ? AND deleted_at IS NULL)", id)
 	if err != nil {
-		log.Printf("[UpdateDataCollectorStatus] Failed to check data collector: %v", err)
+		logger.Printf("[DC] Failed to check data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update status"})
 		return
 	}
@@ -311,7 +312,7 @@ func (h *DataCollectorHandler) UpdateDataCollectorStatus(c *gin.Context) {
 		id,
 	)
 	if err != nil {
-		log.Printf("[UpdateDataCollectorStatus] Failed to update status: %v", err)
+		logger.Printf("[DC] Failed to update status: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update status"})
 		return
 	}

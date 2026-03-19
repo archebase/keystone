@@ -4,7 +4,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"archebase.com/keystone-edge/docs"
 	"archebase.com/keystone-edge/internal/api/handlers"
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
 
@@ -214,7 +214,7 @@ func (s *Server) buildRecorderWSRoutes(recorderHandler *handlers.RecorderHandler
 		deviceID := strings.TrimPrefix(r.URL.Path, "/recorder/")
 		if deviceID == "" || deviceID == r.URL.Path {
 			// #nosec G706 -- Set aside for now
-			log.Printf("[RECORDER] Rejected: empty or invalid device_id (path=%s)", r.URL.Path)
+			logger.Printf("[SERVER] Rejected: empty or invalid device_id (path=%s)", r.URL.Path)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -230,21 +230,21 @@ func (s *Server) Start() error {
 	s.isRunning = true
 	s.shutdownMu.Unlock()
 
-	log.Printf("[SERVER] Starting HTTP server on %s", s.cfg.Server.BindAddr)
-	log.Printf("[SERVER] Swagger UI: http://localhost%s/swagger/index.html", s.cfg.Server.BindAddr)
+	logger.Printf("[SERVER] Starting HTTP server on %s", s.cfg.Server.BindAddr)
+	logger.Printf("[SERVER] Swagger UI: http://localhost%s/swagger/index.html", s.cfg.Server.BindAddr)
 
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[SERVER] HTTP server error: %v", err)
+			logger.Printf("[SERVER] HTTP server error: %v", err)
 		}
 	}()
 
 	// Start WebSocket server on separate port
-	log.Printf("[SERVER] Transfer WebSocket server listening on %d", s.cfg.AxonTransfer.WSPort)
+	logger.Printf("[SERVER] Transfer WebSocket server listening on %d", s.cfg.AxonTransfer.WSPort)
 
 	go func() {
 		if err := s.transferWSServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[SERVER] Transfer WebSocket server error: %v", err)
+			logger.Printf("[SERVER] Transfer WebSocket server error: %v", err)
 		}
 	}()
 
@@ -252,12 +252,12 @@ func (s *Server) Start() error {
 		recorderWSAddr := fmt.Sprintf(":%d", s.cfg.AxonRecorder.WSPort)
 		ln, err := net.Listen("tcp", recorderWSAddr)
 		if err != nil {
-			log.Printf("[SERVER] Recorder WebSocket server listen failed: %v", err)
+			logger.Printf("[SERVER] Recorder WebSocket server listen failed: %v", err)
 		} else {
-			log.Printf("[SERVER] Recorder WebSocket server listening on %d", s.cfg.AxonRecorder.WSPort)
+			logger.Printf("[SERVER] Recorder WebSocket server listening on %d", s.cfg.AxonRecorder.WSPort)
 			go func() {
 				if err := s.recorderWSServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-					log.Printf("[SERVER] Recorder WebSocket server error: %v", err)
+					logger.Printf("[SERVER] Recorder WebSocket server error: %v", err)
 				}
 			}()
 		}
@@ -276,21 +276,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.isRunning = false
 	s.shutdownMu.Unlock()
 
-	log.Printf("[SERVER] Shutting down HTTP server")
+	logger.Printf("[SERVER] Shutting down HTTP server")
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.Server.ShutdownTimeout)*time.Second)
 	defer cancel()
 
 	// Shutdown both servers
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		log.Printf("[SERVER] HTTP server shutdown error: %v", err)
+		logger.Printf("[SERVER] HTTP server shutdown error: %v", err)
 	}
 	if err := s.transferWSServer.Shutdown(ctx); err != nil {
-		log.Printf("[SERVER] Transfer WebSocket server shutdown error: %v", err)
+		logger.Printf("[SERVER] Transfer WebSocket server shutdown error: %v", err)
 	}
 	if s.recorderWSServer != nil {
 		if err := s.recorderWSServer.Shutdown(ctx); err != nil {
-			log.Printf("[SERVER] Recorder WebSocket server shutdown error: %v", err)
+			logger.Printf("[SERVER] Recorder WebSocket server shutdown error: %v", err)
 		}
 	}
 

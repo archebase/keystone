@@ -4,12 +4,12 @@ package handlers
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
@@ -135,7 +135,7 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	// Use db.Select for cleaner code and automatic resource management
 	var dbRows []robotRow
 	if err := h.db.Select(&dbRows, query, args...); err != nil {
-		log.Printf("[ListRobots] Failed to query robots: %v", err)
+		logger.Printf("[ROBOT] Failed to query robots: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robots"})
 		return
 	}
@@ -206,7 +206,6 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
 		return
 	}
-	log.Printf("[CreateRobot] Parsed robot_type_id: %d", robotTypeID)
 
 	// Verify robot_type exists
 	var exists bool
@@ -222,7 +221,6 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
 		return
 	}
-	log.Printf("[CreateRobot] Parsed factory_id: %d", factoryID)
 
 	// Verify factory exists
 	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", factoryID)
@@ -252,14 +250,14 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		createdAt,
 	)
 	if err != nil {
-		log.Printf("[CreateRobot] Failed to insert robot: %v", err)
+		logger.Printf("[ROBOT] Failed to insert robot: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create robot"})
 		return
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
-		log.Printf("[CreateRobot] Failed to get inserted id: %v", err)
+		logger.Printf("[ROBOT] Failed to get inserted id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create robot"})
 		return
 	}

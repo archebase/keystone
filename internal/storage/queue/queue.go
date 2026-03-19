@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/jmoiron/sqlx"
 
 	// Register SQLite driver
@@ -80,7 +80,7 @@ func New(cfg *Config) (*SyncQueue, error) {
 		maxBytes:    cfg.MaxBytes,
 	}
 
-	log.Println("[QUEUE] Sync queue initialized")
+	logger.Println("[QUEUE] Sync queue initialized")
 	return q, nil
 }
 
@@ -101,7 +101,7 @@ func (q *SyncQueue) Push(ep *Episode) error {
 		if err != nil {
 			return fmt.Errorf("failed to write to disk queue: %w", err)
 		}
-		log.Printf("[QUEUE] Episode %s queued to disk", ep.ID)
+		logger.Printf("[QUEUE] Episode %s queued to disk", ep.ID)
 		return nil
 	}
 }
@@ -125,7 +125,7 @@ func (q *SyncQueue) Pop() (*Episode, error) {
 		// Delete read record
 		_, err = q.diskQueue.Exec("DELETE FROM sync_queue WHERE id = ?", row.ID)
 		if err != nil {
-			log.Printf("[QUEUE] Warning: failed to delete queued item: %v", err)
+			logger.Printf("[QUEUE] Warning: failed to delete queued item: %v", err)
 		}
 
 		return &Episode{ID: row.ID, Data: row.Data}, nil
@@ -147,7 +147,7 @@ func (q *SyncQueue) Size() (int, error) {
 
 // Close closes the queue
 func (q *SyncQueue) Close() error {
-	log.Println("[QUEUE] Closing sync queue")
+	logger.Println("[QUEUE] Closing sync queue")
 	return q.diskQueue.Close()
 }
 

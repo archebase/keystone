@@ -2,9 +2,10 @@
 package monitoring
 
 import (
-	"log"
 	"sync/atomic"
 	"time"
+
+	"archebase.com/keystone-edge/internal/logger"
 )
 
 // Metrics monitoring metrics
@@ -22,7 +23,7 @@ func NewMetrics() *Metrics {
 	m := &Metrics{
 		startTime: time.Now(),
 	}
-	log.Println("[MONITORING] Metrics initialized")
+	logger.Println("[MONITORING] Metrics initialized")
 	return m
 }
 

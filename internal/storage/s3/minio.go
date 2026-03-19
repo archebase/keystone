@@ -4,8 +4,8 @@ package s3
 import (
 	"context"
 	"fmt"
-	"log"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -29,7 +29,7 @@ type Config struct {
 
 // Connect creates S3 client
 func Connect(cfg *Config) (*Client, error) {
-	log.Printf("[S3] Connecting to MinIO: endpoint=%s, bucket=%s, useSSL=%v", cfg.Endpoint, cfg.Bucket, cfg.UseSSL)
+	logger.Printf("[S3] Connecting to MinIO: endpoint=%s, bucket=%s, useSSL=%v", cfg.Endpoint, cfg.Bucket, cfg.UseSSL)
 
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
@@ -51,12 +51,12 @@ func Connect(cfg *Config) (*Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bucket: %w", err)
 		}
-		log.Printf("[S3] Created bucket: %s", cfg.Bucket)
+		logger.Printf("[S3] Created bucket: %s", cfg.Bucket)
 	} else {
-		log.Printf("[S3] Using existing bucket: %s", cfg.Bucket)
+		logger.Printf("[S3] Using existing bucket: %s", cfg.Bucket)
 	}
 
-	log.Println("[S3] Connected to MinIO successfully")
+	logger.Println("[S3] Connected to MinIO successfully")
 	return &Client{
 		Client:   client,
 		bucket:   cfg.Bucket,
@@ -90,7 +90,7 @@ func (c *Client) HeadObject(ctx context.Context, objectName string) (bool, error
 	_, err := c.StatObject(ctx, c.bucket, objectName, minio.StatObjectOptions{})
 	if err != nil {
 		errResp := minio.ToErrorResponse(err)
-		log.Printf("[S3] HeadObject error: key=%s, err=%v, code=%s, status=%d", objectName, err, errResp.Code, errResp.StatusCode)
+		logger.Printf("[S3] HeadObject error: key=%s, err=%v, code=%s, status=%d", objectName, err, errResp.Code, errResp.StatusCode)
 		if errResp.Code == "NoSuchKey" || errResp.StatusCode == 404 {
 			return false, nil
 		}
