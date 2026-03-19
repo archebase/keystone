@@ -136,10 +136,6 @@ KEYSTONE_BIND_ADDR=:9090 ./bin/keystone-edge
 
 This project is licensed under the [Mulan PSL v2](https://opensource.org/licenses/MulanPSL-2.0) (木兰开源许可证).
 
-### REUSE Compliance
-
-This project is [REUSE](https://reuse.software/) compliant. All source files contain SPDX license headers.
-
 #### Verify Compliance
 
 ```bash
