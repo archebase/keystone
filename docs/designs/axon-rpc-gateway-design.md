@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+
 # Axon RPC Gateway Design
 
 **Status:** Implemented | **Version:** 0.2.0

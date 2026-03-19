@@ -1,4 +1,8 @@
-.PHONY: help build build-image push run test clean
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+.PHONY: help build build-image push run test clean lint license
 
 # Default target
 help:
@@ -8,6 +12,8 @@ help:
 	@echo "  make test        - Test health endpoint"
 	@echo "  make clean       - Remove built image"
 	@echo "  make push        - Push to registry (set REGISTRY variable)"
+	@echo "  make lint        - Run Go linter (golangci-lint)"
+	@echo "  make license     - Run REUSE license compliance check"
 
 # Build variables
 IMAGE_NAME ?= keystone-edge
@@ -41,3 +47,21 @@ push: build
 	docker tag $(IMAGE_NAME):$(IMAGE_TAG) $(FULL_IMAGE)
 	docker push $(FULL_IMAGE)
 	@echo "Pushed $(FULL_IMAGE)"
+
+# Run Go linter
+lint:
+	@if command -v golangci-lint &> /dev/null; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not found, skipping..."; \
+	fi
+
+# REUSE license compliance check
+license:
+	@if command -v reuse &> /dev/null; then \
+		reuse lint; \
+	else \
+		echo "reuse not found, installing..."; \
+		pip install reuse; \
+		reuse lint; \
+	fi

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
 name: Bug Report
 description: Report a problem or bug in Keystone
 title: "[Bug]: "

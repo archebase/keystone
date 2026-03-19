@@ -1,4 +1,9 @@
 #!/bin/bash
+
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
 # run-dev.sh - Quick development runner for Keystone Edge
 # Usage: ./run-dev.sh
 

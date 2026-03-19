@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+
 # Contributor Covenant 3.0 Code of Conduct
 
 ## Our Pledge

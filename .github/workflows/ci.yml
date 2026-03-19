@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
 name: CI
 
 on:
@@ -27,7 +31,36 @@ jobs:
             exit 1
           fi
 
-  # 2. golangci-lint check
+  # 2. REUSE license check
+  license:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fsfe-reuse
+        run: |
+          pip install reuse
+          reuse --version
+
+      - name: Check REUSE license compliance
+        run: |
+          reuse lint
+          echo "✓ REUSE compliance check passed!"
+
+      - name: Generate SPDX SBOM
+        run: |
+          reuse spdx --output reuse.spdx
+          echo "✓ SPDX SBOM generated successfully!"
+
+      - name: Upload SPDX SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: spdx-sbom
+          path: reuse.spdx
+          retention-days: 90
+
+  # 3. golangci-lint check
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -50,7 +83,7 @@ jobs:
           version: v2.10.1
           args: --timeout=5m
 
-  # 3. unit tests + coverage
+  # 4. unit tests + coverage
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -70,7 +103,7 @@ jobs:
       - name: Run tests with coverage
         run: go test -cover -race -v ./...
 
-  # 4. integration-test (scripts/test.sh)
+  # 5. integration-test (scripts/test.sh)
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
