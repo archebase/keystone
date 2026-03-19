@@ -67,12 +67,6 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	}
 }
 
-// RegisterCallbackRoutes registers callback routes for handling external events.
-// It sets up POST /finish endpoint to handle recording completion callbacks.
-func (h *TransferHandler) RegisterCallbackRoutes(apiV1 *gin.RouterGroup) {
-	apiV1.POST("/finish", h.OnRecordingFinish)
-}
-
 // HandleWebSocket handles WebSocket connections using raw http.ResponseWriter
 func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request, deviceID string) {
 
@@ -250,7 +244,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 		return
 	}
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s: upload complete task=%s", dc.DeviceID, taskID)
+	log.Printf("[TRANSFER] Device %s: upload complete for task=%s", dc.DeviceID, taskID)
 
 	if h.s3 == nil {
 		// #nosec G706 -- Set aside for now
@@ -398,8 +392,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 			log.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
 			return
 		}
-		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: DB insert success for task=%s episode=%s", dc.DeviceID, taskID, episodeID)
 	}
 
 	// Commit transaction
@@ -425,8 +417,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 	dc.RecordEvent("outbound", ackMsg)
 	// #nosec G706 -- Set aside for now
 	log.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
-
-	log.Printf("[TRANSFER] Upload completion acknowledged without changing task status: task_id=%s", taskID)
 }
 
 // onUploadFailed handles "upload_failed" message
@@ -545,7 +535,7 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 		"task_id":  body.TaskID,
 		"priority": body.Priority,
 	}
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -582,7 +572,7 @@ func (h *TransferHandler) UploadAll(c *gin.Context) {
 	msg := map[string]interface{}{"type": "upload_all"}
 	log.Printf("[UPLOAD_ALL] Sending message to device %s: %+v", deviceID, msg)
 
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		log.Printf("[UPLOAD_ALL] Failed to send message to device %s: %v", deviceID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -618,7 +608,7 @@ func (h *TransferHandler) CancelUpload(c *gin.Context) {
 		"type":    "cancel",
 		"task_id": body.TaskID,
 	}
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -645,7 +635,7 @@ func (h *TransferHandler) StatusQuery(c *gin.Context) {
 	}
 
 	msg := map[string]interface{}{"type": "status_query"}
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -678,35 +668,11 @@ func (h *TransferHandler) ManualACK(c *gin.Context) {
 		"type":    "upload_ack",
 		"task_id": body.TaskID,
 	}
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
-}
-
-// sendToDevice sends a JSON message to a connected device via WebSocket
-func (h *TransferHandler) sendToDevice(ctx context.Context, deviceID string, msg map[string]interface{}) error {
-	dc := h.hub.Get(deviceID)
-	if dc == nil {
-		log.Printf("[sendToDevice] Device %s not found in hub", deviceID)
-		return fmt.Errorf("device %s not connected", deviceID)
-	}
-
-	log.Printf("[sendToDevice] Acquiring write lock for device %s", deviceID)
-	dc.WriteMu.Lock()
-	defer dc.WriteMu.Unlock()
-
-	log.Printf("[sendToDevice] Writing message to device %s: %+v", deviceID, msg)
-	if err := wsjson.Write(ctx, dc.Conn, msg); err != nil {
-		log.Printf("[sendToDevice] wsjson.Write failed for device %s: %v", deviceID, err)
-		return fmt.Errorf("failed to send message to device %s: %w", deviceID, err)
-	}
-
-	log.Printf("[sendToDevice] Message written successfully, recording event for device %s", deviceID)
-	dc.RecordEvent("outbound", msg)
-	log.Printf("[sendToDevice] Successfully sent message to device %s", deviceID)
-	return nil
 }
 
 // extractIP extracts the IP address from a RemoteAddr string (host:port)
@@ -748,109 +714,4 @@ func int64Val(m map[string]interface{}, key string) int64 {
 		return int64(v)
 	}
 	return 0
-}
-
-// RecordingFinishCallback represents the callback payload from axon recorder
-type RecordingFinishCallback struct {
-	TaskID        string   `json:"task_id"`
-	DeviceID      string   `json:"device_id"`
-	Status        string   `json:"status"`
-	StartedAt     string   `json:"started_at"`
-	FinishedAt    string   `json:"finished_at"`
-	DurationSec   float64  `json:"duration_sec"`
-	MessageCount  int64    `json:"message_count"`
-	FileSizeBytes int64    `json:"file_size_bytes"`
-	OutputPath    string   `json:"output_path"`
-	SidecarPath   string   `json:"sidecar_path"`
-	Topics        []string `json:"topics"`
-	Metadata      struct {
-		Scene    string   `json:"scene"`
-		Subscene string   `json:"subscene"`
-		Skills   []string `json:"skills"`
-		Factory  string   `json:"factory"`
-	} `json:"metadata"`
-	Error string `json:"error"`
-}
-
-// OnRecordingFinish handles callback from axon recorder when recording finishes.
-// @Summary      Recording finish callback
-// @Description  Handles callback from axon recorder when recording finishes, triggers upload process if device is connected
-// @Tags         callbacks
-// @Accept       json
-// @Produce      json
-// @Param        body  body      RecordingFinishCallback  true  "Recording finish callback payload"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      400  {object}  map[string]interface{}
-// @Failure      409  {object}  map[string]interface{}
-// @Failure      500  {object}  map[string]interface{}
-// @Router       /callbacks/finish [post]
-func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
-	var callback RecordingFinishCallback
-	if err := c.ShouldBindJSON(&callback); err != nil {
-		log.Printf("[OnRecordingFinish] Failed to parse request body: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Invalid request body: " + err.Error(),
-		})
-		return
-	}
-
-	// Validate required fields
-	if callback.TaskID == "" {
-		log.Printf("[OnRecordingFinish] Missing task_id in callback")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Missing required field: task_id",
-		})
-		return
-	}
-
-	if callback.OutputPath == "" {
-		log.Printf("[OnRecordingFinish] No output_path provided for task_id=%s, skipping upload", callback.TaskID)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Missing required field: output_path",
-		})
-		return
-	}
-
-	deviceID := callback.DeviceID
-	if deviceID == "" {
-		log.Printf("[OnRecordingFinish] Missing device_id in callback")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Missing required field: device_id",
-		})
-		return
-	}
-
-	log.Printf("[OnRecordingFinish] Received finish callback: task_id=%s, device_id=%s", callback.TaskID, callback.DeviceID)
-
-	dc := h.hub.Get(deviceID)
-	if dc == nil {
-		// TODO: add status pending_upload, when device reconnects, check for any pending_upload tasks and trigger upload then
-		log.Printf("[OnRecordingFinish] Device %s not found in hub (task_id=%s), cannot trigger upload", deviceID, callback.TaskID)
-		c.JSON(http.StatusConflict, gin.H{
-			"error_msg": "Recording finished, device not connected for auto-upload",
-		})
-		return
-	}
-
-	uploadRequest := map[string]interface{}{
-		"type":     "upload_request",
-		"task_id":  callback.TaskID,
-		"priority": 1,
-	}
-
-	if err := h.sendToDevice(c.Request.Context(), deviceID, uploadRequest); err != nil {
-		log.Printf("[OnRecordingFinish] Failed to send upload_request to device %s: %v", deviceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error_msg": "Failed to trigger upload: " + err.Error(),
-		})
-		return
-	}
-
-	log.Printf("[OnRecordingFinish] Successfully triggered upload for task_id=%s on device %s",
-		callback.TaskID, deviceID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Upload triggered successfully",
-	})
 }

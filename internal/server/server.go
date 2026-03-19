@@ -69,7 +69,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	episodeHandler := handlers.NewEpisodeHandler(db)
 
 	// Create TaskHandler for task configuration
-	taskHandler := handlers.NewTaskHandler(db)
+	taskHandler := handlers.NewTaskHandler(db, transferHub)
 
 	// Create database-dependent handlers only when DB is available
 	var (
@@ -175,7 +175,6 @@ func (s *Server) buildRoutes() http.Handler {
 
 	// Axon callbacks
 	v1Callbacks := v1.Group("/callbacks")
-	s.transfer.RegisterCallbackRoutes(v1Callbacks)
 
 	// Task callbacks
 	s.task.RegisterCallbackRoutes(v1Callbacks)

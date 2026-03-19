@@ -2,11 +2,14 @@
 package services
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 // DeviceEvent represents a single event recorded for a device
@@ -214,4 +217,22 @@ type DeviceInfo struct {
 	ConnectedAt time.Time    `json:"connected_at"`
 	LastSeenAt  time.Time    `json:"last_seen_at"`
 	Status      DeviceStatus `json:"status"`
+}
+
+// SendToDevice sends a JSON message to a connected device via WebSocket
+func (h *TransferHub) SendToDevice(ctx context.Context, deviceID string, msg map[string]interface{}) error {
+	dc := h.Get(deviceID)
+	if dc == nil {
+		return fmt.Errorf("device %s not connected", deviceID)
+	}
+
+	dc.WriteMu.Lock()
+	defer dc.WriteMu.Unlock()
+
+	if err := wsjson.Write(ctx, dc.Conn, msg); err != nil {
+		return fmt.Errorf("failed to send message to device %s: %w", deviceID, err)
+	}
+
+	dc.RecordEvent("outbound", msg)
+	return nil
 }

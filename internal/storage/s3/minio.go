@@ -87,7 +87,6 @@ func (c *Client) IsSecure() bool {
 // HeadObject checks whether an object exists in the bucket.
 // Returns true if the object exists, false if it does not (404), or an error for other failures.
 func (c *Client) HeadObject(ctx context.Context, objectName string) (bool, error) {
-	log.Printf("[S3] HeadObject called: bucket=%s, key=%s", c.bucket, objectName)
 	_, err := c.StatObject(ctx, c.bucket, objectName, minio.StatObjectOptions{})
 	if err != nil {
 		errResp := minio.ToErrorResponse(err)

@@ -12,17 +12,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+
+	"archebase.com/keystone-edge/internal/services"
 )
 
 // TaskHandler handles task-related HTTP requests
 type TaskHandler struct {
-	db *sqlx.DB
+	db  *sqlx.DB
+	hub *services.TransferHub
 }
 
 // NewTaskHandler creates a new TaskHandler
-func NewTaskHandler(db *sqlx.DB) *TaskHandler {
+func NewTaskHandler(db *sqlx.DB, hub *services.TransferHub) *TaskHandler {
 	return &TaskHandler{
-		db: db,
+		db:  db,
+		hub: hub,
 	}
 }
 
@@ -472,9 +476,10 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 }
 
 // RegisterCallbackRoutes registers callback routes for handling external events.
-// It sets up POST /start endpoint to handle recording start callbacks.
+// It sets up POST /start and POST /finish endpoints to handle recording start/finish callbacks.
 func (h *TaskHandler) RegisterCallbackRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/start", h.OnRecordingStart)
+	apiV1.POST("/finish", h.OnRecordingFinish)
 }
 
 // RecordingStartCallback represents the callback payload from axon recorder
@@ -484,6 +489,28 @@ type RecordingStartCallback struct {
 	Status    string   `json:"status"`
 	StartedAt string   `json:"started_at"`
 	Topics    []string `json:"topics"`
+}
+
+// RecordingFinishCallback represents the callback payload from axon recorder
+type RecordingFinishCallback struct {
+	TaskID        string   `json:"task_id"`
+	DeviceID      string   `json:"device_id"`
+	Status        string   `json:"status"`
+	StartedAt     string   `json:"started_at"`
+	FinishedAt    string   `json:"finished_at"`
+	DurationSec   float64  `json:"duration_sec"`
+	MessageCount  int64    `json:"message_count"`
+	FileSizeBytes int64    `json:"file_size_bytes"`
+	OutputPath    string   `json:"output_path"`
+	SidecarPath   string   `json:"sidecar_path"`
+	Topics        []string `json:"topics"`
+	Metadata      struct {
+		Scene    string   `json:"scene"`
+		Subscene string   `json:"subscene"`
+		Skills   []string `json:"skills"`
+		Factory  string   `json:"factory"`
+	} `json:"metadata"`
+	Error string `json:"error"`
 }
 
 // OnRecordingStart handles callback from axon recorder when recording starts.
@@ -501,19 +528,18 @@ type RecordingStartCallback struct {
 func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	var callback RecordingStartCallback
 	if err := c.ShouldBindJSON(&callback); err != nil {
-		log.Printf("[OnRecordingStart] Failed to parse request body: %v", err)
+		log.Printf("[RECORDER] Failed to parse request body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Invalid request body: " + err.Error(),
 		})
 		return
 	}
 
-	log.Printf("[OnRecordingStart] Received start callback: task_id=%s, device_id=%s",
-		callback.TaskID, callback.DeviceID)
+	log.Printf("[RECORDER] Device %s: received start callback for task=%s", callback.DeviceID, callback.TaskID)
 
 	// Validate required fields
 	if callback.TaskID == "" {
-		log.Printf("[OnRecordingStart] Missing task_id in callback")
+		log.Printf("[RECORDER] Device %s: Missing task_id in callback", callback.DeviceID)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Missing required field: task_id",
 		})
@@ -521,13 +547,93 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 	}
 
 	now := time.Now()
-	log.Printf("[OnRecordingStart] Acknowledged recording start callback without changing task status: task_id=%s", callback.TaskID)
-
 	nowStr := now.Format(time.RFC3339)
 	c.JSON(http.StatusOK, gin.H{
 		"status":          "acknowledged",
 		"task_status":     "unknown",
 		"acknowledged_at": nowStr,
+	})
+}
+
+// OnRecordingFinish handles callback from axon recorder when recording finishes.
+// @Summary      Recording finish callback
+// @Description  Handles callback from axon recorder when recording finishes, triggers upload process if device is connected
+// @Tags         callbacks
+// @Accept       json
+// @Produce      json
+// @Param        body  body      RecordingFinishCallback  true  "Recording finish callback payload"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      409  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Router       /callbacks/finish [post]
+func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
+	var callback RecordingFinishCallback
+	if err := c.ShouldBindJSON(&callback); err != nil {
+		log.Printf("[RECORDER] Failed to parse request body: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error_msg": "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	// Validate required fields
+	if callback.TaskID == "" {
+		log.Printf("[RECORDER] Missing task_id in callback")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error_msg": "Missing required field: task_id",
+		})
+		return
+	}
+
+	if callback.OutputPath == "" {
+		log.Printf("[RECORDER] No output_path provided for task_id=%s, skipping upload", callback.TaskID)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error_msg": "Missing required field: output_path",
+		})
+		return
+	}
+
+	deviceID := callback.DeviceID
+	if deviceID == "" {
+		log.Printf("[RECORDER] Missing device_id in callback")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error_msg": "Missing required field: device_id",
+		})
+		return
+	}
+
+	log.Printf("[RECORDER] Device %s: received finish callback for task=%s", callback.DeviceID, callback.TaskID)
+
+	dc := h.hub.Get(deviceID)
+	if dc == nil {
+		// TODO: add status pending_upload, when device reconnects, check for any pending_upload tasks and trigger upload then
+		log.Printf("[RECORDER] Device %s: Not found in hub for task=%s, cannot trigger upload", deviceID, callback.TaskID)
+		c.JSON(http.StatusConflict, gin.H{
+			"error_msg": "Recording finished, device not connected for auto-upload",
+		})
+		return
+	}
+
+	uploadRequest := map[string]interface{}{
+		"type":     "upload_request",
+		"task_id":  callback.TaskID,
+		"priority": 1,
+	}
+
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, uploadRequest); err != nil {
+		log.Printf("[RECORDER] Failed to send upload_request to device %s: %v", deviceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error_msg": "Failed to trigger upload: " + err.Error(),
+		})
+		return
+	}
+
+	log.Printf("[RECORDER] Device %s: successfully triggered upload for task_id=%s", deviceID, callback.TaskID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Upload triggered successfully",
 	})
 }
 
