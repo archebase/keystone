@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // monitoring/metrics_test.go - Monitoring metrics tests
 package monitoring
 

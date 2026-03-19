@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package services provides business logic services for Keystone Edge
 package services
 
@@ -5,10 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
@@ -122,11 +126,11 @@ func (h *RecorderHub) Connect(deviceID string, rc *RecorderConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if old, exists := h.connections[deviceID]; exists && old != nil && old.Conn != nil && old != rc {
-		log.Printf("[AXON-RPC] RecorderHub: closing previous connection for device %s (replaced by new)", deviceID)
+		logger.Printf("[RECORDER] RecorderHub: closing previous connection for device %s (replaced by new)", deviceID)
 		_ = old.Conn.Close(websocket.StatusPolicyViolation, "replaced by newer connection")
 	}
 	h.connections[deviceID] = rc
-	log.Printf("[AXON-RPC] RecorderHub: device %s registered, total connections=%d", deviceID, len(h.connections))
+	logger.Printf("[RECORDER] RecorderHub: device %s registered, total connections=%d", deviceID, len(h.connections))
 }
 
 // Disconnect removes a recorder connection and closes pending waiters.
@@ -137,10 +141,10 @@ func (h *RecorderHub) Disconnect(deviceID string) {
 	h.mu.Unlock()
 
 	if rc == nil {
-		log.Printf("[AXON-RPC] RecorderHub: Disconnect called for unknown device %s", deviceID)
+		logger.Printf("[RECORDER] RecorderHub: Disconnect called for unknown device %s", deviceID)
 		return
 	}
-	log.Printf("[AXON-RPC] RecorderHub: device %s disconnected", deviceID)
+	logger.Printf("[RECORDER] RecorderHub: device %s disconnected", deviceID)
 
 	rc.PendingMu.Lock()
 	for requestID, pending := range rc.Pending {

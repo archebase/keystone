@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
 # Build stage
 FROM golang:1.24-alpine AS builder
 

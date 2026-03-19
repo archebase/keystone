@@ -1,11 +1,19 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package services provides business logic services for Keystone Edge
 package services
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 // DeviceEvent represents a single event recorded for a device
@@ -160,14 +168,26 @@ func (h *TransferHub) NewDeviceConn(conn *websocket.Conn, deviceID, remoteIP str
 func (h *TransferHub) Connect(deviceID string, dc *DeviceConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if old, exists := h.connections[deviceID]; exists && old != nil && old.Conn != nil && old != dc {
+		logger.Printf("[TRANSFER] TransferHub: closing previous connection for device %s (replaced by new)", deviceID)
+		_ = old.Conn.Close(websocket.StatusPolicyViolation, "replaced by newer connection")
+	}
 	h.connections[deviceID] = dc
+	logger.Printf("[TRANSFER] TransferHub: device %s registered, total connections=%d", deviceID, len(h.connections))
 }
 
 // Disconnect removes a device connection
 func (h *TransferHub) Disconnect(deviceID string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	dc := h.connections[deviceID]
 	delete(h.connections, deviceID)
+	h.mu.Unlock()
+
+	if dc == nil {
+		logger.Printf("[TRANSFER] TransferHub: Disconnect called for unknown device %s", deviceID)
+		return
+	}
+	logger.Printf("[TRANSFER] TransferHub: device %s disconnected", deviceID)
 }
 
 // Get returns the DeviceConn for a device, or nil if not connected
@@ -201,4 +221,22 @@ type DeviceInfo struct {
 	ConnectedAt time.Time    `json:"connected_at"`
 	LastSeenAt  time.Time    `json:"last_seen_at"`
 	Status      DeviceStatus `json:"status"`
+}
+
+// SendToDevice sends a JSON message to a connected device via WebSocket
+func (h *TransferHub) SendToDevice(ctx context.Context, deviceID string, msg map[string]interface{}) error {
+	dc := h.Get(deviceID)
+	if dc == nil {
+		return fmt.Errorf("device %s not connected", deviceID)
+	}
+
+	dc.WriteMu.Lock()
+	defer dc.WriteMu.Unlock()
+
+	if err := wsjson.Write(ctx, dc.Conn, msg); err != nil {
+		return fmt.Errorf("failed to send message to device %s: %w", deviceID, err)
+	}
+
+	dc.RecordEvent("outbound", msg)
+	return nil
 }

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package handlers provides HTTP request handlers for Keystone Edge API
 package handlers
 
@@ -6,7 +10,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -20,14 +23,15 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
-// TransferHandler handles WebSocket connections and REST API for Fleet Manager
+// TransferHandler handles WebSocket connections and REST API for Transfer Service
 type TransferHandler struct {
 	hub       *services.TransferHub
-	cfg       *config.FleetManagerConfig
+	cfg       *config.TransferConfig
 	db        *sqlx.DB
 	s3        *s3.Client
 	bucket    string
@@ -37,7 +41,7 @@ type TransferHandler struct {
 
 // NewTransferHandler creates a new TransferHandler.
 // db and s3Client may be nil; Verified ACK will be skipped if either is absent.
-func NewTransferHandler(hub *services.TransferHub, cfg *config.FleetManagerConfig, db *sqlx.DB, s3Client *s3.Client, bucket string, factoryID string) *TransferHandler {
+func NewTransferHandler(hub *services.TransferHub, cfg *config.TransferConfig, db *sqlx.DB, s3Client *s3.Client, bucket string, factoryID string) *TransferHandler {
 	return &TransferHandler{
 		hub:       hub,
 		cfg:       cfg,
@@ -67,15 +71,8 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	}
 }
 
-// RegisterCallbackRoutes registers callback routes for handling external events.
-// It sets up POST /finish endpoint to handle recording completion callbacks.
-func (h *TransferHandler) RegisterCallbackRoutes(apiV1 *gin.RouterGroup) {
-	apiV1.POST("/finish", h.OnRecordingFinish)
-}
-
 // HandleWebSocket handles WebSocket connections using raw http.ResponseWriter
 func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request, deviceID string) {
-	log.Printf("[TRANSFER] WebSocket connection attempt for device: %s", deviceID)
 
 	// Validate device exists in robots table (if DB is configured)
 	if h.db != nil {
@@ -88,11 +85,11 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		if err := h.db.GetContext(queryCtx, &count,
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		); err != nil {
-			log.Printf("[TRANSFER] Device %s: DB query error: %v", deviceID, err)
+			logger.Printf("[TRANSFER] Device %s: DB query error: %v", deviceID, err)
 		}
 		// Check count regardless of DB error (count defaults to 0 on error)
 		if count == 0 {
-			log.Printf("[TRANSFER] Device %s: robot not found in database", deviceID)
+			logger.Printf("[TRANSFER] Device %s: robot not found in database", deviceID)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -102,12 +99,12 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		InsecureSkipVerify: true, // allow any origin in dev; tighten in production
 	})
 	if err != nil {
-		log.Printf("[TRANSFER] Device %s: WebSocket accept error: %v", deviceID, err)
+		logger.Printf("[TRANSFER] Device %s: WebSocket accept error: %v", deviceID, err)
 		return
 	}
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
-			log.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
+			logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
 		}
 	}()
 
@@ -138,7 +135,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	defer h.hub.Disconnect(deviceID)
 
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s connected from %s", deviceID, remoteIP)
+	logger.Printf("[TRANSFER] Transfer %s connected from %s", deviceID, remoteIP)
 
 	// Read loop: use ctx directly for infinite wait.
 	// context.WithTimeout(ctx, 0) would set deadline=now and cause immediate timeout,
@@ -147,13 +144,13 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	for {
 		_, raw, err := conn.Read(ctx)
 		if err != nil {
-			log.Printf("[TRANSFER] Device %s disconnected: %v", deviceID, err)
+			logger.Printf("[TRANSFER] Device %s disconnected: %v", deviceID, err)
 			break
 		}
 
 		var msg map[string]interface{}
 		if jsonErr := json.Unmarshal(raw, &msg); jsonErr != nil {
-			log.Printf("[TRANSFER] Device %s: invalid JSON: %v", deviceID, jsonErr)
+			logger.Printf("[TRANSFER] Device %s: invalid JSON: %v", deviceID, jsonErr)
 			continue
 		}
 
@@ -186,7 +183,7 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Device
 		h.onStatus(dc, msg)
 	default:
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: unknown message type %q", dc.DeviceID, msgType)
+		logger.Printf("[TRANSFER] Device %s: unknown message type %q", dc.DeviceID, msgType)
 	}
 }
 
@@ -205,7 +202,7 @@ func (h *TransferHandler) onConnected(dc *services.DeviceConn, msg map[string]in
 	}
 	dc.UpdateStatus(s)
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s connected: version=%s pending=%d uploading=%d failed=%d",
+	logger.Printf("[TRANSFER] Transfer %s connected: version=%s pending=%d uploading=%d failed=%d",
 		dc.DeviceID, s.Version, s.PendingCount, s.UploadingCount, s.FailedCount)
 }
 
@@ -217,7 +214,7 @@ func (h *TransferHandler) onUploadStarted(dc *services.DeviceConn, msg map[strin
 	}
 	taskID := stringVal(data, "task_id")
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s: upload started task=%s total_bytes=%d",
+	logger.Printf("[TRANSFER] Device %s: upload started task=%s total_bytes=%d",
 		dc.DeviceID, taskID, int64Val(data, "total_bytes"))
 }
 
@@ -230,7 +227,7 @@ func (h *TransferHandler) onUploadProgress(dc *services.DeviceConn, msg map[stri
 	taskID := stringVal(data, "task_id")
 	percent := intVal(data, "percent")
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s: upload progress task=%s %d%%", dc.DeviceID, taskID, percent)
+	logger.Printf("[TRANSFER] Device %s: upload progress task=%s %d%%", dc.DeviceID, taskID, percent)
 }
 
 // onUploadComplete handles "upload_complete" and runs the Verified ACK flow:
@@ -241,26 +238,26 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: upload complete data is nil", dc.DeviceID)
+		logger.Printf("[TRANSFER] Device %s: upload complete data is nil", dc.DeviceID)
 		return
 	}
 	taskID := stringVal(data, "task_id")
 	if taskID == "" {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: upload complete taskID is empty", dc.DeviceID)
+		logger.Printf("[TRANSFER] Device %s: upload complete taskID is empty", dc.DeviceID)
 		return
 	}
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s: upload complete task=%s", dc.DeviceID, taskID)
+	logger.Printf("[TRANSFER] Device %s: upload complete for task=%s", dc.DeviceID, taskID)
 
 	if h.s3 == nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: S3 not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
+		logger.Printf("[TRANSFER] Device %s: S3 not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
 		return
 	}
 	if h.db == nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: DB not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
+		logger.Printf("[TRANSFER] Device %s: DB not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
 		return
 	}
 
@@ -289,13 +286,13 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 
 	if mcapErr != nil || jsonErr != nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: S3 HeadObject error", dc.DeviceID)
+		logger.Printf("[TRANSFER] Device %s: S3 HeadObject error", dc.DeviceID)
 		return
 	}
 
 	if !mcapExists || !jsonExists {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: S3 files not found for task=%s, skipping ACK",
+		logger.Printf("[TRANSFER] Device %s: S3 files not found for task=%s, skipping ACK",
 			dc.DeviceID, taskID)
 		return
 	}
@@ -304,12 +301,12 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: DB begin transaction error for task=%s: %v", dc.DeviceID, taskID, err)
+		logger.Printf("[TRANSFER] Device %s: DB begin transaction error for task=%s: %v", dc.DeviceID, taskID, err)
 		return
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-			log.Printf("[TRANSFER] Transaction rollback error: %v", err)
+			logger.Printf("[TRANSFER] Transaction rollback error: %v", err)
 		}
 	}()
 
@@ -320,12 +317,12 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 	).Scan(&count)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: DB query error for task=%s: %v", dc.DeviceID, taskID, err)
+		logger.Printf("[TRANSFER] Device %s: DB query error for task=%s: %v", dc.DeviceID, taskID, err)
 		return
 	}
 	if count > 0 {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: task=%s already exists in DB (by mcap_path or sidecar_path), skipping insert", dc.DeviceID, taskID)
+		logger.Printf("[TRANSFER] Device %s: task=%s already exists in DB (by mcap_path or sidecar_path), skipping insert", dc.DeviceID, taskID)
 	} else {
 		var taskRow struct {
 			ID             int64         `db:"id"`
@@ -396,17 +393,15 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 		)
 		if dbErr != nil {
 			// #nosec G706 -- Set aside for now
-			log.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
+			logger.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
 			return
 		}
-		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: DB insert success for task=%s episode=%s", dc.DeviceID, taskID, episodeID)
 	}
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: DB commit error for task=%s: %v", dc.DeviceID, taskID, err)
+		logger.Printf("[TRANSFER] Device %s: DB commit error for task=%s: %v", dc.DeviceID, taskID, err)
 		return
 	}
 
@@ -419,15 +414,13 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 	if err := wsjson.Write(ctx, dc.Conn, ackMsg); err != nil {
 		dc.WriteMu.Unlock()
 		// #nosec G706 -- Set aside for now
-		log.Printf("[TRANSFER] Device %s: failed to send upload_ack for task=%s: %v", dc.DeviceID, taskID, err)
+		logger.Printf("[TRANSFER] Device %s: failed to send upload_ack for task=%s: %v", dc.DeviceID, taskID, err)
 		return
 	}
 	dc.WriteMu.Unlock()
 	dc.RecordEvent("outbound", ackMsg)
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
-
-	log.Printf("[TRANSFER] Upload completion acknowledged without changing task status: task_id=%s", taskID)
+	logger.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
 }
 
 // onUploadFailed handles "upload_failed" message
@@ -442,22 +435,22 @@ func (h *TransferHandler) onUploadFailed(dc *services.DeviceConn, msg map[string
 
 	// Log full message for debugging
 	// #nosec G706 -- Set aside for now
-	log.Printf("[UPLOAD_FAILED] Received from device %s: full message=%+v", dc.DeviceID, msg)
+	logger.Printf("[TRANSFER] Received from device %s: full message=%+v", dc.DeviceID, msg)
 
 	// Try to extract bucket info if present
 	if bucket, ok := data["bucket"].(string); ok {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[UPLOAD_FAILED] Device %s: task=%s bucket=%s reason=%q retries=%d",
+		logger.Printf("[TRANSFER] Device %s: task=%s bucket=%s reason=%q retries=%d",
 			dc.DeviceID, taskID, bucket, reason, retryCount)
 	} else {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[UPLOAD_FAILED] Device %s: task=%s reason=%q retries=%d",
+		logger.Printf("[TRANSFER] Device %s: task=%s reason=%q retries=%d",
 			dc.DeviceID, taskID, reason, retryCount)
 	}
 
 	// Log configured S3 bucket for comparison
 	if h.s3 != nil {
-		log.Printf("[UPLOAD_FAILED] Keystone configured bucket: %s", h.s3.Bucket())
+		logger.Printf("[TRANSFER] Keystone configured bucket: %s", h.s3.Bucket())
 	}
 }
 
@@ -470,13 +463,13 @@ func (h *TransferHandler) onUploadNotFound(dc *services.DeviceConn, msg map[stri
 	taskID := stringVal(data, "task_id")
 
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s: task=%s not found", dc.DeviceID, taskID)
+	logger.Printf("[TRANSFER] Device %s: task=%s not found", dc.DeviceID, taskID)
 }
 
 // onStatus handles "status" message and updates the device status snapshot
 func (h *TransferHandler) onStatus(dc *services.DeviceConn, msg map[string]interface{}) {
 	// #nosec G706 -- Set aside for now
-	log.Printf("[TRANSFER] Device %s: received status update", dc.DeviceID)
+	logger.Printf("[TRANSFER] Device %s: received status update", dc.DeviceID)
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -546,7 +539,7 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 		"task_id":  body.TaskID,
 		"priority": body.Priority,
 	}
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -565,31 +558,31 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 func (h *TransferHandler) UploadAll(c *gin.Context) {
 	deviceID := c.Param("device_id")
 
-	log.Printf("[UPLOAD_ALL] Received upload_all request for device: %s", deviceID)
+	logger.Printf("[TRANSFER] Device %s: received upload_all request", deviceID)
 
 	// Check if device is connected
 	dc := h.hub.Get(deviceID)
 	if dc == nil {
-		log.Printf("[UPLOAD_ALL] Device %s not connected - returning 404", deviceID)
+		logger.Printf("[TRANSFER] Device %s: not connected", deviceID)
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("device %s not connected", deviceID)})
 		return
 	}
 
-	log.Printf("[UPLOAD_ALL] Device %s is connected, remote_ip=%s", deviceID, dc.RemoteIP)
+	logger.Printf("[TRANSFER] Device %s: connected, remote_ip=%s", deviceID, dc.RemoteIP)
 	status := dc.GetStatus()
-	log.Printf("[UPLOAD_ALL] Device %s current status: pending=%d uploading=%d failed=%d waiting_ack=%d",
+	logger.Printf("[TRANSFER] Device %s: current status is pending=%d uploading=%d failed=%d waiting_ack=%d",
 		deviceID, status.PendingCount, status.UploadingCount, status.FailedCount, status.WaitingACKCount)
 
 	msg := map[string]interface{}{"type": "upload_all"}
-	log.Printf("[UPLOAD_ALL] Sending message to device %s: %+v", deviceID, msg)
+	logger.Printf("[TRANSFER] Sending message to device %s: %+v", deviceID, msg)
 
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
-		log.Printf("[UPLOAD_ALL] Failed to send message to device %s: %v", deviceID, err)
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+		logger.Printf("[TRANSFER] Failed to send message to device %s: %v", deviceID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 
-	log.Printf("[UPLOAD_ALL] Message sent successfully to device %s, returning 200 OK", deviceID)
+	logger.Printf("[TRANSFER] Message sent successfully to device %s", deviceID)
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
 }
 
@@ -619,7 +612,7 @@ func (h *TransferHandler) CancelUpload(c *gin.Context) {
 		"type":    "cancel",
 		"task_id": body.TaskID,
 	}
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -646,7 +639,7 @@ func (h *TransferHandler) StatusQuery(c *gin.Context) {
 	}
 
 	msg := map[string]interface{}{"type": "status_query"}
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -679,35 +672,11 @@ func (h *TransferHandler) ManualACK(c *gin.Context) {
 		"type":    "upload_ack",
 		"task_id": body.TaskID,
 	}
-	if err := h.sendToDevice(c.Request.Context(), deviceID, msg); err != nil {
+	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
-}
-
-// sendToDevice sends a JSON message to a connected device via WebSocket
-func (h *TransferHandler) sendToDevice(ctx context.Context, deviceID string, msg map[string]interface{}) error {
-	dc := h.hub.Get(deviceID)
-	if dc == nil {
-		log.Printf("[sendToDevice] Device %s not found in hub", deviceID)
-		return fmt.Errorf("device %s not connected", deviceID)
-	}
-
-	log.Printf("[sendToDevice] Acquiring write lock for device %s", deviceID)
-	dc.WriteMu.Lock()
-	defer dc.WriteMu.Unlock()
-
-	log.Printf("[sendToDevice] Writing message to device %s: %+v", deviceID, msg)
-	if err := wsjson.Write(ctx, dc.Conn, msg); err != nil {
-		log.Printf("[sendToDevice] wsjson.Write failed for device %s: %v", deviceID, err)
-		return fmt.Errorf("failed to send message to device %s: %w", deviceID, err)
-	}
-
-	log.Printf("[sendToDevice] Message written successfully, recording event for device %s", deviceID)
-	dc.RecordEvent("outbound", msg)
-	log.Printf("[sendToDevice] Successfully sent message to device %s", deviceID)
-	return nil
 }
 
 // extractIP extracts the IP address from a RemoteAddr string (host:port)
@@ -749,109 +718,4 @@ func int64Val(m map[string]interface{}, key string) int64 {
 		return int64(v)
 	}
 	return 0
-}
-
-// RecordingFinishCallback represents the callback payload from axon recorder
-type RecordingFinishCallback struct {
-	TaskID        string   `json:"task_id"`
-	DeviceID      string   `json:"device_id"`
-	Status        string   `json:"status"`
-	StartedAt     string   `json:"started_at"`
-	FinishedAt    string   `json:"finished_at"`
-	DurationSec   float64  `json:"duration_sec"`
-	MessageCount  int64    `json:"message_count"`
-	FileSizeBytes int64    `json:"file_size_bytes"`
-	OutputPath    string   `json:"output_path"`
-	SidecarPath   string   `json:"sidecar_path"`
-	Topics        []string `json:"topics"`
-	Metadata      struct {
-		Scene    string   `json:"scene"`
-		Subscene string   `json:"subscene"`
-		Skills   []string `json:"skills"`
-		Factory  string   `json:"factory"`
-	} `json:"metadata"`
-	Error string `json:"error"`
-}
-
-// OnRecordingFinish handles callback from axon recorder when recording finishes.
-// @Summary      Recording finish callback
-// @Description  Handles callback from axon recorder when recording finishes, triggers upload process if device is connected
-// @Tags         callbacks
-// @Accept       json
-// @Produce      json
-// @Param        body  body      RecordingFinishCallback  true  "Recording finish callback payload"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      400  {object}  map[string]interface{}
-// @Failure      409  {object}  map[string]interface{}
-// @Failure      500  {object}  map[string]interface{}
-// @Router       /callbacks/finish [post]
-func (h *TransferHandler) OnRecordingFinish(c *gin.Context) {
-	var callback RecordingFinishCallback
-	if err := c.ShouldBindJSON(&callback); err != nil {
-		log.Printf("[OnRecordingFinish] Failed to parse request body: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Invalid request body: " + err.Error(),
-		})
-		return
-	}
-
-	// Validate required fields
-	if callback.TaskID == "" {
-		log.Printf("[OnRecordingFinish] Missing task_id in callback")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Missing required field: task_id",
-		})
-		return
-	}
-
-	if callback.OutputPath == "" {
-		log.Printf("[OnRecordingFinish] No output_path provided for task_id=%s, skipping upload", callback.TaskID)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Missing required field: output_path",
-		})
-		return
-	}
-
-	deviceID := callback.DeviceID
-	if deviceID == "" {
-		log.Printf("[OnRecordingFinish] Missing device_id in callback")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Missing required field: device_id",
-		})
-		return
-	}
-
-	log.Printf("[OnRecordingFinish] Received finish callback: task_id=%s, device_id=%s", callback.TaskID, callback.DeviceID)
-
-	dc := h.hub.Get(deviceID)
-	if dc == nil {
-		// TODO: add status pending_upload, when device reconnects, check for any pending_upload tasks and trigger upload then
-		log.Printf("[OnRecordingFinish] Device %s not found in hub (task_id=%s), cannot trigger upload", deviceID, callback.TaskID)
-		c.JSON(http.StatusConflict, gin.H{
-			"error_msg": "Recording finished, device not connected for auto-upload",
-		})
-		return
-	}
-
-	uploadRequest := map[string]interface{}{
-		"type":     "upload_request",
-		"task_id":  callback.TaskID,
-		"priority": 1,
-	}
-
-	if err := h.sendToDevice(c.Request.Context(), deviceID, uploadRequest); err != nil {
-		log.Printf("[OnRecordingFinish] Failed to send upload_request to device %s: %v", deviceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error_msg": "Failed to trigger upload: " + err.Error(),
-		})
-		return
-	}
-
-	log.Printf("[OnRecordingFinish] Successfully triggered upload for task_id=%s on device %s",
-		callback.TaskID, deviceID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Upload triggered successfully",
-	})
 }

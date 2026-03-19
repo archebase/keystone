@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package database provides database connection and migration management
 package database
 
@@ -5,8 +9,8 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"log"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/mysql"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -21,7 +25,7 @@ var migrationsFS embed.FS
 
 // Migrate runs all pending database migrations
 func Migrate(db *sqlx.DB) error {
-	log.Println("[DATABASE] Running database migrations...")
+	logger.Println("[DATABASE] Running database migrations...")
 
 	src, err := iofs.New(migrationsFS, "migrations")
 	if err != nil {
@@ -45,7 +49,7 @@ func Migrate(db *sqlx.DB) error {
 
 	if err := m.Up(); err != nil {
 		if errors.Is(err, migrate.ErrNoChange) {
-			log.Println("[DATABASE] No pending migrations")
+			logger.Println("[DATABASE] No pending migrations")
 			return nil
 		}
 		return fmt.Errorf("failed to run migrations: %w", err)
@@ -56,7 +60,7 @@ func Migrate(db *sqlx.DB) error {
 		return fmt.Errorf("failed to get migration version: %w", err)
 	}
 
-	log.Printf("[DATABASE] Migrations applied successfully (version=%d, dirty=%v)", version, dirty)
+	logger.Printf("[DATABASE] Migrations applied successfully (version=%d, dirty=%v)", version, dirty)
 	return nil
 }
 
@@ -64,7 +68,7 @@ func Migrate(db *sqlx.DB) error {
 type logWriter struct{}
 
 func (l *logWriter) Printf(format string, v ...interface{}) {
-	log.Printf("[MIGRATE] "+format, v...)
+	logger.Printf("[DATABASE] "+format, v...)
 }
 
 func (l *logWriter) Verbose() bool {

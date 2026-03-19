@@ -1,14 +1,18 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package handlers provides HTTP request handlers for Keystone Edge API
 package handlers
 
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
@@ -133,7 +137,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("[CreateStation] Failed to query robot: %v", err)
+		logger.Printf("[STATION] Failed to query robot: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
@@ -156,7 +160,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("[CreateStation] Failed to query data collector: %v", err)
+		logger.Printf("[STATION] Failed to query data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
@@ -186,7 +190,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 	if err != sql.ErrNoRows {
-		log.Printf("[CreateStation] Failed to check existing station for robot: %v", err)
+		logger.Printf("[STATION] Failed to check existing station for robot: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
@@ -205,7 +209,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 	if err != sql.ErrNoRows {
-		log.Printf("[CreateStation] Failed to check existing station for data collector: %v", err)
+		logger.Printf("[STATION] Failed to check existing station for data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
@@ -214,7 +218,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 	var robotType robotTypeInfoRow
 	err = h.db.Get(&robotType, "SELECT id, name FROM robot_types WHERE id = ?", robotInfo.RobotTypeID)
 	if err != nil {
-		log.Printf("[CreateStation] Failed to get robot type: %v", err)
+		logger.Printf("[STATION] Failed to get robot type: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
@@ -223,7 +227,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 	var factory factoryInfoRow
 	err = h.db.Get(&factory, "SELECT id, slug FROM factories WHERE id = ?", robotInfo.FactoryID)
 	if err != nil {
-		log.Printf("[CreateStation] Failed to get factory: %v", err)
+		logger.Printf("[STATION] Failed to get factory: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
@@ -260,14 +264,14 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		createdAt,
 	)
 	if err != nil {
-		log.Printf("[CreateStation] Failed to insert workstation: %v", err)
+		logger.Printf("[STATION] Failed to insert workstation: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
 
 	stationID, err := result.LastInsertId()
 	if err != nil {
-		log.Printf("[CreateStation] Failed to get inserted id: %v", err)
+		logger.Printf("[STATION] Failed to get inserted id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
@@ -326,7 +330,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		ORDER BY id DESC
 	`)
 	if err != nil && err != sql.ErrNoRows {
-		log.Printf("[ListStations] Failed to query stations: %v", err)
+		logger.Printf("[STATION] Failed to query stations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})
 		return
 	}
@@ -357,7 +361,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		var factoryRows []factoryInfoRow
 		err = h.db.Select(&factoryRows, query, args...)
 		if err != nil && err != sql.ErrNoRows {
-			log.Printf("[ListStations] Failed to query factories: %v", err)
+			logger.Printf("[STATION] Failed to query factories: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})
 			return
 		}
@@ -465,7 +469,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		log.Printf("[UpdateStation] Failed to query station: %v", err)
+		logger.Printf("[STATION] Failed to query station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
 	}
@@ -477,7 +481,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		WHERE id = ? AND deleted_at IS NULL
 	`, req.Status, stationID)
 	if err != nil {
-		log.Printf("[UpdateStation] Failed to update station: %v", err)
+		logger.Printf("[STATION] Failed to update station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
 	}
@@ -493,7 +497,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		WHERE id = ? AND deleted_at IS NULL
 	`, stationID)
 	if err != nil {
-		log.Printf("[UpdateStation] Failed to fetch updated station: %v", err)
+		logger.Printf("[STATION] Failed to fetch updated station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
 	}

@@ -1,11 +1,15 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package database provides MySQL database connection wrapper
 package database
 
 import (
 	"fmt"
-	"log"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/jmoiron/sqlx"
 
 	// Register MySQL driver
@@ -45,7 +49,7 @@ func Connect(cfg *Config) (*DB, error) {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		db, err = sqlx.Open("mysql", cfg.DSN)
 		if err != nil {
-			log.Printf("[DATABASE] Attempt %d/%d: Failed to open database: %v", attempt, maxRetries, err)
+			logger.Printf("[DATABASE] Attempt %d/%d: Failed to open database: %v", attempt, maxRetries, err)
 			time.Sleep(retryInterval)
 			continue
 		}
@@ -57,13 +61,13 @@ func Connect(cfg *Config) (*DB, error) {
 
 		// Verify connection
 		if err := db.Ping(); err != nil {
-			log.Printf("[DATABASE] Attempt %d/%d: Failed to ping database: %v", attempt, maxRetries, err)
+			logger.Printf("[DATABASE] Attempt %d/%d: Failed to ping database: %v", attempt, maxRetries, err)
 			_ = db.Close() // ignore error
 			time.Sleep(retryInterval)
 			continue
 		}
 
-		log.Printf("[DATABASE] Connected to MySQL successfully after %d attempt(s)", attempt)
+		logger.Printf("[DATABASE] Connected to MySQL successfully after %d attempt(s)", attempt)
 		return &DB{DB: db}, nil
 	}
 
@@ -72,6 +76,6 @@ func Connect(cfg *Config) (*DB, error) {
 
 // Close closes the database connection
 func (db *DB) Close() error {
-	log.Println("[DATABASE] Closing database connection")
+	logger.Println("[DATABASE] Closing database connection")
 	return db.DB.Close()
 }

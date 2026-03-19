@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+
 # Keystone Roadmap
 
 This document outlines the development roadmap for the Edge Keystone project.
@@ -6,7 +12,7 @@ This document outlines the development roadmap for the Edge Keystone project.
 
 ---
 
-## Version 0.1.0 (working on)
+## Version 0.1.0 (Done))
 
 First Release Implementation Order:
 
@@ -39,11 +45,11 @@ First Release Implementation Order:
   - ✅ workstations pairing and status management
 7. **record service**
   - ✅ WebSocket long-lived connection with axon_recorder
-  - refactor device connection state management(monitor both axon_recorder and axon_transfer)
+  - ✅ refactor device connection state management(monitor both axon_recorder and axon_transfer)
 
 ---
 
-## Version 0.2.0 (Next)
+## Version 0.2.0 (Working on)
 
 Second Release Implementation Order:
 1. **add new role Data Inspector**
@@ -106,7 +112,7 @@ Third Release — Observability, Resilience & Production Readiness:
 
 We welcome contributions. Priority areas:
 
-1. **0.1.0 scope**: Code standards & CI → Database Migration → Role Management → Workstation Management → Task Management → Callback Endpoints & Episode Management → Fleet Manager (WebSocket Upload Control)
+1. **0.1.0 scope**: Code standards & CI → Database Migration → Role Management → Workstation Management → Task Management → Callback Endpoints & Episode Management → Transfer Server (WebSocket Upload Control)
 2. **Tests**: Unit and integration tests for API and callbacks
 3. **Documentation**: API examples and deployment guide
 4. **Bug fixes**: Any bug reports will be addressed promptly

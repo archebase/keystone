@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+
 ## Pull Request Checklist
 
 Please ensure your PR meets the following requirements:

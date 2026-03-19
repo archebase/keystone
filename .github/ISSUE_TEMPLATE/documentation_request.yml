@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
 name: Documentation Request
 description: Request improvements or additions to Keystone documentation
 title: "[Docs]: "

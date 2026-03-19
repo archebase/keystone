@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+
 # Axon RPC Gateway Design
 
 **Status:** Implemented | **Version:** 0.2.0
@@ -9,7 +15,7 @@ Keystone receives connections from Axon Recorder via WebSocket and provides HTTP
 ## Architecture
 
 ```
-Client → HTTP API → RecorderHandler → RecorderHub → Axon WS Server → Recorder
+Client → HTTP API → RecorderHandler → RecorderHub → Axon Recorder WS Server → Recorder
                                                         ↓
                                               WebSocket Bidirectional Communication
 ```
@@ -17,13 +23,13 @@ Client → HTTP API → RecorderHandler → RecorderHub → Axon WS Server → R
 - **HTTP API**: Receives external RPC requests
 - **RecorderHandler**: Parses requests, validates parameters, transforms responses
 - **RecorderHub**: Manages connections, sends commands, waits for responses
-- **Axon WS Server**: WebSocket server, listening on port 8091
+- **Axon Recorder WS Server**: WebSocket server, listening on port 8091
 
 ## Components
 
 ### 1. Configuration
 
-`AxonRPCConfig` defined in [`internal/config/config.go`](internal/config/config.go:105):
+`RecorderConfig` defined in [`internal/config/config.go`](internal/config/config.go:105):
 
 | Field | Description | Default |
 |-------|-------------|---------|
@@ -326,7 +332,7 @@ Error response format:
 
 Reuses Keystone's existing HTTP +独立 WebSocket + Hub connection pool pattern:
 
-- Add `axon_rpc` configuration section in config layer
+- Add `axon recorder` configuration section in config layer
 - Add `RecorderHub` in service layer (parallel to `TransferHub`)
 - Add separate Axon WebSocket Server in service startup layer
 

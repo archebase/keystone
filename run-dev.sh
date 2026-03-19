@@ -1,4 +1,9 @@
 #!/bin/bash
+
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
 # run-dev.sh - Quick development runner for Keystone Edge
 # Usage: ./run-dev.sh
 
@@ -8,8 +13,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "[INFO] Starting Keystone Edge in development mode..."
-echo "[INFO] API: http://localhost:8080"
-echo "[INFO] Swagger: http://localhost:8080/swagger/index.html"
 echo ""
 
 # Load .env and export variables

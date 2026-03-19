@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package handlers provides HTTP request handlers for Keystone Edge API
 package handlers
 
@@ -5,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"time"
 
@@ -14,30 +17,20 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
 )
 
 // RecorderHandler handles REST and WebSocket traffic for Axon Recorder RPC.
 type RecorderHandler struct {
 	hub *services.RecorderHub
-	cfg *config.AxonRPCConfig
+	cfg *config.RecorderConfig
 	db  *sqlx.DB
 }
 
 // NewRecorderHandler creates a new RecorderHandler.
-func NewRecorderHandler(hub *services.RecorderHub, cfg *config.AxonRPCConfig, db *sqlx.DB) *RecorderHandler {
+func NewRecorderHandler(hub *services.RecorderHub, cfg *config.RecorderConfig, db *sqlx.DB) *RecorderHandler {
 	return &RecorderHandler{hub: hub, cfg: cfg, db: db}
-}
-
-// AxonRPCRequest represents a REST-triggered RPC request.
-// @Description Request body for generic RPC calls
-type AxonRPCRequest struct {
-	// RPC action to execute (e.g., config, begin, pause, resume, finish, cancel, clear, quit, get_state, get_stats)
-	// @example config
-	Action string `json:"action"`
-	// Optional parameters for the action
-	// @example {"task_config": {"task_id": "task-001"}}
-	Params map[string]interface{} `json:"params,omitempty"`
 }
 
 // ConfigRequest represents the request body for config RPC.
@@ -109,12 +102,11 @@ type FinishRequest struct {
 	TaskID string `json:"task_id"`
 }
 
-// RegisterRoutes registers REST routes for Axon RPC.
+// RegisterRoutes registers REST routes for Axon Recorder RPC.
 func (h *RecorderHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/devices", h.ListDevices)
 	apiV1.GET("/:device_id/state", h.GetState)
 	apiV1.GET("/:device_id/stats", h.GetStats)
-	apiV1.POST("/:device_id/rpc", h.CallRPC)
 	apiV1.POST("/:device_id/config", h.Config)
 	apiV1.POST("/:device_id/begin", h.Begin)
 	apiV1.POST("/:device_id/finish", h.Finish)
@@ -143,11 +135,11 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		if err := h.db.GetContext(queryCtx, &count,
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		); err != nil {
-			log.Printf("[AXON-RPC] Device %s: DB query error: %v", deviceID, err)
+			logger.Printf("[RECORDER] Device %s: DB query error: %v", deviceID, err)
 		}
 		// Check count regardless of DB error (count defaults to 0 on error)
 		if count == 0 {
-			log.Printf("[AXON-RPC] Device %s: robot not found in database", deviceID)
+			logger.Printf("[RECORDER] Device %s: robot not found in database", deviceID)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -156,12 +148,12 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	// Allow any origin in dev; tighten in production
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
-		log.Printf("[AXON-RPC] Device %s: WebSocket accept error: %v", deviceID, err)
+		logger.Printf("[RECORDER] Device %s: WebSocket accept error: %v", deviceID, err)
 		return
 	}
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
-			log.Printf("[AXON-RPC] Device %s: WebSocket close error: %v", deviceID, err)
+			logger.Printf("[RECORDER] Device %s: WebSocket close error: %v", deviceID, err)
 		}
 	}()
 
@@ -174,12 +166,12 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	defer h.hub.Disconnect(deviceID)
 
 	// #nosec G706 -- Set aside for now
-	log.Printf("[AXON-RPC] Recorder %s connected from %s", deviceID, remoteIP)
+	logger.Printf("[RECORDER] Recorder %s connected from %s", deviceID, remoteIP)
 
 	for {
 		_, raw, err := conn.Read(ctx)
 		if err != nil {
-			log.Printf("[AXON-RPC] Recorder %s disconnected: %v", deviceID, err)
+			logger.Printf("[RECORDER] Recorder %s disconnected: %v", deviceID, err)
 			return
 		}
 
@@ -187,40 +179,12 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 		var msg map[string]interface{}
 		if err := json.Unmarshal(raw, &msg); err != nil {
-			log.Printf("[AXON-RPC] Recorder %s invalid JSON: %v", deviceID, err)
+			logger.Printf("[RECORDER] Recorder %s invalid JSON: %v", deviceID, err)
 			continue
 		}
 
 		h.handleMessage(deviceID, rc, msg)
 	}
-}
-
-// CallRPC sends a generic RPC request to the recorder.
-// CallRPC handles POST /api/v1/recorder/:device_id/rpc.
-//
-// @Summary      Call recorder RPC
-// @Description  Sends a generic RPC (action + optional params) to the Axon recorder for the given device
-// @Tags         recorder
-// @Accept       json
-// @Produce      json
-// @Param        device_id  path      string           true  "Recorder device ID"
-// @Param        body       body      AxonRPCRequest   true  "RPC request with action and params"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      400  {object}  map[string]interface{}
-// @Failure      404  {object}  map[string]interface{}
-// @Failure      504  {object}  map[string]interface{}
-// @Router       /recorder/{device_id}/rpc [post]
-func (h *RecorderHandler) CallRPC(c *gin.Context) {
-	var req AxonRPCRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-	if req.Action == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "action is required"})
-		return
-	}
-	h.callRPC(c, req.Action, req.Params)
 }
 
 // Config sends config RPC to the recorder.
@@ -469,10 +433,10 @@ func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderCo
 		h.handleStateUpdate(rc, msg)
 	case "connected":
 		// #nosec G706 -- Set aside for now
-		log.Printf("[AXON-RPC] Recorder %s sent connected event", deviceID)
+		logger.Printf("[RECORDER] Recorder %s sent connected event", deviceID)
 	default:
 		// #nosec G706 -- Set aside for now
-		log.Printf("[AXON-RPC] Recorder %s unknown message type %q", deviceID, msgType)
+		logger.Printf("[RECORDER] Recorder %s unknown message type %q", deviceID, msgType)
 	}
 }
 
@@ -485,7 +449,7 @@ func (h *RecorderHandler) handleRPCResponse(deviceID string, msg map[string]inte
 		Data:      mapValue(msg, "data"),
 	}
 	if !h.hub.HandleRPCResponse(deviceID, response) {
-		log.Printf("[AXON-RPC] Recorder %s unmatched response request_id=%s", deviceID, response.RequestID)
+		logger.Printf("[RECORDER] Recorder %s unmatched response request_id=%s", deviceID, response.RequestID)
 	}
 }
 
@@ -499,7 +463,7 @@ func (h *RecorderHandler) handleStateUpdate(rc *services.RecorderConn, msg map[s
 	rc.UpdateState(state)
 	h.syncTaskStatusFromRecorderState(rc.DeviceID, stringValue(data, "previous"), state.CurrentState, state.TaskID)
 	// #nosec G706 -- Set aside for now
-	log.Printf("[AXON-RPC] Recorder %s state=%s task=%s", rc.DeviceID, state.CurrentState, state.TaskID)
+	logger.Printf("[RECORDER] Recorder %s state=%s task=%s", rc.DeviceID, state.CurrentState, state.TaskID)
 }
 
 func (h *RecorderHandler) syncTaskStatusFromRecorderState(deviceID, previousState, currentState, taskID string) {
@@ -508,14 +472,14 @@ func (h *RecorderHandler) syncTaskStatusFromRecorderState(deviceID, previousStat
 	}
 	if taskID == "" {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[AXON-RPC] Recorder %s state update missing task_id, skip task sync", deviceID)
+		logger.Printf("[RECORDER] Recorder %s state update missing task_id, skip task sync", deviceID)
 		return
 	}
 
 	taskStatus, ok := recorderStateToTaskStatus(currentState)
 	if !ok {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[AXON-RPC] Recorder %s state update ignored: previous=%s current=%s task=%s", deviceID, previousState, currentState, taskID)
+		logger.Printf("[RECORDER] Recorder %s state update ignored: previous=%s current=%s task=%s", deviceID, previousState, currentState, taskID)
 		return
 	}
 
@@ -526,24 +490,24 @@ func (h *RecorderHandler) syncTaskStatusFromRecorderState(deviceID, previousStat
 	)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[AXON-RPC] Recorder %s failed to sync task status: task=%s status=%s error=%v", deviceID, taskID, taskStatus, err)
+		logger.Printf("[RECORDER] Recorder %s failed to sync task status: task=%s status=%s error=%v", deviceID, taskID, taskStatus, err)
 		return
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[AXON-RPC] Recorder %s failed to check sync result: task=%s error=%v", deviceID, taskID, err)
+		logger.Printf("[RECORDER] Recorder %s failed to check sync result: task=%s error=%v", deviceID, taskID, err)
 		return
 	}
 	if rowsAffected == 0 {
 		// #nosec G706 -- Set aside for now
-		log.Printf("[AXON-RPC] Recorder %s task sync skipped, task not found: task=%s status=%s", deviceID, taskID, taskStatus)
+		logger.Printf("[RECORDER] Recorder %s task sync skipped, task not found: task=%s status=%s", deviceID, taskID, taskStatus)
 		return
 	}
 
 	// #nosec G706 -- Set aside for now
-	log.Printf("[AXON-RPC] Recorder %s synced task status from state_update: task=%s previous=%s current=%s mapped_status=%s", deviceID, taskID, previousState, currentState, taskStatus)
+	logger.Printf("[RECORDER] Recorder %s synced task status from state_update: task=%s previous=%s current=%s mapped_status=%s", deviceID, taskID, previousState, currentState, taskStatus)
 }
 
 func recorderStateToTaskStatus(state string) (string, bool) {

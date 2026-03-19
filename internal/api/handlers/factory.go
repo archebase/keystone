@@ -1,15 +1,19 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package handlers provides HTTP request handlers for Keystone Edge API
 package handlers
 
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
@@ -124,7 +128,7 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 	// Use db.Select for cleaner code and automatic resource management
 	var dbRows []factoryRow
 	if err := h.db.Select(&dbRows, query, args...); err != nil {
-		log.Printf("[ListFactories] Failed to query factories: %v", err)
+		logger.Printf("[FACTORY] Failed to query factories: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list factories"})
 		return
 	}
@@ -238,14 +242,14 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 		now,
 	)
 	if err != nil {
-		log.Printf("[CreateFactory] Failed to insert factory: %v", err)
+		logger.Printf("[FACTORY] Failed to insert factory: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create factory"})
 		return
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
-		log.Printf("[CreateFactory] Failed to fetch inserted id: %v", err)
+		logger.Printf("[FACTORY] Failed to fetch inserted id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create factory"})
 		return
 	}

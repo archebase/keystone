@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package config provides configuration loading and validation
 package config
 
@@ -9,16 +13,16 @@ import (
 
 // Config represents the complete configuration for Keystone Edge
 type Config struct {
-	Server     ServerConfig
-	Database   DatabaseConfig
-	Storage    StorageConfig
-	QA         QAConfig
-	Sync       SyncConfig
-	Features   FeaturesConfig
-	Monitoring MonitoringConfig
-	Resources  ResourceLimitsConfig
-	Fleet      FleetManagerConfig
-	AxonRPC    AxonRPCConfig
+	Server       ServerConfig
+	Database     DatabaseConfig
+	Storage      StorageConfig
+	QA           QAConfig
+	Sync         SyncConfig
+	Features     FeaturesConfig
+	Monitoring   MonitoringConfig
+	Resources    ResourceLimitsConfig
+	AxonTransfer TransferConfig
+	AxonRecorder RecorderConfig
 }
 
 // ServerConfig server configuration
@@ -94,16 +98,16 @@ type ResourceLimitsConfig struct {
 	DiskWatermarkHigh int
 }
 
-// FleetManagerConfig Fleet Manager configuration
-type FleetManagerConfig struct {
+// TransferConfig Transfer service configuration
+type TransferConfig struct {
 	WSPort      int
 	MaxEvents   int
 	ReadTimeout int // seconds
 	FactoryID   string
 }
 
-// AxonRPCConfig Axon Recorder RPC gateway configuration
-type AxonRPCConfig struct {
+// RecorderConfig Axon Recorder RPC gateway configuration
+type RecorderConfig struct {
 	WSPort          int
 	PingInterval    int // seconds
 	ResponseTimeout int // seconds
@@ -174,16 +178,16 @@ func Load() (*Config, error) {
 			DiskWatermarkLow:  getEnvInt("KEYSTONE_DISK_WATERMARK_LOW", 20),
 			DiskWatermarkHigh: getEnvInt("KEYSTONE_DISK_WATERMARK_HIGH", 10),
 		},
-		Fleet: FleetManagerConfig{
-			WSPort:      getEnvInt("KEYSTONE_FLEET_WS_PORT", 8090),
-			MaxEvents:   getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 500),
-			ReadTimeout: getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 60),
+		AxonTransfer: TransferConfig{
+			WSPort:      getEnvInt("KEYSTONE_AXON_TRANSFER_WS_PORT", 8090),
+			MaxEvents:   getEnvInt("KEYSTONE_AXON_TRANSFER_MAX_EVENTS", 10000),
+			ReadTimeout: getEnvInt("KEYSTONE_AXON_TRANSFER_READ_TIMEOUT", 30),
 			FactoryID:   getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
 		},
-		AxonRPC: AxonRPCConfig{
-			WSPort:          getEnvInt("KEYSTONE_AXON_RPC_WS_PORT", 8091),
-			PingInterval:    getEnvInt("KEYSTONE_AXON_RPC_PING_INTERVAL", 30),
-			ResponseTimeout: getEnvInt("KEYSTONE_AXON_RPC_RESPONSE_TIMEOUT", 15),
+		AxonRecorder: RecorderConfig{
+			WSPort:          getEnvInt("KEYSTONE_AXON_RECORDER_WS_PORT", 8091),
+			PingInterval:    getEnvInt("KEYSTONE_AXON_RECORDER_PING_INTERVAL", 30),
+			ResponseTimeout: getEnvInt("KEYSTONE_AXON_RECORDER_RESPONSE_TIMEOUT", 15),
 		},
 	}
 

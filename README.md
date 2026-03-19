@@ -1,4 +1,14 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+
 # Keystone Edge
+
+[![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go)](https://go.dev/)
+[![CI](https://github.com/ArcheBase/keystone/actions/workflows/ci.yml/badge.svg)](https://github.com/ArcheBase/keystone/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Mulan%20PSL%20v2-blue)](LICENSE)
 
 A backend for edge data collection scenarios.
 
@@ -128,4 +138,28 @@ KEYSTONE_BIND_ADDR=:9090 ./bin/keystone-edge
 
 ## License
 
-MIT
+This project is licensed under the [Mulan PSL v2](https://opensource.org/licenses/MulanPSL-2.0).
+
+#### Verify Compliance
+
+```bash
+# Using Makefile
+make license
+
+# Or using the script directly
+./scripts/ci-reuse-local.sh
+
+# Generate SPDX SBOM
+./scripts/ci-reuse-local.sh --sbom
+```
+
+#### Adding License to New Files
+
+When creating new files, use the following header:
+
+```go
+// SPDX-FileCopyrightText: Copyright (c) 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+```
+
+For more information, see the [REUSE Tutorial](https://reuse.readthedocs.io/en/latest/).

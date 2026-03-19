@@ -1,9 +1,14 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // Package services provides task management service
 package services
 
 import (
-	"log"
 	"sync"
+
+	"archebase.com/keystone-edge/internal/logger"
 )
 
 // TaskManager task manager
@@ -29,7 +34,7 @@ func NewTaskManager() *TaskManager {
 	tm := &TaskManager{
 		tasks: make(map[string]*Task),
 	}
-	log.Println("[SERVICE] TaskManager initialized")
+	logger.Println("[TASK] TaskManager initialized")
 	return tm
 }
 
@@ -43,7 +48,7 @@ func (tm *TaskManager) Create(task *Task) error {
 	}
 
 	tm.tasks[task.ID] = task
-	log.Printf("[TASK-MANAGER] Created task: %s", task.ID)
+	logger.Printf("[TASK] Created task: %s", task.ID)
 	return nil
 }
 
@@ -83,7 +88,7 @@ func (tm *TaskManager) UpdateStatus(id, status string) error {
 
 	oldStatus := task.Status
 	task.Status = status
-	log.Printf("[TASK-MANAGER] Task %s status: %s -> %s", id, oldStatus, status)
+	logger.Printf("[TASK] Task %s status: %s -> %s", id, oldStatus, status)
 	return nil
 }
 

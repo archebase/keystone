@@ -1,3 +1,7 @@
+-- SPDX-FileCopyrightText: 2026 ArcheBase
+--
+-- SPDX-License-Identifier: MulanPSL-2.0
+
 -- migrations/000001_initial_schema.up.sql
 -- Initial schema for Keystone Edge
 

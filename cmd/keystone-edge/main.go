@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
 // main.go - Keystone Edge service entry point
 package main
 
@@ -5,7 +9,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +17,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/server"
 	"archebase.com/keystone-edge/internal/storage/database"
 	"archebase.com/keystone-edge/internal/storage/s3"
@@ -33,7 +37,7 @@ var (
 func main() {
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: Failed to load .env file: %v", err)
+		logger.Printf("[SERVER] Failed to load .env file: %v", err)
 	}
 
 	// Command line flags
@@ -48,21 +52,21 @@ func main() {
 	}
 
 	// Initialize logger
-	logger := log.New(os.Stdout, "[KEYSTONE-EDGE] ", log.LstdFlags|log.Lshortfile)
-	logger.Printf("Starting Keystone Edge %s", version)
-	logger.Printf("Config file: %s", *configPath)
+	logger.Init(logger.DefaultOptions())
+	logger.Printf("[SERVER] Starting Keystone Edge %s", version)
+	logger.Printf("[SERVER] Config file: %s", *configPath)
 
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Fatalf("Failed to load config: %v", err)
+		logger.Fatalf("[SERVER] Failed to load config: %v", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		logger.Fatalf("Invalid config: %v", err)
+		logger.Fatalf("[SERVER] Invalid config: %v", err)
 	}
 
-	logger.Printf("Config loaded: mode=%s, bind=%s", cfg.Server.Mode, cfg.Server.BindAddr)
+	logger.Printf("[SERVER] Config loaded: mode=%s, bind=%s", cfg.Server.Mode, cfg.Server.BindAddr)
 
 	// Initialize database connection
 	db, err := database.Connect(&database.Config{
@@ -72,17 +76,17 @@ func main() {
 		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
 	})
 	if err != nil {
-		logger.Fatalf("Failed to connect to database: %v", err)
+		logger.Fatalf("[DATABASE] Failed to connect to database: %v", err)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			logger.Printf("Failed to close database: %v", err)
+			logger.Printf("[DATABASE] Failed to close database: %v", err)
 		}
 	}()
 
 	// Auto-run pending migrations on server start
 	if err := database.Migrate(db.DB); err != nil {
-		logger.Fatalf("Failed to run database migrations: %v", err)
+		logger.Fatalf("[DATABASE] Failed to run database migrations: %v", err)
 	}
 
 	// Initialize S3/MinIO storage
@@ -94,7 +98,7 @@ func main() {
 		UseSSL:    cfg.Storage.UseSSL,
 	})
 	if err != nil {
-		logger.Printf("Warning: Failed to connect to S3/MinIO: %v (Verified ACK will be skipped)", err)
+		logger.Printf("[S3] Failed to connect to S3/MinIO: %v", err)
 		s3Client = nil
 	}
 
@@ -104,24 +108,24 @@ func main() {
 	// Initialize and start HTTP server
 	srv := server.New(cfg, db.DB, s3Client)
 	if err := srv.Start(); err != nil {
-		logger.Fatalf("Failed to start server: %v", err)
+		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}
 
-	logger.Println("Keystone Edge started successfully")
+	logger.Println("[SERVER] Keystone Edge started successfully")
 
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 
-	logger.Println("Shutting down...")
+	logger.Println("[SERVER] Shutting down...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		logger.Printf("Error during shutdown: %v", err)
+		logger.Printf("[SERVER] Error during shutdown: %v", err)
 	}
 
-	logger.Println("Keystone Edge stopped")
+	logger.Println("[SERVER] Keystone Edge stopped")
 }

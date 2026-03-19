@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
 # Development mode - uses volume mounts for live coding
 services:
   keystone-edge-dev:
