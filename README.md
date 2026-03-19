@@ -6,6 +6,10 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # Keystone Edge
 
+[![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go)](https://go.dev/)
+[![CI](https://github.com/ArcheBase/keystone/actions/workflows/ci.yml/badge.svg)](https://github.com/ArcheBase/keystone/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Mulan%20PSL%20v2-blue)](LICENSE)
+
 A backend for edge data collection scenarios.
 
 ## Features
