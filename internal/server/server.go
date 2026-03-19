@@ -57,9 +57,9 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	// Create handlers
 	healthHandler := handlers.NewHealthHandler(nil, nil)
 
-	// Create TransferHub and TransferHandler for Fleet Manager
-	transferHub := services.NewTransferHub(cfg.Fleet.MaxEvents)
-	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.Fleet, db, s3Client, cfg.Storage.Bucket, cfg.Fleet.FactoryID)
+	// Create TransferHub and TransferHandler for Transfer Service
+	transferHub := services.NewTransferHub(cfg.AxonTransfer.MaxEvents)
+	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.AxonTransfer, db, s3Client, cfg.Storage.Bucket, cfg.AxonTransfer.FactoryID)
 
 	// Create recorderHub and RecorderHandler for Axon Recorder RPC
 	recorderHub := services.NewRecorderHub()
@@ -110,19 +110,19 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	}
 
 	// Create separate WebSocket server on WSPort
-	wsAddr := fmt.Sprintf(":%d", cfg.Fleet.WSPort)
+	wsAddr := fmt.Sprintf(":%d", cfg.AxonTransfer.WSPort)
 	s.transferWSServer = &http.Server{
 		Addr:         wsAddr,
 		ReadTimeout:  0, // Controlled by application-level readTimeout
 		WriteTimeout: 0, // Must be 0 for WebSocket long-lived connections
-		Handler:      s.buildWSRoutes(transferHandler),
+		Handler:      s.buildTransferWSRoutes(transferHandler),
 	}
 
 	s.recorderWSServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.AxonRecorder.WSPort),
 		ReadTimeout:  0,
 		WriteTimeout: 0,
-		Handler:      s.buildAxonWSRoutes(recorderHandler),
+		Handler:      s.buildRecorderWSRoutes(recorderHandler),
 	}
 
 	return s
@@ -146,7 +146,7 @@ func (s *Server) buildRoutes() http.Handler {
 	// Health check - register only in API v1 group
 	s.health.RegisterAPI(v1)
 
-	// Fleet Manager: REST API only (WebSocket on separate port)
+	// Transfer Service API
 	v1Transfer := v1.Group("/transfer")
 	s.transfer.RegisterRoutes(v1Transfer)
 
@@ -190,8 +190,8 @@ func (s *Server) buildRoutes() http.Handler {
 	return s.engine
 }
 
-// buildWSRoutes constructs the WebSocket-only router using standard net/http
-func (s *Server) buildWSRoutes(transferHandler *handlers.TransferHandler) http.Handler {
+// buildTransferWSRoutes constructs the WebSocket-only router using standard net/http
+func (s *Server) buildTransferWSRoutes(transferHandler *handlers.TransferHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/transfer/", func(w http.ResponseWriter, r *http.Request) {
@@ -207,8 +207,8 @@ func (s *Server) buildWSRoutes(transferHandler *handlers.TransferHandler) http.H
 	return mux
 }
 
-// buildAxonWSRoutes constructs the WebSocket router for Axon Recorder RPC.
-func (s *Server) buildAxonWSRoutes(recorderHandler *handlers.RecorderHandler) http.Handler {
+// buildRecorderWSRoutes constructs the WebSocket router for Axon Recorder RPC.
+func (s *Server) buildRecorderWSRoutes(recorderHandler *handlers.RecorderHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/recorder/", func(w http.ResponseWriter, r *http.Request) {
@@ -241,7 +241,7 @@ func (s *Server) Start() error {
 	}()
 
 	// Start WebSocket server on separate port
-	log.Printf("[SERVER] Transfer WebSocket server listening on %d", s.cfg.Fleet.WSPort)
+	log.Printf("[SERVER] Transfer WebSocket server listening on %d", s.cfg.AxonTransfer.WSPort)
 
 	go func() {
 		if err := s.transferWSServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -250,15 +250,15 @@ func (s *Server) Start() error {
 	}()
 
 	if s.recorderWSServer != nil {
-		axonWSAddr := fmt.Sprintf(":%d", s.cfg.AxonRecorder.WSPort)
-		ln, err := net.Listen("tcp", axonWSAddr)
+		recorderWSAddr := fmt.Sprintf(":%d", s.cfg.AxonRecorder.WSPort)
+		ln, err := net.Listen("tcp", recorderWSAddr)
 		if err != nil {
-			log.Printf("[SERVER] Axon RPC WebSocket server listen failed: %v", err)
+			log.Printf("[SERVER] Recorder WebSocket server listen failed: %v", err)
 		} else {
 			log.Printf("[SERVER] Recorder WebSocket server listening on %d", s.cfg.AxonRecorder.WSPort)
 			go func() {
 				if err := s.recorderWSServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-					log.Printf("[SERVER] Axon RPC WebSocket server error: %v", err)
+					log.Printf("[SERVER] Recorder WebSocket server error: %v", err)
 				}
 			}()
 		}

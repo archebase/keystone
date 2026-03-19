@@ -24,10 +24,10 @@ import (
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
-// TransferHandler handles WebSocket connections and REST API for Fleet Manager
+// TransferHandler handles WebSocket connections and REST API for Transfer Service
 type TransferHandler struct {
 	hub       *services.TransferHub
-	cfg       *config.FleetManagerConfig
+	cfg       *config.TransferConfig
 	db        *sqlx.DB
 	s3        *s3.Client
 	bucket    string
@@ -37,7 +37,7 @@ type TransferHandler struct {
 
 // NewTransferHandler creates a new TransferHandler.
 // db and s3Client may be nil; Verified ACK will be skipped if either is absent.
-func NewTransferHandler(hub *services.TransferHub, cfg *config.FleetManagerConfig, db *sqlx.DB, s3Client *s3.Client, bucket string, factoryID string) *TransferHandler {
+func NewTransferHandler(hub *services.TransferHub, cfg *config.TransferConfig, db *sqlx.DB, s3Client *s3.Client, bucket string, factoryID string) *TransferHandler {
 	return &TransferHandler{
 		hub:       hub,
 		cfg:       cfg,

@@ -41,10 +41,10 @@ Upload Service is a Keystone Edge component that manages edge device data upload
 
 ## Configuration
 
-### FleetManagerConfig
+### TransferConfig
 
 ```go
-type FleetManagerConfig struct {
+type TransferConfig struct {
     WebSocketPort      string        // WebSocket listen port (default: "8090")
     MaxEventsPerDevice int           // Max events per device in ring buffer (default: 500)
     ReadTimeout        time.Duration // WebSocket read timeout (default: 60s)
@@ -55,9 +55,9 @@ type FleetManagerConfig struct {
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KEYSTONE_FLEET_WS_PORT` | `8090` | WebSocket listen port |
-| `KEYSTONE_FLEET_MAX_EVENTS` | `500` | Max events stored per device |
-| `KEYSTONE_FLEET_READ_TIMEOUT` | `60` | WebSocket read timeout (seconds) |
+| `KEYSTONE_AXON_TRANSFER_WS_PORT` | `8090` | WebSocket listen port |
+| `KEYSTONE_AXON_TRANSFER_MAX_EVENTS` | `500` | Max events stored per device |
+| `KEYSTONE_AXON_TRANSFER_READ_TIMEOUT` | `60` | WebSocket read timeout (seconds) |
 
 ## Data Models
 
@@ -248,10 +248,10 @@ ws://{host}:{port}/transfer/{device_id}
 
 ### Verified ACK Flow
 
-Fleet Manager uses **Verified ACK**: verify S3 files exist, update database, then send ACK.
+Transfer server uses **Verified ACK**: verify S3 files exist, update database, then send ACK.
 
 ```
-axon_transfer          Fleet Manager          S3/MinIO       MySQL
+axon_transfer          Transfer Server          S3/MinIO       MySQL
     │                        │                    │              │
     │ upload_complete        │                    │              │
     │─────────────────────►  │                    │              │

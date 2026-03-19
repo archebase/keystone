@@ -106,7 +106,7 @@ Third Release — Observability, Resilience & Production Readiness:
 
 We welcome contributions. Priority areas:
 
-1. **0.1.0 scope**: Code standards & CI → Database Migration → Role Management → Workstation Management → Task Management → Callback Endpoints & Episode Management → Fleet Manager (WebSocket Upload Control)
+1. **0.1.0 scope**: Code standards & CI → Database Migration → Role Management → Workstation Management → Task Management → Callback Endpoints & Episode Management → Transfer Server (WebSocket Upload Control)
 2. **Tests**: Unit and integration tests for API and callbacks
 3. **Documentation**: API examples and deployment guide
 4. **Bug fixes**: Any bug reports will be addressed promptly

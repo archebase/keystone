@@ -17,7 +17,7 @@ type Config struct {
 	Features     FeaturesConfig
 	Monitoring   MonitoringConfig
 	Resources    ResourceLimitsConfig
-	Fleet        FleetManagerConfig
+	AxonTransfer TransferConfig
 	AxonRecorder RecorderConfig
 }
 
@@ -94,8 +94,8 @@ type ResourceLimitsConfig struct {
 	DiskWatermarkHigh int
 }
 
-// FleetManagerConfig Fleet Manager configuration
-type FleetManagerConfig struct {
+// TransferConfig Transfer service configuration
+type TransferConfig struct {
 	WSPort      int
 	MaxEvents   int
 	ReadTimeout int // seconds
@@ -174,10 +174,10 @@ func Load() (*Config, error) {
 			DiskWatermarkLow:  getEnvInt("KEYSTONE_DISK_WATERMARK_LOW", 20),
 			DiskWatermarkHigh: getEnvInt("KEYSTONE_DISK_WATERMARK_HIGH", 10),
 		},
-		Fleet: FleetManagerConfig{
-			WSPort:      getEnvInt("KEYSTONE_FLEET_WS_PORT", 8090),
-			MaxEvents:   getEnvInt("KEYSTONE_FLEET_MAX_EVENTS", 500),
-			ReadTimeout: getEnvInt("KEYSTONE_FLEET_READ_TIMEOUT", 60),
+		AxonTransfer: TransferConfig{
+			WSPort:      getEnvInt("KEYSTONE_AXON_TRANSFER_WS_PORT", 8090),
+			MaxEvents:   getEnvInt("KEYSTONE_AXON_TRANSFER_MAX_EVENTS", 10000),
+			ReadTimeout: getEnvInt("KEYSTONE_AXON_TRANSFER_READ_TIMEOUT", 30),
 			FactoryID:   getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
 		},
 		AxonRecorder: RecorderConfig{
