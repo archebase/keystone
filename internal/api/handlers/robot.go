@@ -175,23 +175,17 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		connected := false
 		connectedAt := ""
 		if h.recorderHub != nil && h.transferHub != nil {
-			connected = services.IsRobotConnected(
-				h.recorderHub,
-				h.transferHub,
-				r.DeviceID,
-			)
+			recConn := h.recorderHub.Get(r.DeviceID)
+			transConn := h.transferHub.Get(r.DeviceID)
+			connected = recConn != nil && transConn != nil
 
-			// Only compute connectedAt when connected=true.
+			// Only compute connectedAt when connected=true
 			if connected {
-				recConn := h.recorderHub.Get(r.DeviceID)
-				transConn := h.transferHub.Get(r.DeviceID)
-				if recConn != nil && transConn != nil {
-					t := recConn.ConnectedAt
-					if transConn.ConnectedAt.After(t) {
-						t = transConn.ConnectedAt
-					}
-					connectedAt = t.UTC().Format(time.RFC3339)
+				t := recConn.ConnectedAt
+				if transConn.ConnectedAt.After(t) {
+					t = transConn.ConnectedAt
 				}
+				connectedAt = t.UTC().Format(time.RFC3339)
 			}
 		}
 
