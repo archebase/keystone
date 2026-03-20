@@ -12,7 +12,7 @@ This document outlines the development roadmap for the Edge Keystone project.
 
 ---
 
-## Version 0.1.0 (Done))
+## Version 0.1.0 (Done)
 
 First Release Implementation Order:
 
@@ -52,25 +52,31 @@ First Release Implementation Order:
 ## Version 0.2.0 (Working on)
 
 Second Release Implementation Order:
-1. **add new role Data Inspector**
-  - add Data Inspector
-  - add Production Manager
-  - add corresponding actions and behaviours
-2. **Complete the remaining APIs.**
-  - Organization and factory CRUD
-  - Scene & Subscene CRUD
-  - Skill & sop CRUD
-  - Order & batch & task dispatch
-3. **API rate limiting and webhooks**
-4. **MCAP validator**
+
+1. **Authentication & Authorization**
+  - JWT authentication
+  - Role-based access control (RBAC)
+  - API private key management
+2. **Scene & Skill Management**
+  - scene and subscene CRUD
+  - skill and sop CRUD
+3. **Order & Task Management**
+  - order CRUD
+  - batch CRUD
+  - task dispatch
+4. **upload queue**
+  - Upload prioritization and bandwidth throttling
+5. **QA Pipeline**
   - QA job triggering(dagster agent)(python)
   - basic QA checks(topics, duration, gaps, image integrity)(python)
   - awaiting inspection queue for auto-check failed episodes
-  - Inspection API
-5. **cloud sync**
+  - Inspector CRUD & Inspection API
+6. **cloud sync**
   - Sync worker: push approved episodes to cloud S3
   - Edge-to-Cloud Sync API
-6. **audit logging**
+7. **API rate limiting and webhooks**
+  - API rate limiting
+  - webhooks for task status changes
 
 ---
 
