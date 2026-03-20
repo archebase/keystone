@@ -85,7 +85,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	)
 	if db != nil {
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
-		robotHandler = handlers.NewRobotHandler(db)
+		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub)
 		factoryHandler = handlers.NewFactoryHandler(db)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)

@@ -14,18 +14,25 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
 
 // RobotHandler handles robot related HTTP requests.
 type RobotHandler struct {
-	db *sqlx.DB
+	db          *sqlx.DB
+	recorderHub *services.RecorderHub
+	transferHub *services.TransferHub
 }
 
 // NewRobotHandler creates a new RobotHandler.
-func NewRobotHandler(db *sqlx.DB) *RobotHandler {
-	return &RobotHandler{db: db}
+func NewRobotHandler(db *sqlx.DB, recorderHub *services.RecorderHub, transferHub *services.TransferHub) *RobotHandler {
+	return &RobotHandler{
+		db:          db,
+		recorderHub: recorderHub,
+		transferHub: transferHub,
+	}
 }
 
 // RobotResponse represents a robot in the response.
@@ -36,6 +43,8 @@ type RobotResponse struct {
 	FactoryID   string `json:"factory_id"`
 	Status      string `json:"status"`
 	CreatedAt   string `json:"created_at,omitempty"`
+	Connected   bool   `json:"connected"`
+	ConnectedAt string `json:"connected_at,omitempty"`
 }
 
 // RobotListResponse represents the response for listing robots.
@@ -151,6 +160,29 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 			createdAt = r.CreatedAt.String
 		}
 
+		connected := false
+		connectedAt := ""
+		if h.recorderHub != nil && h.transferHub != nil {
+			connected = services.IsRobotConnected(
+				h.recorderHub,
+				h.transferHub,
+				r.DeviceID,
+			)
+
+			// Only compute connectedAt when connected=true.
+			if connected {
+				recConn := h.recorderHub.Get(r.DeviceID)
+				transConn := h.transferHub.Get(r.DeviceID)
+				if recConn != nil && transConn != nil {
+					t := recConn.ConnectedAt
+					if transConn.ConnectedAt.After(t) {
+						t = transConn.ConnectedAt
+					}
+					connectedAt = t.UTC().Format(time.RFC3339)
+				}
+			}
+		}
+
 		robots = append(robots, RobotResponse{
 			ID:          fmt.Sprintf("%d", r.ID),
 			RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),
@@ -158,6 +190,8 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 			FactoryID:   fmt.Sprintf("%d", r.FactoryID),
 			Status:      r.Status,
 			CreatedAt:   createdAt,
+			Connected:   connected,
+			ConnectedAt: connectedAt,
 		})
 	}
 
