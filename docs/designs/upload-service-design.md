@@ -72,7 +72,7 @@ type TransferConfig struct {
 All device connection state is maintained **in-memory only**, not persisted to database.
 
 ```go
-type DeviceConn struct {
+type TransferConn struct {
     conn        *websocket.Conn
     deviceID    string
     remoteIP    string
@@ -83,7 +83,7 @@ type DeviceConn struct {
 }
 
 type TransferHub struct {
-    connections map[string]*DeviceConn
+    connections map[string]*TransferConn
     mu          sync.RWMutex
 }
 ```

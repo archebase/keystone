@@ -130,7 +130,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 	remoteIP := extractIP(r.RemoteAddr)
 
-	dc := h.hub.NewDeviceConn(conn, deviceID, remoteIP)
+	dc := h.hub.NewTransferConn(conn, deviceID, remoteIP)
 	h.hub.Connect(deviceID, dc)
 	defer h.hub.Disconnect(deviceID)
 
@@ -163,7 +163,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 }
 
 // handleMessage dispatches an inbound WebSocket message to the appropriate handler
-func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.DeviceConn, msg map[string]interface{}) {
+func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.TransferConn, msg map[string]interface{}) {
 	msgType, _ := msg["type"].(string)
 
 	switch msgType {
@@ -188,7 +188,7 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Device
 }
 
 // onConnected handles the initial "connected" message from the device
-func (h *TransferHandler) onConnected(dc *services.DeviceConn, msg map[string]interface{}) {
+func (h *TransferHandler) onConnected(dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -207,7 +207,7 @@ func (h *TransferHandler) onConnected(dc *services.DeviceConn, msg map[string]in
 }
 
 // onUploadStarted handles "upload_started" message
-func (h *TransferHandler) onUploadStarted(dc *services.DeviceConn, msg map[string]interface{}) {
+func (h *TransferHandler) onUploadStarted(dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -219,7 +219,7 @@ func (h *TransferHandler) onUploadStarted(dc *services.DeviceConn, msg map[strin
 }
 
 // onUploadProgress handles "upload_progress" message
-func (h *TransferHandler) onUploadProgress(dc *services.DeviceConn, msg map[string]interface{}) {
+func (h *TransferHandler) onUploadProgress(dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -234,7 +234,7 @@ func (h *TransferHandler) onUploadProgress(dc *services.DeviceConn, msg map[stri
 //  1. Verify S3 files exist
 //  2. Update episodes table
 //  3. Send upload_ack to device
-func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.DeviceConn, msg map[string]interface{}) {
+func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		// #nosec G706 -- Set aside for now
@@ -424,7 +424,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Dev
 }
 
 // onUploadFailed handles "upload_failed" message
-func (h *TransferHandler) onUploadFailed(dc *services.DeviceConn, msg map[string]interface{}) {
+func (h *TransferHandler) onUploadFailed(dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -455,7 +455,7 @@ func (h *TransferHandler) onUploadFailed(dc *services.DeviceConn, msg map[string
 }
 
 // onUploadNotFound handles "upload_not_found" message
-func (h *TransferHandler) onUploadNotFound(dc *services.DeviceConn, msg map[string]interface{}) {
+func (h *TransferHandler) onUploadNotFound(dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -467,7 +467,7 @@ func (h *TransferHandler) onUploadNotFound(dc *services.DeviceConn, msg map[stri
 }
 
 // onStatus handles "status" message and updates the device status snapshot
-func (h *TransferHandler) onStatus(dc *services.DeviceConn, msg map[string]interface{}) {
+func (h *TransferHandler) onStatus(dc *services.TransferConn, msg map[string]interface{}) {
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Device %s: received status update", dc.DeviceID)
 	data, _ := msg["data"].(map[string]interface{})

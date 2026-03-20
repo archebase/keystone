@@ -95,8 +95,8 @@ func (r *ringBuffer) Slice(n int) []DeviceEvent {
 	return result
 }
 
-// DeviceConn holds the WebSocket connection and metadata for a connected device
-type DeviceConn struct {
+// TransferConn holds the WebSocket connection and metadata for a connected device
+type TransferConn struct {
 	Conn        *websocket.Conn
 	DeviceID    string
 	RemoteIP    string
@@ -109,7 +109,7 @@ type DeviceConn struct {
 }
 
 // RecordEvent appends an event to the device's ring buffer
-func (d *DeviceConn) RecordEvent(direction string, payload map[string]interface{}) {
+func (d *TransferConn) RecordEvent(direction string, payload map[string]interface{}) {
 	d.events.Push(DeviceEvent{
 		Direction: direction,
 		Timestamp: time.Now(),
@@ -118,12 +118,12 @@ func (d *DeviceConn) RecordEvent(direction string, payload map[string]interface{
 }
 
 // Events returns up to limit recent events
-func (d *DeviceConn) Events(limit int) []DeviceEvent {
+func (d *TransferConn) Events(limit int) []DeviceEvent {
 	return d.events.Slice(limit)
 }
 
 // UpdateStatus updates the device status snapshot (thread-safe)
-func (d *DeviceConn) UpdateStatus(s DeviceStatus) {
+func (d *TransferConn) UpdateStatus(s DeviceStatus) {
 	d.StatusMu.Lock()
 	defer d.StatusMu.Unlock()
 	s.UpdatedAt = time.Now()
@@ -131,7 +131,7 @@ func (d *DeviceConn) UpdateStatus(s DeviceStatus) {
 }
 
 // GetStatus returns a copy of the current device status (thread-safe)
-func (d *DeviceConn) GetStatus() DeviceStatus {
+func (d *TransferConn) GetStatus() DeviceStatus {
 	d.StatusMu.RLock()
 	defer d.StatusMu.RUnlock()
 	return d.Status
@@ -139,7 +139,7 @@ func (d *DeviceConn) GetStatus() DeviceStatus {
 
 // TransferHub manages all active WebSocket device connections
 type TransferHub struct {
-	connections     map[string]*DeviceConn
+	connections     map[string]*TransferConn
 	mu              sync.RWMutex
 	maxEventsPerDev int
 }
@@ -147,14 +147,14 @@ type TransferHub struct {
 // NewTransferHub creates a new TransferHub
 func NewTransferHub(maxEventsPerDevice int) *TransferHub {
 	return &TransferHub{
-		connections:     make(map[string]*DeviceConn),
+		connections:     make(map[string]*TransferConn),
 		maxEventsPerDev: maxEventsPerDevice,
 	}
 }
 
-// NewDeviceConn creates a DeviceConn with a ring buffer sized by hub config
-func (h *TransferHub) NewDeviceConn(conn *websocket.Conn, deviceID, remoteIP string) *DeviceConn {
-	return &DeviceConn{
+// NewTransferConn creates a TransferConn with a ring buffer sized by hub config
+func (h *TransferHub) NewTransferConn(conn *websocket.Conn, deviceID, remoteIP string) *TransferConn {
+	return &TransferConn{
 		Conn:        conn,
 		DeviceID:    deviceID,
 		RemoteIP:    remoteIP,
@@ -165,7 +165,7 @@ func (h *TransferHub) NewDeviceConn(conn *websocket.Conn, deviceID, remoteIP str
 }
 
 // Connect registers a device connection
-func (h *TransferHub) Connect(deviceID string, dc *DeviceConn) {
+func (h *TransferHub) Connect(deviceID string, dc *TransferConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if old, exists := h.connections[deviceID]; exists && old != nil && old.Conn != nil && old != dc {
@@ -190,8 +190,8 @@ func (h *TransferHub) Disconnect(deviceID string) {
 	logger.Printf("[TRANSFER] TransferHub: device %s disconnected", deviceID)
 }
 
-// Get returns the DeviceConn for a device, or nil if not connected
-func (h *TransferHub) Get(deviceID string) *DeviceConn {
+// Get returns the TransferConn for a device, or nil if not connected
+func (h *TransferHub) Get(deviceID string) *TransferConn {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.connections[deviceID]
