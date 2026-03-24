@@ -14,18 +14,25 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
 
 // RobotHandler handles robot related HTTP requests.
 type RobotHandler struct {
-	db *sqlx.DB
+	db          *sqlx.DB
+	recorderHub *services.RecorderHub
+	transferHub *services.TransferHub
 }
 
 // NewRobotHandler creates a new RobotHandler.
-func NewRobotHandler(db *sqlx.DB) *RobotHandler {
-	return &RobotHandler{db: db}
+func NewRobotHandler(db *sqlx.DB, recorderHub *services.RecorderHub, transferHub *services.TransferHub) *RobotHandler {
+	return &RobotHandler{
+		db:          db,
+		recorderHub: recorderHub,
+		transferHub: transferHub,
+	}
 }
 
 // RobotResponse represents a robot in the response.
@@ -36,6 +43,8 @@ type RobotResponse struct {
 	FactoryID   string `json:"factory_id"`
 	Status      string `json:"status"`
 	CreatedAt   string `json:"created_at,omitempty"`
+	Connected   bool   `json:"connected"`
+	ConnectedAt string `json:"connected_at,omitempty"`
 }
 
 // RobotListResponse represents the response for listing robots.
@@ -79,13 +88,14 @@ type robotRow struct {
 // ListRobots handles robot listing requests with filtering.
 //
 // @Summary      List robots
-// @Description  Lists robots with optional filtering by factory_id, status, and robot_type_id
+// @Description  Lists robots with optional filtering by factory_id, status, robot_type_id, and connection status
 // @Tags         robots
 // @Accept       json
 // @Produce      json
 // @Param        factory_id    query     string  false  "Filter by factory id"
 // @Param        status        query     string  false  "Filter by status (active, maintenance, retired)"
 // @Param        robot_type_id query     string  false  "Filter by robot type id"
+// @Param        connected     query     string  false  "Filter by connection status (true/false)"
 // @Success      200           {object}  RobotListResponse
 // @Failure      500           {object}  map[string]string
 // @Router       /robots [get]
@@ -93,6 +103,17 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	factoryID := c.Query("factory_id")
 	status := c.Query("status")
 	robotTypeID := c.Query("robot_type_id")
+	connectedParam := c.Query("connected")
+
+	var connectedFilter *bool
+	if connectedParam != "" {
+		connected, err := strconv.ParseBool(connectedParam)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid connected format"})
+			return
+		}
+		connectedFilter = &connected
+	}
 
 	// Build query with optional filters
 	query := `
@@ -151,6 +172,27 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 			createdAt = r.CreatedAt.String
 		}
 
+		connected := false
+		connectedAt := ""
+		if h.recorderHub != nil && h.transferHub != nil {
+			recConn := h.recorderHub.Get(r.DeviceID)
+			transConn := h.transferHub.Get(r.DeviceID)
+			connected = recConn != nil && transConn != nil
+
+			// Only compute connectedAt when connected=true
+			if connected {
+				t := recConn.ConnectedAt
+				if transConn.ConnectedAt.After(t) {
+					t = transConn.ConnectedAt
+				}
+				connectedAt = t.UTC().Format(time.RFC3339)
+			}
+		}
+
+		if connectedFilter != nil && connected != *connectedFilter {
+			continue
+		}
+
 		robots = append(robots, RobotResponse{
 			ID:          fmt.Sprintf("%d", r.ID),
 			RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),
@@ -158,6 +200,8 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 			FactoryID:   fmt.Sprintf("%d", r.FactoryID),
 			Status:      r.Status,
 			CreatedAt:   createdAt,
+			Connected:   connected,
+			ConnectedAt: connectedAt,
 		})
 	}
 
