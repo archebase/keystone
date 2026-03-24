@@ -65,7 +65,7 @@ func (h *DataCollectorHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/data_collectors", h.ListDataCollectors)
 	apiV1.POST("/data_collectors", h.CreateDataCollector)
 	apiV1.GET("/data_collectors/:id", h.GetDataCollector)
-	apiV1.PATCH("/data_collectors/:id", h.UpdateDataCollector)
+	apiV1.PUT("/data_collectors/:id", h.UpdateDataCollector)
 	apiV1.DELETE("/data_collectors/:id", h.DeleteDataCollector)
 }
 
@@ -242,93 +242,6 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 	})
 }
 
-// UpdateDataCollectorStatusRequest represents the request body for updating data collector status.
-type UpdateDataCollectorStatusRequest struct {
-	Status string `json:"status"`
-}
-
-// UpdateDataCollectorStatusResponse represents the response for updating data collector status.
-type UpdateDataCollectorStatusResponse struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-}
-
-// UpdateDataCollectorStatus handles status update requests for a data collector.
-//
-// @Summary      Update data collector status
-// @Description  Updates the status of an existing data collector
-// @Tags         data_collectors
-// @Accept       json
-// @Produce      json
-// @Param        id   path      string                         true  "Data collector ID"
-// @Param        body body      UpdateDataCollectorStatusRequest  true  "Status payload"
-// @Success      200 {object}  UpdateDataCollectorStatusResponse
-// @Failure      400 {object}  map[string]string
-// @Failure      404 {object}  map[string]string
-// @Failure      500 {object}  map[string]string
-// @Router       /data_collectors/{id}/status [patch]
-func (h *DataCollectorHandler) UpdateDataCollectorStatus(c *gin.Context) {
-	idParam := c.Param("id")
-	id, err := strconv.ParseInt(idParam, 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid data collector id"})
-		return
-	}
-
-	var req UpdateDataCollectorStatusRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-
-	req.Status = strings.TrimSpace(req.Status)
-
-	// Validate status value
-	validStatuses := map[string]bool{
-		"active":   true,
-		"inactive": true,
-		"on_leave": true,
-	}
-	if !validStatuses[req.Status] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status, must be one of: active, inactive, on_leave"})
-		return
-	}
-
-	// Check if data collector exists
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM data_collectors WHERE id = ? AND deleted_at IS NULL)", id)
-	if err != nil {
-		logger.Printf("[DC] Failed to check data collector: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update status"})
-		return
-	}
-	if !exists {
-		c.JSON(http.StatusNotFound, gin.H{"error": "data collector not found"})
-		return
-	}
-
-	// Generate updated_at timestamp
-	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
-
-	// Update the status
-	_, err = h.db.Exec(
-		`UPDATE data_collectors SET status = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
-		req.Status,
-		updatedAt,
-		id,
-	)
-	if err != nil {
-		logger.Printf("[DC] Failed to update status: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update status"})
-		return
-	}
-
-	c.JSON(http.StatusOK, UpdateDataCollectorStatusResponse{
-		ID:     idParam,
-		Status: req.Status,
-	})
-}
-
 // GetDataCollector handles getting a single data collector by ID.
 //
 // @Summary      Get data collector
@@ -420,7 +333,7 @@ type UpdateDataCollectorRequest struct {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /data_collectors/{id} [patch]
+// @Router       /data_collectors/{id} [put]
 func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 	idParam := c.Param("id")
 	id, err := strconv.ParseInt(idParam, 10, 64)

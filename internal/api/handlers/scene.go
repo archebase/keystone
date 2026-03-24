@@ -77,7 +77,7 @@ func (h *SceneHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/scenes", h.ListScenes)
 	apiV1.POST("/scenes", h.CreateScene)
 	apiV1.GET("/scenes/:id", h.GetScene)
-	apiV1.PATCH("/scenes/:id", h.UpdateScene)
+	apiV1.PUT("/scenes/:id", h.UpdateScene)
 	apiV1.DELETE("/scenes/:id", h.DeleteScene)
 }
 
@@ -416,7 +416,7 @@ func (h *SceneHandler) CreateScene(c *gin.Context) {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /scenes/{id} [patch]
+// @Router       /scenes/{id} [put]
 func (h *SceneHandler) UpdateScene(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)

@@ -61,7 +61,7 @@ func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks", h.CreateTask)
 	apiV1.GET("/tasks", h.ListTasks)
 	apiV1.GET("/tasks/:id", h.GetTask)
-	apiV1.PATCH("/tasks/:id", h.UpdateTask)
+	apiV1.PUT("/tasks/:id", h.UpdateTask)
 	apiV1.GET("/tasks/:id/config", h.GetTaskConfig)
 }
 
@@ -323,7 +323,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 // @Failure      404   {object}  map[string]string
 // @Failure      409   {object}  map[string]string
 // @Failure      500   {object}  map[string]string
-// @Router       /tasks/{id} [patch]
+// @Router       /tasks/{id} [put]
 func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	taskID := strings.TrimSpace(c.Param("id"))
 	if taskID == "" {

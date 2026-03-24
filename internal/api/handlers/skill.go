@@ -76,7 +76,7 @@ func (h *SkillHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/skills", h.ListSkills)
 	apiV1.POST("/skills", h.CreateSkill)
 	apiV1.GET("/skills/:id", h.GetSkill)
-	apiV1.PATCH("/skills/:id", h.UpdateSkill)
+	apiV1.PUT("/skills/:id", h.UpdateSkill)
 	apiV1.DELETE("/skills/:id", h.DeleteSkill)
 }
 
@@ -357,7 +357,7 @@ func (h *SkillHandler) CreateSkill(c *gin.Context) {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /skills/{id} [patch]
+// @Router       /skills/{id} [put]
 func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)

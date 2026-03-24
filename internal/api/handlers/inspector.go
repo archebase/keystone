@@ -79,7 +79,7 @@ func (h *InspectorHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/inspectors", h.ListInspectors)
 	apiV1.POST("/inspectors", h.CreateInspector)
 	apiV1.GET("/inspectors/:id", h.GetInspector)
-	apiV1.PATCH("/inspectors/:id", h.UpdateInspector)
+	apiV1.PUT("/inspectors/:id", h.UpdateInspector)
 	apiV1.DELETE("/inspectors/:id", h.DeleteInspector)
 }
 
@@ -379,7 +379,7 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /inspectors/{id} [patch]
+// @Router       /inspectors/{id} [put]
 func (h *InspectorHandler) UpdateInspector(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)

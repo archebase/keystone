@@ -77,7 +77,7 @@ func (h *SOPHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/sops", h.ListSOPs)
 	apiV1.POST("/sops", h.CreateSOP)
 	apiV1.GET("/sops/:id", h.GetSOP)
-	apiV1.PATCH("/sops/:id", h.UpdateSOP)
+	apiV1.PUT("/sops/:id", h.UpdateSOP)
 	apiV1.DELETE("/sops/:id", h.DeleteSOP)
 }
 
@@ -352,7 +352,7 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /sops/{id} [patch]
+// @Router       /sops/{id} [put]
 func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)

@@ -74,7 +74,7 @@ func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robots", h.ListRobots)
 	apiV1.POST("/robots", h.CreateRobot)
 	apiV1.GET("/robots/:id", h.GetRobot)
-	apiV1.PATCH("/robots/:id", h.UpdateRobot)
+	apiV1.PUT("/robots/:id", h.UpdateRobot)
 	apiV1.DELETE("/robots/:id", h.DeleteRobot)
 }
 
@@ -418,7 +418,7 @@ type UpdateRobotRequest struct {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /robots/{id} [patch]
+// @Router       /robots/{id} [put]
 func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)

@@ -73,8 +73,7 @@ func (h *FactoryHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/factories", h.ListFactories)
 	apiV1.POST("/factories", h.CreateFactory)
 	apiV1.GET("/factories/:id", h.GetFactory)
-	apiV1.PUT("/factories/:id", h.ReplaceFactory)
-	apiV1.PATCH("/factories/:id", h.UpdateFactory)
+	apiV1.PUT("/factories/:id", h.UpdateFactory)
 	apiV1.DELETE("/factories/:id", h.DeleteFactory)
 }
 
@@ -390,191 +389,6 @@ type UpdateFactoryRequest struct {
 	Timezone *string `json:"timezone,omitempty"`
 }
 
-// ReplaceFactoryRequest represents the request body for replacing a factory (PUT).
-type ReplaceFactoryRequest struct {
-	OrganizationID string      `json:"organization_id"`
-	Name           string      `json:"name"`
-	Slug           string      `json:"slug"`
-	Location       string      `json:"location,omitempty"`
-	Timezone       string      `json:"timezone,omitempty"`
-	Settings       interface{} `json:"settings,omitempty"`
-}
-
-// ReplaceFactory handles replacing a factory (full update).
-//
-// @Summary      Replace factory
-// @Description  Replaces an existing factory with the provided data
-// @Tags         factories
-// @Accept       json
-// @Produce      json
-// @Param        id   path      string                 true  "Factory ID"
-// @Param        body body      ReplaceFactoryRequest  true  "Factory payload"
-// @Success      200  {object}  FactoryResponse
-// @Failure      400  {object}  map[string]string
-// @Failure      404  {object}  map[string]string
-// @Failure      500  {object}  map[string]string
-// @Router       /factories/{id} [put]
-func (h *FactoryHandler) ReplaceFactory(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory id"})
-		return
-	}
-
-	var req ReplaceFactoryRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-
-	req.OrganizationID = strings.TrimSpace(req.OrganizationID)
-	req.Name = strings.TrimSpace(req.Name)
-	req.Slug = strings.TrimSpace(req.Slug)
-	req.Location = strings.TrimSpace(req.Location)
-	req.Timezone = strings.TrimSpace(req.Timezone)
-
-	if req.OrganizationID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
-		return
-	}
-
-	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-		return
-	}
-
-	if req.Slug == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug is required"})
-		return
-	}
-
-	// Parse organization_id
-	orgID, err := strconv.ParseInt(req.OrganizationID, 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-		return
-	}
-
-	// Verify organization exists
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID)
-	if err != nil || !exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
-		return
-	}
-
-	// Check if factory exists
-	var existing factoryRow
-	err = h.db.Get(&existing, "SELECT id, organization_id, name, slug, location, timezone, settings, created_at, updated_at FROM factories WHERE id = ? AND deleted_at IS NULL", id)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "factory not found"})
-			return
-		}
-		logger.Printf("[FACTORY] Failed to query factory: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to replace factory"})
-		return
-	}
-
-	// Check if slug already exists for this organization (excluding current factory)
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE organization_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", orgID, req.Slug, id)
-	if err == nil && exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
-		return
-	}
-
-	now := time.Now().UTC()
-
-	// Set default timezone if not provided
-	timezone := req.Timezone
-	if timezone == "" {
-		timezone = "UTC"
-	}
-
-	// Convert location to nullable string
-	var locationStr sql.NullString
-	if req.Location != "" {
-		locationStr = sql.NullString{String: req.Location, Valid: true}
-	}
-
-	// Convert timezone to nullable string
-	var timezoneStr sql.NullString
-	timezoneStr = sql.NullString{String: timezone, Valid: true}
-
-	// Convert settings to JSON string if provided
-	var settingsStr sql.NullString
-	if req.Settings != nil {
-		settingsJSON, err := json.Marshal(req.Settings)
-		if err == nil {
-			settingsStr = sql.NullString{String: string(settingsJSON), Valid: true}
-		}
-	}
-
-	// Perform full update
-	_, err = h.db.Exec(
-		`UPDATE factories SET 
-			organization_id = ?,
-			name = ?,
-			slug = ?,
-			location = ?,
-			timezone = ?,
-			settings = ?,
-			updated_at = ?
-		WHERE id = ?`,
-		orgID,
-		req.Name,
-		req.Slug,
-		locationStr,
-		timezoneStr,
-		settingsStr,
-		now,
-		id,
-	)
-	if err != nil {
-		logger.Printf("[FACTORY] Failed to replace factory: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to replace factory"})
-		return
-	}
-
-	// Fetch the updated factory
-	var f factoryRow
-	err = h.db.Get(&f, "SELECT id, organization_id, name, slug, location, timezone, settings, created_at, updated_at FROM factories WHERE id = ?", id)
-	if err != nil {
-		logger.Printf("[FACTORY] Failed to fetch updated factory: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated factory"})
-		return
-	}
-
-	location := ""
-	if f.Location.Valid {
-		location = f.Location.String
-	}
-	factoryTimezone := "UTC"
-	if f.Timezone.Valid {
-		factoryTimezone = f.Timezone.String
-	}
-	createdAt := ""
-	if f.CreatedAt.Valid {
-		createdAt = f.CreatedAt.String
-	}
-	updatedAt := ""
-	if f.UpdatedAt.Valid {
-		updatedAt = f.UpdatedAt.String
-	}
-
-	c.JSON(http.StatusOK, FactoryResponse{
-		ID:             fmt.Sprintf("%d", f.ID),
-		OrganizationID: fmt.Sprintf("%d", f.OrganizationID),
-		Name:           f.Name,
-		Slug:           f.Slug,
-		Location:       location,
-		Timezone:       factoryTimezone,
-		CreatedAt:      createdAt,
-		UpdatedAt:      updatedAt,
-	})
-}
-
 // UpdateFactory handles updating a factory.
 //
 // @Summary      Update factory
@@ -588,7 +402,7 @@ func (h *FactoryHandler) ReplaceFactory(c *gin.Context) {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /factories/{id} [patch]
+// @Router       /factories/{id} [put]
 func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)

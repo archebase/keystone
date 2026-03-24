@@ -59,7 +59,7 @@ func (h *StationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/stations", h.CreateStation)
 	apiV1.GET("/stations", h.ListStations)
 	apiV1.GET("/stations/:id", h.GetStation)
-	apiV1.PATCH("/stations/:id", h.UpdateStation)
+	apiV1.PUT("/stations/:id", h.UpdateStation)
 	apiV1.DELETE("/stations/:id", h.DeleteStation)
 }
 
@@ -420,7 +420,7 @@ var validStationStatuses = map[string]bool{
 // @Failure      400     {object}  map[string]string
 // @Failure      404     {object}  map[string]string
 // @Failure      500     {object}  map[string]string
-// @Router       /stations/{id} [patch]
+// @Router       /stations/{id} [put]
 func (h *StationHandler) UpdateStation(c *gin.Context) {
 	stationIDStr := c.Param("id")
 

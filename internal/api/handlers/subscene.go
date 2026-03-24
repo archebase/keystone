@@ -77,7 +77,7 @@ func (h *SubsceneHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/subscenes", h.ListSubscenes)
 	apiV1.POST("/subscenes", h.CreateSubscene)
 	apiV1.GET("/subscenes/:id", h.GetSubscene)
-	apiV1.PATCH("/subscenes/:id", h.UpdateSubscene)
+	apiV1.PUT("/subscenes/:id", h.UpdateSubscene)
 	apiV1.DELETE("/subscenes/:id", h.DeleteSubscene)
 }
 
@@ -404,7 +404,7 @@ func (h *SubsceneHandler) CreateSubscene(c *gin.Context) {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /subscenes/{id} [patch]
+// @Router       /subscenes/{id} [put]
 func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)

@@ -65,7 +65,7 @@ func (h *RobotTypeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robot_types", h.ListRobotTypes)
 	apiV1.POST("/robot_types", h.CreateRobotType)
 	apiV1.GET("/robot_types/:id", h.GetRobotType)
-	apiV1.PATCH("/robot_types/:id", h.UpdateRobotType)
+	apiV1.PUT("/robot_types/:id", h.UpdateRobotType)
 	apiV1.DELETE("/robot_types/:id", h.DeleteRobotType)
 }
 
@@ -331,7 +331,7 @@ type UpdateRobotTypeRequest struct {
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
-// @Router       /robot_types/{id} [patch]
+// @Router       /robot_types/{id} [put]
 func (h *RobotTypeHandler) UpdateRobotType(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
