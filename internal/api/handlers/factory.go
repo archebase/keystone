@@ -7,6 +7,7 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -48,9 +49,12 @@ type FactoryListResponse struct {
 
 // CreateFactoryRequest represents the request body for creating a factory.
 type CreateFactoryRequest struct {
-	OrganizationID string `json:"organization_id"`
-	Name           string `json:"name"`
-	Slug           string `json:"slug"`
+	OrganizationID string      `json:"organization_id"`
+	Name           string      `json:"name"`
+	Slug           string      `json:"slug"`
+	Location       string      `json:"location,omitempty"`
+	Timezone       string      `json:"timezone,omitempty"`
+	Settings       interface{} `json:"settings,omitempty"`
 }
 
 // CreateFactoryResponse represents the response for creating a factory.
@@ -59,6 +63,8 @@ type CreateFactoryResponse struct {
 	OrganizationID string `json:"organization_id"`
 	Name           string `json:"name"`
 	Slug           string `json:"slug"`
+	Location       string `json:"location,omitempty"`
+	Timezone       string `json:"timezone,omitempty"`
 	CreatedAt      string `json:"created_at"`
 }
 
@@ -188,6 +194,8 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 	req.OrganizationID = strings.TrimSpace(req.OrganizationID)
 	req.Name = strings.TrimSpace(req.Name)
 	req.Slug = strings.TrimSpace(req.Slug)
+	req.Location = strings.TrimSpace(req.Location)
+	req.Timezone = strings.TrimSpace(req.Timezone)
 
 	if req.OrganizationID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
@@ -228,19 +236,48 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 
 	now := time.Now().UTC()
 
+	// Set default timezone if not provided
+	timezone := req.Timezone
+	if timezone == "" {
+		timezone = "UTC"
+	}
+
+	// Convert location to nullable string
+	var locationStr sql.NullString
+	if req.Location != "" {
+		locationStr = sql.NullString{String: req.Location, Valid: true}
+	}
+
+	// Convert timezone to nullable string
+	var timezoneStr sql.NullString
+	timezoneStr = sql.NullString{String: timezone, Valid: true}
+
+	// Convert settings to JSON string if provided
+	var settingsStr sql.NullString
+	if req.Settings != nil {
+		settingsJSON, err := json.Marshal(req.Settings)
+		if err == nil {
+			settingsStr = sql.NullString{String: string(settingsJSON), Valid: true}
+		}
+	}
+
 	result, err := h.db.Exec(
 		`INSERT INTO factories (
 			organization_id,
 			name,
 			slug,
+			location,
 			timezone,
+			settings,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		orgID,
 		req.Name,
 		req.Slug,
-		"UTC",
+		locationStr,
+		timezoneStr,
+		settingsStr,
 		now,
 		now,
 	)
@@ -262,6 +299,8 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 		OrganizationID: req.OrganizationID,
 		Name:           req.Name,
 		Slug:           req.Slug,
+		Location:       req.Location,
+		Timezone:       timezone,
 		CreatedAt:      now.Format(time.RFC3339),
 	})
 }
