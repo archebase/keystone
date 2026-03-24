@@ -58,7 +58,9 @@ type StationResponse struct {
 func (h *StationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/stations", h.CreateStation)
 	apiV1.GET("/stations", h.ListStations)
+	apiV1.GET("/stations/:id", h.GetStation)
 	apiV1.PATCH("/stations/:id", h.UpdateStation)
+	apiV1.DELETE("/stations/:id", h.DeleteStation)
 }
 
 // robotInfoRow represents robot info retrieved from DB
@@ -530,4 +532,140 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		Name:                station.Name.String,
 		CreatedAt:           createdAtStr,
 	})
+}
+
+// GetStation handles getting a single station by ID.
+//
+// @Summary      Get station
+// @Description  Gets a station by ID
+// @Tags         stations
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string  true  "Station ID (e.g., ws_001)"
+// @Success      200  {object}  StationResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /stations/{id} [get]
+func (h *StationHandler) GetStation(c *gin.Context) {
+	stationIDStr := c.Param("id")
+
+	// Parse station ID (format: ws_XXX)
+	if !strings.HasPrefix(stationIDStr, "ws_") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		return
+	}
+
+	idStr := strings.TrimPrefix(stationIDStr, "ws_")
+	var stationID int64
+	_, err := fmt.Sscanf(idStr, "%d", &stationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		return
+	}
+
+	var station stationListRow
+	err = h.db.Get(&station, `
+		SELECT 
+			id, robot_id, robot_name, robot_serial,
+			data_collector_id, collector_name, collector_operator_id,
+			factory_id, name, status, created_at
+		FROM workstations 
+		WHERE id = ? AND deleted_at IS NULL
+	`, stationID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "station not found"})
+			return
+		}
+		logger.Printf("[STATION] Failed to query station: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get station"})
+		return
+	}
+
+	// Get factory slug
+	var factory factoryInfoRow
+	err = h.db.Get(&factory, "SELECT id, slug FROM factories WHERE id = ?", station.FactoryID)
+	if err != nil {
+		logger.Printf("[STATION] Failed to get factory: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get station"})
+		return
+	}
+
+	var createdAtStr string
+	if station.CreatedAt.Valid {
+		createdAt, _ := time.Parse("2006-01-02 15:04:05", station.CreatedAt.String)
+		createdAtStr = createdAt.Format(time.RFC3339)
+	}
+
+	c.JSON(http.StatusOK, StationResponse{
+		ID:                  fmt.Sprintf("ws_%d", station.ID),
+		RobotID:             fmt.Sprintf("robot_%d", station.RobotID),
+		RobotName:           station.RobotName,
+		RobotSerial:         station.RobotSerial,
+		DataCollectorID:     fmt.Sprintf("dc_%d", station.DataCollectorID),
+		CollectorName:       station.CollectorName,
+		CollectorOperatorID: station.CollectorOperatorID,
+		FactoryID:           factory.Slug,
+		Status:              station.Status,
+		Name:                station.Name.String,
+		CreatedAt:           createdAtStr,
+	})
+}
+
+// DeleteStation handles station deletion requests (soft delete).
+//
+// @Summary      Delete station
+// @Description  Soft deletes a station by ID
+// @Tags         stations
+// @Accept       json
+// @Produce      json
+// @Param        id path     string  true  "Station ID (e.g., ws_001)"
+// @Success      204
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /stations/{id} [delete]
+func (h *StationHandler) DeleteStation(c *gin.Context) {
+	stationIDStr := c.Param("id")
+
+	// Parse station ID (format: ws_XXX)
+	if !strings.HasPrefix(stationIDStr, "ws_") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		return
+	}
+
+	idStr := strings.TrimPrefix(stationIDStr, "ws_")
+	var stationID int64
+	_, err := fmt.Sscanf(idStr, "%d", &stationID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		return
+	}
+
+	// Check if station exists
+	var exists bool
+	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM workstations WHERE id = ? AND deleted_at IS NULL)", stationID)
+	if err != nil {
+		logger.Printf("[STATION] Failed to check station existence: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete station"})
+		return
+	}
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "station not found"})
+		return
+	}
+
+	now := time.Now().UTC()
+
+	// Perform soft delete by setting deleted_at
+	_, err = h.db.Exec("UPDATE workstations SET deleted_at = ?, updated_at = ? WHERE id = ?", now, now, stationID)
+	if err != nil {
+		logger.Printf("[STATION] Failed to delete station: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete station"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }

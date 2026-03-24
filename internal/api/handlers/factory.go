@@ -66,6 +66,9 @@ type CreateFactoryResponse struct {
 func (h *FactoryHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/factories", h.ListFactories)
 	apiV1.POST("/factories", h.CreateFactory)
+	apiV1.GET("/factories/:id", h.GetFactory)
+	apiV1.PATCH("/factories/:id", h.UpdateFactory)
+	apiV1.DELETE("/factories/:id", h.DeleteFactory)
 }
 
 // factoryRow represents a factory in the database
@@ -261,4 +264,281 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 		Slug:           req.Slug,
 		CreatedAt:      now.Format(time.RFC3339),
 	})
+}
+
+// GetFactory handles getting a single factory by ID.
+//
+// @Summary      Get factory
+// @Description  Gets a factory by ID
+// @Tags         factories
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string  true  "Factory ID"
+// @Success      200  {object}  FactoryResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /factories/{id} [get]
+func (h *FactoryHandler) GetFactory(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory id"})
+		return
+	}
+
+	query := `
+		SELECT 
+			id,
+			organization_id,
+			name,
+			slug,
+			location,
+			timezone,
+			settings,
+			created_at,
+			updated_at
+		FROM factories
+		WHERE id = ? AND deleted_at IS NULL
+	`
+
+	var f factoryRow
+	if err := h.db.Get(&f, query, id); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "factory not found"})
+			return
+		}
+		logger.Printf("[FACTORY] Failed to query factory: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get factory"})
+		return
+	}
+
+	location := ""
+	if f.Location.Valid {
+		location = f.Location.String
+	}
+	timezone := "UTC"
+	if f.Timezone.Valid {
+		timezone = f.Timezone.String
+	}
+	createdAt := ""
+	if f.CreatedAt.Valid {
+		createdAt = f.CreatedAt.String
+	}
+	updatedAt := ""
+	if f.UpdatedAt.Valid {
+		updatedAt = f.UpdatedAt.String
+	}
+
+	c.JSON(http.StatusOK, FactoryResponse{
+		ID:             fmt.Sprintf("%d", f.ID),
+		OrganizationID: fmt.Sprintf("%d", f.OrganizationID),
+		Name:           f.Name,
+		Slug:           f.Slug,
+		Location:       location,
+		Timezone:       timezone,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+	})
+}
+
+// UpdateFactoryRequest represents the request body for updating a factory.
+type UpdateFactoryRequest struct {
+	Name     *string `json:"name,omitempty"`
+	Slug     *string `json:"slug,omitempty"`
+	Location *string `json:"location,omitempty"`
+	Timezone *string `json:"timezone,omitempty"`
+}
+
+// UpdateFactory handles updating a factory.
+//
+// @Summary      Update factory
+// @Description  Updates an existing factory
+// @Tags         factories
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string                true  "Factory ID"
+// @Param        body body      UpdateFactoryRequest  true  "Factory payload"
+// @Success      200  {object}  FactoryResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /factories/{id} [patch]
+func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory id"})
+		return
+	}
+
+	var req UpdateFactoryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	// Check if factory exists
+	var existing factoryRow
+	err = h.db.Get(&existing, "SELECT id, organization_id, name, slug, location, timezone, settings, created_at, updated_at FROM factories WHERE id = ? AND deleted_at IS NULL", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "factory not found"})
+			return
+		}
+		logger.Printf("[FACTORY] Failed to query factory: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update factory"})
+		return
+	}
+
+	// Build update query dynamically
+	updates := []string{}
+	args := []interface{}{}
+
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name != "" {
+			updates = append(updates, "name = ?")
+			args = append(args, name)
+		}
+	}
+
+	if req.Slug != nil {
+		slug := strings.TrimSpace(*req.Slug)
+		if slug != "" {
+			// Check if slug already exists for this organization
+			var exists bool
+			err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE organization_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", existing.OrganizationID, slug, id)
+			if err == nil && exists {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
+				return
+			}
+			updates = append(updates, "slug = ?")
+			args = append(args, slug)
+		}
+	}
+
+	if req.Location != nil {
+		location := strings.TrimSpace(*req.Location)
+		var locStr sql.NullString
+		if location != "" {
+			locStr = sql.NullString{String: location, Valid: true}
+		}
+		updates = append(updates, "location = ?")
+		args = append(args, locStr)
+	}
+
+	if req.Timezone != nil {
+		tz := strings.TrimSpace(*req.Timezone)
+		var tzStr sql.NullString
+		if tz != "" {
+			tzStr = sql.NullString{String: tz, Valid: true}
+		}
+		updates = append(updates, "timezone = ?")
+		args = append(args, tzStr)
+	}
+
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+		return
+	}
+
+	now := time.Now().UTC()
+	updates = append(updates, "updated_at = ?")
+	args = append(args, now)
+	args = append(args, id)
+
+	query := fmt.Sprintf("UPDATE factories SET %s WHERE id = ?", strings.Join(updates, ", "))
+
+	_, err = h.db.Exec(query, args...)
+	if err != nil {
+		logger.Printf("[FACTORY] Failed to update factory: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update factory"})
+		return
+	}
+
+	// Fetch the updated factory
+	var f factoryRow
+	err = h.db.Get(&f, "SELECT id, organization_id, name, slug, location, timezone, settings, created_at, updated_at FROM factories WHERE id = ?", id)
+	if err != nil {
+		logger.Printf("[FACTORY] Failed to fetch updated factory: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated factory"})
+		return
+	}
+
+	location := ""
+	if f.Location.Valid {
+		location = f.Location.String
+	}
+	timezone := "UTC"
+	if f.Timezone.Valid {
+		timezone = f.Timezone.String
+	}
+	createdAt := ""
+	if f.CreatedAt.Valid {
+		createdAt = f.CreatedAt.String
+	}
+	updatedAt := ""
+	if f.UpdatedAt.Valid {
+		updatedAt = f.UpdatedAt.String
+	}
+
+	c.JSON(http.StatusOK, FactoryResponse{
+		ID:             fmt.Sprintf("%d", f.ID),
+		OrganizationID: fmt.Sprintf("%d", f.OrganizationID),
+		Name:           f.Name,
+		Slug:           f.Slug,
+		Location:       location,
+		Timezone:       timezone,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+	})
+}
+
+// DeleteFactory handles factory deletion requests (soft delete).
+//
+// @Summary      Delete factory
+// @Description  Soft deletes a factory by ID
+// @Tags         factories
+// @Accept       json
+// @Produce      json
+// @Param        id path     string  true  "Factory ID"
+// @Success      204
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /factories/{id} [delete]
+func (h *FactoryHandler) DeleteFactory(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory id"})
+		return
+	}
+
+	// Check if factory exists
+	var exists bool
+	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", id)
+	if err != nil {
+		logger.Printf("[FACTORY] Failed to check factory existence: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete factory"})
+		return
+	}
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "factory not found"})
+		return
+	}
+
+	now := time.Now().UTC()
+
+	// Perform soft delete by setting deleted_at
+	_, err = h.db.Exec("UPDATE factories SET deleted_at = ?, updated_at = ? WHERE id = ?", now, now, id)
+	if err != nil {
+		logger.Printf("[FACTORY] Failed to delete factory: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete factory"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }

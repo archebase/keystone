@@ -73,6 +73,9 @@ type CreateRobotResponse struct {
 func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robots", h.ListRobots)
 	apiV1.POST("/robots", h.CreateRobot)
+	apiV1.GET("/robots/:id", h.GetRobot)
+	apiV1.PATCH("/robots/:id", h.UpdateRobot)
+	apiV1.DELETE("/robots/:id", h.DeleteRobot)
 }
 
 // robotRow represents a robot in the database
@@ -318,4 +321,246 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		Status:      "active",
 		CreatedAt:   createdAt,
 	})
+}
+
+// GetRobot handles getting a single robot by ID.
+//
+// @Summary      Get robot
+// @Description  Gets a robot by ID
+// @Tags         robots
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string  true  "Robot ID"
+// @Success      200  {object}  RobotResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /robots/{id} [get]
+func (h *RobotHandler) GetRobot(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	query := `
+		SELECT 
+			r.id,
+			r.robot_type_id,
+			r.device_id,
+			r.factory_id,
+			r.status,
+			r.created_at
+		FROM robots r
+		WHERE r.id = ? AND r.deleted_at IS NULL
+	`
+
+	var r robotRow
+	if err := h.db.Get(&r, query, id); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+			return
+		}
+		logger.Printf("[ROBOT] Failed to query robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get robot"})
+		return
+	}
+
+	createdAt := ""
+	if r.CreatedAt.Valid {
+		createdAt = r.CreatedAt.String
+	}
+
+	connected := false
+	connectedAt := ""
+	if h.recorderHub != nil && h.transferHub != nil {
+		recConn := h.recorderHub.Get(r.DeviceID)
+		transConn := h.transferHub.Get(r.DeviceID)
+		connected = recConn != nil && transConn != nil
+
+		if connected {
+			t := recConn.ConnectedAt
+			if transConn.ConnectedAt.After(t) {
+				t = transConn.ConnectedAt
+			}
+			connectedAt = t.UTC().Format(time.RFC3339)
+		}
+	}
+
+	c.JSON(http.StatusOK, RobotResponse{
+		ID:          fmt.Sprintf("%d", r.ID),
+		RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),
+		DeviceID:    r.DeviceID,
+		FactoryID:   fmt.Sprintf("%d", r.FactoryID),
+		Status:      r.Status,
+		CreatedAt:   createdAt,
+		Connected:   connected,
+		ConnectedAt: connectedAt,
+	})
+}
+
+// UpdateRobotRequest represents the request body for updating a robot.
+type UpdateRobotRequest struct {
+	Status *string `json:"status,omitempty"`
+}
+
+// UpdateRobot handles updating a robot.
+//
+// @Summary      Update robot
+// @Description  Updates an existing robot
+// @Tags         robots
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string           true  "Robot ID"
+// @Param        body body      UpdateRobotRequest  true  "Robot payload"
+// @Success      200  {object}  RobotResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /robots/{id} [patch]
+func (h *RobotHandler) UpdateRobot(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	var req UpdateRobotRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	// Validate status if provided
+	validStatuses := map[string]bool{
+		"active":      true,
+		"maintenance": true,
+		"retired":     true,
+	}
+
+	if req.Status != nil {
+		status := strings.TrimSpace(*req.Status)
+		if !validStatuses[status] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status, must be one of: active, maintenance, retired"})
+			return
+		}
+
+		// Check if robot exists
+		var exists bool
+		err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robots WHERE id = ? AND deleted_at IS NULL)", id)
+		if err != nil || !exists {
+			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+			return
+		}
+
+		updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+		_, err = h.db.Exec("UPDATE robots SET status = ?, updated_at = ? WHERE id = ?", status, updatedAt, id)
+		if err != nil {
+			logger.Printf("[ROBOT] Failed to update robot: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+			return
+		}
+	}
+
+	// Fetch the updated robot
+	var r robotRow
+	err = h.db.Get(&r, `
+		SELECT 
+			r.id,
+			r.robot_type_id,
+			r.device_id,
+			r.factory_id,
+			r.status,
+			r.created_at
+		FROM robots r
+		WHERE r.id = ?
+	`, id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to fetch updated robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated robot"})
+		return
+	}
+
+	createdAt := ""
+	if r.CreatedAt.Valid {
+		createdAt = r.CreatedAt.String
+	}
+
+	connected := false
+	connectedAt := ""
+	if h.recorderHub != nil && h.transferHub != nil {
+		recConn := h.recorderHub.Get(r.DeviceID)
+		transConn := h.transferHub.Get(r.DeviceID)
+		connected = recConn != nil && transConn != nil
+
+		if connected {
+			t := recConn.ConnectedAt
+			if transConn.ConnectedAt.After(t) {
+				t = transConn.ConnectedAt
+			}
+			connectedAt = t.UTC().Format(time.RFC3339)
+		}
+	}
+
+	c.JSON(http.StatusOK, RobotResponse{
+		ID:          fmt.Sprintf("%d", r.ID),
+		RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),
+		DeviceID:    r.DeviceID,
+		FactoryID:   fmt.Sprintf("%d", r.FactoryID),
+		Status:      r.Status,
+		CreatedAt:   createdAt,
+		Connected:   connected,
+		ConnectedAt: connectedAt,
+	})
+}
+
+// DeleteRobot handles robot deletion requests (soft delete).
+//
+// @Summary      Delete robot
+// @Description  Soft deletes a robot by ID
+// @Tags         robots
+// @Accept       json
+// @Produce      json
+// @Param        id path     string  true  "Robot ID"
+// @Success      204
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /robots/{id} [delete]
+func (h *RobotHandler) DeleteRobot(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	// Check if robot exists
+	var exists bool
+	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robots WHERE id = ? AND deleted_at IS NULL)", id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to check robot existence: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot"})
+		return
+	}
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+
+	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	// Perform soft delete by setting deleted_at
+	_, err = h.db.Exec("UPDATE robots SET deleted_at = NOW(), updated_at = ? WHERE id = ?", updatedAt, id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to delete robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }
