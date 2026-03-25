@@ -37,6 +37,7 @@ type SceneResponse struct {
 	Slug                       string `json:"slug"`
 	Description                string `json:"description,omitempty"`
 	InitialSceneLayoutTemplate string `json:"initial_scene_layout_template,omitempty"`
+	SubsceneCount              int    `json:"subscene_count"`
 	CreatedAt                  string `json:"created_at,omitempty"`
 	UpdatedAt                  string `json:"updated_at,omitempty"`
 }
@@ -48,12 +49,12 @@ type SceneListResponse struct {
 
 // CreateSceneRequest represents the request body for creating a scene.
 type CreateSceneRequest struct {
-	OrganizationID             string `json:"organization_id"`
-	FactoryID                  string `json:"factory_id"`
-	Name                       string `json:"name"`
-	Slug                       string `json:"slug"`
-	Description                string `json:"description,omitempty"`
-	InitialSceneLayoutTemplate string `json:"initial_scene_layout_template,omitempty"`
+	OrganizationID             *string `json:"organization_id,omitempty"`
+	FactoryID                  string  `json:"factory_id"`
+	Name                       string  `json:"name"`
+	Slug                       *string `json:"slug,omitempty"`
+	Description                string  `json:"description,omitempty"`
+	InitialSceneLayoutTemplate string  `json:"initial_scene_layout_template,omitempty"`
 }
 
 // CreateSceneResponse represents the response for creating a scene.
@@ -66,6 +67,8 @@ type CreateSceneResponse struct {
 
 // UpdateSceneRequest represents the request body for updating a scene.
 type UpdateSceneRequest struct {
+	OrganizationID             *string `json:"organization_id,omitempty"`
+	FactoryID                  *string `json:"factory_id,omitempty"`
 	Name                       *string `json:"name,omitempty"`
 	Slug                       *string `json:"slug,omitempty"`
 	Description                *string `json:"description,omitempty"`
@@ -84,12 +87,13 @@ func (h *SceneHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // sceneRow represents a scene in the database
 type sceneRow struct {
 	ID                         int64          `db:"id"`
-	OrganizationID             int64          `db:"organization_id"`
+	OrganizationID             sql.NullInt64  `db:"organization_id"`
 	FactoryID                  int64          `db:"factory_id"`
 	Name                       string         `db:"name"`
-	Slug                       string         `db:"slug"`
+	Slug                       sql.NullString `db:"slug"`
 	Description                sql.NullString `db:"description"`
 	InitialSceneLayoutTemplate sql.NullString `db:"initial_scene_layout_template"`
+	SubsceneCount              int            `db:"subscene_count"`
 	CreatedAt                  sql.NullString `db:"created_at"`
 	UpdatedAt                  sql.NullString `db:"updated_at"`
 }
@@ -112,17 +116,18 @@ func (h *SceneHandler) ListScenes(c *gin.Context) {
 
 	query := `
 		SELECT 
-			id,
-			organization_id,
-			factory_id,
-			name,
-			slug,
-			description,
-			initial_scene_layout_template,
-			created_at,
-			updated_at
-		FROM scenes
-		WHERE deleted_at IS NULL
+			s.id,
+			s.organization_id,
+			s.factory_id,
+			s.name,
+			s.slug,
+			s.description,
+			s.initial_scene_layout_template,
+			s.created_at,
+			s.updated_at,
+			(SELECT COUNT(*) FROM subscenes sub WHERE sub.scene_id = s.id AND sub.deleted_at IS NULL) as subscene_count
+		FROM scenes s
+		WHERE s.deleted_at IS NULL
 	`
 	args := []interface{}{}
 
@@ -173,15 +178,24 @@ func (h *SceneHandler) ListScenes(c *gin.Context) {
 		if s.UpdatedAt.Valid {
 			updatedAt = s.UpdatedAt.String
 		}
+		orgID := ""
+		if s.OrganizationID.Valid {
+			orgID = fmt.Sprintf("%d", s.OrganizationID.Int64)
+		}
+		slug := ""
+		if s.Slug.Valid {
+			slug = s.Slug.String
+		}
 
 		scenes = append(scenes, SceneResponse{
 			ID:                         fmt.Sprintf("%d", s.ID),
-			OrganizationID:             fmt.Sprintf("%d", s.OrganizationID),
+			OrganizationID:             orgID,
 			FactoryID:                  fmt.Sprintf("%d", s.FactoryID),
 			Name:                       s.Name,
-			Slug:                       s.Slug,
+			Slug:                       slug,
 			Description:                description,
 			InitialSceneLayoutTemplate: layoutTemplate,
+			SubsceneCount:              s.SubsceneCount,
 			CreatedAt:                  createdAt,
 			UpdatedAt:                  updatedAt,
 		})
@@ -255,13 +269,21 @@ func (h *SceneHandler) GetScene(c *gin.Context) {
 	if s.UpdatedAt.Valid {
 		updatedAt = s.UpdatedAt.String
 	}
+	orgID := ""
+	if s.OrganizationID.Valid {
+		orgID = fmt.Sprintf("%d", s.OrganizationID.Int64)
+	}
+	slug := ""
+	if s.Slug.Valid {
+		slug = s.Slug.String
+	}
 
 	c.JSON(http.StatusOK, SceneResponse{
 		ID:                         fmt.Sprintf("%d", s.ID),
-		OrganizationID:             fmt.Sprintf("%d", s.OrganizationID),
+		OrganizationID:             orgID,
 		FactoryID:                  fmt.Sprintf("%d", s.FactoryID),
 		Name:                       s.Name,
-		Slug:                       s.Slug,
+		Slug:                       slug,
 		Description:                description,
 		InitialSceneLayoutTemplate: layoutTemplate,
 		CreatedAt:                  createdAt,
@@ -288,16 +310,17 @@ func (h *SceneHandler) CreateScene(c *gin.Context) {
 		return
 	}
 
-	req.OrganizationID = strings.TrimSpace(req.OrganizationID)
+	if req.OrganizationID != nil {
+		trimmed := strings.TrimSpace(*req.OrganizationID)
+		req.OrganizationID = &trimmed
+	}
 	req.FactoryID = strings.TrimSpace(req.FactoryID)
 	req.Name = strings.TrimSpace(req.Name)
-	req.Slug = strings.TrimSpace(req.Slug)
-	req.Description = strings.TrimSpace(req.Description)
-
-	if req.OrganizationID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
-		return
+	if req.Slug != nil {
+		trimmed := strings.TrimSpace(*req.Slug)
+		req.Slug = &trimmed
 	}
+	req.Description = strings.TrimSpace(req.Description)
 
 	if req.FactoryID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "factory_id is required"})
@@ -309,18 +332,6 @@ func (h *SceneHandler) CreateScene(c *gin.Context) {
 		return
 	}
 
-	if req.Slug == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug is required"})
-		return
-	}
-
-	// Parse organization_id
-	orgID, err := strconv.ParseInt(req.OrganizationID, 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-		return
-	}
-
 	// Parse factory_id
 	factoryID, err := strconv.ParseInt(req.FactoryID, 10, 64)
 	if err != nil {
@@ -328,31 +339,57 @@ func (h *SceneHandler) CreateScene(c *gin.Context) {
 		return
 	}
 
-	// Verify organization exists
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID)
-	if err != nil || !exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
-		return
-	}
-
 	// Verify factory exists
+	var exists bool
 	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", factoryID)
 	if err != nil || !exists {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "factory not found"})
 		return
 	}
 
-	// Check if slug already exists for this organization
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM scenes WHERE organization_id = ? AND slug = ? AND deleted_at IS NULL)", orgID, req.Slug)
-	if err == nil && exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
-		return
+	// Parse organization_id (optional)
+	var orgID sql.NullInt64
+	if req.OrganizationID != nil && *req.OrganizationID != "" {
+		parsedOrgID, err := strconv.ParseInt(*req.OrganizationID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+			return
+		}
+		// Verify organization exists
+		err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", parsedOrgID)
+		if err != nil || !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
+			return
+		}
+		orgID = sql.NullInt64{Int64: parsedOrgID, Valid: true}
+
+		// Check if slug already exists for this organization (if slug is provided)
+		if req.Slug != nil && *req.Slug != "" {
+			err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM scenes WHERE organization_id = ? AND slug = ? AND deleted_at IS NULL)", parsedOrgID, *req.Slug)
+			if err == nil && exists {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
+				return
+			}
+		}
+	} else {
+		// Check if slug already exists globally (when organization_id is not specified)
+		if req.Slug != nil && *req.Slug != "" {
+			err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM scenes WHERE (organization_id IS NULL OR organization_id = 0) AND slug = ? AND deleted_at IS NULL)", *req.Slug)
+			if err == nil && exists {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists"})
+				return
+			}
+		}
 	}
 
 	var descriptionStr sql.NullString
 	if req.Description != "" {
 		descriptionStr = sql.NullString{String: req.Description, Valid: true}
+	}
+
+	var slugStr sql.NullString
+	if req.Slug != nil && *req.Slug != "" {
+		slugStr = sql.NullString{String: *req.Slug, Valid: true}
 	}
 
 	var layoutTemplateStr sql.NullString
@@ -376,7 +413,7 @@ func (h *SceneHandler) CreateScene(c *gin.Context) {
 		orgID,
 		factoryID,
 		req.Name,
-		req.Slug,
+		slugStr,
 		descriptionStr,
 		layoutTemplateStr,
 		now,
@@ -396,9 +433,14 @@ func (h *SceneHandler) CreateScene(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, CreateSceneResponse{
-		ID:        fmt.Sprintf("%d", id),
-		Name:      req.Name,
-		Slug:      req.Slug,
+		ID:   fmt.Sprintf("%d", id),
+		Name: req.Name,
+		Slug: func() string {
+			if req.Slug != nil {
+				return *req.Slug
+			}
+			return ""
+		}(),
 		CreatedAt: now.Format(time.RFC3339),
 	})
 }
@@ -448,6 +490,52 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 	updates := []string{}
 	args := []interface{}{}
 
+	if req.OrganizationID != nil {
+		orgIDStr := strings.TrimSpace(*req.OrganizationID)
+		if orgIDStr == "" {
+			// Set organization_id to NULL
+			updates = append(updates, "organization_id = ?")
+			args = append(args, sql.NullInt64{})
+		} else {
+			orgID, err := strconv.ParseInt(orgIDStr, 10, 64)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+				return
+			}
+			// Verify organization exists
+			var exists bool
+			err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID)
+			if err != nil || !exists {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
+				return
+			}
+			updates = append(updates, "organization_id = ?")
+			args = append(args, sql.NullInt64{Int64: orgID, Valid: true})
+		}
+	}
+
+	if req.FactoryID != nil {
+		factoryIDStr := strings.TrimSpace(*req.FactoryID)
+		if factoryIDStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "factory_id cannot be empty"})
+			return
+		}
+		factoryID, err := strconv.ParseInt(factoryIDStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+			return
+		}
+		// Verify factory exists
+		var exists bool
+		err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", factoryID)
+		if err != nil || !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "factory not found"})
+			return
+		}
+		updates = append(updates, "factory_id = ?")
+		args = append(args, factoryID)
+	}
+
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name != "" {
@@ -458,10 +546,14 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 
 	if req.Slug != nil {
 		slug := strings.TrimSpace(*req.Slug)
-		if slug != "" {
+		if slug == "" {
+			// Set slug to NULL
+			updates = append(updates, "slug = ?")
+			args = append(args, sql.NullString{})
+		} else {
 			// Check if slug already exists for this organization
 			var exists bool
-			err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM scenes WHERE organization_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", existing.OrganizationID, slug, id)
+			err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM scenes WHERE organization_id IS NOT DISTINCT FROM ? AND slug = ? AND id != ? AND deleted_at IS NULL)", existing.OrganizationID, slug, id)
 			if err == nil && exists {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
 				return
@@ -535,13 +627,21 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 	if s.UpdatedAt.Valid {
 		updatedAt = s.UpdatedAt.String
 	}
+	orgID := ""
+	if s.OrganizationID.Valid {
+		orgID = fmt.Sprintf("%d", s.OrganizationID.Int64)
+	}
+	slug := ""
+	if s.Slug.Valid {
+		slug = s.Slug.String
+	}
 
 	c.JSON(http.StatusOK, SceneResponse{
 		ID:                         fmt.Sprintf("%d", s.ID),
-		OrganizationID:             fmt.Sprintf("%d", s.OrganizationID),
+		OrganizationID:             orgID,
 		FactoryID:                  fmt.Sprintf("%d", s.FactoryID),
 		Name:                       s.Name,
-		Slug:                       s.Slug,
+		Slug:                       slug,
 		Description:                description,
 		InitialSceneLayoutTemplate: layoutTemplate,
 		CreatedAt:                  createdAt,

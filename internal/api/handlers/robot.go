@@ -402,7 +402,10 @@ func (h *RobotHandler) GetRobot(c *gin.Context) {
 
 // UpdateRobotRequest represents the request body for updating a robot.
 type UpdateRobotRequest struct {
-	Status *string `json:"status,omitempty"`
+	RobotTypeID *string `json:"robot_type_id,omitempty"`
+	DeviceID    *string `json:"device_id,omitempty"`
+	FactoryID   *string `json:"factory_id,omitempty"`
+	Status      *string `json:"status,omitempty"`
 }
 
 // UpdateRobot handles updating a robot.
@@ -433,11 +436,75 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 		return
 	}
 
+	// Check if robot exists
+	var exists bool
+	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robots WHERE id = ? AND deleted_at IS NULL)", id)
+	if err != nil || !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+
 	// Validate status if provided
 	validStatuses := map[string]bool{
 		"active":      true,
 		"maintenance": true,
 		"retired":     true,
+	}
+
+	// Build update query dynamically
+	updates := []string{}
+	args := []interface{}{}
+
+	if req.RobotTypeID != nil {
+		if *req.RobotTypeID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type_id cannot be empty"})
+			return
+		}
+		parsedRobotTypeID, err := strconv.ParseInt(*req.RobotTypeID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
+			return
+		}
+		// Verify robot_type exists
+		var rtExists bool
+		err = h.db.Get(&rtExists, "SELECT EXISTS(SELECT 1 FROM robot_types WHERE id = ? AND deleted_at IS NULL)", parsedRobotTypeID)
+		if err != nil || !rtExists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type not found"})
+			return
+		}
+		updates = append(updates, "robot_type_id = ?")
+		args = append(args, parsedRobotTypeID)
+	}
+
+	if req.DeviceID != nil {
+		deviceID := strings.TrimSpace(*req.DeviceID)
+		if deviceID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "device_id cannot be empty"})
+			return
+		}
+		updates = append(updates, "device_id = ?")
+		args = append(args, deviceID)
+	}
+
+	if req.FactoryID != nil {
+		if *req.FactoryID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "factory_id cannot be empty"})
+			return
+		}
+		parsedFactoryID, err := strconv.ParseInt(*req.FactoryID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+			return
+		}
+		// Verify factory exists
+		var fExists bool
+		err = h.db.Get(&fExists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", parsedFactoryID)
+		if err != nil || !fExists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "factory not found"})
+			return
+		}
+		updates = append(updates, "factory_id = ?")
+		args = append(args, parsedFactoryID)
 	}
 
 	if req.Status != nil {
@@ -446,23 +513,25 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status, must be one of: active, maintenance, retired"})
 			return
 		}
+		updates = append(updates, "status = ?")
+		args = append(args, status)
+	}
 
-		// Check if robot exists
-		var exists bool
-		err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robots WHERE id = ? AND deleted_at IS NULL)", id)
-		if err != nil || !exists {
-			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
-			return
-		}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+		return
+	}
 
-		updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	updates = append(updates, "updated_at = ?")
+	args = append(args, time.Now().UTC().Format("2006-01-02 15:04:05"))
+	args = append(args, id)
 
-		_, err = h.db.Exec("UPDATE robots SET status = ?, updated_at = ? WHERE id = ?", status, updatedAt, id)
-		if err != nil {
-			logger.Printf("[ROBOT] Failed to update robot: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
-			return
-		}
+	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ?", strings.Join(updates, ", "))
+	_, err = h.db.Exec(query, args...)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to update robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
 	}
 
 	// Fetch the updated robot

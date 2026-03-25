@@ -111,11 +111,6 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 		return
 	}
 
-	if len(req.ROSTopics) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ros_topics is required"})
-		return
-	}
-
 	now := time.Now().UTC()
 
 	result, err := h.db.Exec(
@@ -233,7 +228,7 @@ func parseJSONArray(s string) []string {
 
 func toNullableJSONArray(values []string) sql.NullString {
 	if len(values) == 0 {
-		return sql.NullString{}
+		return sql.NullString{String: "[]", Valid: true}
 	}
 	data, err := json.Marshal(values)
 	if err != nil {
