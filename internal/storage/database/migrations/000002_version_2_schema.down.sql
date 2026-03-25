@@ -6,61 +6,63 @@
 -- Revert index optimizations from version 2
 
 -- ============================================================
--- Production Units (reverse order)
+-- Production Units (reverse order of creation)
 -- ============================================================
 
-DROP INDEX idx_order_batch_task_episode_del ON episodes;
-CREATE INDEX idx_episode_id ON episodes (episode_id);
+DROP INDEX idx_episode_del ON episodes;
+CREATE INDEX episode_id ON episodes (episode_id);
 
-DROP INDEX idx_order_batch_task_del ON tasks;
-CREATE INDEX idx_task_id ON tasks (task_id);
+DROP INDEX idx_task_del ON tasks;
+CREATE INDEX task_id ON tasks (task_id);
 
-DROP INDEX idx_order_name_del ON batches;
-CREATE INDEX idx_batch_id ON batches (batch_id);
+DROP INDEX idx_name_del ON batches;
+CREATE INDEX batch_id ON batches (batch_id);
 
-DROP INDEX idx_org_name_del ON orders;
+DROP INDEX idx_name_del ON orders;
 
 -- ============================================================
 -- Operational Resources
 -- ============================================================
 
 DROP INDEX idx_inspector_del ON inspectors;
+CREATE INDEX inspector_id ON inspectors (inspector_id);
 
-DROP INDEX idx_robot_datacollector_del ON workstations;
+DROP INDEX idx_datacollector_del ON workstations;
 
 DROP INDEX idx_operator_del ON data_collectors;
-CREATE UNIQUE INDEX idx_operator_id ON data_collectors (operator_id);
+CREATE INDEX operator_id ON data_collectors (operator_id);
+CREATE INDEX idx_operator_id ON data_collectors (operator_id);
 
-DROP INDEX idx_robottype_device_del ON robots;
-CREATE UNIQUE INDEX idx_device_id ON robots (device_id);
+DROP INDEX idx_device_del ON robots;
+CREATE INDEX device_id ON robots (device_id);
+CREATE INDEX idx_device_id ON robots (device_id);
 
--- robot_types has no original index to restore (none existed before)
+DROP INDEX idx_model_del ON robot_types;
 
 -- ============================================================
 -- Capability & Procedure
 -- ============================================================
 
-DROP INDEX idx_slug_del ON sops;
+DROP INDEX idx_name_del ON sops;
+CREATE INDEX slug ON sops (slug);
 CREATE INDEX idx_slug ON sops (slug);
 
 DROP INDEX idx_name_del ON skills;
-CREATE INDEX idx_name ON skills (name);
+CREATE INDEX name ON skills (name);
 
 -- ============================================================
 -- Environmental Hierarchy
 -- ============================================================
 
-DROP INDEX idx_org_factory_scene_slug_del ON subscenes;
-ALTER TABLE subscenes 
-    DROP COLUMN factory_id,
-    DROP COLUMN organization_id;
-CREATE UNIQUE INDEX idx_scene_slug ON subscenes (scene_id, slug);
+DROP INDEX idx_name_del ON subscenes;
+CREATE INDEX idx_scene_slug ON subscenes (scene_id, slug);
 
-DROP INDEX idx_org_factory_slug_del ON scenes;
+DROP INDEX idx_name_del ON scenes;
 CREATE UNIQUE INDEX idx_org_slug ON scenes (organization_id, slug);
 
-DROP INDEX idx_org_slug_del ON factories;
+DROP INDEX idx_slug_del ON factories;
 CREATE UNIQUE INDEX idx_org_slug ON factories (organization_id, slug);
 
 DROP INDEX idx_slug_del ON organizations;
+CREATE INDEX slug ON organizations (slug);
 CREATE INDEX idx_slug ON organizations (slug);
