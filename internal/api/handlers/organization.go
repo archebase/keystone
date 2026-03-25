@@ -360,7 +360,6 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 // @Failure      404 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /organizations/{id} [put]
-// @Router       /organizations/{id} [put]
 func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
