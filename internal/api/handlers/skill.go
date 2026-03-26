@@ -65,6 +65,7 @@ type CreateSkillResponse struct {
 
 // UpdateSkillRequest represents the request body for updating a skill.
 type UpdateSkillRequest struct {
+	Name        *string     `json:"name,omitempty"`
 	DisplayName *string     `json:"display_name,omitempty"`
 	Description *string     `json:"description,omitempty"`
 	Version     *string     `json:"version,omitempty"`
@@ -273,16 +274,7 @@ func (h *SkillHandler) CreateSkill(c *gin.Context) {
 	}
 
 	if req.DisplayName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "display_name is required"})
-		return
-	}
-
-	// Check if name already exists
-	var exists bool
-	err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM skills WHERE name = ? AND deleted_at IS NULL)", req.Name)
-	if err == nil && exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "skill name already exists"})
-		return
+		req.DisplayName = req.Name
 	}
 
 	version := "1.0"
@@ -371,10 +363,34 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
+	// version is immutable after creation
+	if req.Version != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "version is immutable and cannot be updated"})
+		return
+	}
 
 	// Build update query dynamically
 	updates := []string{}
 	args := []interface{}{}
+
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name cannot be empty"})
+			return
+		}
+
+		// Check if name already exists (excluding current skill)
+		var exists bool
+		err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM skills WHERE name = ? AND id != ? AND deleted_at IS NULL)", name, id)
+		if err == nil && exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "skill name already exists"})
+			return
+		}
+
+		updates = append(updates, "name = ?")
+		args = append(args, name)
+	}
 
 	if req.DisplayName != nil {
 		displayName := strings.TrimSpace(*req.DisplayName)
@@ -392,14 +408,6 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 		}
 		updates = append(updates, "description = ?")
 		args = append(args, descStr)
-	}
-
-	if req.Version != nil {
-		version := strings.TrimSpace(*req.Version)
-		if version != "" {
-			updates = append(updates, "version = ?")
-			args = append(args, version)
-		}
 	}
 
 	if req.Metadata != nil {

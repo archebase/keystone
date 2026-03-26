@@ -37,6 +37,7 @@ type InspectorResponse struct {
 	Email              string      `json:"email,omitempty"`
 	CertificationLevel string      `json:"certification_level"`
 	Status             string      `json:"status"`
+	QueueSize          int         `json:"queueSize"`
 	Metadata           interface{} `json:"metadata,omitempty"`
 	CreatedAt          string      `json:"created_at,omitempty"`
 	UpdatedAt          string      `json:"updated_at,omitempty"`
@@ -170,6 +171,7 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 			Email:              email,
 			CertificationLevel: certLevel,
 			Status:             i.Status,
+			QueueSize:          0,
 			Metadata:           metadata,
 			CreatedAt:          createdAt,
 			UpdatedAt:          updatedAt,
@@ -256,6 +258,7 @@ func (h *InspectorHandler) GetInspector(c *gin.Context) {
 		Email:              email,
 		CertificationLevel: certLevel,
 		Status:             i.Status,
+		QueueSize:          0,
 		Metadata:           metadata,
 		CreatedAt:          createdAt,
 		UpdatedAt:          updatedAt,
@@ -517,6 +520,7 @@ func (h *InspectorHandler) UpdateInspector(c *gin.Context) {
 		Email:              email,
 		CertificationLevel: certLevel,
 		Status:             i.Status,
+		QueueSize:          0,
 		Metadata:           metadata,
 		CreatedAt:          createdAt,
 		UpdatedAt:          updatedAt,

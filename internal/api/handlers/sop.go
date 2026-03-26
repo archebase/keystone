@@ -33,7 +33,7 @@ func NewSOPHandler(db *sqlx.DB) *SOPHandler {
 type SOPResponse struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
-	Slug          string   `json:"slug"`
+	Slug          *string  `json:"slug,omitempty"`
 	Description   string   `json:"description,omitempty"`
 	SkillSequence []string `json:"skill_sequence"`
 	Version       int      `json:"version"`
@@ -52,13 +52,14 @@ type CreateSOPRequest struct {
 	Slug          string   `json:"slug"`
 	Description   string   `json:"description,omitempty"`
 	SkillSequence []string `json:"skill_sequence"`
+	Version       *int     `json:"version,omitempty"`
 }
 
 // CreateSOPResponse represents the response for creating an SOP.
 type CreateSOPResponse struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
-	Slug          string   `json:"slug"`
+	Slug          *string  `json:"slug,omitempty"`
 	SkillSequence []string `json:"skill_sequence"`
 	Version       int      `json:"version"`
 	CreatedAt     string   `json:"created_at"`
@@ -70,6 +71,7 @@ type UpdateSOPRequest struct {
 	Slug          *string   `json:"slug,omitempty"`
 	Description   *string   `json:"description,omitempty"`
 	SkillSequence *[]string `json:"skill_sequence,omitempty"`
+	Version       *int      `json:"version,omitempty"`
 }
 
 // RegisterRoutes registers SOP related routes.
@@ -85,7 +87,7 @@ func (h *SOPHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 type sopRow struct {
 	ID            int64          `db:"id"`
 	Name          string         `db:"name"`
-	Slug          string         `db:"slug"`
+	Slug          sql.NullString `db:"slug"`
 	Description   sql.NullString `db:"description"`
 	SkillSequence string         `db:"skill_sequence"`
 	Version       int            `db:"version"`
@@ -132,6 +134,11 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		if s.Description.Valid {
 			description = s.Description.String
 		}
+		var slug *string
+		if s.Slug.Valid && strings.TrimSpace(s.Slug.String) != "" {
+			v := s.Slug.String
+			slug = &v
+		}
 		skillSequence := parseJSONArray(s.SkillSequence)
 		createdAt := ""
 		if s.CreatedAt.Valid {
@@ -145,7 +152,7 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		sops = append(sops, SOPResponse{
 			ID:            fmt.Sprintf("%d", s.ID),
 			Name:          s.Name,
-			Slug:          s.Slug,
+			Slug:          slug,
 			Description:   description,
 			SkillSequence: skillSequence,
 			Version:       s.Version,
@@ -209,6 +216,11 @@ func (h *SOPHandler) GetSOP(c *gin.Context) {
 	if s.Description.Valid {
 		description = s.Description.String
 	}
+	var slug *string
+	if s.Slug.Valid && strings.TrimSpace(s.Slug.String) != "" {
+		v := s.Slug.String
+		slug = &v
+	}
 	skillSequence := parseJSONArray(s.SkillSequence)
 	createdAt := ""
 	if s.CreatedAt.Valid {
@@ -222,7 +234,7 @@ func (h *SOPHandler) GetSOP(c *gin.Context) {
 	c.JSON(http.StatusOK, SOPResponse{
 		ID:            fmt.Sprintf("%d", s.ID),
 		Name:          s.Name,
-		Slug:          s.Slug,
+		Slug:          slug,
 		Description:   description,
 		SkillSequence: skillSequence,
 		Version:       s.Version,
@@ -259,29 +271,41 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 		return
 	}
 
-	if req.Slug == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug is required"})
-		return
-	}
+	var slugStr sql.NullString
+	var slugResp *string
+	if req.Slug != "" {
+		// Validate slug format
+		if !isValidSlug(req.Slug) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
+			return
+		}
 
-	// Validate slug format
-	if !isValidSlug(req.Slug) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
-		return
-	}
+		// Check if slug already exists
+		var exists bool
+		err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM sops WHERE slug = ? AND deleted_at IS NULL)", req.Slug)
+		if err == nil && exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists"})
+			return
+		}
 
-	// Check if slug already exists
-	var exists bool
-	err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM sops WHERE slug = ? AND deleted_at IS NULL)", req.Slug)
-	if err == nil && exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists"})
-		return
+		slugStr = sql.NullString{String: req.Slug, Valid: true}
+		v := req.Slug
+		slugResp = &v
 	}
 
 	// Validate skill_sequence
 	if len(req.SkillSequence) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "skill_sequence is required and must not be empty"})
 		return
+	}
+
+	version := 1
+	if req.Version != nil {
+		if *req.Version < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "version must be >= 1"})
+			return
+		}
+		version = *req.Version
 	}
 
 	// Convert skill_sequence to JSON string
@@ -309,10 +333,10 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 			updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		req.Name,
-		req.Slug,
+		slugStr,
 		descriptionStr,
 		string(skillSeqJSON),
-		1,
+		version,
 		now,
 		now,
 	)
@@ -332,9 +356,9 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 	c.JSON(http.StatusCreated, CreateSOPResponse{
 		ID:            fmt.Sprintf("%d", id),
 		Name:          req.Name,
-		Slug:          req.Slug,
+		Slug:          slugResp,
 		SkillSequence: req.SkillSequence,
-		Version:       1,
+		Version:       version,
 		CreatedAt:     now.Format(time.RFC3339),
 	})
 }
@@ -381,7 +405,10 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 
 	if req.Slug != nil {
 		slug := strings.TrimSpace(*req.Slug)
-		if slug != "" {
+		if slug == "" {
+			updates = append(updates, "slug = ?")
+			args = append(args, sql.NullString{Valid: false})
+		} else {
 			if !isValidSlug(slug) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
 				return
@@ -416,6 +443,15 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 		}
 		updates = append(updates, "skill_sequence = ?")
 		args = append(args, string(skillSeqJSON))
+	}
+
+	if req.Version != nil {
+		if *req.Version < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "version must be >= 1"})
+			return
+		}
+		updates = append(updates, "version = ?")
+		args = append(args, *req.Version)
 	}
 
 	if len(updates) == 0 {
@@ -456,6 +492,11 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 	if s.Description.Valid {
 		description = s.Description.String
 	}
+	var slug *string
+	if s.Slug.Valid && strings.TrimSpace(s.Slug.String) != "" {
+		v := s.Slug.String
+		slug = &v
+	}
 	skillSequence := parseJSONArray(s.SkillSequence)
 	createdAt := ""
 	if s.CreatedAt.Valid {
@@ -469,7 +510,7 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 	c.JSON(http.StatusOK, SOPResponse{
 		ID:            fmt.Sprintf("%d", s.ID),
 		Name:          s.Name,
-		Slug:          s.Slug,
+		Slug:          slug,
 		Description:   description,
 		SkillSequence: skillSequence,
 		Version:       s.Version,

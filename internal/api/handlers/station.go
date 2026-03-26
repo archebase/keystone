@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,11 +44,7 @@ type UpdateStationRequest struct {
 type StationResponse struct {
 	ID                  string `json:"id"`
 	RobotID             string `json:"robot_id"`
-	RobotName           string `json:"robot_name"`
-	RobotSerial         string `json:"robot_serial"`
 	DataCollectorID     string `json:"data_collector_id"`
-	CollectorName       string `json:"collector_name"`
-	CollectorOperatorID string `json:"collector_operator_id"`
 	FactoryID           string `json:"factory_id"`
 	Status              string `json:"status"`
 	Name                string `json:"name"`
@@ -127,13 +124,20 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 
-	// Parse robot_id (device_id from robots table)
+	// Parse robot_id (robots.id)
+	robotIDStr := strings.TrimPrefix(req.RobotID, "robot_")
+	robotID, err := strconv.ParseInt(robotIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_id format"})
+		return
+	}
+
 	var robotInfo robotInfoRow
-	err := h.db.Get(&robotInfo, `
+	err = h.db.Get(&robotInfo, `
 		SELECT id, device_id, factory_id, status, robot_type_id 
 		FROM robots 
-		WHERE device_id = ? AND deleted_at IS NULL
-	`, req.RobotID)
+		WHERE id = ? AND deleted_at IS NULL
+	`, robotID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "robot not found"})
 		return
@@ -150,13 +154,20 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 
-	// Parse data_collector_id (operator_id from data_collectors table)
+	// Parse data_collector_id (data_collectors.id)
+	dcIDStr := strings.TrimPrefix(req.DataCollectorID, "dc_")
+	dcID, err := strconv.ParseInt(dcIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid data_collector_id format"})
+		return
+	}
+
 	var dcInfo dataCollectorInfoRow
 	err = h.db.Get(&dcInfo, `
 		SELECT id, name, operator_id, status 
 		FROM data_collectors 
-		WHERE operator_id = ? AND deleted_at IS NULL
-	`, req.DataCollectorID)
+		WHERE id = ? AND deleted_at IS NULL
+	`, dcID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector not found"})
 		return
@@ -187,7 +198,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		// Robot is already assigned
 		c.JSON(http.StatusConflict, gin.H{
 			"error":   "ROBOT_ALREADY_ASSIGNED",
-			"message": fmt.Sprintf("Robot %s is already assigned to station ws_%d", req.RobotID, existingStationID),
+			"message": fmt.Sprintf("Robot robot_%d is already assigned to station ws_%d", robotInfo.ID, existingStationID),
 		})
 		return
 	}
@@ -206,7 +217,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		// Data collector is already assigned
 		c.JSON(http.StatusConflict, gin.H{
 			"error":   "DATA_COLLECTOR_ALREADY_ASSIGNED",
-			"message": fmt.Sprintf("Data collector %s is already assigned to station ws_%d", req.DataCollectorID, existingStationID),
+			"message": fmt.Sprintf("Data collector dc_%d is already assigned to station ws_%d", dcInfo.ID, existingStationID),
 		})
 		return
 	}
@@ -221,15 +232,6 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 	err = h.db.Get(&robotType, "SELECT id, name FROM robot_types WHERE id = ?", robotInfo.RobotTypeID)
 	if err != nil {
 		logger.Printf("[STATION] Failed to get robot type: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
-		return
-	}
-
-	// Get factory slug for response
-	var factory factoryInfoRow
-	err = h.db.Get(&factory, "SELECT id, slug FROM factories WHERE id = ?", robotInfo.FactoryID)
-	if err != nil {
-		logger.Printf("[STATION] Failed to get factory: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
@@ -261,7 +263,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		dcInfo.OperatorID, // collector_operator_id
 		robotInfo.FactoryID,
 		req.Name,
-		"active",
+		"inactive",
 		createdAt,
 		createdAt,
 	)
@@ -283,14 +285,10 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, StationResponse{
 		ID:                  fmt.Sprintf("ws_%d", stationID),
-		RobotID:             req.RobotID,
-		RobotName:           robotType.Name,
-		RobotSerial:         robotInfo.DeviceID,
-		DataCollectorID:     req.DataCollectorID,
-		CollectorName:       dcInfo.Name,
-		CollectorOperatorID: dcInfo.OperatorID,
-		FactoryID:           factory.Slug,
-		Status:              "active",
+		RobotID:             fmt.Sprintf("%d", robotInfo.ID),
+		DataCollectorID:     fmt.Sprintf("%d", dcInfo.ID),
+		FactoryID:           fmt.Sprintf("%d", robotInfo.FactoryID),
+		Status:              "inactive",
 		Name:                req.Name,
 		CreatedAt:           createdAtISO.Format(time.RFC3339),
 	})
@@ -341,55 +339,19 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		stations = []stationListRow{}
 	}
 
-	// Get factory slugs for all unique factory IDs
-	factoryIDs := make([]int64, 0, len(stations))
-	existingFactoryIDs := make(map[int64]bool)
-	for _, s := range stations {
-		if !existingFactoryIDs[s.FactoryID] {
-			factoryIDs = append(factoryIDs, s.FactoryID)
-			existingFactoryIDs[s.FactoryID] = true
-		}
-	}
-
-	factorySlugs := make(map[int64]string)
-	if len(factoryIDs) > 0 {
-		// Use placeholder query for MySQL
-		query := "SELECT id, slug FROM factories WHERE id IN (" + strings.Repeat("?,", len(factoryIDs)-1) + "?)"
-		// Convert to []interface{} for sqlx
-		args := make([]interface{}, len(factoryIDs))
-		for i, id := range factoryIDs {
-			args[i] = id
-		}
-		var factoryRows []factoryInfoRow
-		err = h.db.Select(&factoryRows, query, args...)
-		if err != nil && err != sql.ErrNoRows {
-			logger.Printf("[STATION] Failed to query factories: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})
-			return
-		}
-		for _, f := range factoryRows {
-			factorySlugs[f.ID] = f.Slug
-		}
-	}
-
 	// Build response
 	response := make([]StationResponse, 0, len(stations))
 	for _, s := range stations {
 		var createdAtStr string
 		if s.CreatedAt.Valid {
-			createdAt, _ := time.Parse("2006-01-02 15:04:05", s.CreatedAt.String)
-			createdAtStr = createdAt.Format(time.RFC3339)
+			createdAtStr = formatDBTimeToRFC3339(s.CreatedAt.String)
 		}
 
 		response = append(response, StationResponse{
 			ID:                  fmt.Sprintf("ws_%d", s.ID),
-			RobotID:             fmt.Sprintf("robot_%d", s.RobotID),
-			RobotName:           s.RobotName,
-			RobotSerial:         s.RobotSerial,
-			DataCollectorID:     fmt.Sprintf("dc_%d", s.DataCollectorID),
-			CollectorName:       s.CollectorName,
-			CollectorOperatorID: s.CollectorOperatorID,
-			FactoryID:           factorySlugs[s.FactoryID],
+			RobotID:             fmt.Sprintf("%d", s.RobotID),
+			DataCollectorID:     fmt.Sprintf("%d", s.DataCollectorID),
+			FactoryID:           fmt.Sprintf("%d", s.FactoryID),
 			Status:              s.Status,
 			Name:                s.Name.String,
 			CreatedAt:           createdAtStr,
@@ -504,30 +466,17 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		return
 	}
 
-	// Get factory slug
-	var factory factoryInfoRow
-	var factorySlug string
-	err = h.db.Get(&factory, "SELECT id, slug FROM factories WHERE id = ?", station.FactoryID)
-	if err == nil {
-		factorySlug = factory.Slug
-	}
-
 	// Format response
 	var createdAtStr string
 	if station.CreatedAt.Valid {
-		createdAt, _ := time.Parse("2006-01-02 15:04:05", station.CreatedAt.String)
-		createdAtStr = createdAt.Format(time.RFC3339)
+		createdAtStr = formatDBTimeToRFC3339(station.CreatedAt.String)
 	}
 
 	c.JSON(http.StatusOK, StationResponse{
 		ID:                  fmt.Sprintf("ws_%d", station.ID),
-		RobotID:             fmt.Sprintf("robot_%d", station.RobotID),
-		RobotName:           station.RobotName,
-		RobotSerial:         station.RobotSerial,
-		DataCollectorID:     fmt.Sprintf("dc_%d", station.DataCollectorID),
-		CollectorName:       station.CollectorName,
-		CollectorOperatorID: station.CollectorOperatorID,
-		FactoryID:           factorySlug,
+		RobotID:             fmt.Sprintf("%d", station.RobotID),
+		DataCollectorID:     fmt.Sprintf("%d", station.DataCollectorID),
+		FactoryID:           fmt.Sprintf("%d", station.FactoryID),
 		Status:              station.Status,
 		Name:                station.Name.String,
 		CreatedAt:           createdAtStr,
@@ -583,30 +532,16 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 		return
 	}
 
-	// Get factory slug
-	var factory factoryInfoRow
-	err = h.db.Get(&factory, "SELECT id, slug FROM factories WHERE id = ?", station.FactoryID)
-	if err != nil {
-		logger.Printf("[STATION] Failed to get factory: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get station"})
-		return
-	}
-
 	var createdAtStr string
 	if station.CreatedAt.Valid {
-		createdAt, _ := time.Parse("2006-01-02 15:04:05", station.CreatedAt.String)
-		createdAtStr = createdAt.Format(time.RFC3339)
+		createdAtStr = formatDBTimeToRFC3339(station.CreatedAt.String)
 	}
 
 	c.JSON(http.StatusOK, StationResponse{
 		ID:                  fmt.Sprintf("ws_%d", station.ID),
-		RobotID:             fmt.Sprintf("robot_%d", station.RobotID),
-		RobotName:           station.RobotName,
-		RobotSerial:         station.RobotSerial,
-		DataCollectorID:     fmt.Sprintf("dc_%d", station.DataCollectorID),
-		CollectorName:       station.CollectorName,
-		CollectorOperatorID: station.CollectorOperatorID,
-		FactoryID:           factory.Slug,
+		RobotID:             fmt.Sprintf("%d", station.RobotID),
+		DataCollectorID:     fmt.Sprintf("%d", station.DataCollectorID),
+		FactoryID:           fmt.Sprintf("%d", station.FactoryID),
 		Status:              station.Status,
 		Name:                station.Name.String,
 		CreatedAt:           createdAtStr,
@@ -668,4 +603,30 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+func formatDBTimeToRFC3339(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+
+	// MySQL commonly returns "YYYY-MM-DD HH:MM:SS" or with fractional seconds.
+	// Some drivers/configs may return RFC3339.
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04:05.999999",
+		"2006-01-02 15:04:05.999999999",
+		time.RFC3339Nano,
+		time.RFC3339,
+	}
+
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.Format(time.RFC3339)
+		}
+	}
+
+	// Fallback: return original string instead of a wrong timestamp.
+	return s
 }

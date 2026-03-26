@@ -463,8 +463,3 @@ INSERT INTO skills (name, display_name, description) VALUES
     ('navigate', 'Navigate', 'Move from one location to another'),
     ('pour', 'Pour', 'Transfer liquid between containers')
 ON DUPLICATE KEY UPDATE display_name=VALUES(display_name);
-
-INSERT INTO sops (name, slug, skill_sequence) VALUES
-('Dish Cleaning SOP', 'sop_dish_cleaning_v2',
- '["navigate", "pick", "place", "wipe", "navigate"]')
-ON DUPLICATE KEY UPDATE name=VALUES(name);

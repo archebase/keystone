@@ -57,6 +57,9 @@ ALTER TABLE sops DROP COLUMN _name_unique;
 CREATE INDEX slug ON sops (slug);
 CREATE INDEX idx_slug ON sops (slug);
 
+-- Revert: Make sops.slug NOT NULL again
+ALTER TABLE sops MODIFY COLUMN slug VARCHAR(100) NOT NULL;
+
 DROP INDEX idx_name_del ON skills;
 ALTER TABLE skills DROP COLUMN _name_unique;
 CREATE UNIQUE INDEX name ON skills (name);

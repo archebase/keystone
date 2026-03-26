@@ -46,8 +46,8 @@ ALTER TABLE subscenes MODIFY COLUMN robot_type_id BIGINT NULL;
 -- Capability & Procedure
 -- ============================================================
 
--- skills: name + deleted_at
-ALTER TABLE skills ADD COLUMN _name_unique VARCHAR(300) GENERATED ALWAYS AS (CONCAT(IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED;
+-- skills: name + version + deleted_at
+ALTER TABLE skills ADD COLUMN _name_unique VARCHAR(300) GENERATED ALWAYS AS (CONCAT(IFNULL(name, ''), '|', IFNULL(version, ''), '|', IFNULL(deleted_at, ''))) STORED;
 DROP INDEX name ON skills;
 CREATE UNIQUE INDEX idx_name_del ON skills (_name_unique);
 
@@ -56,6 +56,9 @@ ALTER TABLE sops ADD COLUMN _name_unique VARCHAR(300) GENERATED ALWAYS AS (CONCA
 DROP INDEX slug ON sops;
 DROP INDEX idx_slug ON sops;
 CREATE UNIQUE INDEX idx_name_del ON sops (_name_unique);
+
+-- Allow sops.slug to be NULL
+ALTER TABLE sops MODIFY COLUMN slug VARCHAR(100) NULL;
 
 -- ============================================================
 -- Operational Resources
