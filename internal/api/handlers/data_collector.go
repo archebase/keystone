@@ -49,6 +49,7 @@ type DataCollectorListResponse struct {
 type CreateDataCollectorRequest struct {
 	Name       string `json:"name"`
 	OperatorID string `json:"operator_id"`
+	Email      string `json:"email,omitempty"`
 }
 
 // CreateDataCollectorResponse represents the response for creating a data collector.
@@ -56,6 +57,7 @@ type CreateDataCollectorResponse struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	OperatorID string `json:"operator_id"`
+	Email      string `json:"email,omitempty"`
 	Status     string `json:"status"`
 	CreatedAt  string `json:"created_at"`
 }
@@ -178,6 +180,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 
 	req.Name = strings.TrimSpace(req.Name)
 	req.OperatorID = strings.TrimSpace(req.OperatorID)
+	req.Email = strings.TrimSpace(req.Email)
 
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
@@ -206,16 +209,23 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 
 	// Insert the data collector
+	var emailStr sql.NullString
+	if req.Email != "" {
+		emailStr = sql.NullString{String: req.Email, Valid: true}
+	}
+
 	result, err := h.db.Exec(
 		`INSERT INTO data_collectors (
 			name,
 			operator_id,
+			email,
 			status,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?)`,
 		req.Name,
 		req.OperatorID,
+		emailStr,
 		"active",
 		createdAt,
 		createdAt,
@@ -237,6 +247,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		ID:         fmt.Sprintf("%d", id),
 		Name:       req.Name,
 		OperatorID: req.OperatorID,
+		Email:      req.Email,
 		Status:     "active",
 		CreatedAt:  createdAt,
 	})
