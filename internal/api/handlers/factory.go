@@ -256,9 +256,11 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 	var settingsStr sql.NullString
 	if req.Settings != nil {
 		settingsJSON, err := json.Marshal(req.Settings)
-		if err == nil {
-			settingsStr = sql.NullString{String: string(settingsJSON), Valid: true}
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid settings"})
+			return
 		}
+		settingsStr = sql.NullString{String: string(settingsJSON), Valid: true}
 	}
 
 	result, err := h.db.Exec(
@@ -383,10 +385,11 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 
 // UpdateFactoryRequest represents the request body for updating a factory.
 type UpdateFactoryRequest struct {
-	Name     *string `json:"name,omitempty"`
-	Slug     *string `json:"slug,omitempty"`
-	Location *string `json:"location,omitempty"`
-	Timezone *string `json:"timezone,omitempty"`
+	Name     *string          `json:"name,omitempty"`
+	Slug     *string          `json:"slug,omitempty"`
+	Location *string          `json:"location,omitempty"`
+	Timezone *string          `json:"timezone,omitempty"`
+	Settings *json.RawMessage `json:"settings,omitempty"`
 }
 
 // UpdateFactory handles updating a factory.
@@ -475,6 +478,20 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 		}
 		updates = append(updates, "timezone = ?")
 		args = append(args, tzStr)
+	}
+
+	if req.Settings != nil {
+		var settingsStr sql.NullString
+		rawSettings := strings.TrimSpace(string(*req.Settings))
+		if rawSettings != "" && rawSettings != "null" {
+			if !json.Valid([]byte(rawSettings)) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid settings"})
+				return
+			}
+			settingsStr = sql.NullString{String: rawSettings, Valid: true}
+		}
+		updates = append(updates, "settings = ?")
+		args = append(args, settingsStr)
 	}
 
 	if len(updates) == 0 {

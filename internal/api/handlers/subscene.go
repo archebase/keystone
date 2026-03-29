@@ -33,10 +33,8 @@ type SubsceneResponse struct {
 	ID                 string `json:"id"`
 	SceneID            string `json:"scene_id"`
 	Name               string `json:"name"`
-	Slug               string `json:"slug,omitempty"`
 	Description        string `json:"description,omitempty"`
 	InitialSceneLayout string `json:"initial_scene_layout,omitempty"`
-	RobotTypeID        string `json:"robot_type_id,omitempty"`
 	CreatedAt          string `json:"created_at,omitempty"`
 	UpdatedAt          string `json:"updated_at,omitempty"`
 }
@@ -50,27 +48,22 @@ type SubsceneListResponse struct {
 type CreateSubsceneRequest struct {
 	SceneID            string  `json:"scene_id"`
 	Name               string  `json:"name"`
-	Slug               *string `json:"slug,omitempty"`
 	Description        string  `json:"description,omitempty"`
 	InitialSceneLayout string  `json:"initial_scene_layout,omitempty"`
-	RobotTypeID        *string `json:"robot_type_id,omitempty"`
 }
 
 // CreateSubsceneResponse represents the response for creating a subscene.
 type CreateSubsceneResponse struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
-	Slug      string `json:"slug,omitempty"`
 	CreatedAt string `json:"created_at"`
 }
 
 // UpdateSubsceneRequest represents the request body for updating a subscene.
 type UpdateSubsceneRequest struct {
 	Name               *string `json:"name,omitempty"`
-	Slug               *string `json:"slug,omitempty"`
 	Description        *string `json:"description,omitempty"`
 	InitialSceneLayout *string `json:"initial_scene_layout,omitempty"`
-	RobotTypeID        *string `json:"robot_type_id,omitempty"`
 }
 
 // RegisterRoutes registers subscene related routes.
@@ -87,12 +80,20 @@ type subsceneRow struct {
 	ID                 int64          `db:"id"`
 	SceneID            int64          `db:"scene_id"`
 	Name               string         `db:"name"`
-	Slug               sql.NullString `db:"slug"`
 	Description        sql.NullString `db:"description"`
 	InitialSceneLayout sql.NullString `db:"initial_scene_layout"`
-	RobotTypeID        sql.NullInt64  `db:"robot_type_id"`
 	CreatedAt          sql.NullString `db:"created_at"`
 	UpdatedAt          sql.NullString `db:"updated_at"`
+}
+
+func (h *SubsceneHandler) getSceneInitialLayoutTemplate(sceneID int64) (sql.NullString, error) {
+	var layoutTemplate sql.NullString
+	err := h.db.Get(
+		&layoutTemplate,
+		"SELECT initial_scene_layout_template FROM scenes WHERE id = ? AND deleted_at IS NULL",
+		sceneID,
+	)
+	return layoutTemplate, err
 }
 
 // ListSubscenes handles subscene listing requests with filtering.
@@ -114,10 +115,8 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 			id,
 			scene_id,
 			name,
-			slug,
 			description,
 			initial_scene_layout,
-			robot_type_id,
 			created_at,
 			updated_at
 		FROM subscenes
@@ -162,23 +161,12 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 		if s.UpdatedAt.Valid {
 			updatedAt = s.UpdatedAt.String
 		}
-		slug := ""
-		if s.Slug.Valid {
-			slug = s.Slug.String
-		}
-		robotTypeID := ""
-		if s.RobotTypeID.Valid {
-			robotTypeID = fmt.Sprintf("%d", s.RobotTypeID.Int64)
-		}
-
 		subscenes = append(subscenes, SubsceneResponse{
 			ID:                 fmt.Sprintf("%d", s.ID),
 			SceneID:            fmt.Sprintf("%d", s.SceneID),
 			Name:               s.Name,
-			Slug:               slug,
 			Description:        description,
 			InitialSceneLayout: layout,
-			RobotTypeID:        robotTypeID,
 			CreatedAt:          createdAt,
 			UpdatedAt:          updatedAt,
 		})
@@ -215,10 +203,8 @@ func (h *SubsceneHandler) GetSubscene(c *gin.Context) {
 			id,
 			scene_id,
 			name,
-			slug,
 			description,
 			initial_scene_layout,
-			robot_type_id,
 			created_at,
 			updated_at
 		FROM subscenes
@@ -252,23 +238,12 @@ func (h *SubsceneHandler) GetSubscene(c *gin.Context) {
 	if s.UpdatedAt.Valid {
 		updatedAt = s.UpdatedAt.String
 	}
-	slug := ""
-	if s.Slug.Valid {
-		slug = s.Slug.String
-	}
-	robotTypeID := ""
-	if s.RobotTypeID.Valid {
-		robotTypeID = fmt.Sprintf("%d", s.RobotTypeID.Int64)
-	}
-
 	c.JSON(http.StatusOK, SubsceneResponse{
 		ID:                 fmt.Sprintf("%d", s.ID),
 		SceneID:            fmt.Sprintf("%d", s.SceneID),
 		Name:               s.Name,
-		Slug:               slug,
 		Description:        description,
 		InitialSceneLayout: layout,
-		RobotTypeID:        robotTypeID,
 		CreatedAt:          createdAt,
 		UpdatedAt:          updatedAt,
 	})
@@ -295,15 +270,8 @@ func (h *SubsceneHandler) CreateSubscene(c *gin.Context) {
 
 	req.SceneID = strings.TrimSpace(req.SceneID)
 	req.Name = strings.TrimSpace(req.Name)
-	if req.Slug != nil {
-		trimmed := strings.TrimSpace(*req.Slug)
-		req.Slug = &trimmed
-	}
 	req.Description = strings.TrimSpace(req.Description)
-	if req.RobotTypeID != nil {
-		trimmed := strings.TrimSpace(*req.RobotTypeID)
-		req.RobotTypeID = &trimmed
-	}
+	req.InitialSceneLayout = strings.TrimSpace(req.InitialSceneLayout)
 
 	if req.SceneID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "scene_id is required"})
@@ -322,37 +290,15 @@ func (h *SubsceneHandler) CreateSubscene(c *gin.Context) {
 		return
 	}
 
-	// Verify scene exists
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM scenes WHERE id = ? AND deleted_at IS NULL)", sceneID)
-	if err != nil || !exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
+	sceneLayoutTemplate, err := h.getSceneInitialLayoutTemplate(sceneID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
+			return
+		}
+		logger.Printf("[SUBSCENE] Failed to query scene layout template: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create subscene"})
 		return
-	}
-
-	// Parse and verify robot_type_id (optional)
-	var robotTypeID sql.NullInt64
-	if req.RobotTypeID != nil && *req.RobotTypeID != "" {
-		parsedRobotTypeID, err := strconv.ParseInt(*req.RobotTypeID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
-			return
-		}
-		err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robot_types WHERE id = ? AND deleted_at IS NULL)", parsedRobotTypeID)
-		if err != nil || !exists {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type not found"})
-			return
-		}
-		robotTypeID = sql.NullInt64{Int64: parsedRobotTypeID, Valid: true}
-	}
-
-	// Check if slug already exists for this scene (if slug is provided)
-	if req.Slug != nil && *req.Slug != "" {
-		err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM subscenes WHERE scene_id = ? AND slug = ? AND deleted_at IS NULL)", sceneID, *req.Slug)
-		if err == nil && exists {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this scene"})
-			return
-		}
 	}
 
 	var descriptionStr sql.NullString
@@ -363,11 +309,8 @@ func (h *SubsceneHandler) CreateSubscene(c *gin.Context) {
 	var layoutStr sql.NullString
 	if req.InitialSceneLayout != "" {
 		layoutStr = sql.NullString{String: req.InitialSceneLayout, Valid: true}
-	}
-
-	var slugStr sql.NullString
-	if req.Slug != nil && *req.Slug != "" {
-		slugStr = sql.NullString{String: *req.Slug, Valid: true}
+	} else {
+		layoutStr = sceneLayoutTemplate
 	}
 
 	now := time.Now().UTC()
@@ -376,19 +319,15 @@ func (h *SubsceneHandler) CreateSubscene(c *gin.Context) {
 		`INSERT INTO subscenes (
 			scene_id,
 			name,
-			slug,
 			description,
 			initial_scene_layout,
-			robot_type_id,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?)`,
 		sceneID,
 		req.Name,
-		slugStr,
 		descriptionStr,
 		layoutStr,
-		robotTypeID,
 		now,
 		now,
 	)
@@ -408,12 +347,6 @@ func (h *SubsceneHandler) CreateSubscene(c *gin.Context) {
 	c.JSON(http.StatusCreated, CreateSubsceneResponse{
 		ID:   fmt.Sprintf("%d", id),
 		Name: req.Name,
-		Slug: func() string {
-			if req.Slug != nil {
-				return *req.Slug
-			}
-			return ""
-		}(),
 		CreatedAt: now.Format(time.RFC3339),
 	})
 }
@@ -448,7 +381,7 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 
 	// Check if subscene exists
 	var existing subsceneRow
-	err = h.db.Get(&existing, "SELECT id, scene_id, name, slug, description, initial_scene_layout, robot_type_id, created_at, updated_at FROM subscenes WHERE id = ? AND deleted_at IS NULL", id)
+	err = h.db.Get(&existing, "SELECT id, scene_id, name, description, initial_scene_layout, created_at, updated_at FROM subscenes WHERE id = ? AND deleted_at IS NULL", id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "subscene not found"})
@@ -471,21 +404,6 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 		}
 	}
 
-	if req.Slug != nil {
-		slug := strings.TrimSpace(*req.Slug)
-		if slug != "" {
-			// Check if slug already exists for this scene
-			var exists bool
-			err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM subscenes WHERE scene_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", existing.SceneID, slug, id)
-			if err == nil && exists {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this scene"})
-				return
-			}
-			updates = append(updates, "slug = ?")
-			args = append(args, slug)
-		}
-	}
-
 	if req.Description != nil {
 		description := strings.TrimSpace(*req.Description)
 		var descStr sql.NullString
@@ -496,39 +414,29 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 		args = append(args, descStr)
 	}
 
+	sceneLayoutTemplate, err := h.getSceneInitialLayoutTemplate(existing.SceneID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
+			return
+		}
+		logger.Printf("[SUBSCENE] Failed to query scene layout template: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update subscene"})
+		return
+	}
+	var layoutStr sql.NullString
 	if req.InitialSceneLayout != nil {
 		layout := strings.TrimSpace(*req.InitialSceneLayout)
-		var layoutStr sql.NullString
 		if layout != "" {
 			layoutStr = sql.NullString{String: layout, Valid: true}
-		}
-		updates = append(updates, "initial_scene_layout = ?")
-		args = append(args, layoutStr)
-	}
-
-	// Handle robot_type_id update
-	if req.RobotTypeID != nil {
-		if *req.RobotTypeID == "" {
-			// Set to NULL to remove association
-			updates = append(updates, "robot_type_id = ?")
-			args = append(args, sql.NullInt64{})
 		} else {
-			parsedRobotTypeID, err := strconv.ParseInt(*req.RobotTypeID, 10, 64)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
-				return
-			}
-			// Verify robot_type exists
-			var exists bool
-			err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robot_types WHERE id = ? AND deleted_at IS NULL)", parsedRobotTypeID)
-			if err != nil || !exists {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type not found"})
-				return
-			}
-			updates = append(updates, "robot_type_id = ?")
-			args = append(args, sql.NullInt64{Int64: parsedRobotTypeID, Valid: true})
+			layoutStr = sceneLayoutTemplate
 		}
+	} else {
+		layoutStr = sceneLayoutTemplate
 	}
+	updates = append(updates, "initial_scene_layout = ?")
+	args = append(args, layoutStr)
 
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
@@ -551,7 +459,7 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 
 	// Fetch the updated subscene
 	var s subsceneRow
-	err = h.db.Get(&s, "SELECT id, scene_id, name, slug, description, initial_scene_layout, robot_type_id, created_at, updated_at FROM subscenes WHERE id = ?", id)
+	err = h.db.Get(&s, "SELECT id, scene_id, name, description, initial_scene_layout, created_at, updated_at FROM subscenes WHERE id = ?", id)
 	if err != nil {
 		logger.Printf("[SUBSCENE] Failed to fetch updated subscene: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated subscene"})
@@ -574,23 +482,12 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 	if s.UpdatedAt.Valid {
 		updatedAt = s.UpdatedAt.String
 	}
-	slug := ""
-	if s.Slug.Valid {
-		slug = s.Slug.String
-	}
-	robotTypeID := ""
-	if s.RobotTypeID.Valid {
-		robotTypeID = fmt.Sprintf("%d", s.RobotTypeID.Int64)
-	}
-
 	c.JSON(http.StatusOK, SubsceneResponse{
 		ID:                 fmt.Sprintf("%d", s.ID),
 		SceneID:            fmt.Sprintf("%d", s.SceneID),
 		Name:               s.Name,
-		Slug:               slug,
 		Description:        description,
 		InitialSceneLayout: layout,
-		RobotTypeID:        robotTypeID,
 		CreatedAt:          createdAt,
 		UpdatedAt:          updatedAt,
 	})
