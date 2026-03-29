@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -37,7 +38,6 @@ type InspectorResponse struct {
 	Email              string      `json:"email,omitempty"`
 	CertificationLevel string      `json:"certification_level"`
 	Status             string      `json:"status"`
-	QueueSize          int         `json:"queueSize"`
 	Metadata           interface{} `json:"metadata,omitempty"`
 	CreatedAt          string      `json:"created_at,omitempty"`
 	UpdatedAt          string      `json:"updated_at,omitempty"`
@@ -50,29 +50,33 @@ type InspectorListResponse struct {
 
 // CreateInspectorRequest represents the request body for creating an inspector.
 type CreateInspectorRequest struct {
-	Name               string `json:"name"`
-	InspectorID        string `json:"inspector_id"`
-	Email              string `json:"email,omitempty"`
-	CertificationLevel string `json:"certification_level,omitempty"`
+	Name               string      `json:"name"`
+	InspectorID        string      `json:"inspector_id"`
+	Email              string      `json:"email,omitempty"`
+	CertificationLevel string      `json:"certification_level,omitempty"`
+	Metadata           interface{} `json:"metadata,omitempty"`
 }
 
 // CreateInspectorResponse represents the response for creating an inspector.
 type CreateInspectorResponse struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	InspectorID        string `json:"inspector_id"`
-	CertificationLevel string `json:"certification_level"`
-	Status             string `json:"status"`
-	CreatedAt          string `json:"created_at"`
+	ID                 string      `json:"id"`
+	Name               string      `json:"name"`
+	InspectorID        string      `json:"inspector_id"`
+	CertificationLevel string      `json:"certification_level"`
+	Status             string      `json:"status"`
+	Metadata           interface{} `json:"metadata,omitempty"`
+	CreatedAt          string      `json:"created_at"`
 }
 
 // UpdateInspectorRequest represents the request body for updating an inspector.
+// Metadata uses json.RawMessage so callers can distinguish omitted key vs explicit JSON null (stored as {}).
 type UpdateInspectorRequest struct {
-	Name               *string     `json:"name,omitempty"`
-	Email              *string     `json:"email,omitempty"`
-	CertificationLevel *string     `json:"certification_level,omitempty"`
-	Status             *string     `json:"status,omitempty"`
-	Metadata           interface{} `json:"metadata,omitempty"`
+	InspectorID        *string         `json:"inspector_id,omitempty"`
+	Name               *string         `json:"name,omitempty"`
+	Email              *string         `json:"email,omitempty"`
+	CertificationLevel *string         `json:"certification_level,omitempty"`
+	Status             *string         `json:"status,omitempty"`
+	Metadata           json.RawMessage `json:"metadata,omitempty"`
 }
 
 // RegisterRoutes registers inspector related routes.
@@ -171,7 +175,6 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 			Email:              email,
 			CertificationLevel: certLevel,
 			Status:             i.Status,
-			QueueSize:          0,
 			Metadata:           metadata,
 			CreatedAt:          createdAt,
 			UpdatedAt:          updatedAt,
@@ -258,7 +261,6 @@ func (h *InspectorHandler) GetInspector(c *gin.Context) {
 		Email:              email,
 		CertificationLevel: certLevel,
 		Status:             i.Status,
-		QueueSize:          0,
 		Metadata:           metadata,
 		CreatedAt:          createdAt,
 		UpdatedAt:          updatedAt,
@@ -326,6 +328,16 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 		emailStr = sql.NullString{String: req.Email, Valid: true}
 	}
 
+	metadataStr := sql.NullString{String: "{}", Valid: true}
+	if req.Metadata != nil {
+		metadataJSON, err := json.Marshal(req.Metadata)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid metadata JSON"})
+			return
+		}
+		metadataStr = sql.NullString{String: string(metadataJSON), Valid: true}
+	}
+
 	now := time.Now().UTC()
 
 	result, err := h.db.Exec(
@@ -335,14 +347,16 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 			email,
 			certification_level,
 			status,
+			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.Name,
 		req.InspectorID,
 		emailStr,
 		certLevel,
 		"active",
+		metadataStr,
 		now,
 		now,
 	)
@@ -359,12 +373,18 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 		return
 	}
 
+	var metaOut interface{}
+	if metadataStr.Valid {
+		metaOut = parseJSONRaw(metadataStr.String)
+	}
+
 	c.JSON(http.StatusCreated, CreateInspectorResponse{
 		ID:                 fmt.Sprintf("%d", id),
 		Name:               req.Name,
 		InspectorID:        req.InspectorID,
 		CertificationLevel: certLevel,
 		Status:             "active",
+		Metadata:           metaOut,
 		CreatedAt:          now.Format(time.RFC3339),
 	})
 }
@@ -412,6 +432,27 @@ func (h *InspectorHandler) UpdateInspector(c *gin.Context) {
 	updates := []string{}
 	args := []interface{}{}
 
+	if req.InspectorID != nil {
+		inspectorID := strings.TrimSpace(*req.InspectorID)
+		if inspectorID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "inspector_id cannot be empty"})
+			return
+		}
+		var taken bool
+		err = h.db.Get(&taken, "SELECT EXISTS(SELECT 1 FROM inspectors WHERE inspector_id = ? AND id != ? AND deleted_at IS NULL)", inspectorID, id)
+		if err != nil {
+			logger.Printf("[INSPECTOR] Failed to check inspector_id: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update inspector"})
+			return
+		}
+		if taken {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "inspector_id already exists"})
+			return
+		}
+		updates = append(updates, "inspector_id = ?")
+		args = append(args, inspectorID)
+	}
+
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name != "" {
@@ -450,11 +491,19 @@ func (h *InspectorHandler) UpdateInspector(c *gin.Context) {
 		args = append(args, status)
 	}
 
-	if req.Metadata != nil {
-		metadataJSON, err := json.Marshal(req.Metadata)
-		if err == nil {
+	if len(req.Metadata) > 0 {
+		meta := bytes.TrimSpace(req.Metadata)
+		if bytes.Equal(meta, []byte("null")) {
 			updates = append(updates, "metadata = ?")
-			args = append(args, sql.NullString{String: string(metadataJSON), Valid: true})
+			args = append(args, sql.NullString{String: "{}", Valid: true})
+		} else {
+			var probe interface{}
+			if err := json.Unmarshal(req.Metadata, &probe); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid metadata JSON"})
+				return
+			}
+			updates = append(updates, "metadata = ?")
+			args = append(args, sql.NullString{String: string(req.Metadata), Valid: true})
 		}
 	}
 
@@ -520,7 +569,6 @@ func (h *InspectorHandler) UpdateInspector(c *gin.Context) {
 		Email:              email,
 		CertificationLevel: certLevel,
 		Status:             i.Status,
-		QueueSize:          0,
 		Metadata:           metadata,
 		CreatedAt:          createdAt,
 		UpdatedAt:          updatedAt,

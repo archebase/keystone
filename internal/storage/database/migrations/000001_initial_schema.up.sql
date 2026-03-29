@@ -466,10 +466,10 @@ INSERT INTO organizations (name, slug, settings) VALUES
     ('RoboticsLab Internal', 'roboticslab', '{}')
 ON DUPLICATE KEY UPDATE name=VALUES(name), settings=VALUES(settings);
 
-INSERT INTO factories (organization_id, name, slug, location, settings) VALUES
-(1, 'Shanghai Factory', 'factory-sh', 'Shanghai, China', '{}'),
-(1, 'San Francisco Factory', 'factory-sf', 'San Francisco, USA', '{}')
-ON DUPLICATE KEY UPDATE name=VALUES(name), location=VALUES(location), settings=VALUES(settings);
+INSERT INTO factories (organization_id, name, slug, location, timezone, settings) VALUES
+(1, 'Shanghai Factory', 'factory-sh', 'Shanghai, China', 'Asia/Shanghai', '{}'),
+(1, 'San Francisco Factory', 'factory-sf', 'San Francisco, USA', 'America/Los_Angeles', '{}')
+ON DUPLICATE KEY UPDATE name=VALUES(name), location=VALUES(location), timezone=VALUES(timezone), settings=VALUES(settings);
 
 INSERT INTO skills (slug, name, description) VALUES
     ('pick', 'Pick', 'Grasp and lift an object'),

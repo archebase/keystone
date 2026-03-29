@@ -6,7 +6,9 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -31,13 +33,15 @@ func NewDataCollectorHandler(db *sqlx.DB) *DataCollectorHandler {
 
 // DataCollectorResponse represents a data collector in the response.
 type DataCollectorResponse struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	OperatorID    string `json:"operator_id"`
-	Email         string `json:"email,omitempty"`
-	Certification string `json:"certification,omitempty"`
-	Status        string `json:"status"`
-	CreatedAt     string `json:"created_at,omitempty"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	OperatorID    string      `json:"operator_id"`
+	Email         string      `json:"email,omitempty"`
+	Certification string      `json:"certification,omitempty"`
+	Status        string      `json:"status"`
+	Metadata      interface{} `json:"metadata,omitempty"`
+	CreatedAt     string      `json:"created_at,omitempty"`
+	UpdatedAt     string      `json:"updated_at,omitempty"`
 }
 
 // DataCollectorListResponse represents the response for listing data collectors.
@@ -47,19 +51,24 @@ type DataCollectorListResponse struct {
 
 // CreateDataCollectorRequest represents the request body for creating a data collector.
 type CreateDataCollectorRequest struct {
-	Name       string `json:"name"`
-	OperatorID string `json:"operator_id"`
-	Email      string `json:"email,omitempty"`
+	Name          string      `json:"name"`
+	OperatorID    string      `json:"operator_id"`
+	Email         string      `json:"email,omitempty"`
+	Certification string      `json:"certification,omitempty"`
+	Metadata      interface{} `json:"metadata,omitempty"`
 }
 
 // CreateDataCollectorResponse represents the response for creating a data collector.
 type CreateDataCollectorResponse struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	OperatorID string `json:"operator_id"`
-	Email      string `json:"email,omitempty"`
-	Status     string `json:"status"`
-	CreatedAt  string `json:"created_at"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	OperatorID    string      `json:"operator_id"`
+	Email         string      `json:"email,omitempty"`
+	Certification string      `json:"certification,omitempty"`
+	Status        string      `json:"status"`
+	Metadata      interface{} `json:"metadata,omitempty"`
+	CreatedAt     string      `json:"created_at"`
+	UpdatedAt     string      `json:"updated_at,omitempty"`
 }
 
 // RegisterRoutes registers data collector related routes.
@@ -79,7 +88,46 @@ type dataCollectorRow struct {
 	Email         sql.NullString `db:"email"`
 	Certification sql.NullString `db:"certification"`
 	Status        string         `db:"status"`
+	Metadata      sql.NullString `db:"metadata"`
 	CreatedAt     sql.NullString `db:"created_at"`
+	UpdatedAt     sql.NullString `db:"updated_at"`
+}
+
+func dcMetadataFromDB(ns sql.NullString) interface{} {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return nil
+	}
+	return parseJSONRaw(ns.String)
+}
+
+func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
+	email := ""
+	if dc.Email.Valid {
+		email = dc.Email.String
+	}
+	certification := ""
+	if dc.Certification.Valid {
+		certification = dc.Certification.String
+	}
+	createdAt := ""
+	if dc.CreatedAt.Valid {
+		createdAt = dc.CreatedAt.String
+	}
+	updatedAt := ""
+	if dc.UpdatedAt.Valid {
+		updatedAt = dc.UpdatedAt.String
+	}
+	return DataCollectorResponse{
+		ID:            fmt.Sprintf("%d", dc.ID),
+		Name:          dc.Name,
+		OperatorID:    dc.OperatorID,
+		Email:         email,
+		Certification: certification,
+		Status:        dc.Status,
+		Metadata:      dcMetadataFromDB(dc.Metadata),
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
+	}
 }
 
 // ListDataCollectors handles data collector listing requests with filtering.
@@ -105,7 +153,9 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 			dc.email,
 			dc.certification,
 			dc.status,
-			dc.created_at
+			dc.metadata,
+			dc.created_at,
+			dc.updated_at
 		FROM data_collectors dc
 		WHERE dc.deleted_at IS NULL
 	`
@@ -128,30 +178,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 
 	dataCollectors := []DataCollectorResponse{}
 	for _, dc := range dbRows {
-		email := ""
-		if dc.Email.Valid {
-			email = dc.Email.String
-		}
-
-		certification := ""
-		if dc.Certification.Valid {
-			certification = dc.Certification.String
-		}
-
-		createdAt := ""
-		if dc.CreatedAt.Valid {
-			createdAt = dc.CreatedAt.String
-		}
-
-		dataCollectors = append(dataCollectors, DataCollectorResponse{
-			ID:            fmt.Sprintf("%d", dc.ID),
-			Name:          dc.Name,
-			OperatorID:    dc.OperatorID,
-			Email:         email,
-			Certification: certification,
-			Status:        dc.Status,
-			CreatedAt:     createdAt,
-		})
+		dataCollectors = append(dataCollectors, dataCollectorResponseFromRow(dc))
 	}
 
 	c.JSON(http.StatusOK, DataCollectorListResponse{
@@ -181,6 +208,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.OperatorID = strings.TrimSpace(req.OperatorID)
 	req.Email = strings.TrimSpace(req.Email)
+	req.Certification = strings.TrimSpace(req.Certification)
 
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
@@ -214,19 +242,38 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		emailStr = sql.NullString{String: req.Email, Valid: true}
 	}
 
+	var certStr sql.NullString
+	if req.Certification != "" {
+		certStr = sql.NullString{String: req.Certification, Valid: true}
+	}
+
+	metadataStr := sql.NullString{String: "{}", Valid: true}
+	if req.Metadata != nil {
+		metadataJSON, err := json.Marshal(req.Metadata)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid metadata JSON"})
+			return
+		}
+		metadataStr = sql.NullString{String: string(metadataJSON), Valid: true}
+	}
+
 	result, err := h.db.Exec(
 		`INSERT INTO data_collectors (
 			name,
 			operator_id,
 			email,
+			certification,
 			status,
+			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.Name,
 		req.OperatorID,
 		emailStr,
+		certStr,
 		"active",
+		metadataStr,
 		createdAt,
 		createdAt,
 	)
@@ -243,13 +290,38 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		return
 	}
 
+	var row dataCollectorRow
+	err = h.db.Get(&row, `
+		SELECT 
+			dc.id,
+			dc.name,
+			dc.operator_id,
+			dc.email,
+			dc.certification,
+			dc.status,
+			dc.metadata,
+			dc.created_at,
+			dc.updated_at
+		FROM data_collectors dc
+		WHERE dc.id = ? AND dc.deleted_at IS NULL
+	`, id)
+	if err != nil {
+		logger.Printf("[DC] Failed to load created data collector: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create data collector"})
+		return
+	}
+
+	resp := dataCollectorResponseFromRow(row)
 	c.JSON(http.StatusCreated, CreateDataCollectorResponse{
-		ID:         fmt.Sprintf("%d", id),
-		Name:       req.Name,
-		OperatorID: req.OperatorID,
-		Email:      req.Email,
-		Status:     "active",
-		CreatedAt:  createdAt,
+		ID:            resp.ID,
+		Name:          resp.Name,
+		OperatorID:    resp.OperatorID,
+		Email:         resp.Email,
+		Certification: resp.Certification,
+		Status:        resp.Status,
+		Metadata:      resp.Metadata,
+		CreatedAt:     resp.CreatedAt,
+		UpdatedAt:     resp.UpdatedAt,
 	})
 }
 
@@ -282,7 +354,9 @@ func (h *DataCollectorHandler) GetDataCollector(c *gin.Context) {
 			dc.email,
 			dc.certification,
 			dc.status,
-			dc.created_at
+			dc.metadata,
+			dc.created_at,
+			dc.updated_at
 		FROM data_collectors dc
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`
@@ -298,37 +372,18 @@ func (h *DataCollectorHandler) GetDataCollector(c *gin.Context) {
 		return
 	}
 
-	email := ""
-	if dc.Email.Valid {
-		email = dc.Email.String
-	}
-
-	certification := ""
-	if dc.Certification.Valid {
-		certification = dc.Certification.String
-	}
-
-	createdAt := ""
-	if dc.CreatedAt.Valid {
-		createdAt = dc.CreatedAt.String
-	}
-
-	c.JSON(http.StatusOK, DataCollectorResponse{
-		ID:            fmt.Sprintf("%d", dc.ID),
-		Name:          dc.Name,
-		OperatorID:    dc.OperatorID,
-		Email:         email,
-		Certification: certification,
-		Status:        dc.Status,
-		CreatedAt:     createdAt,
-	})
+	c.JSON(http.StatusOK, dataCollectorResponseFromRow(dc))
 }
 
 // UpdateDataCollectorRequest represents the request body for updating a data collector.
+// Metadata uses json.RawMessage so we can tell: key omitted (no change) vs explicit JSON null (store {}).
 type UpdateDataCollectorRequest struct {
-	Name   *string `json:"name,omitempty"`
-	Email  *string `json:"email,omitempty"`
-	Status *string `json:"status,omitempty"`
+	Name          *string         `json:"name,omitempty"`
+	OperatorID    *string         `json:"operator_id,omitempty"`
+	Email         *string         `json:"email,omitempty"`
+	Certification *string         `json:"certification,omitempty"`
+	Status        *string         `json:"status,omitempty"`
+	Metadata      json.RawMessage `json:"metadata,omitempty"`
 }
 
 // UpdateDataCollector handles updating a data collector.
@@ -377,6 +432,29 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 		}
 	}
 
+	if req.OperatorID != nil {
+		op := strings.TrimSpace(*req.OperatorID)
+		if op == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "operator_id cannot be empty"})
+			return
+		}
+		var taken bool
+		err := h.db.Get(&taken, `SELECT EXISTS(
+			SELECT 1 FROM data_collectors WHERE operator_id = ? AND deleted_at IS NULL AND id != ?
+		)`, op, id)
+		if err != nil {
+			logger.Printf("[DC] Failed to check operator_id: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update data collector"})
+			return
+		}
+		if taken {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "operator_id already exists"})
+			return
+		}
+		updates = append(updates, "operator_id = ?")
+		args = append(args, op)
+	}
+
 	if req.Email != nil {
 		email := strings.TrimSpace(*req.Email)
 		var emailStr sql.NullString
@@ -387,6 +465,16 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 		args = append(args, emailStr)
 	}
 
+	if req.Certification != nil {
+		cert := strings.TrimSpace(*req.Certification)
+		var certStr sql.NullString
+		if cert != "" {
+			certStr = sql.NullString{String: cert, Valid: true}
+		}
+		updates = append(updates, "certification = ?")
+		args = append(args, certStr)
+	}
+
 	if req.Status != nil {
 		status := strings.TrimSpace(*req.Status)
 		if !validStatuses[status] {
@@ -395,6 +483,22 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 		}
 		updates = append(updates, "status = ?")
 		args = append(args, status)
+	}
+
+	if len(req.Metadata) > 0 {
+		meta := bytes.TrimSpace(req.Metadata)
+		if bytes.Equal(meta, []byte("null")) {
+			updates = append(updates, "metadata = ?")
+			args = append(args, sql.NullString{String: "{}", Valid: true})
+		} else {
+			var probe interface{}
+			if err := json.Unmarshal(req.Metadata, &probe); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid metadata JSON"})
+				return
+			}
+			updates = append(updates, "metadata = ?")
+			args = append(args, sql.NullString{String: string(req.Metadata), Valid: true})
+		}
 	}
 
 	if len(updates) == 0 {
@@ -432,9 +536,11 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 			dc.email,
 			dc.certification,
 			dc.status,
-			dc.created_at
+			dc.metadata,
+			dc.created_at,
+			dc.updated_at
 		FROM data_collectors dc
-		WHERE dc.id = ?
+		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`, id)
 	if err != nil {
 		logger.Printf("[DC] Failed to fetch updated data collector: %v", err)
@@ -442,30 +548,7 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 		return
 	}
 
-	email := ""
-	if dc.Email.Valid {
-		email = dc.Email.String
-	}
-
-	certification := ""
-	if dc.Certification.Valid {
-		certification = dc.Certification.String
-	}
-
-	createdAt := ""
-	if dc.CreatedAt.Valid {
-		createdAt = dc.CreatedAt.String
-	}
-
-	c.JSON(http.StatusOK, DataCollectorResponse{
-		ID:            fmt.Sprintf("%d", dc.ID),
-		Name:          dc.Name,
-		OperatorID:    dc.OperatorID,
-		Email:         email,
-		Certification: certification,
-		Status:        dc.Status,
-		CreatedAt:     createdAt,
-	})
+	c.JSON(http.StatusOK, dataCollectorResponseFromRow(dc))
 }
 
 // DeleteDataCollector handles data collector deletion requests (soft delete).
@@ -479,6 +562,7 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 // @Success      204
 // @Failure      400 {object} map[string]string
 // @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /data_collectors/{id} [delete]
 func (h *DataCollectorHandler) DeleteDataCollector(c *gin.Context) {
@@ -500,6 +584,18 @@ func (h *DataCollectorHandler) DeleteDataCollector(c *gin.Context) {
 
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "data collector not found"})
+		return
+	}
+
+	var usedByStation bool
+	err = h.db.Get(&usedByStation, "SELECT EXISTS(SELECT 1 FROM workstations WHERE data_collector_id = ? AND deleted_at IS NULL)", id)
+	if err != nil {
+		logger.Printf("[DC] Failed to check workstations referencing data collector: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete data collector"})
+		return
+	}
+	if usedByStation {
+		c.JSON(http.StatusConflict, gin.H{"error": "data collector is assigned to one or more workstations"})
 		return
 	}
 

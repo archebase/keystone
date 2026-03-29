@@ -37,7 +37,7 @@ type FactoryResponse struct {
 	Slug           string      `json:"slug"`
 	Location       string      `json:"location,omitempty"`
 	Timezone       string      `json:"timezone,omitempty"`
-	Settings       interface{} `json:"settings,omitempty"`
+	Settings       interface{} `json:"settings"`
 	SceneCount     int         `json:"sceneCount"`
 	CreatedAt      string      `json:"created_at,omitempty"`
 	UpdatedAt      string      `json:"updated_at,omitempty"`
@@ -90,6 +90,13 @@ type factoryRow struct {
 	SceneCount     int            `db:"scene_count"`
 	CreatedAt      sql.NullString `db:"created_at"`
 	UpdatedAt      sql.NullString `db:"updated_at"`
+}
+
+func factorySettingsFromDB(ns sql.NullString) interface{} {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return nil
+	}
+	return json.RawMessage(ns.String)
 }
 
 // ListFactories handles factory listing requests with filtering.
@@ -166,6 +173,7 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 			Slug:           f.Slug,
 			Location:       location,
 			Timezone:       timezone,
+			Settings:       factorySettingsFromDB(f.Settings),
 			SceneCount:     f.SceneCount,
 			CreatedAt:      createdAt,
 		})
@@ -383,6 +391,7 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 		Slug:           f.Slug,
 		Location:       location,
 		Timezone:       timezone,
+		Settings:       factorySettingsFromDB(f.Settings),
 		SceneCount:     f.SceneCount,
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
@@ -391,11 +400,12 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 
 // UpdateFactoryRequest represents the request body for updating a factory.
 type UpdateFactoryRequest struct {
-	Name     *string          `json:"name,omitempty"`
-	Slug     *string          `json:"slug,omitempty"`
-	Location *string          `json:"location,omitempty"`
-	Timezone *string          `json:"timezone,omitempty"`
-	Settings *json.RawMessage `json:"settings,omitempty"`
+	OrganizationID *string                   `json:"organization_id,omitempty"`
+	Name           *string                   `json:"name,omitempty"`
+	Slug           *string                   `json:"slug,omitempty"`
+	Location       *string                   `json:"location,omitempty"`
+	Timezone       *string                   `json:"timezone,omitempty"`
+	Settings       organizationSettingsPatch `json:"settings,omitempty"`
 }
 
 // UpdateFactory handles updating a factory.
@@ -439,6 +449,25 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 		return
 	}
 
+	effectiveOrgID := existing.OrganizationID
+	if req.OrganizationID != nil {
+		s := strings.TrimSpace(*req.OrganizationID)
+		if s != "" {
+			orgID, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+				return
+			}
+			var exists bool
+			err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID)
+			if err != nil || !exists {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
+				return
+			}
+			effectiveOrgID = orgID
+		}
+	}
+
 	// Build update query dynamically
 	updates := []string{}
 	args := []interface{}{}
@@ -454,9 +483,9 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 	if req.Slug != nil {
 		slug := strings.TrimSpace(*req.Slug)
 		if slug != "" {
-			// Check if slug already exists for this organization
+			// Check if slug already exists for the target organization
 			var exists bool
-			err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE organization_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", existing.OrganizationID, slug, id)
+			err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE organization_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", effectiveOrgID, slug, id)
 			if err == nil && exists {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
 				return
@@ -486,18 +515,30 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 		args = append(args, tzStr)
 	}
 
-	if req.Settings != nil {
-		var settingsStr sql.NullString
-		rawSettings := strings.TrimSpace(string(*req.Settings))
-		if rawSettings != "" && rawSettings != "null" {
-			if !json.Valid([]byte(rawSettings)) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid settings"})
-				return
-			}
-			settingsStr = sql.NullString{String: rawSettings, Valid: true}
+	if req.Settings.present {
+		var raw json.RawMessage
+		if req.Settings.isNull {
+			raw = nil
+		} else {
+			raw = req.Settings.raw
 		}
 		updates = append(updates, "settings = ?")
-		args = append(args, settingsStr)
+		args = append(args, sql.NullString{String: jsonStringOrEmptyObject(raw), Valid: true})
+	}
+
+	if effectiveOrgID != existing.OrganizationID {
+		// Moving to another org: ensure current slug is unique there when slug is not updated in this request
+		slugChanging := req.Slug != nil && strings.TrimSpace(*req.Slug) != ""
+		if !slugChanging {
+			var exists bool
+			err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE organization_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", effectiveOrgID, existing.Slug, id)
+			if err == nil && exists {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
+				return
+			}
+		}
+		updates = append(updates, "organization_id = ?")
+		args = append(args, effectiveOrgID)
 	}
 
 	if len(updates) == 0 {
@@ -554,6 +595,7 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 		Slug:           f.Slug,
 		Location:       location,
 		Timezone:       timezone,
+		Settings:       factorySettingsFromDB(f.Settings),
 		SceneCount:     f.SceneCount,
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
@@ -563,7 +605,7 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 // DeleteFactory handles factory deletion requests (soft delete).
 //
 // @Summary      Delete factory
-// @Description  Soft deletes a factory by ID. Returns 400 if the factory has associated scenes.
+// @Description  Soft deletes a factory by ID. Returns 400 if the factory has associated scenes or robots.
 // @Tags         factories
 // @Accept       json
 // @Produce      json
@@ -606,6 +648,19 @@ func (h *FactoryHandler) DeleteFactory(c *gin.Context) {
 
 	if sceneCount > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete factory with %d associated scenes", sceneCount)})
+		return
+	}
+
+	var robotCount int
+	err = h.db.Get(&robotCount, "SELECT COUNT(*) FROM robots WHERE factory_id = ? AND deleted_at IS NULL", id)
+	if err != nil {
+		logger.Printf("[FACTORY] Failed to check robot count: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete factory"})
+		return
+	}
+
+	if robotCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete factory with %d associated robots", robotCount)})
 		return
 	}
 

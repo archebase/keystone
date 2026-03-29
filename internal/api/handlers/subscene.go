@@ -61,6 +61,7 @@ type CreateSubsceneResponse struct {
 
 // UpdateSubsceneRequest represents the request body for updating a subscene.
 type UpdateSubsceneRequest struct {
+	SceneID            *string `json:"scene_id,omitempty"`
 	Name               *string `json:"name,omitempty"`
 	Description        *string `json:"description,omitempty"`
 	InitialSceneLayout *string `json:"initial_scene_layout,omitempty"`
@@ -392,6 +393,44 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 		return
 	}
 
+	effectiveSceneID := existing.SceneID
+	if req.SceneID != nil {
+		s := strings.TrimSpace(*req.SceneID)
+		if s != "" {
+			sid, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
+				return
+			}
+			_, err = h.getSceneInitialLayoutTemplate(sid)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
+					return
+				}
+				logger.Printf("[SUBSCENE] Failed to query scene layout template: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update subscene"})
+				return
+			}
+			effectiveSceneID = sid
+		}
+	}
+
+	finalName := existing.Name
+	if req.Name != nil {
+		if t := strings.TrimSpace(*req.Name); t != "" {
+			finalName = t
+		}
+	}
+	if effectiveSceneID != existing.SceneID || finalName != existing.Name {
+		var dup bool
+		err = h.db.Get(&dup, "SELECT EXISTS(SELECT 1 FROM subscenes WHERE scene_id = ? AND name = ? AND id != ? AND deleted_at IS NULL)", effectiveSceneID, finalName, id)
+		if err == nil && dup {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "subscene name already exists in this scene"})
+			return
+		}
+	}
+
 	// Build update query dynamically
 	updates := []string{}
 	args := []interface{}{}
@@ -414,7 +453,7 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 		args = append(args, descStr)
 	}
 
-	sceneLayoutTemplate, err := h.getSceneInitialLayoutTemplate(existing.SceneID)
+	sceneLayoutTemplate, err := h.getSceneInitialLayoutTemplate(effectiveSceneID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
@@ -437,6 +476,11 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 	}
 	updates = append(updates, "initial_scene_layout = ?")
 	args = append(args, layoutStr)
+
+	if effectiveSceneID != existing.SceneID {
+		updates = append(updates, "scene_id = ?")
+		args = append(args, effectiveSceneID)
+	}
 
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})

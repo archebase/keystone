@@ -31,28 +31,27 @@ func NewRobotTypeHandler(db *sqlx.DB) *RobotTypeHandler {
 
 // CreateRobotTypeRequest represents the request body for creating a robot type.
 type CreateRobotTypeRequest struct {
-	Name      string   `json:"name"`
-	Model     string   `json:"model"`
-	ROSTopics []string `json:"ros_topics"`
-}
-
-// CreateRobotTypeResponse represents the response body for creating a robot type.
-type CreateRobotTypeResponse struct {
-	ID        int64    `json:"id"`
-	Name      string   `json:"name"`
-	Model     string   `json:"model"`
-	ROSTopics []string `json:"ros_topics"`
-	CreatedAt string   `json:"created_at"`
+	Name         string          `json:"name"`
+	Model        string          `json:"model"`
+	Manufacturer *string         `json:"manufacturer,omitempty"`
+	EndEffector  *string         `json:"end_effector,omitempty"`
+	SensorSuite  json.RawMessage `json:"sensor_suite,omitempty"`
+	ROSTopics    []string        `json:"ros_topics"`
+	Capabilities json.RawMessage `json:"capabilities,omitempty"`
 }
 
 // RobotTypeResponse represents a robot type in the response.
 type RobotTypeResponse struct {
-	ID        int64    `json:"id"`
-	Name      string   `json:"name"`
-	Model     string   `json:"model"`
-	ROSTopics []string `json:"ros_topics"`
-	CreatedAt string   `json:"created_at,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	ID           int64            `json:"id"`
+	Name         string           `json:"name"`
+	Model        string           `json:"model"`
+	Manufacturer *string          `json:"manufacturer,omitempty"`
+	EndEffector  *string          `json:"end_effector,omitempty"`
+	SensorSuite  *json.RawMessage `json:"sensor_suite,omitempty"`
+	ROSTopics    []string         `json:"ros_topics"`
+	Capabilities *json.RawMessage `json:"capabilities,omitempty"`
+	CreatedAt    string           `json:"created_at,omitempty"`
+	UpdatedAt    string           `json:"updated_at,omitempty"`
 }
 
 // RobotTypeListResponse represents the response for listing robot types.
@@ -71,13 +70,113 @@ func (h *RobotTypeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // robotTypeRow represents a robot type in the database
 type robotTypeRow struct {
-	ID        int64          `db:"id"`
-	Name      string         `db:"name"`
-	Model     string         `db:"model"`
-	ROSTopics sql.NullString `db:"ros_topics"`
-	CreatedAt sql.NullString `db:"created_at"`
-	UpdatedAt sql.NullString `db:"updated_at"`
+	ID           int64          `db:"id"`
+	Name         string         `db:"name"`
+	Model        string         `db:"model"`
+	Manufacturer sql.NullString `db:"manufacturer"`
+	EndEffector  sql.NullString `db:"end_effector"`
+	SensorSuite  sql.NullString `db:"sensor_suite"`
+	ROSTopics    sql.NullString `db:"ros_topics"`
+	Capabilities sql.NullString `db:"capabilities"`
+	CreatedAt    sql.NullString `db:"created_at"`
+	UpdatedAt    sql.NullString `db:"updated_at"`
 }
+
+func sqlNullStringFromOptionalPtr(s *string) sql.NullString {
+	if s == nil {
+		return sql.NullString{Valid: false}
+	}
+	v := strings.TrimSpace(*s)
+	if v == "" {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{String: v, Valid: true}
+}
+
+func sqlNullJSONFromRaw(raw json.RawMessage) sql.NullString {
+	if len(raw) == 0 {
+		return sql.NullString{Valid: false}
+	}
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+// jsonStringOrEmptyObject returns JSON text for sensor_suite/capabilities.
+// Empty or null raw defaults to {}.
+func jsonStringOrEmptyObject(raw json.RawMessage) string {
+	ns := sqlNullJSONFromRaw(raw)
+	if !ns.Valid {
+		return "{}"
+	}
+	return ns.String
+}
+
+// jsonColumnForCreate stores sensor_suite/capabilities on INSERT.
+// If the client omits the field or sends empty/null, defaults to {}.
+func jsonColumnForCreate(raw json.RawMessage) sql.NullString {
+	return sql.NullString{String: jsonStringOrEmptyObject(raw), Valid: true}
+}
+
+func stringPtrFromNull(ns sql.NullString) *string {
+	if !ns.Valid {
+		return nil
+	}
+	s := ns.String
+	return &s
+}
+
+func ptrRawJSONFromNull(ns sql.NullString) *json.RawMessage {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return nil
+	}
+	r := json.RawMessage(ns.String)
+	return &r
+}
+
+func robotTypeRowToResponse(rt robotTypeRow) RobotTypeResponse {
+	var topics []string
+	if rt.ROSTopics.Valid && rt.ROSTopics.String != "" {
+		topics = parseJSONArray(rt.ROSTopics.String)
+	}
+
+	createdAt := ""
+	if rt.CreatedAt.Valid {
+		createdAt = rt.CreatedAt.String
+	}
+
+	updatedAt := ""
+	if rt.UpdatedAt.Valid {
+		updatedAt = rt.UpdatedAt.String
+	}
+
+	return RobotTypeResponse{
+		ID:           rt.ID,
+		Name:         rt.Name,
+		Model:        rt.Model,
+		Manufacturer: stringPtrFromNull(rt.Manufacturer),
+		EndEffector:  stringPtrFromNull(rt.EndEffector),
+		SensorSuite:  ptrRawJSONFromNull(rt.SensorSuite),
+		ROSTopics:    topics,
+		Capabilities: ptrRawJSONFromNull(rt.Capabilities),
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+	}
+}
+
+const robotTypeSelectColumns = `
+			id,
+			name,
+			model,
+			manufacturer,
+			end_effector,
+			sensor_suite,
+			ros_topics,
+			capabilities,
+			created_at,
+			updated_at`
 
 // CreateRobotType handles robot type creation requests.
 //
@@ -87,7 +186,7 @@ type robotTypeRow struct {
 // @Accept       json
 // @Produce      json
 // @Param        body  body      CreateRobotTypeRequest   true  "Robot type payload"
-// @Success      201   {object}  CreateRobotTypeResponse
+// @Success      201   {object}  RobotTypeResponse
 // @Failure      400   {object}  map[string]string
 // @Failure      500   {object}  map[string]string
 // @Router       /robot_types [post]
@@ -117,13 +216,21 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 		`INSERT INTO robot_types (
 			name,
 			model,
+			manufacturer,
+			end_effector,
+			sensor_suite,
 			ros_topics,
+			capabilities,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.Name,
 		req.Model,
+		sqlNullStringFromOptionalPtr(req.Manufacturer),
+		sqlNullStringFromOptionalPtr(req.EndEffector),
+		jsonColumnForCreate(req.SensorSuite),
 		toNullableJSONArray(req.ROSTopics),
+		jsonColumnForCreate(req.Capabilities),
 		now,
 		now,
 	)
@@ -140,13 +247,15 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, CreateRobotTypeResponse{
-		ID:        id,
-		Name:      req.Name,
-		Model:     req.Model,
-		ROSTopics: req.ROSTopics,
-		CreatedAt: now.Format(time.RFC3339),
-	})
+	var rt robotTypeRow
+	err = h.db.Get(&rt, `SELECT `+robotTypeSelectColumns+` FROM robot_types WHERE id = ?`, id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to fetch created robot type: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create robot type"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, robotTypeRowToResponse(rt))
 }
 
 // ListRobotTypes handles robot type listing requests.
@@ -161,19 +270,12 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 // @Router       /robot_types [get]
 func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
 	query := `
-		SELECT 
-			id,
-			name,
-			model,
-			ros_topics,
-			created_at,
-			updated_at
+		SELECT ` + robotTypeSelectColumns + `
 		FROM robot_types
 		WHERE deleted_at IS NULL
 		ORDER BY id DESC
 	`
 
-	// Use db.Select for cleaner code and automatic resource management
 	var dbRows []robotTypeRow
 	if err := h.db.Select(&dbRows, query); err != nil {
 		logger.Printf("[ROBOT] Failed to query robot types: %v", err)
@@ -181,32 +283,9 @@ func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
 		return
 	}
 
-	robotTypes := []RobotTypeResponse{}
+	robotTypes := make([]RobotTypeResponse, 0, len(dbRows))
 	for _, rt := range dbRows {
-		// Parse ROS topics from JSON array
-		var topics []string
-		if rt.ROSTopics.Valid && rt.ROSTopics.String != "" {
-			topics = parseJSONArray(rt.ROSTopics.String)
-		}
-
-		createdAt := ""
-		if rt.CreatedAt.Valid {
-			createdAt = rt.CreatedAt.String
-		}
-
-		updatedAt := ""
-		if rt.UpdatedAt.Valid {
-			updatedAt = rt.UpdatedAt.String
-		}
-
-		robotTypes = append(robotTypes, RobotTypeResponse{
-			ID:        rt.ID,
-			Name:      rt.Name,
-			Model:     rt.Model,
-			ROSTopics: topics,
-			CreatedAt: createdAt,
-			UpdatedAt: updatedAt,
-		})
+		robotTypes = append(robotTypes, robotTypeRowToResponse(rt))
 	}
 
 	c.JSON(http.StatusOK, RobotTypeListResponse{
@@ -259,13 +338,7 @@ func (h *RobotTypeHandler) GetRobotType(c *gin.Context) {
 	}
 
 	query := `
-		SELECT 
-			id,
-			name,
-			model,
-			ros_topics,
-			created_at,
-			updated_at
+		SELECT ` + robotTypeSelectColumns + `
 		FROM robot_types
 		WHERE id = ? AND deleted_at IS NULL
 	`
@@ -281,36 +354,18 @@ func (h *RobotTypeHandler) GetRobotType(c *gin.Context) {
 		return
 	}
 
-	var topics []string
-	if rt.ROSTopics.Valid && rt.ROSTopics.String != "" {
-		topics = parseJSONArray(rt.ROSTopics.String)
-	}
-
-	createdAt := ""
-	if rt.CreatedAt.Valid {
-		createdAt = rt.CreatedAt.String
-	}
-
-	updatedAt := ""
-	if rt.UpdatedAt.Valid {
-		updatedAt = rt.UpdatedAt.String
-	}
-
-	c.JSON(http.StatusOK, RobotTypeResponse{
-		ID:        rt.ID,
-		Name:      rt.Name,
-		Model:     rt.Model,
-		ROSTopics: topics,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
-	})
+	c.JSON(http.StatusOK, robotTypeRowToResponse(rt))
 }
 
 // UpdateRobotTypeRequest represents the request body for updating a robot type.
 type UpdateRobotTypeRequest struct {
-	Name      *string   `json:"name,omitempty"`
-	Model     *string   `json:"model,omitempty"`
-	ROSTopics *[]string `json:"ros_topics,omitempty"`
+	Name         *string          `json:"name,omitempty"`
+	Model        *string          `json:"model,omitempty"`
+	Manufacturer *string          `json:"manufacturer,omitempty"`
+	EndEffector  *string          `json:"end_effector,omitempty"`
+	SensorSuite  *json.RawMessage `json:"sensor_suite,omitempty"`
+	ROSTopics    *[]string        `json:"ros_topics,omitempty"`
+	Capabilities *json.RawMessage `json:"capabilities,omitempty"`
 }
 
 // UpdateRobotType handles updating a robot type.
@@ -361,9 +416,41 @@ func (h *RobotTypeHandler) UpdateRobotType(c *gin.Context) {
 		}
 	}
 
+	if req.Manufacturer != nil {
+		v := strings.TrimSpace(*req.Manufacturer)
+		if v == "" {
+			updates = append(updates, "manufacturer = NULL")
+		} else {
+			updates = append(updates, "manufacturer = ?")
+			args = append(args, v)
+		}
+	}
+
+	if req.EndEffector != nil {
+		v := strings.TrimSpace(*req.EndEffector)
+		if v == "" {
+			updates = append(updates, "end_effector = NULL")
+		} else {
+			updates = append(updates, "end_effector = ?")
+			args = append(args, v)
+		}
+	}
+
+	if req.SensorSuite != nil {
+		raw := *req.SensorSuite
+		updates = append(updates, "sensor_suite = ?")
+		args = append(args, jsonStringOrEmptyObject(raw))
+	}
+
 	if req.ROSTopics != nil {
 		updates = append(updates, "ros_topics = ?")
 		args = append(args, toNullableJSONArray(*req.ROSTopics))
+	}
+
+	if req.Capabilities != nil {
+		raw := *req.Capabilities
+		updates = append(updates, "capabilities = ?")
+		args = append(args, jsonStringOrEmptyObject(raw))
 	}
 
 	if len(updates) == 0 {
@@ -391,38 +478,15 @@ func (h *RobotTypeHandler) UpdateRobotType(c *gin.Context) {
 		return
 	}
 
-	// Fetch the updated robot type
 	var rt robotTypeRow
-	err = h.db.Get(&rt, "SELECT id, name, model, ros_topics, created_at, updated_at FROM robot_types WHERE id = ?", id)
+	err = h.db.Get(&rt, "SELECT "+robotTypeSelectColumns+" FROM robot_types WHERE id = ?", id)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to fetch updated robot type: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated robot type"})
 		return
 	}
 
-	var topics []string
-	if rt.ROSTopics.Valid && rt.ROSTopics.String != "" {
-		topics = parseJSONArray(rt.ROSTopics.String)
-	}
-
-	createdAt := ""
-	if rt.CreatedAt.Valid {
-		createdAt = rt.CreatedAt.String
-	}
-
-	updatedAt := ""
-	if rt.UpdatedAt.Valid {
-		updatedAt = rt.UpdatedAt.String
-	}
-
-	c.JSON(http.StatusOK, RobotTypeResponse{
-		ID:        rt.ID,
-		Name:      rt.Name,
-		Model:     rt.Model,
-		ROSTopics: topics,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
-	})
+	c.JSON(http.StatusOK, robotTypeRowToResponse(rt))
 }
 
 // DeleteRobotType handles robot type deletion requests (soft delete).
@@ -436,6 +500,7 @@ func (h *RobotTypeHandler) UpdateRobotType(c *gin.Context) {
 // @Success      204
 // @Failure      400 {object} map[string]string
 // @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /robot_types/{id} [delete]
 func (h *RobotTypeHandler) DeleteRobotType(c *gin.Context) {
@@ -457,6 +522,18 @@ func (h *RobotTypeHandler) DeleteRobotType(c *gin.Context) {
 
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "robot type not found"})
+		return
+	}
+
+	var robotsUseType bool
+	err = h.db.Get(&robotsUseType, "SELECT EXISTS(SELECT 1 FROM robots WHERE robot_type_id = ? AND deleted_at IS NULL)", id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to check robots referencing robot type: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot type"})
+		return
+	}
+	if robotsUseType {
+		c.JSON(http.StatusConflict, gin.H{"error": "robot type is in used by one or more robots"})
 		return
 	}
 

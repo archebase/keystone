@@ -63,12 +63,30 @@ type CreateOrganizationResponse struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+// organizationSettingsPatch distinguishes a missing "settings" key from JSON null.
+// present: key appeared in the body; isNull: value was JSON null (stored as {}).
+type organizationSettingsPatch struct {
+	present bool
+	isNull  bool
+	raw     json.RawMessage
+}
+
+func (p *organizationSettingsPatch) UnmarshalJSON(data []byte) error {
+	p.present = true
+	if string(data) == "null" {
+		p.isNull = true
+		return nil
+	}
+	p.raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
 // UpdateOrganizationRequest represents the request body for updating an organization.
 type UpdateOrganizationRequest struct {
-	Name        string      `json:"name,omitempty"`
-	Slug        string      `json:"slug,omitempty"`
-	Description *string     `json:"description,omitempty"`
-	Settings    interface{} `json:"settings,omitempty"`
+	Name        string                    `json:"name,omitempty"`
+	Slug        string                    `json:"slug,omitempty"`
+	Description *string                   `json:"description,omitempty"`
+	Settings    organizationSettingsPatch `json:"settings,omitempty"`
 }
 
 // RegisterRoutes registers organization related routes.
@@ -428,12 +446,15 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 		args = append(args, descStr)
 	}
 
-	if req.Settings != nil {
-		settingsJSON, err := json.Marshal(req.Settings)
-		if err == nil {
-			updates = append(updates, "settings = ?")
-			args = append(args, sql.NullString{String: string(settingsJSON), Valid: true})
+	if req.Settings.present {
+		var raw json.RawMessage
+		if req.Settings.isNull {
+			raw = nil
+		} else {
+			raw = req.Settings.raw
 		}
+		updates = append(updates, "settings = ?")
+		args = append(args, sql.NullString{String: jsonStringOrEmptyObject(raw), Valid: true})
 	}
 
 	if len(updates) == 0 {
