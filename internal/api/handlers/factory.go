@@ -38,6 +38,7 @@ type FactoryResponse struct {
 	Location       string      `json:"location,omitempty"`
 	Timezone       string      `json:"timezone,omitempty"`
 	Settings       interface{} `json:"settings,omitempty"`
+	SceneCount     int         `json:"sceneCount"`
 	CreatedAt      string      `json:"created_at,omitempty"`
 	UpdatedAt      string      `json:"updated_at,omitempty"`
 }
@@ -86,6 +87,7 @@ type factoryRow struct {
 	Location       sql.NullString `db:"location"`
 	Timezone       sql.NullString `db:"timezone"`
 	Settings       sql.NullString `db:"settings"`
+	SceneCount     int            `db:"scene_count"`
 	CreatedAt      sql.NullString `db:"created_at"`
 	UpdatedAt      sql.NullString `db:"updated_at"`
 }
@@ -113,6 +115,7 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 			location,
 			timezone,
 			settings,
+			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
 			created_at,
 			updated_at
 		FROM factories
@@ -163,6 +166,7 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 			Slug:           f.Slug,
 			Location:       location,
 			Timezone:       timezone,
+			SceneCount:     f.SceneCount,
 			CreatedAt:      createdAt,
 		})
 	}
@@ -337,6 +341,7 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 			location,
 			timezone,
 			settings,
+			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
 			created_at,
 			updated_at
 		FROM factories
@@ -378,6 +383,7 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 		Slug:           f.Slug,
 		Location:       location,
 		Timezone:       timezone,
+		SceneCount:     f.SceneCount,
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
 	})
@@ -515,7 +521,9 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 
 	// Fetch the updated factory
 	var f factoryRow
-	err = h.db.Get(&f, "SELECT id, organization_id, name, slug, location, timezone, settings, created_at, updated_at FROM factories WHERE id = ?", id)
+	err = h.db.Get(&f, `SELECT id, organization_id, name, slug, location, timezone, settings,
+		(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
+		created_at, updated_at FROM factories WHERE id = ?`, id)
 	if err != nil {
 		logger.Printf("[FACTORY] Failed to fetch updated factory: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated factory"})
@@ -546,6 +554,7 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 		Slug:           f.Slug,
 		Location:       location,
 		Timezone:       timezone,
+		SceneCount:     f.SceneCount,
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
 	})
@@ -554,7 +563,7 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 // DeleteFactory handles factory deletion requests (soft delete).
 //
 // @Summary      Delete factory
-// @Description  Soft deletes a factory by ID
+// @Description  Soft deletes a factory by ID. Returns 400 if the factory has associated scenes.
 // @Tags         factories
 // @Accept       json
 // @Produce      json
@@ -583,6 +592,20 @@ func (h *FactoryHandler) DeleteFactory(c *gin.Context) {
 
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "factory not found"})
+		return
+	}
+
+	// Check if factory has associated scenes
+	var sceneCount int
+	err = h.db.Get(&sceneCount, "SELECT COUNT(*) FROM scenes WHERE factory_id = ? AND deleted_at IS NULL", id)
+	if err != nil {
+		logger.Printf("[FACTORY] Failed to check scene count: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete factory"})
+		return
+	}
+
+	if sceneCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete factory with %d associated scenes", sceneCount)})
 		return
 	}
 

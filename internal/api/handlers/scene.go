@@ -35,7 +35,7 @@ type SceneResponse struct {
 	Name                       string `json:"name"`
 	Description                string `json:"description,omitempty"`
 	InitialSceneLayoutTemplate string `json:"initial_scene_layout_template,omitempty"`
-	SubsceneCount              int    `json:"subscene_count"`
+	SubsceneCount              int    `json:"subsceneCount"`
 	CreatedAt                  string `json:"created_at,omitempty"`
 	UpdatedAt                  string `json:"updated_at,omitempty"`
 }
@@ -498,7 +498,7 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 // DeleteScene handles scene deletion requests (soft delete).
 //
 // @Summary      Delete scene
-// @Description  Soft deletes a scene by ID
+// @Description  Soft deletes a scene by ID. Returns 400 if the scene has associated subscenes.
 // @Tags         scenes
 // @Accept       json
 // @Produce      json
@@ -527,6 +527,20 @@ func (h *SceneHandler) DeleteScene(c *gin.Context) {
 
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scene not found"})
+		return
+	}
+
+	// Check if scene has associated subscenes
+	var subsceneCount int
+	err = h.db.Get(&subsceneCount, "SELECT COUNT(*) FROM subscenes WHERE scene_id = ? AND deleted_at IS NULL", id)
+	if err != nil {
+		logger.Printf("[SCENE] Failed to check subscene count: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete scene"})
+		return
+	}
+
+	if subsceneCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete scene with %d associated subscenes", subsceneCount)})
 		return
 	}
 
