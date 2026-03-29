@@ -546,6 +546,7 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 // @Success      204
 // @Failure      400 {object} map[string]string
 // @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /skills/{id} [delete]
 func (h *SkillHandler) DeleteSkill(c *gin.Context) {
@@ -556,7 +557,6 @@ func (h *SkillHandler) DeleteSkill(c *gin.Context) {
 		return
 	}
 
-	// Check if skill exists
 	var exists bool
 	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM skills WHERE id = ? AND deleted_at IS NULL)", id)
 	if err != nil {
@@ -564,9 +564,27 @@ func (h *SkillHandler) DeleteSkill(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete skill"})
 		return
 	}
-
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "skill not found"})
+		return
+	}
+
+	// skill_sequence stores skill ids as JSON strings, e.g. ["1","2"].
+	var referenced bool
+	err = h.db.Get(&referenced, `
+		SELECT EXISTS(
+			SELECT 1 FROM sops
+			WHERE deleted_at IS NULL
+			  AND JSON_CONTAINS(skill_sequence, JSON_QUOTE(CAST(? AS CHAR)), '$')
+		)
+	`, id)
+	if err != nil {
+		logger.Printf("[SKILL] Failed to check SOP references: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete skill"})
+		return
+	}
+	if referenced {
+		c.JSON(http.StatusConflict, gin.H{"error": "skill is referenced by one or more SOPs"})
 		return
 	}
 
