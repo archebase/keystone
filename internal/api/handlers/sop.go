@@ -276,7 +276,7 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 	}
 	// Validate slug format
 	if !isValidSlug(req.Slug) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
 		return
 	}
 	version := "1.0.0"
@@ -415,7 +415,7 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 			return
 		}
 		if !isValidSlug(slug) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
 			return
 		}
 		if slug != current.Slug {

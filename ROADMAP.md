@@ -58,8 +58,8 @@ Second Release Implementation Order:
   - Role-based access control (RBAC)
   - API private key management
 2. **Scene & Skill Management**
-  - scene and subscene CRUD
-  - skill and sop CRUD
+  - ✅ scene and subscene CRUD
+  - ✅ skill and sop CRUD
 3. **Order & Task Management**
   - order CRUD
   - batch CRUD

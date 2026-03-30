@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
+
+// optionalJSONPatch supports PATCH-style updates: omitted JSON key → Present false;
+// key present with null or a value → Present true (Value nil means store metadata as "{}").
+// encoding/json does not distinguish null from omitted for *interface{}; this type does.
+type optionalJSONPatch struct {
+	Present bool
+	Value   interface{}
+}
+
+func (o *optionalJSONPatch) UnmarshalJSON(data []byte) error {
+	o.Present = true
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		o.Value = nil
+		return nil
+	}
+	return json.Unmarshal(data, &o.Value)
+}
 
 // SkillHandler handles skill related HTTP requests.
 type SkillHandler struct {
@@ -65,12 +83,13 @@ type CreateSkillResponse struct {
 }
 
 // UpdateSkillRequest represents the request body for updating a skill.
+// Metadata uses optionalJSONPatch so JSON null (clear) is distinct from omitting the key (unchanged).
 type UpdateSkillRequest struct {
-	Slug        *string     `json:"slug,omitempty"`
-	Name        *string     `json:"name,omitempty"`
-	Description *string     `json:"description,omitempty"`
-	Version     *string     `json:"version,omitempty"`
-	Metadata    interface{} `json:"metadata,omitempty"`
+	Slug        *string           `json:"slug,omitempty"`
+	Name        *string           `json:"name,omitempty"`
+	Description *string           `json:"description,omitempty"`
+	Version     *string           `json:"version,omitempty"`
+	Metadata    optionalJSONPatch `json:"metadata,omitempty"`
 }
 
 // RegisterRoutes registers skill related routes.
@@ -275,7 +294,7 @@ func (h *SkillHandler) CreateSkill(c *gin.Context) {
 		return
 	}
 	if !isValidSlug(req.Slug) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
 		return
 	}
 	if req.Name == "" {
@@ -406,7 +425,7 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 			return
 		}
 		if !isValidSlug(slug) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
 			return
 		}
 		if slug != current.Slug {
@@ -447,11 +466,16 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 		args = append(args, descStr)
 	}
 
-	if req.Metadata != nil {
-		metadataJSON, err := json.Marshal(req.Metadata)
-		if err == nil {
+	if req.Metadata.Present {
+		if req.Metadata.Value == nil {
 			updates = append(updates, "metadata = ?")
-			args = append(args, sql.NullString{String: string(metadataJSON), Valid: true})
+			args = append(args, sql.NullString{String: "{}", Valid: true})
+		} else {
+			metadataJSON, err := json.Marshal(req.Metadata.Value)
+			if err == nil {
+				updates = append(updates, "metadata = ?")
+				args = append(args, sql.NullString{String: string(metadataJSON), Valid: true})
+			}
 		}
 	}
 

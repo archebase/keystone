@@ -11,9 +11,15 @@ import (
 	"time"
 )
 
-// isValidSlug checks if the slug contains only alphanumeric characters and hyphens.
+// maxSlugLength matches VARCHAR(100) for slug columns in the schema.
+const maxSlugLength = 100
+
+// invalidSlugUserMessage is returned when slug fails isValidSlug (length or charset).
+const invalidSlugUserMessage = "slug must be at most 100 characters and contain only alphanumeric characters and hyphens"
+
+// isValidSlug checks non-empty slug, length <= maxSlugLength, and alphanumeric plus hyphen only.
 func isValidSlug(s string) bool {
-	if len(s) == 0 {
+	if len(s) == 0 || len(s) > maxSlugLength {
 		return false
 	}
 	for _, c := range s {

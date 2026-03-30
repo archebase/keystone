@@ -297,7 +297,7 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 
 	// Validate slug format (alphanumeric and hyphens only)
 	if !isValidSlug(req.Slug) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
 		return
 	}
 
@@ -422,7 +422,7 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 	if req.Slug != "" {
 		// Validate slug format
 		if !isValidSlug(req.Slug) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "slug must contain only alphanumeric characters and hyphens"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
 			return
 		}
 		// Check if new slug already exists for another organization
