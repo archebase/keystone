@@ -312,17 +312,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 	}
 
 	resp := dataCollectorResponseFromRow(row)
-	c.JSON(http.StatusCreated, CreateDataCollectorResponse{
-		ID:            resp.ID,
-		Name:          resp.Name,
-		OperatorID:    resp.OperatorID,
-		Email:         resp.Email,
-		Certification: resp.Certification,
-		Status:        resp.Status,
-		Metadata:      resp.Metadata,
-		CreatedAt:     resp.CreatedAt,
-		UpdatedAt:     resp.UpdatedAt,
-	})
+	c.JSON(http.StatusCreated, CreateDataCollectorResponse(resp))
 }
 
 // GetDataCollector handles getting a single data collector by ID.

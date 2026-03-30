@@ -100,12 +100,6 @@ type dataCollectorInfoRow struct {
 	Status     string `db:"status"`
 }
 
-// factoryRow represents factory info
-type factoryInfoRow struct {
-	ID   int64  `db:"id"`
-	Slug string `db:"slug"`
-}
-
 // CreateStation handles station creation requests.
 //
 // @Summary      Create station

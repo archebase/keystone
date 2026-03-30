@@ -261,8 +261,7 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 	}
 
 	// Convert timezone to nullable string
-	var timezoneStr sql.NullString
-	timezoneStr = sql.NullString{String: timezone, Valid: true}
+	timezoneStr := sql.NullString{String: timezone, Valid: true}
 
 	// Convert settings to JSON string if provided
 	var settingsStr sql.NullString
