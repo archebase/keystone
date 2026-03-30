@@ -819,29 +819,3 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 
 	c.Status(http.StatusNoContent)
 }
-
-func formatDBTimeToRFC3339(raw string) string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return ""
-	}
-
-	// MySQL commonly returns "YYYY-MM-DD HH:MM:SS" or with fractional seconds.
-	// Some drivers/configs may return RFC3339.
-	layouts := []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02 15:04:05.999999",
-		"2006-01-02 15:04:05.999999999",
-		time.RFC3339Nano,
-		time.RFC3339,
-	}
-
-	for _, layout := range layouts {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.Format(time.RFC3339)
-		}
-	}
-
-	// Fallback: return original string instead of a wrong timestamp.
-	return s
-}

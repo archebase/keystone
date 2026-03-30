@@ -590,29 +590,3 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 
 	c.Status(http.StatusNoContent)
 }
-
-// isValidSlug checks if the slug contains only alphanumeric characters and hyphens
-func isValidSlug(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	for _, c := range s {
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
-			return false
-		}
-	}
-	return true
-}
-
-// parseJSONRaw parses a JSON string and returns it as a raw interface{}
-func parseJSONRaw(s string) interface{} {
-	s = strings.TrimSpace(s)
-	if s == "" || s == "null" {
-		return nil
-	}
-	var result interface{}
-	if err := json.Unmarshal([]byte(s), &result); err != nil {
-		return s
-	}
-	return result
-}

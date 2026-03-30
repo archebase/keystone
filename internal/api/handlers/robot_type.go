@@ -93,27 +93,6 @@ func sqlNullStringFromOptionalPtr(s *string) sql.NullString {
 	return sql.NullString{String: v, Valid: true}
 }
 
-func sqlNullJSONFromRaw(raw json.RawMessage) sql.NullString {
-	if len(raw) == 0 {
-		return sql.NullString{Valid: false}
-	}
-	s := strings.TrimSpace(string(raw))
-	if s == "" || s == "null" {
-		return sql.NullString{Valid: false}
-	}
-	return sql.NullString{String: s, Valid: true}
-}
-
-// jsonStringOrEmptyObject returns JSON text for sensor_suite/capabilities.
-// Empty or null raw defaults to {}.
-func jsonStringOrEmptyObject(raw json.RawMessage) string {
-	ns := sqlNullJSONFromRaw(raw)
-	if !ns.Valid {
-		return "{}"
-	}
-	return ns.String
-}
-
 // jsonColumnForCreate stores sensor_suite/capabilities on INSERT.
 // If the client omits the field or sends empty/null, defaults to {}.
 func jsonColumnForCreate(raw json.RawMessage) sql.NullString {
@@ -291,18 +270,6 @@ func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
 	c.JSON(http.StatusOK, RobotTypeListResponse{
 		RobotTypes: robotTypes,
 	})
-}
-
-func parseJSONArray(s string) []string {
-	s = strings.TrimSpace(s)
-	if s == "" || s == "null" {
-		return nil
-	}
-	var result []string
-	if err := json.Unmarshal([]byte(s), &result); err != nil {
-		return nil
-	}
-	return result
 }
 
 func toNullableJSONArray(values []string) sql.NullString {
