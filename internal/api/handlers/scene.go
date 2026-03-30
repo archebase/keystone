@@ -47,10 +47,10 @@ type SceneListResponse struct {
 
 // CreateSceneRequest represents the request body for creating a scene.
 type CreateSceneRequest struct {
-	FactoryID                  string  `json:"factory_id"`
-	Name                       string  `json:"name"`
-	Description                string  `json:"description,omitempty"`
-	InitialSceneLayoutTemplate string  `json:"initial_scene_layout_template,omitempty"`
+	FactoryID                  string `json:"factory_id"`
+	Name                       string `json:"name"`
+	Description                string `json:"description,omitempty"`
+	InitialSceneLayoutTemplate string `json:"initial_scene_layout_template,omitempty"`
 }
 
 // CreateSceneResponse represents the response for creating a scene.

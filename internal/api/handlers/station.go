@@ -45,7 +45,7 @@ type UpdateStationRequest struct {
 	RobotID         *string         `json:"robot_id,omitempty"`
 	DataCollectorID *string         `json:"data_collector_id,omitempty"`
 	Status          *string         `json:"status,omitempty"`
-	Metadata        json.RawMessage `json:"metadata,omitempty"`
+	Metadata        json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
 }
 
 // StationResponse represents a station in the response.

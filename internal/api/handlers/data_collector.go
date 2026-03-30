@@ -373,7 +373,7 @@ type UpdateDataCollectorRequest struct {
 	Email         *string         `json:"email,omitempty"`
 	Certification *string         `json:"certification,omitempty"`
 	Status        *string         `json:"status,omitempty"`
-	Metadata      json.RawMessage `json:"metadata,omitempty"`
+	Metadata      json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
 }
 
 // UpdateDataCollector handles updating a data collector.

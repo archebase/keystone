@@ -35,9 +35,9 @@ type CreateRobotTypeRequest struct {
 	Model        string          `json:"model"`
 	Manufacturer *string         `json:"manufacturer,omitempty"`
 	EndEffector  *string         `json:"end_effector,omitempty"`
-	SensorSuite  json.RawMessage `json:"sensor_suite,omitempty"`
+	SensorSuite  json.RawMessage `json:"sensor_suite,omitempty" swaggertype:"object"`
 	ROSTopics    []string        `json:"ros_topics"`
-	Capabilities json.RawMessage `json:"capabilities,omitempty"`
+	Capabilities json.RawMessage `json:"capabilities,omitempty" swaggertype:"object"`
 }
 
 // RobotTypeResponse represents a robot type in the response.
@@ -47,9 +47,9 @@ type RobotTypeResponse struct {
 	Model        string           `json:"model"`
 	Manufacturer *string          `json:"manufacturer,omitempty"`
 	EndEffector  *string          `json:"end_effector,omitempty"`
-	SensorSuite  *json.RawMessage `json:"sensor_suite,omitempty"`
+	SensorSuite  *json.RawMessage `json:"sensor_suite,omitempty" swaggertype:"object"`
 	ROSTopics    []string         `json:"ros_topics"`
-	Capabilities *json.RawMessage `json:"capabilities,omitempty"`
+	Capabilities *json.RawMessage `json:"capabilities,omitempty" swaggertype:"object"`
 	CreatedAt    string           `json:"created_at,omitempty"`
 	UpdatedAt    string           `json:"updated_at,omitempty"`
 }
@@ -330,9 +330,9 @@ type UpdateRobotTypeRequest struct {
 	Model        *string          `json:"model,omitempty"`
 	Manufacturer *string          `json:"manufacturer,omitempty"`
 	EndEffector  *string          `json:"end_effector,omitempty"`
-	SensorSuite  *json.RawMessage `json:"sensor_suite,omitempty"`
+	SensorSuite  *json.RawMessage `json:"sensor_suite,omitempty" swaggertype:"object"`
 	ROSTopics    *[]string        `json:"ros_topics,omitempty"`
-	Capabilities *json.RawMessage `json:"capabilities,omitempty"`
+	Capabilities *json.RawMessage `json:"capabilities,omitempty" swaggertype:"object"`
 }
 
 // UpdateRobotType handles updating a robot type.

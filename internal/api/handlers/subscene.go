@@ -46,10 +46,10 @@ type SubsceneListResponse struct {
 
 // CreateSubsceneRequest represents the request body for creating a subscene.
 type CreateSubsceneRequest struct {
-	SceneID            string  `json:"scene_id"`
-	Name               string  `json:"name"`
-	Description        string  `json:"description,omitempty"`
-	InitialSceneLayout string  `json:"initial_scene_layout,omitempty"`
+	SceneID            string `json:"scene_id"`
+	Name               string `json:"name"`
+	Description        string `json:"description,omitempty"`
+	InitialSceneLayout string `json:"initial_scene_layout,omitempty"`
 }
 
 // CreateSubsceneResponse represents the response for creating a subscene.
@@ -346,8 +346,8 @@ func (h *SubsceneHandler) CreateSubscene(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, CreateSubsceneResponse{
-		ID:   fmt.Sprintf("%d", id),
-		Name: req.Name,
+		ID:        fmt.Sprintf("%d", id),
+		Name:      req.Name,
 		CreatedAt: now.Format(time.RFC3339),
 	})
 }

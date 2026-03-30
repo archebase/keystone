@@ -463,7 +463,7 @@ type UpdateRobotRequest struct {
 	FactoryID   *string         `json:"factory_id,omitempty"`
 	AssetID     *string         `json:"asset_id,omitempty"`
 	Status      *string         `json:"status,omitempty"`
-	Metadata    json.RawMessage `json:"metadata,omitempty"`
+	Metadata    json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
 }
 
 // UpdateRobot handles updating a robot.

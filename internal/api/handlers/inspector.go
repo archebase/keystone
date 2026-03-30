@@ -76,7 +76,7 @@ type UpdateInspectorRequest struct {
 	Email              *string         `json:"email,omitempty"`
 	CertificationLevel *string         `json:"certification_level,omitempty"`
 	Status             *string         `json:"status,omitempty"`
-	Metadata           json.RawMessage `json:"metadata,omitempty"`
+	Metadata           json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
 }
 
 // RegisterRoutes registers inspector related routes.
