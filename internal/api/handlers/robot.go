@@ -6,7 +6,9 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -37,14 +39,17 @@ func NewRobotHandler(db *sqlx.DB, recorderHub *services.RecorderHub, transferHub
 
 // RobotResponse represents a robot in the response.
 type RobotResponse struct {
-	ID          string `json:"id"`
-	RobotTypeID string `json:"robot_type_id"`
-	DeviceID    string `json:"device_id"`
-	FactoryID   string `json:"factory_id"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	Connected   bool   `json:"connected"`
-	ConnectedAt string `json:"connected_at,omitempty"`
+	ID          string      `json:"id"`
+	RobotTypeID string      `json:"robot_type_id"`
+	DeviceID    string      `json:"device_id"`
+	FactoryID   string      `json:"factory_id"`
+	AssetID     string      `json:"asset_id,omitempty"`
+	Status      string      `json:"status"`
+	Metadata    interface{} `json:"metadata,omitempty"`
+	CreatedAt   string      `json:"created_at,omitempty"`
+	UpdatedAt   string      `json:"updated_at,omitempty"`
+	Connected   bool        `json:"connected"`
+	ConnectedAt string      `json:"connected_at,omitempty"`
 }
 
 // RobotListResponse represents the response for listing robots.
@@ -54,25 +59,33 @@ type RobotListResponse struct {
 
 // CreateRobotRequest represents the request body for creating a robot.
 type CreateRobotRequest struct {
-	RobotTypeID string `json:"robot_type_id"`
-	DeviceID    string `json:"device_id"`
-	FactoryID   string `json:"factory_id"`
+	RobotTypeID string      `json:"robot_type_id"`
+	DeviceID    string      `json:"device_id"`
+	FactoryID   string      `json:"factory_id"`
+	AssetID     string      `json:"asset_id,omitempty"`
+	Metadata    interface{} `json:"metadata,omitempty"`
 }
 
 // CreateRobotResponse represents the response for creating a robot.
 type CreateRobotResponse struct {
-	ID          string `json:"id"`
-	RobotTypeID string `json:"robot_type_id"`
-	DeviceID    string `json:"device_id"`
-	FactoryID   string `json:"factory_id"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
+	ID          string      `json:"id"`
+	RobotTypeID string      `json:"robot_type_id"`
+	DeviceID    string      `json:"device_id"`
+	FactoryID   string      `json:"factory_id"`
+	AssetID     string      `json:"asset_id,omitempty"`
+	Status      string      `json:"status"`
+	Metadata    interface{} `json:"metadata,omitempty"`
+	CreatedAt   string      `json:"created_at"`
+	UpdatedAt   string      `json:"updated_at,omitempty"`
 }
 
 // RegisterRoutes registers robot related routes.
 func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robots", h.ListRobots)
 	apiV1.POST("/robots", h.CreateRobot)
+	apiV1.GET("/robots/:id", h.GetRobot)
+	apiV1.PUT("/robots/:id", h.UpdateRobot)
+	apiV1.DELETE("/robots/:id", h.DeleteRobot)
 }
 
 // robotRow represents a robot in the database
@@ -81,8 +94,64 @@ type robotRow struct {
 	RobotTypeID int64          `db:"robot_type_id"`
 	DeviceID    string         `db:"device_id"`
 	FactoryID   int64          `db:"factory_id"`
+	AssetID     sql.NullString `db:"asset_id"`
 	Status      string         `db:"status"`
+	Metadata    sql.NullString `db:"metadata"`
 	CreatedAt   sql.NullString `db:"created_at"`
+	UpdatedAt   sql.NullString `db:"updated_at"`
+}
+
+func robotMetadataFromDB(ns sql.NullString) interface{} {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return nil
+	}
+	return parseJSONRaw(ns.String)
+}
+
+func (h *RobotHandler) connectionState(deviceID string) (connected bool, connectedAt string) {
+	if h.recorderHub == nil || h.transferHub == nil {
+		return false, ""
+	}
+	recConn := h.recorderHub.Get(deviceID)
+	transConn := h.transferHub.Get(deviceID)
+	connected = recConn != nil && transConn != nil
+	if !connected {
+		return false, ""
+	}
+	t := recConn.ConnectedAt
+	if transConn.ConnectedAt.After(t) {
+		t = transConn.ConnectedAt
+	}
+	return true, t.UTC().Format(time.RFC3339)
+}
+
+func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
+	createdAt := ""
+	if r.CreatedAt.Valid {
+		createdAt = r.CreatedAt.String
+	}
+	updatedAt := ""
+	if r.UpdatedAt.Valid {
+		updatedAt = r.UpdatedAt.String
+	}
+	assetID := ""
+	if r.AssetID.Valid {
+		assetID = r.AssetID.String
+	}
+	connected, connectedAt := h.connectionState(r.DeviceID)
+	return RobotResponse{
+		ID:          fmt.Sprintf("%d", r.ID),
+		RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),
+		DeviceID:    r.DeviceID,
+		FactoryID:   fmt.Sprintf("%d", r.FactoryID),
+		AssetID:     assetID,
+		Status:      r.Status,
+		Metadata:    robotMetadataFromDB(r.Metadata),
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+		Connected:   connected,
+		ConnectedAt: connectedAt,
+	}
 }
 
 // ListRobots handles robot listing requests with filtering.
@@ -122,8 +191,11 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 			r.robot_type_id,
 			r.device_id,
 			r.factory_id,
+			r.asset_id,
 			r.status,
-			r.created_at
+			r.metadata,
+			r.created_at,
+			r.updated_at
 		FROM robots r
 		WHERE r.deleted_at IS NULL
 	`
@@ -167,42 +239,11 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 
 	robots := []RobotResponse{}
 	for _, r := range dbRows {
-		createdAt := ""
-		if r.CreatedAt.Valid {
-			createdAt = r.CreatedAt.String
-		}
-
-		connected := false
-		connectedAt := ""
-		if h.recorderHub != nil && h.transferHub != nil {
-			recConn := h.recorderHub.Get(r.DeviceID)
-			transConn := h.transferHub.Get(r.DeviceID)
-			connected = recConn != nil && transConn != nil
-
-			// Only compute connectedAt when connected=true
-			if connected {
-				t := recConn.ConnectedAt
-				if transConn.ConnectedAt.After(t) {
-					t = transConn.ConnectedAt
-				}
-				connectedAt = t.UTC().Format(time.RFC3339)
-			}
-		}
-
-		if connectedFilter != nil && connected != *connectedFilter {
+		resp := h.responseFromRow(r)
+		if connectedFilter != nil && resp.Connected != *connectedFilter {
 			continue
 		}
-
-		robots = append(robots, RobotResponse{
-			ID:          fmt.Sprintf("%d", r.ID),
-			RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),
-			DeviceID:    r.DeviceID,
-			FactoryID:   fmt.Sprintf("%d", r.FactoryID),
-			Status:      r.Status,
-			CreatedAt:   createdAt,
-			Connected:   connected,
-			ConnectedAt: connectedAt,
-		})
+		robots = append(robots, resp)
 	}
 
 	c.JSON(http.StatusOK, RobotListResponse{
@@ -280,20 +321,39 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 	// Generate created_at timestamp in application layer
 	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 
+	var assetIDStr sql.NullString
+	if a := strings.TrimSpace(req.AssetID); a != "" {
+		assetIDStr = sql.NullString{String: a, Valid: true}
+	}
+
+	metadataStr := sql.NullString{String: "{}", Valid: true}
+	if req.Metadata != nil {
+		metadataJSON, err := json.Marshal(req.Metadata)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid metadata JSON"})
+			return
+		}
+		metadataStr = sql.NullString{String: string(metadataJSON), Valid: true}
+	}
+
 	// Insert the robot
 	result, err := h.db.Exec(
 		`INSERT INTO robots (
 			robot_type_id,
 			device_id,
 			factory_id,
+			asset_id,
 			status,
+			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		robotTypeID,
 		req.DeviceID,
 		factoryID,
+		assetIDStr,
 		"active",
+		metadataStr,
 		createdAt,
 		createdAt,
 	)
@@ -310,12 +370,336 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		return
 	}
 
+	var row robotRow
+	err = h.db.Get(&row, `
+		SELECT 
+			r.id,
+			r.robot_type_id,
+			r.device_id,
+			r.factory_id,
+			r.asset_id,
+			r.status,
+			r.metadata,
+			r.created_at,
+			r.updated_at
+		FROM robots r
+		WHERE r.id = ? AND r.deleted_at IS NULL
+	`, id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to load created robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create robot"})
+		return
+	}
+
+	resp := h.responseFromRow(row)
 	c.JSON(http.StatusCreated, CreateRobotResponse{
-		ID:          fmt.Sprintf("%d", id),
-		RobotTypeID: req.RobotTypeID,
-		DeviceID:    req.DeviceID,
-		FactoryID:   req.FactoryID,
-		Status:      "active",
-		CreatedAt:   createdAt,
+		ID:          resp.ID,
+		RobotTypeID: resp.RobotTypeID,
+		DeviceID:    resp.DeviceID,
+		FactoryID:   resp.FactoryID,
+		AssetID:     resp.AssetID,
+		Status:      resp.Status,
+		Metadata:    resp.Metadata,
+		CreatedAt:   resp.CreatedAt,
+		UpdatedAt:   resp.UpdatedAt,
 	})
+}
+
+// GetRobot handles getting a single robot by ID.
+//
+// @Summary      Get robot
+// @Description  Gets a robot by ID
+// @Tags         robots
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string  true  "Robot ID"
+// @Success      200  {object}  RobotResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /robots/{id} [get]
+func (h *RobotHandler) GetRobot(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	query := `
+		SELECT 
+			r.id,
+			r.robot_type_id,
+			r.device_id,
+			r.factory_id,
+			r.asset_id,
+			r.status,
+			r.metadata,
+			r.created_at,
+			r.updated_at
+		FROM robots r
+		WHERE r.id = ? AND r.deleted_at IS NULL
+	`
+
+	var r robotRow
+	if err := h.db.Get(&r, query, id); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+			return
+		}
+		logger.Printf("[ROBOT] Failed to query robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get robot"})
+		return
+	}
+
+	c.JSON(http.StatusOK, h.responseFromRow(r))
+}
+
+// UpdateRobotRequest represents the request body for updating a robot.
+// Metadata uses json.RawMessage so we can tell: key omitted (no change) vs explicit JSON null (store {}).
+type UpdateRobotRequest struct {
+	RobotTypeID *string         `json:"robot_type_id,omitempty"`
+	DeviceID    *string         `json:"device_id,omitempty"`
+	FactoryID   *string         `json:"factory_id,omitempty"`
+	AssetID     *string         `json:"asset_id,omitempty"`
+	Status      *string         `json:"status,omitempty"`
+	Metadata    json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
+}
+
+// UpdateRobot handles updating a robot.
+//
+// @Summary      Update robot
+// @Description  Updates an existing robot
+// @Tags         robots
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string           true  "Robot ID"
+// @Param        body body      UpdateRobotRequest  true  "Robot payload"
+// @Success      200  {object}  RobotResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /robots/{id} [put]
+func (h *RobotHandler) UpdateRobot(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	var req UpdateRobotRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	// Check if robot exists
+	var exists bool
+	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robots WHERE id = ? AND deleted_at IS NULL)", id)
+	if err != nil || !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+
+	// Validate status if provided
+	validStatuses := map[string]bool{
+		"active":      true,
+		"maintenance": true,
+		"retired":     true,
+	}
+
+	// Build update query dynamically
+	updates := []string{}
+	args := []interface{}{}
+
+	if req.RobotTypeID != nil {
+		if *req.RobotTypeID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type_id cannot be empty"})
+			return
+		}
+		parsedRobotTypeID, err := strconv.ParseInt(*req.RobotTypeID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
+			return
+		}
+		// Verify robot_type exists
+		var rtExists bool
+		err = h.db.Get(&rtExists, "SELECT EXISTS(SELECT 1 FROM robot_types WHERE id = ? AND deleted_at IS NULL)", parsedRobotTypeID)
+		if err != nil || !rtExists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type not found"})
+			return
+		}
+		updates = append(updates, "robot_type_id = ?")
+		args = append(args, parsedRobotTypeID)
+	}
+
+	if req.DeviceID != nil {
+		deviceID := strings.TrimSpace(*req.DeviceID)
+		if deviceID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "device_id cannot be empty"})
+			return
+		}
+		updates = append(updates, "device_id = ?")
+		args = append(args, deviceID)
+	}
+
+	if req.FactoryID != nil {
+		if *req.FactoryID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "factory_id cannot be empty"})
+			return
+		}
+		parsedFactoryID, err := strconv.ParseInt(*req.FactoryID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+			return
+		}
+		// Verify factory exists
+		var fExists bool
+		err = h.db.Get(&fExists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", parsedFactoryID)
+		if err != nil || !fExists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "factory not found"})
+			return
+		}
+		updates = append(updates, "factory_id = ?")
+		args = append(args, parsedFactoryID)
+	}
+
+	if req.AssetID != nil {
+		trimmed := strings.TrimSpace(*req.AssetID)
+		var a sql.NullString
+		if trimmed != "" {
+			a = sql.NullString{String: trimmed, Valid: true}
+		}
+		updates = append(updates, "asset_id = ?")
+		args = append(args, a)
+	}
+
+	if req.Status != nil {
+		status := strings.TrimSpace(*req.Status)
+		if !validStatuses[status] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status, must be one of: active, maintenance, retired"})
+			return
+		}
+		updates = append(updates, "status = ?")
+		args = append(args, status)
+	}
+
+	if len(req.Metadata) > 0 {
+		meta := bytes.TrimSpace(req.Metadata)
+		if bytes.Equal(meta, []byte("null")) {
+			updates = append(updates, "metadata = ?")
+			args = append(args, sql.NullString{String: "{}", Valid: true})
+		} else {
+			var probe interface{}
+			if err := json.Unmarshal(req.Metadata, &probe); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid metadata JSON"})
+				return
+			}
+			updates = append(updates, "metadata = ?")
+			args = append(args, sql.NullString{String: string(req.Metadata), Valid: true})
+		}
+	}
+
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+		return
+	}
+
+	updates = append(updates, "updated_at = ?")
+	args = append(args, time.Now().UTC().Format("2006-01-02 15:04:05"))
+	args = append(args, id)
+
+	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
+	_, err = h.db.Exec(query, args...)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to update robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+
+	// Fetch the updated robot
+	var r robotRow
+	err = h.db.Get(&r, `
+		SELECT 
+			r.id,
+			r.robot_type_id,
+			r.device_id,
+			r.factory_id,
+			r.asset_id,
+			r.status,
+			r.metadata,
+			r.created_at,
+			r.updated_at
+		FROM robots r
+		WHERE r.id = ? AND r.deleted_at IS NULL
+	`, id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to fetch updated robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated robot"})
+		return
+	}
+
+	c.JSON(http.StatusOK, h.responseFromRow(r))
+}
+
+// DeleteRobot handles robot deletion requests (soft delete).
+//
+// @Summary      Delete robot
+// @Description  Soft deletes a robot by ID
+// @Tags         robots
+// @Accept       json
+// @Produce      json
+// @Param        id path     string  true  "Robot ID"
+// @Success      204
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /robots/{id} [delete]
+func (h *RobotHandler) DeleteRobot(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	// Check if robot exists
+	var exists bool
+	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robots WHERE id = ? AND deleted_at IS NULL)", id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to check robot existence: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot"})
+		return
+	}
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+
+	var usedByStation bool
+	err = h.db.Get(&usedByStation, "SELECT EXISTS(SELECT 1 FROM workstations WHERE robot_id = ? AND deleted_at IS NULL)", id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to check workstations referencing robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot"})
+		return
+	}
+	if usedByStation {
+		c.JSON(http.StatusConflict, gin.H{"error": "robot is assigned to one or more workstations"})
+		return
+	}
+
+	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	// Perform soft delete by setting deleted_at
+	_, err = h.db.Exec("UPDATE robots SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", updatedAt, id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to delete robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }

@@ -41,6 +41,12 @@ type Server struct {
 	factory          *handlers.FactoryHandler
 	dataCollector    *handlers.DataCollectorHandler
 	station          *handlers.StationHandler
+	organization     *handlers.OrganizationHandler
+	skill            *handlers.SkillHandler
+	inspector        *handlers.InspectorHandler
+	sop              *handlers.SOPHandler
+	scene            *handlers.SceneHandler
+	subscene         *handlers.SubsceneHandler
 	httpServer       *http.Server
 	transferWSServer *http.Server
 	recorderWSServer *http.Server
@@ -82,6 +88,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		factoryHandler       *handlers.FactoryHandler
 		dataCollectorHandler *handlers.DataCollectorHandler
 		stationHandler       *handlers.StationHandler
+		organizationHandler  *handlers.OrganizationHandler
+		skillHandler         *handlers.SkillHandler
+		inspectorHandler     *handlers.InspectorHandler
+		sopHandler           *handlers.SOPHandler
+		sceneHandler         *handlers.SceneHandler
+		subsceneHandler      *handlers.SubsceneHandler
 	)
 	if db != nil {
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
@@ -89,6 +101,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		factoryHandler = handlers.NewFactoryHandler(db)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
+		organizationHandler = handlers.NewOrganizationHandler(db)
+		skillHandler = handlers.NewSkillHandler(db)
+		inspectorHandler = handlers.NewInspectorHandler(db)
+		sopHandler = handlers.NewSOPHandler(db)
+		sceneHandler = handlers.NewSceneHandler(db)
+		subsceneHandler = handlers.NewSubsceneHandler(db)
 	}
 
 	s := &Server{
@@ -103,6 +121,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		factory:       factoryHandler,
 		dataCollector: dataCollectorHandler,
 		station:       stationHandler,
+		organization:  organizationHandler,
+		skill:         skillHandler,
+		inspector:     inspectorHandler,
+		sop:           sopHandler,
+		scene:         sceneHandler,
+		subscene:      subsceneHandler,
 		engine:        engine,
 	}
 
@@ -175,6 +199,24 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.station != nil {
 		s.station.RegisterRoutes(v1Tasks)
+	}
+	if s.organization != nil {
+		s.organization.RegisterRoutes(v1Tasks)
+	}
+	if s.skill != nil {
+		s.skill.RegisterRoutes(v1Tasks)
+	}
+	if s.inspector != nil {
+		s.inspector.RegisterRoutes(v1Tasks)
+	}
+	if s.sop != nil {
+		s.sop.RegisterRoutes(v1Tasks)
+	}
+	if s.scene != nil {
+		s.scene.RegisterRoutes(v1Tasks)
+	}
+	if s.subscene != nil {
+		s.subscene.RegisterRoutes(v1Tasks)
 	}
 
 	// Axon callbacks
