@@ -573,7 +573,7 @@ func (h *SOPHandler) DeleteSOP(c *gin.Context) {
 	now := time.Now().UTC()
 
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE sops SET deleted_at = ?, updated_at = ? WHERE id = ?", now, now, id)
+	_, err = h.db.Exec("UPDATE sops SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id)
 	if err != nil {
 		logger.Printf("[SOP] Failed to delete SOP: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete SOP"})

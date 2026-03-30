@@ -450,7 +450,7 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 	args = append(args, now)
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE scenes SET %s WHERE id = ?", strings.Join(updates, ", "))
+	query := fmt.Sprintf("UPDATE scenes SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
 
 	_, err = h.db.Exec(query, args...)
 	if err != nil {
@@ -547,7 +547,7 @@ func (h *SceneHandler) DeleteScene(c *gin.Context) {
 	now := time.Now().UTC()
 
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE scenes SET deleted_at = ?, updated_at = ? WHERE id = ?", now, now, id)
+	_, err = h.db.Exec("UPDATE scenes SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id)
 	if err != nil {
 		logger.Printf("[SCENE] Failed to delete scene: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete scene"})

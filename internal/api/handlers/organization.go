@@ -467,7 +467,7 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 	args = append(args, now)
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE organizations SET %s WHERE id = ?", strings.Join(updates, ", "))
+	query := fmt.Sprintf("UPDATE organizations SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
 
 	_, err = h.db.Exec(query, args...)
 	if err != nil {
@@ -581,7 +581,7 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 	now := time.Now().UTC()
 
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE organizations SET deleted_at = ?, updated_at = ? WHERE id = ?", now, now, id)
+	_, err = h.db.Exec("UPDATE organizations SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id)
 	if err != nil {
 		logger.Printf("[ORGANIZATION] Failed to delete organization: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})

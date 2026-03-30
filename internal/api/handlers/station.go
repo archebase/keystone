@@ -810,7 +810,7 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 	now := time.Now().UTC()
 
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE workstations SET deleted_at = ?, updated_at = ? WHERE id = ?", now, now, stationID)
+	_, err = h.db.Exec("UPDATE workstations SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, stationID)
 	if err != nil {
 		logger.Printf("[STATION] Failed to delete station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete station"})

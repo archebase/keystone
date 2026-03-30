@@ -592,7 +592,7 @@ func (h *DataCollectorHandler) DeleteDataCollector(c *gin.Context) {
 	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE data_collectors SET deleted_at = NOW(), updated_at = ? WHERE id = ?", updatedAt, id)
+	_, err = h.db.Exec("UPDATE data_collectors SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", updatedAt, id)
 	if err != nil {
 		logger.Printf("[DC] Failed to delete data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete data collector"})

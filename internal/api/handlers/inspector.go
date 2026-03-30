@@ -613,7 +613,7 @@ func (h *InspectorHandler) DeleteInspector(c *gin.Context) {
 	now := time.Now().UTC()
 
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE inspectors SET deleted_at = ?, updated_at = ? WHERE id = ?", now, now, id)
+	_, err = h.db.Exec("UPDATE inspectors SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id)
 	if err != nil {
 		logger.Printf("[INSPECTOR] Failed to delete inspector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete inspector"})

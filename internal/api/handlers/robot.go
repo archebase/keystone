@@ -610,7 +610,7 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 	args = append(args, time.Now().UTC().Format("2006-01-02 15:04:05"))
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ?", strings.Join(updates, ", "))
+	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
 	_, err = h.db.Exec(query, args...)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to update robot: %v", err)
@@ -694,7 +694,7 @@ func (h *RobotHandler) DeleteRobot(c *gin.Context) {
 	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE robots SET deleted_at = NOW(), updated_at = ? WHERE id = ?", updatedAt, id)
+	_, err = h.db.Exec("UPDATE robots SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", updatedAt, id)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to delete robot: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot"})
