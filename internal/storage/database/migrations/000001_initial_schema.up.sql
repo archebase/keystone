@@ -158,6 +158,8 @@ CREATE TABLE IF NOT EXISTS data_collectors (
     name VARCHAR(255) NOT NULL,
     operator_id VARCHAR(100) NOT NULL,
     email VARCHAR(255),
+    password_hash VARCHAR(255) NULL COMMENT 'Bcrypt hash for password login',
+    last_login_at TIMESTAMP NULL COMMENT 'Last successful login time',
     certification VARCHAR(100),
     status ENUM('active', 'inactive', 'on_leave') DEFAULT 'active',
     metadata JSON DEFAULT NULL,

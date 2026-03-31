@@ -18,6 +18,7 @@ type Config struct {
 	Storage      StorageConfig
 	QA           QAConfig
 	Sync         SyncConfig
+	Auth         AuthConfig
 	Features     FeaturesConfig
 	Monitoring   MonitoringConfig
 	Resources    ResourceLimitsConfig
@@ -113,6 +114,14 @@ type RecorderConfig struct {
 	ResponseTimeout int // seconds
 }
 
+// AuthConfig JWT authentication configuration (collector login).
+type AuthConfig struct {
+	JWTSecret         string
+	Issuer            string
+	JWTExpiryHours    int
+	AllowNoAuthOnDev  bool
+}
+
 // Load loads configuration from environment variables and defaults
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -157,6 +166,12 @@ func Load() (*Config, error) {
 			MaxBytes:       int64(getEnvInt("KEYSTONE_SYNC_MAX_BYTES", 10737418240)), // 10GB
 			MaxRetries:     getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
 			CheckpointPath: getEnv("KEYSTONE_SYNC_CHECKPOINT_PATH", "/var/lib/keystone/.checkpoint"),
+		},
+		Auth: AuthConfig{
+			JWTSecret:        getEnv("KEYSTONE_JWT_SECRET", ""),
+			Issuer:           getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
+			JWTExpiryHours:   getEnvInt("KEYSTONE_JWT_EXPIRY_HOURS", 24),
+			AllowNoAuthOnDev: getEnvBool("KEYSTONE_AUTH_ALLOW_NO_AUTH_ON_DEV", false),
 		},
 		Features: FeaturesConfig{
 			StrataEnabled:  false,
@@ -204,6 +219,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.AccessKey == "" || c.Storage.SecretKey == "" {
 		return fmt.Errorf("storage access key and secret key are required")
+	}
+	if c.Auth.JWTSecret == "" && !c.Auth.AllowNoAuthOnDev {
+		return fmt.Errorf("KEYSTONE_JWT_SECRET is required (or set KEYSTONE_AUTH_ALLOW_NO_AUTH_ON_DEV=true for local dev)")
 	}
 	return nil
 }
