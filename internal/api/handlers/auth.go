@@ -18,20 +18,24 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 )
 
+// AuthHandler provides authentication-related HTTP handlers.
 type AuthHandler struct {
 	db  *sqlx.DB
 	cfg *config.AuthConfig
 }
 
+// NewAuthHandler constructs an AuthHandler with required dependencies.
 func NewAuthHandler(db *sqlx.DB, cfg *config.AuthConfig) *AuthHandler {
 	return &AuthHandler{db: db, cfg: cfg}
 }
 
+// CollectorLoginRequest is the request body for collector login.
 type CollectorLoginRequest struct {
 	OperatorID string `json:"operator_id" binding:"required"`
 	Password   string `json:"password" binding:"required"`
 }
 
+// CollectorLoginResponse is the response body returned after a successful collector login.
 type CollectorLoginResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
@@ -50,6 +54,7 @@ type collectorAuthRow struct {
 	PasswordHash sql.NullString `db:"password_hash"`
 }
 
+// RegisterRoutes registers auth endpoints under the provided router group.
 func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.POST("/auth/login", h.LoginCollector)
 	r.POST("/auth/logout", h.Logout)
@@ -116,11 +121,13 @@ func (h *AuthHandler) LoginCollector(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// Logout ends the current session. In this MVP it is a no-op on the server side.
 func (h *AuthHandler) Logout(c *gin.Context) {
 	// MVP logout: client drops token. Keep endpoint for symmetry.
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// Me returns the current authenticated collector identity.
 func (h *AuthHandler) Me(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
 	if strings.TrimSpace(authHeader) == "" {
@@ -166,4 +173,3 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		"role":         claims.Role,
 	})
 }
-

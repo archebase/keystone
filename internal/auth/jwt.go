@@ -13,10 +13,14 @@ import (
 )
 
 var (
+	// ErrInvalidToken indicates the token is malformed, signed with an unexpected
+	// algorithm, or otherwise fails validation.
 	ErrInvalidToken = errors.New("invalid token")
+	// ErrExpiredToken indicates the token is expired.
 	ErrExpiredToken = errors.New("token has expired")
 )
 
+// GenerateToken signs the given claims into a JWT string using the auth config.
 func GenerateToken(claims *Claims, cfg *config.AuthConfig) (string, error) {
 	claims.Issuer = cfg.Issuer
 	claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(time.Duration(cfg.JWTExpiryHours) * time.Hour))
@@ -27,6 +31,7 @@ func GenerateToken(claims *Claims, cfg *config.AuthConfig) (string, error) {
 	return tok.SignedString([]byte(cfg.JWTSecret))
 }
 
+// ParseToken parses and validates a JWT string and returns its Claims on success.
 func ParseToken(tokenString string, cfg *config.AuthConfig) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -47,4 +52,3 @@ func ParseToken(tokenString string, cfg *config.AuthConfig) (*Claims, error) {
 	}
 	return claims, nil
 }
-

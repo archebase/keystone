@@ -116,10 +116,10 @@ type RecorderConfig struct {
 
 // AuthConfig JWT authentication configuration (collector login).
 type AuthConfig struct {
-	JWTSecret         string
-	Issuer            string
-	JWTExpiryHours    int
-	AllowNoAuthOnDev  bool
+	JWTSecret        string
+	Issuer           string
+	JWTExpiryHours   int
+	AllowNoAuthOnDev bool
 }
 
 // Load loads configuration from environment variables and defaults

@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
+// Package middleware provides HTTP middleware for request authentication.
 package middleware
 
 import (
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// ClaimsKey is the gin.Context key used to store parsed JWT claims.
 const ClaimsKey = "auth_claims"
 
 // JWTAuth validates JWT tokens.
@@ -42,10 +44,10 @@ func JWTAuth(cfg *config.AuthConfig) gin.HandlerFunc {
 	}
 }
 
+// GetClaims returns JWT claims previously stored in the gin.Context by JWTAuth.
 func GetClaims(c *gin.Context) *auth.Claims {
 	if v, ok := c.Get(ClaimsKey); ok {
 		return v.(*auth.Claims)
 	}
 	return nil
 }
-

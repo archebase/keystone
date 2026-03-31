@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
+// Package auth provides JWT claim types and helpers for authentication.
 package auth
 
 import "github.com/golang-jwt/jwt/v5"
@@ -14,6 +15,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// NewCollectorClaims creates claims for a data collector identity.
 func NewCollectorClaims(collectorID int64, operatorID string) *Claims {
 	return &Claims{
 		CollectorID: collectorID,
@@ -21,4 +23,3 @@ func NewCollectorClaims(collectorID int64, operatorID string) *Claims {
 		Role:        "data_collector",
 	}
 }
-
