@@ -54,6 +54,7 @@ type BatchListItem struct {
 	Notes         string `json:"notes,omitempty" db:"notes"`
 	Status        string `json:"status" db:"status"`
 	EpisodeCount  int    `json:"episode_count" db:"episode_count"`
+	TaskCount     int    `json:"task_count" db:"task_count"`
 	StartedAt     string `json:"started_at,omitempty"`
 	EndedAt       string `json:"ended_at,omitempty"`
 	Metadata      any    `json:"metadata,omitempty"`
@@ -78,6 +79,7 @@ type batchRow struct {
 	Notes         sql.NullString `db:"notes"`
 	Status        string         `db:"status"`
 	EpisodeCount  int            `db:"episode_count"`
+	TaskCount     int            `db:"task_count"`
 	StartedAt     sql.NullTime   `db:"started_at"`
 	EndedAt       sql.NullTime   `db:"ended_at"`
 	Metadata      sql.NullString `db:"metadata"`
@@ -134,6 +136,7 @@ func batchListItemFromRow(r batchRow) BatchListItem {
 		Notes:         notes,
 		Status:        r.Status,
 		EpisodeCount:  r.EpisodeCount,
+		TaskCount:     r.TaskCount,
 		StartedAt:     startedAt,
 		EndedAt:       endedAt,
 		Metadata:      parseNullableJSON(r.Metadata),
@@ -219,22 +222,29 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 
 	query := fmt.Sprintf(`
 		SELECT
-			id,
-			batch_id,
-			order_id,
-			workstation_id,
-			name,
-			notes,
-			status,
-			episode_count,
-			started_at,
-			ended_at,
-			CAST(metadata AS CHAR) AS metadata,
-			created_at,
-			updated_at
-		FROM batches
+			b.id,
+			b.batch_id,
+			b.order_id,
+			b.workstation_id,
+			b.name,
+			b.notes,
+			b.status,
+			b.episode_count,
+			COALESCE(tc.task_count, 0) AS task_count,
+			b.started_at,
+			b.ended_at,
+			CAST(b.metadata AS CHAR) AS metadata,
+			b.created_at,
+			b.updated_at
+		FROM batches b
+		LEFT JOIN (
+			SELECT batch_id, COUNT(*) AS task_count
+			FROM tasks
+			WHERE deleted_at IS NULL
+			GROUP BY batch_id
+		) tc ON tc.batch_id = b.id
 		WHERE %s
-		ORDER BY id DESC
+		ORDER BY b.id DESC
 		LIMIT ? OFFSET ?
 	`, whereClause)
 
@@ -282,21 +292,28 @@ func (h *BatchHandler) GetBatch(c *gin.Context) {
 
 	query := `
 		SELECT
-			id,
-			batch_id,
-			order_id,
-			workstation_id,
-			name,
-			notes,
-			status,
-			episode_count,
-			started_at,
-			ended_at,
-			CAST(metadata AS CHAR) AS metadata,
-			created_at,
-			updated_at
-		FROM batches
-		WHERE id = ? AND deleted_at IS NULL
+			b.id,
+			b.batch_id,
+			b.order_id,
+			b.workstation_id,
+			b.name,
+			b.notes,
+			b.status,
+			b.episode_count,
+			COALESCE(tc.task_count, 0) AS task_count,
+			b.started_at,
+			b.ended_at,
+			CAST(b.metadata AS CHAR) AS metadata,
+			b.created_at,
+			b.updated_at
+		FROM batches b
+		LEFT JOIN (
+			SELECT batch_id, COUNT(*) AS task_count
+			FROM tasks
+			WHERE deleted_at IS NULL
+			GROUP BY batch_id
+		) tc ON tc.batch_id = b.id
+		WHERE b.id = ? AND b.deleted_at IS NULL
 	`
 
 	var r batchRow

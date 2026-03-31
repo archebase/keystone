@@ -148,6 +148,9 @@ func TestConfigValidate(t *testing.T) {
 					AccessKey: "key",
 					SecretKey: "secret",
 				},
+				Auth: AuthConfig{
+					JWTSecret: "test-secret",
+				},
 			},
 			wantErr: false,
 		},

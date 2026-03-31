@@ -32,6 +32,7 @@ import (
 type Server struct {
 	cfg              *config.Config
 	health           *handlers.HealthHandler
+	auth             *handlers.AuthHandler
 	transfer         *handlers.TransferHandler
 	recorder         *handlers.RecorderHandler
 	episode          *handlers.EpisodeHandler
@@ -68,6 +69,10 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 
 	// Create handlers
 	healthHandler := handlers.NewHealthHandler(nil, nil)
+	var authHandler *handlers.AuthHandler
+	if db != nil {
+		authHandler = handlers.NewAuthHandler(db, &cfg.Auth)
+	}
 
 	// Create TransferHub and TransferHandler for Transfer Service
 	transferHub := services.NewTransferHub(cfg.AxonTransfer.MaxEvents)
@@ -118,6 +123,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	s := &Server{
 		cfg:           cfg,
 		health:        healthHandler,
+		auth:          authHandler,
 		transfer:      transferHandler,
 		recorder:      recorderHandler,
 		episode:       episodeHandler,
@@ -182,16 +188,21 @@ func (s *Server) buildRoutes() http.Handler {
 	// Health check - register only in API v1 group
 	s.health.RegisterAPI(v1)
 
+	v1Routes := v1.Group("")
+	if s.auth != nil {
+		s.auth.RegisterRoutes(v1Routes)
+	}
+
 	// Transfer Service API
-	v1Transfer := v1.Group("/transfer")
+	v1Transfer := v1Routes.Group("/transfer")
 	s.transfer.RegisterRoutes(v1Transfer)
 
 	// Episodes API
-	v1Episodes := v1.Group("/episodes")
+	v1Episodes := v1Routes.Group("/episodes")
 	s.episode.RegisterRoutes(v1Episodes)
 
 	// Tasks API
-	v1Tasks := v1.Group("")
+	v1Tasks := v1Routes.Group("")
 	s.task.RegisterRoutes(v1Tasks)
 	if s.batch != nil {
 		s.batch.RegisterRoutes(v1Tasks)
@@ -234,12 +245,12 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 
 	// Axon callbacks
-	v1Callbacks := v1.Group("/callbacks")
+	v1Callbacks := v1Routes.Group("/callbacks")
 
 	// Task callbacks
 	s.task.RegisterCallbackRoutes(v1Callbacks)
 
-	v1Recorder := v1.Group("/recorder")
+	v1Recorder := v1Routes.Group("/recorder")
 	s.recorder.RegisterRoutes(v1Recorder)
 
 	// Swagger documentation - serve at both root and api/v1 path
