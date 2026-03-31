@@ -32,12 +32,12 @@ func NewAuthHandler(db *sqlx.DB, cfg *config.AuthConfig) *AuthHandler {
 // CollectorLoginRequest is the request body for collector login.
 type CollectorLoginRequest struct {
 	OperatorID string `json:"operator_id" binding:"required"`
-	Password   string `json:"password" binding:"required"`
+	Password   string `json:"password" binding:"required"` // #nosec G117 -- request DTO intentionally contains password
 }
 
 // CollectorLoginResponse is the response body returned after a successful collector login.
 type CollectorLoginResponse struct {
-	AccessToken string `json:"access_token"`
+	AccessToken string `json:"access_token"` // #nosec G117 -- response DTO intentionally returns access token
 	TokenType   string `json:"token_type"`
 	ExpiresIn   int    `json:"expires_in"`
 	Collector   struct {

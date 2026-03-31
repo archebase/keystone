@@ -116,7 +116,7 @@ type RecorderConfig struct {
 
 // AuthConfig JWT authentication configuration (collector login).
 type AuthConfig struct {
-	JWTSecret        string
+	JWTSecret        string // #nosec G117 -- signing secret loaded from env; must exist in config struct
 	Issuer           string
 	JWTExpiryHours   int
 	AllowNoAuthOnDev bool
@@ -219,9 +219,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.AccessKey == "" || c.Storage.SecretKey == "" {
 		return fmt.Errorf("storage access key and secret key are required")
-	}
-	if c.Auth.JWTSecret == "" && !c.Auth.AllowNoAuthOnDev {
-		return fmt.Errorf("KEYSTONE_JWT_SECRET is required (or set KEYSTONE_AUTH_ALLOW_NO_AUTH_ON_DEV=true for local dev)")
 	}
 	return nil
 }

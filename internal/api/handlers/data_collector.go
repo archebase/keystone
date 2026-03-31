@@ -56,7 +56,7 @@ type CreateDataCollectorRequest struct {
 	OperatorID    string      `json:"operator_id"`
 	Email         string      `json:"email,omitempty"`
 	Certification string      `json:"certification,omitempty"`
-	Password      string      `json:"password,omitempty"`
+	Password      string      `json:"password,omitempty"` // #nosec G117 -- request DTO may include password for initial set
 	Metadata      interface{} `json:"metadata,omitempty"`
 }
 
@@ -391,7 +391,7 @@ type UpdateDataCollectorRequest struct {
 	Email         *string         `json:"email,omitempty"`
 	Certification *string         `json:"certification,omitempty"`
 	Status        *string         `json:"status,omitempty"`
-	Password      *string         `json:"password,omitempty"`
+	Password      *string         `json:"password,omitempty"` // #nosec G117 -- request DTO may include password update
 	Metadata      json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
 }
 
