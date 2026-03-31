@@ -32,7 +32,7 @@ func NewEpisodeHandler(db *sqlx.DB) *EpisodeHandler {
 // Episode represents an episode in the database
 type episodeRow struct {
 	ID                 string          `db:"episode_id"`
-	TaskID             string          `db:"task_id"`
+	TaskID             int64           `db:"task_id"`
 	McapPath           string          `db:"mcap_path"`
 	SidecarPath        string          `db:"sidecar_path"`
 	Checksum           sql.NullString  `db:"checksum"`
@@ -50,7 +50,7 @@ type episodeRow struct {
 // Episode represents an episode in the API response
 type Episode struct {
 	ID                 string   `json:"id"`
-	TaskID             string   `json:"task_id"`
+	TaskID             int64    `json:"task_id"`
 	McapPath           string   `json:"mcap_path"`
 	SidecarPath        string   `json:"sidecar_path"`
 	Checksum           *string  `json:"checksum"`
@@ -112,7 +112,7 @@ func nullableTime(value sql.NullTime) *string {
 // @Description  Returns a list of episodes with optional filtering by task_id, qa_status, auto_approved, and cloud_processed
 // @Tags         episodes
 // @Produce      json
-// @Param        task_id          query     string  false  "Filter by task ID"
+// @Param        task_id          query     string  false  "Filter by task numeric id (or legacy public task_id string)"
 // @Param        qa_status        query     string  false  "Filter by QA status"
 // @Param        auto_approved    query     bool    false  "Filter by auto-approval status"
 // @Param        cloud_processed  query     bool    false  "Filter by cloud processing status"
@@ -145,7 +145,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	query := `
 		SELECT 
 			e.episode_id,
-			COALESCE(t.task_id, '') as task_id,
+			e.task_id as task_id,
 			e.mcap_path,
 			e.sidecar_path,
 			COALESCE(e.qa_status, '') as qa_status,
@@ -154,14 +154,12 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.cloud_processed,
 			e.created_at
 		FROM episodes e
-		LEFT JOIN tasks t ON e.task_id = t.id
 		WHERE e.deleted_at IS NULL
 	`
 
 	countQuery := `
 		SELECT COUNT(1)
 		FROM episodes e
-		LEFT JOIN tasks t ON e.task_id = t.id
 		WHERE e.deleted_at IS NULL
 	`
 
@@ -170,10 +168,19 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 
 	// Add filters
 	if taskID != "" {
-		query += " AND t.task_id = ?"
-		countQuery += " AND t.task_id = ?"
-		args = append(args, taskID)
-		argsCount = append(argsCount, taskID)
+		// Prefer numeric task primary key (tasks.id / episodes.task_id).
+		// For backwards compatibility, also accept legacy public task_id (tasks.task_id).
+		if parsed, err := strconv.ParseInt(taskID, 10, 64); err == nil {
+			query += " AND e.task_id = ?"
+			countQuery += " AND e.task_id = ?"
+			args = append(args, parsed)
+			argsCount = append(argsCount, parsed)
+		} else {
+			query += " AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = e.task_id AND t.task_id = ? AND t.deleted_at IS NULL)"
+			countQuery += " AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = e.task_id AND t.task_id = ? AND t.deleted_at IS NULL)"
+			args = append(args, taskID)
+			argsCount = append(argsCount, taskID)
+		}
 	}
 
 	if qaStatus != "" {
@@ -273,7 +280,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 	query := `
 		SELECT
 			e.episode_id,
-			COALESCE(t.task_id, '') AS task_id,
+			e.task_id AS task_id,
 			e.mcap_path,
 			e.sidecar_path,
 			e.checksum,
@@ -287,7 +294,6 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.cloud_synced_at,
 			e.created_at
 		FROM episodes e
-		LEFT JOIN tasks t ON e.task_id = t.id
 		LEFT JOIN inspections i ON i.episode_id = e.id
 		LEFT JOIN inspectors ins ON ins.id = i.inspector_id
 		WHERE e.episode_id = ? AND e.deleted_at IS NULL

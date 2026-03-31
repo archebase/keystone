@@ -544,6 +544,19 @@ func (h *SceneHandler) DeleteScene(c *gin.Context) {
 		return
 	}
 
+	// Check if scene is referenced by any orders
+	var orderCount int
+	err = h.db.Get(&orderCount, "SELECT COUNT(*) FROM orders WHERE scene_id = ? AND deleted_at IS NULL", id)
+	if err != nil {
+		logger.Printf("[SCENE] Failed to check order references: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete scene"})
+		return
+	}
+	if orderCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete scene referenced by %d orders", orderCount)})
+		return
+	}
+
 	now := time.Now().UTC()
 
 	// Perform soft delete by setting deleted_at

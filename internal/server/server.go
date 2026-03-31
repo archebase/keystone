@@ -36,6 +36,7 @@ type Server struct {
 	recorder         *handlers.RecorderHandler
 	episode          *handlers.EpisodeHandler
 	task             *handlers.TaskHandler
+	batch            *handlers.BatchHandler
 	robotType        *handlers.RobotTypeHandler
 	robot            *handlers.RobotHandler
 	factory          *handlers.FactoryHandler
@@ -47,6 +48,7 @@ type Server struct {
 	sop              *handlers.SOPHandler
 	scene            *handlers.SceneHandler
 	subscene         *handlers.SubsceneHandler
+	order            *handlers.OrderHandler
 	httpServer       *http.Server
 	transferWSServer *http.Server
 	recorderWSServer *http.Server
@@ -83,6 +85,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 
 	// Create database-dependent handlers only when DB is available
 	var (
+		batchHandler         *handlers.BatchHandler
 		robotTypeHandler     *handlers.RobotTypeHandler
 		robotHandler         *handlers.RobotHandler
 		factoryHandler       *handlers.FactoryHandler
@@ -94,8 +97,10 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		sopHandler           *handlers.SOPHandler
 		sceneHandler         *handlers.SceneHandler
 		subsceneHandler      *handlers.SubsceneHandler
+		orderHandler         *handlers.OrderHandler
 	)
 	if db != nil {
+		batchHandler = handlers.NewBatchHandler(db)
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub)
 		factoryHandler = handlers.NewFactoryHandler(db)
@@ -107,6 +112,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		sopHandler = handlers.NewSOPHandler(db)
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
+		orderHandler = handlers.NewOrderHandler(db)
 	}
 
 	s := &Server{
@@ -116,6 +122,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		recorder:      recorderHandler,
 		episode:       episodeHandler,
 		task:          taskHandler,
+		batch:         batchHandler,
 		robotType:     robotTypeHandler,
 		robot:         robotHandler,
 		factory:       factoryHandler,
@@ -127,6 +134,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		sop:           sopHandler,
 		scene:         sceneHandler,
 		subscene:      subsceneHandler,
+		order:         orderHandler,
 		engine:        engine,
 	}
 
@@ -185,6 +193,9 @@ func (s *Server) buildRoutes() http.Handler {
 	// Tasks API
 	v1Tasks := v1.Group("")
 	s.task.RegisterRoutes(v1Tasks)
+	if s.batch != nil {
+		s.batch.RegisterRoutes(v1Tasks)
+	}
 	if s.robotType != nil {
 		s.robotType.RegisterRoutes(v1Tasks)
 	}
@@ -217,6 +228,9 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.subscene != nil {
 		s.subscene.RegisterRoutes(v1Tasks)
+	}
+	if s.order != nil {
+		s.order.RegisterRoutes(v1Tasks)
 	}
 
 	// Axon callbacks
