@@ -310,6 +310,14 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		}
 	}()
 
+	// Resolve task numeric ID early for status updates.
+	var taskPK int64
+	if err := tx.QueryRowContext(ctx, "SELECT id FROM tasks WHERE task_id = ? AND deleted_at IS NULL", taskID).Scan(&taskPK); err != nil {
+		// #nosec G706 -- Set aside for now
+		logger.Printf("[TRANSFER] Device %s: failed to resolve task id for task=%s: %v", dc.DeviceID, taskID, err)
+		return
+	}
+
 	// Check if mcap_path and sidecar_path already exist in database
 	var count int
 	err = tx.QueryRowContext(ctx,
@@ -362,40 +370,76 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			return
 		}
 
-		episodeID := uuid.New().String()
-		_, dbErr := tx.ExecContext(ctx,
-			`INSERT INTO episodes (
-				episode_id,
-				task_id,
-				batch_id,
-				order_id,
-				scene_id,
-				scene_name,
-				workstation_id,
-				factory_id,
-				organization_id,
-				sop_id,
-				mcap_path,
-				sidecar_path
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			episodeID,
-			taskRow.ID,
-			taskRow.BatchID,
-			taskRow.OrderID,
-			taskRow.SceneID,
-			taskRow.SceneName,
-			taskRow.WorkstationID,
-			taskRow.FactoryID,
-			taskRow.OrganizationID,
-			taskRow.SOPID,
-			mcapKey,
-			jsonKey,
-		)
-		if dbErr != nil {
-			// #nosec G706 -- Set aside for now
-			logger.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
-			return
+		// Idempotency: avoid creating duplicate episodes for the same task.
+		// This keeps batches.episode_count correct even if the device retries uploads.
+		var existingEpisodeID string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT episode_id
+			FROM episodes
+			WHERE task_id = ? AND deleted_at IS NULL
+			LIMIT 1
+		`, taskRow.ID).Scan(&existingEpisodeID); err != nil || existingEpisodeID == "" {
+			episodeID := uuid.New().String()
+			_, dbErr := tx.ExecContext(ctx,
+				`INSERT INTO episodes (
+					episode_id,
+					task_id,
+					batch_id,
+					order_id,
+					scene_id,
+					scene_name,
+					workstation_id,
+					factory_id,
+					organization_id,
+					sop_id,
+					mcap_path,
+					sidecar_path
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				episodeID,
+				taskRow.ID,
+				taskRow.BatchID,
+				taskRow.OrderID,
+				taskRow.SceneID,
+				taskRow.SceneName,
+				taskRow.WorkstationID,
+				taskRow.FactoryID,
+				taskRow.OrganizationID,
+				taskRow.SOPID,
+				mcapKey,
+				jsonKey,
+			)
+			if dbErr != nil {
+				// #nosec G706 -- Set aside for now
+				logger.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
+				return
+			}
+
+			// Write-time maintenance for batch episode_count.
+			if _, dbErr := tx.ExecContext(ctx, `
+				UPDATE batches
+				SET episode_count = episode_count + 1, updated_at = updated_at
+				WHERE id = ? AND deleted_at IS NULL
+			`, taskRow.BatchID); dbErr != nil {
+				// #nosec G706 -- Set aside for now
+				logger.Printf("[TRANSFER] Device %s: DB update failed for batch=%d task=%s: %v", dc.DeviceID, taskRow.BatchID, taskID, dbErr)
+				return
+			}
 		}
+	}
+
+	// Episode is confirmed (inserted or already existed). Mark task as completed.
+	now := time.Now().UTC()
+	if _, dbErr := tx.ExecContext(ctx, `
+		UPDATE tasks
+		SET
+			status = 'completed',
+			completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
+			updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`, now, now, taskPK); dbErr != nil {
+		// #nosec G706 -- Set aside for now
+		logger.Printf("[TRANSFER] Device %s: DB update failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
+		return
 	}
 
 	// Commit transaction
