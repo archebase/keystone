@@ -354,13 +354,13 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 // @Router       /tasks/{id} [put]
 func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	idStr := strings.TrimSpace(c.Param("id"))
+	if idStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "task id is required"})
+		return
+	}
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid task id"})
-		return
-	}
-	if idStr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "task id is required"})
 		return
 	}
 

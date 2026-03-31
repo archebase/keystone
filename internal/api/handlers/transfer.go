@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -373,12 +374,25 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		// Idempotency: avoid creating duplicate episodes for the same task.
 		// This keeps batches.episode_count correct even if the device retries uploads.
 		var existingEpisodeID string
-		if err := tx.QueryRowContext(ctx, `
+		err := tx.QueryRowContext(ctx, `
 			SELECT episode_id
 			FROM episodes
 			WHERE task_id = ? AND deleted_at IS NULL
 			LIMIT 1
-		`, taskRow.ID).Scan(&existingEpisodeID); err != nil || existingEpisodeID == "" {
+		`, taskRow.ID).Scan(&existingEpisodeID)
+
+		if err == nil && existingEpisodeID == "" {
+			// #nosec G706 -- Set aside for now
+			logger.Printf("[TRANSFER] Device %s: data corruption: empty episode_id found for task_pk=%d task=%s", dc.DeviceID, taskRow.ID, taskID)
+			return
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			// #nosec G706 -- Set aside for now
+			logger.Printf("[TRANSFER] Device %s: DB query failed for existing episode check task_pk=%d task=%s: %v", dc.DeviceID, taskRow.ID, taskID, err)
+			return
+		}
+
+		if errors.Is(err, sql.ErrNoRows) {
 			episodeID := uuid.New().String()
 			_, dbErr := tx.ExecContext(ctx,
 				`INSERT INTO episodes (
