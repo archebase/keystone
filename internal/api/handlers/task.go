@@ -64,7 +64,6 @@ type TaskConfig struct {
 	Scene              string   `json:"scene"`
 	WorkstationID      string   `json:"workstation_id"`
 	Subscene           string   `json:"subscene"`
-	SubsceneID         string   `json:"subscene_id"`
 	InitialSceneLayout string   `json:"initial_scene_layout"`
 	Skills             []string `json:"skills"`
 	SOPID              string   `json:"sop_id"`
@@ -1061,7 +1060,6 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		Scene:              strings.TrimSpace(row.SceneName.String),
 		WorkstationID:      strings.TrimSpace(row.Workstation.String),
 		Subscene:           strings.TrimSpace(row.SubsceneName.String),
-		SubsceneID:         strings.TrimSpace(row.SubsceneName.String),
 		InitialSceneLayout: strings.TrimSpace(row.Layout.String),
 		Skills:             skills,
 		SOPID:              strings.TrimSpace(row.SOPName.String),

@@ -85,6 +85,63 @@ type batchRow struct {
 	UpdatedAt     sql.NullString `db:"updated_at"`
 }
 
+func parseNullableJSON(v sql.NullString) any {
+	if !v.Valid {
+		return nil
+	}
+	raw := strings.TrimSpace(v.String)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+
+	var out any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func batchListItemFromRow(r batchRow) BatchListItem {
+	notes := ""
+	if r.Notes.Valid {
+		notes = r.Notes.String
+	}
+
+	startedAt := ""
+	if r.StartedAt.Valid {
+		startedAt = r.StartedAt.Time.UTC().Format(time.RFC3339)
+	}
+	endedAt := ""
+	if r.EndedAt.Valid {
+		endedAt = r.EndedAt.Time.UTC().Format(time.RFC3339)
+	}
+
+	createdAt := ""
+	if r.CreatedAt.Valid {
+		createdAt = r.CreatedAt.String
+	}
+	updatedAt := ""
+	if r.UpdatedAt.Valid {
+		updatedAt = r.UpdatedAt.String
+	}
+
+	return BatchListItem{
+		ID:            fmt.Sprintf("%d", r.ID),
+		BatchID:       r.BatchID,
+		OrderID:       fmt.Sprintf("%d", r.OrderID),
+		WorkstationID: fmt.Sprintf("%d", r.WorkstationID),
+		Name:          r.Name,
+		Notes:         notes,
+		Status:        r.Status,
+		EpisodeCount:  r.EpisodeCount,
+		StartedAt:     startedAt,
+		EndedAt:       endedAt,
+		Metadata:      parseNullableJSON(r.Metadata),
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
+	}
+}
+
 // ListBatches handles batch listing requests with optional filtering.
 //
 // @Summary      List batches
@@ -192,55 +249,7 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 
 	batches := make([]BatchListItem, 0, len(rows))
 	for _, r := range rows {
-		notes := ""
-		if r.Notes.Valid {
-			notes = r.Notes.String
-		}
-
-		startedAt := ""
-		if r.StartedAt.Valid {
-			startedAt = r.StartedAt.Time.UTC().Format(time.RFC3339)
-		}
-		endedAt := ""
-		if r.EndedAt.Valid {
-			endedAt = r.EndedAt.Time.UTC().Format(time.RFC3339)
-		}
-
-		createdAt := ""
-		if r.CreatedAt.Valid {
-			createdAt = r.CreatedAt.String
-		}
-		updatedAt := ""
-		if r.UpdatedAt.Valid {
-			updatedAt = r.UpdatedAt.String
-		}
-
-		var metadata any
-		if r.Metadata.Valid {
-			raw := strings.TrimSpace(r.Metadata.String)
-			if raw != "" && raw != "null" {
-				var v any
-				if err := json.Unmarshal([]byte(raw), &v); err == nil {
-					metadata = v
-				}
-			}
-		}
-
-		batches = append(batches, BatchListItem{
-			ID:            fmt.Sprintf("%d", r.ID),
-			BatchID:       r.BatchID,
-			OrderID:       fmt.Sprintf("%d", r.OrderID),
-			WorkstationID: fmt.Sprintf("%d", r.WorkstationID),
-			Name:          r.Name,
-			Notes:         notes,
-			Status:        r.Status,
-			EpisodeCount:  r.EpisodeCount,
-			StartedAt:     startedAt,
-			EndedAt:       endedAt,
-			Metadata:      metadata,
-			CreatedAt:     createdAt,
-			UpdatedAt:     updatedAt,
-		})
+		batches = append(batches, batchListItemFromRow(r))
 	}
 
 	c.JSON(http.StatusOK, ListBatchesResponse{
@@ -301,55 +310,7 @@ func (h *BatchHandler) GetBatch(c *gin.Context) {
 		return
 	}
 
-	notes := ""
-	if r.Notes.Valid {
-		notes = r.Notes.String
-	}
-
-	startedAt := ""
-	if r.StartedAt.Valid {
-		startedAt = r.StartedAt.Time.UTC().Format(time.RFC3339)
-	}
-	endedAt := ""
-	if r.EndedAt.Valid {
-		endedAt = r.EndedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	createdAt := ""
-	if r.CreatedAt.Valid {
-		createdAt = r.CreatedAt.String
-	}
-	updatedAt := ""
-	if r.UpdatedAt.Valid {
-		updatedAt = r.UpdatedAt.String
-	}
-
-	var metadata any
-	if r.Metadata.Valid {
-		raw := strings.TrimSpace(r.Metadata.String)
-		if raw != "" && raw != "null" {
-			var v any
-			if err := json.Unmarshal([]byte(raw), &v); err == nil {
-				metadata = v
-			}
-		}
-	}
-
-	c.JSON(http.StatusOK, BatchListItem{
-		ID:            fmt.Sprintf("%d", r.ID),
-		BatchID:       r.BatchID,
-		OrderID:       fmt.Sprintf("%d", r.OrderID),
-		WorkstationID: fmt.Sprintf("%d", r.WorkstationID),
-		Name:          r.Name,
-		Notes:         notes,
-		Status:        r.Status,
-		EpisodeCount:  r.EpisodeCount,
-		StartedAt:     startedAt,
-		EndedAt:       endedAt,
-		Metadata:      metadata,
-		CreatedAt:     createdAt,
-		UpdatedAt:     updatedAt,
-	})
+	c.JSON(http.StatusOK, batchListItemFromRow(r))
 }
 
 // DeleteBatch handles batch deletion requests (soft delete).
