@@ -48,6 +48,7 @@ type OrderResponse struct {
 	SceneID        string `json:"scene_id"`
 	Name           string `json:"name"`
 	TargetCount    int    `json:"target_count"`
+	TaskCount      int    `json:"task_count"`
 	CompletedCount int    `json:"completed_count"`
 	Status         string `json:"status"`
 	Priority       string `json:"priority"`
@@ -85,6 +86,7 @@ type orderRow struct {
 	SceneID        int64          `db:"scene_id"`
 	Name           string         `db:"name"`
 	TargetCount    int            `db:"target_count"`
+	TaskCount      int            `db:"task_count"`
 	CompletedCount int            `db:"completed_count"`
 	Status         string         `db:"status"`
 	Priority       string         `db:"priority"`
@@ -123,6 +125,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			CAST(o.metadata AS CHAR) AS metadata,
 			o.created_at,
 			o.updated_at,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL) AS task_count,
 			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'completed' AND t.deleted_at IS NULL) AS completed_count
 		FROM orders o
 		WHERE o.deleted_at IS NULL
@@ -162,6 +165,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			SceneID:        fmt.Sprintf("%d", r.SceneID),
 			Name:           r.Name,
 			TargetCount:    r.TargetCount,
+			TaskCount:      r.TaskCount,
 			CompletedCount: r.CompletedCount,
 			Status:         r.Status,
 			Priority:       r.Priority,
@@ -196,6 +200,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 			CAST(o.metadata AS CHAR) AS metadata,
 			o.created_at,
 			o.updated_at,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL) AS task_count,
 			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'completed' AND t.deleted_at IS NULL) AS completed_count
 		FROM orders o
 		WHERE o.id = ? AND o.deleted_at IS NULL
@@ -237,6 +242,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 		SceneID:        fmt.Sprintf("%d", r.SceneID),
 		Name:           r.Name,
 		TargetCount:    r.TargetCount,
+		TaskCount:      r.TaskCount,
 		CompletedCount: r.CompletedCount,
 		Status:         r.Status,
 		Priority:       r.Priority,

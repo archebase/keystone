@@ -18,6 +18,21 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+func validateTaskGroupUniqueness(taskGroups []TaskGroupItem) (dupA int, dupB int, ok bool) {
+	seen := make(map[string]int, len(taskGroups))
+	for i, tg := range taskGroups {
+		if tg.SOPID <= 0 || tg.SubsceneID <= 0 {
+			continue
+		}
+		key := fmt.Sprintf("%d_%d", tg.SOPID, tg.SubsceneID)
+		if prev, exists := seen[key]; exists {
+			return prev, i, true
+		}
+		seen[key] = i
+	}
+	return 0, 0, false
+}
+
 // BatchHandler handles batch-related HTTP requests.
 type BatchHandler struct {
 	db *sqlx.DB
@@ -31,9 +46,21 @@ func NewBatchHandler(db *sqlx.DB) *BatchHandler {
 // RegisterRoutes registers batch routes under the provided router group.
 func (h *BatchHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/batches", h.ListBatches)
+	apiV1.POST("/batches", h.CreateBatch)
 	apiV1.GET("/batches/:id", h.GetBatch)
 	apiV1.DELETE("/batches/:id", h.DeleteBatch)
 	apiV1.PATCH("/batches/:id", h.PatchBatch)
+	apiV1.POST("/batches/:id/tasks", h.AdjustBatchTasks)
+	apiV1.POST("/batches/:id/recall", h.RecallBatch)
+	apiV1.GET("/batches/:id/tasks", h.ListBatchTasks)
+}
+
+// taskTerminalStatuses defines the set of Task terminal statuses.
+// Batch auto-completion is triggered when ALL tasks in a batch are in this set.
+var taskTerminalStatuses = map[string]struct{}{
+	"completed": {},
+	"failed":    {},
+	"cancelled": {},
 }
 
 var validBatchStatuses = map[string]struct{}{
@@ -331,10 +358,10 @@ func (h *BatchHandler) GetBatch(c *gin.Context) {
 }
 
 // DeleteBatch handles batch deletion requests (soft delete).
-// Only batches with status "cancelled" can be deleted.
+// Only batches with status "cancelled" or "pending" can be deleted.
 //
 // @Summary      Delete batch
-// @Description  Soft deletes a batch by ID. Only allowed when status is cancelled.
+// @Description  Soft deletes a batch by ID. Only allowed when status is cancelled or pending.
 // @Tags         batches
 // @Accept       json
 // @Produce      json
@@ -363,14 +390,37 @@ func (h *BatchHandler) DeleteBatch(c *gin.Context) {
 		return
 	}
 
-	if status != "cancelled" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "batch can only be deleted when status is cancelled"})
+	if status != "cancelled" && status != "pending" {
+		c.JSON(http.StatusConflict, gin.H{"error": "batch can only be deleted when status is cancelled or pending"})
 		return
 	}
 
 	now := time.Now().UTC()
-	if _, err := h.db.Exec("UPDATE batches SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id); err != nil {
+	tx, err := h.db.Beginx()
+	if err != nil {
+		logger.Printf("[BATCH] Failed to begin transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete batch"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec("UPDATE batches SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id); err != nil {
 		logger.Printf("[BATCH] Failed to delete batch: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete batch"})
+		return
+	}
+
+	// For pending batches, also soft delete tasks to avoid leaving orphan tasks.
+	if status == "pending" {
+		if _, err := tx.Exec("UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE batch_id = ? AND deleted_at IS NULL", now, now, id); err != nil {
+			logger.Printf("[BATCH] Failed to soft delete batch tasks: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete batch"})
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[BATCH] Failed to commit delete batch transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete batch"})
 		return
 	}
@@ -391,12 +441,17 @@ type PatchBatchResponse struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
-// PatchBatch handles batch status updates. Only supports status transitions:
-// - pending -> active | cancelled
-// - active  -> completed | cancelled
+// PatchBatch handles batch status updates.
+// Only supports cancellation transitions:
+// - pending -> cancelled
+// - active  -> cancelled
+//
+// Note: pending->active is automatic (triggered by Task completion).
+// Note: active->completed is automatic (triggered when all Tasks reach terminal state).
+// Note: For recall, use POST /batches/:id/recall.
 //
 // @Summary      Patch batch
-// @Description  Updates batch status. Only specific state transitions are allowed.
+// @Description  Updates batch status. Only cancellation transitions are allowed via PATCH.
 // @Tags         batches
 // @Accept       json
 // @Produce      json
@@ -426,6 +481,13 @@ func (h *BatchHandler) PatchBatch(c *gin.Context) {
 		return
 	}
 
+	// Only cancellation is allowed via PATCH.
+	// pending->active is automatic; active->completed is automatic; recall uses POST .../recall.
+	if req.Status != "cancelled" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "PATCH only supports transitioning to 'cancelled'; use POST /batches/:id/recall for recall"})
+		return
+	}
+
 	type statusRow struct {
 		Status    string       `db:"status"`
 		StartedAt sql.NullTime `db:"started_at"`
@@ -442,48 +504,910 @@ func (h *BatchHandler) PatchBatch(c *gin.Context) {
 		return
 	}
 
-	allowed := false
-	switch cur.Status {
-	case "pending":
-		allowed = req.Status == "active" || req.Status == "cancelled"
-	case "active":
-		allowed = req.Status == "completed" || req.Status == "cancelled"
-	default:
-		allowed = false
-	}
-	if !allowed {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status transition"})
+	// Only pending and active batches can be cancelled.
+	if cur.Status != "pending" && cur.Status != "active" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":          fmt.Sprintf("cannot cancel batch in status '%s'; only pending or active batches can be cancelled", cur.Status),
+			"current_status": cur.Status,
+		})
 		return
 	}
 
 	now := time.Now().UTC()
-	startedAt := cur.StartedAt
-	updates := []string{"status = ?", "updated_at = ?"}
-	args := []interface{}{req.Status, now}
-
-	// pending -> active sets started_at when not set yet
-	if cur.Status == "pending" && req.Status == "active" && !startedAt.Valid {
-		startedAt = sql.NullTime{Time: now, Valid: true}
-		updates = append(updates, "started_at = ?")
-		args = append(args, now)
-	}
-
-	args = append(args, id)
-	query := fmt.Sprintf("UPDATE batches SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
-	if _, err := h.db.Exec(query, args...); err != nil {
+	if _, err := h.db.Exec(
+		"UPDATE batches SET status = 'cancelled', updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+		now, id,
+	); err != nil {
 		logger.Printf("[BATCH] Failed to patch batch: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to patch batch"})
 		return
 	}
 
 	startedAtOut := ""
-	if startedAt.Valid {
-		startedAtOut = startedAt.Time.UTC().Format(time.RFC3339)
+	if cur.StartedAt.Valid {
+		startedAtOut = cur.StartedAt.Time.UTC().Format(time.RFC3339)
 	}
 	c.JSON(http.StatusOK, PatchBatchResponse{
 		ID:        fmt.Sprintf("%d", id),
-		Status:    req.Status,
+		Status:    "cancelled",
 		StartedAt: startedAtOut,
 		UpdatedAt: now.Format(time.RFC3339),
 	})
+}
+
+// TaskGroupItem represents a single task group in a batch creation/adjustment request.
+type TaskGroupItem struct {
+	SOPID      int64 `json:"sop_id"`
+	SubsceneID int64 `json:"subscene_id"`
+	Quantity   int   `json:"quantity"`
+}
+
+// CreateBatchRequest is the request body for creating a batch with tasks.
+type CreateBatchRequest struct {
+	OrderID       int64           `json:"order_id"`
+	WorkstationID int64           `json:"workstation_id"`
+	Name          string          `json:"name,omitempty"`
+	Notes         string          `json:"notes,omitempty"`
+	TaskGroups    []TaskGroupItem `json:"task_groups"`
+	Metadata      json.RawMessage `json:"metadata,omitempty"`
+}
+
+// CreatedTaskItem represents a single created task in the response.
+type CreatedTaskItem struct {
+	ID         string `json:"id"`
+	TaskID     string `json:"task_id"`
+	SOPID      string `json:"sop_id"`
+	SubsceneID string `json:"subscene_id"`
+	Status     string `json:"status"`
+	CreatedAt  string `json:"created_at"`
+}
+
+// CreateBatchResponse is the response body for creating a batch.
+type CreateBatchResponse struct {
+	Batch BatchListItem     `json:"batch"`
+	Tasks []CreatedTaskItem `json:"tasks"`
+}
+
+// CreateBatch creates a new batch and its tasks in a single transaction.
+//
+// @Summary      Create batch with tasks
+// @Description  Creates a batch and all its tasks atomically. task_groups defines how many tasks per SOP/subscene combination.
+// @Tags         batches
+// @Accept       json
+// @Produce      json
+// @Param        body body      CreateBatchRequest true  "Batch creation payload"
+// @Success      201  {object}  CreateBatchResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      409  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /batches [post]
+func (h *BatchHandler) CreateBatch(c *gin.Context) {
+	var req CreateBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return
+	}
+
+	if req.OrderID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order_id is required"})
+		return
+	}
+	if req.WorkstationID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workstation_id is required"})
+		return
+	}
+	if len(req.TaskGroups) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_groups must not be empty"})
+		return
+	}
+
+	// Validate task_groups
+	totalQuantity := 0
+	for i, tg := range req.TaskGroups {
+		if tg.SOPID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("task_groups[%d].sop_id is required", i)})
+			return
+		}
+		if tg.SubsceneID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("task_groups[%d].subscene_id is required", i)})
+			return
+		}
+		if tg.Quantity < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("task_groups[%d].quantity must be >= 1", i)})
+			return
+		}
+		totalQuantity += tg.Quantity
+	}
+	if a, b, dup := validateTaskGroupUniqueness(req.TaskGroups); dup {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("duplicate task_groups entries: task_groups[%d] and task_groups[%d] have the same sop_id and subscene_id", a, b),
+		})
+		return
+	}
+	if totalQuantity > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "total quantity across all task_groups must be <= 1000"})
+		return
+	}
+
+	now := time.Now().UTC()
+
+	tx, err := h.db.Beginx()
+	if err != nil {
+		logger.Printf("[BATCH] Failed to start transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Lock order and validate quota
+	type orderQuotaRow struct {
+		TargetCount int `db:"target_count"`
+	}
+	var orderQuota orderQuotaRow
+	if err := tx.Get(&orderQuota, "SELECT target_count FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", req.OrderID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("order not found: %d", req.OrderID)})
+			return
+		}
+		logger.Printf("[BATCH] Failed to lock order: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+
+	// Count existing tasks for this order
+	var existingTaskCount int
+	if err := tx.Get(&existingTaskCount, "SELECT COUNT(*) FROM tasks WHERE order_id = ? AND deleted_at IS NULL", req.OrderID); err != nil {
+		logger.Printf("[BATCH] Failed to count existing tasks: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+
+	remaining := orderQuota.TargetCount - existingTaskCount
+	if totalQuantity > remaining {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":        fmt.Sprintf("quota exceeded: target_count=%d, existing_tasks=%d, remaining=%d, requested=%d", orderQuota.TargetCount, existingTaskCount, remaining, totalQuantity),
+			"target_count": orderQuota.TargetCount,
+			"task_count":   existingTaskCount,
+			"remaining":    remaining,
+			"requested":    totalQuantity,
+		})
+		return
+	}
+
+	// Validate workstation
+	type wsRow struct {
+		ID        int64 `db:"id"`
+		FactoryID int64 `db:"factory_id"`
+	}
+	var ws wsRow
+	if err := tx.Get(&ws, "SELECT id, factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", req.WorkstationID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("workstation not found: %d", req.WorkstationID)})
+			return
+		}
+		logger.Printf("[BATCH] Failed to validate workstation: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+
+	// Resolve organization_id from factory
+	var organizationID int64
+	if err := tx.Get(&organizationID, "SELECT organization_id FROM factories WHERE id = ? AND deleted_at IS NULL LIMIT 1", ws.FactoryID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "workstation factory not found"})
+			return
+		}
+		logger.Printf("[BATCH] Failed to resolve organization_id: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+
+	// Generate batch name if not provided
+	batchName := strings.TrimSpace(req.Name)
+	// Generate batch_id (unique even under bulk creates)
+	batchIDStr, err := newPublicBatchID(now, 0)
+	if err != nil {
+		logger.Printf("[BATCH] Failed to generate batch_id: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+	if batchName == "" {
+		batchName = fmt.Sprintf("Batch %s (order=%d ws=%d)", batchIDStr, req.OrderID, req.WorkstationID)
+	}
+
+	// Handle metadata
+	var metadataStr sql.NullString
+	if len(req.Metadata) > 0 {
+		raw := strings.TrimSpace(string(req.Metadata))
+		if raw != "" && raw != "null" {
+			metadataStr = sql.NullString{String: raw, Valid: true}
+		}
+	}
+
+	// Handle notes
+	var notesStr sql.NullString
+	if notes := strings.TrimSpace(req.Notes); notes != "" {
+		notesStr = sql.NullString{String: notes, Valid: true}
+	}
+
+	// Insert batch
+	res, err := tx.Exec(
+		`INSERT INTO batches (batch_id, order_id, workstation_id, name, notes, status, metadata, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+		batchIDStr, req.OrderID, req.WorkstationID, batchName, notesStr, metadataStr, now, now,
+	)
+	if err != nil {
+		logger.Printf("[BATCH] Failed to insert batch: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+	newBatchID, err := res.LastInsertId()
+	if err != nil {
+		logger.Printf("[BATCH] Failed to get batch insert id: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+
+	// Insert tasks for each task group
+	createdTasks := make([]CreatedTaskItem, 0, totalQuantity)
+	seqOffset := 0
+	for _, tg := range req.TaskGroups {
+		// Validate SOP
+		if err := tx.Get(new(int), "SELECT 1 FROM sops WHERE id = ? AND deleted_at IS NULL LIMIT 1", tg.SOPID); err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("sop not found: %d", tg.SOPID)})
+				return
+			}
+			logger.Printf("[BATCH] Failed to validate sop_id: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+			return
+		}
+
+		// Validate subscene and get scene info
+		type subsceneRow struct {
+			ID      int64  `db:"id"`
+			SceneID int64  `db:"scene_id"`
+			Scene   string `db:"scene_name"`
+			Name    string `db:"name"`
+			Layout  string `db:"initial_scene_layout"`
+		}
+		var subscene subsceneRow
+		if err := tx.Get(&subscene, `
+			SELECT ss.id, ss.scene_id, s.name AS scene_name, ss.name,
+			       COALESCE(ss.initial_scene_layout, '') AS initial_scene_layout
+			FROM subscenes ss
+			JOIN scenes s ON s.id = ss.scene_id AND s.deleted_at IS NULL
+			WHERE ss.id = ? AND ss.deleted_at IS NULL
+			LIMIT 1`, tg.SubsceneID); err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("subscene not found: %d", tg.SubsceneID)})
+				return
+			}
+			logger.Printf("[BATCH] Failed to validate subscene_id: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+			return
+		}
+
+		for i := 0; i < tg.Quantity; i++ {
+			taskID, err := newPublicTaskID(now, seqOffset)
+			if err != nil {
+				logger.Printf("[BATCH] Failed to generate task_id: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+				return
+			}
+			seqOffset++
+
+			resTask, err := tx.Exec(
+				`INSERT INTO tasks (
+					task_id, batch_id, order_id, sop_id, workstation_id,
+					scene_id, subscene_id, batch_name, scene_name, subscene_name,
+					factory_id, organization_id, initial_scene_layout,
+					status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+				taskID, newBatchID, req.OrderID, tg.SOPID, req.WorkstationID,
+				subscene.SceneID, tg.SubsceneID, batchName, subscene.Scene, subscene.Name,
+				ws.FactoryID, organizationID, subscene.Layout,
+				now, now,
+			)
+			if err != nil {
+				logger.Printf("[BATCH] Failed to insert task: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+				return
+			}
+			newTaskID, err := resTask.LastInsertId()
+			if err != nil {
+				logger.Printf("[BATCH] Failed to get task insert id: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+				return
+			}
+			createdTasks = append(createdTasks, CreatedTaskItem{
+				ID:         fmt.Sprintf("%d", newTaskID),
+				TaskID:     taskID,
+				SOPID:      fmt.Sprintf("%d", tg.SOPID),
+				SubsceneID: fmt.Sprintf("%d", tg.SubsceneID),
+				Status:     "pending",
+				CreatedAt:  now.Format(time.RFC3339),
+			})
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[BATCH] Failed to commit transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, CreateBatchResponse{
+		Batch: BatchListItem{
+			ID:            fmt.Sprintf("%d", newBatchID),
+			BatchID:       batchIDStr,
+			OrderID:       fmt.Sprintf("%d", req.OrderID),
+			WorkstationID: fmt.Sprintf("%d", req.WorkstationID),
+			Name:          batchName,
+			Status:        "pending",
+			EpisodeCount:  0,
+			TaskCount:     totalQuantity,
+			CreatedAt:     now.Format(time.RFC3339),
+			UpdatedAt:     now.Format(time.RFC3339),
+		},
+		Tasks: createdTasks,
+	})
+}
+
+// AdjustBatchTasksRequest is the request body for adjusting batch tasks declaratively.
+type AdjustBatchTasksRequest struct {
+	TaskGroups []TaskGroupItem `json:"task_groups"`
+}
+
+// AdjustBatchTasksResponse is the response body for adjusting batch tasks.
+type AdjustBatchTasksResponse struct {
+	CreatedTasks   []CreatedTaskItem `json:"created_tasks"`
+	DeletedTaskIDs []string          `json:"deleted_task_ids"`
+}
+
+// AdjustBatchTasks handles declarative task quantity adjustment for a batch.
+// Each task_group entry specifies the TARGET quantity (not a delta) for that (sop_id, subscene_id) combination.
+//
+// @Summary      Adjust batch tasks
+// @Description  Declaratively sets the target task count per SOP/subscene combination. Only pending/active batches allowed.
+// @Tags         batches
+// @Accept       json
+// @Produce      json
+// @Param        id   path      int                      true  "Batch ID"
+// @Param        body body      AdjustBatchTasksRequest  true  "Task groups with target quantities"
+// @Success      200  {object}  AdjustBatchTasksResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      409  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /batches/{id}/tasks [post]
+func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
+	idStr := c.Param("id")
+	batchNumID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || batchNumID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+		return
+	}
+
+	var req AdjustBatchTasksRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	if len(req.TaskGroups) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_groups must not be empty"})
+		return
+	}
+	if a, b, dup := validateTaskGroupUniqueness(req.TaskGroups); dup {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("duplicate task_groups entries: task_groups[%d] and task_groups[%d] have the same sop_id and subscene_id", a, b),
+		})
+		return
+	}
+
+	now := time.Now().UTC()
+
+	tx, err := h.db.Beginx()
+	if err != nil {
+		logger.Printf("[BATCH] Failed to start transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Lock and validate batch
+	type batchStatusRow struct {
+		ID            int64  `db:"id"`
+		OrderID       int64  `db:"order_id"`
+		WorkstationID int64  `db:"workstation_id"`
+		Status        string `db:"status"`
+	}
+	var batch batchStatusRow
+	if err := tx.Get(&batch,
+		"SELECT id, order_id, workstation_id, status FROM batches WHERE id = ? AND deleted_at IS NULL FOR UPDATE",
+		batchNumID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+			return
+		}
+		logger.Printf("[BATCH] Failed to lock batch: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+
+	if batch.Status != "pending" && batch.Status != "active" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":          fmt.Sprintf("batch status is '%s'; only pending or active batches can be adjusted", batch.Status),
+			"current_status": batch.Status,
+		})
+		return
+	}
+
+	// Lock order for quota check
+	var targetCount int
+	if err := tx.Get(&targetCount, "SELECT target_count FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", batch.OrderID); err != nil {
+		logger.Printf("[BATCH] Failed to lock order: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+
+	// Count current order-level task count (excluding this batch's tasks temporarily)
+	var orderTaskCount int
+	if err := tx.Get(&orderTaskCount, "SELECT COUNT(*) FROM tasks WHERE order_id = ? AND deleted_at IS NULL", batch.OrderID); err != nil {
+		logger.Printf("[BATCH] Failed to count order tasks: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+
+	// Validate workstation for new tasks
+	type wsRow struct {
+		ID        int64 `db:"id"`
+		FactoryID int64 `db:"factory_id"`
+	}
+	var ws wsRow
+	if err := tx.Get(&ws, "SELECT id, factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", batch.WorkstationID); err != nil {
+		logger.Printf("[BATCH] Failed to get workstation: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+	var organizationID int64
+	if err := tx.Get(&organizationID, "SELECT organization_id FROM factories WHERE id = ? AND deleted_at IS NULL LIMIT 1", ws.FactoryID); err != nil {
+		logger.Printf("[BATCH] Failed to resolve organization_id: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+
+	// Get batch name for denormalization
+	var batchName string
+	if err := tx.Get(&batchName, "SELECT name FROM batches WHERE id = ?", batchNumID); err != nil {
+		logger.Printf("[BATCH] Failed to get batch name: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+
+	type taskCountRow struct {
+		Current     int `db:"current_count"`
+		LockedCount int `db:"locked_count"`
+	}
+
+	// subsceneInfo holds denormalized subscene data for task insertion.
+	type subsceneInfo struct {
+		SceneID int64  `db:"scene_id"`
+		Scene   string `db:"scene"`
+		Name    string `db:"name"`
+		Layout  string `db:"layout"`
+	}
+
+	// Per-group analysis
+	type groupPlan struct {
+		tg          TaskGroupItem
+		current     int
+		locked      int
+		pendingOnly int
+		toInsert    int
+		toDelete    int
+		deleteIDs   []int64
+		subscene    subsceneInfo
+	}
+
+	plans := make([]groupPlan, 0, len(req.TaskGroups))
+	batchDelta := 0
+
+	for _, tg := range req.TaskGroups {
+		if tg.SOPID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "sop_id is required in each task_group"})
+			return
+		}
+		if tg.SubsceneID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "subscene_id is required in each task_group"})
+			return
+		}
+		if tg.Quantity < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be >= 0"})
+			return
+		}
+
+		// Count current, locked, pending-only for this (sop_id, subscene_id) in this batch
+		var counts struct {
+			Current     int `db:"current_count"`
+			LockedCount int `db:"locked_count"`
+		}
+		if err := tx.Get(&counts, `
+			SELECT
+				COUNT(*) AS current_count,
+				COALESCE(SUM(CASE WHEN status != 'pending' OR episode_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS locked_count
+			FROM tasks
+			WHERE batch_id = ? AND sop_id = ? AND subscene_id = ? AND deleted_at IS NULL`,
+			batchNumID, tg.SOPID, tg.SubsceneID); err != nil {
+			logger.Printf("[BATCH] Failed to count tasks for group: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+			return
+		}
+
+		pendingOnly := counts.Current - counts.LockedCount
+
+		// Validate: cannot reduce below locked count
+		if tg.Quantity < counts.LockedCount {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("cannot reduce sop_id=%d subscene_id=%d below locked count %d (requested %d)",
+					tg.SOPID, tg.SubsceneID, counts.LockedCount, tg.Quantity),
+			})
+			return
+		}
+
+		plan := groupPlan{
+			tg:          tg,
+			current:     counts.Current,
+			locked:      counts.LockedCount,
+			pendingOnly: pendingOnly,
+		}
+
+		if tg.Quantity > counts.Current {
+			plan.toInsert = tg.Quantity - counts.Current
+		} else if tg.Quantity < counts.Current {
+			toDelete := counts.Current - tg.Quantity
+			if toDelete > pendingOnly {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": fmt.Sprintf("cannot delete %d tasks for sop_id=%d subscene_id=%d: only %d pending tasks available",
+						toDelete, tg.SOPID, tg.SubsceneID, pendingOnly),
+				})
+				return
+			}
+			plan.toDelete = toDelete
+
+			// Select IDs to delete (LIFO: newest first)
+			var deleteIDs []int64
+			if err := tx.Select(&deleteIDs, `
+				SELECT id FROM tasks
+				WHERE batch_id = ? AND sop_id = ? AND subscene_id = ? AND deleted_at IS NULL
+				  AND status = 'pending' AND episode_id IS NULL
+				ORDER BY created_at DESC, id DESC
+				LIMIT ?`,
+				batchNumID, tg.SOPID, tg.SubsceneID, toDelete); err != nil {
+				logger.Printf("[BATCH] Failed to select tasks to delete: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+				return
+			}
+			plan.deleteIDs = deleteIDs
+		}
+
+		// Validate subscene for inserts
+		if plan.toInsert > 0 {
+			if err := tx.Get(new(int), "SELECT 1 FROM sops WHERE id = ? AND deleted_at IS NULL LIMIT 1", tg.SOPID); err != nil {
+				if err == sql.ErrNoRows {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("sop not found: %d", tg.SOPID)})
+					return
+				}
+				logger.Printf("[BATCH] Failed to validate sop: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+				return
+			}
+			if err := tx.Get(&plan.subscene, `
+				SELECT ss.scene_id, s.name AS scene, ss.name, COALESCE(ss.initial_scene_layout, '') AS layout
+				FROM subscenes ss
+				JOIN scenes s ON s.id = ss.scene_id AND s.deleted_at IS NULL
+				WHERE ss.id = ? AND ss.deleted_at IS NULL LIMIT 1`, tg.SubsceneID); err != nil {
+				if err == sql.ErrNoRows {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("subscene not found: %d", tg.SubsceneID)})
+					return
+				}
+				logger.Printf("[BATCH] Failed to validate subscene: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+				return
+			}
+		}
+
+		batchDelta += plan.toInsert - plan.toDelete
+		plans = append(plans, plan)
+	}
+
+	// Quota check: order-level task_count + batch_delta <= target_count
+	if orderTaskCount+batchDelta > targetCount {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":        fmt.Sprintf("quota exceeded: target_count=%d, current_task_count=%d, batch_delta=%d", targetCount, orderTaskCount, batchDelta),
+			"target_count": targetCount,
+			"task_count":   orderTaskCount,
+			"batch_delta":  batchDelta,
+		})
+		return
+	}
+
+	// Execute: first all deletes, then all inserts
+	deletedTaskIDs := make([]string, 0)
+	for _, plan := range plans {
+		for _, delID := range plan.deleteIDs {
+			if _, err := tx.Exec(
+				"UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+				now, now, delID,
+			); err != nil {
+				logger.Printf("[BATCH] Failed to soft-delete task %d: %v", delID, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+				return
+			}
+			deletedTaskIDs = append(deletedTaskIDs, fmt.Sprintf("%d", delID))
+		}
+	}
+
+	createdTasks := make([]CreatedTaskItem, 0)
+	seqOffset := 0
+	for _, plan := range plans {
+		for i := 0; i < plan.toInsert; i++ {
+			taskID, err := newPublicTaskID(now, seqOffset)
+			if err != nil {
+				logger.Printf("[BATCH] Failed to generate task_id: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+				return
+			}
+			seqOffset++
+
+			resTask, err := tx.Exec(
+				`INSERT INTO tasks (
+					task_id, batch_id, order_id, sop_id, workstation_id,
+					scene_id, subscene_id, batch_name, scene_name, subscene_name,
+					factory_id, organization_id, initial_scene_layout,
+					status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+				taskID, batchNumID, batch.OrderID, plan.tg.SOPID, batch.WorkstationID,
+				plan.subscene.SceneID, plan.tg.SubsceneID, batchName, plan.subscene.Scene, plan.subscene.Name,
+				ws.FactoryID, organizationID, plan.subscene.Layout,
+				now, now,
+			)
+			if err != nil {
+				logger.Printf("[BATCH] Failed to insert task: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+				return
+			}
+			newTaskID, err := resTask.LastInsertId()
+			if err != nil {
+				logger.Printf("[BATCH] Failed to get task insert id: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+				return
+			}
+			createdTasks = append(createdTasks, CreatedTaskItem{
+				ID:         fmt.Sprintf("%d", newTaskID),
+				TaskID:     taskID,
+				SOPID:      fmt.Sprintf("%d", plan.tg.SOPID),
+				SubsceneID: fmt.Sprintf("%d", plan.tg.SubsceneID),
+				Status:     "pending",
+				CreatedAt:  now.Format(time.RFC3339),
+			})
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[BATCH] Failed to commit transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+
+	c.JSON(http.StatusOK, AdjustBatchTasksResponse{
+		CreatedTasks:   createdTasks,
+		DeletedTaskIDs: deletedTaskIDs,
+	})
+}
+
+// RecallBatch transitions a batch from active or completed to recalled.
+//
+// @Summary      Recall batch
+// @Description  Transitions a batch to recalled status. Only active or completed batches can be recalled.
+// @Tags         batches
+// @Produce      json
+// @Param        id path int true "Batch ID"
+// @Success      200 {object} PatchBatchResponse
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /batches/{id}/recall [post]
+func (h *BatchHandler) RecallBatch(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+		return
+	}
+
+	type statusRow struct {
+		Status    string       `db:"status"`
+		StartedAt sql.NullTime `db:"started_at"`
+	}
+	var cur statusRow
+	if err := h.db.Get(&cur, "SELECT status, started_at FROM batches WHERE id = ? AND deleted_at IS NULL", id); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+			return
+		}
+		logger.Printf("[BATCH] Failed to query batch: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to recall batch"})
+		return
+	}
+
+	if cur.Status != "active" && cur.Status != "completed" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":          fmt.Sprintf("cannot recall batch in status '%s'; only active or completed batches can be recalled", cur.Status),
+			"current_status": cur.Status,
+		})
+		return
+	}
+
+	now := time.Now().UTC()
+	if _, err := h.db.Exec(
+		"UPDATE batches SET status = 'recalled', updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+		now, id,
+	); err != nil {
+		logger.Printf("[BATCH] Failed to recall batch: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to recall batch"})
+		return
+	}
+
+	startedAtOut := ""
+	if cur.StartedAt.Valid {
+		startedAtOut = cur.StartedAt.Time.UTC().Format(time.RFC3339)
+	}
+	c.JSON(http.StatusOK, PatchBatchResponse{
+		ID:        fmt.Sprintf("%d", id),
+		Status:    "recalled",
+		StartedAt: startedAtOut,
+		UpdatedAt: now.Format(time.RFC3339),
+	})
+}
+
+// ListBatchTasks lists all tasks belonging to a batch.
+//
+// @Summary      List batch tasks
+// @Description  Returns all tasks belonging to the specified batch
+// @Tags         batches
+// @Produce      json
+// @Param        id path int true "Batch ID"
+// @Success      200 {object} ListTasksResponse
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /batches/{id}/tasks [get]
+func (h *BatchHandler) ListBatchTasks(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+		return
+	}
+
+	// Verify batch exists
+	var exists int
+	if err := h.db.Get(&exists, "SELECT 1 FROM batches WHERE id = ? AND deleted_at IS NULL LIMIT 1", id); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+			return
+		}
+		logger.Printf("[BATCH] Failed to verify batch: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list batch tasks"})
+		return
+	}
+
+	items := make([]TaskListItem, 0)
+	if err := h.db.Select(&items, `
+		SELECT
+			CAST(id AS CHAR) AS id,
+			task_id AS task_id,
+			CAST(batch_id AS CHAR) AS batch_id,
+			CAST(order_id AS CHAR) AS order_id,
+			CAST(sop_id AS CHAR) AS sop_id,
+			CASE WHEN workstation_id IS NULL THEN NULL ELSE CAST(workstation_id AS CHAR) END AS workstation_id,
+			CAST(scene_id AS CHAR) AS scene_id,
+			COALESCE(scene_name, '') AS scene_name,
+			CAST(subscene_id AS CHAR) AS subscene_id,
+			COALESCE(subscene_name, '') AS subscene_name,
+			status,
+			CASE WHEN assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at
+		FROM tasks
+		WHERE batch_id = ? AND deleted_at IS NULL
+		ORDER BY created_at ASC, id ASC`, id); err != nil {
+		logger.Printf("[BATCH] Failed to query batch tasks: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list batch tasks"})
+		return
+	}
+
+	c.JSON(http.StatusOK, ListTasksResponse{
+		Tasks:  items,
+		Total:  len(items),
+		Limit:  len(items),
+		Offset: 0,
+	})
+}
+
+// tryAdvanceBatchStatus checks and advances batch status based on task completion.
+// It should be called within or after a task status change transaction.
+// - If batch is pending and a task just completed: advance to active.
+// - If batch is active and ALL tasks are in terminal state: advance to completed.
+// This function uses its own transaction and is safe to call after the task update commits.
+func tryAdvanceBatchStatus(db *sqlx.DB, batchID int64) {
+	tx, err := db.Beginx()
+	if err != nil {
+		logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to begin tx for batch %d: %v", batchID, err)
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	type batchInfo struct {
+		Status string `db:"status"`
+	}
+	var info batchInfo
+	if err := tx.Get(&info, "SELECT status FROM batches WHERE id = ? AND deleted_at IS NULL FOR UPDATE", batchID); err != nil {
+		if err != sql.ErrNoRows {
+			logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to lock batch %d: %v", batchID, err)
+		}
+		return
+	}
+
+	now := time.Now().UTC()
+
+	switch info.Status {
+	case "pending":
+		// Advance to active: a task just completed, so this batch has started producing
+		if _, err := tx.Exec(
+			"UPDATE batches SET status = 'active', started_at = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND deleted_at IS NULL",
+			now, now, batchID,
+		); err != nil {
+			logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to advance batch %d to active: %v", batchID, err)
+			return
+		}
+		logger.Printf("[BATCH] Batch %d advanced: pending -> active", batchID)
+
+	case "active":
+		// Check if ALL non-deleted tasks are in terminal state
+		var nonTerminalCount int
+		if err := tx.Get(&nonTerminalCount, `
+			SELECT COUNT(*) FROM tasks
+			WHERE batch_id = ? AND deleted_at IS NULL
+			  AND status NOT IN ('completed', 'failed', 'cancelled')`,
+			batchID); err != nil {
+			logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to count non-terminal tasks for batch %d: %v", batchID, err)
+			return
+		}
+
+		// Also ensure there's at least one task
+		var totalCount int
+		if err := tx.Get(&totalCount, "SELECT COUNT(*) FROM tasks WHERE batch_id = ? AND deleted_at IS NULL", batchID); err != nil {
+			logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to count tasks for batch %d: %v", batchID, err)
+			return
+		}
+
+		if totalCount > 0 && nonTerminalCount == 0 {
+			if _, err := tx.Exec(
+				"UPDATE batches SET status = 'completed', ended_at = ?, updated_at = ? WHERE id = ? AND status = 'active' AND deleted_at IS NULL",
+				now, now, batchID,
+			); err != nil {
+				logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to advance batch %d to completed: %v", batchID, err)
+				return
+			}
+			logger.Printf("[BATCH] Batch %d advanced: active -> completed (all %d tasks in terminal state)", batchID, totalCount)
+		}
+
+	default:
+		// Terminal or non-advanceable state; do nothing
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to commit for batch %d: %v", batchID, err)
+	}
 }

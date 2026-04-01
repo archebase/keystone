@@ -319,6 +319,15 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		return
 	}
 
+	// Resolve batch id for post-commit batch state advancement.
+	// Best-effort: failure here should not block upload acknowledgement.
+	var batchIDForAdvance int64
+	if err := tx.QueryRowContext(ctx, "SELECT batch_id FROM tasks WHERE id = ? AND deleted_at IS NULL", taskPK).Scan(&batchIDForAdvance); err != nil {
+		// #nosec G706 -- Set aside for now
+		logger.Printf("[TRANSFER] Device %s: failed to resolve batch id for task=%s (task_pk=%d): %v", dc.DeviceID, taskID, taskPK, err)
+		batchIDForAdvance = 0
+	}
+
 	// Check if mcap_path and sidecar_path already exist in database
 	var count int
 	err = tx.QueryRowContext(ctx,
@@ -461,6 +470,13 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		// #nosec G706 -- Set aside for now
 		logger.Printf("[TRANSFER] Device %s: DB commit error for task=%s: %v", dc.DeviceID, taskID, err)
 		return
+	}
+
+	// After a task enters a terminal state via transfer flow, try to advance batch status.
+	// This keeps batch status consistent with the task lifecycle even when task completion
+	// does not go through TaskHandler.UpdateTask.
+	if batchIDForAdvance > 0 {
+		go tryAdvanceBatchStatus(h.db, batchIDForAdvance)
 	}
 
 	// Step 3: Send upload_ack

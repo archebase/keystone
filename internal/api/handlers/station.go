@@ -384,7 +384,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		}
 
 		response = append(response, StationResponse{
-			ID:              fmt.Sprintf("ws_%d", s.ID),
+			ID:              fmt.Sprintf("%d", s.ID),
 			RobotID:         fmt.Sprintf("%d", s.RobotID),
 			DataCollectorID: fmt.Sprintf("%d", s.DataCollectorID),
 			FactoryID:       fmt.Sprintf("%d", s.FactoryID),
@@ -699,7 +699,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 // @Tags         stations
 // @Accept       json
 // @Produce      json
-// @Param        id   path      string  true  "Station ID (e.g., ws_001)"
+// @Param        id   path      string  true  "Station ID (numeric, e.g., 1)"
 // @Success      200  {object}  StationResponse
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
@@ -708,17 +708,10 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 func (h *StationHandler) GetStation(c *gin.Context) {
 	stationIDStr := c.Param("id")
 
-	// Parse station ID (format: ws_XXX)
-	if !strings.HasPrefix(stationIDStr, "ws_") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
-		return
-	}
-
-	idStr := strings.TrimPrefix(stationIDStr, "ws_")
 	var stationID int64
-	_, err := fmt.Sscanf(idStr, "%d", &stationID)
+	_, err := fmt.Sscanf(stationIDStr, "%d", &stationID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected numeric id"})
 		return
 	}
 
@@ -751,7 +744,7 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, StationResponse{
-		ID:              fmt.Sprintf("ws_%d", station.ID),
+		ID:              fmt.Sprintf("%d", station.ID),
 		RobotID:         fmt.Sprintf("%d", station.RobotID),
 		DataCollectorID: fmt.Sprintf("%d", station.DataCollectorID),
 		FactoryID:       fmt.Sprintf("%d", station.FactoryID),

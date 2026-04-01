@@ -32,7 +32,6 @@ func NewSOPHandler(db *sqlx.DB) *SOPHandler {
 // SOPResponse represents an SOP in the response.
 type SOPResponse struct {
 	ID            string   `json:"id"`
-	Name          string   `json:"name"`
 	Slug          string   `json:"slug"`
 	Description   string   `json:"description,omitempty"`
 	SkillSequence []string `json:"skill_sequence"`
@@ -48,7 +47,6 @@ type SOPListResponse struct {
 
 // CreateSOPRequest represents the request body for creating an SOP.
 type CreateSOPRequest struct {
-	Name          string   `json:"name"`
 	Slug          string   `json:"slug"`
 	Description   string   `json:"description,omitempty"`
 	SkillSequence []string `json:"skill_sequence"`
@@ -58,7 +56,6 @@ type CreateSOPRequest struct {
 // CreateSOPResponse represents the response for creating an SOP.
 type CreateSOPResponse struct {
 	ID            string   `json:"id"`
-	Name          string   `json:"name"`
 	Slug          string   `json:"slug"`
 	SkillSequence []string `json:"skill_sequence"`
 	Version       string   `json:"version"`
@@ -67,7 +64,6 @@ type CreateSOPResponse struct {
 
 // UpdateSOPRequest represents the request body for updating an SOP.
 type UpdateSOPRequest struct {
-	Name          *string   `json:"name,omitempty"`
 	Slug          *string   `json:"slug,omitempty"`
 	Description   *string   `json:"description,omitempty"`
 	SkillSequence *[]string `json:"skill_sequence,omitempty"`
@@ -86,7 +82,6 @@ func (h *SOPHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // sopRow represents an SOP in the database
 type sopRow struct {
 	ID            int64          `db:"id"`
-	Name          string         `db:"name"`
 	Slug          string         `db:"slug"`
 	Description   sql.NullString `db:"description"`
 	SkillSequence string         `db:"skill_sequence"`
@@ -109,7 +104,6 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 	query := `
 		SELECT 
 			id,
-			name,
 			slug,
 			description,
 			skill_sequence,
@@ -150,7 +144,6 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 
 		sops = append(sops, SOPResponse{
 			ID:            fmt.Sprintf("%d", s.ID),
-			Name:          s.Name,
 			Slug:          s.Slug,
 			Description:   description,
 			SkillSequence: skillSequence,
@@ -189,7 +182,6 @@ func (h *SOPHandler) GetSOP(c *gin.Context) {
 	query := `
 		SELECT 
 			id,
-			name,
 			slug,
 			description,
 			skill_sequence,
@@ -231,7 +223,6 @@ func (h *SOPHandler) GetSOP(c *gin.Context) {
 
 	c.JSON(http.StatusOK, SOPResponse{
 		ID:            fmt.Sprintf("%d", s.ID),
-		Name:          s.Name,
 		Slug:          s.Slug,
 		Description:   description,
 		SkillSequence: skillSequence,
@@ -260,15 +251,9 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 		return
 	}
 
-	req.Name = strings.TrimSpace(req.Name)
 	req.Slug = strings.TrimSpace(req.Slug)
 	req.Description = strings.TrimSpace(req.Description)
 	req.Version = strings.TrimSpace(req.Version)
-
-	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-		return
-	}
 
 	if req.Slug == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug is required"})
@@ -313,15 +298,13 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 
 	result, err := h.db.Exec(
 		`INSERT INTO sops (
-			name,
 			slug,
 			description,
 			skill_sequence,
 			version,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		req.Name,
+		) VALUES (?, ?, ?, ?, ?, ?)`,
 		req.Slug,
 		descriptionStr,
 		string(skillSeqJSON),
@@ -344,7 +327,6 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, CreateSOPResponse{
 		ID:            fmt.Sprintf("%d", id),
-		Name:          req.Name,
 		Slug:          req.Slug,
 		SkillSequence: req.SkillSequence,
 		Version:       version,
@@ -399,14 +381,6 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 	// Build update query dynamically
 	updates := []string{}
 	args := []interface{}{}
-
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name != "" {
-			updates = append(updates, "name = ?")
-			args = append(args, name)
-		}
-	}
 
 	if req.Slug != nil {
 		slug := strings.TrimSpace(*req.Slug)
@@ -498,7 +472,7 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 
 	// Fetch the updated SOP
 	var s sopRow
-	err = h.db.Get(&s, "SELECT id, name, slug, description, skill_sequence, version, created_at, updated_at FROM sops WHERE id = ?", id)
+	err = h.db.Get(&s, "SELECT id, slug, description, skill_sequence, version, created_at, updated_at FROM sops WHERE id = ?", id)
 	if err != nil {
 		logger.Printf("[SOP] Failed to fetch updated SOP: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated SOP"})
@@ -525,7 +499,6 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 
 	c.JSON(http.StatusOK, SOPResponse{
 		ID:            fmt.Sprintf("%d", s.ID),
-		Name:          s.Name,
 		Slug:          s.Slug,
 		Description:   description,
 		SkillSequence: skillSequence,

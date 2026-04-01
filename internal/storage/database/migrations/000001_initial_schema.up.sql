@@ -77,7 +77,6 @@ CREATE TABLE IF NOT EXISTS subscenes (
 CREATE TABLE IF NOT EXISTS skills (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     slug VARCHAR(100) NOT NULL,
-    name VARCHAR(255) NOT NULL,
     description TEXT,
     version VARCHAR(20) DEFAULT '1.0.0',
     metadata JSON DEFAULT NULL,
@@ -100,7 +99,6 @@ CREATE TABLE IF NOT EXISTS subscene_skills (
 
 CREATE TABLE IF NOT EXISTS sops (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
     slug VARCHAR(100) NOT NULL,
     description TEXT,
     skill_sequence JSON NOT NULL,
@@ -473,12 +471,12 @@ INSERT INTO factories (organization_id, name, slug, location, timezone, settings
 (1, 'San Francisco Factory', 'factory-sf', 'San Francisco, USA', 'America/Los_Angeles', '{}')
 ON DUPLICATE KEY UPDATE name=VALUES(name), location=VALUES(location), timezone=VALUES(timezone), settings=VALUES(settings);
 
-INSERT INTO skills (slug, name, description) VALUES
-    ('pick', 'Pick', 'Grasp and lift an object'),
-    ('place', 'Place', 'Put an object at a target location'),
-    ('drop', 'Drop', 'Release an object without precision'),
-    ('push', 'Push', 'Move an object without grasping'),
-    ('wipe', 'Wipe', 'Clean a surface with wiping motion'),
-    ('navigate', 'Navigate', 'Move from one location to another'),
-    ('pour', 'Pour', 'Transfer liquid between containers')
-ON DUPLICATE KEY UPDATE name=VALUES(name);
+INSERT INTO skills (slug, description) VALUES
+    ('pick', 'Grasp and lift an object'),
+    ('place', 'Put an object at a target location'),
+    ('drop', 'Release an object without precision'),
+    ('push', 'Move an object without grasping'),
+    ('wipe', 'Clean a surface with wiping motion'),
+    ('navigate', 'Move from one location to another'),
+    ('pour', 'Transfer liquid between containers')
+ON DUPLICATE KEY UPDATE description=VALUES(description);

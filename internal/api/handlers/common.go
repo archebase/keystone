@@ -9,21 +9,26 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // maxSlugLength matches VARCHAR(100) for slug columns in the schema.
 const maxSlugLength = 100
 
 // invalidSlugUserMessage is returned when slug fails isValidSlug (length or charset).
-const invalidSlugUserMessage = "slug must be at most 100 characters and contain only alphanumeric characters and hyphens"
+const invalidSlugUserMessage = "slug must be at most 100 characters and contain only letters, digits, and hyphens"
 
-// isValidSlug checks non-empty slug, length <= maxSlugLength, and alphanumeric plus hyphen only.
+// isValidSlug checks non-empty slug, length <= maxSlugLength (in runes), and allows Unicode letters/digits plus hyphen.
 func isValidSlug(s string) bool {
-	if len(s) == 0 || len(s) > maxSlugLength {
+	if s == "" {
+		return false
+	}
+	if utf8.RuneCountInString(s) > maxSlugLength {
 		return false
 	}
 	for _, c := range s {
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+		if !unicode.IsLetter(c) && !unicode.IsDigit(c) && c != '-' {
 			return false
 		}
 	}
