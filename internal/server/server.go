@@ -74,19 +74,20 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		authHandler = handlers.NewAuthHandler(db, &cfg.Auth)
 	}
 
-	// Create TransferHub and TransferHandler for Transfer Service
-	transferHub := services.NewTransferHub(cfg.AxonTransfer.MaxEvents)
-	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.AxonTransfer, db, s3Client, cfg.Storage.Bucket, cfg.AxonTransfer.FactoryID)
-
-	// Create recorderHub and RecorderHandler for Axon Recorder RPC
+	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
 	recorderHub := services.NewRecorderHub()
 	recorderHandler := handlers.NewRecorderHandler(recorderHub, &cfg.AxonRecorder, db)
+	recorderRPCTimeout := time.Duration(cfg.AxonRecorder.ResponseTimeout) * time.Second
+
+	// Create TransferHub and TransferHandler for Transfer Service
+	transferHub := services.NewTransferHub(cfg.AxonTransfer.MaxEvents)
+	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.AxonTransfer, db, s3Client, cfg.Storage.Bucket, cfg.AxonTransfer.FactoryID, recorderHub, recorderRPCTimeout)
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db)
 
 	// Create TaskHandler for task configuration
-	taskHandler := handlers.NewTaskHandler(db, transferHub)
+	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout)
 
 	// Create database-dependent handlers only when DB is available
 	var (
@@ -105,7 +106,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		orderHandler         *handlers.OrderHandler
 	)
 	if db != nil {
-		batchHandler = handlers.NewBatchHandler(db)
+		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub)
 		factoryHandler = handlers.NewFactoryHandler(db)

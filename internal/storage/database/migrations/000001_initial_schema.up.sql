@@ -240,10 +240,10 @@ CREATE TABLE IF NOT EXISTS orders (
 
 CREATE TABLE IF NOT EXISTS batches (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    batch_id VARCHAR(100) NOT NULL COMMENT 'Human-readable batch ID',
+    batch_id VARCHAR(100) NOT NULL,
     order_id BIGINT NOT NULL,
     workstation_id BIGINT NOT NULL,
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NULL COMMENT 'Human-readable name',
     notes TEXT,
     status ENUM('pending', 'active', 'completed', 'cancelled', 'recalled') DEFAULT 'pending',
     episode_count INT DEFAULT 0,
@@ -253,7 +253,7 @@ CREATE TABLE IF NOT EXISTS batches (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL,
-    _name_unique VARCHAR(600) GENERATED ALWAYS AS (CONCAT(IFNULL(order_id, ''), '|', IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
+    _name_unique VARCHAR(600) GENERATED ALWAYS AS (CONCAT(IFNULL(order_id, ''), '|', IFNULL(batch_id, ''), '|', IFNULL(deleted_at, ''))) STORED,
     UNIQUE INDEX idx_name_del (_name_unique),
     INDEX idx_batch_id (batch_id),
     INDEX idx_order (order_id),

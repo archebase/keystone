@@ -35,24 +35,30 @@ var (
 )
 
 func main() {
-	// Load .env file
-	if err := godotenv.Load(); err != nil {
-		logger.Printf("[SERVER] Failed to load .env file: %v", err)
-	}
-
-	// Command line flags
 	showVersion := flag.Bool("version", false, "Show version information")
 	configPath := flag.String("config", "/etc/keystone-edge/config.toml", "Configuration file path")
 	flag.Parse()
 
-	// Show version
 	if *showVersion {
 		fmt.Printf("Keystone Edge %s (built: %s)\n", version, buildTime)
 		os.Exit(0)
 	}
 
-	// Initialize logger
-	logger.Init(logger.DefaultOptions())
+	logFile, err := os.OpenFile("keystone-edge.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open keystone-edge.log: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = logFile.Close()
+	}()
+
+	logger.InitWithWriter(logFile, logger.DefaultOptions())
+
+	if err := godotenv.Load(); err != nil {
+		logger.Printf("[SERVER] Failed to load .env file: %v", err)
+	}
+
 	logger.Printf("[SERVER] Starting Keystone Edge %s", version)
 	logger.Printf("[SERVER] Config file: %s", *configPath)
 

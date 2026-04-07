@@ -58,15 +58,19 @@ func newPublicBatchID(now time.Time, seq int) (string, error) {
 
 // TaskHandler handles task-related HTTP requests
 type TaskHandler struct {
-	db  *sqlx.DB
-	hub *services.TransferHub
+	db                 *sqlx.DB
+	hub                *services.TransferHub
+	recorderHub        *services.RecorderHub
+	recorderRPCTimeout time.Duration
 }
 
 // NewTaskHandler creates a new TaskHandler
-func NewTaskHandler(db *sqlx.DB, hub *services.TransferHub) *TaskHandler {
+func NewTaskHandler(db *sqlx.DB, hub *services.TransferHub, recorderHub *services.RecorderHub, recorderRPCTimeout time.Duration) *TaskHandler {
 	return &TaskHandler{
-		db:  db,
-		hub: hub,
+		db:                 db,
+		hub:                hub,
+		recorderHub:        recorderHub,
+		recorderRPCTimeout: recorderRPCTimeout,
 	}
 }
 
@@ -176,22 +180,31 @@ type UpdateTaskResponse struct {
 
 var validTaskStatusTransitions = map[string]map[string]struct{}{
 	"pending": {
-		"ready":     {},
-		"cancelled": {},
+		"ready": {},
 	},
 	"ready": {
-		"pending": {},
+		"in_progress": {},
+		"pending":     {},
 	},
+	"in_progress": {
+		"pending":   {},
+		"completed": {},
+		"failed":    {},
+	},
+	"failed":    {},
+	"completed": {},
+	"cancelled": {},
 }
 
 // ListTasks handles task listing requests with optional filtering.
 //
 // @Summary      List tasks
-// @Description  Lists tasks with optional workstation and status filters
+// @Description  Lists tasks with optional workstation, status, and public task_id filters
 // @Tags         tasks
 // @Produce      json
 // @Param        workstation_id  query     string  false  "Filter by workstation"
 // @Param        status          query     string  false  "Filter by status"
+// @Param        task_id         query     string  false  "Filter by public task_id (exact match)"
 // @Param        limit           query     int     false  "Max results"      default(50)
 // @Param        offset          query     int     false  "Pagination offset" default(0)
 // @Success      200             {object}  ListTasksResponse
@@ -203,6 +216,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 
 	workstationID := strings.TrimSpace(c.Query("workstation_id"))
 	status := strings.TrimSpace(c.Query("status"))
+	publicTaskID := strings.TrimSpace(c.Query("task_id"))
 
 	limit := defaultLimit
 	if rawLimit := strings.TrimSpace(c.Query("limit")); rawLimit != "" {
@@ -232,7 +246,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	}
 
 	conditions := []string{"deleted_at IS NULL"}
-	args := make([]interface{}, 0, 4)
+	args := make([]interface{}, 0, 6)
 
 	if workstationID != "" {
 		conditions = append(conditions, "CAST(workstation_id AS CHAR) = ?")
@@ -242,6 +256,11 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	if status != "" {
 		conditions = append(conditions, "status = ?")
 		args = append(args, status)
+	}
+
+	if publicTaskID != "" {
+		conditions = append(conditions, "task_id = ?")
+		args = append(args, publicTaskID)
 	}
 
 	whereClause := strings.Join(conditions, " AND ")
@@ -357,7 +376,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 // UpdateTask handles task status update requests.
 //
 // @Summary      Update task
-// @Description  Updates task status with restricted state transitions
+// @Description  Updates task status with restricted state transitions. Setting status to cancelled is not allowed; cancel the parent batch instead. Rejected when the parent batch status is cancelled or recalled.
 // @Tags         tasks
 // @Accept       json
 // @Produce      json
@@ -366,7 +385,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 // @Success      200   {object}  UpdateTaskResponse
 // @Failure      400   {object}  map[string]string
 // @Failure      404   {object}  map[string]string
-// @Failure      409   {object}  map[string]string
+// @Failure      409   {object}  map[string]string "Conflict (invalid transition or batch is cancelled/recalled)"
 // @Failure      500   {object}  map[string]string
 // @Router       /tasks/{id} [put]
 func (h *TaskHandler) UpdateTask(c *gin.Context) {
@@ -402,15 +421,28 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		return
 	}
 
+	if req.Status == "cancelled" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error_msg": "setting status to 'cancelled' is not allowed via PUT; cancel the parent batch (PATCH /batches/:id) instead",
+		})
+		return
+	}
+
 	if req.UpdatedBy == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "updated_by is required"})
 		return
 	}
 
 	var taskRow struct {
-		Status string `db:"status"`
+		Status      string         `db:"status"`
+		OrderID     int64          `db:"order_id"`
+		BatchStatus sql.NullString `db:"batch_status"`
 	}
-	err = h.db.Get(&taskRow, "SELECT status FROM tasks WHERE id = ? AND deleted_at IS NULL", id)
+	err = h.db.Get(&taskRow, `
+		SELECT t.status, t.order_id, b.status AS batch_status
+		FROM tasks t
+		LEFT JOIN batches b ON b.id = t.batch_id AND b.deleted_at IS NULL
+		WHERE t.id = ? AND t.deleted_at IS NULL`, id)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error_msg": "Task not found: " + idStr})
 		return
@@ -419,6 +451,18 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		logger.Printf("[TASK] Failed to query task: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task"})
 		return
+	}
+
+	if taskRow.BatchStatus.Valid {
+		bs := taskRow.BatchStatus.String
+		if bs == "cancelled" || bs == "recalled" {
+			c.JSON(http.StatusConflict, gin.H{
+				"error_msg":        fmt.Sprintf("cannot update task while parent batch status is %q", bs),
+				"batch_status":     bs,
+				"requested_status": req.Status,
+			})
+			return
+		}
 	}
 
 	if _, ok := validTaskStatusTransitions[taskRow.Status][req.Status]; !ok {
@@ -435,6 +479,7 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	// Fetch batch_id for post-update batch state advancement
 	var batchIDForAdvance int64
 	_ = h.db.Get(&batchIDForAdvance, "SELECT batch_id FROM tasks WHERE id = ? AND deleted_at IS NULL LIMIT 1", id)
+	orderIDForAdvance := taskRow.OrderID
 
 	result, err := h.db.Exec(
 		"UPDATE tasks SET status = ?, updated_at = ?, ready_at = CASE WHEN ? = 'ready' THEN ? ELSE ready_at END WHERE id = ? AND status = ? AND deleted_at IS NULL",
@@ -467,10 +512,13 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 		return
 	}
 
-	// After a task enters a terminal state, try to advance the batch status.
-	// This handles: pending->active (first completed task) and active->completed (all tasks terminal).
-	if _, isTerminal := taskTerminalStatuses[req.Status]; isTerminal && batchIDForAdvance > 0 {
+	// After completed/failed, try to advance the batch status (pending->active, active->completed).
+	if _, ok := batchAdvanceTriggerStatuses[req.Status]; ok && batchIDForAdvance > 0 {
 		go tryAdvanceBatchStatus(h.db, batchIDForAdvance)
+	}
+	// After completed, try to advance the order status (created->in_progress, in_progress->completed).
+	if req.Status == "completed" && orderIDForAdvance > 0 {
+		go tryAdvanceOrderStatus(h.db, orderIDForAdvance, h.recorderHub, h.recorderRPCTimeout)
 	}
 
 	c.JSON(http.StatusOK, UpdateTaskResponse{
@@ -678,8 +726,8 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 
 	// Ensure a batch exists for (order_id, workstation_id). Prefer active/pending, otherwise create.
 	type batchRow struct {
-		ID   int64  `db:"id"`
-		Name string `db:"name"`
+		ID   int64          `db:"id"`
+		Name sql.NullString `db:"name"`
 	}
 	var batch batchRow
 	batchQuery := `
@@ -701,7 +749,6 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
 			return
 		}
-		batchName := fmt.Sprintf("Batch %s (order=%d ws=%d)", batchIDStr, req.OrderID, req.WorkstationID)
 		res, err := tx.Exec(
 			`INSERT INTO batches (
 				batch_id,
@@ -711,11 +758,10 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 				status,
 				created_at,
 				updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, NULL, ?, ?, ?)`,
 			batchIDStr,
 			req.OrderID,
 			req.WorkstationID,
-			batchName,
 			"pending",
 			now,
 			now,
@@ -732,7 +778,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 			return
 		}
 		batch.ID = newID
-		batch.Name = batchName
+		batch.Name = sql.NullString{}
 	}
 
 	// Denormalized filtering fields
@@ -745,6 +791,11 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 		logger.Printf("[TASK] Failed to resolve organization_id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
 		return
+	}
+
+	var taskBatchNameArg interface{}
+	if batch.Name.Valid {
+		taskBatchNameArg = batch.Name.String
 	}
 
 	created := make([]CreateTaskResponse, 0, quantity)
@@ -781,7 +832,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 			req.WorkstationID,
 			subscene.SceneID,
 			req.SubsceneID,
-			batch.Name,
+			taskBatchNameArg,
 			subscene.Scene,
 			subscene.Name,
 			ws.FactoryID,
