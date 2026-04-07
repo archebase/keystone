@@ -65,8 +65,10 @@ Organization ── owns ──► Order ── has many ──► Batch ── 
 This document does not restate full table schemas; it only defines key field semantics (see the migration file for details).
 
 - **Order**
-  - `target_count`: the maximum number of Tasks expected to be generated for the order (currently used to cap `POST /tasks`).
-  - `completed_count`: a derived statistic (based on the number of completed Tasks).
+  - `target_count`: the desired number of **completed** Tasks for the order (see §6.1).
+  - `task_count`: a derived statistic: `COUNT(tasks)` under the order (non-deleted; includes all statuses).
+  - `completed_count`: a derived statistic: number of Tasks with `status='completed'` (non-deleted).
+  - `cancelled_count` / `failed_count`: derived statistics from Tasks (non-deleted).
 - **Batch**
   - `batch_id`: a human-readable ID (for display/traceability).
   - `episode_count`: the number of persisted Episodes (see 3.2).
@@ -104,13 +106,23 @@ This document does not restate full table schemas; it only defines key field sem
 | Method | Path | Notes |
 |------|------|------|
 | GET | `/batches` | List (filters: `order_id/workstation_id/status/limit/offset`) |
+| POST | `/batches` | **Create Batch + Tasks atomically** (`task_groups`) |
 | GET | `/batches/:id` | Detail |
-| PATCH | `/batches/:id` | Status only; allows `pending -> active/cancelled`, `active -> completed/cancelled` |
+| GET | `/batches/:id/tasks` | List tasks under a batch |
+| POST | `/batches/:id/tasks` | Declaratively adjust task quantities (`task_groups`) |
+| PATCH | `/batches/:id` | **Cancel only** (`pending/active -> cancelled`) |
+| POST | `/batches/:id/recall` | Recall (`active/completed -> recalled`) |
 | DELETE | `/batches/:id` | Soft delete (only allowed when `status=cancelled`) |
 
 **Design constraints:**
 
-- There is currently no `POST /batches`. Batches are created/reused implicitly during Task generation (see 5.3).
+- **Cancellation semantics (PATCH)**: `PATCH /batches/:id` only supports transitioning to `cancelled`. It cascades cancellation to tasks in `pending/ready/in_progress` under the batch, and best-effort notifies Axon recorder:
+  - `ready` tasks → recorder `clear`
+  - `in_progress` tasks → recorder `cancel {task_id}`
+- **Automatic advancement**:
+  - `pending -> active`: automatic (triggered when a task under the batch reaches a terminal state; see §6.2).
+  - `active -> completed`: automatic (when **all** non-deleted tasks are terminal: `completed/failed/cancelled`; see §6.2).
+- **Recall semantics (POST)**: recall is a separate endpoint (`POST /batches/:id/recall`), not a `PATCH` status update.
 
 ---
 
@@ -118,13 +130,19 @@ This document does not restate full table schemas; it only defines key field sem
 
 #### 5.3.1 Create (`POST /tasks`)
 
-`POST /tasks` is the entry point for creating Tasks per **(order + workstation)**:
+`POST /tasks` exists for backwards compatibility. It creates Tasks per **(order + workstation)**:
 
 - **Request fields**: `order_id`, `sop_id`, `subscene_id`, `workstation_id`, optional `quantity` (default 1, range 1..1000)
-- **Quantity constraint**: total Tasks under the same Order must not exceed `orders.target_count`.
 - **Batch association (implicit)**:
   - Prefer reusing a batch under the same `(order_id, workstation_id)` with status `pending/active`;
   - Otherwise create a new `pending` batch.
+
+**Quantity constraint (current implementation):**
+
+- `POST /tasks`: caps by **existing task rows** (non-deleted) under the order: `existing_tasks + quantity <= target_count`.
+- `POST /batches`: caps by **completed tasks only** under the order: `completed_count + requested_total_quantity <= target_count`.
+
+This difference is a known inconsistency (see §8).
 
 #### 5.3.2 Query and config
 
@@ -132,23 +150,46 @@ This document does not restate full table schemas; it only defines key field sem
 |------|------|------|
 | GET | `/tasks` | List (filters: `workstation_id/status/limit/offset`) |
 | GET | `/tasks/:id` | Detail (includes `episode` if linked) |
-| PUT | `/tasks/:id` | Status update (restricted transitions) |
+| PUT | `/tasks/:id` | Status update (restricted transitions; see §6.2) |
 | GET | `/tasks/:id/config` | Generate recorder config (requires workstation robot + collector bindings) |
 
 ---
 
 ## 6. State machines (design constraints + current implementation)
 
-### 6.1 Task states
+### 6.1 Order states
+
+- **State set**: `created` | `in_progress` | `paused` | `completed` | `cancelled`
+- **Auto-advance rules (completed-only)**:
+  - `created -> in_progress`: when the order has **at least one** `completed` task.
+  - `in_progress -> completed`: when `completed_count == target_count`.
+- **Order completion side-effects (current implementation)**:
+  - When auto-advancing to `completed`, Keystone finalizes any still-open batches for this order:
+    - Cancels runnable tasks (`pending/ready/in_progress`) under batches in `pending/active`.
+    - Marks those batches `completed`.
+    - Best-effort notifies Axon recorder (clear/cancel) for affected `ready/in_progress` tasks.
+
+### 6.2 Task states
 
 - **State set**: `pending` | `ready` | `in_progress` | `completed` | `failed` | `cancelled`
 - **Prepare (pending→ready)**: triggered by UI/scheduler (currently via `PUT /tasks/:id`).
-- **Complete (→completed)**: set after Episode persistence via Transfer Verified ACK (current implementation).
+- **Run (ready→in_progress)**: triggered by UI/device workflow (currently via `PUT /tasks/:id`).
+- **Transfer ACK**:
+  - On verified upload ACK, Keystone marks task `in_progress -> completed` (only if currently `in_progress`).
+  - On `upload_failed`, Keystone marks task `in_progress -> failed`.
+- **Revert to pending (ready/in_progress→pending)**: used for recovery when Transfer disconnects (to avoid stuck runnable tasks).
 
-### 6.2 Batch states
+### 6.3 Batch states
 
 `pending` | `active` | `completed` | `cancelled` | `recalled`  
-Currently `PATCH /batches/:id` only supports limited transitions (see 5.2) to control the batch lifecycle.
+
+**Current transition rules:**
+
+- **Manual cancellation**: `pending/active -> cancelled` via `PATCH /batches/:id` (and cascade-cancel tasks).
+- **Manual recall**: `active/completed -> recalled` via `POST /batches/:id/recall` (and labels Episodes).
+- **Automatic advancement**:
+  - `pending -> active`: when a task under the batch reaches a terminal state (`completed` or `failed`).
+  - `active -> completed`: when **all** non-deleted tasks under the batch are terminal (`completed/failed/cancelled`).
 
 ---
 
@@ -173,7 +214,7 @@ When the device reports `upload_complete`, Keystone runs the Verified ACK flow:
    - **Idempotent**: if an Episode already exists for this `task_id`, do not insert again
    - Insert into `episodes` (persist denormalized fields such as `batch_id/order_id/scene_id/...`)
    - `batches.episode_count += 1` (only when a new Episode is inserted)
-   - Update `tasks.status` to **`completed`** (and set `completed_at`)
+   - Update `tasks.status` to **`completed`** (and set `completed_at`) **only when current status is `in_progress`**
 3. **Send `upload_ack`** to the device
 
 ---
@@ -182,7 +223,11 @@ When the device reports `upload_complete`, Keystone runs the Verified ACK flow:
 
 - **In-recording state**: `callbacks/start` does not persist state today; `ready -> in_progress` validation/persistence is not implemented yet.
 - **Failure path**: an end-to-end `failed` terminal state and error attribution are not fully implemented (callbacks/transfer need to be extended).
-- **Controlled order transitions**: Order status updates currently only validate enum values; it should converge to controlled transitions aligned with Primer and linked to Task statistics.
+- **Quota consistency**:
+  - `POST /tasks` caps by **task row count** under an order.
+  - `POST /batches` caps by **completed task count** under an order.
+  These should converge to a single definition (either “planned tasks” or “completed target”) to avoid surprising client behavior.
+- **Controlled order transitions**: `PUT /orders/:id` validates enum values, but auto-advance also exists (see §6.1). These should converge to a single, explicit policy aligned with Primer.
 
 ---
 
