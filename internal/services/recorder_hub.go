@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"archebase.com/keystone-edge/internal/logger"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
@@ -81,6 +80,15 @@ type RecorderConn struct {
 	StateMu   sync.RWMutex
 }
 
+// GetDeviceID implements Connection.
+func (r *RecorderConn) GetDeviceID() string { return r.DeviceID }
+
+// GetWSConn implements Connection.
+func (r *RecorderConn) GetWSConn() *websocket.Conn { return r.Conn }
+
+// GetConnectedAt implements Connection.
+func (r *RecorderConn) GetConnectedAt() time.Time { return r.ConnectedAt }
+
 // GetState returns a copy of the recorder state.
 func (r *RecorderConn) GetState() RecorderState {
 	r.StateMu.RLock()
@@ -97,15 +105,16 @@ func (r *RecorderConn) UpdateState(state RecorderState) {
 }
 
 // RecorderHub manages all active Axon Recorder WebSocket connections.
+// It embeds the generic Hub[*RecorderConn] for connection lifecycle and
+// adds the RPC request/response matching layer on top.
 type RecorderHub struct {
-	mu          sync.RWMutex
-	connections map[string]*RecorderConn
+	*Hub[*RecorderConn]
 }
 
 // NewRecorderHub creates a new RecorderHub.
 func NewRecorderHub() *RecorderHub {
 	return &RecorderHub{
-		connections: make(map[string]*RecorderConn),
+		Hub: newHub[*RecorderConn]("RECORDER"),
 	}
 }
 
@@ -127,33 +136,21 @@ func (h *RecorderHub) NewRecorderConn(conn *websocket.Conn, deviceID, remoteIP s
 
 // Connect registers a recorder connection, replacing any previous one for the same device.
 func (h *RecorderHub) Connect(deviceID string, rc *RecorderConn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if old, exists := h.connections[deviceID]; exists && old != nil && old.Conn != nil && old != rc {
-		logger.Printf("[RECORDER] RecorderHub: closing previous connection for device %s (replaced by new)", deviceID)
-		_ = old.Conn.Close(websocket.StatusPolicyViolation, "replaced by newer connection")
-	}
-	h.connections[deviceID] = rc
-	logger.Printf("[RECORDER] RecorderHub: device %s registered, total connections=%d", deviceID, len(h.connections))
+	h.connect(deviceID, rc)
 }
 
-// Disconnect removes a recorder connection and closes pending waiters.
+// Disconnect removes a recorder connection and drains any pending RPC waiters.
 func (h *RecorderHub) Disconnect(deviceID string) {
-	h.mu.Lock()
-	rc := h.connections[deviceID]
-	delete(h.connections, deviceID)
-	h.mu.Unlock()
-
-	if rc == nil {
-		logger.Printf("[RECORDER] RecorderHub: Disconnect called for unknown device %s", deviceID)
+	rc, found := h.disconnect(deviceID)
+	if !found {
 		return
 	}
-	logger.Printf("[RECORDER] RecorderHub: device %s disconnected", deviceID)
 
+	// Unblock any goroutines waiting for an RPC response from this device.
 	rc.PendingMu.Lock()
 	for requestID, pending := range rc.Pending {
 		delete(rc.Pending, requestID)
-		// Use non-blocking send to avoid panic if channel is already closed
+		// Non-blocking send: the waiter may have already timed out.
 		select {
 		case pending.ResponseC <- &RPCResponse{
 			RequestID: requestID,
@@ -161,7 +158,6 @@ func (h *RecorderHub) Disconnect(deviceID string) {
 			Message:   ErrRecorderNotConnected.Error(),
 		}:
 		default:
-			// Channel already received or closed, skip
 		}
 	}
 	rc.PendingMu.Unlock()
@@ -169,17 +165,14 @@ func (h *RecorderHub) Disconnect(deviceID string) {
 
 // Get returns the recorder connection for a device, or nil if not connected.
 func (h *RecorderHub) Get(deviceID string) *RecorderConn {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.connections[deviceID]
+	return h.get(deviceID)
 }
 
 // ListDevices returns a snapshot of all connected recorders.
 func (h *RecorderHub) ListDevices() []RecorderInfo {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	result := make([]RecorderInfo, 0, len(h.connections))
-	for _, rc := range h.connections {
+	conns := h.list()
+	result := make([]RecorderInfo, 0, len(conns))
+	for _, rc := range conns {
 		result = append(result, RecorderInfo{
 			DeviceID:    rc.DeviceID,
 			RemoteIP:    rc.RemoteIP,
