@@ -7,8 +7,10 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -45,6 +47,7 @@ type episodeRow struct {
 	CloudProcessed     bool            `db:"cloud_processed"`
 	CloudSyncedAt      sql.NullTime    `db:"cloud_synced_at"`
 	CreatedAt          time.Time       `db:"created_at"`
+	LabelsJSON         sql.NullString  `db:"labels"`
 }
 
 // Episode represents an episode in the API response
@@ -63,6 +66,7 @@ type Episode struct {
 	CloudProcessed     bool     `json:"cloud_processed"`
 	CloudSyncedAt      *string  `json:"cloud_synced_at"`
 	CreatedAt          string   `json:"created_at"`
+	Labels             []string `json:"labels"`
 }
 
 // EpisodeListResponse represents the response for listing episodes
@@ -104,6 +108,21 @@ func nullableTime(value sql.NullTime) *string {
 
 	v := value.Time.UTC().Format(time.RFC3339)
 	return &v
+}
+
+// episodeLabelsFromDB parses episodes.labels JSON (string array). Invalid or empty yields empty slice.
+func episodeLabelsFromDB(ns sql.NullString) []string {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return []string{}
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(ns.String), &out); err != nil {
+		return []string{}
+	}
+	if out == nil {
+		return []string{}
+	}
+	return out
 }
 
 // ListEpisodes returns a list of episodes with filtering and pagination
@@ -152,7 +171,8 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			COALESCE(e.qa_score, 0) as qa_score,
 			e.auto_approved,
 			e.cloud_processed,
-			e.created_at
+			e.created_at,
+			e.labels
 		FROM episodes e
 		WHERE e.deleted_at IS NULL
 	`
@@ -250,6 +270,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			CloudProcessed:     r.CloudProcessed,
 			CloudSyncedAt:      nullableTime(r.CloudSyncedAt),
 			CreatedAt:          r.CreatedAt.UTC().Format(time.RFC3339),
+			Labels:             episodeLabelsFromDB(r.LabelsJSON),
 		}
 	}
 
@@ -292,7 +313,8 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			i.inspected_at,
 			e.cloud_processed,
 			e.cloud_synced_at,
-			e.created_at
+			e.created_at,
+			e.labels
 		FROM episodes e
 		LEFT JOIN inspections i ON i.episode_id = e.id
 		LEFT JOIN inspectors ins ON ins.id = i.inspector_id
@@ -327,5 +349,6 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		CloudProcessed:     row.CloudProcessed,
 		CloudSyncedAt:      nullableTime(row.CloudSyncedAt),
 		CreatedAt:          row.CreatedAt.UTC().Format(time.RFC3339),
+		Labels:             episodeLabelsFromDB(row.LabelsJSON),
 	})
 }

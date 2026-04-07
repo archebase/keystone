@@ -57,6 +57,15 @@ type RobotListResponse struct {
 	Robots []RobotResponse `json:"robots"`
 }
 
+// DeviceConnectionResponse is an in-memory connection snapshot keyed by Axon device_id (no database access).
+type DeviceConnectionResponse struct {
+	DeviceID          string `json:"device_id"`
+	Connected         bool   `json:"connected"`
+	ConnectedAt       string `json:"connected_at,omitempty"`
+	RecorderConnected bool   `json:"recorder_connected"`
+	TransferConnected bool   `json:"transfer_connected"`
+}
+
 // CreateRobotRequest represents the request body for creating a robot.
 type CreateRobotRequest struct {
 	RobotTypeID string      `json:"robot_type_id"`
@@ -83,6 +92,7 @@ type CreateRobotResponse struct {
 func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robots", h.ListRobots)
 	apiV1.POST("/robots", h.CreateRobot)
+	apiV1.GET("/devices/:device_id/connection", h.GetDeviceConnection)
 	apiV1.GET("/robots/:id", h.GetRobot)
 	apiV1.PUT("/robots/:id", h.UpdateRobot)
 	apiV1.DELETE("/robots/:id", h.DeleteRobot)
@@ -109,20 +119,32 @@ func robotMetadataFromDB(ns sql.NullString) interface{} {
 }
 
 func (h *RobotHandler) connectionState(deviceID string) (connected bool, connectedAt string) {
+	connected, connectedAt, _, _ = h.connectionStateDetailed(deviceID)
+	return connected, connectedAt
+}
+
+// connectionStateDetailed returns hub presence for recorder and transfer (no DB).
+func (h *RobotHandler) connectionStateDetailed(deviceID string) (connected bool, connectedAt string, recorderConnected bool, transferConnected bool) {
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return false, "", false, false
+	}
 	if h.recorderHub == nil || h.transferHub == nil {
-		return false, ""
+		return false, "", false, false
 	}
 	recConn := h.recorderHub.Get(deviceID)
 	transConn := h.transferHub.Get(deviceID)
-	connected = recConn != nil && transConn != nil
+	recorderConnected = recConn != nil
+	transferConnected = transConn != nil
+	connected = recorderConnected && transferConnected
 	if !connected {
-		return false, ""
+		return false, "", recorderConnected, transferConnected
 	}
 	t := recConn.ConnectedAt
 	if transConn.ConnectedAt.After(t) {
 		t = transConn.ConnectedAt
 	}
-	return true, t.UTC().Format(time.RFC3339)
+	return true, t.UTC().Format(time.RFC3339), recorderConnected, transferConnected
 }
 
 func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
@@ -402,6 +424,34 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		Metadata:    resp.Metadata,
 		CreatedAt:   resp.CreatedAt,
 		UpdatedAt:   resp.UpdatedAt,
+	})
+}
+
+// GetDeviceConnection returns recorder+transfer WebSocket presence for a device_id without touching the database.
+//
+// @Summary      Device connection status
+// @Description  In-memory connection snapshot (RecorderHub + TransferHub). Same rules as GET /robots/:id field `connected`.
+// @Tags         robots
+// @Accept       json
+// @Produce      json
+// @Param        device_id  path  string  true  "Axon device id"
+// @Success      200  {object}  DeviceConnectionResponse
+// @Failure      400  {object}  map[string]string
+// @Router       /devices/{device_id}/connection [get]
+func (h *RobotHandler) GetDeviceConnection(c *gin.Context) {
+	raw := c.Param("device_id")
+	deviceID := strings.TrimSpace(raw)
+	if deviceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "device_id is required"})
+		return
+	}
+	connected, connectedAt, rec, trans := h.connectionStateDetailed(deviceID)
+	c.JSON(http.StatusOK, DeviceConnectionResponse{
+		DeviceID:          deviceID,
+		Connected:         connected,
+		ConnectedAt:       connectedAt,
+		RecorderConnected: rec,
+		TransferConnected: trans,
 	})
 }
 

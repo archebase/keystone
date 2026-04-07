@@ -70,6 +70,7 @@ func stationMetadataFromDB(ns sql.NullString) interface{} {
 
 // RegisterRoutes registers station related routes.
 func (h *StationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/stations/lookup", h.LookupStations)
 	apiV1.POST("/stations", h.CreateStation)
 	apiV1.GET("/stations", h.ListStations)
 	apiV1.GET("/stations/:id", h.GetStation)
@@ -285,7 +286,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		dcInfo.OperatorID, // collector_operator_id
 		robotInfo.FactoryID,
 		req.Name,
-		"inactive",
+		"offline",
 		metadataStr,
 		createdAt,
 		createdAt,
@@ -316,7 +317,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		RobotID:         fmt.Sprintf("%d", robotInfo.ID),
 		DataCollectorID: fmt.Sprintf("%d", dcInfo.ID),
 		FactoryID:       fmt.Sprintf("%d", robotInfo.FactoryID),
-		Status:          "inactive",
+		Status:          "offline",
 		Name:            req.Name,
 		Metadata:        metaOut,
 		CreatedAt:       createdAtISO.Format(time.RFC3339),
@@ -384,7 +385,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		}
 
 		response = append(response, StationResponse{
-			ID:              fmt.Sprintf("ws_%d", s.ID),
+			ID:              fmt.Sprintf("%d", s.ID),
 			RobotID:         fmt.Sprintf("%d", s.RobotID),
 			DataCollectorID: fmt.Sprintf("%d", s.DataCollectorID),
 			FactoryID:       fmt.Sprintf("%d", s.FactoryID),
@@ -399,12 +400,181 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"stations": response})
 }
 
+const maxStationLookupIDs = 500
+
+// LookupStationsRequest is the body for POST /stations/lookup.
+type LookupStationsRequest struct {
+	WorkstationIDs []any `json:"workstation_ids"`
+}
+
+// StationLookupItem is a workstation snapshot for admin/history views (includes soft-deleted rows).
+type StationLookupItem struct {
+	ID                  string `json:"id"`
+	RobotID             string `json:"robot_id"`
+	DataCollectorID     string `json:"data_collector_id"`
+	FactoryID           string `json:"factory_id"`
+	Name                string `json:"name"`
+	Status              string `json:"status"`
+	RobotName           string `json:"robot_name,omitempty"`
+	RobotSerial         string `json:"robot_serial,omitempty"`
+	CollectorName       string `json:"collector_name,omitempty"`
+	CollectorOperatorID string `json:"collector_operator_id,omitempty"`
+	Deleted             bool   `json:"deleted"`
+}
+
+func parseWorkstationIDFromLookupAny(v any) (int64, bool) {
+	if v == nil {
+		return 0, false
+	}
+	switch x := v.(type) {
+	case float64:
+		if x < 1 || x != float64(int64(x)) {
+			return 0, false
+		}
+		return int64(x), true
+	case string:
+		s := strings.TrimSpace(x)
+		s = strings.TrimPrefix(strings.TrimPrefix(s, "ws_"), "WS_")
+		if s == "" {
+			return 0, false
+		}
+		id, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || id <= 0 {
+			return 0, false
+		}
+		return id, true
+	case json.Number:
+		id, err := strconv.ParseInt(strings.TrimSpace(string(x)), 10, 64)
+		if err != nil || id <= 0 {
+			return 0, false
+		}
+		return id, true
+	default:
+		return 0, false
+	}
+}
+
+// LookupStations returns workstation snapshots by id, including soft-deleted rows.
+func (h *StationHandler) LookupStations(c *gin.Context) {
+	var req LookupStationsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if len(req.WorkstationIDs) == 0 {
+		c.JSON(http.StatusOK, gin.H{"stations": []StationLookupItem{}})
+		return
+	}
+
+	seen := make(map[int64]struct{})
+	ids := make([]int64, 0, len(req.WorkstationIDs))
+	for _, raw := range req.WorkstationIDs {
+		id, ok := parseWorkstationIDFromLookupAny(raw)
+		if !ok {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+		if len(ids) >= maxStationLookupIDs {
+			break
+		}
+	}
+	if len(ids) == 0 {
+		c.JSON(http.StatusOK, gin.H{"stations": []StationLookupItem{}})
+		return
+	}
+
+	query, args, err := sqlx.In(`
+		SELECT
+			id, robot_id,
+			COALESCE(robot_name, '') AS robot_name,
+			COALESCE(robot_serial, '') AS robot_serial,
+			data_collector_id,
+			COALESCE(collector_name, '') AS collector_name,
+			COALESCE(collector_operator_id, '') AS collector_operator_id,
+			factory_id,
+			name, status,
+			deleted_at
+		FROM workstations
+		WHERE id IN (?)
+	`, ids)
+	if err != nil {
+		logger.Printf("[STATION] Failed to build lookup query: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to lookup stations"})
+		return
+	}
+	query = h.db.Rebind(query)
+
+	type lookupRow struct {
+		ID                  int64          `db:"id"`
+		RobotID             int64          `db:"robot_id"`
+		RobotName           string         `db:"robot_name"`
+		RobotSerial         string         `db:"robot_serial"`
+		DataCollectorID     int64          `db:"data_collector_id"`
+		CollectorName       string         `db:"collector_name"`
+		CollectorOperatorID string         `db:"collector_operator_id"`
+		FactoryID           int64          `db:"factory_id"`
+		Name                sql.NullString `db:"name"`
+		Status              string         `db:"status"`
+		DeletedAt           sql.NullTime   `db:"deleted_at"`
+	}
+
+	var rows []lookupRow
+	if err := h.db.Select(&rows, query, args...); err != nil {
+		logger.Printf("[STATION] Failed to lookup stations: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to lookup stations"})
+		return
+	}
+
+	out := make([]StationLookupItem, 0, len(rows))
+	for _, r := range rows {
+		name := ""
+		if r.Name.Valid {
+			name = strings.TrimSpace(r.Name.String)
+		}
+		out = append(out, StationLookupItem{
+			ID:                  fmt.Sprintf("%d", r.ID),
+			RobotID:             fmt.Sprintf("%d", r.RobotID),
+			DataCollectorID:     fmt.Sprintf("%d", r.DataCollectorID),
+			FactoryID:           fmt.Sprintf("%d", r.FactoryID),
+			Name:                name,
+			Status:              r.Status,
+			RobotName:           strings.TrimSpace(r.RobotName),
+			RobotSerial:         strings.TrimSpace(r.RobotSerial),
+			CollectorName:       strings.TrimSpace(r.CollectorName),
+			CollectorOperatorID: strings.TrimSpace(r.CollectorOperatorID),
+			Deleted:             r.DeletedAt.Valid,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"stations": out})
+}
+
 // validStationStatuses contains all valid station status values
 var validStationStatuses = map[string]bool{
 	"active":   true,
 	"inactive": true,
 	"break":    true,
 	"offline":  true,
+}
+
+// parseStationPathID parses a station id from the URL path (decimal string, e.g. "12").
+func parseStationPathID(stationIDStr string) (int64, error) {
+	s := strings.TrimSpace(stationIDStr)
+	if s == "" {
+		return 0, fmt.Errorf("empty station id")
+	}
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if id <= 0 {
+		return 0, fmt.Errorf("station id must be positive")
+	}
+	return id, nil
 }
 
 // UpdateStation handles updating a station's status.
@@ -414,7 +584,7 @@ var validStationStatuses = map[string]bool{
 // @Tags         stations
 // @Accept       json
 // @Produce      json
-// @Param        id      path      string               true  "Station ID (e.g., ws_001)"
+// @Param        id      path      string               true  "Station ID (numeric, e.g. 1)"
 // @Param        body    body      UpdateStationRequest true  "Status update payload"
 // @Success      200     {object}  StationResponse
 // @Failure      400     {object}  map[string]string
@@ -424,17 +594,9 @@ var validStationStatuses = map[string]bool{
 func (h *StationHandler) UpdateStation(c *gin.Context) {
 	stationIDStr := c.Param("id")
 
-	// Parse station ID (format: ws_XXX)
-	if !strings.HasPrefix(stationIDStr, "ws_") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
-		return
-	}
-
-	idStr := strings.TrimPrefix(stationIDStr, "ws_")
-	var stationID int64
-	_, err := fmt.Sscanf(idStr, "%d", &stationID)
+	stationID, err := parseStationPathID(stationIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected numeric id"})
 		return
 	}
 
@@ -699,7 +861,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 // @Tags         stations
 // @Accept       json
 // @Produce      json
-// @Param        id   path      string  true  "Station ID (e.g., ws_001)"
+// @Param        id   path      string  true  "Station ID (numeric, e.g., 1)"
 // @Success      200  {object}  StationResponse
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
@@ -708,17 +870,9 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 func (h *StationHandler) GetStation(c *gin.Context) {
 	stationIDStr := c.Param("id")
 
-	// Parse station ID (format: ws_XXX)
-	if !strings.HasPrefix(stationIDStr, "ws_") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
-		return
-	}
-
-	idStr := strings.TrimPrefix(stationIDStr, "ws_")
-	var stationID int64
-	_, err := fmt.Sscanf(idStr, "%d", &stationID)
+	stationID, err := parseStationPathID(stationIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected numeric id"})
 		return
 	}
 
@@ -751,7 +905,7 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, StationResponse{
-		ID:              fmt.Sprintf("ws_%d", station.ID),
+		ID:              fmt.Sprintf("%d", station.ID),
 		RobotID:         fmt.Sprintf("%d", station.RobotID),
 		DataCollectorID: fmt.Sprintf("%d", station.DataCollectorID),
 		FactoryID:       fmt.Sprintf("%d", station.FactoryID),
@@ -770,26 +924,19 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 // @Tags         stations
 // @Accept       json
 // @Produce      json
-// @Param        id path     string  true  "Station ID (e.g., ws_001)"
+// @Param        id path     string  true  "Station ID (numeric, e.g. 1)"
 // @Success      204
 // @Failure      400 {object} map[string]string
 // @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /stations/{id} [delete]
 func (h *StationHandler) DeleteStation(c *gin.Context) {
 	stationIDStr := c.Param("id")
 
-	// Parse station ID (format: ws_XXX)
-	if !strings.HasPrefix(stationIDStr, "ws_") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
-		return
-	}
-
-	idStr := strings.TrimPrefix(stationIDStr, "ws_")
-	var stationID int64
-	_, err := fmt.Sscanf(idStr, "%d", &stationID)
+	stationID, err := parseStationPathID(stationIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected ws_XXX"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid station ID format, expected numeric id"})
 		return
 	}
 
@@ -804,6 +951,26 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "station not found"})
+		return
+	}
+
+	var hasBlockingBatch bool
+	err = h.db.Get(&hasBlockingBatch, `
+		SELECT EXISTS(
+			SELECT 1 FROM batches
+			WHERE workstation_id = ? AND deleted_at IS NULL
+			  AND status IN ('pending', 'active')
+		)
+	`, stationID)
+	if err != nil {
+		logger.Printf("[STATION] Failed to check batches for station %d: %v", stationID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete station"})
+		return
+	}
+	if hasBlockingBatch {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "cannot delete station while batches are pending or active",
+		})
 		return
 	}
 

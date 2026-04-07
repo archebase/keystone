@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -164,6 +165,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	rc := h.hub.NewRecorderConn(conn, deviceID, remoteIP)
 	h.hub.Connect(deviceID, rc)
 	defer h.hub.Disconnect(deviceID)
+	defer revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, nil, 0, false)
 
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[RECORDER] Recorder %s connected from %s", deviceID, remoteIP)
@@ -206,7 +208,40 @@ func (h *RecorderHandler) Config(c *gin.Context) {
 	if !ok {
 		return
 	}
-	h.callRPC(c, "config", params)
+
+	var taskID string
+	if params != nil {
+		if tc, ok := params["task_config"].(map[string]interface{}); ok {
+			taskID, _ = tc["task_id"].(string)
+			taskID = strings.TrimSpace(taskID)
+		}
+	}
+
+	if !h.callRPC(c, "config", params) {
+		return
+	}
+
+	// If RPC succeeded (HTTP 200), advance task status: pending -> ready.
+	// This is best-effort; failures should not change the RPC response.
+	if taskID != "" && h.db != nil {
+		now := time.Now().UTC()
+		res, err := h.db.Exec(
+			`UPDATE tasks
+			 SET
+			   status = 'ready',
+			   ready_at = CASE WHEN ready_at IS NULL THEN ? ELSE ready_at END,
+			   updated_at = ?
+			 WHERE task_id = ? AND status = 'pending' AND deleted_at IS NULL`,
+			now, now, taskID,
+		)
+		if err != nil {
+			logger.Printf("[RECORDER] Device %s: failed to advance task pending->ready after config: task=%s err=%v", c.Param("device_id"), taskID, err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			logger.Printf("[RECORDER] Device %s: task pending->ready skipped after config (not found or not pending): task=%s", c.Param("device_id"), taskID)
+		}
+	}
 }
 
 // Begin sends begin recording RPC to the recorder.
@@ -228,7 +263,38 @@ func (h *RecorderHandler) Begin(c *gin.Context) {
 	if !ok {
 		return
 	}
-	h.callRPC(c, "begin", params)
+
+	var taskID string
+	if params != nil {
+		if v, ok := params["task_id"].(string); ok {
+			taskID = strings.TrimSpace(v)
+		}
+	}
+
+	if !h.callRPC(c, "begin", params) {
+		return
+	}
+
+	// If RPC succeeded (HTTP 200), advance task status: ready -> in_progress.
+	if taskID != "" && h.db != nil {
+		now := time.Now().UTC()
+		res, err := h.db.Exec(
+			`UPDATE tasks
+			 SET
+			   status = 'in_progress',
+			   started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END,
+			   updated_at = ?
+			 WHERE task_id = ? AND status = 'ready' AND deleted_at IS NULL`,
+			now, now, taskID,
+		)
+		if err != nil {
+			logger.Printf("[RECORDER] Device %s: failed to advance task ready->in_progress after begin: task=%s err=%v", c.Param("device_id"), taskID, err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			logger.Printf("[RECORDER] Device %s: task ready->in_progress skipped after begin (not found or not ready): task=%s", c.Param("device_id"), taskID)
+		}
+	}
 }
 
 // Finish sends finish recording RPC to the recorder.
@@ -290,7 +356,7 @@ func (h *RecorderHandler) Resume(c *gin.Context) {
 // Cancel sends cancel RPC to the recorder.
 //
 // @Summary      Cancel recording
-// @Description  Sends cancel RPC to the Axon recorder
+// @Description  Sends cancel RPC to the Axon recorder. If task_id is provided and the RPC succeeds, sets task status from ready or in_progress back to pending (other statuses are left unchanged). Does not advance batch status.
 // @Tags         recorder
 // @Accept       json
 // @Produce      json
@@ -301,24 +367,98 @@ func (h *RecorderHandler) Resume(c *gin.Context) {
 // @Failure      504  {object}  map[string]interface{}
 // @Router       /recorder/{device_id}/cancel [post]
 func (h *RecorderHandler) Cancel(c *gin.Context) {
-	h.callRPC(c, "cancel", nil)
+	params, ok := h.bindOptionalParams(c)
+	if !ok {
+		return
+	}
+
+	var taskID string
+	if params != nil {
+		if v, ok := params["task_id"].(string); ok {
+			taskID = strings.TrimSpace(v)
+		}
+	}
+
+	if !h.callRPC(c, "cancel", params) {
+		return
+	}
+
+	// If RPC succeeded (HTTP 200), only when the task is ready or in_progress: revert to pending.
+	// Best-effort: failures should not change the RPC response.
+	if taskID != "" && h.db != nil {
+		deviceID := c.Param("device_id")
+		now := time.Now().UTC()
+		res, err := h.db.Exec(
+			`UPDATE tasks
+			 SET
+			   status = 'pending',
+			   updated_at = ?
+			 WHERE task_id = ? AND status IN ('ready', 'in_progress') AND deleted_at IS NULL`,
+			now, taskID,
+		)
+		if err != nil {
+			logger.Printf("[RECORDER] Device %s: failed to revert task after cancel RPC: task=%s err=%v", deviceID, taskID, err)
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			logger.Printf("[RECORDER] Device %s: task revert skipped after cancel RPC (not found or not ready/in_progress): task=%s", deviceID, taskID)
+		}
+	}
 }
 
 // Clear sends clear RPC to the recorder.
 //
 // @Summary      Clear recorder
-// @Description  Sends clear RPC to the Axon recorder
+// @Description  Sends clear RPC to the Axon recorder. If task_id is provided and the RPC succeeds, it will revert task status from ready to pending.
 // @Tags         recorder
 // @Accept       json
 // @Produce      json
 // @Param        device_id  path  string  true  "Recorder device ID"
-// @Param        body       body  object  false  "Empty body"
+// @Param        body       body  object  false  "Optional body (supports task_id)"
 // @Success      200  {object}  map[string]interface{}
 // @Failure      404  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}
 // @Failure      504  {object}  map[string]interface{}
 // @Router       /recorder/{device_id}/clear [post]
 func (h *RecorderHandler) Clear(c *gin.Context) {
-	h.callRPC(c, "clear", nil)
+	params, ok := h.bindOptionalParams(c)
+	if !ok {
+		return
+	}
+
+	var taskID string
+	if params != nil {
+		if v, ok := params["task_id"].(string); ok {
+			taskID = strings.TrimSpace(v)
+		}
+	}
+
+	// Do not forward params to recorder; keep RPC payload stable.
+	if !h.callRPC(c, "clear", nil) {
+		return
+	}
+
+	// If RPC succeeded (HTTP 200), revert task status: ready -> pending.
+	// Best-effort: failures should not change the RPC response.
+	if taskID != "" && h.db != nil {
+		now := time.Now().UTC()
+		res, err := h.db.Exec(
+			`UPDATE tasks
+			 SET
+			   status = 'pending',
+			   updated_at = ?
+			 WHERE task_id = ? AND status = 'ready' AND deleted_at IS NULL`,
+			now, taskID,
+		)
+		if err != nil {
+			logger.Printf("[RECORDER] Device %s: failed to revert task ready->pending after clear: task=%s err=%v", c.Param("device_id"), taskID, err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			logger.Printf("[RECORDER] Device %s: task ready->pending skipped after clear (not found or not ready): task=%s", c.Param("device_id"), taskID)
+		}
+	}
 }
 
 // Quit sends quit RPC to the recorder.
@@ -346,19 +486,56 @@ func (h *RecorderHandler) Quit(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        device_id  path  string  true  "Recorder device ID"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      404  {object}  map[string]interface{}
+// @Success      200  {object}  map[string]interface{}  "connected + data (optional error when device reports failure)"
 // @Failure      504  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
 // @Router       /recorder/{device_id}/stats [get]
 func (h *RecorderHandler) GetStats(c *gin.Context) {
-	h.callRPC(c, "get_stats", nil)
-}
-
-func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[string]interface{}) {
 	deviceID := c.Param("device_id")
 	if deviceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "device_id is required"})
 		return
+	}
+	if h.hub.Get(deviceID) == nil {
+		c.JSON(http.StatusOK, disconnectedRecorderStatsResponse())
+		return
+	}
+
+	response, err := h.hub.SendRPC(c.Request.Context(), deviceID, "get_stats", nil, time.Duration(h.cfg.ResponseTimeout)*time.Second)
+	if err != nil {
+		switch {
+		case errors.Is(err, services.ErrRecorderNotConnected):
+			c.JSON(http.StatusOK, disconnectedRecorderStatsResponse())
+		case errors.Is(err, services.ErrRecorderRPCTimeout):
+			c.JSON(http.StatusGatewayTimeout, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	out := gin.H{
+		"connected": true,
+		"data":      response.Data,
+	}
+	if !response.Success && strings.TrimSpace(response.Message) != "" {
+		out["error"] = response.Message
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func disconnectedRecorderStatsResponse() gin.H {
+	return gin.H{
+		"connected": false,
+		"data":      map[string]interface{}{},
+	}
+}
+
+func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[string]interface{}) bool {
+	deviceID := c.Param("device_id")
+	if deviceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "device_id is required"})
+		return false
 	}
 
 	response, err := h.hub.SendRPC(c.Request.Context(), deviceID, action, params, time.Duration(h.cfg.ResponseTimeout)*time.Second)
@@ -371,10 +548,11 @@ func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[stri
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		return
+		return false
 	}
 
 	c.JSON(http.StatusOK, response)
+	return true
 }
 
 func (h *RecorderHandler) bindOptionalParams(c *gin.Context) (map[string]interface{}, bool) {
@@ -411,17 +589,38 @@ func (h *RecorderHandler) ListDevices(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        device_id  path  string  true  "Recorder device ID"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      404  {object}  map[string]interface{}
+// @Success      200  {object}  map[string]interface{}  "connected=false when recorder WS is not active"
 // @Router       /recorder/{device_id}/state [get]
 func (h *RecorderHandler) GetState(c *gin.Context) {
 	deviceID := c.Param("device_id")
 	rc := h.hub.Get(deviceID)
 	if rc == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": services.ErrRecorderNotConnected.Error()})
+		c.JSON(http.StatusOK, gin.H{
+			"connected":      false,
+			"current_state":  "unknown",
+			"previous_state": "",
+			"task_id":        "",
+			"updated_at":     time.Now().UTC(),
+		})
 		return
 	}
-	c.JSON(http.StatusOK, rc.GetState())
+	st := rc.GetState()
+	prev := recorderPreviousStateFromRaw(st.Raw)
+	c.JSON(http.StatusOK, gin.H{
+		"connected":      true,
+		"current_state":  st.CurrentState,
+		"previous_state": prev,
+		"task_id":        st.TaskID,
+		"updated_at":     st.UpdatedAt,
+	})
+}
+
+func recorderPreviousStateFromRaw(raw map[string]interface{}) string {
+	if raw == nil {
+		return ""
+	}
+	s, _ := raw["previous"].(string)
+	return strings.TrimSpace(s)
 }
 
 func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderConn, msg map[string]interface{}) {
@@ -461,66 +660,8 @@ func (h *RecorderHandler) handleStateUpdate(rc *services.RecorderConn, msg map[s
 		Raw:          data,
 	}
 	rc.UpdateState(state)
-	h.syncTaskStatusFromRecorderState(rc.DeviceID, stringValue(data, "previous"), state.CurrentState, state.TaskID)
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[RECORDER] Recorder %s state=%s task=%s", rc.DeviceID, state.CurrentState, state.TaskID)
-}
-
-func (h *RecorderHandler) syncTaskStatusFromRecorderState(deviceID, previousState, currentState, taskID string) {
-	if h.db == nil {
-		return
-	}
-	if taskID == "" {
-		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s state update missing task_id, skip task sync", deviceID)
-		return
-	}
-
-	taskStatus, ok := recorderStateToTaskStatus(currentState)
-	if !ok {
-		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s state update ignored: previous=%s current=%s task=%s", deviceID, previousState, currentState, taskID)
-		return
-	}
-
-	now := time.Now()
-	result, err := h.db.Exec(
-		"UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ? AND deleted_at IS NULL",
-		taskStatus, now, taskID,
-	)
-	if err != nil {
-		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s failed to sync task status: task=%s status=%s error=%v", deviceID, taskID, taskStatus, err)
-		return
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s failed to check sync result: task=%s error=%v", deviceID, taskID, err)
-		return
-	}
-	if rowsAffected == 0 {
-		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s task sync skipped, task not found: task=%s status=%s", deviceID, taskID, taskStatus)
-		return
-	}
-
-	// #nosec G706 -- Set aside for now
-	logger.Printf("[RECORDER] Recorder %s synced task status from state_update: task=%s previous=%s current=%s mapped_status=%s", deviceID, taskID, previousState, currentState, taskStatus)
-}
-
-func recorderStateToTaskStatus(state string) (string, bool) {
-	switch state {
-	case "ready":
-		return "ready", true
-	case "recording", "paused":
-		return "in_progress", true
-	case "finished", "idle":
-		return "completed", true
-	default:
-		return "", false
-	}
 }
 
 func (h *RecorderHandler) pingLoop(ctx context.Context, conn *websocket.Conn) {

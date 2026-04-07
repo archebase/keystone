@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -14,18 +15,22 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
 
 // OrderHandler handles order-related HTTP requests.
 type OrderHandler struct {
-	db *sqlx.DB
+	db                 *sqlx.DB
+	recorderHub        *services.RecorderHub
+	recorderRPCTimeout time.Duration
 }
 
 // NewOrderHandler creates a new OrderHandler.
-func NewOrderHandler(db *sqlx.DB) *OrderHandler {
-	return &OrderHandler{db: db}
+// recorderHub may be nil (skips Axon cancel RPCs after finalizing open batches when an order is completed via target_count).
+func NewOrderHandler(db *sqlx.DB, recorderHub *services.RecorderHub, recorderRPCTimeout time.Duration) *OrderHandler {
+	return &OrderHandler{db: db, recorderHub: recorderHub, recorderRPCTimeout: recorderRPCTimeout}
 }
 
 // RegisterRoutes registers order routes under the provided router group.
@@ -48,7 +53,10 @@ type OrderResponse struct {
 	SceneID        string `json:"scene_id"`
 	Name           string `json:"name"`
 	TargetCount    int    `json:"target_count"`
+	TaskCount      int    `json:"task_count"`
 	CompletedCount int    `json:"completed_count"`
+	CancelledCount int    `json:"cancelled_count"`
+	FailedCount    int    `json:"failed_count"`
 	Status         string `json:"status"`
 	Priority       string `json:"priority"`
 	Deadline       string `json:"deadline,omitempty"`
@@ -85,7 +93,10 @@ type orderRow struct {
 	SceneID        int64          `db:"scene_id"`
 	Name           string         `db:"name"`
 	TargetCount    int            `db:"target_count"`
+	TaskCount      int            `db:"task_count"`
 	CompletedCount int            `db:"completed_count"`
+	CancelledCount int            `db:"cancelled_count"`
+	FailedCount    int            `db:"failed_count"`
 	Status         string         `db:"status"`
 	Priority       string         `db:"priority"`
 	Deadline       sql.NullTime   `db:"deadline"`
@@ -123,7 +134,10 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			CAST(o.metadata AS CHAR) AS metadata,
 			o.created_at,
 			o.updated_at,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'completed' AND t.deleted_at IS NULL) AS completed_count
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL) AS task_count,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'completed' AND t.deleted_at IS NULL) AS completed_count,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'cancelled' AND t.deleted_at IS NULL) AS cancelled_count,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'failed' AND t.deleted_at IS NULL) AS failed_count
 		FROM orders o
 		WHERE o.deleted_at IS NULL
 		ORDER BY o.id DESC
@@ -162,7 +176,10 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			SceneID:        fmt.Sprintf("%d", r.SceneID),
 			Name:           r.Name,
 			TargetCount:    r.TargetCount,
+			TaskCount:      r.TaskCount,
 			CompletedCount: r.CompletedCount,
+			CancelledCount: r.CancelledCount,
+			FailedCount:    r.FailedCount,
 			Status:         r.Status,
 			Priority:       r.Priority,
 			Deadline:       deadline,
@@ -196,7 +213,10 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 			CAST(o.metadata AS CHAR) AS metadata,
 			o.created_at,
 			o.updated_at,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'completed' AND t.deleted_at IS NULL) AS completed_count
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL) AS task_count,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'completed' AND t.deleted_at IS NULL) AS completed_count,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'cancelled' AND t.deleted_at IS NULL) AS cancelled_count,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'failed' AND t.deleted_at IS NULL) AS failed_count
 		FROM orders o
 		WHERE o.id = ? AND o.deleted_at IS NULL
 	`
@@ -237,7 +257,10 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 		SceneID:        fmt.Sprintf("%d", r.SceneID),
 		Name:           r.Name,
 		TargetCount:    r.TargetCount,
+		TaskCount:      r.TaskCount,
 		CompletedCount: r.CompletedCount,
+		CancelledCount: r.CancelledCount,
+		FailedCount:    r.FailedCount,
 		Status:         r.Status,
 		Priority:       r.Priority,
 		Deadline:       deadline,
@@ -386,7 +409,10 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		SceneID:        fmt.Sprintf("%d", sceneID),
 		Name:           req.Name,
 		TargetCount:    req.TargetCount,
+		TaskCount:      0,
 		CompletedCount: 0,
+		CancelledCount: 0,
+		FailedCount:    0,
 		Status:         "created",
 		Priority:       req.Priority,
 		Deadline:       deadlineOut,
@@ -451,13 +477,39 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 		args = append(args, sceneID)
 	}
 
+	var autoStatusFromTarget *string
 	if req.TargetCount != nil {
 		if *req.TargetCount <= 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "target_count must be > 0"})
 			return
 		}
+		type orderTargetCtx struct {
+			Status         string `db:"status"`
+			CompletedCount int    `db:"completed_count"`
+		}
+		var octx orderTargetCtx
+		if err := h.db.Get(&octx, `
+			SELECT o.status,
+				(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL AND t.status = 'completed') AS completed_count
+			FROM orders o WHERE o.id = ? AND o.deleted_at IS NULL`, id); err != nil {
+			logger.Printf("[ORDER] Failed to load order for target_count update: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update order"})
+			return
+		}
+		if *req.TargetCount < octx.CompletedCount {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target_count cannot be less than completed_count"})
+			return
+		}
 		updates = append(updates, "target_count = ?")
 		args = append(args, *req.TargetCount)
+		switch {
+		case *req.TargetCount == octx.CompletedCount && octx.Status != "cancelled" && octx.Status != "completed":
+			s := "completed"
+			autoStatusFromTarget = &s
+		case octx.Status == "completed" && *req.TargetCount > octx.CompletedCount:
+			s := "in_progress"
+			autoStatusFromTarget = &s
+		}
 	}
 
 	if req.Name != nil {
@@ -519,7 +571,10 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 		args = append(args, priority)
 	}
 
-	if req.Status != nil {
+	if autoStatusFromTarget != nil {
+		updates = append(updates, "status = ?")
+		args = append(args, *autoStatusFromTarget)
+	} else if req.Status != nil {
 		status := strings.TrimSpace(*req.Status)
 		if status == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "status cannot be empty"})
@@ -543,10 +598,45 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 	args = append(args, now, id)
 
 	query := fmt.Sprintf("UPDATE orders SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
-	if _, err := h.db.Exec(query, args...); err != nil {
-		logger.Printf("[ORDER] Failed to update order: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update order"})
-		return
+	if autoStatusFromTarget != nil && *autoStatusFromTarget == "completed" {
+		tx, err := h.db.Beginx()
+		if err != nil {
+			logger.Printf("[ORDER] Failed to begin tx for order update: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update order"})
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(query, args...); err != nil {
+			logger.Printf("[ORDER] Failed to update order: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update order"})
+			return
+		}
+		orderFinalizeRecorderNotifies, finErr := finalizeOpenBatchesAfterOrderCompletedTx(tx, id, now)
+		if finErr != nil {
+			logger.Printf("[ORDER] Failed to finalize open batches after order completed via target_count: %v", finErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update order"})
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			logger.Printf("[ORDER] Failed to commit order update: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update order"})
+			return
+		}
+		if len(orderFinalizeRecorderNotifies) > 0 && h.recorderHub != nil {
+			notifies := orderFinalizeRecorderNotifies
+			go func() {
+				ctx := context.Background()
+				for _, n := range notifies {
+					notifyRecorderCancelTasksWithHub(ctx, h.recorderHub, h.recorderRPCTimeout, n.BatchID, n.Rows)
+				}
+			}()
+		}
+	} else {
+		if _, err := h.db.Exec(query, args...); err != nil {
+			logger.Printf("[ORDER] Failed to update order: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update order"})
+			return
+		}
 	}
 
 	h.GetOrder(c)
@@ -614,4 +704,98 @@ func (h *OrderHandler) DeleteOrder(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// tryAdvanceOrderStatus advances order status based on completed tasks count.
+//
+// Rules (completed-only):
+// - created -> in_progress when there is at least one completed task
+// - in_progress -> completed when completed_count == target_count
+//
+// This helper uses its own transaction and is safe to call after task updates commit.
+// recorderHub may be nil (skips Axon clear/cancel RPCs after finalizing open batches).
+func tryAdvanceOrderStatus(db *sqlx.DB, orderID int64, recorderHub *services.RecorderHub, recorderRPCTimeout time.Duration) {
+	tx, err := db.Beginx()
+	if err != nil {
+		logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to begin tx for order %d: %v", orderID, err)
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var orderFinalizeRecorderNotifies []orderCompletionRecorderNotify
+
+	type orderInfo struct {
+		Status      string `db:"status"`
+		TargetCount int    `db:"target_count"`
+	}
+	var info orderInfo
+	if err := tx.Get(&info, "SELECT status, target_count FROM orders WHERE id = ? AND deleted_at IS NULL FOR UPDATE", orderID); err != nil {
+		if err != sql.ErrNoRows {
+			logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to lock order %d: %v", orderID, err)
+		}
+		return
+	}
+
+	// Only auto-advance non-terminal statuses.
+	if info.Status != "created" && info.Status != "in_progress" {
+		return
+	}
+	if info.TargetCount <= 0 {
+		return
+	}
+
+	var completedCount int
+	if err := tx.Get(&completedCount, `
+		SELECT COUNT(*) FROM tasks
+		WHERE order_id = ? AND deleted_at IS NULL AND status = 'completed'
+	`, orderID); err != nil {
+		logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to count completed tasks for order %d: %v", orderID, err)
+		return
+	}
+
+	now := time.Now().UTC()
+
+	if info.Status == "created" && completedCount > 0 {
+		if _, err := tx.Exec(
+			"UPDATE orders SET status = 'in_progress', updated_at = ? WHERE id = ? AND status = 'created' AND deleted_at IS NULL",
+			now, orderID,
+		); err != nil {
+			logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to advance order %d created->in_progress: %v", orderID, err)
+			return
+		}
+		info.Status = "in_progress"
+	}
+
+	if info.Status == "in_progress" && completedCount == info.TargetCount {
+		if _, err := tx.Exec(
+			"UPDATE orders SET status = 'completed', updated_at = ? WHERE id = ? AND status = 'in_progress' AND deleted_at IS NULL",
+			now, orderID,
+		); err != nil {
+			logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to advance order %d in_progress->completed: %v", orderID, err)
+			return
+		}
+		// Close any still-open batches for this order: cancel non-terminal tasks, then mark batches completed.
+		var finErr error
+		orderFinalizeRecorderNotifies, finErr = finalizeOpenBatchesAfterOrderCompletedTx(tx, orderID, now)
+		if finErr != nil {
+			logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to finalize open batches for completed order %d: %v", orderID, finErr)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to commit for order %d: %v", orderID, err)
+		return
+	}
+
+	// Best-effort: after commit, notify Axon recorder for ready/in_progress tasks we cancelled (same as PATCH batch cancel).
+	if len(orderFinalizeRecorderNotifies) > 0 && recorderHub != nil {
+		notifies := orderFinalizeRecorderNotifies
+		go func() {
+			ctx := context.Background()
+			for _, n := range notifies {
+				notifyRecorderCancelTasksWithHub(ctx, recorderHub, recorderRPCTimeout, n.BatchID, n.Rows)
+			}
+		}()
+	}
 }

@@ -117,7 +117,11 @@ func (h *RecorderHub) NewRecorderConn(conn *websocket.Conn, deviceID, remoteIP s
 		RemoteIP:    remoteIP,
 		ConnectedAt: time.Now(),
 		LastSeenAt:  time.Now(),
-		Pending:     make(map[string]*PendingRPC),
+		State: RecorderState{
+			CurrentState: "unknown",
+			UpdatedAt:    time.Now(),
+		},
+		Pending: make(map[string]*PendingRPC),
 	}
 }
 

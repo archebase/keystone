@@ -51,7 +51,6 @@ func NewSkillHandler(db *sqlx.DB) *SkillHandler {
 type SkillResponse struct {
 	ID          string      `json:"id"`
 	Slug        string      `json:"slug"`
-	Name        string      `json:"name"`
 	Description string      `json:"description,omitempty"`
 	Version     string      `json:"version,omitempty"`
 	Metadata    interface{} `json:"metadata,omitempty"`
@@ -67,7 +66,6 @@ type SkillListResponse struct {
 // CreateSkillRequest represents the request body for creating a skill.
 type CreateSkillRequest struct {
 	Slug        string      `json:"slug"`
-	Name        string      `json:"name"`
 	Description string      `json:"description,omitempty"`
 	Version     string      `json:"version,omitempty"`
 	Metadata    interface{} `json:"metadata,omitempty"`
@@ -77,7 +75,6 @@ type CreateSkillRequest struct {
 type CreateSkillResponse struct {
 	ID        string `json:"id"`
 	Slug      string `json:"slug"`
-	Name      string `json:"name"`
 	Version   string `json:"version"`
 	CreatedAt string `json:"created_at"`
 }
@@ -86,7 +83,6 @@ type CreateSkillResponse struct {
 // Metadata uses optionalJSONPatch so JSON null (clear) is distinct from omitting the key (unchanged).
 type UpdateSkillRequest struct {
 	Slug        *string           `json:"slug,omitempty"`
-	Name        *string           `json:"name,omitempty"`
 	Description *string           `json:"description,omitempty"`
 	Version     *string           `json:"version,omitempty"`
 	Metadata    optionalJSONPatch `json:"metadata,omitempty"`
@@ -105,7 +101,6 @@ func (h *SkillHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 type skillRow struct {
 	ID          int64          `db:"id"`
 	Slug        string         `db:"slug"`
-	Name        string         `db:"name"`
 	Description sql.NullString `db:"description"`
 	Version     sql.NullString `db:"version"`
 	Metadata    sql.NullString `db:"metadata"`
@@ -128,7 +123,6 @@ func (h *SkillHandler) ListSkills(c *gin.Context) {
 		SELECT 
 			id,
 			slug,
-			name,
 			description,
 			version,
 			metadata,
@@ -172,7 +166,6 @@ func (h *SkillHandler) ListSkills(c *gin.Context) {
 		skills = append(skills, SkillResponse{
 			ID:          fmt.Sprintf("%d", s.ID),
 			Slug:        s.Slug,
-			Name:        s.Name,
 			Description: description,
 			Version:     version,
 			Metadata:    metadata,
@@ -211,7 +204,6 @@ func (h *SkillHandler) GetSkill(c *gin.Context) {
 		SELECT 
 			id,
 			slug,
-			name,
 			description,
 			version,
 			metadata,
@@ -256,7 +248,6 @@ func (h *SkillHandler) GetSkill(c *gin.Context) {
 	c.JSON(http.StatusOK, SkillResponse{
 		ID:          fmt.Sprintf("%d", s.ID),
 		Slug:        s.Slug,
-		Name:        s.Name,
 		Description: description,
 		Version:     version,
 		Metadata:    metadata,
@@ -285,7 +276,6 @@ func (h *SkillHandler) CreateSkill(c *gin.Context) {
 	}
 
 	req.Slug = strings.TrimSpace(req.Slug)
-	req.Name = strings.TrimSpace(req.Name)
 	req.Description = strings.TrimSpace(req.Description)
 	req.Version = strings.TrimSpace(req.Version)
 
@@ -295,10 +285,6 @@ func (h *SkillHandler) CreateSkill(c *gin.Context) {
 	}
 	if !isValidSlug(req.Slug) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
-		return
-	}
-	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
 
@@ -333,15 +319,13 @@ func (h *SkillHandler) CreateSkill(c *gin.Context) {
 	result, err := h.db.Exec(
 		`INSERT INTO skills (
 			slug,
-			name,
 			description,
 			version,
 			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?)`,
 		req.Slug,
-		req.Name,
 		descriptionStr,
 		version,
 		metadataStr,
@@ -364,7 +348,6 @@ func (h *SkillHandler) CreateSkill(c *gin.Context) {
 	c.JSON(http.StatusCreated, CreateSkillResponse{
 		ID:        fmt.Sprintf("%d", id),
 		Slug:      req.Slug,
-		Name:      req.Name,
 		Version:   version,
 		CreatedAt: now.Format(time.RFC3339),
 	})
@@ -448,14 +431,6 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 		}
 	}
 
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name != "" {
-			updates = append(updates, "name = ?")
-			args = append(args, name)
-		}
-	}
-
 	if req.Description != nil {
 		description := strings.TrimSpace(*req.Description)
 		var descStr sql.NullString
@@ -519,7 +494,7 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 
 	// Fetch the updated skill
 	var s skillRow
-	err = h.db.Get(&s, "SELECT id, slug, name, description, version, metadata, created_at, updated_at FROM skills WHERE id = ?", id)
+	err = h.db.Get(&s, "SELECT id, slug, description, version, metadata, created_at, updated_at FROM skills WHERE id = ?", id)
 	if err != nil {
 		logger.Printf("[SKILL] Failed to fetch updated skill: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated skill"})
@@ -550,7 +525,6 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 	c.JSON(http.StatusOK, SkillResponse{
 		ID:          fmt.Sprintf("%d", s.ID),
 		Slug:        s.Slug,
-		Name:        s.Name,
 		Description: description,
 		Version:     version,
 		Metadata:    metadata,
