@@ -181,6 +181,8 @@ func (h *AuthHandler) LoginCollector(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// Logout acknowledges logout. The client discards the token; if a valid Bearer
+// token is present, the handler best-effort sets the workstation status to offline.
 func (h *AuthHandler) Logout(c *gin.Context) {
 	// MVP logout: client drops token.
 	//
@@ -266,12 +268,12 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"collector_id":    claims.CollectorID,
-		"operator_id":     row.OperatorID,
-		"name":            row.Name,
-		"role":            claims.Role,
-		"workstation_id":  workstationID,
-		"robot_id":        robotID,
+		"collector_id":   claims.CollectorID,
+		"operator_id":    row.OperatorID,
+		"name":           row.Name,
+		"role":           claims.Role,
+		"workstation_id": workstationID,
+		"robot_id":       robotID,
 	})
 }
 

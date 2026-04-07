@@ -618,7 +618,11 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 		logger.Printf("[DEVICE] Device %s: failed to query runnable tasks on disconnect: %v", deviceID, err)
 		return
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			logger.Printf("[DEVICE] Device %s: close rows after disconnect task query: %v", deviceID, cerr)
+		}
+	}()
 
 	type taskRef struct {
 		id      int64

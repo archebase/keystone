@@ -881,10 +881,10 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 	if totalQuantity > remaining {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":           fmt.Sprintf("quota exceeded: target_count=%d, completed_count=%d, remaining=%d, requested=%d", orderQuota.TargetCount, existingCompletedCount, remaining, totalQuantity),
-			"target_count": orderQuota.TargetCount,
+			"target_count":    orderQuota.TargetCount,
 			"completed_count": existingCompletedCount,
-			"remaining":    remaining,
-			"requested":    totalQuantity,
+			"remaining":       remaining,
+			"requested":       totalQuantity,
 		})
 		return
 	}
@@ -1228,11 +1228,6 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 		logger.Printf("[BATCH] Failed to get batch name: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
-	}
-
-	type taskCountRow struct {
-		Current     int `db:"current_count"`
-		LockedCount int `db:"locked_count"`
 	}
 
 	// subsceneInfo holds denormalized subscene data for task insertion.

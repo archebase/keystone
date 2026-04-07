@@ -44,7 +44,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logFile, err := os.OpenFile("keystone-edge.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, err := os.OpenFile("keystone-edge.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to open keystone-edge.log: %v\n", err)
 		os.Exit(1)

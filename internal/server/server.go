@@ -118,7 +118,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		sopHandler = handlers.NewSOPHandler(db)
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
-		orderHandler = handlers.NewOrderHandler(db)
+		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
 	}
 
 	s := &Server{
