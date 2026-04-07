@@ -104,8 +104,8 @@ type skillRow struct {
 	Description sql.NullString `db:"description"`
 	Version     sql.NullString `db:"version"`
 	Metadata    sql.NullString `db:"metadata"`
-	CreatedAt   sql.NullString `db:"created_at"`
-	UpdatedAt   sql.NullString `db:"updated_at"`
+	CreatedAt   sql.NullTime   `db:"created_at"`
+	UpdatedAt   sql.NullTime   `db:"updated_at"`
 }
 
 // ListSkills handles skill listing requests.
@@ -156,11 +156,11 @@ func (h *SkillHandler) ListSkills(c *gin.Context) {
 		}
 		createdAt := ""
 		if s.CreatedAt.Valid {
-			createdAt = s.CreatedAt.String
+			createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		updatedAt := ""
 		if s.UpdatedAt.Valid {
-			updatedAt = s.UpdatedAt.String
+			updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		skills = append(skills, SkillResponse{
@@ -238,11 +238,11 @@ func (h *SkillHandler) GetSkill(c *gin.Context) {
 	}
 	createdAt := ""
 	if s.CreatedAt.Valid {
-		createdAt = s.CreatedAt.String
+		createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if s.UpdatedAt.Valid {
-		updatedAt = s.UpdatedAt.String
+		updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, SkillResponse{
@@ -515,11 +515,11 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 	}
 	createdAt := ""
 	if s.CreatedAt.Valid {
-		createdAt = s.CreatedAt.String
+		createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if s.UpdatedAt.Valid {
-		updatedAt = s.UpdatedAt.String
+		updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, SkillResponse{

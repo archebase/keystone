@@ -91,8 +91,8 @@ type dataCollectorRow struct {
 	Certification sql.NullString `db:"certification"`
 	Status        string         `db:"status"`
 	Metadata      sql.NullString `db:"metadata"`
-	CreatedAt     sql.NullString `db:"created_at"`
-	UpdatedAt     sql.NullString `db:"updated_at"`
+	CreatedAt     sql.NullTime   `db:"created_at"`
+	UpdatedAt     sql.NullTime   `db:"updated_at"`
 }
 
 func dcMetadataFromDB(ns sql.NullString) interface{} {
@@ -113,11 +113,11 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 	}
 	createdAt := ""
 	if dc.CreatedAt.Valid {
-		createdAt = dc.CreatedAt.String
+		createdAt = dc.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if dc.UpdatedAt.Valid {
-		updatedAt = dc.UpdatedAt.String
+		updatedAt = dc.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	return DataCollectorResponse{
 		ID:            fmt.Sprintf("%d", dc.ID),
@@ -236,8 +236,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		return
 	}
 
-	// Generate created_at timestamp in application layer
-	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	now := time.Now().UTC()
 
 	// Insert the data collector
 	var emailStr sql.NullString
@@ -292,8 +291,8 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		certStr,
 		"active",
 		metadataStr,
-		createdAt,
-		createdAt,
+		now,
+		now,
 	)
 	if err != nil {
 		logger.Printf("[DC] Failed to insert data collector: %v", err)
@@ -531,9 +530,8 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 		return
 	}
 
-	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 	updates = append(updates, "updated_at = ?")
-	args = append(args, updatedAt)
+	args = append(args, time.Now().UTC())
 	args = append(args, id)
 
 	query := fmt.Sprintf("UPDATE data_collectors SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
@@ -624,10 +622,8 @@ func (h *DataCollectorHandler) DeleteDataCollector(c *gin.Context) {
 		return
 	}
 
-	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
-
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE data_collectors SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", updatedAt, id)
+	_, err = h.db.Exec("UPDATE data_collectors SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", time.Now().UTC(), id)
 	if err != nil {
 		logger.Printf("[DC] Failed to delete data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete data collector"})

@@ -83,8 +83,8 @@ type subsceneRow struct {
 	Name               string         `db:"name"`
 	Description        sql.NullString `db:"description"`
 	InitialSceneLayout sql.NullString `db:"initial_scene_layout"`
-	CreatedAt          sql.NullString `db:"created_at"`
-	UpdatedAt          sql.NullString `db:"updated_at"`
+	CreatedAt          sql.NullTime   `db:"created_at"`
+	UpdatedAt          sql.NullTime   `db:"updated_at"`
 }
 
 func (h *SubsceneHandler) getSceneInitialLayoutTemplate(sceneID int64) (sql.NullString, error) {
@@ -156,11 +156,11 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 		}
 		createdAt := ""
 		if s.CreatedAt.Valid {
-			createdAt = s.CreatedAt.String
+			createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		updatedAt := ""
 		if s.UpdatedAt.Valid {
-			updatedAt = s.UpdatedAt.String
+			updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		subscenes = append(subscenes, SubsceneResponse{
 			ID:                 fmt.Sprintf("%d", s.ID),
@@ -233,11 +233,11 @@ func (h *SubsceneHandler) GetSubscene(c *gin.Context) {
 	}
 	createdAt := ""
 	if s.CreatedAt.Valid {
-		createdAt = s.CreatedAt.String
+		createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if s.UpdatedAt.Valid {
-		updatedAt = s.UpdatedAt.String
+		updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	c.JSON(http.StatusOK, SubsceneResponse{
 		ID:                 fmt.Sprintf("%d", s.ID),
@@ -520,11 +520,11 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 	}
 	createdAt := ""
 	if s.CreatedAt.Valid {
-		createdAt = s.CreatedAt.String
+		createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if s.UpdatedAt.Valid {
-		updatedAt = s.UpdatedAt.String
+		updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	c.JSON(http.StatusOK, SubsceneResponse{
 		ID:                 fmt.Sprintf("%d", s.ID),

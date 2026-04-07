@@ -97,8 +97,8 @@ type inspectorRow struct {
 	CertificationLevel string         `db:"certification_level"`
 	Status             string         `db:"status"`
 	Metadata           sql.NullString `db:"metadata"`
-	CreatedAt          sql.NullString `db:"created_at"`
-	UpdatedAt          sql.NullString `db:"updated_at"`
+	CreatedAt          sql.NullTime   `db:"created_at"`
+	UpdatedAt          sql.NullTime   `db:"updated_at"`
 }
 
 // ListInspectors handles inspector listing requests.
@@ -161,11 +161,11 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		}
 		createdAt := ""
 		if i.CreatedAt.Valid {
-			createdAt = i.CreatedAt.String
+			createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		updatedAt := ""
 		if i.UpdatedAt.Valid {
-			updatedAt = i.UpdatedAt.String
+			updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		inspectors = append(inspectors, InspectorResponse{
@@ -247,11 +247,11 @@ func (h *InspectorHandler) GetInspector(c *gin.Context) {
 	}
 	createdAt := ""
 	if i.CreatedAt.Valid {
-		createdAt = i.CreatedAt.String
+		createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if i.UpdatedAt.Valid {
-		updatedAt = i.UpdatedAt.String
+		updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, InspectorResponse{
@@ -555,11 +555,11 @@ func (h *InspectorHandler) UpdateInspector(c *gin.Context) {
 	}
 	createdAt := ""
 	if i.CreatedAt.Valid {
-		createdAt = i.CreatedAt.String
+		createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if i.UpdatedAt.Valid {
-		updatedAt = i.UpdatedAt.String
+		updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, InspectorResponse{

@@ -248,8 +248,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 
-	// Generate created_at timestamp
-	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	now := time.Now().UTC()
 
 	metadataStr := sql.NullString{String: "{}", Valid: true}
 	if req.Metadata != nil {
@@ -288,8 +287,8 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		req.Name,
 		"offline",
 		metadataStr,
-		createdAt,
-		createdAt,
+		now,
+		now,
 	)
 	if err != nil {
 		logger.Printf("[STATION] Failed to insert workstation: %v", err)
@@ -304,9 +303,6 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 
-	// Format created_at for response in ISO 8601
-	createdAtISO, _ := time.Parse("2006-01-02 15:04:05", createdAt)
-
 	var metaOut interface{}
 	if metadataStr.Valid {
 		metaOut = stationMetadataFromDB(metadataStr)
@@ -320,8 +316,8 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		Status:          "offline",
 		Name:            req.Name,
 		Metadata:        metaOut,
-		CreatedAt:       createdAtISO.Format(time.RFC3339),
-		UpdatedAt:       createdAtISO.Format(time.RFC3339),
+		CreatedAt:       now.Format(time.RFC3339),
+		UpdatedAt:       now.Format(time.RFC3339),
 	})
 }
 
@@ -338,8 +334,8 @@ type stationListRow struct {
 	Name                sql.NullString `db:"name"`
 	Status              string         `db:"status"`
 	Metadata            sql.NullString `db:"metadata"`
-	CreatedAt           sql.NullString `db:"created_at"`
-	UpdatedAt           sql.NullString `db:"updated_at"`
+	CreatedAt           sql.NullTime   `db:"created_at"`
+	UpdatedAt           sql.NullTime   `db:"updated_at"`
 }
 
 // ListStations handles listing all stations.
@@ -377,11 +373,11 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 	for _, s := range stations {
 		var createdAtStr string
 		if s.CreatedAt.Valid {
-			createdAtStr = formatDBTimeToRFC3339(s.CreatedAt.String)
+			createdAtStr = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		var updatedAtStr string
 		if s.UpdatedAt.Valid {
-			updatedAtStr = formatDBTimeToRFC3339(s.UpdatedAt.String)
+			updatedAtStr = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		response = append(response, StationResponse{
@@ -834,11 +830,11 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	// Format response
 	var createdAtStr string
 	if station.CreatedAt.Valid {
-		createdAtStr = formatDBTimeToRFC3339(station.CreatedAt.String)
+		createdAtStr = station.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	var updatedAtStr string
 	if station.UpdatedAt.Valid {
-		updatedAtStr = formatDBTimeToRFC3339(station.UpdatedAt.String)
+		updatedAtStr = station.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, StationResponse{
@@ -897,11 +893,11 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 
 	var createdAtStr string
 	if station.CreatedAt.Valid {
-		createdAtStr = formatDBTimeToRFC3339(station.CreatedAt.String)
+		createdAtStr = station.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	var updatedAtStr string
 	if station.UpdatedAt.Valid {
-		updatedAtStr = formatDBTimeToRFC3339(station.UpdatedAt.String)
+		updatedAtStr = station.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, StationResponse{

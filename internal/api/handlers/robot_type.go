@@ -78,8 +78,8 @@ type robotTypeRow struct {
 	SensorSuite  sql.NullString `db:"sensor_suite"`
 	ROSTopics    sql.NullString `db:"ros_topics"`
 	Capabilities sql.NullString `db:"capabilities"`
-	CreatedAt    sql.NullString `db:"created_at"`
-	UpdatedAt    sql.NullString `db:"updated_at"`
+	CreatedAt    sql.NullTime   `db:"created_at"`
+	UpdatedAt    sql.NullTime   `db:"updated_at"`
 }
 
 func sqlNullStringFromOptionalPtr(s *string) sql.NullString {
@@ -123,12 +123,12 @@ func robotTypeRowToResponse(rt robotTypeRow) RobotTypeResponse {
 
 	createdAt := ""
 	if rt.CreatedAt.Valid {
-		createdAt = rt.CreatedAt.String
+		createdAt = rt.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	updatedAt := ""
 	if rt.UpdatedAt.Valid {
-		updatedAt = rt.UpdatedAt.String
+		updatedAt = rt.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	return RobotTypeResponse{

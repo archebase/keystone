@@ -145,8 +145,8 @@ type batchRow struct {
 	StartedAt      sql.NullTime   `db:"started_at"`
 	EndedAt        sql.NullTime   `db:"ended_at"`
 	Metadata       sql.NullString `db:"metadata"`
-	CreatedAt      sql.NullString `db:"created_at"`
-	UpdatedAt      sql.NullString `db:"updated_at"`
+	CreatedAt      sql.NullTime   `db:"created_at"`
+	UpdatedAt      sql.NullTime   `db:"updated_at"`
 }
 
 func parseNullableJSON(v sql.NullString) any {
@@ -182,11 +182,11 @@ func batchListItemFromRow(r batchRow) BatchListItem {
 
 	createdAt := ""
 	if r.CreatedAt.Valid {
-		createdAt = r.CreatedAt.String
+		createdAt = r.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if r.UpdatedAt.Valid {
-		updatedAt = r.UpdatedAt.String
+		updatedAt = r.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	nameOut := ""

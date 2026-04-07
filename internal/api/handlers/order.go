@@ -101,8 +101,8 @@ type orderRow struct {
 	Priority       string         `db:"priority"`
 	Deadline       sql.NullTime   `db:"deadline"`
 	Metadata       sql.NullString `db:"metadata"`
-	CreatedAt      sql.NullString `db:"created_at"`
-	UpdatedAt      sql.NullString `db:"updated_at"`
+	CreatedAt      sql.NullTime   `db:"created_at"`
+	UpdatedAt      sql.NullTime   `db:"updated_at"`
 }
 
 var validOrderPriorities = map[string]struct{}{
@@ -154,11 +154,11 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	for _, r := range rows {
 		createdAt := ""
 		if r.CreatedAt.Valid {
-			createdAt = r.CreatedAt.String
+			createdAt = r.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		updatedAt := ""
 		if r.UpdatedAt.Valid {
-			updatedAt = r.UpdatedAt.String
+			updatedAt = r.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		deadline := ""
 		if r.Deadline.Valid {
@@ -234,11 +234,11 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 
 	createdAt := ""
 	if r.CreatedAt.Valid {
-		createdAt = r.CreatedAt.String
+		createdAt = r.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if r.UpdatedAt.Valid {
-		updatedAt = r.UpdatedAt.String
+		updatedAt = r.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	deadline := ""
 	if r.Deadline.Valid {

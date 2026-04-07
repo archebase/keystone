@@ -88,8 +88,8 @@ type factoryRow struct {
 	Timezone       sql.NullString `db:"timezone"`
 	Settings       sql.NullString `db:"settings"`
 	SceneCount     int            `db:"scene_count"`
-	CreatedAt      sql.NullString `db:"created_at"`
-	UpdatedAt      sql.NullString `db:"updated_at"`
+	CreatedAt      sql.NullTime   `db:"created_at"`
+	UpdatedAt      sql.NullTime   `db:"updated_at"`
 }
 
 func factorySettingsFromDB(ns sql.NullString) interface{} {
@@ -163,7 +163,7 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 		}
 		createdAt := ""
 		if f.CreatedAt.Valid {
-			createdAt = f.CreatedAt.String
+			createdAt = f.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		factories = append(factories, FactoryResponse{
@@ -376,11 +376,11 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 	}
 	createdAt := ""
 	if f.CreatedAt.Valid {
-		createdAt = f.CreatedAt.String
+		createdAt = f.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if f.UpdatedAt.Valid {
-		updatedAt = f.UpdatedAt.String
+		updatedAt = f.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, FactoryResponse{
@@ -580,11 +580,11 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 	}
 	createdAt := ""
 	if f.CreatedAt.Valid {
-		createdAt = f.CreatedAt.String
+		createdAt = f.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if f.UpdatedAt.Valid {
-		updatedAt = f.UpdatedAt.String
+		updatedAt = f.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, FactoryResponse{

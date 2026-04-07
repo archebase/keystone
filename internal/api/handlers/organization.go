@@ -105,8 +105,8 @@ type organizationRow struct {
 	Slug         string         `db:"slug"`
 	Description  sql.NullString `db:"description"`
 	Settings     sql.NullString `db:"settings"`
-	CreatedAt    sql.NullString `db:"created_at"`
-	UpdatedAt    sql.NullString `db:"updated_at"`
+	CreatedAt    sql.NullTime   `db:"created_at"`
+	UpdatedAt    sql.NullTime   `db:"updated_at"`
 	FactoryCount int            `db:"factory_count"`
 }
 
@@ -158,12 +158,12 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 
 		createdAt := ""
 		if org.CreatedAt.Valid {
-			createdAt = org.CreatedAt.String
+			createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		updatedAt := ""
 		if org.UpdatedAt.Valid {
-			updatedAt = org.UpdatedAt.String
+			updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		organizations = append(organizations, OrganizationResponse{
@@ -242,12 +242,12 @@ func (h *OrganizationHandler) GetOrganization(c *gin.Context) {
 
 	createdAt := ""
 	if org.CreatedAt.Valid {
-		createdAt = org.CreatedAt.String
+		createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	updatedAt := ""
 	if org.UpdatedAt.Valid {
-		updatedAt = org.UpdatedAt.String
+		updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, OrganizationResponse{
@@ -509,12 +509,12 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 
 	createdAt := ""
 	if org.CreatedAt.Valid {
-		createdAt = org.CreatedAt.String
+		createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	updatedAt := ""
 	if org.UpdatedAt.Valid {
-		updatedAt = org.UpdatedAt.String
+		updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, OrganizationResponse{

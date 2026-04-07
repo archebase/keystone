@@ -85,8 +85,8 @@ type sceneRow struct {
 	Description                sql.NullString `db:"description"`
 	InitialSceneLayoutTemplate sql.NullString `db:"initial_scene_layout_template"`
 	SubsceneCount              int            `db:"subscene_count"`
-	CreatedAt                  sql.NullString `db:"created_at"`
-	UpdatedAt                  sql.NullString `db:"updated_at"`
+	CreatedAt                  sql.NullTime   `db:"created_at"`
+	UpdatedAt                  sql.NullTime   `db:"updated_at"`
 }
 
 // ListScenes handles scene listing requests with filtering.
@@ -149,11 +149,11 @@ func (h *SceneHandler) ListScenes(c *gin.Context) {
 		}
 		createdAt := ""
 		if s.CreatedAt.Valid {
-			createdAt = s.CreatedAt.String
+			createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		updatedAt := ""
 		if s.UpdatedAt.Valid {
-			updatedAt = s.UpdatedAt.String
+			updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		scenes = append(scenes, SceneResponse{
 			ID:                         fmt.Sprintf("%d", s.ID),
@@ -227,11 +227,11 @@ func (h *SceneHandler) GetScene(c *gin.Context) {
 	}
 	createdAt := ""
 	if s.CreatedAt.Valid {
-		createdAt = s.CreatedAt.String
+		createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if s.UpdatedAt.Valid {
-		updatedAt = s.UpdatedAt.String
+		updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	c.JSON(http.StatusOK, SceneResponse{
 		ID:                         fmt.Sprintf("%d", s.ID),
@@ -478,11 +478,11 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 	}
 	createdAt := ""
 	if s.CreatedAt.Valid {
-		createdAt = s.CreatedAt.String
+		createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if s.UpdatedAt.Valid {
-		updatedAt = s.UpdatedAt.String
+		updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	c.JSON(http.StatusOK, SceneResponse{
 		ID:                         fmt.Sprintf("%d", s.ID),

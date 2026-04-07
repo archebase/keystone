@@ -107,8 +107,8 @@ type robotRow struct {
 	AssetID     sql.NullString `db:"asset_id"`
 	Status      string         `db:"status"`
 	Metadata    sql.NullString `db:"metadata"`
-	CreatedAt   sql.NullString `db:"created_at"`
-	UpdatedAt   sql.NullString `db:"updated_at"`
+	CreatedAt   sql.NullTime   `db:"created_at"`
+	UpdatedAt   sql.NullTime   `db:"updated_at"`
 }
 
 func robotMetadataFromDB(ns sql.NullString) interface{} {
@@ -150,11 +150,11 @@ func (h *RobotHandler) connectionStateDetailed(deviceID string) (connected bool,
 func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
 	createdAt := ""
 	if r.CreatedAt.Valid {
-		createdAt = r.CreatedAt.String
+		createdAt = r.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if r.UpdatedAt.Valid {
-		updatedAt = r.UpdatedAt.String
+		updatedAt = r.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	assetID := ""
 	if r.AssetID.Valid {
@@ -340,8 +340,7 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		return
 	}
 
-	// Generate created_at timestamp in application layer
-	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	now := time.Now().UTC()
 
 	var assetIDStr sql.NullString
 	if a := strings.TrimSpace(req.AssetID); a != "" {
@@ -376,8 +375,8 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		assetIDStr,
 		"active",
 		metadataStr,
-		createdAt,
-		createdAt,
+		now,
+		now,
 	)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to insert robot: %v", err)
@@ -657,7 +656,7 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 	}
 
 	updates = append(updates, "updated_at = ?")
-	args = append(args, time.Now().UTC().Format("2006-01-02 15:04:05"))
+	args = append(args, time.Now().UTC())
 	args = append(args, id)
 
 	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
@@ -741,10 +740,8 @@ func (h *RobotHandler) DeleteRobot(c *gin.Context) {
 		return
 	}
 
-	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
-
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE robots SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", updatedAt, id)
+	_, err = h.db.Exec("UPDATE robots SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", time.Now().UTC(), id)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to delete robot: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot"})
