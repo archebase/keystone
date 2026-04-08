@@ -60,7 +60,12 @@ type SkillResponse struct {
 
 // SkillListResponse represents the response for listing skills.
 type SkillListResponse struct {
-	Skills []SkillResponse `json:"skills"`
+	Items   []SkillResponse `json:"items"`
+	Total   int             `json:"total"`
+	Limit   int             `json:"limit"`
+	Offset  int             `json:"offset"`
+	HasNext bool            `json:"hasNext,omitempty"`
+	HasPrev bool            `json:"hasPrev,omitempty"`
 }
 
 // CreateSkillRequest represents the request body for creating a skill.
@@ -111,14 +116,31 @@ type skillRow struct {
 // ListSkills handles skill listing requests.
 //
 // @Summary      List skills
-// @Description  Lists all skills
+// @Description  Lists all skills with pagination
 // @Tags         skills
 // @Accept       json
 // @Produce      json
+// @Param        limit  query int false "Max results (default 50, max 100)"
+// @Param        offset query int false "Pagination offset (default 0)"
 // @Success      200 {object} SkillListResponse
+// @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /skills [get]
 func (h *SkillHandler) ListSkills(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
+	countQuery := "SELECT COUNT(*) FROM skills WHERE deleted_at IS NULL"
+	var total int
+	if err := h.db.Get(&total, countQuery); err != nil {
+		logger.Printf("[SKILL] Failed to count skills: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list skills"})
+		return
+	}
+
 	query := `
 		SELECT 
 			id,
@@ -131,10 +153,11 @@ func (h *SkillHandler) ListSkills(c *gin.Context) {
 		FROM skills
 		WHERE deleted_at IS NULL
 		ORDER BY id DESC
+		LIMIT ? OFFSET ?
 	`
 
 	var dbRows []skillRow
-	if err := h.db.Select(&dbRows, query); err != nil {
+	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
 		logger.Printf("[SKILL] Failed to query skills: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list skills"})
 		return
@@ -174,8 +197,16 @@ func (h *SkillHandler) ListSkills(c *gin.Context) {
 		})
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, SkillListResponse{
-		Skills: skills,
+		Items:   skills,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 

@@ -44,7 +44,12 @@ func (h *OrderHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // OrderListResponse is the response body for listing orders.
 type OrderListResponse struct {
-	Orders []OrderResponse `json:"orders"`
+	Items   []OrderResponse `json:"items"`
+	Total   int             `json:"total"`
+	Limit   int             `json:"limit"`
+	Offset  int             `json:"offset"`
+	HasNext bool            `json:"hasNext,omitempty"`
+	HasPrev bool            `json:"hasPrev,omitempty"`
 }
 
 // OrderResponse is the response body for a single order.
@@ -120,8 +125,35 @@ var validOrderStatuses = map[string]struct{}{
 	"cancelled":   {},
 }
 
-// ListOrders returns all non-deleted orders.
+// ListOrders returns all non-deleted orders with pagination.
 func (h *OrderHandler) ListOrders(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
+	status := strings.TrimSpace(c.Query("status"))
+	if status != "" {
+		if _, ok := validOrderStatuses[status]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
+	}
+
+	countQuery := "SELECT COUNT(*) FROM orders WHERE deleted_at IS NULL"
+	countArgs := []any{}
+	if status != "" {
+		countQuery += " AND status = ?"
+		countArgs = append(countArgs, status)
+	}
+	var total int
+	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
+		logger.Printf("[ORDER] Failed to count orders: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
+		return
+	}
+
 	query := `
 		SELECT
 			o.id,
@@ -140,11 +172,20 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'failed' AND t.deleted_at IS NULL) AS failed_count
 		FROM orders o
 		WHERE o.deleted_at IS NULL
-		ORDER BY o.id DESC
 	`
+	args := []any{}
+	if status != "" {
+		query += " AND o.status = ?\n"
+		args = append(args, status)
+	}
+	query += `
+		ORDER BY o.id DESC
+		LIMIT ? OFFSET ?
+	`
+	args = append(args, pagination.Limit, pagination.Offset)
 
 	var rows []orderRow
-	if err := h.db.Select(&rows, query); err != nil {
+	if err := h.db.Select(&rows, query, args...); err != nil {
 		logger.Printf("[ORDER] Failed to query orders: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
 		return
@@ -189,7 +230,17 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, OrderListResponse{Orders: orders})
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
+	c.JSON(http.StatusOK, OrderListResponse{
+		Items:   orders,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
+	})
 }
 
 // GetOrder returns a single order by id.

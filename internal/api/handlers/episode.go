@@ -71,10 +71,12 @@ type Episode struct {
 
 // EpisodeListResponse represents the response for listing episodes
 type EpisodeListResponse struct {
-	Episodes []Episode `json:"episodes"`
-	Total    int       `json:"total"`
-	Limit    int       `json:"limit"`
-	Offset   int       `json:"offset"`
+	Items   []Episode `json:"items"`
+	Total   int       `json:"total"`
+	Limit   int       `json:"limit"`
+	Offset  int       `json:"offset"`
+	HasNext bool      `json:"hasNext,omitempty"`
+	HasPrev bool      `json:"hasPrev,omitempty"`
 }
 
 // RegisterRoutes registers episode-related routes
@@ -274,12 +276,17 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		}
 	}
 
+	hasNext := (offset + limit) < total
+	hasPrev := offset > 0
+
 	// Return response
 	c.JSON(http.StatusOK, EpisodeListResponse{
-		Episodes: episodes,
-		Total:    total,
-		Limit:    limit,
-		Offset:   offset,
+		Items:   episodes,
+		Total:   total,
+		Limit:   limit,
+		Offset:  offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 

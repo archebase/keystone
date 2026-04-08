@@ -341,15 +341,32 @@ type stationListRow struct {
 // ListStations handles listing all stations.
 //
 // @Summary      List stations
-// @Description  Returns a list of all workstations
+// @Description  Returns a list of all workstations with pagination
 // @Tags         stations
 // @Produce      json
-// @Success      200  {object}  map[string][]StationResponse
-// @Failure      500  {object}  map[string]string
+// @Param        limit  query int false "Max results (default 50, max 100)"
+// @Param        offset query int false "Pagination offset (default 0)"
+// @Success      200 {object} ListResponse
+// @Failure      400 {object} map[string]string
+// @Failure      500 {object} map[string]string
 // @Router       /stations [get]
 func (h *StationHandler) ListStations(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
+	countQuery := "SELECT COUNT(*) FROM workstations WHERE deleted_at IS NULL"
+	var total int
+	if err := h.db.Get(&total, countQuery); err != nil {
+		logger.Printf("[STATION] Failed to count stations: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})
+		return
+	}
+
 	var stations []stationListRow
-	err := h.db.Select(&stations, `
+	err = h.db.Select(&stations, `
 		SELECT 
 			id, robot_id, robot_name, robot_serial,
 			data_collector_id, collector_name, collector_operator_id,
@@ -357,7 +374,8 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		FROM workstations 
 		WHERE deleted_at IS NULL
 		ORDER BY id DESC
-	`)
+		LIMIT ? OFFSET ?
+	`, pagination.Limit, pagination.Offset)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Printf("[STATION] Failed to query stations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})
@@ -368,7 +386,6 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		stations = []stationListRow{}
 	}
 
-	// Build response
 	response := make([]StationResponse, 0, len(stations))
 	for _, s := range stations {
 		var createdAtStr string
@@ -393,7 +410,17 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{"stations": response})
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
+	c.JSON(http.StatusOK, ListResponse{
+		Items:   response,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
+	})
 }
 
 const maxStationLookupIDs = 500

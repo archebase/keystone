@@ -99,7 +99,7 @@ func factorySettingsFromDB(ns sql.NullString) interface{} {
 	return json.RawMessage(ns.String)
 }
 
-// ListFactories handles factory listing requests with filtering.
+// ListFactories handles factory listing requests with filtering and pagination.
 //
 // @Summary      List factories
 // @Description  Lists factories with optional filtering by organization_id
@@ -107,11 +107,41 @@ func factorySettingsFromDB(ns sql.NullString) interface{} {
 // @Accept       json
 // @Produce      json
 // @Param        organization_id query     string  false  "Filter by organization ID"
-// @Success      200               {object}  FactoryListResponse
+// @Param        limit            query     int     false  "Max results (default 50, max 100)"
+// @Param        offset           query     int     false  "Pagination offset (default 0)"
+// @Success      200               {object}  ListResponse
+// @Failure      400               {object}  map[string]string
 // @Failure      500               {object}  map[string]string
 // @Router       /factories [get]
 func (h *FactoryHandler) ListFactories(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
 	orgID := c.Query("organization_id")
+
+	whereClause := "WHERE deleted_at IS NULL"
+	args := []interface{}{}
+
+	if orgID != "" {
+		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+			return
+		}
+		whereClause += " AND organization_id = ?"
+		args = append(args, parsedOrgID)
+	}
+
+	countQuery := "SELECT COUNT(*) FROM factories " + whereClause
+	var total int
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
+		logger.Printf("[FACTORY] Failed to count factories: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list factories"})
+		return
+	}
 
 	query := `
 		SELECT 
@@ -126,27 +156,17 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 			created_at,
 			updated_at
 		FROM factories
-		WHERE deleted_at IS NULL
+		` + whereClause + `
+		ORDER BY id DESC
+		LIMIT ? OFFSET ?
 	`
-	args := []interface{}{}
 
-	if orgID != "" {
-		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-			return
-		}
-		query += " AND organization_id = ?"
-		args = append(args, parsedOrgID)
-	}
-
-	query += " ORDER BY id DESC"
+	queryArgs := append(args, pagination.Limit, pagination.Offset)
 
 	factories := []FactoryResponse{}
 
-	// Use db.Select for cleaner code and automatic resource management
 	var dbRows []factoryRow
-	if err := h.db.Select(&dbRows, query, args...); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[FACTORY] Failed to query factories: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list factories"})
 		return
@@ -179,8 +199,16 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, FactoryListResponse{
-		Factories: factories,
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
+	c.JSON(http.StatusOK, ListResponse{
+		Items:   factories,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 

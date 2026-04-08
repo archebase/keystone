@@ -42,7 +42,12 @@ type SceneResponse struct {
 
 // SceneListResponse represents the response for listing scenes.
 type SceneListResponse struct {
-	Scenes []SceneResponse `json:"scenes"`
+	Items   []SceneResponse `json:"items"`
+	Total   int             `json:"total"`
+	Limit   int             `json:"limit"`
+	Offset  int             `json:"offset"`
+	HasNext bool            `json:"hasNext,omitempty"`
+	HasPrev bool            `json:"hasPrev,omitempty"`
 }
 
 // CreateSceneRequest represents the request body for creating a scene.
@@ -97,11 +102,41 @@ type sceneRow struct {
 // @Accept       json
 // @Produce      json
 // @Param        factory_id query string false "Filter by factory ID"
+// @Param        limit      query int    false "Max results (default 50, max 100)"
+// @Param        offset     query int    false "Pagination offset (default 0)"
 // @Success      200 {object} SceneListResponse
+// @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /scenes [get]
 func (h *SceneHandler) ListScenes(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
 	factoryID := c.Query("factory_id")
+
+	whereClause := "WHERE s.deleted_at IS NULL"
+	args := []interface{}{}
+
+	if factoryID != "" {
+		parsedFactoryID, err := strconv.ParseInt(factoryID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+			return
+		}
+		whereClause += " AND factory_id = ?"
+		args = append(args, parsedFactoryID)
+	}
+
+	countQuery := "SELECT COUNT(*) FROM scenes s " + whereClause
+	var total int
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
+		logger.Printf("[SCENE] Failed to count scenes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list scenes"})
+		return
+	}
 
 	query := `
 		SELECT 
@@ -114,24 +149,15 @@ func (h *SceneHandler) ListScenes(c *gin.Context) {
 			s.updated_at,
 			(SELECT COUNT(*) FROM subscenes sub WHERE sub.scene_id = s.id AND sub.deleted_at IS NULL) as subscene_count
 		FROM scenes s
-		WHERE s.deleted_at IS NULL
+		` + whereClause + `
+		ORDER BY id DESC
+		LIMIT ? OFFSET ?
 	`
-	args := []interface{}{}
 
-	if factoryID != "" {
-		parsedFactoryID, err := strconv.ParseInt(factoryID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
-			return
-		}
-		query += " AND factory_id = ?"
-		args = append(args, parsedFactoryID)
-	}
-
-	query += " ORDER BY id DESC"
+	queryArgs := append(args, pagination.Limit, pagination.Offset)
 
 	var dbRows []sceneRow
-	if err := h.db.Select(&dbRows, query, args...); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[SCENE] Failed to query scenes: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list scenes"})
 		return
@@ -167,8 +193,16 @@ func (h *SceneHandler) ListScenes(c *gin.Context) {
 		})
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, SceneListResponse{
-		Scenes: scenes,
+		Items:   scenes,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 

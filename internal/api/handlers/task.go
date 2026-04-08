@@ -130,10 +130,12 @@ type TaskListItem struct {
 
 // ListTasksResponse represents the response body for listing tasks.
 type ListTasksResponse struct {
-	Tasks  []TaskListItem `json:"tasks"`
-	Total  int            `json:"total"`
-	Limit  int            `json:"limit"`
-	Offset int            `json:"offset"`
+	Items   []TaskListItem `json:"items"`
+	Total   int            `json:"total"`
+	Limit   int            `json:"limit"`
+	Offset  int            `json:"offset"`
+	HasNext bool           `json:"hasNext,omitempty"`
+	HasPrev bool           `json:"hasPrev,omitempty"`
 }
 
 // TaskEpisodeDetail represents the episode information attached to a task.
@@ -299,11 +301,16 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		return
 	}
 
+	hasNext := (offset + limit) < total
+	hasPrev := offset > 0
+
 	c.JSON(http.StatusOK, ListTasksResponse{
-		Tasks:  items,
-		Total:  total,
-		Limit:  limit,
-		Offset: offset,
+		Items:   items,
+		Total:   total,
+		Limit:   limit,
+		Offset:  offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 

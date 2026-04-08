@@ -42,7 +42,12 @@ type SOPResponse struct {
 
 // SOPListResponse represents the response for listing SOPs.
 type SOPListResponse struct {
-	SOPs []SOPResponse `json:"sops"`
+	Items   []SOPResponse `json:"items"`
+	Total   int           `json:"total"`
+	Limit   int           `json:"limit"`
+	Offset  int           `json:"offset"`
+	HasNext bool          `json:"hasNext,omitempty"`
+	HasPrev bool          `json:"hasPrev,omitempty"`
 }
 
 // CreateSOPRequest represents the request body for creating an SOP.
@@ -93,14 +98,31 @@ type sopRow struct {
 // ListSOPs handles SOP listing requests.
 //
 // @Summary      List SOPs
-// @Description  Lists all SOPs
+// @Description  Lists all SOPs with pagination
 // @Tags         sops
 // @Accept       json
 // @Produce      json
+// @Param        limit  query int false "Max results (default 50, max 100)"
+// @Param        offset query int false "Pagination offset (default 0)"
 // @Success      200 {object} SOPListResponse
+// @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /sops [get]
 func (h *SOPHandler) ListSOPs(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
+	countQuery := "SELECT COUNT(*) FROM sops WHERE deleted_at IS NULL"
+	var total int
+	if err := h.db.Get(&total, countQuery); err != nil {
+		logger.Printf("[SOP] Failed to count SOPs: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list SOPs"})
+		return
+	}
+
 	query := `
 		SELECT 
 			id,
@@ -113,10 +135,11 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		FROM sops
 		WHERE deleted_at IS NULL
 		ORDER BY id DESC
+		LIMIT ? OFFSET ?
 	`
 
 	var dbRows []sopRow
-	if err := h.db.Select(&dbRows, query); err != nil {
+	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
 		logger.Printf("[SOP] Failed to query SOPs: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list SOPs"})
 		return
@@ -153,8 +176,16 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		})
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, SOPListResponse{
-		SOPs: sops,
+		Items:   sops,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 

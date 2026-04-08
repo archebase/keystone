@@ -123,10 +123,12 @@ type BatchListItem struct {
 
 // ListBatchesResponse represents the response body for listing batches.
 type ListBatchesResponse struct {
-	Batches []BatchListItem `json:"batches"`
+	Items   []BatchListItem `json:"items"`
 	Total   int             `json:"total"`
 	Limit   int             `json:"limit"`
 	Offset  int             `json:"offset"`
+	HasNext bool            `json:"hasNext,omitempty"`
+	HasPrev bool            `json:"hasPrev,omitempty"`
 }
 
 type batchRow struct {
@@ -339,11 +341,16 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 		batches = append(batches, batchListItemFromRow(r))
 	}
 
+	hasNext := (offset + limit) < total
+	hasPrev := offset > 0
+
 	c.JSON(http.StatusOK, ListBatchesResponse{
-		Batches: batches,
+		Items:   batches,
 		Total:   total,
 		Limit:   limit,
 		Offset:  offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 
@@ -1650,7 +1657,7 @@ func (h *BatchHandler) ListBatchTasks(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, ListTasksResponse{
-		Tasks:  items,
+		Items:  items,
 		Total:  len(items),
 		Limit:  len(items),
 		Offset: 0,

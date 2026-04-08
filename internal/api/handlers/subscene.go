@@ -41,7 +41,12 @@ type SubsceneResponse struct {
 
 // SubsceneListResponse represents the response for listing subscenes.
 type SubsceneListResponse struct {
-	Subscenes []SubsceneResponse `json:"subscenes"`
+	Items   []SubsceneResponse `json:"items"`
+	Total   int                `json:"total"`
+	Limit   int                `json:"limit"`
+	Offset  int                `json:"offset"`
+	HasNext bool               `json:"hasNext,omitempty"`
+	HasPrev bool               `json:"hasPrev,omitempty"`
 }
 
 // CreateSubsceneRequest represents the request body for creating a subscene.
@@ -105,11 +110,41 @@ func (h *SubsceneHandler) getSceneInitialLayoutTemplate(sceneID int64) (sql.Null
 // @Accept       json
 // @Produce      json
 // @Param        scene_id query string false "Filter by scene ID"
+// @Param        limit    query int    false "Max results (default 50, max 100)"
+// @Param        offset   query int    false "Pagination offset (default 0)"
 // @Success      200 {object} SubsceneListResponse
+// @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /subscenes [get]
 func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
 	sceneID := c.Query("scene_id")
+
+	whereClause := "WHERE deleted_at IS NULL"
+	args := []interface{}{}
+
+	if sceneID != "" {
+		parsedSceneID, err := strconv.ParseInt(sceneID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
+			return
+		}
+		whereClause += " AND scene_id = ?"
+		args = append(args, parsedSceneID)
+	}
+
+	countQuery := "SELECT COUNT(*) FROM subscenes " + whereClause
+	var total int
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
+		logger.Printf("[SUBSCENE] Failed to count subscenes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list subscenes"})
+		return
+	}
 
 	query := `
 		SELECT 
@@ -121,24 +156,15 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 			created_at,
 			updated_at
 		FROM subscenes
-		WHERE deleted_at IS NULL
+		` + whereClause + `
+		ORDER BY id DESC
+		LIMIT ? OFFSET ?
 	`
-	args := []interface{}{}
 
-	if sceneID != "" {
-		parsedSceneID, err := strconv.ParseInt(sceneID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
-			return
-		}
-		query += " AND scene_id = ?"
-		args = append(args, parsedSceneID)
-	}
-
-	query += " ORDER BY id DESC"
+	queryArgs := append(args, pagination.Limit, pagination.Offset)
 
 	var dbRows []subsceneRow
-	if err := h.db.Select(&dbRows, query, args...); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[SUBSCENE] Failed to query subscenes: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list subscenes"})
 		return
@@ -173,8 +199,16 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 		})
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, SubsceneListResponse{
-		Subscenes: subscenes,
+		Items:   subscenes,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 
