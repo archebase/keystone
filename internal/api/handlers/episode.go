@@ -35,6 +35,7 @@ func NewEpisodeHandler(db *sqlx.DB) *EpisodeHandler {
 type episodeRow struct {
 	ID                 string          `db:"episode_id"`
 	TaskID             int64           `db:"task_id"`
+	TaskPublicID       sql.NullString  `db:"task_public_id"`
 	McapPath           string          `db:"mcap_path"`
 	SidecarPath        string          `db:"sidecar_path"`
 	Checksum           sql.NullString  `db:"checksum"`
@@ -54,6 +55,7 @@ type episodeRow struct {
 type Episode struct {
 	ID                 string   `json:"id"`
 	TaskID             int64    `json:"task_id"`
+	TaskPublicID       *string  `json:"task_public_id"`
 	McapPath           string   `json:"mcap_path"`
 	SidecarPath        string   `json:"sidecar_path"`
 	Checksum           *string  `json:"checksum"`
@@ -167,6 +169,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		SELECT 
 			e.episode_id,
 			e.task_id as task_id,
+			t.task_id as task_public_id,
 			e.mcap_path,
 			e.sidecar_path,
 			COALESCE(e.qa_status, '') as qa_status,
@@ -176,6 +179,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.created_at,
 			e.labels
 		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		WHERE e.deleted_at IS NULL
 	`
 
@@ -260,6 +264,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		episodes[i] = Episode{
 			ID:                 r.ID,
 			TaskID:             r.TaskID,
+			TaskPublicID:       nullableString(r.TaskPublicID),
 			McapPath:           r.McapPath,
 			SidecarPath:        r.SidecarPath,
 			Checksum:           nullableString(r.Checksum),
@@ -309,6 +314,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		SELECT
 			e.episode_id,
 			e.task_id AS task_id,
+			t.task_id AS task_public_id,
 			e.mcap_path,
 			e.sidecar_path,
 			e.checksum,
@@ -323,6 +329,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.created_at,
 			e.labels
 		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN inspections i ON i.episode_id = e.id
 		LEFT JOIN inspectors ins ON ins.id = i.inspector_id
 		WHERE e.episode_id = ? AND e.deleted_at IS NULL
@@ -344,6 +351,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 	c.JSON(http.StatusOK, Episode{
 		ID:                 row.ID,
 		TaskID:             row.TaskID,
+		TaskPublicID:       nullableString(row.TaskPublicID),
 		McapPath:           row.McapPath,
 		SidecarPath:        row.SidecarPath,
 		Checksum:           nullableString(row.Checksum),
