@@ -44,19 +44,28 @@ func (h *OrderHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // OrderListResponse is the response body for listing orders.
 type OrderListResponse struct {
-	Items   []OrderResponse `json:"items"`
-	Scenes  []SceneRef      `json:"scenes,omitempty"`
-	Total   int             `json:"total"`
-	Limit   int             `json:"limit"`
-	Offset  int             `json:"offset"`
-	HasNext bool            `json:"hasNext,omitempty"`
-	HasPrev bool            `json:"hasPrev,omitempty"`
+	Items   []OrderListItemResponse `json:"items"`
+	Total   int                     `json:"total"`
+	Limit   int                     `json:"limit"`
+	Offset  int                     `json:"offset"`
+	HasNext bool                    `json:"hasNext,omitempty"`
+	HasPrev bool                    `json:"hasPrev,omitempty"`
 }
 
-// SceneRef is a minimal scene representation used by order pages.
-type SceneRef struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+// OrderListItemResponse is the response body for an order item in list views.
+// It intentionally excludes task statistics to keep ListOrders fast.
+type OrderListItemResponse struct {
+	ID          string `json:"id"`
+	SceneID     string `json:"scene_id"`
+	SceneName   string `json:"scene_name,omitempty"`
+	Name        string `json:"name"`
+	TargetCount int    `json:"target_count"`
+	Status      string `json:"status"`
+	Priority    string `json:"priority"`
+	Deadline    string `json:"deadline,omitempty"`
+	Metadata    any    `json:"metadata,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 // OrderResponse is the response body for a single order.
@@ -119,6 +128,20 @@ type orderRow struct {
 	UpdatedAt      sql.NullTime   `db:"updated_at"`
 }
 
+type orderListRow struct {
+	ID          int64          `db:"id"`
+	SceneID     int64          `db:"scene_id"`
+	SceneName   sql.NullString `db:"scene_name"`
+	Name        string         `db:"name"`
+	TargetCount int            `db:"target_count"`
+	Status      string         `db:"status"`
+	Priority    string         `db:"priority"`
+	Deadline    sql.NullTime   `db:"deadline"`
+	Metadata    sql.NullString `db:"metadata"`
+	CreatedAt   sql.NullTime   `db:"created_at"`
+	UpdatedAt   sql.NullTime   `db:"updated_at"`
+}
+
 var validOrderPriorities = map[string]struct{}{
 	"low":    {},
 	"normal": {},
@@ -175,11 +198,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			o.deadline,
 			CAST(o.metadata AS CHAR) AS metadata,
 			o.created_at,
-			o.updated_at,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL) AS task_count,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'completed' AND t.deleted_at IS NULL) AS completed_count,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'cancelled' AND t.deleted_at IS NULL) AS cancelled_count,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'failed' AND t.deleted_at IS NULL) AS failed_count
+			o.updated_at
 		FROM orders o
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
 		WHERE o.deleted_at IS NULL
@@ -195,14 +214,14 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	`
 	args = append(args, pagination.Limit, pagination.Offset)
 
-	var rows []orderRow
+	var rows []orderListRow
 	if err := h.db.Select(&rows, query, args...); err != nil {
 		logger.Printf("[ORDER] Failed to query orders: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
 		return
 	}
 
-	orders := make([]OrderResponse, 0, len(rows))
+	orders := make([]OrderListItemResponse, 0, len(rows))
 	for _, r := range rows {
 		createdAt := ""
 		if r.CreatedAt.Valid {
@@ -227,59 +246,26 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		if r.SceneName.Valid {
 			sceneName = r.SceneName.String
 		}
-		orders = append(orders, OrderResponse{
-			ID:             fmt.Sprintf("%d", r.ID),
-			SceneID:        fmt.Sprintf("%d", r.SceneID),
-			SceneName:      sceneName,
-			Name:           r.Name,
-			TargetCount:    r.TargetCount,
-			TaskCount:      r.TaskCount,
-			CompletedCount: r.CompletedCount,
-			CancelledCount: r.CancelledCount,
-			FailedCount:    r.FailedCount,
-			Status:         r.Status,
-			Priority:       r.Priority,
-			Deadline:       deadline,
-			Metadata:       metadata,
-			CreatedAt:      createdAt,
-			UpdatedAt:      updatedAt,
+		orders = append(orders, OrderListItemResponse{
+			ID:          fmt.Sprintf("%d", r.ID),
+			SceneID:     fmt.Sprintf("%d", r.SceneID),
+			SceneName:   sceneName,
+			Name:        r.Name,
+			TargetCount: r.TargetCount,
+			Status:      r.Status,
+			Priority:    r.Priority,
+			Deadline:    deadline,
+			Metadata:    metadata,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
 		})
 	}
 
 	hasNext := (pagination.Offset + pagination.Limit) < total
 	hasPrev := pagination.Offset > 0
 
-	// Provide scenes to allow order pages to avoid a separate GET /scenes call.
-	var sceneRefs []SceneRef
-	{
-		type sceneRefRow struct {
-			ID   int64  `db:"id"`
-			Name string `db:"name"`
-		}
-		var srows []sceneRefRow
-		// Cap to a reasonable number; UI only needs id/name for select options.
-		if err := h.db.Select(&srows, `
-			SELECT id, name
-			FROM scenes
-			WHERE deleted_at IS NULL
-			ORDER BY id DESC
-			LIMIT 500
-		`); err != nil {
-			logger.Printf("[ORDER] Failed to query scene refs: %v", err)
-		} else {
-			sceneRefs = make([]SceneRef, 0, len(srows))
-			for _, sr := range srows {
-				sceneRefs = append(sceneRefs, SceneRef{
-					ID:   fmt.Sprintf("%d", sr.ID),
-					Name: sr.Name,
-				})
-			}
-		}
-	}
-
 	c.JSON(http.StatusOK, OrderListResponse{
 		Items:   orders,
-		Scenes:  sceneRefs,
 		Total:   total,
 		Limit:   pagination.Limit,
 		Offset:  pagination.Offset,
@@ -310,13 +296,26 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 			CAST(o.metadata AS CHAR) AS metadata,
 			o.created_at,
 			o.updated_at,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL) AS task_count,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'completed' AND t.deleted_at IS NULL) AS completed_count,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'cancelled' AND t.deleted_at IS NULL) AS cancelled_count,
-			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'failed' AND t.deleted_at IS NULL) AS failed_count
+			COUNT(t.id) AS task_count,
+			SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+			SUM(CASE WHEN t.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+			SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed_count
 		FROM orders o
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
+		LEFT JOIN tasks t ON t.order_id = o.id AND t.deleted_at IS NULL
 		WHERE o.id = ? AND o.deleted_at IS NULL
+		GROUP BY
+			o.id,
+			o.scene_id,
+			s.name,
+			o.name,
+			o.target_count,
+			o.status,
+			o.priority,
+			o.deadline,
+			o.metadata,
+			o.created_at,
+			o.updated_at
 	`
 
 	var r orderRow
