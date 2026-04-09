@@ -134,15 +134,15 @@ func (h *RecorderHub) NewRecorderConn(conn *websocket.Conn, deviceID, remoteIP s
 	}
 }
 
-// Connect registers a recorder connection, replacing any previous one for the same device.
-func (h *RecorderHub) Connect(deviceID string, rc *RecorderConn) {
-	h.connect(deviceID, rc)
+// Connect registers a recorder connection. If the device already has an active
+// connection, returns false and the caller must close the new WebSocket.
+func (h *RecorderHub) Connect(deviceID string, rc *RecorderConn) bool {
+	return h.connect(deviceID, rc)
 }
 
 // Disconnect removes a recorder connection and drains any pending RPC waiters.
-func (h *RecorderHub) Disconnect(deviceID string) {
-	rc, found := h.disconnect(deviceID)
-	if !found {
+func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) {
+	if !h.disconnect(deviceID, rc) {
 		return
 	}
 

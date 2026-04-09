@@ -45,40 +45,46 @@ func newHub[T Connection](label string) *Hub[T] {
 	}
 }
 
-// connect registers conn under deviceID. If a different connection for the
-// same device already exists it is forcibly closed before the new one is
-// stored. Callers must pass a non-nil conn.
-func (h *Hub[T]) connect(deviceID string, conn T) {
+// connect registers conn under deviceID. If another connection is already
+// registered for the same device, the new connection is rejected (caller must
+// close it) and false is returned. Callers must pass a non-nil conn.
+func (h *Hub[T]) connect(deviceID string, conn T) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if old, exists := h.connections[deviceID]; exists {
-		// Only close when it is genuinely a different object to avoid closing
-		// a connection that was just re-registered after an in-place upgrade.
 		if old.GetWSConn() != nil && old.GetWSConn() != conn.GetWSConn() {
-			logger.Printf("[%s] Hub: closing previous connection for device %s (replaced by new)", h.label, deviceID)
-			_ = old.GetWSConn().Close(websocket.StatusPolicyViolation, "replaced by newer connection")
+			logger.Printf("[%s] Hub: rejecting new connection for device %s (already connected)", h.label, deviceID)
+			return false
 		}
 	}
 	h.connections[deviceID] = conn
 	logger.Printf("[%s] Hub: device %s registered, total connections=%d", h.label, deviceID, len(h.connections))
+	return true
 }
 
-// disconnect removes the connection for deviceID and returns it (or the zero
-// value of T if the device was not registered). The caller is responsible for
-// any type-specific teardown (e.g. draining pending RPCs).
-func (h *Hub[T]) disconnect(deviceID string) (conn T, found bool) {
+// disconnect removes the connection for deviceID only if it matches conn.
+// This avoids a stale handler goroutine deleting a newer connection after
+// rejecting takeover. Returns true if an entry was removed.
+func (h *Hub[T]) disconnect(deviceID string, conn T) bool {
 	h.mu.Lock()
-	conn, found = h.connections[deviceID]
-	delete(h.connections, deviceID)
-	h.mu.Unlock()
+	defer h.mu.Unlock()
 
-	if !found {
+	current, exists := h.connections[deviceID]
+	if !exists {
 		logger.Printf("[%s] Hub: Disconnect called for unknown device %s", h.label, deviceID)
-	} else {
-		logger.Printf("[%s] Hub: device %s disconnected", h.label, deviceID)
+		return false
 	}
-	return conn, found
+	// Compare underlying websocket connections; type parameter T is not necessarily comparable.
+	cw := current.GetWSConn()
+	nw := conn.GetWSConn()
+	if cw == nil || nw == nil || cw != nw {
+		logger.Printf("[%s] Hub: Disconnect ignored for device %s (connection not current)", h.label, deviceID)
+		return false
+	}
+	delete(h.connections, deviceID)
+	logger.Printf("[%s] Hub: device %s disconnected", h.label, deviceID)
+	return true
 }
 
 // get returns the connection for deviceID, or the zero value of T if not found.

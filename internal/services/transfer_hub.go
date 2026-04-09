@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"archebase.com/keystone-edge/internal/logger"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -183,15 +182,16 @@ func (h *TransferHub) NewTransferConn(conn *websocket.Conn, deviceID, remoteIP s
 	}
 }
 
-// Connect registers a device connection
-func (h *TransferHub) Connect(deviceID string, dc *TransferConn) {
-	h.connect(deviceID, dc)
+// Connect registers a device connection. If the device already has an active
+// connection, returns false and the caller must close the new WebSocket.
+func (h *TransferHub) Connect(deviceID string, dc *TransferConn) bool {
+	return h.connect(deviceID, dc)
 }
 
 // Disconnect removes a device connection
-func (h *TransferHub) Disconnect(deviceID string) {
-	if _, found := h.disconnect(deviceID); !found {
-		logger.Printf("[TRANSFER] TransferHub: Disconnect called for unknown device %s", deviceID)
+func (h *TransferHub) Disconnect(deviceID string, dc *TransferConn) {
+	if !h.disconnect(deviceID, dc) {
+		return
 	}
 }
 
