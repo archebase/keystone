@@ -54,16 +54,16 @@ First Release Implementation Order:
 Second Release Implementation Order:
 
 1. **Authentication & Authorization**
-  - JWT authentication
+  - ✅ JWT authentication
   - Role-based access control (RBAC)
   - API private key management
 2. **Scene & Skill Management**
   - ✅ scene and subscene CRUD
   - ✅ skill and sop CRUD
 3. **Order & Task Management**
-  - order CRUD
-  - batch CRUD
-  - task dispatch
+  - ✅ order CRUD
+  - ✅ batch CRUD
+  - ✅ task dispatch lifecycle
 4. **upload queue**
   - Upload prioritization and bandwidth throttling
 5. **QA Pipeline**
