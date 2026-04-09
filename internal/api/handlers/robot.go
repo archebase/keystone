@@ -54,7 +54,12 @@ type RobotResponse struct {
 
 // RobotListResponse represents the response for listing robots.
 type RobotListResponse struct {
-	Robots []RobotResponse `json:"robots"`
+	Items   []RobotResponse `json:"items"`
+	Total   int             `json:"total"`
+	Limit   int             `json:"limit"`
+	Offset  int             `json:"offset"`
+	HasNext bool            `json:"hasNext,omitempty"`
+	HasPrev bool            `json:"hasPrev,omitempty"`
 }
 
 // DeviceConnectionResponse is an in-memory connection snapshot keyed by Axon device_id (no database access).
@@ -107,8 +112,8 @@ type robotRow struct {
 	AssetID     sql.NullString `db:"asset_id"`
 	Status      string         `db:"status"`
 	Metadata    sql.NullString `db:"metadata"`
-	CreatedAt   sql.NullString `db:"created_at"`
-	UpdatedAt   sql.NullString `db:"updated_at"`
+	CreatedAt   sql.NullTime   `db:"created_at"`
+	UpdatedAt   sql.NullTime   `db:"updated_at"`
 }
 
 func robotMetadataFromDB(ns sql.NullString) interface{} {
@@ -150,11 +155,11 @@ func (h *RobotHandler) connectionStateDetailed(deviceID string) (connected bool,
 func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
 	createdAt := ""
 	if r.CreatedAt.Valid {
-		createdAt = r.CreatedAt.String
+		createdAt = r.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if r.UpdatedAt.Valid {
-		updatedAt = r.UpdatedAt.String
+		updatedAt = r.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	assetID := ""
 	if r.AssetID.Valid {
@@ -187,10 +192,19 @@ func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
 // @Param        status        query     string  false  "Filter by status (active, maintenance, retired)"
 // @Param        robot_type_id query     string  false  "Filter by robot type id"
 // @Param        connected     query     string  false  "Filter by connection status (true/false)"
+// @Param        limit         query     int     false  "Max results (default 50, max 100)"
+// @Param        offset        query     int     false  "Pagination offset (default 0)"
 // @Success      200           {object}  RobotListResponse
+// @Failure      400           {object}  map[string]string
 // @Failure      500           {object}  map[string]string
 // @Router       /robots [get]
 func (h *RobotHandler) ListRobots(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
 	factoryID := c.Query("factory_id")
 	status := c.Query("status")
 	robotTypeID := c.Query("robot_type_id")
@@ -206,7 +220,42 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		connectedFilter = &connected
 	}
 
-	// Build query with optional filters
+	whereClause := "WHERE r.deleted_at IS NULL"
+	args := []interface{}{}
+
+	if factoryID != "" {
+		parsedFactoryID, err := strconv.ParseInt(factoryID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+			return
+		}
+		whereClause += " AND r.factory_id = ?"
+		args = append(args, parsedFactoryID)
+	}
+
+	if status != "" {
+		whereClause += " AND r.status = ?"
+		args = append(args, status)
+	}
+
+	if robotTypeID != "" {
+		parsedRobotTypeID, err := strconv.ParseInt(robotTypeID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
+			return
+		}
+		whereClause += " AND r.robot_type_id = ?"
+		args = append(args, parsedRobotTypeID)
+	}
+
+	countQuery := "SELECT COUNT(*) FROM robots r " + whereClause
+	var total int
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
+		logger.Printf("[ROBOT] Failed to count robots: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robots"})
+		return
+	}
+
 	query := `
 		SELECT 
 			r.id,
@@ -219,41 +268,15 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 			r.created_at,
 			r.updated_at
 		FROM robots r
-		WHERE r.deleted_at IS NULL
+		` + whereClause + `
+		ORDER BY r.id DESC
+		LIMIT ? OFFSET ?
 	`
-	args := []interface{}{}
 
-	if factoryID != "" {
-		parsedFactoryID, err := strconv.ParseInt(factoryID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
-			return
-		}
-		query += " AND r.factory_id = ?"
-		args = append(args, parsedFactoryID)
-	}
+	queryArgs := append(args, pagination.Limit, pagination.Offset)
 
-	if status != "" {
-		query += " AND r.status = ?"
-		args = append(args, status)
-	}
-
-	if robotTypeID != "" {
-		// Parse robot_type_id as numeric value
-		parsedRobotTypeID, err := strconv.ParseInt(robotTypeID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
-			return
-		}
-		query += " AND r.robot_type_id = ?"
-		args = append(args, parsedRobotTypeID)
-	}
-
-	query += " ORDER BY r.id DESC"
-
-	// Use db.Select for cleaner code and automatic resource management
 	var dbRows []robotRow
-	if err := h.db.Select(&dbRows, query, args...); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[ROBOT] Failed to query robots: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robots"})
 		return
@@ -268,8 +291,16 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		robots = append(robots, resp)
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, RobotListResponse{
-		Robots: robots,
+		Items:   robots,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 
@@ -340,8 +371,7 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		return
 	}
 
-	// Generate created_at timestamp in application layer
-	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	now := time.Now().UTC()
 
 	var assetIDStr sql.NullString
 	if a := strings.TrimSpace(req.AssetID); a != "" {
@@ -376,8 +406,8 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		assetIDStr,
 		"active",
 		metadataStr,
-		createdAt,
-		createdAt,
+		now,
+		now,
 	)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to insert robot: %v", err)
@@ -657,7 +687,7 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 	}
 
 	updates = append(updates, "updated_at = ?")
-	args = append(args, time.Now().UTC().Format("2006-01-02 15:04:05"))
+	args = append(args, time.Now().UTC())
 	args = append(args, id)
 
 	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
@@ -741,10 +771,8 @@ func (h *RobotHandler) DeleteRobot(c *gin.Context) {
 		return
 	}
 
-	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
-
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE robots SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", updatedAt, id)
+	_, err = h.db.Exec("UPDATE robots SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", time.Now().UTC(), id)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to delete robot: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete robot"})

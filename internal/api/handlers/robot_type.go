@@ -56,7 +56,12 @@ type RobotTypeResponse struct {
 
 // RobotTypeListResponse represents the response for listing robot types.
 type RobotTypeListResponse struct {
-	RobotTypes []RobotTypeResponse `json:"robot_types"`
+	Items   []RobotTypeResponse `json:"items"`
+	Total   int                 `json:"total"`
+	Limit   int                 `json:"limit"`
+	Offset  int                 `json:"offset"`
+	HasNext bool                `json:"hasNext,omitempty"`
+	HasPrev bool                `json:"hasPrev,omitempty"`
 }
 
 // RegisterRoutes registers robot type related routes.
@@ -78,8 +83,8 @@ type robotTypeRow struct {
 	SensorSuite  sql.NullString `db:"sensor_suite"`
 	ROSTopics    sql.NullString `db:"ros_topics"`
 	Capabilities sql.NullString `db:"capabilities"`
-	CreatedAt    sql.NullString `db:"created_at"`
-	UpdatedAt    sql.NullString `db:"updated_at"`
+	CreatedAt    sql.NullTime   `db:"created_at"`
+	UpdatedAt    sql.NullTime   `db:"updated_at"`
 }
 
 func sqlNullStringFromOptionalPtr(s *string) sql.NullString {
@@ -123,12 +128,12 @@ func robotTypeRowToResponse(rt robotTypeRow) RobotTypeResponse {
 
 	createdAt := ""
 	if rt.CreatedAt.Valid {
-		createdAt = rt.CreatedAt.String
+		createdAt = rt.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	updatedAt := ""
 	if rt.UpdatedAt.Valid {
-		updatedAt = rt.UpdatedAt.String
+		updatedAt = rt.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	return RobotTypeResponse{
@@ -240,23 +245,41 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 // ListRobotTypes handles robot type listing requests.
 //
 // @Summary      List robot types
-// @Description  Lists all robot types
+// @Description  Lists all robot types with pagination
 // @Tags         robot_types
 // @Accept       json
 // @Produce      json
+// @Param        limit  query     int  false  "Max results (default 50, max 100)"
+// @Param        offset query     int  false  "Pagination offset (default 0)"
 // @Success      200 {object} RobotTypeListResponse
+// @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /robot_types [get]
 func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
+	countQuery := "SELECT COUNT(*) FROM robot_types WHERE deleted_at IS NULL"
+	var total int
+	if err := h.db.Get(&total, countQuery); err != nil {
+		logger.Printf("[ROBOT] Failed to count robot types: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robot types"})
+		return
+	}
+
 	query := `
 		SELECT ` + robotTypeSelectColumns + `
 		FROM robot_types
 		WHERE deleted_at IS NULL
 		ORDER BY id DESC
+		LIMIT ? OFFSET ?
 	`
 
 	var dbRows []robotTypeRow
-	if err := h.db.Select(&dbRows, query); err != nil {
+	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
 		logger.Printf("[ROBOT] Failed to query robot types: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robot types"})
 		return
@@ -267,8 +290,16 @@ func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
 		robotTypes = append(robotTypes, robotTypeRowToResponse(rt))
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, RobotTypeListResponse{
-		RobotTypes: robotTypes,
+		Items:   robotTypes,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 

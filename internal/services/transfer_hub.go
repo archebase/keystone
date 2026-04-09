@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"archebase.com/keystone-edge/internal/logger"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -108,6 +107,15 @@ type TransferConn struct {
 	StatusMu    sync.RWMutex
 }
 
+// GetDeviceID implements Connection.
+func (d *TransferConn) GetDeviceID() string { return d.DeviceID }
+
+// GetWSConn implements Connection.
+func (d *TransferConn) GetWSConn() *websocket.Conn { return d.Conn }
+
+// GetConnectedAt implements Connection.
+func (d *TransferConn) GetConnectedAt() time.Time { return d.ConnectedAt }
+
 // RecordEvent appends an event to the device's ring buffer
 func (d *TransferConn) RecordEvent(direction string, payload map[string]interface{}) {
 	d.events.Push(DeviceEvent{
@@ -137,17 +145,27 @@ func (d *TransferConn) GetStatus() DeviceStatus {
 	return d.Status
 }
 
-// TransferHub manages all active WebSocket device connections
+// DeviceInfo is a read-only snapshot of a connected device
+type DeviceInfo struct {
+	DeviceID    string       `json:"device_id"`
+	RemoteIP    string       `json:"remote_ip"`
+	ConnectedAt time.Time    `json:"connected_at"`
+	LastSeenAt  time.Time    `json:"last_seen_at"`
+	Status      DeviceStatus `json:"status"`
+}
+
+// TransferHub manages all active WebSocket device connections.
+// It embeds the generic Hub[*TransferConn] to handle all concurrency and
+// bookkeeping, and only adds Transfer-specific behaviour on top.
 type TransferHub struct {
-	connections     map[string]*TransferConn
-	mu              sync.RWMutex
+	*Hub[*TransferConn]
 	maxEventsPerDev int
 }
 
 // NewTransferHub creates a new TransferHub
 func NewTransferHub(maxEventsPerDevice int) *TransferHub {
 	return &TransferHub{
-		connections:     make(map[string]*TransferConn),
+		Hub:             newHub[*TransferConn]("TRANSFER"),
 		maxEventsPerDev: maxEventsPerDevice,
 	}
 }
@@ -164,45 +182,29 @@ func (h *TransferHub) NewTransferConn(conn *websocket.Conn, deviceID, remoteIP s
 	}
 }
 
-// Connect registers a device connection
-func (h *TransferHub) Connect(deviceID string, dc *TransferConn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if old, exists := h.connections[deviceID]; exists && old != nil && old.Conn != nil && old != dc {
-		logger.Printf("[TRANSFER] TransferHub: closing previous connection for device %s (replaced by new)", deviceID)
-		_ = old.Conn.Close(websocket.StatusPolicyViolation, "replaced by newer connection")
-	}
-	h.connections[deviceID] = dc
-	logger.Printf("[TRANSFER] TransferHub: device %s registered, total connections=%d", deviceID, len(h.connections))
+// Connect registers a device connection. If the device already has an active
+// connection, returns false and the caller must close the new WebSocket.
+func (h *TransferHub) Connect(deviceID string, dc *TransferConn) bool {
+	return h.connect(deviceID, dc)
 }
 
 // Disconnect removes a device connection
-func (h *TransferHub) Disconnect(deviceID string) {
-	h.mu.Lock()
-	dc := h.connections[deviceID]
-	delete(h.connections, deviceID)
-	h.mu.Unlock()
-
-	if dc == nil {
-		logger.Printf("[TRANSFER] TransferHub: Disconnect called for unknown device %s", deviceID)
+func (h *TransferHub) Disconnect(deviceID string, dc *TransferConn) {
+	if !h.disconnect(deviceID, dc) {
 		return
 	}
-	logger.Printf("[TRANSFER] TransferHub: device %s disconnected", deviceID)
 }
 
 // Get returns the TransferConn for a device, or nil if not connected
 func (h *TransferHub) Get(deviceID string) *TransferConn {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.connections[deviceID]
+	return h.get(deviceID)
 }
 
 // ListDevices returns a snapshot of all connected device IDs and their metadata
 func (h *TransferHub) ListDevices() []DeviceInfo {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	result := make([]DeviceInfo, 0, len(h.connections))
-	for _, dc := range h.connections {
+	conns := h.list()
+	result := make([]DeviceInfo, 0, len(conns))
+	for _, dc := range conns {
 		result = append(result, DeviceInfo{
 			DeviceID:    dc.DeviceID,
 			RemoteIP:    dc.RemoteIP,
@@ -212,15 +214,6 @@ func (h *TransferHub) ListDevices() []DeviceInfo {
 		})
 	}
 	return result
-}
-
-// DeviceInfo is a read-only snapshot of a connected device
-type DeviceInfo struct {
-	DeviceID    string       `json:"device_id"`
-	RemoteIP    string       `json:"remote_ip"`
-	ConnectedAt time.Time    `json:"connected_at"`
-	LastSeenAt  time.Time    `json:"last_seen_at"`
-	Status      DeviceStatus `json:"status"`
 }
 
 // SendToDevice sends a JSON message to a connected device via WebSocket

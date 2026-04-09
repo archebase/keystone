@@ -45,7 +45,12 @@ type InspectorResponse struct {
 
 // InspectorListResponse represents the response for listing inspectors.
 type InspectorListResponse struct {
-	Inspectors []InspectorResponse `json:"inspectors"`
+	Items   []InspectorResponse `json:"items"`
+	Total   int                 `json:"total"`
+	Limit   int                 `json:"limit"`
+	Offset  int                 `json:"offset"`
+	HasNext bool                `json:"hasNext,omitempty"`
+	HasPrev bool                `json:"hasPrev,omitempty"`
 }
 
 // CreateInspectorRequest represents the request body for creating an inspector.
@@ -97,23 +102,48 @@ type inspectorRow struct {
 	CertificationLevel string         `db:"certification_level"`
 	Status             string         `db:"status"`
 	Metadata           sql.NullString `db:"metadata"`
-	CreatedAt          sql.NullString `db:"created_at"`
-	UpdatedAt          sql.NullString `db:"updated_at"`
+	CreatedAt          sql.NullTime   `db:"created_at"`
+	UpdatedAt          sql.NullTime   `db:"updated_at"`
 }
 
 // ListInspectors handles inspector listing requests.
 //
 // @Summary      List inspectors
-// @Description  Lists all inspectors
+// @Description  Lists all inspectors with pagination
 // @Tags         inspectors
 // @Accept       json
 // @Produce      json
 // @Param        status query string false "Filter by status (active, inactive)"
+// @Param        limit  query int    false "Max results (default 50, max 100)"
+// @Param        offset query int    false "Pagination offset (default 0)"
 // @Success      200 {object} InspectorListResponse
+// @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /inspectors [get]
 func (h *InspectorHandler) ListInspectors(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
 	status := c.Query("status")
+
+	whereClause := "WHERE deleted_at IS NULL"
+	args := []interface{}{}
+
+	if status != "" {
+		whereClause += " AND status = ?"
+		args = append(args, status)
+	}
+
+	countQuery := "SELECT COUNT(*) FROM inspectors " + whereClause
+	var total int
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
+		logger.Printf("[INSPECTOR] Failed to count inspectors: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list inspectors"})
+		return
+	}
 
 	query := `
 		SELECT 
@@ -127,19 +157,15 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 			created_at,
 			updated_at
 		FROM inspectors
-		WHERE deleted_at IS NULL
+		` + whereClause + `
+		ORDER BY id DESC
+		LIMIT ? OFFSET ?
 	`
-	args := []interface{}{}
 
-	if status != "" {
-		query += " AND status = ?"
-		args = append(args, status)
-	}
-
-	query += " ORDER BY id DESC"
+	queryArgs := append(args, pagination.Limit, pagination.Offset)
 
 	var dbRows []inspectorRow
-	if err := h.db.Select(&dbRows, query, args...); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[INSPECTOR] Failed to query inspectors: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list inspectors"})
 		return
@@ -161,11 +187,11 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		}
 		createdAt := ""
 		if i.CreatedAt.Valid {
-			createdAt = i.CreatedAt.String
+			createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 		updatedAt := ""
 		if i.UpdatedAt.Valid {
-			updatedAt = i.UpdatedAt.String
+			updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		inspectors = append(inspectors, InspectorResponse{
@@ -181,8 +207,16 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		})
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, InspectorListResponse{
-		Inspectors: inspectors,
+		Items:   inspectors,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 
@@ -247,11 +281,11 @@ func (h *InspectorHandler) GetInspector(c *gin.Context) {
 	}
 	createdAt := ""
 	if i.CreatedAt.Valid {
-		createdAt = i.CreatedAt.String
+		createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if i.UpdatedAt.Valid {
-		updatedAt = i.UpdatedAt.String
+		updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, InspectorResponse{
@@ -555,11 +589,11 @@ func (h *InspectorHandler) UpdateInspector(c *gin.Context) {
 	}
 	createdAt := ""
 	if i.CreatedAt.Valid {
-		createdAt = i.CreatedAt.String
+		createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if i.UpdatedAt.Valid {
-		updatedAt = i.UpdatedAt.String
+		updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, InspectorResponse{

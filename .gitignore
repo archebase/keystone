@@ -81,6 +81,9 @@ release/
 # Claude Code
 .claude/settings.local.json
 
+# Agent guides (local only)
+AGENTS.md
+
 # swagger
 docs/docs.go
 docs/swagger.json

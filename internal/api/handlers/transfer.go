@@ -111,11 +111,24 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		logger.Printf("[TRANSFER] Device %s: WebSocket accept error: %v", deviceID, err)
 		return
 	}
+
+	remoteIP := extractIP(r.RemoteAddr)
+	dc := h.hub.NewTransferConn(conn, deviceID, remoteIP)
+	if !h.hub.Connect(deviceID, dc) {
+		logger.Printf("[TRANSFER] Device %s: connection rejected (already connected)", deviceID)
+		if err := conn.Close(websocket.StatusPolicyViolation, "device already connected"); err != nil {
+			logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
+		}
+		return
+	}
+
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
 			logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
 		}
 	}()
+	defer h.hub.Disconnect(deviceID, dc)
+	defer revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, h.recorderHub, h.recorderRPCTimeout, true)
 
 	// Create context for this connection
 	ctx := r.Context()
@@ -136,13 +149,6 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 			}
 		}
 	}()
-
-	remoteIP := extractIP(r.RemoteAddr)
-
-	dc := h.hub.NewTransferConn(conn, deviceID, remoteIP)
-	h.hub.Connect(deviceID, dc)
-	defer h.hub.Disconnect(deviceID)
-	defer revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, h.recorderHub, h.recorderRPCTimeout, true)
 
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Transfer %s connected from %s", deviceID, remoteIP)

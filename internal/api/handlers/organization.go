@@ -43,7 +43,12 @@ type OrganizationResponse struct {
 
 // OrganizationListResponse represents the response for listing organizations.
 type OrganizationListResponse struct {
-	Organizations []OrganizationResponse `json:"organizations"`
+	Items   []OrganizationResponse `json:"items"`
+	Total   int                    `json:"total"`
+	Limit   int                    `json:"limit"`
+	Offset  int                    `json:"offset"`
+	HasNext bool                   `json:"hasNext,omitempty"`
+	HasPrev bool                   `json:"hasPrev,omitempty"`
 }
 
 // CreateOrganizationRequest represents the request body for creating an organization.
@@ -105,22 +110,39 @@ type organizationRow struct {
 	Slug         string         `db:"slug"`
 	Description  sql.NullString `db:"description"`
 	Settings     sql.NullString `db:"settings"`
-	CreatedAt    sql.NullString `db:"created_at"`
-	UpdatedAt    sql.NullString `db:"updated_at"`
+	CreatedAt    sql.NullTime   `db:"created_at"`
+	UpdatedAt    sql.NullTime   `db:"updated_at"`
 	FactoryCount int            `db:"factory_count"`
 }
 
 // ListOrganizations handles organization listing requests.
 //
 // @Summary      List organizations
-// @Description  Lists all organizations
+// @Description  Lists all organizations with pagination
 // @Tags         organizations
 // @Accept       json
 // @Produce      json
+// @Param        limit  query     int  false  "Max results (default 50, max 100)"
+// @Param        offset query     int  false  "Pagination offset (default 0)"
 // @Success      200 {object} OrganizationListResponse
+// @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /organizations [get]
 func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
+	countQuery := "SELECT COUNT(*) FROM organizations WHERE deleted_at IS NULL"
+	var total int
+	if err := h.db.Get(&total, countQuery); err != nil {
+		logger.Printf("[ORGANIZATION] Failed to count organizations: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list organizations"})
+		return
+	}
+
 	query := `
 		SELECT 
 			o.id,
@@ -135,10 +157,11 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 		FROM organizations o
 		WHERE o.deleted_at IS NULL
 		ORDER BY o.id DESC
+		LIMIT ? OFFSET ?
 	`
 
 	var dbRows []organizationRow
-	if err := h.db.Select(&dbRows, query); err != nil {
+	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to query organizations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list organizations"})
 		return
@@ -158,12 +181,12 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 
 		createdAt := ""
 		if org.CreatedAt.Valid {
-			createdAt = org.CreatedAt.String
+			createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		updatedAt := ""
 		if org.UpdatedAt.Valid {
-			updatedAt = org.UpdatedAt.String
+			updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
 		}
 
 		organizations = append(organizations, OrganizationResponse{
@@ -178,8 +201,16 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 		})
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, OrganizationListResponse{
-		Organizations: organizations,
+		Items:   organizations,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 
@@ -242,12 +273,12 @@ func (h *OrganizationHandler) GetOrganization(c *gin.Context) {
 
 	createdAt := ""
 	if org.CreatedAt.Valid {
-		createdAt = org.CreatedAt.String
+		createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	updatedAt := ""
 	if org.UpdatedAt.Valid {
-		updatedAt = org.UpdatedAt.String
+		updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, OrganizationResponse{
@@ -509,12 +540,12 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 
 	createdAt := ""
 	if org.CreatedAt.Valid {
-		createdAt = org.CreatedAt.String
+		createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	updatedAt := ""
 	if org.UpdatedAt.Valid {
-		updatedAt = org.UpdatedAt.String
+		updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	c.JSON(http.StatusOK, OrganizationResponse{

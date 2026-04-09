@@ -47,7 +47,12 @@ type DataCollectorResponse struct {
 
 // DataCollectorListResponse represents the response for listing data collectors.
 type DataCollectorListResponse struct {
-	DataCollectors []DataCollectorResponse `json:"data_collectors"`
+	Items   []DataCollectorResponse `json:"items"`
+	Total   int                     `json:"total"`
+	Limit   int                     `json:"limit"`
+	Offset  int                     `json:"offset"`
+	HasNext bool                    `json:"hasNext,omitempty"`
+	HasPrev bool                    `json:"hasPrev,omitempty"`
 }
 
 // CreateDataCollectorRequest represents the request body for creating a data collector.
@@ -91,8 +96,8 @@ type dataCollectorRow struct {
 	Certification sql.NullString `db:"certification"`
 	Status        string         `db:"status"`
 	Metadata      sql.NullString `db:"metadata"`
-	CreatedAt     sql.NullString `db:"created_at"`
-	UpdatedAt     sql.NullString `db:"updated_at"`
+	CreatedAt     sql.NullTime   `db:"created_at"`
+	UpdatedAt     sql.NullTime   `db:"updated_at"`
 }
 
 func dcMetadataFromDB(ns sql.NullString) interface{} {
@@ -113,11 +118,11 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 	}
 	createdAt := ""
 	if dc.CreatedAt.Valid {
-		createdAt = dc.CreatedAt.String
+		createdAt = dc.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if dc.UpdatedAt.Valid {
-		updatedAt = dc.UpdatedAt.String
+		updatedAt = dc.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	return DataCollectorResponse{
 		ID:            fmt.Sprintf("%d", dc.ID),
@@ -135,18 +140,42 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 // ListDataCollectors handles data collector listing requests with filtering.
 //
 // @Summary      List data collectors
-// @Description  Lists data collectors with optional filtering by status
+// @Description  Lists all data collectors with optional status filtering
 // @Tags         data_collectors
 // @Accept       json
 // @Produce      json
 // @Param        status  query     string  false  "Filter by status (active, inactive, on_leave)"
+// @Param        limit   query     int     false  "Max results (default 50, max 100)"
+// @Param        offset  query     int     false  "Pagination offset (default 0)"
 // @Success      200     {object}  DataCollectorListResponse
+// @Failure      400     {object}  map[string]string
 // @Failure      500     {object}  map[string]string
 // @Router       /data_collectors [get]
 func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
 	status := c.Query("status")
 
-	// Build query with optional filters
+	whereClause := "WHERE dc.deleted_at IS NULL"
+	args := []interface{}{}
+
+	if status != "" {
+		whereClause += " AND dc.status = ?"
+		args = append(args, status)
+	}
+
+	countQuery := "SELECT COUNT(*) FROM data_collectors dc " + whereClause
+	var total int
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
+		logger.Printf("[DC] Failed to count data collectors: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list data collectors"})
+		return
+	}
+
 	query := `
 		SELECT 
 			dc.id,
@@ -159,20 +188,15 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
-		WHERE dc.deleted_at IS NULL
+		` + whereClause + `
+		ORDER BY dc.id DESC
+		LIMIT ? OFFSET ?
 	`
-	args := []interface{}{}
 
-	if status != "" {
-		query += " AND dc.status = ?"
-		args = append(args, status)
-	}
+	queryArgs := append(args, pagination.Limit, pagination.Offset)
 
-	query += " ORDER BY dc.id DESC"
-
-	// Use db.Select for cleaner code and automatic resource management
 	var dbRows []dataCollectorRow
-	if err := h.db.Select(&dbRows, query, args...); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[DC] Failed to query data collectors: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list data collectors"})
 		return
@@ -183,8 +207,16 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 		dataCollectors = append(dataCollectors, dataCollectorResponseFromRow(dc))
 	}
 
+	hasNext := (pagination.Offset + pagination.Limit) < total
+	hasPrev := pagination.Offset > 0
+
 	c.JSON(http.StatusOK, DataCollectorListResponse{
-		DataCollectors: dataCollectors,
+		Items:   dataCollectors,
+		Total:   total,
+		Limit:   pagination.Limit,
+		Offset:  pagination.Offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 
@@ -236,8 +268,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		return
 	}
 
-	// Generate created_at timestamp in application layer
-	createdAt := time.Now().UTC().Format("2006-01-02 15:04:05")
+	now := time.Now().UTC()
 
 	// Insert the data collector
 	var emailStr sql.NullString
@@ -292,8 +323,8 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		certStr,
 		"active",
 		metadataStr,
-		createdAt,
-		createdAt,
+		now,
+		now,
 	)
 	if err != nil {
 		logger.Printf("[DC] Failed to insert data collector: %v", err)
@@ -531,9 +562,8 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 		return
 	}
 
-	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
 	updates = append(updates, "updated_at = ?")
-	args = append(args, updatedAt)
+	args = append(args, time.Now().UTC())
 	args = append(args, id)
 
 	query := fmt.Sprintf("UPDATE data_collectors SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
@@ -624,10 +654,8 @@ func (h *DataCollectorHandler) DeleteDataCollector(c *gin.Context) {
 		return
 	}
 
-	updatedAt := time.Now().UTC().Format("2006-01-02 15:04:05")
-
 	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE data_collectors SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", updatedAt, id)
+	_, err = h.db.Exec("UPDATE data_collectors SET deleted_at = NOW(), updated_at = ? WHERE id = ? AND deleted_at IS NULL", time.Now().UTC(), id)
 	if err != nil {
 		logger.Printf("[DC] Failed to delete data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete data collector"})

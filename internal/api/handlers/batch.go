@@ -123,10 +123,12 @@ type BatchListItem struct {
 
 // ListBatchesResponse represents the response body for listing batches.
 type ListBatchesResponse struct {
-	Batches []BatchListItem `json:"batches"`
+	Items   []BatchListItem `json:"items"`
 	Total   int             `json:"total"`
 	Limit   int             `json:"limit"`
 	Offset  int             `json:"offset"`
+	HasNext bool            `json:"hasNext,omitempty"`
+	HasPrev bool            `json:"hasPrev,omitempty"`
 }
 
 type batchRow struct {
@@ -145,8 +147,8 @@ type batchRow struct {
 	StartedAt      sql.NullTime   `db:"started_at"`
 	EndedAt        sql.NullTime   `db:"ended_at"`
 	Metadata       sql.NullString `db:"metadata"`
-	CreatedAt      sql.NullString `db:"created_at"`
-	UpdatedAt      sql.NullString `db:"updated_at"`
+	CreatedAt      sql.NullTime   `db:"created_at"`
+	UpdatedAt      sql.NullTime   `db:"updated_at"`
 }
 
 func parseNullableJSON(v sql.NullString) any {
@@ -182,11 +184,11 @@ func batchListItemFromRow(r batchRow) BatchListItem {
 
 	createdAt := ""
 	if r.CreatedAt.Valid {
-		createdAt = r.CreatedAt.String
+		createdAt = r.CreatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	updatedAt := ""
 	if r.UpdatedAt.Valid {
-		updatedAt = r.UpdatedAt.String
+		updatedAt = r.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	nameOut := ""
@@ -339,11 +341,16 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 		batches = append(batches, batchListItemFromRow(r))
 	}
 
+	hasNext := (offset + limit) < total
+	hasPrev := offset > 0
+
 	c.JSON(http.StatusOK, ListBatchesResponse{
-		Batches: batches,
+		Items:   batches,
 		Total:   total,
 		Limit:   limit,
 		Offset:  offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 
@@ -1442,6 +1449,10 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 		return
 	}
 
+	// If task deletions/inserts made the batch terminal, advance status accordingly.
+	// Example: target reduced from 2 -> 1 after 1 task completed; remaining tasks may all be terminal.
+	tryAdvanceBatchStatus(h.db, batchNumID)
+
 	c.JSON(http.StatusOK, AdjustBatchTasksResponse{
 		CreatedTasks:   createdTasks,
 		DeletedTaskIDs: deletedTaskIDs,
@@ -1650,7 +1661,7 @@ func (h *BatchHandler) ListBatchTasks(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, ListTasksResponse{
-		Tasks:  items,
+		Items:  items,
 		Total:  len(items),
 		Limit:  len(items),
 		Offset: 0,
@@ -1815,8 +1826,24 @@ func tryAdvanceBatchStatus(db *sqlx.DB, batchID int64) {
 
 	switch info.Status {
 	case "pending":
-		// Advance to active: a task just reached a terminal state, so this batch has started.
-		// Then immediately re-evaluate completion: it's possible all tasks are already terminal.
+		// Advance to active only if at least one task is already in terminal state.
+		// Historically this function was only called after a task reached terminal state,
+		// but it may also be invoked after batch task adjustments (create/delete), so we
+		// must guard against incorrectly advancing a never-started batch.
+		var terminalCount int
+		if err := tx.Get(&terminalCount, `
+			SELECT COUNT(*) FROM tasks
+			WHERE batch_id = ? AND deleted_at IS NULL
+			  AND status IN ('completed', 'failed', 'cancelled')`,
+			batchID); err != nil {
+			logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to count terminal tasks for batch %d: %v", batchID, err)
+			return
+		}
+		if terminalCount == 0 {
+			return
+		}
+
+		// Now it's safe to mark started; then re-evaluate completion.
 		if _, err := tx.Exec(
 			"UPDATE batches SET status = 'active', started_at = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND deleted_at IS NULL",
 			now, now, batchID,

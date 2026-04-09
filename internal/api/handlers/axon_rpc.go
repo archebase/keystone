@@ -152,20 +152,27 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		logger.Printf("[RECORDER] Device %s: WebSocket accept error: %v", deviceID, err)
 		return
 	}
+
+	remoteIP := extractIP(r.RemoteAddr)
+	rc := h.hub.NewRecorderConn(conn, deviceID, remoteIP)
+	if !h.hub.Connect(deviceID, rc) {
+		logger.Printf("[RECORDER] Device %s: connection rejected (already connected)", deviceID)
+		if err := conn.Close(websocket.StatusPolicyViolation, "device already connected"); err != nil {
+			logger.Printf("[RECORDER] Device %s: WebSocket close error: %v", deviceID, err)
+		}
+		return
+	}
+
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
 			logger.Printf("[RECORDER] Device %s: WebSocket close error: %v", deviceID, err)
 		}
 	}()
+	defer h.hub.Disconnect(deviceID, rc)
+	defer revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, nil, 0, false)
 
 	ctx := r.Context()
 	go h.pingLoop(ctx, conn)
-
-	remoteIP := extractIP(r.RemoteAddr)
-	rc := h.hub.NewRecorderConn(conn, deviceID, remoteIP)
-	h.hub.Connect(deviceID, rc)
-	defer h.hub.Disconnect(deviceID)
-	defer revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, nil, 0, false)
 
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[RECORDER] Recorder %s connected from %s", deviceID, remoteIP)

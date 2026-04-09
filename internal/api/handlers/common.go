@@ -7,17 +7,79 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"strconv"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/gin-gonic/gin"
 )
 
-// maxSlugLength matches VARCHAR(100) for slug columns in the schema.
-const maxSlugLength = 100
+const (
+	defaultLimit  = 50
+	maxLimit      = 100
+	maxSlugLength = 100
+)
 
-// invalidSlugUserMessage is returned when slug fails isValidSlug (length or charset).
 const invalidSlugUserMessage = "slug must be at most 100 characters and contain only letters, digits, and hyphens"
+
+// PaginationParams represents normalized pagination input from query parameters.
+type PaginationParams struct {
+	Limit  int
+	Offset int
+}
+
+// ListResponse is a generic list payload with pagination metadata.
+type ListResponse struct {
+	Items   interface{} `json:"items"`
+	Total   int         `json:"total"`
+	Limit   int         `json:"limit"`
+	Offset  int         `json:"offset"`
+	HasNext bool        `json:"hasNext,omitempty"`
+	HasPrev bool        `json:"hasPrev,omitempty"`
+}
+
+// ParsePagination reads and validates pagination query parameters from the request.
+func ParsePagination(c *gin.Context) (PaginationParams, error) {
+	limit := defaultLimit
+	offset := 0
+
+	if rawLimit := strings.TrimSpace(c.Query("limit")); rawLimit != "" {
+		parsedLimit, err := strconv.Atoi(rawLimit)
+		if err != nil || parsedLimit < 1 {
+			return PaginationParams{}, &PaginationError{Message: "limit must be a positive integer"}
+		}
+		if parsedLimit > maxLimit {
+			parsedLimit = maxLimit
+		}
+		limit = parsedLimit
+	}
+
+	if rawOffset := strings.TrimSpace(c.Query("offset")); rawOffset != "" {
+		parsedOffset, err := strconv.Atoi(rawOffset)
+		if err != nil || parsedOffset < 0 {
+			return PaginationParams{}, &PaginationError{Message: "offset must be a non-negative integer"}
+		}
+		offset = parsedOffset
+	}
+
+	return PaginationParams{Limit: limit, Offset: offset}, nil
+}
+
+// PaginationError is returned when pagination inputs are invalid.
+type PaginationError struct {
+	Message string
+}
+
+func (e *PaginationError) Error() string {
+	return e.Message
+}
+
+// PaginationErrorResponse writes a standardized 400 response for pagination errors.
+func PaginationErrorResponse(c *gin.Context, err error) {
+	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+}
 
 // isValidSlug checks non-empty slug, length <= maxSlugLength (in runes), and allows Unicode letters/digits plus hyphen.
 func isValidSlug(s string) bool {
@@ -79,30 +141,4 @@ func sqlNullJSONFromRaw(raw json.RawMessage) sql.NullString {
 		return sql.NullString{Valid: false}
 	}
 	return sql.NullString{String: s, Valid: true}
-}
-
-func formatDBTimeToRFC3339(raw string) string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return ""
-	}
-
-	// MySQL commonly returns "YYYY-MM-DD HH:MM:SS" or with fractional seconds.
-	// Some drivers/configs may return RFC3339.
-	layouts := []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02 15:04:05.999999",
-		"2006-01-02 15:04:05.999999999",
-		time.RFC3339Nano,
-		time.RFC3339,
-	}
-
-	for _, layout := range layouts {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.Format(time.RFC3339)
-		}
-	}
-
-	// Fallback: return original string instead of a wrong timestamp.
-	return s
 }

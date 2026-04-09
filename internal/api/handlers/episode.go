@@ -31,10 +31,18 @@ func NewEpisodeHandler(db *sqlx.DB) *EpisodeHandler {
 	}
 }
 
-// Episode represents an episode in the database
+// episodeRow represents an episode row from the database.
 type episodeRow struct {
-	ID                 string          `db:"episode_id"`
+	ID                 int64           `db:"id"`
+	EpisodeID          string          `db:"episode_id"`
 	TaskID             int64           `db:"task_id"`
+	TaskPublicID       sql.NullString  `db:"task_public_id"`
+	SopSlug            sql.NullString  `db:"sop_slug"`
+	SopVersion         sql.NullString  `db:"sop_version"`
+	SceneName          sql.NullString  `db:"scene_name"`
+	SubsceneName       sql.NullString  `db:"subscene_name"`
+	RobotDeviceID      sql.NullString  `db:"robot_device_id"`
+	CollectorOperator  sql.NullString  `db:"collector_operator_id"`
 	McapPath           string          `db:"mcap_path"`
 	SidecarPath        string          `db:"sidecar_path"`
 	Checksum           sql.NullString  `db:"checksum"`
@@ -52,8 +60,16 @@ type episodeRow struct {
 
 // Episode represents an episode in the API response
 type Episode struct {
-	ID                 string   `json:"id"`
+	ID                 int64    `json:"id"`
+	EpisodeID          string   `json:"episode_id,omitempty"`
 	TaskID             int64    `json:"task_id"`
+	TaskPublicID       *string  `json:"task_public_id,omitempty"`
+	SopSlug            *string  `json:"sop_slug"`
+	SopVersion         *string  `json:"sop_version"`
+	SceneName          *string  `json:"scene_name"`
+	SubsceneName       *string  `json:"subscene_name"`
+	RobotDeviceID      *string  `json:"robot_device_id"`
+	CollectorOperator  *string  `json:"collector_operator_id"`
 	McapPath           string   `json:"mcap_path"`
 	SidecarPath        string   `json:"sidecar_path"`
 	Checksum           *string  `json:"checksum"`
@@ -71,16 +87,18 @@ type Episode struct {
 
 // EpisodeListResponse represents the response for listing episodes
 type EpisodeListResponse struct {
-	Episodes []Episode `json:"episodes"`
-	Total    int       `json:"total"`
-	Limit    int       `json:"limit"`
-	Offset   int       `json:"offset"`
+	Items   []Episode `json:"items"`
+	Total   int       `json:"total"`
+	Limit   int       `json:"limit"`
+	Offset  int       `json:"offset"`
+	HasNext bool      `json:"hasNext,omitempty"`
+	HasPrev bool      `json:"hasPrev,omitempty"`
 }
 
 // RegisterRoutes registers episode-related routes
 func (h *EpisodeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("", h.ListEpisodes)
-	apiV1.GET(":id", h.GetEpisode)
+	apiV1.GET("/:id", h.GetEpisode)
 }
 
 func nullableString(value sql.NullString) *string {
@@ -163,8 +181,14 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	// Build the base query
 	query := `
 		SELECT 
-			e.episode_id,
+			e.id,
 			e.task_id as task_id,
+			s.slug AS sop_slug,
+			s.version AS sop_version,
+			t.scene_name AS scene_name,
+			t.subscene_name AS subscene_name,
+			r.device_id AS robot_device_id,
+			dc.operator_id AS collector_operator_id,
 			e.mcap_path,
 			e.sidecar_path,
 			COALESCE(e.qa_status, '') as qa_status,
@@ -174,6 +198,11 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.created_at,
 			e.labels
 		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
 		WHERE e.deleted_at IS NULL
 	`
 
@@ -257,7 +286,15 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	for i, r := range rows {
 		episodes[i] = Episode{
 			ID:                 r.ID,
+			EpisodeID:          r.EpisodeID,
 			TaskID:             r.TaskID,
+			TaskPublicID:       nullableString(r.TaskPublicID),
+			SopSlug:            nullableString(r.SopSlug),
+			SopVersion:         nullableString(r.SopVersion),
+			SceneName:          nullableString(r.SceneName),
+			SubsceneName:       nullableString(r.SubsceneName),
+			RobotDeviceID:      nullableString(r.RobotDeviceID),
+			CollectorOperator:  nullableString(r.CollectorOperator),
 			McapPath:           r.McapPath,
 			SidecarPath:        r.SidecarPath,
 			Checksum:           nullableString(r.Checksum),
@@ -274,34 +311,46 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		}
 	}
 
+	hasNext := (offset + limit) < total
+	hasPrev := offset > 0
+
 	// Return response
 	c.JSON(http.StatusOK, EpisodeListResponse{
-		Episodes: episodes,
-		Total:    total,
-		Limit:    limit,
-		Offset:   offset,
+		Items:   episodes,
+		Total:   total,
+		Limit:   limit,
+		Offset:  offset,
+		HasNext: hasNext,
+		HasPrev: hasPrev,
 	})
 }
 
-// GetEpisode returns episode details by episode ID.
+// GetEpisode returns episode details by episode numeric ID.
 //
 // @Summary      Get episode details
 // @Description  Returns an episode by ID
 // @Tags         episodes
 // @Produce      json
-// @Param        id   path      string  true  "Episode ID"
+// @Param        id   path      int  true  "Episode ID"
 // @Success      200  {object}  Episode
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
 // @Router       /episodes/{id} [get]
 func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
-	episodeID := c.Param("id")
+	episodeIDStr := c.Param("id")
+	episodeID, err := strconv.ParseInt(strings.TrimSpace(episodeIDStr), 10, 64)
+	if err != nil || episodeID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode id"})
+		return
+	}
 
 	var row episodeRow
 	query := `
 		SELECT
+			e.id,
 			e.episode_id,
 			e.task_id AS task_id,
+			t.task_id AS task_public_id,
 			e.mcap_path,
 			e.sidecar_path,
 			e.checksum,
@@ -316,13 +365,14 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.created_at,
 			e.labels
 		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN inspections i ON i.episode_id = e.id
 		LEFT JOIN inspectors ins ON ins.id = i.inspector_id
-		WHERE e.episode_id = ? AND e.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
 		LIMIT 1
 	`
 
-	err := h.db.Get(&row, query, episodeID)
+	err = h.db.Get(&row, query, episodeID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
 		return
@@ -336,7 +386,15 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 
 	c.JSON(http.StatusOK, Episode{
 		ID:                 row.ID,
+		EpisodeID:          row.EpisodeID,
 		TaskID:             row.TaskID,
+		TaskPublicID:       nullableString(row.TaskPublicID),
+		SopSlug:            nullableString(row.SopSlug),
+		SopVersion:         nullableString(row.SopVersion),
+		SceneName:          nullableString(row.SceneName),
+		SubsceneName:       nullableString(row.SubsceneName),
+		RobotDeviceID:      nullableString(row.RobotDeviceID),
+		CollectorOperator:  nullableString(row.CollectorOperator),
 		McapPath:           row.McapPath,
 		SidecarPath:        row.SidecarPath,
 		Checksum:           nullableString(row.Checksum),
