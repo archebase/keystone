@@ -1449,6 +1449,10 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 		return
 	}
 
+	// If task deletions/inserts made the batch terminal, advance status accordingly.
+	// Example: target reduced from 2 -> 1 after 1 task completed; remaining tasks may all be terminal.
+	tryAdvanceBatchStatus(h.db, batchNumID)
+
 	c.JSON(http.StatusOK, AdjustBatchTasksResponse{
 		CreatedTasks:   createdTasks,
 		DeletedTaskIDs: deletedTaskIDs,
@@ -1822,8 +1826,24 @@ func tryAdvanceBatchStatus(db *sqlx.DB, batchID int64) {
 
 	switch info.Status {
 	case "pending":
-		// Advance to active: a task just reached a terminal state, so this batch has started.
-		// Then immediately re-evaluate completion: it's possible all tasks are already terminal.
+		// Advance to active only if at least one task is already in terminal state.
+		// Historically this function was only called after a task reached terminal state,
+		// but it may also be invoked after batch task adjustments (create/delete), so we
+		// must guard against incorrectly advancing a never-started batch.
+		var terminalCount int
+		if err := tx.Get(&terminalCount, `
+			SELECT COUNT(*) FROM tasks
+			WHERE batch_id = ? AND deleted_at IS NULL
+			  AND status IN ('completed', 'failed', 'cancelled')`,
+			batchID); err != nil {
+			logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to count terminal tasks for batch %d: %v", batchID, err)
+			return
+		}
+		if terminalCount == 0 {
+			return
+		}
+
+		// Now it's safe to mark started; then re-evaluate completion.
 		if _, err := tx.Exec(
 			"UPDATE batches SET status = 'active', started_at = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND deleted_at IS NULL",
 			now, now, batchID,

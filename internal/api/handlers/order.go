@@ -558,28 +558,9 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 	args := []interface{}{}
 
 	if req.SceneID != nil {
-		sceneIDStr := strings.TrimSpace(*req.SceneID)
-		if sceneIDStr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "scene_id cannot be empty"})
-			return
-		}
-		sceneID, err := strconv.ParseInt(sceneIDStr, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
-			return
-		}
-		var sceneExists bool
-		if err := h.db.Get(&sceneExists, "SELECT EXISTS(SELECT 1 FROM scenes WHERE id = ? AND deleted_at IS NULL)", sceneID); err != nil {
-			logger.Printf("[ORDER] Failed to verify scene: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update order"})
-			return
-		}
-		if !sceneExists {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
-			return
-		}
-		updates = append(updates, "scene_id = ?")
-		args = append(args, sceneID)
+		// scene_id is immutable after creation: changing it would invalidate existing batches/tasks/subscenes.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scene_id is immutable and cannot be updated"})
+		return
 	}
 
 	var autoStatusFromTarget *string

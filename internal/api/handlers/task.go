@@ -206,6 +206,7 @@ var validTaskStatusTransitions = map[string]map[string]struct{}{
 // @Description  Lists tasks with optional workstation and status filters
 // @Tags         tasks
 // @Produce      json
+// @Param        task_id         query     string  false  "Filter by public task_id"
 // @Param        workstation_id  query     string  false  "Filter by workstation"
 // @Param        status          query     string  false  "Filter by status"
 // @Param        limit           query     int     false  "Max results"      default(50)
@@ -217,6 +218,7 @@ var validTaskStatusTransitions = map[string]map[string]struct{}{
 func (h *TaskHandler) ListTasks(c *gin.Context) {
 	const defaultLimit = 50
 
+	taskID := strings.TrimSpace(c.Query("task_id"))
 	workstationID := strings.TrimSpace(c.Query("workstation_id"))
 	status := strings.TrimSpace(c.Query("status"))
 
@@ -250,6 +252,11 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	conditions := []string{"tasks.deleted_at IS NULL"}
 	args := make([]interface{}, 0, 6)
 
+	if taskID != "" {
+		conditions = append(conditions, "tasks.task_id = ?")
+		args = append(args, taskID)
+	}
+
 	if workstationID != "" {
 		conditions = append(conditions, "CAST(tasks.workstation_id AS CHAR) = ?")
 		args = append(args, workstationID)
@@ -273,6 +280,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	queryArgs := append(append([]interface{}{}, args...), limit, offset)
 	listQuery := fmt.Sprintf(`SELECT
 		tasks.id AS id,
+		tasks.task_id AS task_id,
 		CAST(tasks.batch_id AS CHAR) AS batch_id,
 		CAST(tasks.order_id AS CHAR) AS order_id,
 		CAST(tasks.sop_id AS CHAR) AS sop_id,
