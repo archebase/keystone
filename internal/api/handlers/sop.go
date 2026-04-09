@@ -409,38 +409,24 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 		return
 	}
 
-	// Build update query dynamically
+	// Build update query dynamically (id-scoped updates only; slug rename is handled separately).
 	updates := []string{}
 	args := []interface{}{}
 
+	renameSlug := false
+	oldSlug := current.Slug
+	newSlug := ""
 	if req.Slug != nil {
-		slug := strings.TrimSpace(*req.Slug)
-		if slug == "" {
+		newSlug = strings.TrimSpace(*req.Slug)
+		if newSlug == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "slug cannot be empty"})
 			return
 		}
-		if !isValidSlug(slug) {
+		if !isValidSlug(newSlug) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
 			return
 		}
-		if slug != current.Slug {
-			// New slug: reset version to 1.0.0.
-			targetVersion := "1.0.0"
-
-			var exists bool
-			err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM sops WHERE slug = ? AND id != ? AND version = ? AND deleted_at IS NULL)", slug, id, targetVersion)
-			if err == nil && exists {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this version"})
-				return
-			}
-
-			updates = append(updates, "slug = ?", "version = ?")
-			args = append(args, slug, targetVersion)
-		} else {
-			// Same slug in payload: no version reset.
-			updates = append(updates, "slug = ?")
-			args = append(args, slug)
-		}
+		renameSlug = newSlug != oldSlug
 	}
 
 	if req.Description != nil {
@@ -476,28 +462,78 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 		}
 	}
 
-	if len(updates) == 0 {
+	// It's valid to rename a slug even if no id-scoped fields are being updated.
+	if !renameSlug && len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
 		return
 	}
 
 	now := time.Now().UTC()
-	updates = append(updates, "updated_at = ?")
-	args = append(args, now)
-	args = append(args, id)
-
-	query := fmt.Sprintf("UPDATE sops SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
-
-	result, err := h.db.Exec(query, args...)
+	tx, err := h.db.Beginx()
 	if err != nil {
-		logger.Printf("[SOP] Failed to update SOP: %v", err)
+		logger.Printf("[SOP] Failed to begin transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update SOP"})
 		return
 	}
+	defer func() { _ = tx.Rollback() }()
 
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "SOP not found"})
+	if renameSlug {
+		// Do not allow rename if target slug already exists (any version).
+		var exists bool
+		if err := tx.Get(&exists, "SELECT EXISTS(SELECT 1 FROM sops WHERE slug = ? AND deleted_at IS NULL)", newSlug); err != nil {
+			logger.Printf("[SOP] Failed to check target slug existence: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update SOP"})
+			return
+		}
+		if exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target slug already exists"})
+			return
+		}
+
+		// Rename all versions under the same old slug.
+		if _, err := tx.Exec(
+			"UPDATE sops SET slug = ?, updated_at = ? WHERE slug = ? AND deleted_at IS NULL",
+			newSlug, now, oldSlug,
+		); err != nil {
+			logger.Printf("[SOP] Failed to rename SOP slug: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update SOP"})
+			return
+		}
+	}
+
+	if len(updates) > 0 {
+		updates = append(updates, "updated_at = ?")
+		args = append(args, now)
+		args = append(args, id)
+
+		query := fmt.Sprintf("UPDATE sops SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
+		result, err := tx.Exec(query, args...)
+		if err != nil {
+			logger.Printf("[SOP] Failed to update SOP: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update SOP"})
+			return
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected == 0 {
+			// MySQL may report 0 rows affected when the row matches but values are unchanged.
+			// Re-check existence to avoid false 404 responses on no-op updates.
+			var stillExists bool
+			if err := tx.Get(&stillExists, "SELECT EXISTS(SELECT 1 FROM sops WHERE id = ? AND deleted_at IS NULL)", id); err != nil {
+				logger.Printf("[SOP] Failed to re-check SOP existence: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update SOP"})
+				return
+			}
+			if !stillExists {
+				c.JSON(http.StatusNotFound, gin.H{"error": "SOP not found"})
+				return
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[SOP] Failed to commit transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update SOP"})
 		return
 	}
 
