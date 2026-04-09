@@ -45,6 +45,7 @@ func (h *OrderHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // OrderListResponse is the response body for listing orders.
 type OrderListResponse struct {
 	Items   []OrderResponse `json:"items"`
+	Scenes  []SceneRef      `json:"scenes,omitempty"`
 	Total   int             `json:"total"`
 	Limit   int             `json:"limit"`
 	Offset  int             `json:"offset"`
@@ -52,10 +53,17 @@ type OrderListResponse struct {
 	HasPrev bool            `json:"hasPrev,omitempty"`
 }
 
+// SceneRef is a minimal scene representation used by order pages.
+type SceneRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // OrderResponse is the response body for a single order.
 type OrderResponse struct {
 	ID             string `json:"id"`
 	SceneID        string `json:"scene_id"`
+	SceneName      string `json:"scene_name,omitempty"`
 	Name           string `json:"name"`
 	TargetCount    int    `json:"target_count"`
 	TaskCount      int    `json:"task_count"`
@@ -96,6 +104,7 @@ type UpdateOrderRequest struct {
 type orderRow struct {
 	ID             int64          `db:"id"`
 	SceneID        int64          `db:"scene_id"`
+	SceneName      sql.NullString `db:"scene_name"`
 	Name           string         `db:"name"`
 	TargetCount    int            `db:"target_count"`
 	TaskCount      int            `db:"task_count"`
@@ -158,6 +167,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		SELECT
 			o.id,
 			o.scene_id,
+			s.name AS scene_name,
 			o.name,
 			o.target_count,
 			o.status,
@@ -171,6 +181,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'cancelled' AND t.deleted_at IS NULL) AS cancelled_count,
 			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'failed' AND t.deleted_at IS NULL) AS failed_count
 		FROM orders o
+		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
 		WHERE o.deleted_at IS NULL
 	`
 	args := []any{}
@@ -212,9 +223,14 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 				metadata = v
 			}
 		}
+		sceneName := ""
+		if r.SceneName.Valid {
+			sceneName = r.SceneName.String
+		}
 		orders = append(orders, OrderResponse{
 			ID:             fmt.Sprintf("%d", r.ID),
 			SceneID:        fmt.Sprintf("%d", r.SceneID),
+			SceneName:      sceneName,
 			Name:           r.Name,
 			TargetCount:    r.TargetCount,
 			TaskCount:      r.TaskCount,
@@ -233,8 +249,37 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	hasNext := (pagination.Offset + pagination.Limit) < total
 	hasPrev := pagination.Offset > 0
 
+	// Provide scenes to allow order pages to avoid a separate GET /scenes call.
+	var sceneRefs []SceneRef
+	{
+		type sceneRefRow struct {
+			ID   int64  `db:"id"`
+			Name string `db:"name"`
+		}
+		var srows []sceneRefRow
+		// Cap to a reasonable number; UI only needs id/name for select options.
+		if err := h.db.Select(&srows, `
+			SELECT id, name
+			FROM scenes
+			WHERE deleted_at IS NULL
+			ORDER BY id DESC
+			LIMIT 500
+		`); err != nil {
+			logger.Printf("[ORDER] Failed to query scene refs: %v", err)
+		} else {
+			sceneRefs = make([]SceneRef, 0, len(srows))
+			for _, sr := range srows {
+				sceneRefs = append(sceneRefs, SceneRef{
+					ID:   fmt.Sprintf("%d", sr.ID),
+					Name: sr.Name,
+				})
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, OrderListResponse{
 		Items:   orders,
+		Scenes:  sceneRefs,
 		Total:   total,
 		Limit:   pagination.Limit,
 		Offset:  pagination.Offset,
@@ -256,6 +301,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 		SELECT
 			o.id,
 			o.scene_id,
+			s.name AS scene_name,
 			o.name,
 			o.target_count,
 			o.status,
@@ -269,6 +315,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'cancelled' AND t.deleted_at IS NULL) AS cancelled_count,
 			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.status = 'failed' AND t.deleted_at IS NULL) AS failed_count
 		FROM orders o
+		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
 		WHERE o.id = ? AND o.deleted_at IS NULL
 	`
 
@@ -302,10 +349,15 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 			metadata = v
 		}
 	}
+	sceneName := ""
+	if r.SceneName.Valid {
+		sceneName = r.SceneName.String
+	}
 
 	c.JSON(http.StatusOK, OrderResponse{
 		ID:             fmt.Sprintf("%d", r.ID),
 		SceneID:        fmt.Sprintf("%d", r.SceneID),
+		SceneName:      sceneName,
 		Name:           r.Name,
 		TargetCount:    r.TargetCount,
 		TaskCount:      r.TaskCount,
@@ -389,12 +441,13 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 
 	// Derive organization_id from scene -> factory -> organization
 	var organizationID int64
-	err = h.db.Get(&organizationID, `
-		SELECT f.organization_id
+	var sceneName string
+	err = h.db.QueryRowx(`
+		SELECT f.organization_id, s.name
 		FROM scenes s
 		JOIN factories f ON f.id = s.factory_id
 		WHERE s.id = ? AND s.deleted_at IS NULL AND f.deleted_at IS NULL
-	`, sceneID)
+	`, sceneID).Scan(&organizationID, &sceneName)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
@@ -458,6 +511,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	c.JSON(http.StatusCreated, OrderResponse{
 		ID:             fmt.Sprintf("%d", id),
 		SceneID:        fmt.Sprintf("%d", sceneID),
+		SceneName:      sceneName,
 		Name:           req.Name,
 		TargetCount:    req.TargetCount,
 		TaskCount:      0,

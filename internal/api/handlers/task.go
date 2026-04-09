@@ -114,18 +114,20 @@ var validTaskStatuses = map[string]struct{}{
 
 // TaskListItem represents a task item in list responses.
 type TaskListItem struct {
-	ID            string  `json:"id" db:"id"`
-	TaskID        string  `json:"task_id" db:"task_id"`
-	BatchID       string  `json:"batch_id" db:"batch_id"`
-	OrderID       string  `json:"order_id" db:"order_id"`
-	SOPID         string  `json:"sop_id" db:"sop_id"`
-	WorkstationID *string `json:"workstation_id" db:"workstation_id"`
-	SceneID       string  `json:"scene_id" db:"scene_id"`
-	SceneName     string  `json:"scene_name" db:"scene_name"`
-	SubsceneID    string  `json:"subscene_id" db:"subscene_id"`
-	SubsceneName  string  `json:"subscene_name" db:"subscene_name"`
-	Status        string  `json:"status" db:"status"`
-	AssignedAt    *string `json:"assigned_at" db:"assigned_at"`
+	ID                  int64   `json:"id" db:"id"`
+	TaskID              string  `json:"task_id" db:"task_id"`
+	BatchID             string  `json:"batch_id" db:"batch_id"`
+	OrderID             string  `json:"order_id" db:"order_id"`
+	SOPID               string  `json:"sop_id" db:"sop_id"`
+	WorkstationID       *string `json:"workstation_id" db:"workstation_id"`
+	RobotDeviceID       *string `json:"robot_device_id" db:"robot_device_id"`
+	CollectorOperatorID *string `json:"collector_operator_id" db:"collector_operator_id"`
+	SceneID             string  `json:"scene_id" db:"scene_id"`
+	SceneName           string  `json:"scene_name" db:"scene_name"`
+	SubsceneID          string  `json:"subscene_id" db:"subscene_id"`
+	SubsceneName        string  `json:"subscene_name" db:"subscene_name"`
+	Status              string  `json:"status" db:"status"`
+	AssignedAt          *string `json:"assigned_at" db:"assigned_at"`
 }
 
 // ListTasksResponse represents the response body for listing tasks.
@@ -145,7 +147,7 @@ type TaskEpisodeDetail struct {
 
 // TaskDetailResponse represents the response body for getting a task by ID.
 type TaskDetailResponse struct {
-	ID             string             `json:"id" db:"id"`
+	ID             int64              `json:"id" db:"id"`
 	TaskID         string             `json:"task_id" db:"task_id"`
 	BatchID        string             `json:"batch_id" db:"batch_id"`
 	BatchName      string             `json:"batch_name" db:"batch_name"`
@@ -201,12 +203,11 @@ var validTaskStatusTransitions = map[string]map[string]struct{}{
 // ListTasks handles task listing requests with optional filtering.
 //
 // @Summary      List tasks
-// @Description  Lists tasks with optional workstation, status, and public task_id filters
+// @Description  Lists tasks with optional workstation and status filters
 // @Tags         tasks
 // @Produce      json
 // @Param        workstation_id  query     string  false  "Filter by workstation"
 // @Param        status          query     string  false  "Filter by status"
-// @Param        task_id         query     string  false  "Filter by public task_id (exact match)"
 // @Param        limit           query     int     false  "Max results"      default(50)
 // @Param        offset          query     int     false  "Pagination offset" default(0)
 // @Success      200             {object}  ListTasksResponse
@@ -218,7 +219,6 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 
 	workstationID := strings.TrimSpace(c.Query("workstation_id"))
 	status := strings.TrimSpace(c.Query("status"))
-	publicTaskID := strings.TrimSpace(c.Query("task_id"))
 
 	limit := defaultLimit
 	if rawLimit := strings.TrimSpace(c.Query("limit")); rawLimit != "" {
@@ -247,22 +247,17 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		}
 	}
 
-	conditions := []string{"deleted_at IS NULL"}
+	conditions := []string{"tasks.deleted_at IS NULL"}
 	args := make([]interface{}, 0, 6)
 
 	if workstationID != "" {
-		conditions = append(conditions, "CAST(workstation_id AS CHAR) = ?")
+		conditions = append(conditions, "CAST(tasks.workstation_id AS CHAR) = ?")
 		args = append(args, workstationID)
 	}
 
 	if status != "" {
-		conditions = append(conditions, "status = ?")
+		conditions = append(conditions, "tasks.status = ?")
 		args = append(args, status)
-	}
-
-	if publicTaskID != "" {
-		conditions = append(conditions, "task_id = ?")
-		args = append(args, publicTaskID)
 	}
 
 	whereClause := strings.Join(conditions, " AND ")
@@ -277,21 +272,23 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 
 	queryArgs := append(append([]interface{}{}, args...), limit, offset)
 	listQuery := fmt.Sprintf(`SELECT
-		CAST(id AS CHAR) AS id,
-		task_id AS task_id,
-		CAST(batch_id AS CHAR) AS batch_id,
-		CAST(order_id AS CHAR) AS order_id,
-		CAST(sop_id AS CHAR) AS sop_id,
-		CASE WHEN workstation_id IS NULL THEN NULL ELSE CAST(workstation_id AS CHAR) END AS workstation_id,
-		CAST(scene_id AS CHAR) AS scene_id,
-		COALESCE(scene_name, '') AS scene_name,
-		CAST(subscene_id AS CHAR) AS subscene_id,
-		COALESCE(subscene_name, '') AS subscene_name,
-		status,
-		CASE WHEN assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at
+		tasks.id AS id,
+		CAST(tasks.batch_id AS CHAR) AS batch_id,
+		CAST(tasks.order_id AS CHAR) AS order_id,
+		CAST(tasks.sop_id AS CHAR) AS sop_id,
+		CASE WHEN tasks.workstation_id IS NULL THEN NULL ELSE CAST(tasks.workstation_id AS CHAR) END AS workstation_id,
+		NULLIF(TRIM(COALESCE(ws.robot_serial, '')), '') AS robot_device_id,
+		NULLIF(TRIM(COALESCE(ws.collector_operator_id, '')), '') AS collector_operator_id,
+		CAST(tasks.scene_id AS CHAR) AS scene_id,
+		COALESCE(tasks.scene_name, '') AS scene_name,
+		CAST(tasks.subscene_id AS CHAR) AS subscene_id,
+		COALESCE(tasks.subscene_name, '') AS subscene_name,
+		tasks.status,
+		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at
 		FROM tasks
+		LEFT JOIN workstations ws ON ws.id = tasks.workstation_id AND ws.deleted_at IS NULL
 		WHERE %s
-		ORDER BY created_at DESC, id DESC
+		ORDER BY tasks.created_at DESC, tasks.id DESC
 		LIMIT ? OFFSET ?`, whereClause)
 
 	items := make([]TaskListItem, 0)
@@ -335,7 +332,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 
 	var task TaskDetailResponse
 	query := `SELECT
-		CAST(t.id AS CHAR) AS id,
+		t.id AS id,
 		t.task_id AS task_id,
 		CAST(t.batch_id AS CHAR) AS batch_id,
 		COALESCE(t.batch_name, '') AS batch_name,
