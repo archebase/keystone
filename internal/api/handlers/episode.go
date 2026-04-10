@@ -17,17 +17,22 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
 // EpisodeHandler handles episode-related HTTP requests
 type EpisodeHandler struct {
-	db *sqlx.DB
+	db     *sqlx.DB
+	s3     *s3.Client
+	bucket string
 }
 
 // NewEpisodeHandler creates a new EpisodeHandler
-func NewEpisodeHandler(db *sqlx.DB) *EpisodeHandler {
+func NewEpisodeHandler(db *sqlx.DB, s3Client *s3.Client, bucket string) *EpisodeHandler {
 	return &EpisodeHandler{
-		db: db,
+		db:     db,
+		s3:     s3Client,
+		bucket: strings.TrimSpace(bucket),
 	}
 }
 
@@ -99,6 +104,7 @@ type EpisodeListResponse struct {
 func (h *EpisodeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("", h.ListEpisodes)
 	apiV1.GET("/:id", h.GetEpisode)
+	apiV1.GET("/:id/presign", h.GetEpisodePresignedURL)
 }
 
 func nullableString(value sql.NullString) *string {
@@ -182,7 +188,9 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	query := `
 		SELECT 
 			e.id,
+			e.episode_id,
 			e.task_id as task_id,
+			t.task_id AS task_public_id,
 			s.slug AS sop_slug,
 			s.version AS sop_version,
 			t.scene_name AS scene_name,
@@ -191,8 +199,9 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			dc.operator_id AS collector_operator_id,
 			e.mcap_path,
 			e.sidecar_path,
+			e.checksum,
 			COALESCE(e.qa_status, '') as qa_status,
-			COALESCE(e.qa_score, 0) as qa_score,
+			e.qa_score,
 			e.auto_approved,
 			e.cloud_processed,
 			e.created_at,
@@ -336,11 +345,115 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 // @Failure      404  {object}  map[string]string
 // @Failure      500  {object}  map[string]string
 // @Router       /episodes/{id} [get]
-func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
+func parseEpisodeIDParam(c *gin.Context) (int64, bool) {
 	episodeIDStr := c.Param("id")
 	episodeID, err := strconv.ParseInt(strings.TrimSpace(episodeIDStr), 10, 64)
 	if err != nil || episodeID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode id"})
+		return 0, false
+	}
+	return episodeID, true
+}
+
+func resolveEpisodeMcapLocation(configuredBucket, storedPath string) (string, string, bool) {
+	bucket := strings.TrimSpace(configuredBucket)
+	path := strings.TrimSpace(storedPath)
+	if path == "" {
+		return "", "", false
+	}
+
+	path = strings.TrimPrefix(path, "/")
+	if strings.HasPrefix(path, "s3/") {
+		path = strings.TrimPrefix(path, "s3/")
+	}
+
+	if idx := strings.Index(path, "/"); idx > 0 {
+		first := strings.TrimSpace(path[:idx])
+		rest := strings.TrimSpace(path[idx+1:])
+		if first != "" && rest != "" && (bucket == "" || first == bucket) {
+			return first, rest, true
+		}
+	}
+
+	if bucket == "" {
+		return "", "", false
+	}
+	return bucket, path, true
+}
+
+func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
+	if h.s3 == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
+		return
+	}
+
+	episodeID, ok := parseEpisodeIDParam(c)
+	if !ok {
+		return
+	}
+
+	kind := strings.TrimSpace(strings.ToLower(c.DefaultQuery("kind", "mcap")))
+	if kind != "mcap" && kind != "sidecar" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be mcap or sidecar"})
+		return
+	}
+
+	var row struct {
+		McapPath    string `db:"mcap_path"`
+		SidecarPath string `db:"sidecar_path"`
+	}
+	err := h.db.Get(&row, "SELECT mcap_path, sidecar_path FROM episodes WHERE id = ? AND deleted_at IS NULL LIMIT 1", episodeID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		return
+	}
+	if err != nil {
+		logger.Printf("[EPISODE] Failed to query episode paths: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query episode"})
+		return
+	}
+
+	selectedPath := row.McapPath
+	fieldName := "mcap_path"
+	if kind == "sidecar" {
+		selectedPath = row.SidecarPath
+		fieldName = "sidecar_path"
+	}
+
+	bucket, objectName, ok := resolveEpisodeMcapLocation(h.bucket, selectedPath)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + fieldName})
+		return
+	}
+
+	expSeconds := 600
+	if raw := strings.TrimSpace(c.Query("expires_seconds")); raw != "" {
+		v, convErr := strconv.Atoi(raw)
+		if convErr != nil || v < 1 || v > 3600 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "expires_seconds must be between 1 and 3600"})
+			return
+		}
+		expSeconds = v
+	}
+
+	u, err := h.s3.PresignedGetObject(c.Request.Context(), bucket, objectName, time.Duration(expSeconds)*time.Second, nil)
+	if err != nil {
+		logger.Printf("[EPISODE] Presign failed: id=%d, bucket=%s, object=%s, err=%v", episodeID, bucket, objectName, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to presign url"})
+		return
+	}
+
+	path := "/s3" + u.EscapedPath()
+	if u.RawQuery != "" {
+		path += "?" + u.RawQuery
+	}
+
+	c.JSON(http.StatusOK, presignResponse{URL: path})
+}
+
+func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
+	episodeID, ok := parseEpisodeIDParam(c)
+	if !ok {
 		return
 	}
 
@@ -351,6 +464,12 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.episode_id,
 			e.task_id AS task_id,
 			t.task_id AS task_public_id,
+			s.slug AS sop_slug,
+			s.version AS sop_version,
+			t.scene_name AS scene_name,
+			t.subscene_name AS subscene_name,
+			r.device_id AS robot_device_id,
+			dc.operator_id AS collector_operator_id,
 			e.mcap_path,
 			e.sidecar_path,
 			e.checksum,
@@ -366,13 +485,17 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.labels
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
 		LEFT JOIN inspections i ON i.episode_id = e.id
 		LEFT JOIN inspectors ins ON ins.id = i.inspector_id
 		WHERE e.id = ? AND e.deleted_at IS NULL
 		LIMIT 1
 	`
 
-	err = h.db.Get(&row, query, episodeID)
+	err := h.db.Get(&row, query, episodeID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
 		return

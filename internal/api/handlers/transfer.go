@@ -282,6 +282,10 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	mcapKey := fmt.Sprintf("%s/%s/%s/%s.mcap", h.factoryID, dc.DeviceID, today, taskID)
 	jsonKey := fmt.Sprintf("%s/%s/%s/%s.json", h.factoryID, dc.DeviceID, today, taskID)
 
+	// Persist full path including bucket for clarity and easier downstream consumption.
+	mcapPath := fmt.Sprintf("%s/%s", h.bucket, mcapKey)
+	sidecarPath := fmt.Sprintf("%s/%s", h.bucket, jsonKey)
+
 	var mcapExists, jsonExists bool
 	var mcapErr, jsonErr error
 
@@ -355,7 +359,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	// Check if mcap_path and sidecar_path already exist in database
 	var count int
 	err = tx.QueryRowContext(ctx,
-		"SELECT COUNT(1) FROM episodes WHERE mcap_path = ? OR sidecar_path = ?", mcapKey, jsonKey,
+		"SELECT COUNT(1) FROM episodes WHERE mcap_path = ? OR sidecar_path = ?",
+		mcapPath, sidecarPath,
 	).Scan(&count)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
@@ -452,8 +457,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				taskRow.FactoryID,
 				taskRow.OrganizationID,
 				taskRow.SOPID,
-				mcapKey,
-				jsonKey,
+				mcapPath,
+				sidecarPath,
 			)
 			if dbErr != nil {
 				// #nosec G706 -- Set aside for now

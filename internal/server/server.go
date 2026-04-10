@@ -33,6 +33,7 @@ type Server struct {
 	cfg              *config.Config
 	health           *handlers.HealthHandler
 	auth             *handlers.AuthHandler
+	storage          *handlers.StorageHandler
 	transfer         *handlers.TransferHandler
 	recorder         *handlers.RecorderHandler
 	episode          *handlers.EpisodeHandler
@@ -73,6 +74,10 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	if db != nil {
 		authHandler = handlers.NewAuthHandler(db, &cfg.Auth)
 	}
+	var storageHandler *handlers.StorageHandler
+	if s3Client != nil {
+		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth)
+	}
 
 	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
 	recorderHub := services.NewRecorderHub()
@@ -84,7 +89,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.AxonTransfer, db, s3Client, cfg.Storage.Bucket, cfg.AxonTransfer.FactoryID, recorderHub, recorderRPCTimeout)
 
 	// Create EpisodeHandler for episode listing
-	episodeHandler := handlers.NewEpisodeHandler(db)
+	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket)
 
 	// Create TaskHandler for task configuration
 	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout)
@@ -125,6 +130,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		cfg:           cfg,
 		health:        healthHandler,
 		auth:          authHandler,
+		storage:       storageHandler,
 		transfer:      transferHandler,
 		recorder:      recorderHandler,
 		episode:       episodeHandler,
@@ -192,6 +198,9 @@ func (s *Server) buildRoutes() http.Handler {
 	v1Routes := v1.Group("")
 	if s.auth != nil {
 		s.auth.RegisterRoutes(v1Routes)
+	}
+	if s.storage != nil {
+		s.storage.RegisterRoutes(v1Routes)
 	}
 
 	// Transfer Service API
