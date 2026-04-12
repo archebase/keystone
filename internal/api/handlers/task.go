@@ -141,32 +141,35 @@ type ListTasksResponse struct {
 }
 
 // TaskEpisodeDetail represents the episode information attached to a task.
+// Shape matches GET /api/v1/episodes/:id (Episode): id is episodes.id (PK), episode_id is the human-readable column.
 type TaskEpisodeDetail struct {
-	ID string `json:"id" db:"id"`
+	ID        int64  `json:"id"`
+	EpisodeID string `json:"episode_id,omitempty"`
 }
 
 // TaskDetailResponse represents the response body for getting a task by ID.
 type TaskDetailResponse struct {
-	ID             int64              `json:"id" db:"id"`
-	TaskID         string             `json:"task_id" db:"task_id"`
-	BatchID        string             `json:"batch_id" db:"batch_id"`
-	BatchName      string             `json:"batch_name" db:"batch_name"`
-	OrderID        string             `json:"order_id" db:"order_id"`
-	SOPID          string             `json:"sop_id" db:"sop_id"`
-	WorkstationID  *string            `json:"workstation_id" db:"workstation_id"`
-	SceneID        string             `json:"scene_id" db:"scene_id"`
-	SceneName      string             `json:"scene_name" db:"scene_name"`
-	SubsceneID     string             `json:"subscene_id" db:"subscene_id"`
-	SubsceneName   string             `json:"subscene_name" db:"subscene_name"`
-	FactoryID      *string            `json:"factory_id" db:"factory_id"`
-	OrganizationID *int64             `json:"organization_id" db:"organization_id"`
-	Status         string             `json:"status" db:"status"`
-	CreatedAt      *string            `json:"created_at" db:"created_at"`
-	AssignedAt     *string            `json:"assigned_at" db:"assigned_at"`
-	StartedAt      *string            `json:"started_at" db:"started_at"`
-	CompletedAt    *string            `json:"completed_at" db:"completed_at"`
-	Episode        *TaskEpisodeDetail `json:"episode"`
-	EpisodeID      *string            `json:"-" db:"episode_id"`
+	ID               int64              `json:"id" db:"id"`
+	TaskID           string             `json:"task_id" db:"task_id"`
+	BatchID          string             `json:"batch_id" db:"batch_id"`
+	BatchName        string             `json:"batch_name" db:"batch_name"`
+	OrderID          string             `json:"order_id" db:"order_id"`
+	SOPID            string             `json:"sop_id" db:"sop_id"`
+	WorkstationID    *string            `json:"workstation_id" db:"workstation_id"`
+	SceneID          string             `json:"scene_id" db:"scene_id"`
+	SceneName        string             `json:"scene_name" db:"scene_name"`
+	SubsceneID       string             `json:"subscene_id" db:"subscene_id"`
+	SubsceneName     string             `json:"subscene_name" db:"subscene_name"`
+	FactoryID        *string            `json:"factory_id" db:"factory_id"`
+	OrganizationID   *int64             `json:"organization_id" db:"organization_id"`
+	Status           string             `json:"status" db:"status"`
+	CreatedAt        *string            `json:"created_at" db:"created_at"`
+	AssignedAt       *string            `json:"assigned_at" db:"assigned_at"`
+	StartedAt        *string            `json:"started_at" db:"started_at"`
+	CompletedAt      *string            `json:"completed_at" db:"completed_at"`
+	Episode          *TaskEpisodeDetail `json:"episode"`
+	EpisodeNumericID sql.NullInt64      `db:"episode_numeric_id" json:"-"`
+	EpisodePublicID  sql.NullString     `db:"episode_public_id" json:"-"`
 }
 
 // UpdateTaskRequest represents the request body for updating a task status.
@@ -358,7 +361,8 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		CASE WHEN t.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.assigned_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS assigned_at,
 		CASE WHEN t.started_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.started_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS started_at,
 		CASE WHEN t.completed_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.completed_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS completed_at,
-		e.episode_id AS episode_id
+		e.id AS episode_numeric_id,
+		e.episode_id AS episode_public_id
 		FROM tasks t
 		LEFT JOIN episodes e ON e.task_id = t.id AND e.deleted_at IS NULL
 		WHERE t.id = ? AND t.deleted_at IS NULL
@@ -378,8 +382,11 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		return
 	}
 
-	if task.EpisodeID != nil {
-		task.Episode = &TaskEpisodeDetail{ID: *task.EpisodeID}
+	if task.EpisodeNumericID.Valid {
+		task.Episode = &TaskEpisodeDetail{
+			ID:        task.EpisodeNumericID.Int64,
+			EpisodeID: task.EpisodePublicID.String,
+		}
 	}
 
 	c.JSON(http.StatusOK, task)
@@ -834,9 +841,10 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 				organization_id,
 				initial_scene_layout,
 				status,
+				assigned_at,
 				created_at,
 				updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			taskID,
 			batch.ID,
 			req.OrderID,
@@ -851,6 +859,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 			organizationID,
 			subscene.Layout,
 			"pending",
+			now,
 			now,
 			now,
 		)
