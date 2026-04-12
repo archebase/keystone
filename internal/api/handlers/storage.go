@@ -23,10 +23,12 @@ type StorageHandler struct {
 	authCfg *config.AuthConfig
 }
 
+// NewStorageHandler creates a new StorageHandler.
 func NewStorageHandler(s3Client *s3.Client, authCfg *config.AuthConfig) *StorageHandler {
 	return &StorageHandler{s3: s3Client, authCfg: authCfg}
 }
 
+// RegisterRoutes registers storage-related routes on the given router group.
 func (h *StorageHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/storage/presign", h.PresignGetObject)
 }

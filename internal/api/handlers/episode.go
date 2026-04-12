@@ -363,9 +363,7 @@ func resolveEpisodeMcapLocation(configuredBucket, storedPath string) (string, st
 	}
 
 	path = strings.TrimPrefix(path, "/")
-	if strings.HasPrefix(path, "s3/") {
-		path = strings.TrimPrefix(path, "s3/")
-	}
+	path = strings.TrimPrefix(path, "s3/")
 
 	if idx := strings.Index(path, "/"); idx > 0 {
 		first := strings.TrimSpace(path[:idx])
@@ -381,6 +379,7 @@ func resolveEpisodeMcapLocation(configuredBucket, storedPath string) (string, st
 	return bucket, path, true
 }
 
+// GetEpisodePresignedURL returns a presigned GET URL for an episode's MCAP or sidecar object.
 func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 	if h.s3 == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
@@ -451,6 +450,7 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 	c.JSON(http.StatusOK, presignResponse{URL: path})
 }
 
+// GetEpisode returns episode details by numeric id.
 func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 	episodeID, ok := parseEpisodeIDParam(c)
 	if !ok {
