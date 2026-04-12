@@ -1028,12 +1028,12 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 					task_id, batch_id, order_id, sop_id, workstation_id,
 					scene_id, subscene_id, batch_name, scene_name, subscene_name,
 					factory_id, organization_id, initial_scene_layout,
-					status, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+					status, assigned_at, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
 				taskID, newBatchID, req.OrderID, tg.SOPID, req.WorkstationID,
 				subscene.SceneID, tg.SubsceneID, taskBatchName, subscene.Scene, subscene.Name,
 				ws.FactoryID, organizationID, subscene.Layout,
-				now, now,
+				now, now, now,
 			)
 			if err != nil {
 				logger.Printf("[BATCH] Failed to insert task: %v", err)
@@ -1414,12 +1414,12 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 					task_id, batch_id, order_id, sop_id, workstation_id,
 					scene_id, subscene_id, batch_name, scene_name, subscene_name,
 					factory_id, organization_id, initial_scene_layout,
-					status, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+					status, assigned_at, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
 				taskID, batchNumID, batch.OrderID, plan.tg.SOPID, batch.WorkstationID,
 				plan.subscene.SceneID, plan.tg.SubsceneID, batchName, plan.subscene.Scene, plan.subscene.Name,
 				ws.FactoryID, organizationID, plan.subscene.Layout,
-				now, now,
+				now, now, now,
 			)
 			if err != nil {
 				logger.Printf("[BATCH] Failed to insert task: %v", err)
@@ -1651,7 +1651,7 @@ func (h *BatchHandler) ListBatchTasks(c *gin.Context) {
 			CAST(subscene_id AS CHAR) AS subscene_id,
 			COALESCE(subscene_name, '') AS subscene_name,
 			status,
-			CASE WHEN assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at
+			CASE WHEN assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(assigned_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS assigned_at
 		FROM tasks
 		WHERE batch_id = ? AND deleted_at IS NULL
 		ORDER BY created_at ASC, id ASC`, id); err != nil {
