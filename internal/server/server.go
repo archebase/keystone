@@ -51,6 +51,8 @@ type Server struct {
 	scene            *handlers.SceneHandler
 	subscene         *handlers.SubsceneHandler
 	order            *handlers.OrderHandler
+	syncHandler      *handlers.SyncHandler
+	syncWorker       *services.SyncWorker
 	httpServer       *http.Server
 	transferWSServer *http.Server
 	recorderWSServer *http.Server
@@ -61,7 +63,8 @@ type Server struct {
 
 // New creates a new server instance.
 // db and s3Client are optional; pass nil to disable Verified ACK.
-func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
+// syncWorker is optional; pass nil to disable cloud sync API.
+func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *services.SyncWorker) *Server {
 	// Create Gin engine
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -126,6 +129,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
 	}
 
+	// Create SyncHandler for cloud sync API
+	var syncHandler *handlers.SyncHandler
+	if db != nil {
+		syncHandler = handlers.NewSyncHandler(db, syncWorker)
+	}
+
 	s := &Server{
 		cfg:           cfg,
 		health:        healthHandler,
@@ -148,6 +157,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client) *Server {
 		scene:         sceneHandler,
 		subscene:      subsceneHandler,
 		order:         orderHandler,
+		syncHandler:   syncHandler,
+		syncWorker:    syncWorker,
 		engine:        engine,
 	}
 
@@ -252,6 +263,11 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.order != nil {
 		s.order.RegisterRoutes(v1Tasks)
+	}
+
+	// Cloud Sync API
+	if s.syncHandler != nil {
+		s.syncHandler.RegisterRoutes(v1Routes)
 	}
 
 	// Axon callbacks
@@ -373,6 +389,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if err := s.recorderWSServer.Shutdown(ctx); err != nil {
 			logger.Printf("[SERVER] Recorder WebSocket server shutdown error: %v", err)
 		}
+	}
+
+	// Stop sync worker
+	if s.syncWorker != nil {
+		s.syncWorker.Stop()
 	}
 
 	return nil

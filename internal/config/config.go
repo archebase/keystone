@@ -65,12 +65,19 @@ type QAConfig struct {
 
 // SyncConfig synchronization configuration
 type SyncConfig struct {
-	Enabled        bool
-	Endpoint       string
-	BatchSize      int
-	MaxBytes       int64
-	MaxRetries     int
-	CheckpointPath string
+	Enabled    bool
+	BatchSize  int
+	MaxRetries int
+
+	// Cloud upload settings (data-platform integration)
+	AuthEndpoint      string // gRPC endpoint for AuthService
+	GatewayEndpoint   string // gRPC endpoint for DataGatewayService
+	SiteID            int64  // site identifier for credential exchange
+	APISecret         string `json:"-"` // API key secret for credential exchange
+	MaxConcurrent     int    // max concurrent uploads
+	WorkerIntervalSec int    // sync worker poll interval in seconds
+	RequestTimeoutSec int    // per-RPC timeout in seconds
+	OSSTimeoutSec     int    // per-part OSS upload timeout in seconds
 }
 
 // FeaturesConfig feature flags configuration
@@ -160,12 +167,17 @@ func Load() (*Config, error) {
 			Checks:               []string{"topics", "duration", "gaps", "images"},
 		},
 		Sync: SyncConfig{
-			Enabled:        getEnvBool("KEYSTONE_SYNC_ENABLED", true),
-			Endpoint:       getEnv("KEYSTONE_CLOUD_ENDPOINT", ""),
-			BatchSize:      getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 100),
-			MaxBytes:       int64(getEnvInt("KEYSTONE_SYNC_MAX_BYTES", 10737418240)), // 10GB
-			MaxRetries:     getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
-			CheckpointPath: getEnv("KEYSTONE_SYNC_CHECKPOINT_PATH", "/var/lib/keystone/.checkpoint"),
+			Enabled:           getEnvBool("KEYSTONE_SYNC_ENABLED", false),
+			BatchSize:         getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 10),
+			MaxRetries:        getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
+			AuthEndpoint:      getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),
+			GatewayEndpoint:   getEnv("KEYSTONE_CLOUD_GATEWAY_ENDPOINT", ""),
+			SiteID:            int64(getEnvInt("KEYSTONE_CLOUD_SITE_ID", 0)),
+			APISecret:         getEnv("KEYSTONE_CLOUD_API_SECRET", ""),
+			MaxConcurrent:     getEnvInt("KEYSTONE_SYNC_MAX_CONCURRENT", 2),
+			WorkerIntervalSec: getEnvInt("KEYSTONE_SYNC_WORKER_INTERVAL", 60),
+			RequestTimeoutSec: getEnvInt("KEYSTONE_SYNC_REQUEST_TIMEOUT", 30),
+			OSSTimeoutSec:     getEnvInt("KEYSTONE_SYNC_OSS_TIMEOUT", 300),
 		},
 		Auth: AuthConfig{
 			JWTSecret:        getEnv("KEYSTONE_JWT_SECRET", ""),

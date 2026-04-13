@@ -16,9 +16,11 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"archebase.com/keystone-edge/internal/cloud"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/server"
+	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/database"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
@@ -109,10 +111,42 @@ func main() {
 	}
 
 	// TODO: Start QA worker
-	// TODO: Start sync worker
+
+	// Initialize cloud sync worker
+	var syncWorker *services.SyncWorker
+	if cfg.Sync.Enabled && cfg.Sync.AuthEndpoint != "" && cfg.Sync.GatewayEndpoint != "" && s3Client != nil {
+		authClient := cloud.NewAuthClient(cloud.AuthClientConfig{
+			Endpoint:      cfg.Sync.AuthEndpoint,
+			SiteID:        cfg.Sync.SiteID,
+			APISecret:     cfg.Sync.APISecret,
+			RefreshBefore: 60 * time.Second,
+		})
+
+		gatewayClient := cloud.NewGatewayClient(cloud.GatewayClientConfig{
+			Endpoint:       cfg.Sync.GatewayEndpoint,
+			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
+		}, authClient)
+
+		uploader := cloud.NewUploader(gatewayClient, s3Client, cfg.Storage.Bucket, cloud.UploaderConfig{
+			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
+			OSSTimeout:     time.Duration(cfg.Sync.OSSTimeoutSec) * time.Second,
+		})
+
+		syncWorker = services.NewSyncWorker(db.DB, uploader, services.SyncWorkerConfig{
+			BatchSize:     cfg.Sync.BatchSize,
+			MaxConcurrent: cfg.Sync.MaxConcurrent,
+			MaxRetries:    cfg.Sync.MaxRetries,
+			IntervalSec:   cfg.Sync.WorkerIntervalSec,
+		}, &cfg.Sync)
+
+		syncWorker.Start()
+		logger.Printf("[SYNC] Cloud sync worker started: auth=%s gateway=%s", cfg.Sync.AuthEndpoint, cfg.Sync.GatewayEndpoint)
+	} else {
+		logger.Println("[SYNC] Cloud sync disabled (KEYSTONE_SYNC_ENABLED=false or missing endpoints)")
+	}
 
 	// Initialize and start HTTP server
-	srv := server.New(cfg, db.DB, s3Client)
+	srv := server.New(cfg, db.DB, s3Client, syncWorker)
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}

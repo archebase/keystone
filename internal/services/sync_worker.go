@@ -1,0 +1,372 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
+package services
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"math"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"archebase.com/keystone-edge/internal/cloud"
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
+	"github.com/jmoiron/sqlx"
+)
+
+// SyncWorkerConfig provides the runtime configuration for the sync worker.
+type SyncWorkerConfig struct {
+	BatchSize     int
+	MaxConcurrent int
+	MaxRetries    int
+	IntervalSec   int
+}
+
+// SyncWorker is a background goroutine that periodically scans for approved
+// episodes and uploads them to cloud via the data-platform gateway.
+type SyncWorker struct {
+	db       *sqlx.DB
+	uploader *cloud.Uploader
+	cfg      SyncWorkerConfig
+	syncCfg  *config.SyncConfig
+
+	running atomic.Bool
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
+
+	// enqueueCh allows the API handler to inject specific episode IDs for immediate upload.
+	enqueueCh chan int64
+}
+
+// NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
+func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, cfg SyncWorkerConfig, syncCfg *config.SyncConfig) *SyncWorker {
+	return &SyncWorker{
+		db:        db,
+		uploader:  uploader,
+		cfg:       cfg,
+		syncCfg:   syncCfg,
+		stopCh:    make(chan struct{}),
+		enqueueCh: make(chan int64, 100),
+	}
+}
+
+// Start begins the background sync worker loop.
+func (w *SyncWorker) Start() {
+	if w.running.Load() {
+		return
+	}
+	w.running.Store(true)
+	w.wg.Add(1)
+	go w.run()
+	logger.Printf("[SYNC-WORKER] Started (interval=%ds, batch=%d, concurrency=%d)",
+		w.cfg.IntervalSec, w.cfg.BatchSize, w.cfg.MaxConcurrent)
+}
+
+// Stop gracefully stops the sync worker.
+func (w *SyncWorker) Stop() {
+	if !w.running.Load() {
+		return
+	}
+	w.running.Store(false)
+	close(w.stopCh)
+	w.wg.Wait()
+	logger.Println("[SYNC-WORKER] Stopped")
+}
+
+// IsRunning returns whether the worker is currently running.
+func (w *SyncWorker) IsRunning() bool {
+	return w.running.Load()
+}
+
+// EnqueueEpisode adds a specific episode ID for immediate sync processing.
+func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error {
+	select {
+	case w.enqueueCh <- episodeID:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return fmt.Errorf("sync enqueue channel full")
+	}
+}
+
+// EnqueuePendingEpisodes scans for all approved but un-synced episodes and enqueues them.
+// Returns the number of episodes enqueued.
+func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
+	ids, err := w.findPendingEpisodes(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, id := range ids {
+		select {
+		case w.enqueueCh <- id:
+			count++
+		default:
+			logger.Printf("[SYNC-WORKER] Enqueue channel full, skipping episode %d", id)
+		}
+	}
+	return count, nil
+}
+
+func (w *SyncWorker) run() {
+	defer w.wg.Done()
+
+	interval := time.Duration(w.cfg.IntervalSec) * time.Second
+	if interval <= 0 {
+		interval = 60 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.stopCh:
+			return
+
+		case episodeID := <-w.enqueueCh:
+			w.processEpisode(context.Background(), episodeID)
+
+		case <-ticker.C:
+			w.pollAndProcess()
+		}
+	}
+}
+
+func (w *SyncWorker) pollAndProcess() {
+	ctx := context.Background()
+
+	// First, retry any failed episodes that are due
+	w.retryFailedEpisodes(ctx)
+
+	// Then, find new pending episodes
+	ids, err := w.findPendingEpisodes(ctx)
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to find pending episodes: %v", err)
+		return
+	}
+
+	if len(ids) == 0 {
+		return
+	}
+
+	logger.Printf("[SYNC-WORKER] Found %d episodes to sync", len(ids))
+
+	// Process with concurrency limit
+	sem := make(chan struct{}, w.cfg.MaxConcurrent)
+	var wg sync.WaitGroup
+
+	for _, id := range ids {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(episodeID int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			w.processEpisode(ctx, episodeID)
+		}(id)
+	}
+
+	wg.Wait()
+}
+
+func (w *SyncWorker) findPendingEpisodes(ctx context.Context) ([]int64, error) {
+	var ids []int64
+	err := w.db.SelectContext(ctx, &ids, `
+		SELECT e.id
+		FROM episodes e
+		WHERE e.qa_status IN ('approved', 'inspector_approved')
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM sync_logs sl
+		    WHERE sl.episode_id = e.id
+		      AND sl.status = 'in_progress'
+		  )
+		ORDER BY e.created_at ASC
+		LIMIT ?
+	`, w.cfg.BatchSize)
+	if err != nil {
+		return nil, fmt.Errorf("query pending episodes: %w", err)
+	}
+	return ids, nil
+}
+
+func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
+	var ids []int64
+	err := w.db.SelectContext(ctx, &ids, `
+		SELECT sl.episode_id
+		FROM sync_logs sl
+		WHERE sl.status = 'failed'
+		  AND sl.attempt_count < ?
+		  AND (sl.next_retry_at IS NULL OR sl.next_retry_at <= NOW())
+		GROUP BY sl.episode_id
+		ORDER BY MAX(sl.started_at) ASC
+		LIMIT ?
+	`, w.cfg.MaxRetries, w.cfg.BatchSize)
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to query retryable episodes: %v", err)
+		return
+	}
+
+	for _, id := range ids {
+		w.processEpisode(ctx, id)
+	}
+}
+
+func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {
+	// Fetch episode details
+	var ep struct {
+		ID          int64  `db:"id"`
+		EpisodeUUID string `db:"episode_id"`
+		McapPath    string `db:"mcap_path"`
+		SidecarPath string `db:"sidecar_path"`
+		CloudSynced bool   `db:"cloud_synced"`
+	}
+	err := w.db.GetContext(ctx, &ep, `
+		SELECT id, episode_id, mcap_path, sidecar_path, cloud_synced
+		FROM episodes
+		WHERE id = ? AND deleted_at IS NULL
+	`, episodeID)
+	if err == sql.ErrNoRows {
+		logger.Printf("[SYNC-WORKER] Episode %d not found, skipping", episodeID)
+		return
+	}
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to query episode %d: %v", episodeID, err)
+		return
+	}
+
+	if ep.CloudSynced {
+		//logger.Printf("[SYNC-WORKER] Episode %d already synced, skipping", episodeID)
+		return
+	}
+
+	// Extract the MinIO object key from the stored path (strip bucket prefix)
+	mcapKey := stripBucketPrefix(ep.McapPath)
+	sidecarKey := stripBucketPrefix(ep.SidecarPath)
+
+	if mcapKey == "" {
+		logger.Printf("[SYNC-WORKER] Episode %d has empty mcap_path, skipping", episodeID)
+		return
+	}
+
+	// Create sync_log entry (in_progress)
+	syncLogID, err := w.createSyncLog(ctx, episodeID, ep.McapPath)
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to create sync log for episode %d: %v", episodeID, err)
+		return
+	}
+
+	startTime := time.Now()
+
+	// Execute upload
+	result, err := w.uploader.Upload(ctx, cloud.UploadRequest{
+		EpisodeID:  ep.EpisodeUUID,
+		McapKey:    mcapKey,
+		SidecarKey: sidecarKey,
+		RawTags: map[string]string{
+			"episode_id": ep.EpisodeUUID,
+		},
+	})
+	if err != nil {
+		duration := int64(time.Since(startTime).Seconds())
+		w.markSyncFailed(ctx, syncLogID, episodeID, duration, err)
+		return
+	}
+
+	// Success: update episode and sync_log
+	duration := int64(time.Since(startTime).Seconds())
+	w.markSyncCompleted(ctx, syncLogID, episodeID, result, duration)
+}
+
+func (w *SyncWorker) createSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, error) {
+	now := time.Now().UTC()
+	result, err := w.db.ExecContext(ctx, `
+		INSERT INTO sync_logs (episode_id, source_path, status, attempt_count, started_at)
+		VALUES (?, ?, 'in_progress', 1, ?)
+	`, episodeID, sourcePath, now)
+	if err != nil {
+		return 0, fmt.Errorf("insert sync_log: %w", err)
+	}
+	return result.LastInsertId()
+}
+
+func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID int64, result *cloud.UploadResult, durationSec int64) {
+	now := time.Now().UTC()
+
+	// Update sync_log
+	if _, err := w.db.ExecContext(ctx, `
+		UPDATE sync_logs
+		SET status = 'completed',
+		    destination_path = ?,
+		    bytes_transferred = ?,
+		    duration_sec = ?,
+		    completed_at = ?
+		WHERE id = ?
+	`, result.ObjectKey, result.FileSize, durationSec, now, syncLogID); err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to update sync log %d: %v", syncLogID, err)
+	}
+
+	// Update episode
+	if _, err := w.db.ExecContext(ctx, `
+		UPDATE episodes
+		SET cloud_synced = TRUE,
+		    cloud_synced_at = ?,
+		    cloud_mcap_path = ?,
+		    cloud_processed = FALSE
+		WHERE id = ? AND deleted_at IS NULL
+	`, now, result.ObjectKey, episodeID); err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to update episode %d cloud status: %v", episodeID, err)
+	}
+
+	logger.Printf("[SYNC-WORKER] Episode %d synced successfully: upload_id=%s object_key=%s duration=%ds",
+		episodeID, result.UploadID, result.ObjectKey, durationSec)
+}
+
+func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, durationSec int64, uploadErr error) {
+	now := time.Now().UTC()
+	errMsg := uploadErr.Error()
+
+	// Read current attempt count for exponential backoff
+	var attemptCount int
+	if err := w.db.GetContext(ctx, &attemptCount, "SELECT attempt_count FROM sync_logs WHERE id = ?", syncLogID); err != nil {
+		attemptCount = 1
+	}
+
+	// Exponential backoff: min(2^attempt * 5s, 30s)
+	backoffSec := math.Min(math.Pow(2, float64(attemptCount))*5, 30)
+	nextRetry := now.Add(time.Duration(backoffSec) * time.Second)
+
+	if _, err := w.db.ExecContext(ctx, `
+		UPDATE sync_logs
+		SET status = 'failed',
+		    error_message = ?,
+		    duration_sec = ?,
+		    completed_at = ?,
+		    next_retry_at = ?
+		WHERE id = ?
+	`, errMsg, durationSec, now, nextRetry, syncLogID); err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to update sync log %d as failed: %v", syncLogID, err)
+	}
+
+	logger.Printf("[SYNC-WORKER] Episode %d sync failed: %v (attempt=%d, next_retry=%v)",
+		episodeID, uploadErr, attemptCount, nextRetry.Format(time.RFC3339))
+}
+
+// stripBucketPrefix removes the leading "bucket/" prefix from a stored path.
+// Stored paths look like "edge-factory-default/factory-default/device/date/task.mcap".
+func stripBucketPrefix(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.TrimPrefix(path, "/")
+	if idx := strings.Index(path, "/"); idx > 0 {
+		return path[idx+1:]
+	}
+	return path
+}
