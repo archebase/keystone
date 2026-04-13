@@ -445,8 +445,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					organization_id,
 					sop_id,
 					mcap_path,
-					sidecar_path
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					sidecar_path,
+					qa_status
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				episodeID,
 				taskRow.ID,
 				taskRow.BatchID,
@@ -459,6 +460,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				taskRow.SOPID,
 				mcapPath,
 				sidecarPath,
+				"approved",
 			)
 			if dbErr != nil {
 				// #nosec G706 -- Set aside for now
