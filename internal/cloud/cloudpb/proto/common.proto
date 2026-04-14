@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package archebase.common.v1;
+
+option go_package = "archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpb";
+
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+}

@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package archebase.data_gateway.v1;
+
+option go_package = "archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpb";
+
+service DataGatewayService {
+  rpc CreateFileUpload(CreateFileUploadRequest)
+      returns (CreateFileUploadResponse);
+  rpc RefreshUploadCredentials(RefreshUploadCredentialsRequest)
+      returns (RefreshUploadCredentialsResponse);
+  rpc CompleteUpload(CompleteUploadRequest)
+      returns (CompleteUploadResponse);
+}
+
+message UploadCredentials {
+  string bucket = 1;
+  string endpoint = 2;
+  string object_key = 3;
+  string sts_access_key_id = 4;
+  string sts_access_key_secret = 5;
+  string sts_security_token = 6;
+  int64 sts_expire_at_unix = 7;
+  int64 part_size_bytes = 8;
+}
+
+message CreateFileUploadRequest {
+  map<string, string> client_hints = 1;
+}
+
+message CreateFileUploadResponse {
+  string upload_id = 1;
+  UploadCredentials credentials = 2;
+  reserved 3;
+}
+
+message RefreshUploadCredentialsRequest {
+  string upload_id = 1;
+}
+
+message RefreshUploadCredentialsResponse {
+  string upload_id = 1;
+  UploadCredentials credentials = 2;
+  reserved 3;
+}
+
+message CompleteUploadRequest {
+  string upload_id = 1;
+  int64 file_size = 3;
+  map<string, string> raw_tags = 5;
+  int32 completed_part_count = 6;
+  string oss_object_etag = 7;
+  reserved 2, 4;
+}
+
+message CompleteUploadResponse {}
+
+enum DataGatewayErrorCode {
+  DATA_GATEWAY_ERROR_CODE_UNSPECIFIED = 0;
+  DATA_GATEWAY_ERROR_CODE_UNAUTHENTICATED = 1;
+  DATA_GATEWAY_ERROR_CODE_UPLOAD_NOT_FOUND = 2;
+  DATA_GATEWAY_ERROR_CODE_UPLOAD_NOT_OWNED = 3;
+  DATA_GATEWAY_ERROR_CODE_UPLOAD_NOT_REFRESHABLE = 4;
+  DATA_GATEWAY_ERROR_CODE_INVALID_ARGUMENT = 5;
+  DATA_GATEWAY_ERROR_CODE_FAILED_PRECONDITION = 6;
+  DATA_GATEWAY_ERROR_CODE_STS_UNAVAILABLE = 7;
+  DATA_GATEWAY_ERROR_CODE_INTERNAL_ERROR = 8;
+}

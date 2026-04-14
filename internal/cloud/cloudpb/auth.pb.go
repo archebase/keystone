@@ -204,7 +204,7 @@ var File_auth_proto protoreflect.FileDescriptor
 const file_auth_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"auth.proto\x12\x11archebase.auth.v1\x1a\fcommon.proto\"H\n" +
+	"auth.proto\x12\x11archebase.auth.v1\"H\n" +
 	"\x19ExchangeCredentialRequest\x12+\n" +
 	"\x11credential_base64\x18\x01 \x01(\tR\x10credentialBase64\"\xbc\x01\n" +
 	"\x1aExchangeCredentialResponse\x12!\n" +
@@ -223,7 +223,7 @@ const file_auth_proto_rawDesc = "" +
 	"\x1dAUTH_ERROR_CODE_SITE_DISABLED\x10\x04\x12\"\n" +
 	"\x1eAUTH_ERROR_CODE_INTERNAL_ERROR\x10\x052\x80\x01\n" +
 	"\vAuthService\x12q\n" +
-	"\x12ExchangeCredential\x12,.archebase.auth.v1.ExchangeCredentialRequest\x1a-.archebase.auth.v1.ExchangeCredentialResponseb\x06proto3"
+	"\x12ExchangeCredential\x12,.archebase.auth.v1.ExchangeCredentialRequest\x1a-.archebase.auth.v1.ExchangeCredentialResponseB<Z:archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpbb\x06proto3"
 
 var (
 	file_auth_proto_rawDescOnce sync.Once
@@ -259,7 +259,6 @@ func file_auth_proto_init() {
 	if File_auth_proto != nil {
 		return
 	}
-	file_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

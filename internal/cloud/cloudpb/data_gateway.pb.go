@@ -496,7 +496,7 @@ var File_data_gateway_proto protoreflect.FileDescriptor
 
 const file_data_gateway_proto_rawDesc = "" +
 	"\n" +
-	"\x12data_gateway.proto\x12\x19archebase.data_gateway.v1\x1a\fcommon.proto\"\xc7\x02\n" +
+	"\x12data_gateway.proto\x12\x19archebase.data_gateway.v1\"\xc7\x02\n" +
 	"\x11UploadCredentials\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x1a\n" +
 	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12\x1d\n" +
@@ -543,7 +543,7 @@ const file_data_gateway_proto_rawDesc = "" +
 	"\x12DataGatewayService\x12{\n" +
 	"\x10CreateFileUpload\x122.archebase.data_gateway.v1.CreateFileUploadRequest\x1a3.archebase.data_gateway.v1.CreateFileUploadResponse\x12\x93\x01\n" +
 	"\x18RefreshUploadCredentials\x12:.archebase.data_gateway.v1.RefreshUploadCredentialsRequest\x1a;.archebase.data_gateway.v1.RefreshUploadCredentialsResponse\x12u\n" +
-	"\x0eCompleteUpload\x120.archebase.data_gateway.v1.CompleteUploadRequest\x1a1.archebase.data_gateway.v1.CompleteUploadResponseb\x06proto3"
+	"\x0eCompleteUpload\x120.archebase.data_gateway.v1.CompleteUploadRequest\x1a1.archebase.data_gateway.v1.CompleteUploadResponseB<Z:archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpbb\x06proto3"
 
 var (
 	file_data_gateway_proto_rawDescOnce sync.Once
@@ -594,7 +594,6 @@ func file_data_gateway_proto_init() {
 	if File_data_gateway_proto != nil {
 		return
 	}
-	file_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

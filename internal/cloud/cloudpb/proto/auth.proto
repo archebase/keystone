@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package archebase.auth.v1;
+
+option go_package = "archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpb";
+
+service AuthService {
+  rpc ExchangeCredential(ExchangeCredentialRequest)
+      returns (ExchangeCredentialResponse);
+}
+
+message ExchangeCredentialRequest {
+  string credential_base64 = 1;
+}
+
+message ExchangeCredentialResponse {
+  string access_token = 1;
+  int64 expires_at_unix = 2;
+  string token_type = 3;
+  string key_id = 4;
+  string key_prefix = 5;
+}
+
+enum AuthErrorCode {
+  AUTH_ERROR_CODE_UNSPECIFIED = 0;
+  AUTH_ERROR_CODE_INVALID_CREDENTIAL = 1;
+  AUTH_ERROR_CODE_KEY_DISABLED = 2;
+  AUTH_ERROR_CODE_KEY_EXPIRED = 3;
+  AUTH_ERROR_CODE_SITE_DISABLED = 4;
+  AUTH_ERROR_CODE_INTERNAL_ERROR = 5;
+}
