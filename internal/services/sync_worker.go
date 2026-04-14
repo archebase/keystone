@@ -96,6 +96,22 @@ func (w *SyncWorker) IsRunning() bool {
 
 // EnqueueEpisode adds a specific episode ID for immediate sync processing.
 func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisode(ctx, episodeID, false)
+}
+
+// EnqueueEpisodeManual adds a specific episode ID for immediate sync processing,
+// allowing explicit API-triggered retries even after automatic retries are exhausted.
+func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisode(ctx, episodeID, true)
+}
+
+func (w *SyncWorker) enqueueEpisode(ctx context.Context, episodeID int64, manual bool) error {
+	if manual {
+		if err := w.validateEpisodeForManualEnqueue(ctx, episodeID); err != nil {
+			return err
+		}
+	}
+
 	if !w.tryMarkEnqueued(episodeID) {
 		return nil
 	}
@@ -112,10 +128,42 @@ func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error 
 	}
 }
 
+func (w *SyncWorker) validateEpisodeForManualEnqueue(ctx context.Context, episodeID int64) error {
+	if w.db == nil {
+		return nil
+	}
+
+	var latest struct {
+		Status       string       `db:"status"`
+		NextRetry    sql.NullTime `db:"next_retry_at"`
+		AttemptCount int          `db:"attempt_count"`
+	}
+	err := w.db.GetContext(ctx, &latest, `
+		SELECT sl.status, sl.next_retry_at, sl.attempt_count
+		FROM sync_logs sl
+		INNER JOIN (
+		  SELECT episode_id, MAX(id) AS latest_id
+		  FROM sync_logs
+		  GROUP BY episode_id
+		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		WHERE sl.episode_id = ?
+	`, episodeID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("query latest sync_log: %w", err)
+	}
+	if latest.Status == "in_progress" {
+		return fmt.Errorf("sync already in progress for episode %d", episodeID)
+	}
+	return nil
+}
+
 // EnqueuePendingEpisodes scans for all approved but un-synced episodes and enqueues them.
 // Returns the number of episodes enqueued.
 func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
-	ids, err := w.findPendingEpisodes(ctx)
+	ids, err := w.findPendingEpisodes(ctx, true)
 	if err != nil {
 		return 0, err
 	}
@@ -158,7 +206,7 @@ func (w *SyncWorker) run() {
 
 		case episodeID := <-w.enqueueCh:
 			w.unmarkEnqueued(episodeID)
-			w.processEpisode(ctx, episodeID)
+			w.processEpisodeWithMode(ctx, episodeID, true)
 
 		case <-ticker.C:
 			w.pollAndProcess(ctx)
@@ -188,7 +236,7 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 	w.retryFailedEpisodes(ctx)
 
 	// Then, find new pending episodes
-	ids, err := w.findPendingEpisodes(ctx)
+	ids, err := w.findPendingEpisodes(ctx, false)
 	if err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to find pending episodes: %v", err)
 		return
@@ -217,9 +265,10 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 	wg.Wait()
 }
 
-func (w *SyncWorker) findPendingEpisodes(ctx context.Context) ([]int64, error) {
+func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFailures bool) ([]int64, error) {
 	var ids []int64
-	err := w.db.SelectContext(ctx, &ids, `
+	var err error
+	query := `
 		SELECT e.id
 		FROM episodes e
 		WHERE e.qa_status IN ('approved', 'inspector_approved')
@@ -241,6 +290,12 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context) ([]int64, error) {
 		    WHERE sl.episode_id = e.id
 		      AND sl.status = 'in_progress'
 		  )
+		  %s
+		ORDER BY e.created_at ASC
+		LIMIT ?
+	`
+	if !includeExhaustedFailures {
+		query = fmt.Sprintf(query, `
 		  AND NOT EXISTS (
 		    SELECT 1 FROM sync_logs sl
 		    INNER JOIN (
@@ -250,10 +305,13 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context) ([]int64, error) {
 		    ) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
 		    WHERE sl.episode_id = e.id
 		      AND sl.status = 'failed'
-		  )
-		ORDER BY e.created_at ASC
-		LIMIT ?
-	`, w.cfg.BatchSize)
+		      AND sl.attempt_count >= ?
+		  )`)
+		err = w.db.SelectContext(ctx, &ids, query, w.cfg.MaxRetries, w.cfg.BatchSize)
+	} else {
+		query = fmt.Sprintf(query, "")
+		err = w.db.SelectContext(ctx, &ids, query, w.cfg.BatchSize)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("query pending episodes: %w", err)
 	}
@@ -307,6 +365,10 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 }
 
 func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {
+	w.processEpisodeWithMode(ctx, episodeID, false)
+}
+
+func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64, manual bool) {
 	// Fetch episode details
 	var ep struct {
 		ID          int64  `db:"id"`
@@ -344,7 +406,7 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {
 	}
 
 	// Reuse latest failed sync_log when retry is due, otherwise insert a new row.
-	syncLogID, err := w.acquireSyncLog(ctx, episodeID, ep.McapPath)
+	syncLogID, err := w.acquireSyncLogWithMode(ctx, episodeID, ep.McapPath, manual)
 	if err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to acquire sync log for episode %d: %v", episodeID, err)
 		return
@@ -376,6 +438,10 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {
 // failed row for the episode when a retry is due (and increments attempt_count); otherwise
 // inserts a new row with attempt_count = 1.
 func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, error) {
+	return w.acquireSyncLogWithMode(ctx, episodeID, sourcePath, false)
+}
+
+func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64, sourcePath string, manual bool) (int64, error) {
 	var reuseID int64
 	err := w.db.GetContext(ctx, &reuseID, `
 		SELECT sl.id FROM sync_logs sl
@@ -444,10 +510,10 @@ func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, source
 		case "in_progress":
 			return 0, fmt.Errorf("sync already in progress for episode %d", episodeID)
 		case "failed":
-			if latest.AttemptCount >= w.cfg.MaxRetries {
+			if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
 				return 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
 			}
-			if latest.NextRetry.Valid && latest.NextRetry.Time.After(time.Now().UTC()) {
+			if !manual && latest.NextRetry.Valid && latest.NextRetry.Time.After(time.Now().UTC()) {
 				return 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
 			}
 		}
@@ -455,10 +521,10 @@ func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, source
 		return 0, fmt.Errorf("query latest sync_log: %w", qErr)
 	}
 
-	return w.insertSyncLog(ctx, episodeID, sourcePath)
+	return w.insertSyncLog(ctx, episodeID, sourcePath, manual)
 }
 
-func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, error) {
+func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourcePath string, manual bool) (int64, error) {
 	tx, err := w.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin sync_log transaction: %w", err)
@@ -488,10 +554,10 @@ func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourceP
 		case "completed":
 			return 0, fmt.Errorf("episode %d already has completed sync_log", episodeID)
 		case "failed":
-			if latest.AttemptCount >= w.cfg.MaxRetries {
+			if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
 				return 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
 			}
-			if latest.NextRetry.Valid && latest.NextRetry.Time.After(time.Now().UTC()) {
+			if !manual && latest.NextRetry.Valid && latest.NextRetry.Time.After(time.Now().UTC()) {
 				return 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
 			}
 		}

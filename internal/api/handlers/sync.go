@@ -165,7 +165,7 @@ func (h *SyncHandler) TriggerEpisodeSync(c *gin.Context) {
 		return
 	}
 
-	err = h.syncWorker.EnqueueEpisode(c.Request.Context(), episodeID)
+	err = h.syncWorker.EnqueueEpisodeManual(c.Request.Context(), episodeID)
 	if err != nil {
 		logger.Printf("[SYNC] Enqueue episode %d failed: %v", episodeID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue episode"})
