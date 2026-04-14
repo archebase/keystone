@@ -6,6 +6,7 @@ package handlers
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -167,6 +168,22 @@ func (h *SyncHandler) TriggerEpisodeSync(c *gin.Context) {
 
 	err = h.syncWorker.EnqueueEpisodeManual(c.Request.Context(), episodeID)
 	if err != nil {
+		switch {
+		case errors.Is(err, services.ErrEpisodeAlreadyEnqueued), errors.Is(err, services.ErrSyncAlreadyInProgress):
+			c.JSON(http.StatusConflict, gin.H{
+				"error":      err.Error(),
+				"episode_id": episodeID,
+				"status":     "already_queued",
+			})
+			return
+		case errors.Is(err, services.ErrSyncQueueFull):
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":      err.Error(),
+				"episode_id": episodeID,
+				"status":     "queue_full",
+			})
+			return
+		}
 		logger.Printf("[SYNC] Enqueue episode %d failed: %v", episodeID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue episode"})
 		return

@@ -6,6 +6,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -46,8 +47,8 @@ func TestEnqueueEpisode_DeduplicatesPendingEpisode(t *testing.T) {
 	if err := w.EnqueueEpisode(ctx, 42); err != nil {
 		t.Fatalf("first enqueue failed: %v", err)
 	}
-	if err := w.EnqueueEpisode(ctx, 42); err != nil {
-		t.Fatalf("second enqueue failed: %v", err)
+	if err := w.EnqueueEpisode(ctx, 42); !errors.Is(err, ErrEpisodeAlreadyEnqueued) {
+		t.Fatalf("second enqueue error = %v, want ErrEpisodeAlreadyEnqueued", err)
 	}
 
 	select {
@@ -159,8 +160,19 @@ func TestEnqueueEpisode_RejectsInProgressEpisode(t *testing.T) {
 	insertEpisodeForSyncWorkerTest(t, db, 11, "approved", false)
 	insertSyncLogForSyncWorkerTest(t, db, 11, "in_progress", 1)
 
-	if err := w.EnqueueEpisodeManual(context.Background(), 11); err == nil {
-		t.Fatal("expected in-progress manual enqueue to fail")
+	if err := w.EnqueueEpisodeManual(context.Background(), 11); !errors.Is(err, ErrSyncAlreadyInProgress) {
+		t.Fatalf("manual enqueue error = %v, want ErrSyncAlreadyInProgress", err)
+	}
+}
+
+func TestEnqueueEpisode_ReturnsQueueFull(t *testing.T) {
+	w := &SyncWorker{
+		enqueueCh:       make(chan int64),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+
+	if err := w.EnqueueEpisode(context.Background(), 99); !errors.Is(err, ErrSyncQueueFull) {
+		t.Fatalf("enqueue error = %v, want ErrSyncQueueFull", err)
 	}
 }
 

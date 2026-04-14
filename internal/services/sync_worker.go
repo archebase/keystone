@@ -7,6 +7,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -50,6 +51,12 @@ type SyncWorker struct {
 	// enqueueCh allows the API handler to inject specific episode IDs for immediate upload.
 	enqueueCh chan int64
 }
+
+var (
+	ErrEpisodeAlreadyEnqueued = errors.New("sync episode already enqueued")
+	ErrSyncQueueFull          = errors.New("sync enqueue channel full")
+	ErrSyncAlreadyInProgress  = errors.New("sync already in progress")
+)
 
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
 func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, cfg SyncWorkerConfig, syncCfg *config.SyncConfig) *SyncWorker {
@@ -113,7 +120,7 @@ func (w *SyncWorker) enqueueEpisode(ctx context.Context, episodeID int64, manual
 	}
 
 	if !w.tryMarkEnqueued(episodeID) {
-		return nil
+		return ErrEpisodeAlreadyEnqueued
 	}
 
 	select {
@@ -124,7 +131,7 @@ func (w *SyncWorker) enqueueEpisode(ctx context.Context, episodeID int64, manual
 		return ctx.Err()
 	default:
 		w.unmarkEnqueued(episodeID)
-		return fmt.Errorf("sync enqueue channel full")
+		return ErrSyncQueueFull
 	}
 }
 
@@ -155,7 +162,7 @@ func (w *SyncWorker) validateEpisodeForManualEnqueue(ctx context.Context, episod
 		return fmt.Errorf("query latest sync_log: %w", err)
 	}
 	if latest.Status == "in_progress" {
-		return fmt.Errorf("sync already in progress for episode %d", episodeID)
+		return fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
 	}
 	return nil
 }
@@ -508,7 +515,7 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 	if qErr == nil {
 		switch latest.Status {
 		case "in_progress":
-			return 0, fmt.Errorf("sync already in progress for episode %d", episodeID)
+			return 0, fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
 		case "failed":
 			if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
 				return 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
@@ -550,7 +557,7 @@ func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourceP
 	if err == nil {
 		switch latest.Status {
 		case "in_progress":
-			return 0, fmt.Errorf("sync already in progress for episode %d", episodeID)
+			return 0, fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
 		case "completed":
 			return 0, fmt.Errorf("episode %d already has completed sync_log", episodeID)
 		case "failed":
