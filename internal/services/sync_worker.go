@@ -324,7 +324,9 @@ func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, source
 	`, episodeID, w.cfg.MaxRetries)
 	if err == nil && reuseID > 0 {
 		now := time.Now().UTC()
-		if _, updErr := w.db.ExecContext(ctx, `
+		// Atomic claim: only one worker may move this row from failed → in_progress
+		// (WHERE matches the reuse SELECT so a lost race yields RowsAffected 0).
+		res, updErr := w.db.ExecContext(ctx, `
 			UPDATE sync_logs
 			SET status = 'in_progress',
 			    source_path = ?,
@@ -335,8 +337,19 @@ func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, source
 			    next_retry_at = NULL,
 			    attempt_count = attempt_count + 1
 			WHERE id = ?
-		`, sourcePath, now, reuseID); updErr != nil {
+			  AND status = 'failed'
+			  AND attempt_count < ?
+			  AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+		`, sourcePath, now, reuseID, w.cfg.MaxRetries)
+		if updErr != nil {
 			return 0, fmt.Errorf("reuse sync_log: %w", updErr)
+		}
+		n, raErr := res.RowsAffected()
+		if raErr != nil {
+			return 0, fmt.Errorf("reuse sync_log rows affected: %w", raErr)
+		}
+		if n != 1 {
+			return 0, fmt.Errorf("retry claim lost for sync_log %d (concurrent worker or state changed)", reuseID)
 		}
 		return reuseID, nil
 	}
