@@ -5,6 +5,7 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/md5"  //#nosec G501 -- MD5 required by OSS multipart ETag protocol
@@ -158,12 +159,15 @@ func (u *OSSUploader) sendRequest(ctx context.Context, session *UploadSession, m
 
 	var bodyReader io.Reader
 	if body != nil {
-		bodyReader = strings.NewReader(string(body))
+		bodyReader = bytes.NewReader(body)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
+	}
+	if body != nil {
+		req.ContentLength = int64(len(body))
 	}
 
 	req.Header.Set("Date", date)

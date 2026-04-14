@@ -172,7 +172,7 @@ func Load() (*Config, error) {
 			MaxRetries:        getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
 			AuthEndpoint:      getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),
 			GatewayEndpoint:   getEnv("KEYSTONE_CLOUD_GATEWAY_ENDPOINT", ""),
-			SiteID:            int64(getEnvInt("KEYSTONE_CLOUD_SITE_ID", 0)),
+			SiteID:            getEnvInt64("KEYSTONE_CLOUD_SITE_ID", 0),
 			APISecret:         getEnv("KEYSTONE_CLOUD_API_SECRET", ""),
 			MaxConcurrent:     getEnvInt("KEYSTONE_SYNC_MAX_CONCURRENT", 2),
 			WorkerIntervalSec: getEnvInt("KEYSTONE_SYNC_WORKER_INTERVAL", 60),
@@ -245,6 +245,15 @@ func getEnv(key, fallback string) string {
 func getEnvInt(key string, fallback int) int {
 	if val := os.Getenv(key); val != "" {
 		if i, err := strconv.Atoi(val); err == nil {
+			return i
+		}
+	}
+	return fallback
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	if val := os.Getenv(key); val != "" {
+		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
 			return i
 		}
 	}

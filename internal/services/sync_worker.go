@@ -62,11 +62,10 @@ func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, cfg SyncWorkerConfig, 
 
 // Start begins the background sync worker loop.
 func (w *SyncWorker) Start() {
-	if w.running.Load() {
+	if !w.running.CompareAndSwap(false, true) {
 		return
 	}
 	w.runCtx, w.runCancel = context.WithCancel(context.Background())
-	w.running.Store(true)
 	w.wg.Add(1)
 	go w.run()
 	logger.Printf("[SYNC-WORKER] Started (interval=%ds, batch=%d, concurrency=%d)",
@@ -75,10 +74,9 @@ func (w *SyncWorker) Start() {
 
 // Stop gracefully stops the sync worker.
 func (w *SyncWorker) Stop() {
-	if !w.running.Load() {
+	if !w.running.CompareAndSwap(true, false) {
 		return
 	}
-	w.running.Store(false)
 	if w.runCancel != nil {
 		w.runCancel()
 	}
@@ -245,9 +243,24 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 		return
 	}
 
-	for _, id := range ids {
-		w.processEpisode(ctx, id)
+	if len(ids) == 0 {
+		return
 	}
+
+	sem := make(chan struct{}, w.cfg.MaxConcurrent)
+	var wg sync.WaitGroup
+
+	for _, id := range ids {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(episodeID int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			w.processEpisode(ctx, episodeID)
+		}(id)
+	}
+
+	wg.Wait()
 }
 
 func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {
@@ -421,8 +434,15 @@ func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourceP
 func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID int64, result *cloud.UploadResult, durationSec int64) {
 	now := time.Now().UTC()
 
+	tx, err := w.db.BeginTxx(ctx, nil)
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to begin transaction for episode %d: %v", episodeID, err)
+		return
+	}
+	defer tx.Rollback()
+
 	// Update sync_log
-	if _, err := w.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE sync_logs
 		SET status = 'completed',
 		    destination_path = ?,
@@ -432,10 +452,11 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		WHERE id = ?
 	`, result.ObjectKey, result.FileSize, durationSec, now, syncLogID); err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to update sync log %d: %v", syncLogID, err)
+		return
 	}
 
 	// Update episode
-	if _, err := w.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE episodes
 		SET cloud_synced = TRUE,
 		    cloud_synced_at = ?,
@@ -444,6 +465,12 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		WHERE id = ? AND deleted_at IS NULL
 	`, now, result.ObjectKey, episodeID); err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to update episode %d cloud status: %v", episodeID, err)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to commit sync completion for episode %d: %v", episodeID, err)
+		return
 	}
 
 	logger.Printf("[SYNC-WORKER] Episode %d synced successfully: upload_id=%s object_key=%s duration=%ds",

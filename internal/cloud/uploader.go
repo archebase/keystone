@@ -178,6 +178,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 	// Step 5: Complete multipart upload on OSS
 	_, err = u.oss.CompleteMultipartUpload(ctx, session, multipartUploadID, parts)
 	if err != nil {
+		u.oss.AbortMultipartUpload(context.Background(), session, multipartUploadID)
 		return nil, fmt.Errorf("complete multipart upload on OSS: %w", err)
 	}
 
