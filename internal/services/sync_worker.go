@@ -189,6 +189,16 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context) ([]int64, error) {
 		    WHERE sl.episode_id = e.id
 		      AND sl.status = 'in_progress'
 		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM sync_logs sl
+		    INNER JOIN (
+		      SELECT episode_id, MAX(id) AS latest_id
+		      FROM sync_logs
+		      GROUP BY episode_id
+		    ) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		    WHERE sl.episode_id = e.id
+		      AND sl.status = 'failed'
+		  )
 		ORDER BY e.created_at ASC
 		LIMIT ?
 	`, w.cfg.BatchSize)
@@ -203,11 +213,20 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 	err := w.db.SelectContext(ctx, &ids, `
 		SELECT sl.episode_id
 		FROM sync_logs sl
+		INNER JOIN (
+		  SELECT episode_id, MAX(id) AS latest_id
+		  FROM sync_logs
+		  GROUP BY episode_id
+		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
 		WHERE sl.status = 'failed'
 		  AND sl.attempt_count < ?
 		  AND (sl.next_retry_at IS NULL OR sl.next_retry_at <= NOW())
-		GROUP BY sl.episode_id
-		ORDER BY MAX(sl.started_at) ASC
+		  AND NOT EXISTS (
+		    SELECT 1 FROM sync_logs sl2
+		    WHERE sl2.episode_id = sl.episode_id
+		      AND sl2.status = 'in_progress'
+		  )
+		ORDER BY sl.started_at ASC
 		LIMIT ?
 	`, w.cfg.MaxRetries, w.cfg.BatchSize)
 	if err != nil {
@@ -257,10 +276,10 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {
 		return
 	}
 
-	// Create sync_log entry (in_progress)
-	syncLogID, err := w.createSyncLog(ctx, episodeID, ep.McapPath)
+	// Reuse latest failed sync_log when retry is due, otherwise insert a new row.
+	syncLogID, err := w.acquireSyncLog(ctx, episodeID, ep.McapPath)
 	if err != nil {
-		logger.Printf("[SYNC-WORKER] Failed to create sync log for episode %d: %v", episodeID, err)
+		logger.Printf("[SYNC-WORKER] Failed to acquire sync log for episode %d: %v", episodeID, err)
 		return
 	}
 
@@ -286,7 +305,80 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {
 	w.markSyncCompleted(ctx, syncLogID, episodeID, result, duration)
 }
 
-func (w *SyncWorker) createSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, error) {
+// acquireSyncLog returns the sync_logs id for this upload attempt. It reuses the latest
+// failed row for the episode when a retry is due (and increments attempt_count); otherwise
+// inserts a new row with attempt_count = 1.
+func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, error) {
+	var reuseID int64
+	err := w.db.GetContext(ctx, &reuseID, `
+		SELECT sl.id FROM sync_logs sl
+		INNER JOIN (
+		  SELECT episode_id, MAX(id) AS latest_id
+		  FROM sync_logs
+		  GROUP BY episode_id
+		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		WHERE sl.episode_id = ?
+		  AND sl.status = 'failed'
+		  AND sl.attempt_count < ?
+		  AND (sl.next_retry_at IS NULL OR sl.next_retry_at <= NOW())
+	`, episodeID, w.cfg.MaxRetries)
+	if err == nil && reuseID > 0 {
+		now := time.Now().UTC()
+		if _, updErr := w.db.ExecContext(ctx, `
+			UPDATE sync_logs
+			SET status = 'in_progress',
+			    source_path = ?,
+			    started_at = ?,
+			    error_message = NULL,
+			    duration_sec = NULL,
+			    completed_at = NULL,
+			    next_retry_at = NULL,
+			    attempt_count = attempt_count + 1
+			WHERE id = ?
+		`, sourcePath, now, reuseID); updErr != nil {
+			return 0, fmt.Errorf("reuse sync_log: %w", updErr)
+		}
+		return reuseID, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return 0, fmt.Errorf("query reusable sync_log: %w", err)
+	}
+
+	var latest struct {
+		Status       string       `db:"status"`
+		NextRetry    sql.NullTime `db:"next_retry_at"`
+		AttemptCount int          `db:"attempt_count"`
+	}
+	qErr := w.db.GetContext(ctx, &latest, `
+		SELECT sl.status, sl.next_retry_at, sl.attempt_count
+		FROM sync_logs sl
+		INNER JOIN (
+		  SELECT episode_id, MAX(id) AS latest_id
+		  FROM sync_logs
+		  GROUP BY episode_id
+		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		WHERE sl.episode_id = ?
+	`, episodeID)
+	if qErr == nil {
+		switch latest.Status {
+		case "in_progress":
+			return 0, fmt.Errorf("sync already in progress for episode %d", episodeID)
+		case "failed":
+			if latest.AttemptCount >= w.cfg.MaxRetries {
+				return 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
+			}
+			if latest.NextRetry.Valid && latest.NextRetry.Time.After(time.Now().UTC()) {
+				return 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
+			}
+		}
+	} else if qErr != sql.ErrNoRows {
+		return 0, fmt.Errorf("query latest sync_log: %w", qErr)
+	}
+
+	return w.insertSyncLog(ctx, episodeID, sourcePath)
+}
+
+func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, error) {
 	now := time.Now().UTC()
 	result, err := w.db.ExecContext(ctx, `
 		INSERT INTO sync_logs (episode_id, source_path, status, attempt_count, started_at)
@@ -295,7 +387,11 @@ func (w *SyncWorker) createSyncLog(ctx context.Context, episodeID int64, sourceP
 	if err != nil {
 		return 0, fmt.Errorf("insert sync_log: %w", err)
 	}
-	return result.LastInsertId()
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("sync_log last insert id: %w", err)
+	}
+	return id, nil
 }
 
 func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID int64, result *cloud.UploadResult, durationSec int64) {
@@ -334,13 +430,13 @@ func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, d
 	now := time.Now().UTC()
 	errMsg := uploadErr.Error()
 
-	// Read current attempt count for exponential backoff
+	// attempt_count is the 1-based index of this upload attempt (incremented when a failed row is reused).
 	var attemptCount int
 	if err := w.db.GetContext(ctx, &attemptCount, "SELECT attempt_count FROM sync_logs WHERE id = ?", syncLogID); err != nil {
 		attemptCount = 1
 	}
 
-	// Exponential backoff: min(2^attempt * 5s, 30s)
+	// Exponential backoff after this failure: min(2^attempt * 5s, 30s)
 	backoffSec := math.Min(math.Pow(2, float64(attemptCount))*5, 30)
 	nextRetry := now.Add(time.Duration(backoffSec) * time.Second)
 
