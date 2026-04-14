@@ -36,6 +36,9 @@ type SyncWorker struct {
 	cfg      SyncWorkerConfig
 	syncCfg  *config.SyncConfig
 
+	mu              sync.Mutex
+	enqueuedEpisode map[int64]struct{}
+
 	running atomic.Bool
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
@@ -51,12 +54,13 @@ type SyncWorker struct {
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
 func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, cfg SyncWorkerConfig, syncCfg *config.SyncConfig) *SyncWorker {
 	return &SyncWorker{
-		db:        db,
-		uploader:  uploader,
-		cfg:       cfg,
-		syncCfg:   syncCfg,
-		stopCh:    make(chan struct{}),
-		enqueueCh: make(chan int64, 100),
+		db:              db,
+		uploader:        uploader,
+		cfg:             cfg,
+		syncCfg:         syncCfg,
+		stopCh:          make(chan struct{}),
+		enqueueCh:       make(chan int64, 100),
+		enqueuedEpisode: make(map[int64]struct{}),
 	}
 }
 
@@ -92,12 +96,18 @@ func (w *SyncWorker) IsRunning() bool {
 
 // EnqueueEpisode adds a specific episode ID for immediate sync processing.
 func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error {
+	if !w.tryMarkEnqueued(episodeID) {
+		return nil
+	}
+
 	select {
 	case w.enqueueCh <- episodeID:
 		return nil
 	case <-ctx.Done():
+		w.unmarkEnqueued(episodeID)
 		return ctx.Err()
 	default:
+		w.unmarkEnqueued(episodeID)
 		return fmt.Errorf("sync enqueue channel full")
 	}
 }
@@ -111,10 +121,14 @@ func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
 	}
 	count := 0
 	for _, id := range ids {
+		if !w.tryMarkEnqueued(id) {
+			continue
+		}
 		select {
 		case w.enqueueCh <- id:
 			count++
 		default:
+			w.unmarkEnqueued(id)
 			logger.Printf("[SYNC-WORKER] Enqueue channel full, skipping episode %d", id)
 		}
 	}
@@ -143,12 +157,30 @@ func (w *SyncWorker) run() {
 			return
 
 		case episodeID := <-w.enqueueCh:
+			w.unmarkEnqueued(episodeID)
 			w.processEpisode(ctx, episodeID)
 
 		case <-ticker.C:
 			w.pollAndProcess(ctx)
 		}
 	}
+}
+
+func (w *SyncWorker) tryMarkEnqueued(episodeID int64) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if _, exists := w.enqueuedEpisode[episodeID]; exists {
+		return false
+	}
+	w.enqueuedEpisode[episodeID] = struct{}{}
+	return true
+}
+
+func (w *SyncWorker) unmarkEnqueued(episodeID int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.enqueuedEpisode, episodeID)
 }
 
 func (w *SyncWorker) pollAndProcess(ctx context.Context) {
@@ -193,6 +225,17 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context) ([]int64, error) {
 		WHERE e.qa_status IN ('approved', 'inspector_approved')
 		  AND e.cloud_synced = FALSE
 		  AND e.deleted_at IS NULL
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM sync_logs sl
+		    INNER JOIN (
+		      SELECT episode_id, MAX(id) AS latest_id
+		      FROM sync_logs
+		      GROUP BY episode_id
+		    ) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		    WHERE sl.episode_id = e.id
+		      AND sl.status = 'completed'
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM sync_logs sl
 		    WHERE sl.episode_id = e.id
@@ -416,8 +459,48 @@ func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, source
 }
 
 func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, error) {
+	tx, err := w.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin sync_log transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var latest struct {
+		Status       string       `db:"status"`
+		NextRetry    sql.NullTime `db:"next_retry_at"`
+		AttemptCount int          `db:"attempt_count"`
+	}
+	err = tx.GetContext(ctx, &latest, `
+		SELECT sl.status, sl.next_retry_at, sl.attempt_count
+		FROM sync_logs sl
+		INNER JOIN (
+		  SELECT episode_id, MAX(id) AS latest_id
+		  FROM sync_logs
+		  GROUP BY episode_id
+		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		WHERE sl.episode_id = ?
+		FOR UPDATE
+	`, episodeID)
+	if err == nil {
+		switch latest.Status {
+		case "in_progress":
+			return 0, fmt.Errorf("sync already in progress for episode %d", episodeID)
+		case "completed":
+			return 0, fmt.Errorf("episode %d already has completed sync_log", episodeID)
+		case "failed":
+			if latest.AttemptCount >= w.cfg.MaxRetries {
+				return 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
+			}
+			if latest.NextRetry.Valid && latest.NextRetry.Time.After(time.Now().UTC()) {
+				return 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
+			}
+		}
+	} else if err != sql.ErrNoRows {
+		return 0, fmt.Errorf("lock latest sync_log: %w", err)
+	}
+
 	now := time.Now().UTC()
-	result, err := w.db.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO sync_logs (episode_id, source_path, status, attempt_count, started_at)
 		VALUES (?, ?, 'in_progress', 1, ?)
 	`, episodeID, sourcePath, now)
@@ -427,6 +510,9 @@ func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourceP
 	id, err := result.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("sync_log last insert id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit sync_log insert: %w", err)
 	}
 	return id, nil
 }
@@ -439,7 +525,7 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		logger.Printf("[SYNC-WORKER] Failed to begin transaction for episode %d: %v", episodeID, err)
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Update sync_log
 	if _, err := tx.ExecContext(ctx, `

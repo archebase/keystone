@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config represents the complete configuration for Keystone Edge
@@ -231,6 +232,38 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.AccessKey == "" || c.Storage.SecretKey == "" {
 		return fmt.Errorf("storage access key and secret key are required")
+	}
+	if c.Sync.Enabled {
+		if strings.TrimSpace(c.Sync.AuthEndpoint) == "" {
+			return fmt.Errorf("sync auth endpoint is required when sync is enabled")
+		}
+		if strings.TrimSpace(c.Sync.GatewayEndpoint) == "" {
+			return fmt.Errorf("sync gateway endpoint is required when sync is enabled")
+		}
+		if c.Sync.SiteID <= 0 {
+			return fmt.Errorf("sync site id must be greater than 0 when sync is enabled")
+		}
+		if strings.TrimSpace(c.Sync.APISecret) == "" {
+			return fmt.Errorf("sync api secret is required when sync is enabled")
+		}
+		if c.Sync.BatchSize <= 0 {
+			return fmt.Errorf("sync batch size must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.MaxRetries <= 0 {
+			return fmt.Errorf("sync max retries must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.MaxConcurrent <= 0 {
+			return fmt.Errorf("sync max concurrent must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.WorkerIntervalSec <= 0 {
+			return fmt.Errorf("sync worker interval must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.RequestTimeoutSec <= 0 {
+			return fmt.Errorf("sync request timeout must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.OSSTimeoutSec <= 0 {
+			return fmt.Errorf("sync oss timeout must be greater than 0 when sync is enabled")
+		}
 	}
 	return nil
 }
