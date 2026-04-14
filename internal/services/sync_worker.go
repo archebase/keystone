@@ -40,6 +40,10 @@ type SyncWorker struct {
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
 
+	// runCtx is cancelled when Stop() is called so in-flight uploads and DB ops can exit promptly.
+	runCtx    context.Context
+	runCancel context.CancelFunc
+
 	// enqueueCh allows the API handler to inject specific episode IDs for immediate upload.
 	enqueueCh chan int64
 }
@@ -61,6 +65,7 @@ func (w *SyncWorker) Start() {
 	if w.running.Load() {
 		return
 	}
+	w.runCtx, w.runCancel = context.WithCancel(context.Background())
 	w.running.Store(true)
 	w.wg.Add(1)
 	go w.run()
@@ -74,6 +79,9 @@ func (w *SyncWorker) Stop() {
 		return
 	}
 	w.running.Store(false)
+	if w.runCancel != nil {
+		w.runCancel()
+	}
 	close(w.stopCh)
 	w.wg.Wait()
 	logger.Println("[SYNC-WORKER] Stopped")
@@ -118,6 +126,11 @@ func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
 func (w *SyncWorker) run() {
 	defer w.wg.Done()
 
+	ctx := w.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	interval := time.Duration(w.cfg.IntervalSec) * time.Second
 	if interval <= 0 {
 		interval = 60 * time.Second
@@ -132,17 +145,15 @@ func (w *SyncWorker) run() {
 			return
 
 		case episodeID := <-w.enqueueCh:
-			w.processEpisode(context.Background(), episodeID)
+			w.processEpisode(ctx, episodeID)
 
 		case <-ticker.C:
-			w.pollAndProcess()
+			w.pollAndProcess(ctx)
 		}
 	}
 }
 
-func (w *SyncWorker) pollAndProcess() {
-	ctx := context.Background()
-
+func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 	// First, retry any failed episodes that are due
 	w.retryFailedEpisodes(ctx)
 

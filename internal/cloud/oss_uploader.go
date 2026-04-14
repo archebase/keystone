@@ -5,6 +5,7 @@
 package cloud
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/md5"  //#nosec G501 -- MD5 required by OSS multipart ETag protocol
 	"crypto/sha1" //#nosec G505 -- SHA1 required by OSS V1 signature
@@ -52,9 +53,9 @@ func NewOSSUploader(timeout time.Duration) *OSSUploader {
 }
 
 // InitiateMultipartUpload starts a multipart upload and returns the OSS multipart upload ID.
-func (u *OSSUploader) InitiateMultipartUpload(session *UploadSession) (string, error) {
+func (u *OSSUploader) InitiateMultipartUpload(ctx context.Context, session *UploadSession) (string, error) {
 	query := []queryParam{{Key: "uploads"}}
-	resp, err := u.sendRequest(session, http.MethodPost, session.ObjectKey, query, nil, "")
+	resp, err := u.sendRequest(ctx, session, http.MethodPost, session.ObjectKey, query, nil, "")
 	if err != nil {
 		return "", fmt.Errorf("initiate multipart: %w", err)
 	}
@@ -78,12 +79,12 @@ func (u *OSSUploader) InitiateMultipartUpload(session *UploadSession) (string, e
 }
 
 // UploadPart uploads a single part and returns its ETag.
-func (u *OSSUploader) UploadPart(session *UploadSession, multipartUploadID string, partNumber int, body []byte) (string, error) {
+func (u *OSSUploader) UploadPart(ctx context.Context, session *UploadSession, multipartUploadID string, partNumber int, body []byte) (string, error) {
 	query := []queryParam{
 		{Key: "partNumber", Value: fmt.Sprintf("%d", partNumber)},
 		{Key: "uploadId", Value: multipartUploadID},
 	}
-	resp, err := u.sendRequest(session, http.MethodPut, session.ObjectKey, query, body, "application/octet-stream")
+	resp, err := u.sendRequest(ctx, session, http.MethodPut, session.ObjectKey, query, body, "application/octet-stream")
 	if err != nil {
 		return "", fmt.Errorf("upload part %d: %w", partNumber, err)
 	}
@@ -99,10 +100,10 @@ func (u *OSSUploader) UploadPart(session *UploadSession, multipartUploadID strin
 }
 
 // CompleteMultipartUpload completes the multipart upload and returns the final object ETag.
-func (u *OSSUploader) CompleteMultipartUpload(session *UploadSession, multipartUploadID string, parts []UploadedPart) (string, error) {
+func (u *OSSUploader) CompleteMultipartUpload(ctx context.Context, session *UploadSession, multipartUploadID string, parts []UploadedPart) (string, error) {
 	xmlBody := buildCompleteMultipartUploadXML(parts)
 	query := []queryParam{{Key: "uploadId", Value: multipartUploadID}}
-	resp, err := u.sendRequest(session, http.MethodPost, session.ObjectKey, query, []byte(xmlBody), "application/xml")
+	resp, err := u.sendRequest(ctx, session, http.MethodPost, session.ObjectKey, query, []byte(xmlBody), "application/xml")
 	if err != nil {
 		return "", fmt.Errorf("complete multipart: %w", err)
 	}
@@ -123,9 +124,9 @@ func (u *OSSUploader) CompleteMultipartUpload(session *UploadSession, multipartU
 }
 
 // AbortMultipartUpload aborts a multipart upload (best-effort cleanup).
-func (u *OSSUploader) AbortMultipartUpload(session *UploadSession, multipartUploadID string) {
+func (u *OSSUploader) AbortMultipartUpload(ctx context.Context, session *UploadSession, multipartUploadID string) {
 	query := []queryParam{{Key: "uploadId", Value: multipartUploadID}}
-	resp, err := u.sendRequest(session, http.MethodDelete, session.ObjectKey, query, nil, "")
+	resp, err := u.sendRequest(ctx, session, http.MethodDelete, session.ObjectKey, query, nil, "")
 	if err != nil {
 		logger.Printf("[OSS] Abort multipart upload failed: %v", err)
 		return
@@ -133,7 +134,7 @@ func (u *OSSUploader) AbortMultipartUpload(session *UploadSession, multipartUplo
 	_ = resp.Body.Close()
 }
 
-func (u *OSSUploader) sendRequest(session *UploadSession, method, objectKey string, query []queryParam, body []byte, contentType string) (*http.Response, error) {
+func (u *OSSUploader) sendRequest(ctx context.Context, session *UploadSession, method, objectKey string, query []queryParam, body []byte, contentType string) (*http.Response, error) {
 	date := formatHTTPDate()
 
 	extraHeaders := map[string]string{}
@@ -160,7 +161,7 @@ func (u *OSSUploader) sendRequest(session *UploadSession, method, objectKey stri
 		bodyReader = strings.NewReader(string(body))
 	}
 
-	req, err := http.NewRequest(method, requestURL, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

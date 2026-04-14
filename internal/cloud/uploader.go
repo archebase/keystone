@@ -106,7 +106,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 		session.UploadID, session.ObjectKey, session.Bucket, session.PartSizeBytes)
 
 	// Step 3: Initiate multipart upload on OSS
-	multipartUploadID, err := u.oss.InitiateMultipartUpload(session)
+	multipartUploadID, err := u.oss.InitiateMultipartUpload(ctx, session)
 	if err != nil {
 		return nil, fmt.Errorf("initiate multipart upload: %w", err)
 	}
@@ -116,7 +116,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 	// Step 4: Stream from MinIO → OSS in parts
 	mcapStream, err := u.minioClient.GetObject(ctx, u.minioBucket, req.McapKey, minio.GetObjectOptions{})
 	if err != nil {
-		u.oss.AbortMultipartUpload(session, multipartUploadID)
+		u.oss.AbortMultipartUpload(context.Background(), session, multipartUploadID)
 		return nil, fmt.Errorf("get minio object %s: %w", req.McapKey, err)
 	}
 	defer func() {
@@ -135,6 +135,11 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 	partNumber := 1
 
 	for offset < fileSize {
+		if err := ctx.Err(); err != nil {
+			u.oss.AbortMultipartUpload(context.Background(), session, multipartUploadID)
+			return nil, err
+		}
+
 		remaining := fileSize - offset
 		readSize := partSizeBytes
 		if remaining < readSize {
@@ -143,16 +148,16 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 
 		n, err := io.ReadFull(mcapStream, buf[:readSize])
 		if err != nil && err != io.ErrUnexpectedEOF {
-			u.oss.AbortMultipartUpload(session, multipartUploadID)
+			u.oss.AbortMultipartUpload(context.Background(), session, multipartUploadID)
 			return nil, fmt.Errorf("read part %d from minio: %w", partNumber, err)
 		}
 
 		partSlice := buf[:n]
 		partMD5s = append(partMD5s, MD5DigestBytes(partSlice))
 
-		etag, err := u.oss.UploadPart(session, multipartUploadID, partNumber, partSlice)
+		etag, err := u.oss.UploadPart(ctx, session, multipartUploadID, partNumber, partSlice)
 		if err != nil {
-			u.oss.AbortMultipartUpload(session, multipartUploadID)
+			u.oss.AbortMultipartUpload(context.Background(), session, multipartUploadID)
 			return nil, fmt.Errorf("upload part %d: %w", partNumber, err)
 		}
 
@@ -171,7 +176,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 	}
 
 	// Step 5: Complete multipart upload on OSS
-	_, err = u.oss.CompleteMultipartUpload(session, multipartUploadID, parts)
+	_, err = u.oss.CompleteMultipartUpload(ctx, session, multipartUploadID, parts)
 	if err != nil {
 		return nil, fmt.Errorf("complete multipart upload on OSS: %w", err)
 	}
