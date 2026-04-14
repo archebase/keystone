@@ -176,6 +176,51 @@ func TestEnqueueEpisode_ReturnsQueueFull(t *testing.T) {
 	}
 }
 
+func TestNextRetryDelay_UsesMinuteScaleBackoff(t *testing.T) {
+	w := &SyncWorker{
+		cfg: SyncWorkerConfig{
+			RetryBaseSec:   30,
+			RetryMaxSec:    1800,
+			RetryJitterSec: 0,
+		},
+	}
+
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 1, want: 30 * time.Second},
+		{attempt: 2, want: 60 * time.Second},
+		{attempt: 3, want: 120 * time.Second},
+		{attempt: 4, want: 240 * time.Second},
+		{attempt: 10, want: 1800 * time.Second},
+	}
+
+	for _, tt := range tests {
+		got := w.nextRetryDelay(tt.attempt)
+		if got != tt.want {
+			t.Fatalf("nextRetryDelay(%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
+	}
+}
+
+func TestNextRetryDelay_IncludesBoundedJitter(t *testing.T) {
+	w := &SyncWorker{
+		cfg: SyncWorkerConfig{
+			RetryBaseSec:   30,
+			RetryMaxSec:    1800,
+			RetryJitterSec: 30,
+		},
+	}
+
+	got := w.nextRetryDelay(3)
+	min := 120 * time.Second
+	max := 150 * time.Second
+	if got < min || got > max {
+		t.Fatalf("nextRetryDelay with jitter = %v, want [%v, %v]", got, min, max)
+	}
+}
+
 func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 

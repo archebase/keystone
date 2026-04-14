@@ -43,9 +43,11 @@ type AuthToken struct {
 // AuthClient provides credential exchange, caching and automatic refresh for
 // JWT tokens from the data-platform AuthService.
 type AuthClient struct {
-	cfg   AuthClientConfig
-	mu    sync.Mutex
-	token *AuthToken
+	cfg    AuthClientConfig
+	mu     sync.Mutex
+	token  *AuthToken
+	connMu sync.Mutex
+	conn   *grpc.ClientConn
 }
 
 // NewAuthClient creates a new auth client.
@@ -109,15 +111,10 @@ func (c *AuthClient) refreshToken(ctx context.Context) (*AuthToken, error) {
 }
 
 func (c *AuthClient) exchangeCredential(ctx context.Context, credentialBase64 string) (*pb.ExchangeCredentialResponse, error) {
-	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := c.getConn()
 	if err != nil {
-		return nil, fmt.Errorf("grpc dial %s: %w", c.cfg.Endpoint, err)
+		return nil, err
 	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			logger.Printf("[CLOUD-AUTH] gRPC connection close error: %v", err)
-		}
-	}()
 
 	client := pb.NewAuthServiceClient(conn)
 	resp, err := client.ExchangeCredential(ctx, &pb.ExchangeCredentialRequest{
@@ -127,6 +124,40 @@ func (c *AuthClient) exchangeCredential(ctx context.Context, credentialBase64 st
 		return nil, fmt.Errorf("exchange credential RPC: %w", err)
 	}
 	return resp, nil
+}
+
+func (c *AuthClient) getConn() (*grpc.ClientConn, error) {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	if c.conn != nil {
+		return c.conn, nil
+	}
+
+	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, fmt.Errorf("grpc dial %s: %w", c.cfg.Endpoint, err)
+	}
+
+	c.conn = conn
+	return conn, nil
+}
+
+// Close releases the shared gRPC connection.
+func (c *AuthClient) Close() error {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	if c.conn == nil {
+		return nil
+	}
+
+	err := c.conn.Close()
+	if err != nil {
+		logger.Printf("[CLOUD-AUTH] gRPC connection close error: %v", err)
+	}
+	c.conn = nil
+	return err
 }
 
 // buildCredentialBase64 encodes the credential as base64url(int64_be(site_id) + "." + api_secret).

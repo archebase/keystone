@@ -126,6 +126,16 @@ func main() {
 			Endpoint:       cfg.Sync.GatewayEndpoint,
 			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
 		}, authClient)
+		defer func() {
+			if err := gatewayClient.Close(); err != nil {
+				logger.Printf("[SYNC] Failed to close gateway client: %v", err)
+			}
+		}()
+		defer func() {
+			if err := authClient.Close(); err != nil {
+				logger.Printf("[SYNC] Failed to close auth client: %v", err)
+			}
+		}()
 
 		uploader := cloud.NewUploader(gatewayClient, s3Client, cfg.Storage.Bucket, cloud.UploaderConfig{
 			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
@@ -133,10 +143,13 @@ func main() {
 		})
 
 		syncWorker = services.NewSyncWorker(db.DB, uploader, services.SyncWorkerConfig{
-			BatchSize:     cfg.Sync.BatchSize,
-			MaxConcurrent: cfg.Sync.MaxConcurrent,
-			MaxRetries:    cfg.Sync.MaxRetries,
-			IntervalSec:   cfg.Sync.WorkerIntervalSec,
+			BatchSize:      cfg.Sync.BatchSize,
+			MaxConcurrent:  cfg.Sync.MaxConcurrent,
+			MaxRetries:     cfg.Sync.MaxRetries,
+			IntervalSec:    cfg.Sync.WorkerIntervalSec,
+			RetryBaseSec:   cfg.Sync.RetryBaseSec,
+			RetryMaxSec:    cfg.Sync.RetryMaxSec,
+			RetryJitterSec: cfg.Sync.RetryJitterSec,
 		}, &cfg.Sync)
 
 		syncWorker.Start()

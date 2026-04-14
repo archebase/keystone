@@ -7,6 +7,7 @@ package cloud
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	pb "archebase.com/keystone-edge/internal/cloud/cloudpb"
@@ -42,6 +43,8 @@ type UploadSession struct {
 type GatewayClient struct {
 	cfg        GatewayClientConfig
 	authClient *AuthClient
+	connMu     sync.Mutex
+	conn       *grpc.ClientConn
 }
 
 // NewGatewayClient creates a new gateway client.
@@ -56,11 +59,6 @@ func (c *GatewayClient) CreateFileUpload(ctx context.Context, clientHints map[st
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			logger.Printf("[CLOUD-GATEWAY] gRPC close error: %v", err)
-		}
-	}()
 
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
 	defer cancel()
@@ -87,11 +85,6 @@ func (c *GatewayClient) RefreshUploadCredentials(ctx context.Context, uploadID s
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			logger.Printf("[CLOUD-GATEWAY] gRPC close error: %v", err)
-		}
-	}()
 
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
 	defer cancel()
@@ -118,11 +111,6 @@ func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fil
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			logger.Printf("[CLOUD-GATEWAY] gRPC close error: %v", err)
-		}
-	}()
 
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
 	defer cancel()
@@ -147,11 +135,36 @@ func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fil
 }
 
 func (c *GatewayClient) connect() (*grpc.ClientConn, error) {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	if c.conn != nil {
+		return c.conn, nil
+	}
+
 	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("grpc dial %s: %w", c.cfg.Endpoint, err)
 	}
+	c.conn = conn
 	return conn, nil
+}
+
+// Close releases the shared gRPC connection.
+func (c *GatewayClient) Close() error {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	if c.conn == nil {
+		return nil
+	}
+
+	err := c.conn.Close()
+	if err != nil {
+		logger.Printf("[CLOUD-GATEWAY] gRPC close error: %v", err)
+	}
+	c.conn = nil
+	return err
 }
 
 func (c *GatewayClient) attachAuth(ctx context.Context) (context.Context, error) {

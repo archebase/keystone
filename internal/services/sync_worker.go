@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,10 +24,13 @@ import (
 
 // SyncWorkerConfig provides the runtime configuration for the sync worker.
 type SyncWorkerConfig struct {
-	BatchSize     int
-	MaxConcurrent int
-	MaxRetries    int
-	IntervalSec   int
+	BatchSize      int
+	MaxConcurrent  int
+	MaxRetries     int
+	IntervalSec    int
+	RetryBaseSec   int
+	RetryMaxSec    int
+	RetryJitterSec int
 }
 
 // SyncWorker is a background goroutine that periodically scans for approved
@@ -381,11 +385,10 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 		ID          int64  `db:"id"`
 		EpisodeUUID string `db:"episode_id"`
 		McapPath    string `db:"mcap_path"`
-		SidecarPath string `db:"sidecar_path"`
 		CloudSynced bool   `db:"cloud_synced"`
 	}
 	err := w.db.GetContext(ctx, &ep, `
-		SELECT id, episode_id, mcap_path, sidecar_path, cloud_synced
+		SELECT id, episode_id, mcap_path, cloud_synced
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`, episodeID)
@@ -405,11 +408,15 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 
 	// Extract the MinIO object key from the stored path (strip bucket prefix)
 	mcapKey := stripBucketPrefix(ep.McapPath)
-	sidecarKey := stripBucketPrefix(ep.SidecarPath)
 
 	if mcapKey == "" {
 		logger.Printf("[SYNC-WORKER] Episode %d has empty mcap_path, skipping", episodeID)
 		return
+	}
+
+	// Cloud sync uploads the MCAP object only. Sidecar JSON is not sent as raw tags.
+	rawTags := map[string]string{
+		"episode_id": ep.EpisodeUUID,
 	}
 
 	// Reuse latest failed sync_log when retry is due, otherwise insert a new row.
@@ -423,12 +430,9 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 
 	// Execute upload
 	result, err := w.uploader.Upload(ctx, cloud.UploadRequest{
-		EpisodeID:  ep.EpisodeUUID,
-		McapKey:    mcapKey,
-		SidecarKey: sidecarKey,
-		RawTags: map[string]string{
-			"episode_id": ep.EpisodeUUID,
-		},
+		EpisodeID: ep.EpisodeUUID,
+		McapKey:   mcapKey,
+		RawTags:   rawTags,
 	})
 	if err != nil {
 		duration := int64(time.Since(startTime).Seconds())
@@ -646,9 +650,8 @@ func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, d
 		attemptCount = 1
 	}
 
-	// Exponential backoff after this failure: min(2^attempt * 5s, 30s)
-	backoffSec := math.Min(math.Pow(2, float64(attemptCount))*5, 30)
-	nextRetry := now.Add(time.Duration(backoffSec) * time.Second)
+	backoff := w.nextRetryDelay(attemptCount)
+	nextRetry := now.Add(backoff)
 
 	if _, err := w.db.ExecContext(ctx, `
 		UPDATE sync_logs
@@ -664,6 +667,48 @@ func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, d
 
 	logger.Printf("[SYNC-WORKER] Episode %d sync failed: %v (attempt=%d, next_retry=%v)",
 		episodeID, uploadErr, attemptCount, nextRetry.Format(time.RFC3339))
+}
+
+func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
+	baseSec := w.cfg.RetryBaseSec
+	if baseSec <= 0 {
+		baseSec = 30
+	}
+
+	maxSec := w.cfg.RetryMaxSec
+	if maxSec <= 0 {
+		maxSec = 1800
+	}
+	if maxSec < baseSec {
+		maxSec = baseSec
+	}
+
+	jitterSec := w.cfg.RetryJitterSec
+	if jitterSec < 0 {
+		jitterSec = 0
+	}
+
+	if attemptCount < 1 {
+		attemptCount = 1
+	}
+
+	exponent := attemptCount - 1
+	if exponent > 20 {
+		exponent = 20
+	}
+
+	backoffSec := math.Min(float64(baseSec)*math.Pow(2, float64(exponent)), float64(maxSec))
+	jitter := 0
+	if jitterSec > 0 {
+		jitter = rand.Intn(jitterSec + 1)
+	}
+
+	totalSec := backoffSec + float64(jitter)
+	if totalSec > float64(maxSec) {
+		totalSec = float64(maxSec)
+	}
+
+	return time.Duration(totalSec * float64(time.Second))
 }
 
 // stripBucketPrefix removes the leading "bucket/" prefix from a stored path.

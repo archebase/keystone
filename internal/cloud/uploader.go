@@ -31,8 +31,6 @@ type UploadRequest struct {
 	EpisodeID string
 	// McapKey is the MinIO object key for the MCAP file (without bucket prefix).
 	McapKey string
-	// SidecarKey is the MinIO object key for the sidecar JSON file.
-	SidecarKey string
 	// RawTags are arbitrary key-value tags passed to the data-gateway.
 	RawTags map[string]string
 	// ClientHints are passed to CreateFileUpload for server-side routing.

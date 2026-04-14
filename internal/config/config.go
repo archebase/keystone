@@ -79,6 +79,9 @@ type SyncConfig struct {
 	WorkerIntervalSec int    // sync worker poll interval in seconds
 	RequestTimeoutSec int    // per-RPC timeout in seconds
 	OSSTimeoutSec     int    // per-part OSS upload timeout in seconds
+	RetryBaseSec      int    // base retry backoff in seconds
+	RetryMaxSec       int    // max retry backoff in seconds
+	RetryJitterSec    int    // max additive jitter in seconds
 }
 
 // FeaturesConfig feature flags configuration
@@ -179,6 +182,9 @@ func Load() (*Config, error) {
 			WorkerIntervalSec: getEnvInt("KEYSTONE_SYNC_WORKER_INTERVAL", 60),
 			RequestTimeoutSec: getEnvInt("KEYSTONE_SYNC_REQUEST_TIMEOUT", 30),
 			OSSTimeoutSec:     getEnvInt("KEYSTONE_SYNC_OSS_TIMEOUT", 300),
+			RetryBaseSec:      getEnvInt("KEYSTONE_SYNC_RETRY_BASE_SEC", 30),
+			RetryMaxSec:       getEnvInt("KEYSTONE_SYNC_RETRY_MAX_SEC", 1800),
+			RetryJitterSec:    getEnvInt("KEYSTONE_SYNC_RETRY_JITTER_SEC", 30),
 		},
 		Auth: AuthConfig{
 			JWTSecret:        getEnv("KEYSTONE_JWT_SECRET", ""),
@@ -263,6 +269,18 @@ func (c *Config) Validate() error {
 		}
 		if c.Sync.OSSTimeoutSec <= 0 {
 			return fmt.Errorf("sync oss timeout must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.RetryBaseSec <= 0 {
+			return fmt.Errorf("sync retry base seconds must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.RetryMaxSec <= 0 {
+			return fmt.Errorf("sync retry max seconds must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.RetryJitterSec < 0 {
+			return fmt.Errorf("sync retry jitter seconds must be greater than or equal to 0 when sync is enabled")
+		}
+		if c.Sync.RetryMaxSec < c.Sync.RetryBaseSec {
+			return fmt.Errorf("sync retry max seconds must be greater than or equal to retry base seconds when sync is enabled")
 		}
 	}
 	return nil
