@@ -116,13 +116,13 @@ func main() {
 	var syncWorker *services.SyncWorker
 	if cfg.Sync.Enabled && cfg.Sync.AuthEndpoint != "" && cfg.Sync.GatewayEndpoint != "" && s3Client != nil {
 		authClient := cloud.NewAuthClient(cloud.AuthClientConfig{
-			Endpoint:       cfg.Sync.AuthEndpoint,
-			UseTLS:         cfg.Sync.CloudUseTLS,
-			TLSCAFile:      cfg.Sync.CloudTLSCAFile,
-			TLSServerName:  cfg.Sync.CloudTLSServerName,
-			SiteID:         cfg.Sync.SiteID,
-			APISecret:      cfg.Sync.APISecret,
-			RefreshBefore:  60 * time.Second,
+			Endpoint:      cfg.Sync.AuthEndpoint,
+			UseTLS:        cfg.Sync.CloudUseTLS,
+			TLSCAFile:     cfg.Sync.CloudTLSCAFile,
+			TLSServerName: cfg.Sync.CloudTLSServerName,
+			SiteID:        cfg.Sync.SiteID,
+			APISecret:     cfg.Sync.APISecret,
+			RefreshBefore: 60 * time.Second,
 		})
 
 		gatewayClient := cloud.NewGatewayClient(cloud.GatewayClientConfig{
@@ -132,14 +132,15 @@ func main() {
 			TLSServerName:  cfg.Sync.CloudTLSServerName,
 			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
 		}, authClient)
-		defer func() {
-			if err := gatewayClient.Close(); err != nil {
-				logger.Printf("[SYNC] Failed to close gateway client: %v", err)
-			}
-		}()
+		// Close gateway client before auth client (LIFO defer order).
 		defer func() {
 			if err := authClient.Close(); err != nil {
 				logger.Printf("[SYNC] Failed to close auth client: %v", err)
+			}
+		}()
+		defer func() {
+			if err := gatewayClient.Close(); err != nil {
+				logger.Printf("[SYNC] Failed to close gateway client: %v", err)
 			}
 		}()
 
@@ -181,6 +182,10 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	if syncWorker != nil {
+		syncWorker.Stop()
+	}
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Printf("[SERVER] Error during shutdown: %v", err)
