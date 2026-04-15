@@ -468,102 +468,37 @@ func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, source
 }
 
 func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64, sourcePath string, manual bool) (int64, error) {
-	var reuseID int64
-	err := w.db.GetContext(ctx, &reuseID, `
-		SELECT sl.id FROM sync_logs sl
-		INNER JOIN (
-		  SELECT episode_id, MAX(id) AS latest_id
-		  FROM sync_logs
-		  GROUP BY episode_id
-		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
-		WHERE sl.episode_id = ?
-		  AND sl.status = 'failed'
-		  AND sl.attempt_count < ?
-		  AND (sl.next_retry_at IS NULL OR sl.next_retry_at <= NOW())
-	`, episodeID, w.cfg.MaxRetries)
-	if err == nil && reuseID > 0 {
-		now := time.Now().UTC()
-		// Atomic claim: only one worker may move this row from failed → in_progress
-		// (WHERE matches the reuse SELECT so a lost race yields RowsAffected 0).
-		res, updErr := w.db.ExecContext(ctx, `
-			UPDATE sync_logs
-			SET status = 'in_progress',
-			    source_path = ?,
-			    started_at = ?,
-			    error_message = NULL,
-			    duration_sec = NULL,
-			    completed_at = NULL,
-			    next_retry_at = NULL,
-			    attempt_count = attempt_count + 1
-			WHERE id = ?
-			  AND status = 'failed'
-			  AND attempt_count < ?
-			  AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-		`, sourcePath, now, reuseID, w.cfg.MaxRetries)
-		if updErr != nil {
-			return 0, fmt.Errorf("reuse sync_log: %w", updErr)
-		}
-		n, raErr := res.RowsAffected()
-		if raErr != nil {
-			return 0, fmt.Errorf("reuse sync_log rows affected: %w", raErr)
-		}
-		if n != 1 {
-			return 0, fmt.Errorf("retry claim lost for sync_log %d (concurrent worker or state changed)", reuseID)
-		}
-		return reuseID, nil
-	}
-	if err != nil && err != sql.ErrNoRows {
-		return 0, fmt.Errorf("query reusable sync_log: %w", err)
-	}
-
-	var latest struct {
-		Status       string       `db:"status"`
-		NextRetry    sql.NullTime `db:"next_retry_at"`
-		AttemptCount int          `db:"attempt_count"`
-	}
-	qErr := w.db.GetContext(ctx, &latest, `
-		SELECT sl.status, sl.next_retry_at, sl.attempt_count
-		FROM sync_logs sl
-		INNER JOIN (
-		  SELECT episode_id, MAX(id) AS latest_id
-		  FROM sync_logs
-		  GROUP BY episode_id
-		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
-		WHERE sl.episode_id = ?
-	`, episodeID)
-	if qErr == nil {
-		switch latest.Status {
-		case "in_progress":
-			return 0, fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
-		case "failed":
-			if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
-				return 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
-			}
-			if !manual && latest.NextRetry.Valid && latest.NextRetry.Time.After(time.Now().UTC()) {
-				return 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
-			}
-		}
-	} else if qErr != sql.ErrNoRows {
-		return 0, fmt.Errorf("query latest sync_log: %w", qErr)
-	}
-
-	return w.insertSyncLog(ctx, episodeID, sourcePath, manual)
-}
-
-func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourcePath string, manual bool) (int64, error) {
+	// NOTE: This must be lock-protected. A plain "check then insert" is vulnerable to TOCTOU
+	// and, when there is no existing sync_logs row, there is nothing to lock with FOR UPDATE.
+	// We serialize claims per-episode by locking the parent episodes row first.
 	tx, err := w.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin sync_log transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Serialize per episode even when sync_logs is empty for this episode.
+	var lockedEpisodeID int64
+	if err := tx.GetContext(ctx, &lockedEpisodeID, `
+		SELECT id
+		FROM episodes
+		WHERE id = ? AND deleted_at IS NULL
+		FOR UPDATE
+	`, episodeID); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("episode %d not found", episodeID)
+		}
+		return 0, fmt.Errorf("lock episode %d: %w", episodeID, err)
+	}
+
 	var latest struct {
+		ID           int64        `db:"id"`
 		Status       string       `db:"status"`
 		NextRetry    sql.NullTime `db:"next_retry_at"`
 		AttemptCount int          `db:"attempt_count"`
 	}
 	err = tx.GetContext(ctx, &latest, `
-		SELECT sl.status, sl.next_retry_at, sl.attempt_count
+		SELECT sl.id, sl.status, sl.next_retry_at, sl.attempt_count
 		FROM sync_logs sl
 		INNER JOIN (
 		  SELECT episode_id, MAX(id) AS latest_id
@@ -574,16 +509,51 @@ func (w *SyncWorker) insertSyncLog(ctx context.Context, episodeID int64, sourceP
 		FOR UPDATE
 	`, episodeID)
 	if err == nil {
+		now := time.Now().UTC()
 		switch latest.Status {
 		case "in_progress":
 			return 0, fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
 		case "completed":
 			return 0, fmt.Errorf("episode %d already has completed sync_log", episodeID)
 		case "failed":
+			// Reuse latest failed sync_log when retry is due and attempt_count < MaxRetries.
+			// This matches the previous behavior (manual mode can still insert a new row when
+			// retries are exhausted or backoff is active).
+			retryDue := !latest.NextRetry.Valid || !latest.NextRetry.Time.After(now)
+			if latest.AttemptCount < w.cfg.MaxRetries && retryDue {
+				res, updErr := tx.ExecContext(ctx, `
+					UPDATE sync_logs
+					SET status = 'in_progress',
+					    source_path = ?,
+					    started_at = ?,
+					    error_message = NULL,
+					    duration_sec = NULL,
+					    completed_at = NULL,
+					    next_retry_at = NULL,
+					    attempt_count = attempt_count + 1
+					WHERE id = ?
+					  AND status = 'failed'
+				`, sourcePath, now, latest.ID)
+				if updErr != nil {
+					return 0, fmt.Errorf("reuse sync_log: %w", updErr)
+				}
+				n, raErr := res.RowsAffected()
+				if raErr != nil {
+					return 0, fmt.Errorf("reuse sync_log rows affected: %w", raErr)
+				}
+				if n != 1 {
+					return 0, fmt.Errorf("retry claim lost for sync_log %d (state changed)", latest.ID)
+				}
+				if err := tx.Commit(); err != nil {
+					return 0, fmt.Errorf("commit sync_log reuse: %w", err)
+				}
+				return latest.ID, nil
+			}
+
 			if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
 				return 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
 			}
-			if !manual && latest.NextRetry.Valid && latest.NextRetry.Time.After(time.Now().UTC()) {
+			if !manual && latest.NextRetry.Valid && latest.NextRetry.Time.After(now) {
 				return 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
 			}
 		}
