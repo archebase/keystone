@@ -65,6 +65,7 @@ var (
 	ErrEpisodeAlreadyEnqueued = errors.New("sync episode already enqueued")
 	ErrSyncQueueFull          = errors.New("sync enqueue channel full")
 	ErrSyncAlreadyInProgress  = errors.New("sync already in progress")
+	ErrSyncWorkerNotRunning   = errors.New("sync worker is not running")
 )
 
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
@@ -124,6 +125,10 @@ func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) 
 }
 
 func (w *SyncWorker) enqueueEpisode(ctx context.Context, episodeID int64, manual bool) error {
+	if !w.running.Load() {
+		return ErrSyncWorkerNotRunning
+	}
+
 	if manual {
 		if err := w.validateEpisodeForManualEnqueue(ctx, episodeID); err != nil {
 			return err
@@ -181,6 +186,10 @@ func (w *SyncWorker) validateEpisodeForManualEnqueue(ctx context.Context, episod
 // EnqueuePendingEpisodes scans for all approved but un-synced episodes and enqueues them.
 // Returns the number of episodes enqueued.
 func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
+	if !w.running.Load() {
+		return 0, ErrSyncWorkerNotRunning
+	}
+
 	ids, err := w.findPendingEpisodes(ctx, true)
 	if err != nil {
 		return 0, err

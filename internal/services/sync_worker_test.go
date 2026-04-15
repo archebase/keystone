@@ -40,6 +40,7 @@ func TestEnqueueEpisode_DeduplicatesPendingEpisode(t *testing.T) {
 		enqueueCh:       make(chan int64, 2),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
+	w.running.Store(true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -72,6 +73,7 @@ func TestEnqueueEpisode_AllowsReenqueueAfterProcessing(t *testing.T) {
 		enqueueCh:       make(chan int64, 2),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
+	w.running.Store(true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -130,6 +132,7 @@ func TestEnqueueEpisodeManual_AllowsExhaustedRetryEpisode(t *testing.T) {
 		enqueueCh:       make(chan int64, 1),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
+	w.running.Store(true)
 
 	insertEpisodeForSyncWorkerTest(t, db, 10, "approved", false)
 	insertSyncLogForSyncWorkerTest(t, db, 10, "failed", 3)
@@ -156,6 +159,7 @@ func TestEnqueueEpisode_RejectsInProgressEpisode(t *testing.T) {
 		enqueueCh:       make(chan int64, 1),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
+	w.running.Store(true)
 
 	insertEpisodeForSyncWorkerTest(t, db, 11, "approved", false)
 	insertSyncLogForSyncWorkerTest(t, db, 11, "in_progress", 1)
@@ -170,9 +174,21 @@ func TestEnqueueEpisode_ReturnsQueueFull(t *testing.T) {
 		enqueueCh:       make(chan int64),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
+	w.running.Store(true)
 
 	if err := w.EnqueueEpisode(context.Background(), 99); !errors.Is(err, ErrSyncQueueFull) {
 		t.Fatalf("enqueue error = %v, want ErrSyncQueueFull", err)
+	}
+}
+
+func TestEnqueueEpisodeManual_ReturnsNotRunningWhenWorkerNotStarted(t *testing.T) {
+	w := &SyncWorker{
+		enqueueCh:       make(chan int64, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+
+	if err := w.EnqueueEpisodeManual(context.Background(), 123); !errors.Is(err, ErrSyncWorkerNotRunning) {
+		t.Fatalf("manual enqueue error = %v, want ErrSyncWorkerNotRunning", err)
 	}
 }
 

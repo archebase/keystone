@@ -100,6 +100,10 @@ func (h *SyncHandler) TriggerBatchSync(c *gin.Context) {
 
 	count, err := h.syncWorker.EnqueuePendingEpisodes(c.Request.Context())
 	if err != nil {
+		if errors.Is(err, services.ErrSyncWorkerNotRunning) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
 		logger.Printf("[SYNC] Batch enqueue failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue episodes"})
 		return
@@ -169,6 +173,13 @@ func (h *SyncHandler) TriggerEpisodeSync(c *gin.Context) {
 	err = h.syncWorker.EnqueueEpisodeManual(c.Request.Context(), episodeID)
 	if err != nil {
 		switch {
+		case errors.Is(err, services.ErrSyncWorkerNotRunning):
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":      err.Error(),
+				"episode_id": episodeID,
+				"status":     "worker_not_running",
+			})
+			return
 		case errors.Is(err, services.ErrEpisodeAlreadyEnqueued), errors.Is(err, services.ErrSyncAlreadyInProgress):
 			c.JSON(http.StatusConflict, gin.H{
 				"error":      err.Error(),
