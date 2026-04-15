@@ -19,13 +19,18 @@ import (
 	"archebase.com/keystone-edge/internal/logger"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // AuthClientConfig defines the runtime configuration for the auth client.
 type AuthClientConfig struct {
 	// Endpoint is the gRPC address of the AuthService (e.g. "cloud.example.com:50051").
 	Endpoint string
+	// UseTLS enables TLS for the gRPC connection.
+	UseTLS bool
+	// TLSCAFile is an optional CA bundle path for TLS verification.
+	TLSCAFile string
+	// TLSServerName is an optional TLS server name override (SNI / verification).
+	TLSServerName string
 	// SiteID is the numeric site identifier assigned to this edge deployment.
 	SiteID int64
 	// APISecret is the raw API key secret for credential exchange.
@@ -134,7 +139,11 @@ func (c *AuthClient) getConn() (*grpc.ClientConn, error) {
 		return c.conn, nil
 	}
 
-	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds, err := newCloudTransportCredentials(c.cfg.UseTLS, c.cfg.TLSCAFile, c.cfg.TLSServerName)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("grpc dial %s: %w", c.cfg.Endpoint, err)
 	}

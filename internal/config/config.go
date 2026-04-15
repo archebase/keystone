@@ -73,6 +73,9 @@ type SyncConfig struct {
 	// Cloud upload settings (data-platform integration)
 	AuthEndpoint      string // gRPC endpoint for AuthService
 	GatewayEndpoint   string // gRPC endpoint for DataGatewayService
+	CloudUseTLS       bool   // enable TLS for cloud gRPC connections
+	CloudTLSCAFile    string // optional CA bundle path for TLS verification
+	CloudTLSServerName string // optional TLS server name override (SNI / verification)
 	SiteID            int64  // site identifier for credential exchange
 	APISecret         string `json:"-"` // API key secret for credential exchange
 	MaxConcurrent     int    // max concurrent uploads
@@ -176,6 +179,9 @@ func Load() (*Config, error) {
 			MaxRetries:        getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
 			AuthEndpoint:      getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),
 			GatewayEndpoint:   getEnv("KEYSTONE_CLOUD_GATEWAY_ENDPOINT", ""),
+			CloudUseTLS:       getEnvBool("KEYSTONE_CLOUD_USE_TLS", true),
+			CloudTLSCAFile:    getEnv("KEYSTONE_CLOUD_TLS_CA_FILE", ""),
+			CloudTLSServerName: getEnv("KEYSTONE_CLOUD_TLS_SERVER_NAME", ""),
 			SiteID:            getEnvInt64("KEYSTONE_CLOUD_SITE_ID", 0),
 			APISecret:         getEnv("KEYSTONE_CLOUD_API_SECRET", ""),
 			MaxConcurrent:     getEnvInt("KEYSTONE_SYNC_MAX_CONCURRENT", 2),

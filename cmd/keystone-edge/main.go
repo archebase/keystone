@@ -116,14 +116,20 @@ func main() {
 	var syncWorker *services.SyncWorker
 	if cfg.Sync.Enabled && cfg.Sync.AuthEndpoint != "" && cfg.Sync.GatewayEndpoint != "" && s3Client != nil {
 		authClient := cloud.NewAuthClient(cloud.AuthClientConfig{
-			Endpoint:      cfg.Sync.AuthEndpoint,
-			SiteID:        cfg.Sync.SiteID,
-			APISecret:     cfg.Sync.APISecret,
-			RefreshBefore: 60 * time.Second,
+			Endpoint:       cfg.Sync.AuthEndpoint,
+			UseTLS:         cfg.Sync.CloudUseTLS,
+			TLSCAFile:      cfg.Sync.CloudTLSCAFile,
+			TLSServerName:  cfg.Sync.CloudTLSServerName,
+			SiteID:         cfg.Sync.SiteID,
+			APISecret:      cfg.Sync.APISecret,
+			RefreshBefore:  60 * time.Second,
 		})
 
 		gatewayClient := cloud.NewGatewayClient(cloud.GatewayClientConfig{
 			Endpoint:       cfg.Sync.GatewayEndpoint,
+			UseTLS:         cfg.Sync.CloudUseTLS,
+			TLSCAFile:      cfg.Sync.CloudTLSCAFile,
+			TLSServerName:  cfg.Sync.CloudTLSServerName,
 			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
 		}, authClient)
 		defer func() {

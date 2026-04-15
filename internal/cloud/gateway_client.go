@@ -14,7 +14,6 @@ import (
 	"archebase.com/keystone-edge/internal/logger"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -22,6 +21,12 @@ import (
 type GatewayClientConfig struct {
 	// Endpoint is the gRPC address of the DataGatewayService.
 	Endpoint string
+	// UseTLS enables TLS for the gRPC connection.
+	UseTLS bool
+	// TLSCAFile is an optional CA bundle path for TLS verification.
+	TLSCAFile string
+	// TLSServerName is an optional TLS server name override (SNI / verification).
+	TLSServerName string
 	// RequestTimeout is the per-RPC deadline.
 	RequestTimeout time.Duration
 }
@@ -142,7 +147,11 @@ func (c *GatewayClient) connect() (*grpc.ClientConn, error) {
 		return c.conn, nil
 	}
 
-	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds, err := newCloudTransportCredentials(c.cfg.UseTLS, c.cfg.TLSCAFile, c.cfg.TLSServerName)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("grpc dial %s: %w", c.cfg.Endpoint, err)
 	}
