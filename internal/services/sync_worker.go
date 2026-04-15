@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"strings"
@@ -19,7 +20,9 @@ import (
 	"archebase.com/keystone-edge/internal/cloud"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/storage/s3"
 	"github.com/jmoiron/sqlx"
+	"github.com/minio/minio-go/v7"
 )
 
 // SyncWorkerConfig provides the runtime configuration for the sync worker.
@@ -36,10 +39,12 @@ type SyncWorkerConfig struct {
 // SyncWorker is a background goroutine that periodically scans for approved
 // episodes and uploads them to cloud via the data-platform gateway.
 type SyncWorker struct {
-	db       *sqlx.DB
-	uploader *cloud.Uploader
-	cfg      SyncWorkerConfig
-	syncCfg  *config.SyncConfig
+	db          *sqlx.DB
+	uploader    *cloud.Uploader
+	minioClient *s3.Client
+	minioBucket string
+	cfg         SyncWorkerConfig
+	syncCfg     *config.SyncConfig
 
 	mu              sync.Mutex
 	enqueuedEpisode map[int64]struct{}
@@ -63,10 +68,12 @@ var (
 )
 
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
-func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, cfg SyncWorkerConfig, syncCfg *config.SyncConfig) *SyncWorker {
+func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, minioClient *s3.Client, minioBucket string, cfg SyncWorkerConfig, syncCfg *config.SyncConfig) *SyncWorker {
 	return &SyncWorker{
 		db:              db,
 		uploader:        uploader,
+		minioClient:     minioClient,
+		minioBucket:     minioBucket,
 		cfg:             cfg,
 		syncCfg:         syncCfg,
 		stopCh:          make(chan struct{}),
@@ -385,10 +392,11 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 		ID          int64  `db:"id"`
 		EpisodeUUID string `db:"episode_id"`
 		McapPath    string `db:"mcap_path"`
+		SidecarPath string `db:"sidecar_path"`
 		CloudSynced bool   `db:"cloud_synced"`
 	}
 	err := w.db.GetContext(ctx, &ep, `
-		SELECT id, episode_id, mcap_path, cloud_synced
+		SELECT id, episode_id, mcap_path, sidecar_path, cloud_synced
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`, episodeID)
@@ -414,15 +422,22 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 		return
 	}
 
-	// Cloud sync uploads the MCAP object only. Sidecar JSON is not sent as raw tags.
+	// Build raw tags from sidecar JSON (best-effort: log and continue on failure).
 	rawTags := map[string]string{
 		"episode_id": ep.EpisodeUUID,
+	}
+	if sidecarTags, err := w.tagsFromSidecar(ctx, ep.SidecarPath); err != nil {
+		logger.Printf("[SYNC-WORKER] Episode %d: failed to read sidecar tags, uploading without them: %v", episodeID, err)
+	} else {
+		for k, v := range sidecarTags {
+			rawTags[k] = v
+		}
 	}
 
 	// Reuse latest failed sync_log when retry is due, otherwise insert a new row.
 	syncLogID, err := w.acquireSyncLogWithMode(ctx, episodeID, ep.McapPath, manual)
 	if err != nil {
-		logger.Printf("[SYNC-WORKER] Failed to acquire sync log for episode %d: %v", episodeID, err)
+		//logger.Printf("[SYNC-WORKER] Failed to acquire sync log for episode %d: %v", episodeID, err)
 		return
 	}
 
@@ -709,6 +724,38 @@ func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
 	}
 
 	return time.Duration(totalSec * float64(time.Second))
+}
+
+// tagsFromSidecar reads the sidecar JSON from MinIO and returns it as a flat string map
+// for use as RawTags. topics_summary is excluded. Returns nil map and an error if the
+// sidecar path is empty, the object cannot be read, or the JSON is malformed.
+func (w *SyncWorker) tagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) {
+	key := stripBucketPrefix(sidecarPath)
+	if key == "" {
+		return nil, fmt.Errorf("empty sidecar_path")
+	}
+	if w.minioClient == nil {
+		return nil, fmt.Errorf("minio client not available")
+	}
+
+	obj, err := w.minioClient.GetObject(ctx, w.minioBucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get sidecar object %s: %w", key, err)
+	}
+	defer func() {
+		_ = obj.Close()
+	}()
+
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		return nil, fmt.Errorf("read sidecar object %s: %w", key, err)
+	}
+
+	tags, err := flattenSidecar(data)
+	if err != nil {
+		return nil, fmt.Errorf("flatten sidecar %s: %w", key, err)
+	}
+	return tags, nil
 }
 
 // stripBucketPrefix removes the leading "bucket/" prefix from a stored path.

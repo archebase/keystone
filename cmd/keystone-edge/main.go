@@ -142,7 +142,7 @@ func main() {
 			OSSTimeout:     time.Duration(cfg.Sync.OSSTimeoutSec) * time.Second,
 		})
 
-		syncWorker = services.NewSyncWorker(db.DB, uploader, services.SyncWorkerConfig{
+		syncWorker = services.NewSyncWorker(db.DB, uploader, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
 			BatchSize:      cfg.Sync.BatchSize,
 			MaxConcurrent:  cfg.Sync.MaxConcurrent,
 			MaxRetries:     cfg.Sync.MaxRetries,
