@@ -38,6 +38,11 @@ type SyncWorkerConfig struct {
 
 // SyncWorker is a background goroutine that periodically scans for approved
 // episodes and uploads them to cloud via the data-platform gateway.
+type syncEnqueueRequest struct {
+	episodeID int64
+	manual    bool
+}
+
 type SyncWorker struct {
 	db          *sqlx.DB
 	uploader    *cloud.Uploader
@@ -57,7 +62,7 @@ type SyncWorker struct {
 	runCancel context.CancelFunc
 
 	// enqueueCh allows the API handler to inject specific episode IDs for immediate upload.
-	enqueueCh chan int64
+	enqueueCh chan syncEnqueueRequest
 }
 
 var (
@@ -76,7 +81,7 @@ func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, minioClient *s3.Client
 		minioBucket:     minioBucket,
 		cfg:             cfg,
 		syncCfg:         syncCfg,
-		enqueueCh:       make(chan int64, 100),
+		enqueueCh:       make(chan syncEnqueueRequest, 100),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
 }
@@ -137,7 +142,7 @@ func (w *SyncWorker) enqueueEpisode(ctx context.Context, episodeID int64, manual
 	}
 
 	select {
-	case w.enqueueCh <- episodeID:
+	case w.enqueueCh <- syncEnqueueRequest{episodeID: episodeID, manual: manual}:
 		return nil
 	case <-ctx.Done():
 		w.unmarkEnqueued(episodeID)
@@ -197,7 +202,7 @@ func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
 			continue
 		}
 		select {
-		case w.enqueueCh <- id:
+		case w.enqueueCh <- syncEnqueueRequest{episodeID: id, manual: false}:
 			count++
 		default:
 			w.unmarkEnqueued(id)
@@ -228,9 +233,9 @@ func (w *SyncWorker) run() {
 		case <-ctx.Done():
 			return
 
-		case episodeID := <-w.enqueueCh:
-			w.unmarkEnqueued(episodeID)
-			w.processEpisodeWithMode(ctx, episodeID, true)
+		case req := <-w.enqueueCh:
+			w.unmarkEnqueued(req.episodeID)
+			w.processEpisodeWithMode(ctx, req.episodeID, req.manual)
 
 		case <-ticker.C:
 			w.pollAndProcess(ctx)

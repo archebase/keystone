@@ -287,14 +287,6 @@ func buildRequestURL(endpoint, bucket, objectKey string, query []queryParam) str
 	}
 
 	if len(query) > 0 {
-		q := parsed.Query()
-		for _, param := range query {
-			if param.Value != "" {
-				q.Set(param.Key, param.Value)
-			} else {
-				q.Set(param.Key, "")
-			}
-		}
 		parsed.RawQuery = encodeQueryString(query)
 	}
 

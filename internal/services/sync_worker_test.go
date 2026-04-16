@@ -37,7 +37,7 @@ func TestStripBucketPrefix(t *testing.T) {
 
 func TestEnqueueEpisode_DeduplicatesPendingEpisode(t *testing.T) {
 	w := &SyncWorker{
-		enqueueCh:       make(chan int64, 2),
+		enqueueCh:       make(chan syncEnqueueRequest, 2),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
 	w.running.Store(true)
@@ -54,8 +54,11 @@ func TestEnqueueEpisode_DeduplicatesPendingEpisode(t *testing.T) {
 
 	select {
 	case got := <-w.enqueueCh:
-		if got != 42 {
-			t.Fatalf("unexpected episode id: got %d want 42", got)
+		if got.episodeID != 42 {
+			t.Fatalf("unexpected episode id: got %d want 42", got.episodeID)
+		}
+		if got.manual {
+			t.Fatal("unexpected manual mode for EnqueueEpisode")
 		}
 	default:
 		t.Fatal("expected episode to be enqueued")
@@ -63,14 +66,14 @@ func TestEnqueueEpisode_DeduplicatesPendingEpisode(t *testing.T) {
 
 	select {
 	case got := <-w.enqueueCh:
-		t.Fatalf("duplicate enqueue detected: got %d", got)
+		t.Fatalf("duplicate enqueue detected: got %d", got.episodeID)
 	default:
 	}
 }
 
 func TestEnqueueEpisode_AllowsReenqueueAfterProcessing(t *testing.T) {
 	w := &SyncWorker{
-		enqueueCh:       make(chan int64, 2),
+		enqueueCh:       make(chan syncEnqueueRequest, 2),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
 	w.running.Store(true)
@@ -129,7 +132,7 @@ func TestEnqueueEpisodeManual_AllowsExhaustedRetryEpisode(t *testing.T) {
 	w := &SyncWorker{
 		db:              db,
 		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
-		enqueueCh:       make(chan int64, 1),
+		enqueueCh:       make(chan syncEnqueueRequest, 1),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
 	w.running.Store(true)
@@ -143,8 +146,11 @@ func TestEnqueueEpisodeManual_AllowsExhaustedRetryEpisode(t *testing.T) {
 
 	select {
 	case got := <-w.enqueueCh:
-		if got != 10 {
-			t.Fatalf("unexpected episode id: got %d want 10", got)
+		if got.episodeID != 10 {
+			t.Fatalf("unexpected episode id: got %d want 10", got.episodeID)
+		}
+		if !got.manual {
+			t.Fatal("expected manual mode for EnqueueEpisodeManual")
 		}
 	default:
 		t.Fatal("expected episode to be enqueued")
@@ -156,7 +162,7 @@ func TestEnqueueEpisode_RejectsInProgressEpisode(t *testing.T) {
 	w := &SyncWorker{
 		db:              db,
 		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
-		enqueueCh:       make(chan int64, 1),
+		enqueueCh:       make(chan syncEnqueueRequest, 1),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
 	w.running.Store(true)
@@ -171,7 +177,7 @@ func TestEnqueueEpisode_RejectsInProgressEpisode(t *testing.T) {
 
 func TestEnqueueEpisode_ReturnsQueueFull(t *testing.T) {
 	w := &SyncWorker{
-		enqueueCh:       make(chan int64),
+		enqueueCh:       make(chan syncEnqueueRequest),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
 	w.running.Store(true)
@@ -183,7 +189,7 @@ func TestEnqueueEpisode_ReturnsQueueFull(t *testing.T) {
 
 func TestEnqueueEpisodeManual_ReturnsNotRunningWhenWorkerNotStarted(t *testing.T) {
 	w := &SyncWorker{
-		enqueueCh:       make(chan int64, 1),
+		enqueueCh:       make(chan syncEnqueueRequest, 1),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
 

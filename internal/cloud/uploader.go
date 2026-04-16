@@ -143,7 +143,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 
 	for offset < fileSize {
 		if err := ctx.Err(); err != nil {
-			u.oss.AbortMultipartUpload(context.Background(), session, multipartUploadID)
+			u.abortMultipartUpload(session, multipartUploadID)
 			return nil, err
 		}
 
