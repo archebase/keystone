@@ -519,10 +519,6 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 	}
 }
 
-func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {
-	w.processEpisodeWithMode(ctx, episodeID, false)
-}
-
 func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64, manual bool) {
 	// Fetch episode details
 	var ep struct {
