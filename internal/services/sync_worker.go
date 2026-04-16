@@ -36,13 +36,13 @@ type SyncWorkerConfig struct {
 	RetryJitterSec int
 }
 
-// SyncWorker is a background goroutine that periodically scans for approved
-// episodes and uploads them to cloud via the data-platform gateway.
 type syncEnqueueRequest struct {
 	episodeID int64
 	manual    bool
 }
 
+// SyncWorker is a background goroutine that periodically scans for approved
+// episodes and uploads them to cloud via the data-platform gateway.
 type SyncWorker struct {
 	db          *sqlx.DB
 	uploader    *cloud.Uploader
@@ -66,10 +66,14 @@ type SyncWorker struct {
 }
 
 var (
+	// ErrEpisodeAlreadyEnqueued is returned when the episode is already in the sync queue.
 	ErrEpisodeAlreadyEnqueued = errors.New("sync episode already enqueued")
-	ErrSyncQueueFull          = errors.New("sync enqueue channel full")
-	ErrSyncAlreadyInProgress  = errors.New("sync already in progress")
-	ErrSyncWorkerNotRunning   = errors.New("sync worker is not running")
+	// ErrSyncQueueFull is returned when the non-blocking enqueue channel is full.
+	ErrSyncQueueFull = errors.New("sync enqueue channel full")
+	// ErrSyncAlreadyInProgress is returned when a conflicting sync operation is active.
+	ErrSyncAlreadyInProgress = errors.New("sync already in progress")
+	// ErrSyncWorkerNotRunning is returned when Start has not been called or after Stop.
+	ErrSyncWorkerNotRunning = errors.New("sync worker is not running")
 )
 
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
@@ -683,6 +687,7 @@ func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
 	backoffSec := math.Min(float64(baseSec)*math.Pow(2, float64(exponent)), float64(maxSec))
 	jitter := 0
 	if jitterSec > 0 {
+		// #nosec G404 -- retry backoff jitter only, not cryptographic randomness
 		jitter = rand.Intn(jitterSec + 1)
 	}
 

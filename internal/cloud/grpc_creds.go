@@ -28,6 +28,7 @@ func newCloudTransportCredentials(useTLS bool, caFile string, serverName string)
 		}
 		roots = pool
 	} else {
+		// #nosec G304 -- CA path is operator-controlled config, not end-user input
 		pem, err := os.ReadFile(caFile)
 		if err != nil {
 			return nil, fmt.Errorf("read tls ca file %s: %w", caFile, err)
