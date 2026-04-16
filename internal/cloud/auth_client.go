@@ -34,14 +34,14 @@ type AuthClientConfig struct {
 	// SiteID is the numeric site identifier assigned to this edge deployment.
 	SiteID int64
 	// APISecret is the raw API key secret for credential exchange.
-	APISecret string
+	APISecret string // #nosec G117 -- in-process auth config only; not JSON-marshaled to clients
 	// RefreshBefore is how long before expiry to proactively refresh the token.
 	RefreshBefore time.Duration
 }
 
 // AuthToken represents a cached JWT access token obtained from the AuthService.
 type AuthToken struct {
-	AccessToken string
+	AccessToken string // #nosec G117 -- JWT from AuthService; in-memory cache only
 	ExpiresAt   time.Time
 }
 

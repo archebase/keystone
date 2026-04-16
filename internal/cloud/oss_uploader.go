@@ -179,6 +179,7 @@ func (u *OSSUploader) sendRequest(ctx context.Context, session *UploadSession, m
 		req.Header.Set(k, v)
 	}
 
+	// #nosec G704 -- URL is OSS endpoint from authenticated DataGateway gRPC upload session
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
