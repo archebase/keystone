@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 
-.PHONY: help build build-image push run test clean lint license
+.PHONY: help build build-image push run test clean lint license proto
 
 # Default target
 help:
@@ -14,6 +14,7 @@ help:
 	@echo "  make push        - Push to registry (set REGISTRY variable)"
 	@echo "  make lint        - Run Go linter (golangci-lint)"
 	@echo "  make license     - Run REUSE license compliance check"
+	@echo "  make proto       - Regenerate Go bindings from .proto sources"
 
 # Build variables
 IMAGE_NAME ?= keystone-edge
@@ -55,6 +56,13 @@ lint:
 	else \
 		echo "golangci-lint not found, skipping..."; \
 	fi
+
+# Regenerate gRPC/protobuf Go bindings from .proto source files.
+# Requires: protoc (v5.x), protoc-gen-go, protoc-gen-go-grpc on PATH.
+#   go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+#   go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+proto:
+	go generate ./internal/cloud/cloudpb/
 
 # REUSE license compliance check
 license:

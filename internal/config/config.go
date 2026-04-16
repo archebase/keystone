@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config represents the complete configuration for Keystone Edge
@@ -65,12 +66,25 @@ type QAConfig struct {
 
 // SyncConfig synchronization configuration
 type SyncConfig struct {
-	Enabled        bool
-	Endpoint       string
-	BatchSize      int
-	MaxBytes       int64
-	MaxRetries     int
-	CheckpointPath string
+	Enabled    bool
+	BatchSize  int
+	MaxRetries int
+
+	// Cloud upload settings (data-platform integration)
+	AuthEndpoint       string // gRPC endpoint for AuthService
+	GatewayEndpoint    string // gRPC endpoint for DataGatewayService
+	CloudUseTLS        bool   // enable TLS for cloud gRPC connections
+	CloudTLSCAFile     string // optional CA bundle path for TLS verification
+	CloudTLSServerName string // optional TLS server name override (SNI / verification)
+	SiteID             int64  // site identifier for credential exchange
+	APISecret          string `json:"-"` // API key secret for credential exchange (never JSON-marshaled)
+	MaxConcurrent      int    // max concurrent uploads
+	WorkerIntervalSec  int    // sync worker poll interval in seconds
+	RequestTimeoutSec  int    // per-RPC timeout in seconds
+	OSSTimeoutSec      int    // per-part OSS upload timeout in seconds
+	RetryBaseSec       int    // base retry backoff in seconds
+	RetryMaxSec        int    // max retry backoff in seconds
+	RetryJitterSec     int    // max additive jitter in seconds
 }
 
 // FeaturesConfig feature flags configuration
@@ -160,12 +174,23 @@ func Load() (*Config, error) {
 			Checks:               []string{"topics", "duration", "gaps", "images"},
 		},
 		Sync: SyncConfig{
-			Enabled:        getEnvBool("KEYSTONE_SYNC_ENABLED", true),
-			Endpoint:       getEnv("KEYSTONE_CLOUD_ENDPOINT", ""),
-			BatchSize:      getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 100),
-			MaxBytes:       int64(getEnvInt("KEYSTONE_SYNC_MAX_BYTES", 10737418240)), // 10GB
-			MaxRetries:     getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
-			CheckpointPath: getEnv("KEYSTONE_SYNC_CHECKPOINT_PATH", "/var/lib/keystone/.checkpoint"),
+			Enabled:            getEnvBool("KEYSTONE_SYNC_ENABLED", true),
+			BatchSize:          getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 10),
+			MaxRetries:         getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
+			AuthEndpoint:       getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),
+			GatewayEndpoint:    getEnv("KEYSTONE_CLOUD_GATEWAY_ENDPOINT", ""),
+			CloudUseTLS:        getEnvBool("KEYSTONE_CLOUD_USE_TLS", true),
+			CloudTLSCAFile:     getEnv("KEYSTONE_CLOUD_TLS_CA_FILE", ""),
+			CloudTLSServerName: getEnv("KEYSTONE_CLOUD_TLS_SERVER_NAME", ""),
+			SiteID:             getEnvInt64("KEYSTONE_CLOUD_SITE_ID", 0),
+			APISecret:          getEnv("KEYSTONE_CLOUD_API_SECRET", ""),
+			MaxConcurrent:      getEnvInt("KEYSTONE_SYNC_MAX_CONCURRENT", 2),
+			WorkerIntervalSec:  getEnvInt("KEYSTONE_SYNC_WORKER_INTERVAL", 60),
+			RequestTimeoutSec:  getEnvInt("KEYSTONE_SYNC_REQUEST_TIMEOUT", 30),
+			OSSTimeoutSec:      getEnvInt("KEYSTONE_SYNC_OSS_TIMEOUT", 300),
+			RetryBaseSec:       getEnvInt("KEYSTONE_SYNC_RETRY_BASE_SEC", 30),
+			RetryMaxSec:        getEnvInt("KEYSTONE_SYNC_RETRY_MAX_SEC", 1800),
+			RetryJitterSec:     getEnvInt("KEYSTONE_SYNC_RETRY_JITTER_SEC", 30),
 		},
 		Auth: AuthConfig{
 			JWTSecret:        getEnv("KEYSTONE_JWT_SECRET", ""),
@@ -220,6 +245,50 @@ func (c *Config) Validate() error {
 	if c.Storage.AccessKey == "" || c.Storage.SecretKey == "" {
 		return fmt.Errorf("storage access key and secret key are required")
 	}
+	if c.Sync.Enabled {
+		if strings.TrimSpace(c.Sync.AuthEndpoint) == "" {
+			return fmt.Errorf("sync auth endpoint is required when sync is enabled")
+		}
+		if strings.TrimSpace(c.Sync.GatewayEndpoint) == "" {
+			return fmt.Errorf("sync gateway endpoint is required when sync is enabled")
+		}
+		if c.Sync.SiteID <= 0 {
+			return fmt.Errorf("sync site id must be greater than 0 when sync is enabled")
+		}
+		if strings.TrimSpace(c.Sync.APISecret) == "" {
+			return fmt.Errorf("sync api secret is required when sync is enabled")
+		}
+		if c.Sync.BatchSize <= 0 {
+			return fmt.Errorf("sync batch size must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.MaxRetries <= 0 {
+			return fmt.Errorf("sync max retries must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.MaxConcurrent <= 0 {
+			return fmt.Errorf("sync max concurrent must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.WorkerIntervalSec <= 0 {
+			return fmt.Errorf("sync worker interval must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.RequestTimeoutSec <= 0 {
+			return fmt.Errorf("sync request timeout must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.OSSTimeoutSec <= 0 {
+			return fmt.Errorf("sync oss timeout must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.RetryBaseSec <= 0 {
+			return fmt.Errorf("sync retry base seconds must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.RetryMaxSec <= 0 {
+			return fmt.Errorf("sync retry max seconds must be greater than 0 when sync is enabled")
+		}
+		if c.Sync.RetryJitterSec < 0 {
+			return fmt.Errorf("sync retry jitter seconds must be greater than or equal to 0 when sync is enabled")
+		}
+		if c.Sync.RetryMaxSec < c.Sync.RetryBaseSec {
+			return fmt.Errorf("sync retry max seconds must be greater than or equal to retry base seconds when sync is enabled")
+		}
+	}
 	return nil
 }
 
@@ -233,6 +302,15 @@ func getEnv(key, fallback string) string {
 func getEnvInt(key string, fallback int) int {
 	if val := os.Getenv(key); val != "" {
 		if i, err := strconv.Atoi(val); err == nil {
+			return i
+		}
+	}
+	return fallback
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	if val := os.Getenv(key); val != "" {
+		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
 			return i
 		}
 	}

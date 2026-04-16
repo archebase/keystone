@@ -16,9 +16,11 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"archebase.com/keystone-edge/internal/cloud"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/server"
+	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/database"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
@@ -109,10 +111,62 @@ func main() {
 	}
 
 	// TODO: Start QA worker
-	// TODO: Start sync worker
+
+	// Initialize cloud sync worker
+	var syncWorker *services.SyncWorker
+	if cfg.Sync.Enabled && cfg.Sync.AuthEndpoint != "" && cfg.Sync.GatewayEndpoint != "" && s3Client != nil {
+		authClient := cloud.NewAuthClient(cloud.AuthClientConfig{
+			Endpoint:      cfg.Sync.AuthEndpoint,
+			UseTLS:        cfg.Sync.CloudUseTLS,
+			TLSCAFile:     cfg.Sync.CloudTLSCAFile,
+			TLSServerName: cfg.Sync.CloudTLSServerName,
+			SiteID:        cfg.Sync.SiteID,
+			APISecret:     cfg.Sync.APISecret,
+			RefreshBefore: 60 * time.Second,
+		})
+
+		gatewayClient := cloud.NewGatewayClient(cloud.GatewayClientConfig{
+			Endpoint:       cfg.Sync.GatewayEndpoint,
+			UseTLS:         cfg.Sync.CloudUseTLS,
+			TLSCAFile:      cfg.Sync.CloudTLSCAFile,
+			TLSServerName:  cfg.Sync.CloudTLSServerName,
+			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
+		}, authClient)
+		// Close gateway client before auth client (LIFO defer order).
+		defer func() {
+			if err := authClient.Close(); err != nil {
+				logger.Printf("[SYNC] Failed to close auth client: %v", err)
+			}
+		}()
+		defer func() {
+			if err := gatewayClient.Close(); err != nil {
+				logger.Printf("[SYNC] Failed to close gateway client: %v", err)
+			}
+		}()
+
+		uploader := cloud.NewUploader(gatewayClient, s3Client, cfg.Storage.Bucket, cloud.UploaderConfig{
+			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
+			OSSTimeout:     time.Duration(cfg.Sync.OSSTimeoutSec) * time.Second,
+		})
+
+		syncWorker = services.NewSyncWorker(db.DB, uploader, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
+			BatchSize:      cfg.Sync.BatchSize,
+			MaxConcurrent:  cfg.Sync.MaxConcurrent,
+			MaxRetries:     cfg.Sync.MaxRetries,
+			IntervalSec:    cfg.Sync.WorkerIntervalSec,
+			RetryBaseSec:   cfg.Sync.RetryBaseSec,
+			RetryMaxSec:    cfg.Sync.RetryMaxSec,
+			RetryJitterSec: cfg.Sync.RetryJitterSec,
+		}, &cfg.Sync)
+
+		syncWorker.Start()
+		logger.Printf("[SYNC] Cloud sync worker started: auth=%s gateway=%s", cfg.Sync.AuthEndpoint, cfg.Sync.GatewayEndpoint)
+	} else {
+		logger.Println("[SYNC] Cloud sync disabled (KEYSTONE_SYNC_ENABLED=false or missing endpoints)")
+	}
 
 	// Initialize and start HTTP server
-	srv := server.New(cfg, db.DB, s3Client)
+	srv := server.New(cfg, db.DB, s3Client, syncWorker)
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}
