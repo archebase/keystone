@@ -183,10 +183,6 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if syncWorker != nil {
-		syncWorker.Stop()
-	}
-
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Printf("[SERVER] Error during shutdown: %v", err)
 	}
