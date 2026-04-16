@@ -46,4 +46,3 @@ func newCloudTransportCredentials(useTLS bool, caFile string, serverName string)
 		MinVersion: tls.VersionTLS12,
 	}), nil
 }
-
