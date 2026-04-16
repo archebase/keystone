@@ -11,3 +11,4 @@ ALTER TABLE sync_logs
 
 CREATE INDEX idx_sync_retry ON sync_logs (status, next_retry_at);
 CREATE INDEX idx_sync_episode_status ON sync_logs (episode_id, status);
+CREATE INDEX idx_sync_episode_latest ON sync_logs (episode_id, id);
