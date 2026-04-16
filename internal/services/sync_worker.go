@@ -441,7 +441,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 	}
 
 	// Reuse latest failed sync_log when retry is due, otherwise insert a new row.
-	syncLogID, err := w.acquireSyncLogWithMode(ctx, episodeID, ep.McapPath, manual)
+	syncLogID, attemptCount, err := w.acquireSyncLogWithMode(ctx, episodeID, ep.McapPath, manual)
 	if err != nil {
 		//logger.Printf("[SYNC-WORKER] Failed to acquire sync log for episode %d: %v", episodeID, err)
 		return
@@ -457,7 +457,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 	})
 	if err != nil {
 		duration := int64(time.Since(startTime).Seconds())
-		w.markSyncFailed(ctx, syncLogID, episodeID, duration, err)
+		w.markSyncFailed(ctx, syncLogID, episodeID, duration, err, attemptCount)
 		return
 	}
 
@@ -466,20 +466,20 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 	w.markSyncCompleted(ctx, syncLogID, episodeID, result, duration)
 }
 
-// acquireSyncLog returns the sync_logs id for this upload attempt. It reuses the latest
-// failed row for the episode when a retry is due (and increments attempt_count); otherwise
-// inserts a new row with attempt_count = 1.
-func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, error) {
+// acquireSyncLog returns the sync_logs id and attempt_count for this upload attempt.
+// It reuses the latest failed row for the episode when a retry is due (and increments attempt_count);
+// otherwise inserts a new row with attempt_count = 1.
+func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, int, error) {
 	return w.acquireSyncLogWithMode(ctx, episodeID, sourcePath, false)
 }
 
-func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64, sourcePath string, manual bool) (int64, error) {
+func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64, sourcePath string, manual bool) (int64, int, error) {
 	// NOTE: This must be lock-protected. A plain "check then insert" is vulnerable to TOCTOU
 	// and, when there is no existing sync_logs row, there is nothing to lock with FOR UPDATE.
 	// We serialize claims per-episode by locking the parent episodes row first.
 	tx, err := w.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin sync_log transaction: %w", err)
+		return 0, 0, fmt.Errorf("begin sync_log transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -492,9 +492,9 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 		FOR UPDATE
 	`, episodeID); err != nil {
 		if err == sql.ErrNoRows {
-			return 0, fmt.Errorf("episode %d not found", episodeID)
+			return 0, 0, fmt.Errorf("episode %d not found", episodeID)
 		}
-		return 0, fmt.Errorf("lock episode %d: %w", episodeID, err)
+		return 0, 0, fmt.Errorf("lock episode %d: %w", episodeID, err)
 	}
 
 	var latest struct {
@@ -518,13 +518,10 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 		now := time.Now().UTC()
 		switch latest.Status {
 		case "in_progress":
-			return 0, fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
+			return 0, 0, fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
 		case "completed":
-			return 0, fmt.Errorf("episode %d already has completed sync_log", episodeID)
+			return 0, 0, fmt.Errorf("episode %d already has completed sync_log", episodeID)
 		case "failed":
-			// Reuse latest failed sync_log when retry is due and attempt_count < MaxRetries.
-			// This matches the previous behavior (manual mode can still insert a new row when
-			// retries are exhausted or backoff is active).
 			retryDue := !latest.NextRetry.Valid || !latest.NextRetry.Time.After(now)
 			if latest.AttemptCount < w.cfg.MaxRetries && retryDue {
 				res, updErr := tx.ExecContext(ctx, `
@@ -541,30 +538,30 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 					  AND status = 'failed'
 				`, sourcePath, now, latest.ID)
 				if updErr != nil {
-					return 0, fmt.Errorf("reuse sync_log: %w", updErr)
+					return 0, 0, fmt.Errorf("reuse sync_log: %w", updErr)
 				}
 				n, raErr := res.RowsAffected()
 				if raErr != nil {
-					return 0, fmt.Errorf("reuse sync_log rows affected: %w", raErr)
+					return 0, 0, fmt.Errorf("reuse sync_log rows affected: %w", raErr)
 				}
 				if n != 1 {
-					return 0, fmt.Errorf("retry claim lost for sync_log %d (state changed)", latest.ID)
+					return 0, 0, fmt.Errorf("retry claim lost for sync_log %d (state changed)", latest.ID)
 				}
 				if err := tx.Commit(); err != nil {
-					return 0, fmt.Errorf("commit sync_log reuse: %w", err)
+					return 0, 0, fmt.Errorf("commit sync_log reuse: %w", err)
 				}
-				return latest.ID, nil
+				return latest.ID, latest.AttemptCount + 1, nil
 			}
 
 			if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
-				return 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
+				return 0, 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
 			}
 			if !manual && latest.NextRetry.Valid && latest.NextRetry.Time.After(now) {
-				return 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
+				return 0, 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
 			}
 		}
 	} else if err != sql.ErrNoRows {
-		return 0, fmt.Errorf("lock latest sync_log: %w", err)
+		return 0, 0, fmt.Errorf("lock latest sync_log: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -573,16 +570,16 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 		VALUES (?, ?, 'in_progress', 1, ?)
 	`, episodeID, sourcePath, now)
 	if err != nil {
-		return 0, fmt.Errorf("insert sync_log: %w", err)
+		return 0, 0, fmt.Errorf("insert sync_log: %w", err)
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		return 0, fmt.Errorf("sync_log last insert id: %w", err)
+		return 0, 0, fmt.Errorf("sync_log last insert id: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit sync_log insert: %w", err)
+		return 0, 0, fmt.Errorf("commit sync_log insert: %w", err)
 	}
-	return id, nil
+	return id, 1, nil
 }
 
 func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID int64, result *cloud.UploadResult, durationSec int64) {
@@ -631,15 +628,9 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		episodeID, result.UploadID, result.ObjectKey, durationSec)
 }
 
-func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, durationSec int64, uploadErr error) {
+func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, durationSec int64, uploadErr error, attemptCount int) {
 	now := time.Now().UTC()
 	errMsg := uploadErr.Error()
-
-	// attempt_count is the 1-based index of this upload attempt (incremented when a failed row is reused).
-	var attemptCount int
-	if err := w.db.GetContext(ctx, &attemptCount, "SELECT attempt_count FROM sync_logs WHERE id = ?", syncLogID); err != nil {
-		attemptCount = 1
-	}
 
 	backoff := w.nextRetryDelay(attemptCount)
 	nextRetry := now.Add(backoff)
