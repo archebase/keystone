@@ -77,7 +77,7 @@ type SyncConfig struct {
 	CloudTLSCAFile     string // optional CA bundle path for TLS verification
 	CloudTLSServerName string // optional TLS server name override (SNI / verification)
 	SiteID             int64  // site identifier for credential exchange
-	APISecret          string // API key secret for credential exchange // #nosec G117 -- loaded from env; not exposed via HTTP JSON
+	APISecret          string `json:"-"` // API key secret for credential exchange (never JSON-marshaled)
 	MaxConcurrent      int    // max concurrent uploads
 	WorkerIntervalSec  int    // sync worker poll interval in seconds
 	RequestTimeoutSec  int    // per-RPC timeout in seconds
