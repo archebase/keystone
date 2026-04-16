@@ -53,16 +53,22 @@ type SyncWorker struct {
 
 	mu              sync.Mutex
 	enqueuedEpisode map[int64]struct{}
+	stopDone        chan struct{}
 
-	running atomic.Bool
-	wg      sync.WaitGroup
+	running  atomic.Bool
+	stopping atomic.Bool
+	wg       sync.WaitGroup
 
 	// runCtx is cancelled when Stop() is called so in-flight uploads and DB ops can exit promptly.
 	runCtx    context.Context
 	runCancel context.CancelFunc
 
-	// enqueueCh allows the API handler to inject specific episode IDs for immediate upload.
+	// enqueueCh allows the API handler to inject specific episode IDs for immediate scheduling.
 	enqueueCh chan syncEnqueueRequest
+	// jobCh is consumed by worker goroutines that execute uploads concurrently.
+	jobCh chan syncEnqueueRequest
+
+	workersWg sync.WaitGroup
 }
 
 var (
@@ -92,26 +98,87 @@ func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, minioClient *s3.Client
 
 // Start begins the background sync worker loop.
 func (w *SyncWorker) Start() {
-	if !w.running.CompareAndSwap(false, true) {
+	w.mu.Lock()
+	if w.stopping.Load() {
+		w.mu.Unlock()
+		logger.Printf("[SYNC-WORKER] Start skipped: worker is stopping")
 		return
 	}
+	if !w.running.CompareAndSwap(false, true) {
+		w.mu.Unlock()
+		return
+	}
+
+	w.stopDone = make(chan struct{})
+	w.jobCh = make(chan syncEnqueueRequest, max(1, w.cfg.BatchSize*2))
 	w.runCtx, w.runCancel = context.WithCancel(context.Background())
+	jobCh := w.jobCh
+	runCtx := w.runCtx
+	w.mu.Unlock()
+
+	workerCount := max(1, w.cfg.MaxConcurrent)
+	for i := 0; i < workerCount; i++ {
+		w.workersWg.Add(1)
+		go w.worker(runCtx, jobCh)
+	}
+
 	w.wg.Add(1)
-	go w.run()
+	go w.run(runCtx)
 	logger.Printf("[SYNC-WORKER] Started (interval=%ds, batch=%d, concurrency=%d)",
 		w.cfg.IntervalSec, w.cfg.BatchSize, w.cfg.MaxConcurrent)
 }
 
-// Stop gracefully stops the sync worker.
-func (w *SyncWorker) Stop() {
-	if !w.running.CompareAndSwap(true, false) {
-		return
+// Stop gracefully stops the sync worker within the provided context deadline.
+func (w *SyncWorker) Stop(ctx context.Context) error {
+	w.mu.Lock()
+	if !w.running.Load() {
+		done := w.stopDone
+		w.mu.Unlock()
+		if done == nil {
+			return nil
+		}
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+		}
 	}
-	if w.runCancel != nil {
-		w.runCancel()
+
+	if !w.stopping.CompareAndSwap(false, true) {
+		done := w.stopDone
+		w.mu.Unlock()
+		if done == nil {
+			return nil
+		}
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+		}
 	}
-	w.wg.Wait()
-	logger.Println("[SYNC-WORKER] Stopped")
+
+	done := w.stopDone
+	runCancel := w.runCancel
+	w.running.Store(false)
+	w.mu.Unlock()
+
+	if runCancel != nil {
+		runCancel()
+	}
+
+	if done == nil {
+		return nil
+	}
+
+	select {
+	case <-done:
+		logger.Println("[SYNC-WORKER] Stopped")
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+	}
 }
 
 // IsRunning returns whether the worker is currently running.
@@ -216,10 +283,9 @@ func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-func (w *SyncWorker) run() {
-	defer w.wg.Done()
+func (w *SyncWorker) run(ctx context.Context) {
+	defer w.finalizeRun()
 
-	ctx := w.runCtx
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -236,11 +302,8 @@ func (w *SyncWorker) run() {
 		select {
 		case <-ctx.Done():
 			return
-
 		case req := <-w.enqueueCh:
-			w.unmarkEnqueued(req.episodeID)
-			w.processEpisodeWithMode(ctx, req.episodeID, req.manual)
-
+			w.dispatchJob(ctx, req)
 		case <-ticker.C:
 			w.pollAndProcess(ctx)
 		}
@@ -264,6 +327,82 @@ func (w *SyncWorker) unmarkEnqueued(episodeID int64) {
 	delete(w.enqueuedEpisode, episodeID)
 }
 
+func (w *SyncWorker) worker(ctx context.Context, jobCh <-chan syncEnqueueRequest) {
+	defer w.workersWg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req := <-jobCh:
+			w.unmarkEnqueued(req.episodeID)
+			w.processEpisodeWithMode(ctx, req.episodeID, req.manual)
+		}
+	}
+}
+
+func (w *SyncWorker) dispatchJob(ctx context.Context, req syncEnqueueRequest) {
+	w.mu.Lock()
+	jobCh := w.jobCh
+	w.mu.Unlock()
+	if jobCh == nil {
+		w.unmarkEnqueued(req.episodeID)
+		return
+	}
+
+	select {
+	case <-ctx.Done():
+		w.unmarkEnqueued(req.episodeID)
+	case jobCh <- req:
+	}
+}
+
+func (w *SyncWorker) clearPendingEnqueues() {
+	for {
+		select {
+		case req := <-w.enqueueCh:
+			w.unmarkEnqueued(req.episodeID)
+		default:
+			return
+		}
+	}
+}
+
+func (w *SyncWorker) clearPendingJobs() {
+	w.mu.Lock()
+	jobCh := w.jobCh
+	w.mu.Unlock()
+	if jobCh == nil {
+		return
+	}
+	for {
+		select {
+		case req := <-jobCh:
+			w.unmarkEnqueued(req.episodeID)
+		default:
+			return
+		}
+	}
+}
+
+func (w *SyncWorker) finalizeRun() {
+	w.clearPendingJobs()
+	w.clearPendingEnqueues()
+	w.wg.Done()
+	w.workersWg.Wait()
+
+	w.mu.Lock()
+	done := w.stopDone
+	w.stopDone = nil
+	w.jobCh = nil
+	w.runCtx = nil
+	w.runCancel = nil
+	w.stopping.Store(false)
+	w.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
+}
+
 func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 	// First, retry any failed episodes that are due
 	w.retryFailedEpisodes(ctx)
@@ -281,21 +420,12 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 
 	logger.Printf("[SYNC-WORKER] Found %d episodes to sync", len(ids))
 
-	// Process with concurrency limit
-	sem := make(chan struct{}, w.cfg.MaxConcurrent)
-	var wg sync.WaitGroup
-
 	for _, id := range ids {
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(episodeID int64) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			w.processEpisode(ctx, episodeID)
-		}(id)
+		if !w.tryMarkEnqueued(id) {
+			continue
+		}
+		w.dispatchJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
 	}
-
-	wg.Wait()
 }
 
 func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFailures bool) ([]int64, error) {
@@ -381,20 +511,12 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 		return
 	}
 
-	sem := make(chan struct{}, w.cfg.MaxConcurrent)
-	var wg sync.WaitGroup
-
 	for _, id := range ids {
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(episodeID int64) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			w.processEpisode(ctx, episodeID)
-		}(id)
+		if !w.tryMarkEnqueued(id) {
+			continue
+		}
+		w.dispatchJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
 	}
-
-	wg.Wait()
 }
 
 func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64) {

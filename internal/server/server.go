@@ -378,25 +378,41 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.Server.ShutdownTimeout)*time.Second)
 	defer cancel()
 
+	var shutdownErr error
+
 	// Shutdown both servers
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		logger.Printf("[SERVER] HTTP server shutdown error: %v", err)
+		if shutdownErr == nil {
+			shutdownErr = fmt.Errorf("http server shutdown: %w", err)
+		}
 	}
 	if err := s.transferWSServer.Shutdown(ctx); err != nil {
 		logger.Printf("[SERVER] Transfer WebSocket server shutdown error: %v", err)
+		if shutdownErr == nil {
+			shutdownErr = fmt.Errorf("transfer websocket shutdown: %w", err)
+		}
 	}
 	if s.recorderWSServer != nil {
 		if err := s.recorderWSServer.Shutdown(ctx); err != nil {
 			logger.Printf("[SERVER] Recorder WebSocket server shutdown error: %v", err)
+			if shutdownErr == nil {
+				shutdownErr = fmt.Errorf("recorder websocket shutdown: %w", err)
+			}
 		}
 	}
 
 	// Stop sync worker
 	if s.syncWorker != nil {
-		s.syncWorker.Stop()
+		if err := s.syncWorker.Stop(ctx); err != nil {
+			logger.Printf("[SERVER] Sync worker shutdown error: %v", err)
+			if shutdownErr == nil {
+				shutdownErr = fmt.Errorf("sync worker shutdown: %w", err)
+			}
+		}
 	}
 
-	return nil
+	return shutdownErr
 }
 
 // Addr returns the server address
