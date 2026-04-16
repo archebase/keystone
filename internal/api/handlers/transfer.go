@@ -43,6 +43,9 @@ type TransferHandler struct {
 	// recorderHub is used on transfer disconnect to notify recorder (clear/cancel) before reverting tasks.
 	recorderHub        *services.RecorderHub
 	recorderRPCTimeout time.Duration
+
+	uploadNotFoundMu       sync.Mutex
+	uploadNotFoundAttempts map[string]int
 }
 
 // NewTransferHandler creates a new TransferHandler.
@@ -50,18 +53,48 @@ type TransferHandler struct {
 // recorderHub may be nil (disables recorder RPC on transfer disconnect).
 func NewTransferHandler(hub *services.TransferHub, cfg *config.TransferConfig, db *sqlx.DB, s3Client *s3.Client, bucket string, factoryID string, recorderHub *services.RecorderHub, recorderRPCTimeout time.Duration) *TransferHandler {
 	return &TransferHandler{
-		hub:                hub,
-		cfg:                cfg,
-		db:                 db,
-		s3:                 s3Client,
-		bucket:             bucket,
-		factoryID:          factoryID,
-		recorderHub:        recorderHub,
-		recorderRPCTimeout: recorderRPCTimeout,
+		hub:                    hub,
+		cfg:                    cfg,
+		db:                     db,
+		s3:                     s3Client,
+		bucket:                 bucket,
+		factoryID:              factoryID,
+		recorderHub:            recorderHub,
+		recorderRPCTimeout:     recorderRPCTimeout,
+		uploadNotFoundAttempts: make(map[string]int),
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+func uploadNotFoundKey(deviceID, taskID string) string {
+	return deviceID + "|" + taskID
+}
+
+func (h *TransferHandler) clearUploadNotFoundAttempts(deviceID, taskID string) {
+	if strings.TrimSpace(deviceID) == "" || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	key := uploadNotFoundKey(deviceID, taskID)
+	h.uploadNotFoundMu.Lock()
+	delete(h.uploadNotFoundAttempts, key)
+	h.uploadNotFoundMu.Unlock()
+}
+
+func (h *TransferHandler) clearUploadNotFoundAttemptsByDevice(deviceID string) {
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return
+	}
+	prefix := deviceID + "|"
+	h.uploadNotFoundMu.Lock()
+	for key := range h.uploadNotFoundAttempts {
+		if strings.HasPrefix(key, prefix) {
+			delete(h.uploadNotFoundAttempts, key)
+		}
+	}
+	h.uploadNotFoundMu.Unlock()
 }
 
 // RegisterRoutes registers all transfer-related REST routes
@@ -127,6 +160,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 			logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
 		}
 	}()
+	defer h.clearUploadNotFoundAttemptsByDevice(deviceID)
 	defer h.hub.Disconnect(deviceID, dc)
 	defer revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, h.recorderHub, h.recorderRPCTimeout, true)
 
@@ -229,6 +263,7 @@ func (h *TransferHandler) onUploadStarted(dc *services.TransferConn, msg map[str
 		return
 	}
 	taskID := stringVal(data, "task_id")
+	h.clearUploadNotFoundAttempts(dc.DeviceID, taskID)
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Device %s: upload started task=%s total_bytes=%d",
 		dc.DeviceID, taskID, int64Val(data, "total_bytes"))
@@ -263,6 +298,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		logger.Printf("[TRANSFER] Device %s: upload complete taskID is empty", dc.DeviceID)
 		return
 	}
+	h.clearUploadNotFoundAttempts(dc.DeviceID, taskID)
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Device %s: upload complete for task=%s", dc.DeviceID, taskID)
 
@@ -538,6 +574,7 @@ func (h *TransferHandler) onUploadFailed(ctx context.Context, dc *services.Trans
 	taskID := stringVal(data, "task_id")
 	reason := stringVal(data, "reason")
 	retryCount := intVal(data, "retry_count")
+	h.clearUploadNotFoundAttempts(dc.DeviceID, taskID)
 
 	// Log full message for debugging
 	// #nosec G706 -- Set aside for now
@@ -708,9 +745,95 @@ func (h *TransferHandler) onUploadNotFound(dc *services.TransferConn, msg map[st
 		return
 	}
 	taskID := stringVal(data, "task_id")
+	detail := stringVal(data, "detail")
+	if strings.TrimSpace(taskID) == "" {
+		return
+	}
+
+	const maxAttempts = 5
+	key := uploadNotFoundKey(dc.DeviceID, taskID)
+
+	h.uploadNotFoundMu.Lock()
+	attempt := h.uploadNotFoundAttempts[key] + 1
+	h.uploadNotFoundAttempts[key] = attempt
+	h.uploadNotFoundMu.Unlock()
 
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Device %s: task=%s not found", dc.DeviceID, taskID)
+	logger.Printf("[TRANSFER] Device %s: task=%s not found (attempt=%d/%d) detail=%q", dc.DeviceID, taskID, attempt, maxAttempts, detail)
+
+	if attempt < maxAttempts {
+		// Simple backoff: 1s, 2s, 3s, 4s (capped).
+		delay := time.Duration(attempt) * time.Second
+		if delay > 5*time.Second {
+			delay = 5 * time.Second
+		}
+
+		go func(deviceID, tid string, attemptNow int, d time.Duration) {
+			time.Sleep(d)
+			if h.hub.Get(deviceID) == nil {
+				logger.Printf("[TRANSFER] Device %s: skip retry upload_request for task=%s (device not connected)", deviceID, tid)
+				return
+			}
+
+			keyNow := uploadNotFoundKey(deviceID, tid)
+			h.uploadNotFoundMu.Lock()
+			currentAttempt, ok := h.uploadNotFoundAttempts[keyNow]
+			h.uploadNotFoundMu.Unlock()
+			if !ok || currentAttempt != attemptNow {
+				logger.Printf("[TRANSFER] Device %s: skip stale retry upload_request for task=%s attempt=%d", deviceID, tid, attemptNow)
+				return
+			}
+
+			req := map[string]interface{}{
+				"type":     "upload_request",
+				"task_id":  tid,
+				"priority": 1,
+			}
+			if err := h.hub.SendToDevice(context.Background(), deviceID, req); err != nil {
+				logger.Printf("[TRANSFER] Device %s: retry upload_request failed for task=%s attempt=%d err=%v", deviceID, tid, attemptNow, err)
+				return
+			}
+			logger.Printf("[TRANSFER] Device %s: retry upload_request sent for task=%s attempt=%d", deviceID, tid, attemptNow)
+		}(dc.DeviceID, taskID, attempt, delay)
+		return
+	}
+
+	// Reached max attempts: stop retrying and mark task as failed (best-effort).
+	h.uploadNotFoundMu.Lock()
+	delete(h.uploadNotFoundAttempts, key)
+	h.uploadNotFoundMu.Unlock()
+
+	if h.db == nil {
+		return
+	}
+	now := time.Now().UTC()
+	detail = strings.TrimSpace(detail)
+	errMsg := fmt.Sprintf("upload_not_found after %d attempts", maxAttempts)
+	if detail != "" {
+		errMsg = fmt.Sprintf("%s: %s", errMsg, detail)
+	}
+	result, err := h.db.ExecContext(context.Background(), `
+		UPDATE tasks
+		SET
+			status = 'failed',
+			error_message = ?,
+			completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
+			updated_at = ?
+		WHERE task_id = ? AND status = 'in_progress' AND deleted_at IS NULL
+	`, errMsg, now, now, taskID)
+	if err != nil {
+		logger.Printf("[TRANSFER] Device %s: failed to mark task failed on upload_not_found: task=%s err=%v", dc.DeviceID, taskID, err)
+		return
+	}
+	if rows, _ := result.RowsAffected(); rows > 0 {
+		logger.Printf("[TRANSFER] Device %s: task=%s marked as failed due to upload_not_found", dc.DeviceID, taskID)
+		var batchID int64
+		if err := h.db.QueryRowContext(context.Background(),
+			"SELECT batch_id FROM tasks WHERE task_id = ? AND deleted_at IS NULL", taskID,
+		).Scan(&batchID); err == nil && batchID > 0 {
+			go tryAdvanceBatchStatus(h.db, batchID)
+		}
+	}
 }
 
 // onStatus handles "status" message and updates the device status snapshot
