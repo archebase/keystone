@@ -50,7 +50,6 @@ type SyncWorker struct {
 	enqueuedEpisode map[int64]struct{}
 
 	running atomic.Bool
-	stopCh  chan struct{}
 	wg      sync.WaitGroup
 
 	// runCtx is cancelled when Stop() is called so in-flight uploads and DB ops can exit promptly.
@@ -77,7 +76,6 @@ func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, minioClient *s3.Client
 		minioBucket:     minioBucket,
 		cfg:             cfg,
 		syncCfg:         syncCfg,
-		stopCh:          make(chan struct{}),
 		enqueueCh:       make(chan int64, 100),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
@@ -103,7 +101,6 @@ func (w *SyncWorker) Stop() {
 	if w.runCancel != nil {
 		w.runCancel()
 	}
-	close(w.stopCh)
 	w.wg.Wait()
 	logger.Println("[SYNC-WORKER] Stopped")
 }
@@ -228,7 +225,7 @@ func (w *SyncWorker) run() {
 
 	for {
 		select {
-		case <-w.stopCh:
+		case <-ctx.Done():
 			return
 
 		case episodeID := <-w.enqueueCh:
