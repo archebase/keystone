@@ -466,13 +466,6 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 	w.markSyncCompleted(ctx, syncLogID, episodeID, result, duration)
 }
 
-// acquireSyncLog returns the sync_logs id and attempt_count for this upload attempt.
-// It reuses the latest failed row for the episode when a retry is due (and increments attempt_count);
-// otherwise inserts a new row with attempt_count = 1.
-func (w *SyncWorker) acquireSyncLog(ctx context.Context, episodeID int64, sourcePath string) (int64, int, error) {
-	return w.acquireSyncLogWithMode(ctx, episodeID, sourcePath, false)
-}
-
 func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64, sourcePath string, manual bool) (int64, int, error) {
 	// NOTE: This must be lock-protected. A plain "check then insert" is vulnerable to TOCTOU
 	// and, when there is no existing sync_logs row, there is nothing to lock with FOR UPDATE.
@@ -559,6 +552,9 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 			if !manual && latest.NextRetry.Valid && latest.NextRetry.Time.After(now) {
 				return 0, 0, fmt.Errorf("retry backoff active for episode %d", episodeID)
 			}
+			// manual=true intentionally bypasses exhausted-retry and backoff guards above.
+			// Falling through to INSERT creates a fresh sync_log row (attempt_count=1)
+			// so operator-triggered retries are recorded as a new attempt chain.
 		}
 	} else if err != sql.ErrNoRows {
 		return 0, 0, fmt.Errorf("lock latest sync_log: %w", err)

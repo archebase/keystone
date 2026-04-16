@@ -271,15 +271,17 @@ func buildRequestURL(endpoint, bucket, objectKey string, query []queryParam) str
 	}
 
 	host := parsed.Hostname()
+	port := parsed.Port()
 	encodedKey := encodeObjectKeyForPath(objectKey)
 
 	// Use path-style for localhost / 127.0.0.1, virtual-hosted style otherwise.
 	if host == "127.0.0.1" || host == "localhost" {
 		parsed.Path = "/" + bucket + "/" + encodedKey
 	} else {
-		parsed.Host = bucket + "." + host
-		if parsed.Port() != "" {
-			parsed.Host = bucket + "." + host + ":" + parsed.Port()
+		if port != "" {
+			parsed.Host = bucket + "." + host + ":" + port
+		} else {
+			parsed.Host = bucket + "." + host
 		}
 		parsed.Path = "/" + encodedKey
 	}

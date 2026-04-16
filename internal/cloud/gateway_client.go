@@ -78,6 +78,12 @@ func (c *GatewayClient) CreateFileUpload(ctx context.Context, clientHints map[st
 		ClientHints: clientHints,
 	})
 	if err != nil {
+		logger.Printf("[CLOUD-GATEWAY] CreateFileUpload RPC failed, resetting gRPC connection: %v", err)
+		if closeErr := c.Close(); closeErr != nil {
+			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after CreateFileUpload error: %v", closeErr)
+		} else {
+			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after CreateFileUpload error")
+		}
 		return nil, fmt.Errorf("CreateFileUpload RPC: %w", err)
 	}
 
@@ -104,6 +110,12 @@ func (c *GatewayClient) RefreshUploadCredentials(ctx context.Context, uploadID s
 		UploadId: uploadID,
 	})
 	if err != nil {
+		logger.Printf("[CLOUD-GATEWAY] RefreshUploadCredentials RPC failed, resetting gRPC connection: %v", err)
+		if closeErr := c.Close(); closeErr != nil {
+			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after RefreshUploadCredentials error: %v", closeErr)
+		} else {
+			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after RefreshUploadCredentials error")
+		}
 		return nil, fmt.Errorf("RefreshUploadCredentials RPC: %w", err)
 	}
 
@@ -134,6 +146,12 @@ func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fil
 		OssObjectEtag:      ossObjectEtag,
 	})
 	if err != nil {
+		logger.Printf("[CLOUD-GATEWAY] CompleteUpload RPC failed, resetting gRPC connection: %v", err)
+		if closeErr := c.Close(); closeErr != nil {
+			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after CompleteUpload error: %v", closeErr)
+		} else {
+			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after CompleteUpload error")
+		}
 		return fmt.Errorf("CompleteUpload RPC: %w", err)
 	}
 	return nil

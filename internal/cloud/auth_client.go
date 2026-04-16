@@ -126,6 +126,12 @@ func (c *AuthClient) exchangeCredential(ctx context.Context, credentialBase64 st
 		CredentialBase64: credentialBase64,
 	})
 	if err != nil {
+		logger.Printf("[CLOUD-AUTH] ExchangeCredential RPC failed, resetting gRPC connection: %v", err)
+		if closeErr := c.Close(); closeErr != nil {
+			logger.Printf("[CLOUD-AUTH] failed to reset gRPC connection after RPC error: %v", closeErr)
+		} else {
+			logger.Printf("[CLOUD-AUTH] gRPC connection reset after RPC error")
+		}
 		return nil, fmt.Errorf("exchange credential RPC: %w", err)
 	}
 	return resp, nil

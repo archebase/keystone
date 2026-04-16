@@ -71,20 +71,20 @@ type SyncConfig struct {
 	MaxRetries int
 
 	// Cloud upload settings (data-platform integration)
-	AuthEndpoint      string // gRPC endpoint for AuthService
-	GatewayEndpoint   string // gRPC endpoint for DataGatewayService
-	CloudUseTLS       bool   // enable TLS for cloud gRPC connections
-	CloudTLSCAFile    string // optional CA bundle path for TLS verification
+	AuthEndpoint       string // gRPC endpoint for AuthService
+	GatewayEndpoint    string // gRPC endpoint for DataGatewayService
+	CloudUseTLS        bool   // enable TLS for cloud gRPC connections
+	CloudTLSCAFile     string // optional CA bundle path for TLS verification
 	CloudTLSServerName string // optional TLS server name override (SNI / verification)
-	SiteID            int64  // site identifier for credential exchange
-	APISecret         string `json:"-"` // API key secret for credential exchange
-	MaxConcurrent     int    // max concurrent uploads
-	WorkerIntervalSec int    // sync worker poll interval in seconds
-	RequestTimeoutSec int    // per-RPC timeout in seconds
-	OSSTimeoutSec     int    // per-part OSS upload timeout in seconds
-	RetryBaseSec      int    // base retry backoff in seconds
-	RetryMaxSec       int    // max retry backoff in seconds
-	RetryJitterSec    int    // max additive jitter in seconds
+	SiteID             int64  // site identifier for credential exchange
+	APISecret          string // API key secret for credential exchange
+	MaxConcurrent      int    // max concurrent uploads
+	WorkerIntervalSec  int    // sync worker poll interval in seconds
+	RequestTimeoutSec  int    // per-RPC timeout in seconds
+	OSSTimeoutSec      int    // per-part OSS upload timeout in seconds
+	RetryBaseSec       int    // base retry backoff in seconds
+	RetryMaxSec        int    // max retry backoff in seconds
+	RetryJitterSec     int    // max additive jitter in seconds
 }
 
 // FeaturesConfig feature flags configuration
@@ -174,23 +174,23 @@ func Load() (*Config, error) {
 			Checks:               []string{"topics", "duration", "gaps", "images"},
 		},
 		Sync: SyncConfig{
-			Enabled:           getEnvBool("KEYSTONE_SYNC_ENABLED", false),
-			BatchSize:         getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 10),
-			MaxRetries:        getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
-			AuthEndpoint:      getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),
-			GatewayEndpoint:   getEnv("KEYSTONE_CLOUD_GATEWAY_ENDPOINT", ""),
-			CloudUseTLS:       getEnvBool("KEYSTONE_CLOUD_USE_TLS", true),
-			CloudTLSCAFile:    getEnv("KEYSTONE_CLOUD_TLS_CA_FILE", ""),
+			Enabled:            getEnvBool("KEYSTONE_SYNC_ENABLED", true),
+			BatchSize:          getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 10),
+			MaxRetries:         getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
+			AuthEndpoint:       getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),
+			GatewayEndpoint:    getEnv("KEYSTONE_CLOUD_GATEWAY_ENDPOINT", ""),
+			CloudUseTLS:        getEnvBool("KEYSTONE_CLOUD_USE_TLS", true),
+			CloudTLSCAFile:     getEnv("KEYSTONE_CLOUD_TLS_CA_FILE", ""),
 			CloudTLSServerName: getEnv("KEYSTONE_CLOUD_TLS_SERVER_NAME", ""),
-			SiteID:            getEnvInt64("KEYSTONE_CLOUD_SITE_ID", 0),
-			APISecret:         getEnv("KEYSTONE_CLOUD_API_SECRET", ""),
-			MaxConcurrent:     getEnvInt("KEYSTONE_SYNC_MAX_CONCURRENT", 2),
-			WorkerIntervalSec: getEnvInt("KEYSTONE_SYNC_WORKER_INTERVAL", 60),
-			RequestTimeoutSec: getEnvInt("KEYSTONE_SYNC_REQUEST_TIMEOUT", 30),
-			OSSTimeoutSec:     getEnvInt("KEYSTONE_SYNC_OSS_TIMEOUT", 300),
-			RetryBaseSec:      getEnvInt("KEYSTONE_SYNC_RETRY_BASE_SEC", 30),
-			RetryMaxSec:       getEnvInt("KEYSTONE_SYNC_RETRY_MAX_SEC", 1800),
-			RetryJitterSec:    getEnvInt("KEYSTONE_SYNC_RETRY_JITTER_SEC", 30),
+			SiteID:             getEnvInt64("KEYSTONE_CLOUD_SITE_ID", 0),
+			APISecret:          getEnv("KEYSTONE_CLOUD_API_SECRET", ""),
+			MaxConcurrent:      getEnvInt("KEYSTONE_SYNC_MAX_CONCURRENT", 2),
+			WorkerIntervalSec:  getEnvInt("KEYSTONE_SYNC_WORKER_INTERVAL", 60),
+			RequestTimeoutSec:  getEnvInt("KEYSTONE_SYNC_REQUEST_TIMEOUT", 30),
+			OSSTimeoutSec:      getEnvInt("KEYSTONE_SYNC_OSS_TIMEOUT", 300),
+			RetryBaseSec:       getEnvInt("KEYSTONE_SYNC_RETRY_BASE_SEC", 30),
+			RetryMaxSec:        getEnvInt("KEYSTONE_SYNC_RETRY_MAX_SEC", 1800),
+			RetryJitterSec:     getEnvInt("KEYSTONE_SYNC_RETRY_JITTER_SEC", 30),
 		},
 		Auth: AuthConfig{
 			JWTSecret:        getEnv("KEYSTONE_JWT_SECRET", ""),

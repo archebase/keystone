@@ -104,6 +104,14 @@ func TestBuildRequestURL_VirtualHostedStyle(t *testing.T) {
 	}
 }
 
+func TestBuildRequestURL_VirtualHostedStyleWithPort(t *testing.T) {
+	got := buildRequestURL("https://oss-cn-shanghai.aliyuncs.com:443", "my-bucket", "path/to/file.mcap", nil)
+	want := "https://my-bucket.oss-cn-shanghai.aliyuncs.com:443/path/to/file.mcap"
+	if got != want {
+		t.Errorf("buildRequestURL virtual with port = %q, want %q", got, want)
+	}
+}
+
 func TestBuildRequestURL_PathStyle(t *testing.T) {
 	got := buildRequestURL("http://127.0.0.1:9000", "my-bucket", "file.mcap", nil)
 	want := "http://127.0.0.1:9000/my-bucket/file.mcap"

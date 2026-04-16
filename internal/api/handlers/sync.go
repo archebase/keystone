@@ -349,7 +349,7 @@ func (h *SyncHandler) GetSyncStatus(c *gin.Context) {
 		FROM sync_logs sl
 		LEFT JOIN episodes e ON e.id = sl.episode_id AND e.deleted_at IS NULL
 		WHERE sl.episode_id = ?
-		ORDER BY sl.started_at DESC
+		ORDER BY sl.id DESC
 		LIMIT 1
 	`, episodeID)
 	if err == sql.ErrNoRows {
