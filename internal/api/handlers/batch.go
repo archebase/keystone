@@ -771,7 +771,7 @@ type CreateBatchRequest struct {
 	Name          string          `json:"name,omitempty"`
 	Notes         string          `json:"notes,omitempty"`
 	TaskGroups    []TaskGroupItem `json:"task_groups"`
-	Metadata      json.RawMessage `json:"metadata,omitempty"`
+	Metadata      json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
 }
 
 // CreatedTaskItem represents a single created task in the response.
