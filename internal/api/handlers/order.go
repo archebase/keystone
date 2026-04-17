@@ -53,19 +53,19 @@ type OrderListResponse struct {
 }
 
 // OrderListItemResponse is the response body for an order item in list views.
-// It intentionally excludes task statistics to keep ListOrders fast.
 type OrderListItemResponse struct {
-	ID          string `json:"id"`
-	SceneID     string `json:"scene_id"`
-	SceneName   string `json:"scene_name,omitempty"`
-	Name        string `json:"name"`
-	TargetCount int    `json:"target_count"`
-	Status      string `json:"status"`
-	Priority    string `json:"priority"`
-	Deadline    string `json:"deadline,omitempty"`
-	Metadata    any    `json:"metadata,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	ID             string `json:"id"`
+	SceneID        string `json:"scene_id"`
+	SceneName      string `json:"scene_name,omitempty"`
+	Name           string `json:"name"`
+	TargetCount    int    `json:"target_count"`
+	CompletedCount int    `json:"completed_count"`
+	Status         string `json:"status"`
+	Priority       string `json:"priority"`
+	Deadline       string `json:"deadline,omitempty"`
+	Metadata       any    `json:"metadata,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	UpdatedAt      string `json:"updated_at,omitempty"`
 }
 
 // OrderResponse is the response body for a single order.
@@ -129,17 +129,18 @@ type orderRow struct {
 }
 
 type orderListRow struct {
-	ID          int64          `db:"id"`
-	SceneID     int64          `db:"scene_id"`
-	SceneName   sql.NullString `db:"scene_name"`
-	Name        string         `db:"name"`
-	TargetCount int            `db:"target_count"`
-	Status      string         `db:"status"`
-	Priority    string         `db:"priority"`
-	Deadline    sql.NullTime   `db:"deadline"`
-	Metadata    sql.NullString `db:"metadata"`
-	CreatedAt   sql.NullTime   `db:"created_at"`
-	UpdatedAt   sql.NullTime   `db:"updated_at"`
+	ID             int64          `db:"id"`
+	SceneID        int64          `db:"scene_id"`
+	SceneName      sql.NullString `db:"scene_name"`
+	Name           string         `db:"name"`
+	TargetCount    int            `db:"target_count"`
+	CompletedCount int            `db:"completed_count"`
+	Status         string         `db:"status"`
+	Priority       string         `db:"priority"`
+	Deadline       sql.NullTime   `db:"deadline"`
+	Metadata       sql.NullString `db:"metadata"`
+	CreatedAt      sql.NullTime   `db:"created_at"`
+	UpdatedAt      sql.NullTime   `db:"updated_at"`
 }
 
 var validOrderPriorities = map[string]struct{}{
@@ -193,6 +194,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			s.name AS scene_name,
 			o.name,
 			o.target_count,
+			COALESCE(ts.completed_count, 0) AS completed_count,
 			o.status,
 			o.priority,
 			o.deadline,
@@ -201,6 +203,14 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			o.updated_at
 		FROM orders o
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
+		LEFT JOIN (
+			SELECT
+				t.order_id,
+				COUNT(*) AS completed_count
+			FROM tasks t
+			WHERE t.deleted_at IS NULL AND t.status = 'completed'
+			GROUP BY t.order_id
+		) ts ON ts.order_id = o.id
 		WHERE o.deleted_at IS NULL
 	`
 	args := []any{}
@@ -247,17 +257,18 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			sceneName = r.SceneName.String
 		}
 		orders = append(orders, OrderListItemResponse{
-			ID:          fmt.Sprintf("%d", r.ID),
-			SceneID:     fmt.Sprintf("%d", r.SceneID),
-			SceneName:   sceneName,
-			Name:        r.Name,
-			TargetCount: r.TargetCount,
-			Status:      r.Status,
-			Priority:    r.Priority,
-			Deadline:    deadline,
-			Metadata:    metadata,
-			CreatedAt:   createdAt,
-			UpdatedAt:   updatedAt,
+			ID:             fmt.Sprintf("%d", r.ID),
+			SceneID:        fmt.Sprintf("%d", r.SceneID),
+			SceneName:      sceneName,
+			Name:           r.Name,
+			TargetCount:    r.TargetCount,
+			CompletedCount: r.CompletedCount,
+			Status:         r.Status,
+			Priority:       r.Priority,
+			Deadline:       deadline,
+			Metadata:       metadata,
+			CreatedAt:      createdAt,
+			UpdatedAt:      updatedAt,
 		})
 	}
 
