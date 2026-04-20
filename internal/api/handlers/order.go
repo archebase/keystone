@@ -143,6 +143,11 @@ type orderListRow struct {
 	UpdatedAt      sql.NullTime   `db:"updated_at"`
 }
 
+type orderCompletedAggRow struct {
+	OrderID        int64 `db:"order_id"`
+	CompletedCount int   `db:"completed_count"`
+}
+
 var validOrderPriorities = map[string]struct{}{
 	"low":    {},
 	"normal": {},
@@ -194,7 +199,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			s.name AS scene_name,
 			o.name,
 			o.target_count,
-			COALESCE(ts.completed_count, 0) AS completed_count,
+			0 AS completed_count,
 			o.status,
 			o.priority,
 			o.deadline,
@@ -203,14 +208,6 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			o.updated_at
 		FROM orders o
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
-		LEFT JOIN (
-			SELECT
-				t.order_id,
-				COUNT(*) AS completed_count
-			FROM tasks t
-			WHERE t.deleted_at IS NULL AND t.status = 'completed'
-			GROUP BY t.order_id
-		) ts ON ts.order_id = o.id
 		WHERE o.deleted_at IS NULL
 	`
 	args := []any{}
@@ -229,6 +226,49 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		logger.Printf("[ORDER] Failed to query orders: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
 		return
+	}
+
+	// Fetch completed task counts in a separate scoped query rather than a
+	// LEFT JOIN subquery.  The JOIN approach aggregates across ALL orders in
+	// the database before pagination is applied; when the tasks table is large
+	// this causes a full-table scan even though we only need counts for the
+	// orders on the current page.  By querying only the page's order IDs via
+	// IN (?), the database can use the composite index
+	// idx_tasks_order_status_del (order_id, status, deleted_at) and touch a
+	// minimal number of rows.
+	if len(rows) > 0 {
+		orderIDs := make([]int64, len(rows))
+		for i := range rows {
+			orderIDs[i] = rows[i].ID
+		}
+		aggQ, aggArgs, err := sqlx.In(`
+			SELECT order_id, COUNT(*) AS completed_count
+			FROM tasks
+			WHERE deleted_at IS NULL AND status = 'completed' AND order_id IN (?)
+			GROUP BY order_id`,
+			orderIDs,
+		)
+		if err != nil {
+			logger.Printf("[ORDER] Failed to build completed task count query: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
+			return
+		}
+		aggQ = h.db.Rebind(aggQ)
+		var agg []orderCompletedAggRow
+		if err := h.db.Select(&agg, aggQ, aggArgs...); err != nil {
+			logger.Printf("[ORDER] Failed to query completed task counts: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
+			return
+		}
+		completedByOrder := make(map[int64]int, len(agg))
+		for _, a := range agg {
+			completedByOrder[a.OrderID] = a.CompletedCount
+		}
+		for i := range rows {
+			if n, ok := completedByOrder[rows[i].ID]; ok {
+				rows[i].CompletedCount = n
+			}
+		}
 	}
 
 	orders := make([]OrderListItemResponse, 0, len(rows))
