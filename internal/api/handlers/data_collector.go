@@ -568,7 +568,19 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 
 	query := fmt.Sprintf("UPDATE data_collectors SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
 
-	result, err := h.db.Exec(query, args...)
+	// Determine whether denormalized workstation columns need syncing.
+	needsNameSync := req.Name != nil && strings.TrimSpace(*req.Name) != ""
+	needsOpIDSync := req.OperatorID != nil && strings.TrimSpace(*req.OperatorID) != ""
+
+	tx, err := h.db.Begin()
+	if err != nil {
+		logger.Printf("[DC] Failed to begin transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update data collector"})
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	result, err := tx.Exec(query, args...)
 	if err != nil {
 		logger.Printf("[DC] Failed to update data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update data collector"})
@@ -578,6 +590,36 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "data collector not found"})
+		return
+	}
+
+	// Sync denormalized columns in workstations if name or operator_id changed.
+	if needsNameSync || needsOpIDSync {
+		wsUpdates := []string{}
+		wsArgs := []interface{}{}
+		if needsNameSync {
+			wsUpdates = append(wsUpdates, "collector_name = ?")
+			wsArgs = append(wsArgs, strings.TrimSpace(*req.Name))
+		}
+		if needsOpIDSync {
+			wsUpdates = append(wsUpdates, "collector_operator_id = ?")
+			wsArgs = append(wsArgs, strings.TrimSpace(*req.OperatorID))
+		}
+		wsArgs = append(wsArgs, id)
+		wsQuery := fmt.Sprintf(
+			"UPDATE workstations SET %s WHERE data_collector_id = ? AND deleted_at IS NULL",
+			strings.Join(wsUpdates, ", "),
+		)
+		if _, err := tx.Exec(wsQuery, wsArgs...); err != nil {
+			logger.Printf("[DC] Failed to sync workstation denormalized columns: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update data collector"})
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[DC] Failed to commit transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update data collector"})
 		return
 	}
 
