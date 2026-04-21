@@ -50,15 +50,19 @@ type UpdateStationRequest struct {
 
 // StationResponse represents a station in the response.
 type StationResponse struct {
-	ID              string      `json:"id"`
-	RobotID         string      `json:"robot_id"`
-	DataCollectorID string      `json:"data_collector_id"`
-	FactoryID       string      `json:"factory_id"`
-	Status          string      `json:"status"`
-	Name            string      `json:"name"`
-	Metadata        interface{} `json:"metadata,omitempty"`
-	CreatedAt       string      `json:"created_at"`
-	UpdatedAt       string      `json:"updated_at"`
+	ID                  string      `json:"id"`
+	RobotID             string      `json:"robot_id"`
+	RobotName           string      `json:"robot_name,omitempty"`
+	RobotSerial         string      `json:"robot_serial,omitempty"`
+	DataCollectorID     string      `json:"data_collector_id"`
+	CollectorName       string      `json:"collector_name,omitempty"`
+	CollectorOperatorID string      `json:"collector_operator_id,omitempty"`
+	FactoryID           string      `json:"factory_id"`
+	Status              string      `json:"status"`
+	Name                string      `json:"name"`
+	Metadata            interface{} `json:"metadata,omitempty"`
+	CreatedAt           string      `json:"created_at"`
+	UpdatedAt           string      `json:"updated_at"`
 }
 
 func stationMetadataFromDB(ns sql.NullString) interface{} {
@@ -398,15 +402,19 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		}
 
 		response = append(response, StationResponse{
-			ID:              fmt.Sprintf("%d", s.ID),
-			RobotID:         fmt.Sprintf("%d", s.RobotID),
-			DataCollectorID: fmt.Sprintf("%d", s.DataCollectorID),
-			FactoryID:       fmt.Sprintf("%d", s.FactoryID),
-			Status:          s.Status,
-			Name:            s.Name.String,
-			Metadata:        stationMetadataFromDB(s.Metadata),
-			CreatedAt:       createdAtStr,
-			UpdatedAt:       updatedAtStr,
+			ID:                  fmt.Sprintf("%d", s.ID),
+			RobotID:             fmt.Sprintf("%d", s.RobotID),
+			RobotName:           s.RobotName,
+			RobotSerial:         s.RobotSerial,
+			DataCollectorID:     fmt.Sprintf("%d", s.DataCollectorID),
+			CollectorName:       s.CollectorName,
+			CollectorOperatorID: s.CollectorOperatorID,
+			FactoryID:           fmt.Sprintf("%d", s.FactoryID),
+			Status:              s.Status,
+			Name:                s.Name.String,
+			Metadata:            stationMetadataFromDB(s.Metadata),
+			CreatedAt:           createdAtStr,
+			UpdatedAt:           updatedAtStr,
 		})
 	}
 
@@ -865,15 +873,19 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, StationResponse{
-		ID:              fmt.Sprintf("ws_%d", station.ID),
-		RobotID:         fmt.Sprintf("%d", station.RobotID),
-		DataCollectorID: fmt.Sprintf("%d", station.DataCollectorID),
-		FactoryID:       fmt.Sprintf("%d", station.FactoryID),
-		Status:          station.Status,
-		Name:            station.Name.String,
-		Metadata:        stationMetadataFromDB(station.Metadata),
-		CreatedAt:       createdAtStr,
-		UpdatedAt:       updatedAtStr,
+		ID:                  fmt.Sprintf("ws_%d", station.ID),
+		RobotID:             fmt.Sprintf("%d", station.RobotID),
+		RobotName:           station.RobotName,
+		RobotSerial:         station.RobotSerial,
+		DataCollectorID:     fmt.Sprintf("%d", station.DataCollectorID),
+		CollectorName:       station.CollectorName,
+		CollectorOperatorID: station.CollectorOperatorID,
+		FactoryID:           fmt.Sprintf("%d", station.FactoryID),
+		Status:              station.Status,
+		Name:                station.Name.String,
+		Metadata:            stationMetadataFromDB(station.Metadata),
+		CreatedAt:           createdAtStr,
+		UpdatedAt:           updatedAtStr,
 	})
 }
 
@@ -928,15 +940,19 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, StationResponse{
-		ID:              fmt.Sprintf("%d", station.ID),
-		RobotID:         fmt.Sprintf("%d", station.RobotID),
-		DataCollectorID: fmt.Sprintf("%d", station.DataCollectorID),
-		FactoryID:       fmt.Sprintf("%d", station.FactoryID),
-		Status:          station.Status,
-		Name:            station.Name.String,
-		Metadata:        stationMetadataFromDB(station.Metadata),
-		CreatedAt:       createdAtStr,
-		UpdatedAt:       updatedAtStr,
+		ID:                  fmt.Sprintf("%d", station.ID),
+		RobotID:             fmt.Sprintf("%d", station.RobotID),
+		RobotName:           station.RobotName,
+		RobotSerial:         station.RobotSerial,
+		DataCollectorID:     fmt.Sprintf("%d", station.DataCollectorID),
+		CollectorName:       station.CollectorName,
+		CollectorOperatorID: station.CollectorOperatorID,
+		FactoryID:           fmt.Sprintf("%d", station.FactoryID),
+		Status:              station.Status,
+		Name:                station.Name.String,
+		Metadata:            stationMetadataFromDB(station.Metadata),
+		CreatedAt:           createdAtStr,
+		UpdatedAt:           updatedAtStr,
 	})
 }
 
