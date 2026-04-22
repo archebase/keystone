@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,10 @@ import (
 
 	"archebase.com/keystone-edge/internal/logger"
 )
+
+// ErrOSSNotFound is returned when an OSS operation targets an object or multipart upload that
+// does not exist (HTTP 404). Callers can use errors.Is to detect this sentinel.
+var ErrOSSNotFound = errors.New("oss object not found")
 
 // OSSUploader provides Aliyun OSS multipart upload using V1 signature.
 // This is a direct Go translation of data-platform/aliyun/ram/src/oss.rs.
@@ -135,6 +140,33 @@ func (u *OSSUploader) AbortMultipartUpload(ctx context.Context, session *UploadS
 	_ = resp.Body.Close()
 }
 
+// HeadObjectETag performs a HEAD request on the object and returns its ETag header.
+// Returns ("", ErrOSSNotFound) if the object does not exist.
+func (u *OSSUploader) HeadObjectETag(ctx context.Context, session *UploadSession) (string, error) {
+	resp, err := u.sendRequest(ctx, session, http.MethodHead, session.ObjectKey, nil, nil, "")
+	if err != nil {
+		return "", err
+	}
+	_ = resp.Body.Close()
+	etag := resp.Header.Get("ETag")
+	return etag, nil
+}
+
+// ListParts checks whether a multipart upload still exists on OSS.
+// Returns ErrOSSNotFound if the multipart upload ID is no longer valid.
+func (u *OSSUploader) ListParts(ctx context.Context, session *UploadSession, multipartUploadID string) error {
+	query := []queryParam{
+		{Key: "uploadId", Value: multipartUploadID},
+		{Key: "max-parts", Value: "1"},
+	}
+	resp, err := u.sendRequest(ctx, session, http.MethodGet, session.ObjectKey, query, nil, "")
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 func (u *OSSUploader) sendRequest(ctx context.Context, session *UploadSession, method, objectKey string, query []queryParam, body []byte, contentType string) (*http.Response, error) {
 	date := formatHTTPDate()
 
@@ -187,7 +219,7 @@ func (u *OSSUploader) sendRequest(ctx context.Context, session *UploadSession, m
 
 	if resp.StatusCode == http.StatusNotFound {
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("oss object not found")
+		return nil, ErrOSSNotFound
 	}
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)

@@ -33,6 +33,8 @@ type GatewayClientConfig struct {
 
 // UploadSession tracks the active upload session state returned by the data-gateway service.
 type UploadSession struct {
+	// LogicalUploadID is the stable logical identifier that persists across restarts.
+	LogicalUploadID    string
 	UploadID           string
 	Bucket             string
 	Endpoint           string
@@ -42,6 +44,14 @@ type UploadSession struct {
 	STSSecurityToken   string
 	STSExpireAt        time.Time
 	PartSizeBytes      int64
+}
+
+// UploadRecoveryInfo holds the recovery state returned by GetUploadRecovery.
+type UploadRecoveryInfo struct {
+	LogicalUploadID string
+	CurrentUploadID string
+	NextAction      pb.UploadRecoveryAction
+	OSSObjectETag   string
 }
 
 // GatewayClient provides a high-level gRPC client for the DataGatewayService.
@@ -57,9 +67,9 @@ func NewGatewayClient(cfg GatewayClientConfig, authClient *AuthClient) *GatewayC
 	return &GatewayClient{cfg: cfg, authClient: authClient}
 }
 
-// CreateFileUpload calls DataGatewayService.CreateFileUpload to obtain an upload session
-// with STS credentials and target object key.
-func (c *GatewayClient) CreateFileUpload(ctx context.Context, clientHints map[string]string) (*UploadSession, error) {
+// CreateLogicalUpload calls DataGatewayService.CreateLogicalUpload to create a new logical upload
+// session (or restart an existing one) and obtain STS credentials and the target object key.
+func (c *GatewayClient) CreateLogicalUpload(ctx context.Context, clientHints map[string]string, restartFromUploadID string) (*UploadSession, error) {
 	conn, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -74,24 +84,26 @@ func (c *GatewayClient) CreateFileUpload(ctx context.Context, clientHints map[st
 	}
 
 	client := pb.NewDataGatewayServiceClient(conn)
-	resp, err := client.CreateFileUpload(ctx, &pb.CreateFileUploadRequest{
-		ClientHints: clientHints,
+	resp, err := client.CreateLogicalUpload(ctx, &pb.CreateLogicalUploadRequest{
+		ClientHints:         clientHints,
+		RestartFromUploadId: restartFromUploadID,
 	})
 	if err != nil {
-		logger.Printf("[CLOUD-GATEWAY] CreateFileUpload RPC failed, resetting gRPC connection: %v", err)
+		logger.Printf("[CLOUD-GATEWAY] CreateLogicalUpload RPC failed, resetting gRPC connection: %v", err)
 		if closeErr := c.Close(); closeErr != nil {
-			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after CreateFileUpload error: %v", closeErr)
+			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after CreateLogicalUpload error: %v", closeErr)
 		} else {
-			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after CreateFileUpload error")
+			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after CreateLogicalUpload error")
 		}
-		return nil, fmt.Errorf("CreateFileUpload RPC: %w", err)
+		return nil, fmt.Errorf("CreateLogicalUpload RPC: %w", err)
 	}
 
-	return c.sessionFromCredentials(resp.UploadId, resp.Credentials)
+	return c.sessionFromCreateResponse(resp.LogicalUploadId, resp.UploadId, resp.Credentials)
 }
 
-// RefreshUploadCredentials refreshes STS credentials for an existing upload session.
-func (c *GatewayClient) RefreshUploadCredentials(ctx context.Context, uploadID string) (*UploadSession, error) {
+// GetUploadRecovery calls DataGatewayService.GetUploadRecovery to determine the recovery action
+// for an existing logical upload (e.g. after a process restart).
+func (c *GatewayClient) GetUploadRecovery(ctx context.Context, logicalUploadID string) (*UploadRecoveryInfo, error) {
 	conn, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -106,20 +118,89 @@ func (c *GatewayClient) RefreshUploadCredentials(ctx context.Context, uploadID s
 	}
 
 	client := pb.NewDataGatewayServiceClient(conn)
-	resp, err := client.RefreshUploadCredentials(ctx, &pb.RefreshUploadCredentialsRequest{
+	resp, err := client.GetUploadRecovery(ctx, &pb.GetUploadRecoveryRequest{
+		LogicalUploadId: logicalUploadID,
+	})
+	if err != nil {
+		logger.Printf("[CLOUD-GATEWAY] GetUploadRecovery RPC failed, resetting gRPC connection: %v", err)
+		if closeErr := c.Close(); closeErr != nil {
+			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after GetUploadRecovery error: %v", closeErr)
+		} else {
+			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after GetUploadRecovery error")
+		}
+		return nil, fmt.Errorf("GetUploadRecovery RPC: %w", err)
+	}
+
+	return &UploadRecoveryInfo{
+		LogicalUploadID: resp.LogicalUploadId,
+		CurrentUploadID: resp.CurrentUploadId,
+		NextAction:      resp.NextAction,
+		OSSObjectETag:   resp.OssObjectEtag,
+	}, nil
+}
+
+// ReissueUploadCredentials refreshes STS credentials for an existing upload session.
+func (c *GatewayClient) ReissueUploadCredentials(ctx context.Context, uploadID string) (*UploadSession, error) {
+	conn, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer cancel()
+
+	ctx, err = c.attachAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	client := pb.NewDataGatewayServiceClient(conn)
+	resp, err := client.ReissueUploadCredentials(ctx, &pb.ReissueUploadCredentialsRequest{
 		UploadId: uploadID,
 	})
 	if err != nil {
-		logger.Printf("[CLOUD-GATEWAY] RefreshUploadCredentials RPC failed, resetting gRPC connection: %v", err)
+		logger.Printf("[CLOUD-GATEWAY] ReissueUploadCredentials RPC failed, resetting gRPC connection: %v", err)
 		if closeErr := c.Close(); closeErr != nil {
-			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after RefreshUploadCredentials error: %v", closeErr)
+			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after ReissueUploadCredentials error: %v", closeErr)
 		} else {
-			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after RefreshUploadCredentials error")
+			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after ReissueUploadCredentials error")
 		}
-		return nil, fmt.Errorf("RefreshUploadCredentials RPC: %w", err)
+		return nil, fmt.Errorf("ReissueUploadCredentials RPC: %w", err)
 	}
 
-	return c.sessionFromCredentials(resp.UploadId, resp.Credentials)
+	return c.sessionFromCreateResponse(resp.LogicalUploadId, resp.UploadId, resp.Credentials)
+}
+
+// AbortUpload cancels a logical upload session on the data-gateway.
+func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string, reason string) error {
+	conn, err := c.connect()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer cancel()
+
+	ctx, err = c.attachAuth(ctx)
+	if err != nil {
+		return err
+	}
+
+	client := pb.NewDataGatewayServiceClient(conn)
+	_, err = client.AbortUpload(ctx, &pb.AbortUploadRequest{
+		LogicalUploadId: logicalUploadID,
+		Reason:          reason,
+	})
+	if err != nil {
+		logger.Printf("[CLOUD-GATEWAY] AbortUpload RPC failed, resetting gRPC connection: %v", err)
+		if closeErr := c.Close(); closeErr != nil {
+			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after AbortUpload error: %v", closeErr)
+		} else {
+			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after AbortUpload error")
+		}
+		return fmt.Errorf("AbortUpload RPC: %w", err)
+	}
+	return nil
 }
 
 // CompleteUpload notifies the data-gateway that all parts have been uploaded to OSS.
@@ -203,11 +284,12 @@ func (c *GatewayClient) attachAuth(ctx context.Context) (context.Context, error)
 	return metadata.NewOutgoingContext(ctx, md), nil
 }
 
-func (c *GatewayClient) sessionFromCredentials(uploadID string, creds *pb.UploadCredentials) (*UploadSession, error) {
+func (c *GatewayClient) sessionFromCreateResponse(logicalUploadID, uploadID string, creds *pb.UploadCredentials) (*UploadSession, error) {
 	if creds == nil {
 		return nil, fmt.Errorf("missing upload credentials in response")
 	}
 	return &UploadSession{
+		LogicalUploadID:    logicalUploadID,
 		UploadID:           uploadID,
 		Bucket:             creds.Bucket,
 		Endpoint:           creds.Endpoint,
