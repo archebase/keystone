@@ -85,6 +85,8 @@ type SyncConfig struct {
 	RetryBaseSec       int    // base retry backoff in seconds
 	RetryMaxSec        int    // max retry backoff in seconds
 	RetryJitterSec     int    // max additive jitter in seconds
+	PersistRootDir     string // root directory for persisting upload state across restarts; empty disables persistence
+	MaxRestartCount    int    // max number of upload restarts before permanent failure; 0 uses uploader default (3)
 }
 
 // FeaturesConfig feature flags configuration
@@ -191,6 +193,8 @@ func Load() (*Config, error) {
 			RetryBaseSec:       getEnvInt("KEYSTONE_SYNC_RETRY_BASE_SEC", 30),
 			RetryMaxSec:        getEnvInt("KEYSTONE_SYNC_RETRY_MAX_SEC", 1800),
 			RetryJitterSec:     getEnvInt("KEYSTONE_SYNC_RETRY_JITTER_SEC", 30),
+			PersistRootDir:     getEnv("KEYSTONE_SYNC_PERSIST_ROOT_DIR", "/var/lib/keystone-edge"),
+			MaxRestartCount:    getEnvInt("KEYSTONE_SYNC_MAX_RESTART_COUNT", 3),
 		},
 		Auth: AuthConfig{
 			JWTSecret:        getEnv("KEYSTONE_JWT_SECRET", ""),

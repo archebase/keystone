@@ -145,8 +145,10 @@ func main() {
 		}()
 
 		uploader := cloud.NewUploader(gatewayClient, s3Client, cfg.Storage.Bucket, cloud.UploaderConfig{
-			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
-			OSSTimeout:     time.Duration(cfg.Sync.OSSTimeoutSec) * time.Second,
+			RequestTimeout:  time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
+			OSSTimeout:      time.Duration(cfg.Sync.OSSTimeoutSec) * time.Second,
+			PersistRootDir:  cfg.Sync.PersistRootDir,
+			MaxRestartCount: uint32(cfg.Sync.MaxRestartCount), //nolint:gosec // G115: MaxRestartCount is a small positive config value
 		})
 
 		syncWorker = services.NewSyncWorker(db.DB, uploader, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{

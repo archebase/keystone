@@ -142,6 +142,8 @@ func (u *OSSUploader) AbortMultipartUpload(ctx context.Context, session *UploadS
 
 // HeadObjectETag performs a HEAD request on the object and returns its ETag header.
 // Returns ("", ErrOSSNotFound) if the object does not exist.
+// Returns ("", ErrOSSNotFound) also when the server returns a 200 but omits the ETag
+// header, as an empty ETag cannot be meaningfully compared against an expected value.
 func (u *OSSUploader) HeadObjectETag(ctx context.Context, session *UploadSession) (string, error) {
 	resp, err := u.sendRequest(ctx, session, http.MethodHead, session.ObjectKey, nil, nil, "")
 	if err != nil {
@@ -149,6 +151,9 @@ func (u *OSSUploader) HeadObjectETag(ctx context.Context, session *UploadSession
 	}
 	_ = resp.Body.Close()
 	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		return "", ErrOSSNotFound
+	}
 	return etag, nil
 }
 

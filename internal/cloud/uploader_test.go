@@ -243,7 +243,7 @@ func TestPrepareUploadSession_PermanentFailure_FileSizeMismatch(t *testing.T) {
 	})
 
 	// Provide a different file size — no gateway needed, should fail at size check
-	_, _, _, err := u.prepareUploadSession(
+	_, err := u.prepareUploadSession(
 		context.Background(),
 		map[string]string{},
 		"episodes/1/mismatch.mcap",
@@ -273,7 +273,7 @@ func TestPrepareUploadSession_PermanentFailure_CleanupOnSizeMismatch(t *testing.
 		UpdatedAt:       time.Now(),
 	})
 
-	_, _, _, err := u.prepareUploadSession(
+	_, err := u.prepareUploadSession(
 		context.Background(),
 		map[string]string{},
 		"episodes/2/cleanup.mcap",
