@@ -193,7 +193,7 @@ func Load() (*Config, error) {
 			RetryBaseSec:       getEnvInt("KEYSTONE_SYNC_RETRY_BASE_SEC", 30),
 			RetryMaxSec:        getEnvInt("KEYSTONE_SYNC_RETRY_MAX_SEC", 1800),
 			RetryJitterSec:     getEnvInt("KEYSTONE_SYNC_RETRY_JITTER_SEC", 30),
-			PersistRootDir:     getEnv("KEYSTONE_SYNC_PERSIST_ROOT_DIR", "/var/lib/keystone-edge"),
+			PersistRootDir:     getEnv("KEYSTONE_SYNC_PERSIST_ROOT_DIR", ""),
 			MaxRestartCount:    getEnvInt("KEYSTONE_SYNC_MAX_RESTART_COUNT", 3),
 		},
 		Auth: AuthConfig{
@@ -291,6 +291,9 @@ func (c *Config) Validate() error {
 		}
 		if c.Sync.RetryMaxSec < c.Sync.RetryBaseSec {
 			return fmt.Errorf("sync retry max seconds must be greater than or equal to retry base seconds when sync is enabled")
+		}
+		if c.Sync.MaxRestartCount < 0 {
+			return fmt.Errorf("sync max restart count must be greater than or equal to 0 when sync is enabled")
 		}
 	}
 	return nil

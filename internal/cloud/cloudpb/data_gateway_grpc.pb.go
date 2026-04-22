@@ -271,3 +271,116 @@ var DataGatewayService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "data_gateway.proto",
 }
+
+const (
+	InternalStorageService_PresignObject_FullMethodName = "/archebase.data_gateway.v1.InternalStorageService/PresignObject"
+)
+
+// InternalStorageServiceClient is the client API for InternalStorageService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// Internal-only storage service exposed by data-gateway.
+// This service is served on a dedicated internal gRPC port and is not
+// protected by the public JWT interceptor chain.
+type InternalStorageServiceClient interface {
+	// Generates presigned access for a single object.
+	PresignObject(ctx context.Context, in *PresignObjectRequest, opts ...grpc.CallOption) (*PresignObjectResponse, error)
+}
+
+type internalStorageServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewInternalStorageServiceClient(cc grpc.ClientConnInterface) InternalStorageServiceClient {
+	return &internalStorageServiceClient{cc}
+}
+
+func (c *internalStorageServiceClient) PresignObject(ctx context.Context, in *PresignObjectRequest, opts ...grpc.CallOption) (*PresignObjectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PresignObjectResponse)
+	err := c.cc.Invoke(ctx, InternalStorageService_PresignObject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// InternalStorageServiceServer is the server API for InternalStorageService service.
+// All implementations must embed UnimplementedInternalStorageServiceServer
+// for forward compatibility.
+//
+// Internal-only storage service exposed by data-gateway.
+// This service is served on a dedicated internal gRPC port and is not
+// protected by the public JWT interceptor chain.
+type InternalStorageServiceServer interface {
+	// Generates presigned access for a single object.
+	PresignObject(context.Context, *PresignObjectRequest) (*PresignObjectResponse, error)
+	mustEmbedUnimplementedInternalStorageServiceServer()
+}
+
+// UnimplementedInternalStorageServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedInternalStorageServiceServer struct{}
+
+func (UnimplementedInternalStorageServiceServer) PresignObject(context.Context, *PresignObjectRequest) (*PresignObjectResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PresignObject not implemented")
+}
+func (UnimplementedInternalStorageServiceServer) mustEmbedUnimplementedInternalStorageServiceServer() {
+}
+func (UnimplementedInternalStorageServiceServer) testEmbeddedByValue() {}
+
+// UnsafeInternalStorageServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to InternalStorageServiceServer will
+// result in compilation errors.
+type UnsafeInternalStorageServiceServer interface {
+	mustEmbedUnimplementedInternalStorageServiceServer()
+}
+
+func RegisterInternalStorageServiceServer(s grpc.ServiceRegistrar, srv InternalStorageServiceServer) {
+	// If the following call panics, it indicates UnimplementedInternalStorageServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&InternalStorageService_ServiceDesc, srv)
+}
+
+func _InternalStorageService_PresignObject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PresignObjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalStorageServiceServer).PresignObject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalStorageService_PresignObject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalStorageServiceServer).PresignObject(ctx, req.(*PresignObjectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// InternalStorageService_ServiceDesc is the grpc.ServiceDesc for InternalStorageService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var InternalStorageService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "archebase.data_gateway.v1.InternalStorageService",
+	HandlerType: (*InternalStorageServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PresignObject",
+			Handler:    _InternalStorageService_PresignObject_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "data_gateway.proto",
+}

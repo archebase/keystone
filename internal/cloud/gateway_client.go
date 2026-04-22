@@ -6,6 +6,7 @@ package cloud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -14,8 +15,15 @@ import (
 	"archebase.com/keystone-edge/internal/logger"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
+
+// ErrLogicalUploadNotFound is returned by GetUploadRecovery when the server reports that the
+// logical upload session no longer exists (gRPC NOT_FOUND). Callers should treat this as a
+// permanent failure and clean up any local persisted state.
+var ErrLogicalUploadNotFound = errors.New("logical upload not found on server")
 
 // GatewayClientConfig defines the runtime configuration for the data-gateway client.
 type GatewayClientConfig struct {
@@ -48,10 +56,11 @@ type UploadSession struct {
 
 // UploadRecoveryInfo holds the recovery state returned by GetUploadRecovery.
 type UploadRecoveryInfo struct {
-	LogicalUploadID string
-	CurrentUploadID string
-	NextAction      pb.UploadRecoveryAction
-	OSSObjectETag   string
+	LogicalUploadID    string
+	CurrentUploadID    string
+	NextAction         pb.UploadRecoveryAction
+	OSSObjectETag      string
+	CompletedPartCount int32
 }
 
 // GatewayClient provides a high-level gRPC client for the DataGatewayService.
@@ -122,6 +131,12 @@ func (c *GatewayClient) GetUploadRecovery(ctx context.Context, logicalUploadID s
 		LogicalUploadId: logicalUploadID,
 	})
 	if err != nil {
+		// NOT_FOUND means the logical upload session no longer exists on the server.
+		// Return the sentinel directly — no connection reset needed, this is not a
+		// transient error and the caller must treat it as permanent failure.
+		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+			return nil, ErrLogicalUploadNotFound
+		}
 		logger.Printf("[CLOUD-GATEWAY] GetUploadRecovery RPC failed, resetting gRPC connection: %v", err)
 		if closeErr := c.Close(); closeErr != nil {
 			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after GetUploadRecovery error: %v", closeErr)
@@ -132,10 +147,11 @@ func (c *GatewayClient) GetUploadRecovery(ctx context.Context, logicalUploadID s
 	}
 
 	return &UploadRecoveryInfo{
-		LogicalUploadID: resp.LogicalUploadId,
-		CurrentUploadID: resp.CurrentUploadId,
-		NextAction:      resp.NextAction,
-		OSSObjectETag:   resp.OssObjectEtag,
+		LogicalUploadID:    resp.LogicalUploadId,
+		CurrentUploadID:    resp.CurrentUploadId,
+		NextAction:         resp.NextAction,
+		OSSObjectETag:      resp.OssObjectEtag,
+		CompletedPartCount: resp.CompletedPartCount,
 	}, nil
 }
 

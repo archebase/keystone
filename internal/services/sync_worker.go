@@ -747,8 +747,8 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		return
 	}
 
-	logger.Printf("[SYNC-WORKER] Episode %d synced successfully: upload_id=%s object_key=%s duration=%ds",
-		episodeID, result.UploadID, result.ObjectKey, durationSec)
+	logger.Printf("[SYNC-WORKER] Episode %d synced successfully: logical_upload_id=%s upload_id=%s object_key=%s duration=%ds",
+		episodeID, result.LogicalUploadID, result.UploadID, result.ObjectKey, durationSec)
 }
 
 func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, durationSec int64, uploadErr error, attemptCount int) {

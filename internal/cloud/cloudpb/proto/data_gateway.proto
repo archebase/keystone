@@ -4,6 +4,8 @@ package archebase.data_gateway.v1;
 
 option go_package = "archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpb";
 
+import "common.proto";
+
 service DataGatewayService {
   rpc CreateLogicalUpload(CreateLogicalUploadRequest)
       returns (CreateLogicalUploadResponse);
@@ -14,6 +16,14 @@ service DataGatewayService {
   rpc AbortUpload(AbortUploadRequest) returns (AbortUploadResponse);
   rpc CompleteUpload(CompleteUploadRequest)
       returns (CompleteUploadResponse);
+}
+
+// Internal-only storage service exposed by data-gateway.
+// This service is served on a dedicated internal gRPC port and is not
+// protected by the public JWT interceptor chain.
+service InternalStorageService {
+  // Generates presigned access for a single object.
+  rpc PresignObject(PresignObjectRequest) returns (PresignObjectResponse);
 }
 
 message UploadCredentials {
@@ -104,6 +114,54 @@ message CompleteUploadRequest {
 }
 
 message CompleteUploadResponse {}
+
+// Identifies an object within the configured OSS bucket.
+message StorageObject {
+  // Target bucket name.
+  string bucket = 1;
+  // Target object key.
+  string object_key = 2;
+}
+
+// Declares the requested presigned access mode.
+enum PresignAccessMode {
+  PRESIGN_ACCESS_MODE_UNSPECIFIED = 0;
+  PRESIGN_ACCESS_MODE_READ = 1;
+  PRESIGN_ACCESS_MODE_WRITE = 2;
+  PRESIGN_ACCESS_MODE_READ_WRITE = 3;
+}
+
+// Represents one presigned HTTP operation.
+message PresignedOperation {
+  // HTTP method that must be used by the caller.
+  string method = 1;
+  // Fully qualified presigned URI.
+  string uri = 2;
+  // Required request headers.
+  map<string, string> headers = 3;
+}
+
+// Requests presigned access for a single object.
+message PresignObjectRequest {
+  // Object to presign.
+  StorageObject object = 1;
+  // Requested access mode.
+  PresignAccessMode access_mode = 2;
+  // Requested presign TTL in seconds.
+  int64 expires_in_seconds = 3;
+}
+
+// Returns presigned operations for the requested object.
+message PresignObjectResponse {
+  // Object that was presigned.
+  StorageObject object = 1;
+  // Presigned read operation, present for read-enabled modes.
+  PresignedOperation read = 2;
+  // Presigned write operation, present for write-enabled modes.
+  PresignedOperation write = 3;
+  // Absolute expiration time as Unix seconds.
+  int64 expires_at_unix = 4;
+}
 
 enum DataGatewayErrorCode {
   DATA_GATEWAY_ERROR_CODE_UNSPECIFIED = 0;

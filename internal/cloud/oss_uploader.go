@@ -29,6 +29,12 @@ import (
 // does not exist (HTTP 404). Callers can use errors.Is to detect this sentinel.
 var ErrOSSNotFound = errors.New("oss object not found")
 
+// ErrOSSETagMissing is returned by HeadObjectETag when the server returns a successful
+// response (HTTP 2xx) but omits the ETag header. This is distinct from a 404 and most
+// likely indicates an OSS configuration issue. Callers should treat this as a transient
+// error rather than triggering a restart.
+var ErrOSSETagMissing = errors.New("oss head object returned no ETag header")
+
 // OSSUploader provides Aliyun OSS multipart upload using V1 signature.
 // This is a direct Go translation of data-platform/aliyun/ram/src/oss.rs.
 type OSSUploader struct {
@@ -141,9 +147,9 @@ func (u *OSSUploader) AbortMultipartUpload(ctx context.Context, session *UploadS
 }
 
 // HeadObjectETag performs a HEAD request on the object and returns its ETag header.
-// Returns ("", ErrOSSNotFound) if the object does not exist.
-// Returns ("", ErrOSSNotFound) also when the server returns a 200 but omits the ETag
-// header, as an empty ETag cannot be meaningfully compared against an expected value.
+// Returns ("", ErrOSSNotFound) if the object does not exist (HTTP 404).
+// Returns ("", ErrOSSETagMissing) if the server responds with a 2xx but omits the ETag
+// header — callers should treat this as a transient error, not a missing object.
 func (u *OSSUploader) HeadObjectETag(ctx context.Context, session *UploadSession) (string, error) {
 	resp, err := u.sendRequest(ctx, session, http.MethodHead, session.ObjectKey, nil, nil, "")
 	if err != nil {
@@ -152,7 +158,7 @@ func (u *OSSUploader) HeadObjectETag(ctx context.Context, session *UploadSession
 	_ = resp.Body.Close()
 	etag := resp.Header.Get("ETag")
 	if etag == "" {
-		return "", ErrOSSNotFound
+		return "", ErrOSSETagMissing
 	}
 	return etag, nil
 }

@@ -92,6 +92,27 @@ const (
 	resumeOSSAlreadyComplete                       // OSS object already present and verified; skip upload, go straight to CompleteUpload
 )
 
+// gatewayClient is the subset of GatewayClient methods used by Uploader.
+// It is defined as an interface to allow test injection of fake implementations.
+type gatewayClient interface {
+	CreateLogicalUpload(ctx context.Context, clientHints map[string]string, restartFromUploadID string) (*UploadSession, error)
+	GetUploadRecovery(ctx context.Context, logicalUploadID string) (*UploadRecoveryInfo, error)
+	ReissueUploadCredentials(ctx context.Context, uploadID string) (*UploadSession, error)
+	AbortUpload(ctx context.Context, logicalUploadID string, reason string) error
+	CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, ossObjectEtag string) error
+}
+
+// ossClient is the subset of OSSUploader methods used by Uploader.
+// It is defined as an interface to allow test injection of fake implementations.
+type ossClient interface {
+	InitiateMultipartUpload(ctx context.Context, session *UploadSession) (string, error)
+	UploadPart(ctx context.Context, session *UploadSession, multipartUploadID string, partNumber int, body []byte) (string, error)
+	CompleteMultipartUpload(ctx context.Context, session *UploadSession, multipartUploadID string, parts []UploadedPart) (string, error)
+	AbortMultipartUpload(ctx context.Context, session *UploadSession, multipartUploadID string)
+	HeadObjectETag(ctx context.Context, session *UploadSession) (string, error)
+	ListParts(ctx context.Context, session *UploadSession, multipartUploadID string) error
+}
+
 // Uploader orchestrates the complete upload flow:
 //  1. Auth (gRPC) → JWT
 //  2. Gateway (gRPC) → logical upload session + STS credentials + object key
@@ -101,25 +122,51 @@ const (
 // It mirrors the Rust data-platform-data-gateway-client SDK, including local
 // persistence for cross-restart recovery and the full restart/abort state machine.
 type Uploader struct {
-	gateway     *GatewayClient
-	oss         *OSSUploader
+	gateway     gatewayClient
+	oss         ossClient
 	minioClient *s3.Client
 	minioBucket string
 	cfg         UploaderConfig
 }
 
 // NewUploader creates a new uploader that streams data from MinIO to cloud OSS.
+// If PersistRootDir is set, the active state directory is created and tested for
+// writability at construction time. A fatal log is emitted if the directory cannot
+// be created or is not writable; callers should treat this as a startup error.
 func NewUploader(gateway *GatewayClient, minioClient *s3.Client, minioBucket string, cfg UploaderConfig) *Uploader {
 	if cfg.MaxRestartCount == 0 {
 		cfg.MaxRestartCount = 3
 	}
-	return &Uploader{
+	u := &Uploader{
 		gateway:     gateway,
 		oss:         NewOSSUploader(cfg.OSSTimeout),
 		minioClient: minioClient,
 		minioBucket: minioBucket,
 		cfg:         cfg,
 	}
+	if cfg.PersistRootDir != "" {
+		if err := u.validatePersistDir(); err != nil {
+			logger.Printf("[CLOUD-UPLOAD] FATAL: persist_root_dir %q is not usable: %v — "+
+				"upload state cannot be persisted; set KEYSTONE_SYNC_PERSIST_ROOT_DIR to a writable directory "+
+				"or leave it empty to disable persistence", cfg.PersistRootDir, err)
+		}
+	}
+	return u
+}
+
+// validatePersistDir creates the active state directory and verifies it is writable
+// by writing and immediately removing a probe file.
+func (u *Uploader) validatePersistDir() error {
+	dir := u.activeStateDir()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("cannot create state directory: %w", err)
+	}
+	probe := filepath.Join(dir, ".write-probe")
+	if err := os.WriteFile(probe, []byte("probe"), 0o600); err != nil {
+		return fmt.Errorf("state directory is not writable: %w", err)
+	}
+	_ = os.Remove(probe)
+	return nil
 }
 
 // abortMultipartUpload attempts to abort a multipart upload with a timeout.
@@ -169,10 +216,12 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 
 	// Fast path: OSS object is already present (COMPLETE_ONLY recovery, ETag verified).
 	// Skip the multipart upload and go straight to CompleteUpload on the gateway.
+	// Use ossCompletePartCount from GetUploadRecovery — the server requires completed_part_count > 0
+	// and uses it for idempotency validation, so we must pass the value it previously recorded.
 	if prepared.ossCompleteETag != "" {
-		logger.Printf("[CLOUD-UPLOAD] OSS object already verified (COMPLETE_ONLY): logical_upload_id=%s etag=%s",
-			session.LogicalUploadID, prepared.ossCompleteETag)
-		if err := u.gateway.CompleteUpload(ctx, session.UploadID, fileSize, req.RawTags, 0, prepared.ossCompleteETag); err != nil {
+		logger.Printf("[CLOUD-UPLOAD] OSS object already verified (COMPLETE_ONLY): logical_upload_id=%s etag=%s parts=%d",
+			session.LogicalUploadID, prepared.ossCompleteETag, prepared.ossCompletePartCount)
+		if err := u.gateway.CompleteUpload(ctx, session.UploadID, fileSize, req.RawTags, prepared.ossCompletePartCount, prepared.ossCompleteETag); err != nil {
 			return nil, fmt.Errorf("complete upload on gateway (oss-already-complete): %w", err)
 		}
 		u.cleanupPersistedState(session.LogicalUploadID)
@@ -277,6 +326,7 @@ type preparedSession struct {
 	persistedState  bool   // whether an active state file already exists on disk
 	ossCompleteETag string // non-empty when the OSS object is already present and verified;
 	// caller should skip uploadParts and proceed directly to CompleteUpload with this ETag.
+	ossCompletePartCount int32 // the completed_part_count recorded by the server; valid only when ossCompleteETag is set.
 }
 
 // prepareUploadSession checks for persisted state and either resumes or creates a new session.
@@ -288,7 +338,7 @@ func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[str
 	}
 
 	if state != nil {
-		decision, session, ossETag, err := u.decideResumeAction(ctx, state, fileSize)
+		decision, session, ossETag, ossPartCount, err := u.decideResumeAction(ctx, state, fileSize)
 		if err != nil {
 			return preparedSession{}, err
 		}
@@ -297,12 +347,14 @@ func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[str
 			return preparedSession{session: session, restartCount: state.RestartCount, persistedState: true}, nil
 		case resumeOSSAlreadyComplete:
 			// The OSS object is already present and its ETag matches the server's record.
-			// Skip uploadParts and go straight to CompleteUpload with the server-provided ETag.
+			// Skip uploadParts and go straight to CompleteUpload with the server-provided ETag and
+			// completed_part_count (required by the server's > 0 validation and idempotency check).
 			return preparedSession{
-				session:         session,
-				restartCount:    state.RestartCount,
-				persistedState:  true,
-				ossCompleteETag: ossETag,
+				session:              session,
+				restartCount:         state.RestartCount,
+				persistedState:       true,
+				ossCompleteETag:      ossETag,
+				ossCompletePartCount: ossPartCount,
 			}, nil
 		case resumeRestart:
 			if state.RestartCount >= u.cfg.MaxRestartCount {
@@ -333,6 +385,10 @@ func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[str
 		case resumePermanentFailure:
 			u.abortAndCleanupSession(ctx, state.LogicalUploadID, "upload cannot be resumed")
 			return preparedSession{}, fmt.Errorf("persisted upload cannot be resumed (logical_upload_id=%s)", state.LogicalUploadID)
+		default:
+			// Should never happen: all resumeDecision values must be handled above.
+			// Guard against future enum additions silently falling through to CreateLogicalUpload.
+			return preparedSession{}, fmt.Errorf("unexpected resume decision %d (logical_upload_id=%s)", decision, state.LogicalUploadID)
 		}
 	}
 
@@ -348,20 +404,27 @@ func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[str
 // whether to continue, restart, or permanently fail the upload.
 // It mirrors the Rust SDK's decide_resume_action logic.
 //
-// Returns (decision, session, ossETag, error):
-//   - ossETag is non-empty only when decision == resumeOSSAlreadyComplete; it is the
-//     server-verified ETag to pass directly to CompleteUpload.
-func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploadState, fileSize int64) (resumeDecision, *UploadSession, string, error) {
+// Returns (decision, session, ossETag, completedPartCount, error):
+//   - ossETag and completedPartCount are non-zero only when decision == resumeOSSAlreadyComplete;
+//     ossETag is the server-verified ETag and completedPartCount is the value recorded by the
+//     server, both to be passed directly to CompleteUpload.
+func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploadState, fileSize int64) (resumeDecision, *UploadSession, string, int32, error) {
 	// Verify local file size hasn't changed
 	if state.FileSize != fileSize {
-		return resumePermanentFailure, nil, "", nil
+		return resumePermanentFailure, nil, "", 0, nil
 	}
 
 	recovery, err := u.gateway.GetUploadRecovery(ctx, state.LogicalUploadID)
 	if err != nil {
-		// Treat RPC failures as transient: return an error without a decision so the
-		// caller's err != nil path preserves the local state file for the next retry.
-		return resumeContinue, nil, "", fmt.Errorf("GetUploadRecovery: %w", err)
+		// ErrLogicalUploadNotFound means the session no longer exists on the server
+		// (expired, deleted, or never created). There is nothing to recover — treat
+		// as permanent failure so the caller can abort and clean up local state.
+		if errors.Is(err, ErrLogicalUploadNotFound) {
+			return resumePermanentFailure, nil, "", 0, nil
+		}
+		// All other RPC errors are treated as transient: return the error so the
+		// caller preserves the local state file for the next retry.
+		return resumeContinue, nil, "", 0, fmt.Errorf("GetUploadRecovery: %w", err)
 	}
 
 	switch recovery.NextAction {
@@ -371,17 +434,17 @@ func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploa
 		session, err := u.gateway.ReissueUploadCredentials(ctx, recovery.CurrentUploadID)
 		if err != nil {
 			// Treat RPC failures as transient: preserve local state for next retry.
-			return resumeContinue, nil, "", fmt.Errorf("ReissueUploadCredentials: %w", err)
+			return resumeContinue, nil, "", 0, fmt.Errorf("ReissueUploadCredentials: %w", err)
 		}
 
 		if state.MultipartUploadID != "" {
 			outcome, err := u.reconcileRemoteParts(ctx, session, state.MultipartUploadID)
 			if err != nil {
 				// Non-404 OSS error (network/auth): treat as transient, preserve state for next retry.
-				return resumeContinue, nil, "", fmt.Errorf("reconcile remote parts: %w", err)
+				return resumeContinue, nil, "", 0, fmt.Errorf("reconcile remote parts: %w", err)
 			}
 			if outcome == reconcileRestart {
-				return resumeRestart, nil, "", nil
+				return resumeRestart, nil, "", 0, nil
 			}
 		}
 
@@ -389,24 +452,26 @@ func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploa
 			outcome, err := u.reconcileCompletedObject(ctx, session, recovery.OSSObjectETag)
 			if err != nil {
 				// Non-404 OSS error: treat as transient, preserve state for next retry.
-				return resumeContinue, nil, "", fmt.Errorf("reconcile completed object: %w", err)
+				return resumeContinue, nil, "", 0, fmt.Errorf("reconcile completed object: %w", err)
 			}
 			switch outcome {
 			case reconcileCompleted:
 				// OSS object already exists and ETag matches: skip re-upload, go straight to CompleteUpload.
-				return resumeOSSAlreadyComplete, session, recovery.OSSObjectETag, nil
+				// Use the server-recorded completed_part_count from GetUploadRecovery to satisfy the
+				// server's > 0 validation and its idempotency check on CompleteUpload.
+				return resumeOSSAlreadyComplete, session, recovery.OSSObjectETag, recovery.CompletedPartCount, nil
 			case reconcileRestart:
-				return resumeRestart, nil, "", nil
+				return resumeRestart, nil, "", 0, nil
 			}
 		}
 
-		return resumeContinue, session, "", nil
+		return resumeContinue, session, "", 0, nil
 
 	case pb.UploadRecoveryAction_UPLOAD_RECOVERY_ACTION_RESTART:
-		return resumeRestart, nil, "", nil
+		return resumeRestart, nil, "", 0, nil
 
 	default: // ABORT or UNSPECIFIED
-		return resumePermanentFailure, nil, "", nil
+		return resumePermanentFailure, nil, "", 0, nil
 	}
 }
 
@@ -429,15 +494,17 @@ func (u *Uploader) reconcileRemoteParts(ctx context.Context, session *UploadSess
 
 // reconcileCompletedObject checks whether the final object already exists on OSS with the
 // expected ETag. Returns reconcileCompleted on a match, reconcileRestart on a 404 or ETag
-// mismatch. Non-404 OSS errors are returned as errors so the caller can distinguish transient
-// failures from a genuinely missing object.
+// mismatch. Other errors (network, auth, missing ETag header) are returned as errors so
+// the caller can treat them as transient rather than triggering an unnecessary restart.
 func (u *Uploader) reconcileCompletedObject(ctx context.Context, session *UploadSession, expectedETag string) (reconcileOutcome, error) {
 	etag, err := u.oss.HeadObjectETag(ctx, session)
 	if err != nil {
 		if errors.Is(err, ErrOSSNotFound) {
 			return reconcileRestart, nil
 		}
-		return reconcileRestart, fmt.Errorf("head object: %w", err)
+		// ErrOSSETagMissing and other non-404 errors are transient; return an error
+		// so the caller preserves local state and retries on the next sync cycle.
+		return reconcileContinue, fmt.Errorf("head object: %w", err)
 	}
 	if etag == expectedETag {
 		return reconcileCompleted, nil
