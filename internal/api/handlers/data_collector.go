@@ -566,7 +566,7 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 	args = append(args, time.Now().UTC())
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE data_collectors SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
+	query := fmt.Sprintf("UPDATE data_collectors SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", ")) //nolint:gosec // columns are hardcoded literals, not user input
 
 	// Determine whether denormalized workstation columns need syncing.
 	needsNameSync := req.Name != nil && strings.TrimSpace(*req.Name) != ""
@@ -606,7 +606,7 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 			wsArgs = append(wsArgs, strings.TrimSpace(*req.OperatorID))
 		}
 		wsArgs = append(wsArgs, id)
-		wsQuery := fmt.Sprintf(
+		wsQuery := fmt.Sprintf( //nolint:gosec // columns are hardcoded literals, not user input
 			"UPDATE workstations SET %s WHERE data_collector_id = ? AND deleted_at IS NULL",
 			strings.Join(wsUpdates, ", "),
 		)

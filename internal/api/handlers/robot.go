@@ -695,7 +695,7 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 	args = append(args, time.Now().UTC())
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
+	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", ")) //nolint:gosec // columns are hardcoded literals, not user input
 
 	tx, err := h.db.Begin()
 	if err != nil {
@@ -739,7 +739,7 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 		}
 
 		wsArgs = append(wsArgs, id)
-		wsQuery := fmt.Sprintf(
+		wsQuery := fmt.Sprintf( //nolint:gosec // columns are hardcoded literals, not user input
 			"UPDATE workstations SET %s WHERE robot_id = ? AND deleted_at IS NULL",
 			strings.Join(wsUpdates, ", "),
 		)
