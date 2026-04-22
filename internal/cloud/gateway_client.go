@@ -208,12 +208,9 @@ func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string,
 		Reason:          reason,
 	})
 	if err != nil {
-		logger.Printf("[CLOUD-GATEWAY] AbortUpload RPC failed, resetting gRPC connection: %v", err)
-		if closeErr := c.Close(); closeErr != nil {
-			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after AbortUpload error: %v", closeErr)
-		} else {
-			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after AbortUpload error")
-		}
+		// AbortUpload is best-effort: do not reset the shared gRPC connection on failure,
+		// as that would disrupt subsequent normal uploads. Only log the error.
+		logger.Printf("[CLOUD-GATEWAY] AbortUpload RPC failed: %v", err)
 		return fmt.Errorf("AbortUpload RPC: %w", err)
 	}
 	return nil
