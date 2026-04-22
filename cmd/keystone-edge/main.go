@@ -144,10 +144,15 @@ func main() {
 			}
 		}()
 
-		uploader := cloud.NewUploader(gatewayClient, s3Client, cfg.Storage.Bucket, cloud.UploaderConfig{
-			RequestTimeout: time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
-			OSSTimeout:     time.Duration(cfg.Sync.OSSTimeoutSec) * time.Second,
+		uploader, err := cloud.NewUploader(gatewayClient, s3Client, cfg.Storage.Bucket, cloud.UploaderConfig{
+			RequestTimeout:  time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
+			OSSTimeout:      time.Duration(cfg.Sync.OSSTimeoutSec) * time.Second,
+			PersistRootDir:  cfg.Sync.PersistRootDir,
+			MaxRestartCount: uint32(cfg.Sync.MaxRestartCount), //nolint:gosec // non-negative guaranteed by config.Validate()
 		})
+		if err != nil {
+			logger.Fatalf("[SYNC] Failed to initialise uploader: %v", err)
+		}
 
 		syncWorker = services.NewSyncWorker(db.DB, uploader, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
 			BatchSize:      cfg.Sync.BatchSize,

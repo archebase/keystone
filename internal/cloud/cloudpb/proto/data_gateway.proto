@@ -4,13 +4,26 @@ package archebase.data_gateway.v1;
 
 option go_package = "archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpb";
 
+import "common.proto";
+
 service DataGatewayService {
-  rpc CreateFileUpload(CreateFileUploadRequest)
-      returns (CreateFileUploadResponse);
-  rpc RefreshUploadCredentials(RefreshUploadCredentialsRequest)
-      returns (RefreshUploadCredentialsResponse);
+  rpc CreateLogicalUpload(CreateLogicalUploadRequest)
+      returns (CreateLogicalUploadResponse);
+  rpc GetUploadRecovery(GetUploadRecoveryRequest)
+      returns (GetUploadRecoveryResponse);
+  rpc ReissueUploadCredentials(ReissueUploadCredentialsRequest)
+      returns (ReissueUploadCredentialsResponse);
+  rpc AbortUpload(AbortUploadRequest) returns (AbortUploadResponse);
   rpc CompleteUpload(CompleteUploadRequest)
       returns (CompleteUploadResponse);
+}
+
+// Internal-only storage service exposed by data-gateway.
+// This service is served on a dedicated internal gRPC port and is not
+// protected by the public JWT interceptor chain.
+service InternalStorageService {
+  // Generates presigned access for a single object.
+  rpc PresignObject(PresignObjectRequest) returns (PresignObjectResponse);
 }
 
 message UploadCredentials {
@@ -24,36 +37,131 @@ message UploadCredentials {
   int64 part_size_bytes = 8;
 }
 
-message CreateFileUploadRequest {
+enum UploadRecoveryAction {
+  UPLOAD_RECOVERY_ACTION_UNSPECIFIED = 0;
+  UPLOAD_RECOVERY_ACTION_CONTINUE = 1;
+  UPLOAD_RECOVERY_ACTION_COMPLETE_ONLY = 2;
+  UPLOAD_RECOVERY_ACTION_RESTART = 3;
+  UPLOAD_RECOVERY_ACTION_ABORT = 4;
+}
+
+enum LogicalUploadStatus {
+  LOGICAL_UPLOAD_STATUS_UNSPECIFIED = 0;
+  LOGICAL_UPLOAD_STATUS_ACTIVE = 1;
+  LOGICAL_UPLOAD_STATUS_COMPLETING = 2;
+  LOGICAL_UPLOAD_STATUS_COMPLETED = 3;
+  LOGICAL_UPLOAD_STATUS_TERMINAL = 4;
+}
+
+message CreateLogicalUploadRequest {
   map<string, string> client_hints = 1;
+  string restart_from_upload_id = 2;
 }
 
-message CreateFileUploadResponse {
-  string upload_id = 1;
-  UploadCredentials credentials = 2;
-  reserved 3;
+message CreateLogicalUploadResponse {
+  string logical_upload_id = 1;
+  string upload_id = 2;
+  UploadCredentials credentials = 3;
 }
 
-message RefreshUploadCredentialsRequest {
+message GetUploadRecoveryRequest {
+  string logical_upload_id = 1;
+}
+
+message GetUploadRecoveryResponse {
+  string logical_upload_id = 1;
+  LogicalUploadStatus logical_upload_status = 2;
+  string current_upload_id = 3;
+  string bucket = 4;
+  string endpoint = 5;
+  string object_key = 6;
+  bool can_refresh_credentials = 7;
+  bool restart_allowed = 8;
+  string terminal_reason = 9;
+  int32 credential_refresh_count = 10;
+  int64 session_expire_at_unix = 11;
+  UploadRecoveryAction next_action = 12;
+  int32 completed_part_count = 13;
+  string oss_object_etag = 14;
+}
+
+message ReissueUploadCredentialsRequest {
   string upload_id = 1;
 }
 
-message RefreshUploadCredentialsResponse {
-  string upload_id = 1;
-  UploadCredentials credentials = 2;
-  reserved 3;
+message ReissueUploadCredentialsResponse {
+  string logical_upload_id = 1;
+  string upload_id = 2;
+  UploadCredentials credentials = 3;
+}
+
+message AbortUploadRequest {
+  string logical_upload_id = 1;
+  string reason = 2;
+}
+
+message AbortUploadResponse {
+  string logical_upload_id = 1;
+  string upload_id = 2;
 }
 
 message CompleteUploadRequest {
   string upload_id = 1;
-  int64 file_size = 3;
-  map<string, string> raw_tags = 5;
-  int32 completed_part_count = 6;
-  string oss_object_etag = 7;
-  reserved 2, 4;
+  int64 file_size = 2;
+  map<string, string> raw_tags = 3;
+  int32 completed_part_count = 4;
+  string oss_object_etag = 5;
 }
 
 message CompleteUploadResponse {}
+
+// Identifies an object within the configured OSS bucket.
+message StorageObject {
+  // Target bucket name.
+  string bucket = 1;
+  // Target object key.
+  string object_key = 2;
+}
+
+// Declares the requested presigned access mode.
+enum PresignAccessMode {
+  PRESIGN_ACCESS_MODE_UNSPECIFIED = 0;
+  PRESIGN_ACCESS_MODE_READ = 1;
+  PRESIGN_ACCESS_MODE_WRITE = 2;
+  PRESIGN_ACCESS_MODE_READ_WRITE = 3;
+}
+
+// Represents one presigned HTTP operation.
+message PresignedOperation {
+  // HTTP method that must be used by the caller.
+  string method = 1;
+  // Fully qualified presigned URI.
+  string uri = 2;
+  // Required request headers.
+  map<string, string> headers = 3;
+}
+
+// Requests presigned access for a single object.
+message PresignObjectRequest {
+  // Object to presign.
+  StorageObject object = 1;
+  // Requested access mode.
+  PresignAccessMode access_mode = 2;
+  // Requested presign TTL in seconds.
+  int64 expires_in_seconds = 3;
+}
+
+// Returns presigned operations for the requested object.
+message PresignObjectResponse {
+  // Object that was presigned.
+  StorageObject object = 1;
+  // Presigned read operation, present for read-enabled modes.
+  PresignedOperation read = 2;
+  // Presigned write operation, present for write-enabled modes.
+  PresignedOperation write = 3;
+  // Absolute expiration time as Unix seconds.
+  int64 expires_at_unix = 4;
+}
 
 enum DataGatewayErrorCode {
   DATA_GATEWAY_ERROR_CODE_UNSPECIFIED = 0;

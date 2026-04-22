@@ -19,8 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DataGatewayService_CreateFileUpload_FullMethodName         = "/archebase.data_gateway.v1.DataGatewayService/CreateFileUpload"
-	DataGatewayService_RefreshUploadCredentials_FullMethodName = "/archebase.data_gateway.v1.DataGatewayService/RefreshUploadCredentials"
+	DataGatewayService_CreateLogicalUpload_FullMethodName      = "/archebase.data_gateway.v1.DataGatewayService/CreateLogicalUpload"
+	DataGatewayService_GetUploadRecovery_FullMethodName        = "/archebase.data_gateway.v1.DataGatewayService/GetUploadRecovery"
+	DataGatewayService_ReissueUploadCredentials_FullMethodName = "/archebase.data_gateway.v1.DataGatewayService/ReissueUploadCredentials"
+	DataGatewayService_AbortUpload_FullMethodName              = "/archebase.data_gateway.v1.DataGatewayService/AbortUpload"
 	DataGatewayService_CompleteUpload_FullMethodName           = "/archebase.data_gateway.v1.DataGatewayService/CompleteUpload"
 )
 
@@ -28,8 +30,10 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type DataGatewayServiceClient interface {
-	CreateFileUpload(ctx context.Context, in *CreateFileUploadRequest, opts ...grpc.CallOption) (*CreateFileUploadResponse, error)
-	RefreshUploadCredentials(ctx context.Context, in *RefreshUploadCredentialsRequest, opts ...grpc.CallOption) (*RefreshUploadCredentialsResponse, error)
+	CreateLogicalUpload(ctx context.Context, in *CreateLogicalUploadRequest, opts ...grpc.CallOption) (*CreateLogicalUploadResponse, error)
+	GetUploadRecovery(ctx context.Context, in *GetUploadRecoveryRequest, opts ...grpc.CallOption) (*GetUploadRecoveryResponse, error)
+	ReissueUploadCredentials(ctx context.Context, in *ReissueUploadCredentialsRequest, opts ...grpc.CallOption) (*ReissueUploadCredentialsResponse, error)
+	AbortUpload(ctx context.Context, in *AbortUploadRequest, opts ...grpc.CallOption) (*AbortUploadResponse, error)
 	CompleteUpload(ctx context.Context, in *CompleteUploadRequest, opts ...grpc.CallOption) (*CompleteUploadResponse, error)
 }
 
@@ -41,20 +45,40 @@ func NewDataGatewayServiceClient(cc grpc.ClientConnInterface) DataGatewayService
 	return &dataGatewayServiceClient{cc}
 }
 
-func (c *dataGatewayServiceClient) CreateFileUpload(ctx context.Context, in *CreateFileUploadRequest, opts ...grpc.CallOption) (*CreateFileUploadResponse, error) {
+func (c *dataGatewayServiceClient) CreateLogicalUpload(ctx context.Context, in *CreateLogicalUploadRequest, opts ...grpc.CallOption) (*CreateLogicalUploadResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CreateFileUploadResponse)
-	err := c.cc.Invoke(ctx, DataGatewayService_CreateFileUpload_FullMethodName, in, out, cOpts...)
+	out := new(CreateLogicalUploadResponse)
+	err := c.cc.Invoke(ctx, DataGatewayService_CreateLogicalUpload_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *dataGatewayServiceClient) RefreshUploadCredentials(ctx context.Context, in *RefreshUploadCredentialsRequest, opts ...grpc.CallOption) (*RefreshUploadCredentialsResponse, error) {
+func (c *dataGatewayServiceClient) GetUploadRecovery(ctx context.Context, in *GetUploadRecoveryRequest, opts ...grpc.CallOption) (*GetUploadRecoveryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RefreshUploadCredentialsResponse)
-	err := c.cc.Invoke(ctx, DataGatewayService_RefreshUploadCredentials_FullMethodName, in, out, cOpts...)
+	out := new(GetUploadRecoveryResponse)
+	err := c.cc.Invoke(ctx, DataGatewayService_GetUploadRecovery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dataGatewayServiceClient) ReissueUploadCredentials(ctx context.Context, in *ReissueUploadCredentialsRequest, opts ...grpc.CallOption) (*ReissueUploadCredentialsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReissueUploadCredentialsResponse)
+	err := c.cc.Invoke(ctx, DataGatewayService_ReissueUploadCredentials_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dataGatewayServiceClient) AbortUpload(ctx context.Context, in *AbortUploadRequest, opts ...grpc.CallOption) (*AbortUploadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AbortUploadResponse)
+	err := c.cc.Invoke(ctx, DataGatewayService_AbortUpload_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -75,8 +99,10 @@ func (c *dataGatewayServiceClient) CompleteUpload(ctx context.Context, in *Compl
 // All implementations must embed UnimplementedDataGatewayServiceServer
 // for forward compatibility.
 type DataGatewayServiceServer interface {
-	CreateFileUpload(context.Context, *CreateFileUploadRequest) (*CreateFileUploadResponse, error)
-	RefreshUploadCredentials(context.Context, *RefreshUploadCredentialsRequest) (*RefreshUploadCredentialsResponse, error)
+	CreateLogicalUpload(context.Context, *CreateLogicalUploadRequest) (*CreateLogicalUploadResponse, error)
+	GetUploadRecovery(context.Context, *GetUploadRecoveryRequest) (*GetUploadRecoveryResponse, error)
+	ReissueUploadCredentials(context.Context, *ReissueUploadCredentialsRequest) (*ReissueUploadCredentialsResponse, error)
+	AbortUpload(context.Context, *AbortUploadRequest) (*AbortUploadResponse, error)
 	CompleteUpload(context.Context, *CompleteUploadRequest) (*CompleteUploadResponse, error)
 	mustEmbedUnimplementedDataGatewayServiceServer()
 }
@@ -88,11 +114,17 @@ type DataGatewayServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedDataGatewayServiceServer struct{}
 
-func (UnimplementedDataGatewayServiceServer) CreateFileUpload(context.Context, *CreateFileUploadRequest) (*CreateFileUploadResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CreateFileUpload not implemented")
+func (UnimplementedDataGatewayServiceServer) CreateLogicalUpload(context.Context, *CreateLogicalUploadRequest) (*CreateLogicalUploadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateLogicalUpload not implemented")
 }
-func (UnimplementedDataGatewayServiceServer) RefreshUploadCredentials(context.Context, *RefreshUploadCredentialsRequest) (*RefreshUploadCredentialsResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RefreshUploadCredentials not implemented")
+func (UnimplementedDataGatewayServiceServer) GetUploadRecovery(context.Context, *GetUploadRecoveryRequest) (*GetUploadRecoveryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetUploadRecovery not implemented")
+}
+func (UnimplementedDataGatewayServiceServer) ReissueUploadCredentials(context.Context, *ReissueUploadCredentialsRequest) (*ReissueUploadCredentialsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReissueUploadCredentials not implemented")
+}
+func (UnimplementedDataGatewayServiceServer) AbortUpload(context.Context, *AbortUploadRequest) (*AbortUploadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AbortUpload not implemented")
 }
 func (UnimplementedDataGatewayServiceServer) CompleteUpload(context.Context, *CompleteUploadRequest) (*CompleteUploadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CompleteUpload not implemented")
@@ -118,38 +150,74 @@ func RegisterDataGatewayServiceServer(s grpc.ServiceRegistrar, srv DataGatewaySe
 	s.RegisterService(&DataGatewayService_ServiceDesc, srv)
 }
 
-func _DataGatewayService_CreateFileUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CreateFileUploadRequest)
+func _DataGatewayService_CreateLogicalUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateLogicalUploadRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(DataGatewayServiceServer).CreateFileUpload(ctx, in)
+		return srv.(DataGatewayServiceServer).CreateLogicalUpload(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: DataGatewayService_CreateFileUpload_FullMethodName,
+		FullMethod: DataGatewayService_CreateLogicalUpload_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DataGatewayServiceServer).CreateFileUpload(ctx, req.(*CreateFileUploadRequest))
+		return srv.(DataGatewayServiceServer).CreateLogicalUpload(ctx, req.(*CreateLogicalUploadRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _DataGatewayService_RefreshUploadCredentials_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RefreshUploadCredentialsRequest)
+func _DataGatewayService_GetUploadRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUploadRecoveryRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(DataGatewayServiceServer).RefreshUploadCredentials(ctx, in)
+		return srv.(DataGatewayServiceServer).GetUploadRecovery(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: DataGatewayService_RefreshUploadCredentials_FullMethodName,
+		FullMethod: DataGatewayService_GetUploadRecovery_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DataGatewayServiceServer).RefreshUploadCredentials(ctx, req.(*RefreshUploadCredentialsRequest))
+		return srv.(DataGatewayServiceServer).GetUploadRecovery(ctx, req.(*GetUploadRecoveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DataGatewayService_ReissueUploadCredentials_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReissueUploadCredentialsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DataGatewayServiceServer).ReissueUploadCredentials(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DataGatewayService_ReissueUploadCredentials_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DataGatewayServiceServer).ReissueUploadCredentials(ctx, req.(*ReissueUploadCredentialsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DataGatewayService_AbortUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AbortUploadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DataGatewayServiceServer).AbortUpload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DataGatewayService_AbortUpload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DataGatewayServiceServer).AbortUpload(ctx, req.(*AbortUploadRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -180,16 +248,137 @@ var DataGatewayService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*DataGatewayServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "CreateFileUpload",
-			Handler:    _DataGatewayService_CreateFileUpload_Handler,
+			MethodName: "CreateLogicalUpload",
+			Handler:    _DataGatewayService_CreateLogicalUpload_Handler,
 		},
 		{
-			MethodName: "RefreshUploadCredentials",
-			Handler:    _DataGatewayService_RefreshUploadCredentials_Handler,
+			MethodName: "GetUploadRecovery",
+			Handler:    _DataGatewayService_GetUploadRecovery_Handler,
+		},
+		{
+			MethodName: "ReissueUploadCredentials",
+			Handler:    _DataGatewayService_ReissueUploadCredentials_Handler,
+		},
+		{
+			MethodName: "AbortUpload",
+			Handler:    _DataGatewayService_AbortUpload_Handler,
 		},
 		{
 			MethodName: "CompleteUpload",
 			Handler:    _DataGatewayService_CompleteUpload_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "data_gateway.proto",
+}
+
+const (
+	InternalStorageService_PresignObject_FullMethodName = "/archebase.data_gateway.v1.InternalStorageService/PresignObject"
+)
+
+// InternalStorageServiceClient is the client API for InternalStorageService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// Internal-only storage service exposed by data-gateway.
+// This service is served on a dedicated internal gRPC port and is not
+// protected by the public JWT interceptor chain.
+type InternalStorageServiceClient interface {
+	// Generates presigned access for a single object.
+	PresignObject(ctx context.Context, in *PresignObjectRequest, opts ...grpc.CallOption) (*PresignObjectResponse, error)
+}
+
+type internalStorageServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewInternalStorageServiceClient(cc grpc.ClientConnInterface) InternalStorageServiceClient {
+	return &internalStorageServiceClient{cc}
+}
+
+func (c *internalStorageServiceClient) PresignObject(ctx context.Context, in *PresignObjectRequest, opts ...grpc.CallOption) (*PresignObjectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PresignObjectResponse)
+	err := c.cc.Invoke(ctx, InternalStorageService_PresignObject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// InternalStorageServiceServer is the server API for InternalStorageService service.
+// All implementations must embed UnimplementedInternalStorageServiceServer
+// for forward compatibility.
+//
+// Internal-only storage service exposed by data-gateway.
+// This service is served on a dedicated internal gRPC port and is not
+// protected by the public JWT interceptor chain.
+type InternalStorageServiceServer interface {
+	// Generates presigned access for a single object.
+	PresignObject(context.Context, *PresignObjectRequest) (*PresignObjectResponse, error)
+	mustEmbedUnimplementedInternalStorageServiceServer()
+}
+
+// UnimplementedInternalStorageServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedInternalStorageServiceServer struct{}
+
+func (UnimplementedInternalStorageServiceServer) PresignObject(context.Context, *PresignObjectRequest) (*PresignObjectResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PresignObject not implemented")
+}
+func (UnimplementedInternalStorageServiceServer) mustEmbedUnimplementedInternalStorageServiceServer() {
+}
+func (UnimplementedInternalStorageServiceServer) testEmbeddedByValue() {}
+
+// UnsafeInternalStorageServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to InternalStorageServiceServer will
+// result in compilation errors.
+type UnsafeInternalStorageServiceServer interface {
+	mustEmbedUnimplementedInternalStorageServiceServer()
+}
+
+func RegisterInternalStorageServiceServer(s grpc.ServiceRegistrar, srv InternalStorageServiceServer) {
+	// If the following call panics, it indicates UnimplementedInternalStorageServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&InternalStorageService_ServiceDesc, srv)
+}
+
+func _InternalStorageService_PresignObject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PresignObjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InternalStorageServiceServer).PresignObject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InternalStorageService_PresignObject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InternalStorageServiceServer).PresignObject(ctx, req.(*PresignObjectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// InternalStorageService_ServiceDesc is the grpc.ServiceDesc for InternalStorageService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var InternalStorageService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "archebase.data_gateway.v1.InternalStorageService",
+	HandlerType: (*InternalStorageServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PresignObject",
+			Handler:    _InternalStorageService_PresignObject_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
