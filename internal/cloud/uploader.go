@@ -131,9 +131,9 @@ type Uploader struct {
 
 // NewUploader creates a new uploader that streams data from MinIO to cloud OSS.
 // If PersistRootDir is set, the active state directory is created and tested for
-// writability at construction time. A fatal log is emitted if the directory cannot
-// be created or is not writable; callers should treat this as a startup error.
-func NewUploader(gateway *GatewayClient, minioClient *s3.Client, minioBucket string, cfg UploaderConfig) *Uploader {
+// writability at construction time. An error is returned if the directory cannot
+// be created or is not writable; callers should treat this as a fatal startup error.
+func NewUploader(gateway *GatewayClient, minioClient *s3.Client, minioBucket string, cfg UploaderConfig) (*Uploader, error) {
 	if cfg.MaxRestartCount == 0 {
 		cfg.MaxRestartCount = 3
 	}
@@ -146,12 +146,10 @@ func NewUploader(gateway *GatewayClient, minioClient *s3.Client, minioBucket str
 	}
 	if cfg.PersistRootDir != "" {
 		if err := u.validatePersistDir(); err != nil {
-			logger.Printf("[CLOUD-UPLOAD] FATAL: persist_root_dir %q is not usable: %v — "+
-				"upload state cannot be persisted; set KEYSTONE_SYNC_PERSIST_ROOT_DIR to a writable directory "+
-				"or leave it empty to disable persistence", cfg.PersistRootDir, err)
+			return nil, fmt.Errorf("persist_root_dir %q is not usable: %w", cfg.PersistRootDir, err)
 		}
 	}
-	return u
+	return u, nil
 }
 
 // validatePersistDir creates the active state directory and verifies it is writable
@@ -259,6 +257,18 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 		session.LogicalUploadID, session.UploadID, session.ObjectKey, session.PartSizeBytes)
 
 	// Step 3: Multipart upload
+	//
+	// KNOWN LIMITATION: the multipart_upload_id is only persisted AFTER uploadParts returns
+	// (see the persistActiveState call below). If the process crashes during the transfer
+	// window — which can span several minutes for large MCAP files — the state file on disk
+	// will have an empty multipart_upload_id. On the next restart, reconcileRemoteParts is
+	// skipped (nothing to probe) and the client initiates a brand-new multipart upload,
+	// silently retransmitting the entire file and orphaning the previous OSS session.
+	//
+	// The correct fix is to persist the multipart_upload_id immediately after
+	// InitiateMultipartUpload succeeds, before streaming any parts. This requires splitting
+	// uploadParts into an initiate step (called here, result persisted) and a stream step.
+	// The Rust SDK has the same gap; defer fixing until the upstream SDK is updated.
 	multipartUploadID, parts, partMD5s, err := u.uploadParts(ctx, req, session, fileSize)
 	if err != nil {
 		return nil, err
@@ -361,12 +371,23 @@ func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[str
 				u.abortAndCleanupSession(ctx, state.LogicalUploadID, "restart count exceeded")
 				return preparedSession{}, fmt.Errorf("upload restart count exceeded (logical_upload_id=%s)", state.LogicalUploadID)
 			}
-			u.cleanupPersistedState(state.LogicalUploadID)
 			newSession, err := u.gateway.CreateLogicalUpload(ctx, clientHints, state.UploadID)
 			if err != nil {
+				// RPC failed — the old state file is still on disk so the next retry can
+				// re-enter this path and try again with the same logical upload ID.
 				return preparedSession{}, fmt.Errorf("create logical upload (restart): %w", err)
 			}
 			newRestartCount := state.RestartCount + 1
+			// Persist the new session state BEFORE removing the old one.
+			// This ensures that a crash between the two operations always leaves at least
+			// one valid state file on disk:
+			//   - crash before persist(new)  → old file still present; next retry retries the restart RPC
+			//   - crash after  persist(new)  → new file present; next retry continues normally
+			//   - crash after  cleanup(old)  → only new file present; correct
+			// Note: since new and old logical_upload_ids are different, the two files have
+			// different names and can coexist without conflict.
+			// This intentionally diverges from the Rust SDK (which cleans up first) to close
+			// the crash-window identified in the code review.
 			if err := u.persistActiveState(&persistedUploadState{
 				Version:         1,
 				LogicalUploadID: newSession.LogicalUploadID,
@@ -379,8 +400,12 @@ func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[str
 				FileSize:        fileSize,
 				UpdatedAt:       time.Now(),
 			}); err != nil {
-				logger.Printf("[CLOUD-UPLOAD] Warning: failed to persist restart state: %v", err)
+				// Persistence failed — abort the new session (best-effort) so it does not
+				// leak on the server, and propagate the error so the caller retries.
+				u.abortAndCleanupSession(ctx, newSession.LogicalUploadID, "failed to persist restart state")
+				return preparedSession{}, fmt.Errorf("persist restart state: %w", err)
 			}
+			u.cleanupPersistedState(state.LogicalUploadID)
 			return preparedSession{session: newSession, restartCount: newRestartCount, persistedState: true}, nil
 		case resumePermanentFailure:
 			u.abortAndCleanupSession(ctx, state.LogicalUploadID, "upload cannot be resumed")

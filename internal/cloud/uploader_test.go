@@ -292,6 +292,117 @@ func TestPrepareUploadSession_PermanentFailure_CleanupOnSizeMismatch(t *testing.
 	}
 }
 
+// TestPrepareUploadSession_Restart_OldStatePreservedOnRPCFailure verifies that when
+// CreateLogicalUpload fails during a restart, the original persisted state file is NOT
+// removed. This ensures the next retry can still find the old logical_upload_id and
+// re-attempt the restart rather than starting a brand-new upload.
+//
+// This is the core safety property fixed by the "persist-new-before-cleanup-old" ordering:
+// previously, cleanupPersistedState was called before CreateLogicalUpload, so a crash or
+// RPC failure would leave no state on disk.
+func TestPrepareUploadSession_Restart_OldStatePreservedOnRPCFailure(t *testing.T) {
+	dir := t.TempDir()
+	rpcErr := errors.New("rpc: unavailable")
+
+	gw := &fakeGateway{
+		getUploadRecoveryFn: func(_ context.Context, _ string) (*UploadRecoveryInfo, error) {
+			return &UploadRecoveryInfo{
+				LogicalUploadID: "logical-old",
+				CurrentUploadID: "upload-old",
+				NextAction:      pb.UploadRecoveryAction_UPLOAD_RECOVERY_ACTION_RESTART,
+			}, nil
+		},
+		reissueCredentialsFn: func(_ context.Context, _ string) (*UploadSession, error) {
+			panic("ReissueUploadCredentials should not be called on RESTART path")
+		},
+		createLogicalUploadFn: func(_ context.Context, _ map[string]string, _ string) (*UploadSession, error) {
+			return nil, rpcErr
+		},
+	}
+
+	activeDir := filepath.Join(dir, "data-gateway-client", "uploads", "active")
+	oldStateFile := writeTempState(t, activeDir, &persistedUploadState{
+		Version:         1,
+		LogicalUploadID: "logical-old",
+		UploadID:        "upload-old",
+		McapKey:         "episodes/10/restart-rpc-fail.mcap",
+		FileSize:        512,
+		RestartCount:    0,
+		UpdatedAt:       time.Now(),
+	})
+
+	u := newDecideResumeUploader(dir, gw, &fakeOSS{})
+	_, err := u.prepareUploadSession(context.Background(), map[string]string{}, "episodes/10/restart-rpc-fail.mcap", 512)
+	if err == nil {
+		t.Fatal("expected error when CreateLogicalUpload fails, got nil")
+	}
+	if !errors.Is(err, rpcErr) {
+		t.Errorf("error = %v, want to wrap %v", err, rpcErr)
+	}
+
+	// Old state file must still be on disk so the next retry can re-enter the restart path.
+	if _, statErr := os.Stat(oldStateFile); statErr != nil {
+		t.Errorf("old state file should be preserved after RPC failure, got: %v", statErr)
+	}
+}
+
+// TestPrepareUploadSession_Restart_NewStatePersisted_OldStateRemoved verifies the happy-path
+// ordering: after a successful restart, the new state file exists and the old one is gone.
+func TestPrepareUploadSession_Restart_NewStatePersisted_OldStateRemoved(t *testing.T) {
+	dir := t.TempDir()
+	newSess := makeSession("logical-new", "upload-new")
+
+	gw := &fakeGateway{
+		getUploadRecoveryFn: func(_ context.Context, _ string) (*UploadRecoveryInfo, error) {
+			return &UploadRecoveryInfo{
+				LogicalUploadID: "logical-old",
+				CurrentUploadID: "upload-old",
+				NextAction:      pb.UploadRecoveryAction_UPLOAD_RECOVERY_ACTION_RESTART,
+			}, nil
+		},
+		reissueCredentialsFn: func(_ context.Context, _ string) (*UploadSession, error) {
+			panic("ReissueUploadCredentials should not be called on RESTART path")
+		},
+		createLogicalUploadFn: func(_ context.Context, _ map[string]string, _ string) (*UploadSession, error) {
+			return newSess, nil
+		},
+	}
+
+	activeDir := filepath.Join(dir, "data-gateway-client", "uploads", "active")
+	oldStateFile := writeTempState(t, activeDir, &persistedUploadState{
+		Version:         1,
+		LogicalUploadID: "logical-old",
+		UploadID:        "upload-old",
+		McapKey:         "episodes/11/restart-ok.mcap",
+		FileSize:        512,
+		RestartCount:    0,
+		UpdatedAt:       time.Now(),
+	})
+
+	u := newDecideResumeUploader(dir, gw, &fakeOSS{})
+	prepared, err := u.prepareUploadSession(context.Background(), map[string]string{}, "episodes/11/restart-ok.mcap", 512)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if prepared.session == nil || prepared.session.LogicalUploadID != "logical-new" {
+		t.Errorf("expected new session with logical-new, got %+v", prepared.session)
+	}
+	if prepared.restartCount != 1 {
+		t.Errorf("restartCount = %d, want 1", prepared.restartCount)
+	}
+
+	// New state file must be written.
+	newStateFile := filepath.Join(activeDir, "logical-new.json")
+	if _, statErr := os.Stat(newStateFile); statErr != nil {
+		t.Errorf("new state file should exist after successful restart: %v", statErr)
+	}
+
+	// Old state file must be removed.
+	if _, statErr := os.Stat(oldStateFile); !os.IsNotExist(statErr) {
+		t.Error("old state file should be removed after successful restart")
+	}
+}
+
 // TestDecideResumeAction_FileSizeMismatch_ReturnsPermanentFailure verifies that when the
 // persisted file size differs from the current size, decideResumeAction returns
 // resumePermanentFailure with zero ossCompletePartCount, without contacting the gateway.
@@ -387,6 +498,8 @@ type fakeGateway struct {
 	getUploadRecoveryFn func(ctx context.Context, logicalUploadID string) (*UploadRecoveryInfo, error)
 	// reissueCredentialsFn is called by ReissueUploadCredentials; must be set for tests that reach it.
 	reissueCredentialsFn func(ctx context.Context, uploadID string) (*UploadSession, error)
+	// createLogicalUploadFn is called by CreateLogicalUpload; must be set for tests that reach it.
+	createLogicalUploadFn func(ctx context.Context, clientHints map[string]string, restartFromUploadID string) (*UploadSession, error)
 }
 
 func (f *fakeGateway) GetUploadRecovery(ctx context.Context, logicalUploadID string) (*UploadRecoveryInfo, error) {
@@ -403,8 +516,11 @@ func (f *fakeGateway) ReissueUploadCredentials(ctx context.Context, uploadID str
 	return f.reissueCredentialsFn(ctx, uploadID)
 }
 
-func (f *fakeGateway) CreateLogicalUpload(_ context.Context, _ map[string]string, _ string) (*UploadSession, error) {
-	panic("fakeGateway.CreateLogicalUpload called unexpectedly")
+func (f *fakeGateway) CreateLogicalUpload(ctx context.Context, clientHints map[string]string, restartFromUploadID string) (*UploadSession, error) {
+	if f.createLogicalUploadFn == nil {
+		panic("fakeGateway.CreateLogicalUpload called unexpectedly")
+	}
+	return f.createLogicalUploadFn(ctx, clientHints, restartFromUploadID)
 }
 
 func (f *fakeGateway) AbortUpload(_ context.Context, _ string, _ string) error {
