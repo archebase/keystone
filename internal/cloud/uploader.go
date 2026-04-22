@@ -483,7 +483,7 @@ func (u *Uploader) persistActiveState(state *persistedUploadState) error {
 		return nil
 	}
 	dir := u.activeStateDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // G301: state dir contains no secrets; 0750 satisfies gosec
 		return fmt.Errorf("mkdir active state dir: %w", err)
 	}
 	data, err := json.Marshal(state)
@@ -529,7 +529,7 @@ func (u *Uploader) findPersistedStateByKey(mcapKey string) (*persistedUploadStat
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name())) //nolint:gosec // G304: path is built from os.ReadDir results within a controlled state directory
 		if err != nil {
 			logger.Printf("[CLOUD-UPLOAD] Warning: failed to read state file %s: %v", entry.Name(), err)
 			continue
