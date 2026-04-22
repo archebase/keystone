@@ -164,7 +164,9 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 		return nil, fmt.Errorf("prepare upload session: %w", err)
 	}
 
-	// Persist state (initial snapshot without multipart_upload_id)
+	// Persist state (initial snapshot without multipart_upload_id).
+	// Mirrors Rust SDK: persistence failure is not silently ignored — without a persisted
+	// state the upload cannot be recovered after a process restart.
 	if !persistedActiveState {
 		if err := u.persistActiveState(&persistedUploadState{
 			Version:         1,
@@ -178,7 +180,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 			FileSize:        fileSize,
 			UpdatedAt:       time.Now(),
 		}); err != nil {
-			logger.Printf("[CLOUD-UPLOAD] Warning: failed to persist initial state: %v", err)
+			return nil, fmt.Errorf("persist initial upload state: %w", err)
 		}
 	}
 
@@ -331,11 +333,8 @@ func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploa
 			if err != nil {
 				return resumePermanentFailure, nil, fmt.Errorf("reconcile remote parts: %w", err)
 			}
-			switch outcome {
-			case reconcileRestart:
+			if outcome == reconcileRestart {
 				return resumeRestart, nil, nil
-			case reconcileCompleted:
-				return resumeContinue, session, nil
 			}
 		}
 
@@ -363,16 +362,18 @@ func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploa
 }
 
 // reconcileRemoteParts verifies that a multipart upload still exists on OSS.
-// Returns reconcileRestart if the multipart upload ID is stale (404), reconcileContinue otherwise.
-// Non-404 OSS errors (network failures, auth errors, etc.) are returned as errors so the caller
-// can distinguish transient failures from a genuinely stale multipart upload ID.
+// Returns reconcileRestart if the multipart upload ID is stale (HTTP 404).
+// Returns reconcileContinue if the multipart upload is still active.
+// Non-404 OSS errors (network failures, auth errors, etc.) are returned as errors so that
+// callers can distinguish transient failures from a genuinely stale multipart upload ID;
+// the returned reconcileOutcome is undefined when err != nil.
 func (u *Uploader) reconcileRemoteParts(ctx context.Context, session *UploadSession, multipartUploadID string) (reconcileOutcome, error) {
 	err := u.oss.ListParts(ctx, session, multipartUploadID)
 	if err != nil {
 		if errors.Is(err, ErrOSSNotFound) {
 			return reconcileRestart, nil
 		}
-		return reconcileRestart, fmt.Errorf("list parts: %w", err)
+		return reconcileContinue, fmt.Errorf("list parts: %w", err)
 	}
 	return reconcileContinue, nil
 }
@@ -505,14 +506,19 @@ func (u *Uploader) persistActiveState(state *persistedUploadState) error {
 	return nil
 }
 
-// cleanupPersistedState removes the active state file for the given logical upload ID.
+// cleanupPersistedState removes state files for the given logical upload ID from the
+// active/, terminal/, and completed/ subdirectories. This mirrors the Rust SDK's
+// cleanup_persisted_state which removes from all three directories.
 func (u *Uploader) cleanupPersistedState(logicalUploadID string) {
 	if u.cfg.PersistRootDir == "" {
 		return
 	}
-	path := filepath.Join(u.activeStateDir(), logicalUploadID+".json")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		logger.Printf("[CLOUD-UPLOAD] Warning: failed to cleanup state file %s: %v", path, err)
+	base := filepath.Join(u.cfg.PersistRootDir, "data-gateway-client", "uploads")
+	for _, subdir := range []string{"active", "terminal", "completed"} {
+		path := filepath.Join(base, subdir, logicalUploadID+".json")
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			logger.Printf("[CLOUD-UPLOAD] Warning: failed to cleanup state file %s: %v", path, err)
+		}
 	}
 }
 

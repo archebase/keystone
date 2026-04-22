@@ -43,7 +43,7 @@ func newTestUploader(persistRootDir string) *Uploader {
 	}
 }
 
-// TestPersistAndCleanupActiveState verifies round-trip write + remove.
+// TestPersistAndCleanupActiveState verifies round-trip write + remove from active/.
 // Mirrors Rust abort_upload_cleans_persisted_state.
 func TestPersistAndCleanupActiveState(t *testing.T) {
 	dir := t.TempDir()
@@ -74,6 +74,37 @@ func TestPersistAndCleanupActiveState(t *testing.T) {
 	u.cleanupPersistedState("logical-persist-test")
 	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
 		t.Fatal("state file should be removed after cleanup")
+	}
+}
+
+// TestCleanupPersistedState_ClearsAllSubdirs verifies that cleanupPersistedState removes
+// state files from active/, terminal/, and completed/ directories.
+// Mirrors Rust SDK cleanup_persisted_state which iterates all three subdirectories.
+func TestCleanupPersistedState_ClearsAllSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	u := newTestUploader(dir)
+	logicalID := "logical-multi-dir"
+	base := filepath.Join(dir, "data-gateway-client", "uploads")
+
+	// Create a state file in each of the three subdirectories.
+	for _, subdir := range []string{"active", "terminal", "completed"} {
+		d := filepath.Join(base, subdir)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+		p := filepath.Join(d, logicalID+".json")
+		if err := os.WriteFile(p, []byte(`{}`), 0o644); err != nil { //nolint:gosec // test fixture
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	u.cleanupPersistedState(logicalID)
+
+	for _, subdir := range []string{"active", "terminal", "completed"} {
+		p := filepath.Join(base, subdir, logicalID+".json")
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("state file in %s/ should be removed after cleanup", subdir)
+		}
 	}
 }
 
