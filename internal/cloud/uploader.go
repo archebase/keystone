@@ -363,27 +363,31 @@ func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploa
 }
 
 // reconcileRemoteParts verifies that a multipart upload still exists on OSS.
-// Returns reconcileRestart if the multipart upload ID is stale, reconcileContinue otherwise.
+// Returns reconcileRestart if the multipart upload ID is stale (404), reconcileContinue otherwise.
+// Non-404 OSS errors (network failures, auth errors, etc.) are returned as errors so the caller
+// can distinguish transient failures from a genuinely stale multipart upload ID.
 func (u *Uploader) reconcileRemoteParts(ctx context.Context, session *UploadSession, multipartUploadID string) (reconcileOutcome, error) {
 	err := u.oss.ListParts(ctx, session, multipartUploadID)
 	if err != nil {
 		if errors.Is(err, ErrOSSNotFound) {
 			return reconcileRestart, nil
 		}
-		return reconcileRestart, nil // treat unknown error as restart
+		return reconcileRestart, fmt.Errorf("list parts: %w", err)
 	}
 	return reconcileContinue, nil
 }
 
 // reconcileCompletedObject checks whether the final object already exists on OSS with the
-// expected ETag. Returns reconcileCompleted on a match, reconcileRestart otherwise.
+// expected ETag. Returns reconcileCompleted on a match, reconcileRestart on a 404 or ETag
+// mismatch. Non-404 OSS errors are returned as errors so the caller can distinguish transient
+// failures from a genuinely missing object.
 func (u *Uploader) reconcileCompletedObject(ctx context.Context, session *UploadSession, expectedETag string) (reconcileOutcome, error) {
 	etag, err := u.oss.HeadObjectETag(ctx, session)
 	if err != nil {
 		if errors.Is(err, ErrOSSNotFound) {
 			return reconcileRestart, nil
 		}
-		return reconcileRestart, nil
+		return reconcileRestart, fmt.Errorf("head object: %w", err)
 	}
 	if etag == expectedETag {
 		return reconcileCompleted, nil

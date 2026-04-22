@@ -5,6 +5,7 @@
 package cloud
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -212,7 +213,7 @@ func TestPrepareUploadSession_PermanentFailure_FileSizeMismatch(t *testing.T) {
 
 	// Provide a different file size — no gateway needed, should fail at size check
 	_, _, _, err := u.prepareUploadSession(
-		nil, // context unused in this code path
+		context.Background(),
 		map[string]string{},
 		"episodes/1/mismatch.mcap",
 		512, // actual size differs
@@ -242,7 +243,7 @@ func TestPrepareUploadSession_PermanentFailure_CleanupOnSizeMismatch(t *testing.
 	})
 
 	_, _, _, err := u.prepareUploadSession(
-		nil,
+		context.Background(),
 		map[string]string{},
 		"episodes/2/cleanup.mcap",
 		512, // different from persisted
