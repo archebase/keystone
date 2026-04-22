@@ -686,14 +686,83 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 		return
 	}
 
+	// Determine which workstation denormalized columns need syncing.
+	needsDeviceIDSync := req.DeviceID != nil && strings.TrimSpace(*req.DeviceID) != ""
+	needsRobotTypeSync := req.RobotTypeID != nil && *req.RobotTypeID != ""
+	needsFactorySync := req.FactoryID != nil && *req.FactoryID != ""
+
 	updates = append(updates, "updated_at = ?")
 	args = append(args, time.Now().UTC())
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
-	_, err = h.db.Exec(query, args...)
+	query := fmt.Sprintf("UPDATE robots SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", ")) //nolint:gosec // columns are hardcoded literals, not user input
+
+	tx, err := h.db.Begin()
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to begin transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	result, err := tx.Exec(query, args...)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to update robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to get rows affected: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+
+	// Sync denormalized columns in workstations if device_id, robot_type_id, or factory_id changed.
+	if needsDeviceIDSync || needsRobotTypeSync || needsFactorySync {
+		wsUpdates := []string{}
+		wsArgs := []interface{}{}
+
+		if needsDeviceIDSync {
+			wsUpdates = append(wsUpdates, "robot_serial = ?")
+			wsArgs = append(wsArgs, strings.TrimSpace(*req.DeviceID))
+		}
+		if needsRobotTypeSync {
+			// Look up the robot_type name to keep robot_name in sync.
+			parsedRobotTypeID, _ := strconv.ParseInt(*req.RobotTypeID, 10, 64)
+			var rtName string
+			if err := tx.QueryRow("SELECT name FROM robot_types WHERE id = ? AND deleted_at IS NULL", parsedRobotTypeID).Scan(&rtName); err != nil {
+				logger.Printf("[ROBOT] Failed to fetch robot_type name for workstation sync: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+				return
+			}
+			wsUpdates = append(wsUpdates, "robot_name = ?")
+			wsArgs = append(wsArgs, rtName)
+		}
+		if needsFactorySync {
+			parsedFactoryID, _ := strconv.ParseInt(*req.FactoryID, 10, 64)
+			wsUpdates = append(wsUpdates, "factory_id = ?")
+			wsArgs = append(wsArgs, parsedFactoryID)
+		}
+
+		wsArgs = append(wsArgs, id)
+		wsQuery := fmt.Sprintf( //nolint:gosec // columns are hardcoded literals, not user input
+			"UPDATE workstations SET %s WHERE robot_id = ? AND deleted_at IS NULL",
+			strings.Join(wsUpdates, ", "),
+		)
+		if _, err := tx.Exec(wsQuery, wsArgs...); err != nil {
+			logger.Printf("[ROBOT] Failed to sync workstation denormalized columns: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[ROBOT] Failed to commit transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
 		return
 	}
