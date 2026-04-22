@@ -456,14 +456,28 @@ func (h *RobotTypeHandler) UpdateRobotType(c *gin.Context) {
 		return
 	}
 
+	// Capture the new name before appending updated_at so we know whether to fan-out.
+	newName := ""
+	if req.Name != nil {
+		newName = strings.TrimSpace(*req.Name)
+	}
+
 	now := time.Now().UTC()
 	updates = append(updates, "updated_at = ?")
 	args = append(args, now)
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE robot_types SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
+	query := fmt.Sprintf("UPDATE robot_types SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", ")) //nolint:gosec // columns are hardcoded literals, not user input
 
-	result, err := h.db.Exec(query, args...)
+	tx, err := h.db.Begin()
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to begin transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot type"})
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	result, err := tx.Exec(query, args...)
 	if err != nil {
 		logger.Printf("[ROBOT] Failed to update robot type: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot type"})
@@ -473,6 +487,27 @@ func (h *RobotTypeHandler) UpdateRobotType(c *gin.Context) {
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "robot type not found"})
+		return
+	}
+
+	// Fan-out: keep workstations.robot_name in sync when robot_types.name changes.
+	if newName != "" {
+		if _, err := tx.Exec(
+			`UPDATE workstations SET robot_name = ?
+			 WHERE robot_id IN (
+			   SELECT id FROM robots WHERE robot_type_id = ? AND deleted_at IS NULL
+			 ) AND deleted_at IS NULL`,
+			newName, id,
+		); err != nil {
+			logger.Printf("[ROBOT] Failed to sync workstation robot_name: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot type"})
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[ROBOT] Failed to commit transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot type"})
 		return
 	}
 

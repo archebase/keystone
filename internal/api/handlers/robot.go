@@ -705,9 +705,20 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	if _, err = tx.Exec(query, args...); err != nil {
+	result, err := tx.Exec(query, args...)
+	if err != nil {
 		logger.Printf("[ROBOT] Failed to update robot: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to get rows affected: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
 		return
 	}
 
