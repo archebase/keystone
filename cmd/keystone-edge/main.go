@@ -148,7 +148,7 @@ func main() {
 			RequestTimeout:  time.Duration(cfg.Sync.RequestTimeoutSec) * time.Second,
 			OSSTimeout:      time.Duration(cfg.Sync.OSSTimeoutSec) * time.Second,
 			PersistRootDir:  cfg.Sync.PersistRootDir,
-			MaxRestartCount: uint32(cfg.Sync.MaxRestartCount), // non-negative guaranteed by Validate()
+			MaxRestartCount: uint32(cfg.Sync.MaxRestartCount), //nolint:gosec // non-negative guaranteed by config.Validate()
 		})
 
 		syncWorker = services.NewSyncWorker(db.DB, uploader, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
