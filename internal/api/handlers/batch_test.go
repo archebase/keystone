@@ -457,6 +457,7 @@ func newTestBatchHandlerDB(t *testing.T) *sqlx.DB {
 			batch_id TEXT NOT NULL,
 			order_id INTEGER NOT NULL,
 			workstation_id INTEGER NOT NULL,
+			organization_id INTEGER NOT NULL DEFAULT 0,
 			name TEXT,
 			notes TEXT,
 			status TEXT NOT NULL,
@@ -492,11 +493,20 @@ func newTestBatchHandlerDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE orders (
 			id INTEGER PRIMARY KEY,
 			target_count INTEGER NOT NULL,
+			organization_id INTEGER NOT NULL DEFAULT 0,
+			scene_id INTEGER,
+			deleted_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE organizations (
+			id INTEGER PRIMARY KEY,
+			factory_id INTEGER NOT NULL DEFAULT 0,
+			name TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE workstations (
 			id INTEGER PRIMARY KEY,
 			factory_id INTEGER NOT NULL,
+			organization_id INTEGER NOT NULL DEFAULT 0,
 			status TEXT,
 			deleted_at TIMESTAMP NULL
 		)`,
@@ -534,9 +544,13 @@ func newTestBatchHandlerDB(t *testing.T) *sqlx.DB {
 func seedBatchListFixtures(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	now := time.Now().UTC()
+	// Insert a shared organization so the LEFT JOIN in ListBatches resolves correctly.
+	if _, err := db.Exec(`INSERT OR IGNORE INTO organizations (id, factory_id, name) VALUES (60, 30, 'Test Org')`); err != nil {
+		t.Fatalf("seed organization failed: %v", err)
+	}
 	stmts := []string{
-		`INSERT INTO batches (id, batch_id, order_id, workstation_id, name, status, episode_count, created_at, updated_at) VALUES (1, 'B1', 10, 20, 'A', 'active', 0, ?, ?)`,
-		`INSERT INTO batches (id, batch_id, order_id, workstation_id, name, status, episode_count, created_at, updated_at) VALUES (2, 'B2', 11, 21, 'B', 'pending', 0, ?, ?)`,
+		`INSERT INTO batches (id, batch_id, order_id, workstation_id, organization_id, name, status, episode_count, created_at, updated_at) VALUES (1, 'B1', 10, 20, 60, 'A', 'active', 0, ?, ?)`,
+		`INSERT INTO batches (id, batch_id, order_id, workstation_id, organization_id, name, status, episode_count, created_at, updated_at) VALUES (2, 'B2', 11, 21, 60, 'B', 'pending', 0, ?, ?)`,
 		`INSERT INTO tasks (task_id, batch_id, order_id, sop_id, workstation_id, status, created_at, updated_at) VALUES ('T1', 1, 10, 40, 20, 'completed', ?, ?)`,
 		`INSERT INTO tasks (task_id, batch_id, order_id, sop_id, workstation_id, status, created_at, updated_at) VALUES ('T2', 1, 10, 41, 20, 'failed', ?, ?)`,
 	}
@@ -557,8 +571,8 @@ func seedBatchListFixturesForPagination(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	now := time.Now().UTC()
 	stmts := []string{
-		`INSERT INTO batches (id, batch_id, order_id, workstation_id, name, status, episode_count, created_at, updated_at) VALUES (3, 'B3', 12, 22, 'C', 'pending', 0, ?, ?)`,
-		`INSERT INTO batches (id, batch_id, order_id, workstation_id, name, status, episode_count, created_at, updated_at) VALUES (4, 'B4', 13, 23, 'D', 'pending', 0, ?, ?)`,
+		`INSERT INTO batches (id, batch_id, order_id, workstation_id, organization_id, name, status, episode_count, created_at, updated_at) VALUES (3, 'B3', 12, 22, 60, 'C', 'pending', 0, ?, ?)`,
+		`INSERT INTO batches (id, batch_id, order_id, workstation_id, organization_id, name, status, episode_count, created_at, updated_at) VALUES (4, 'B4', 13, 23, 60, 'D', 'pending', 0, ?, ?)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt, now, now); err != nil {
@@ -570,9 +584,10 @@ func seedBatchListFixturesForPagination(t *testing.T, db *sqlx.DB) {
 func seedBatchCreateFixtures(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	stmts := []string{
-		`INSERT INTO orders (id, target_count) VALUES (10, 10)`,
+		`INSERT INTO organizations (id, factory_id, name) VALUES (60, 30, 'Test Org')`,
+		`INSERT INTO orders (id, target_count, organization_id) VALUES (10, 10, 60)`,
 		`INSERT INTO factories (id) VALUES (30)`,
-		`INSERT INTO workstations (id, factory_id, status) VALUES (20, 30, 'idle')`,
+		`INSERT INTO workstations (id, factory_id, organization_id, status) VALUES (20, 30, 60, 'idle')`,
 		`INSERT INTO sops (id) VALUES (40)`,
 		`INSERT INTO scenes (id, name) VALUES (70, 'scene-a')`,
 		`INSERT INTO subscenes (id, scene_id, name, initial_scene_layout) VALUES (50, 70, 'sub-a', '{}')`,

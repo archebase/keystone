@@ -532,18 +532,30 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		}
 	}
 
-	countQuery := "SELECT COUNT(*) FROM workstations WHERE deleted_at IS NULL"
+	countQuery := `
+		SELECT COUNT(*)
+		FROM workstations ws
+		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
+		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
+		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		WHERE ws.deleted_at IS NULL
+	`
 	countArgs := []any{}
 	if hasFactory {
-		countQuery += " AND factory_id = ?"
+		countQuery += " AND ws.factory_id = ?"
 		countArgs = append(countArgs, factoryID)
 	}
 	if hasOrg {
-		countQuery += " AND organization_id = ?"
+		countQuery += " AND ws.organization_id = ?"
 		countArgs = append(countArgs, orgID)
 	}
+	if hasRobotType {
+		countQuery += " AND r.robot_type_id = ?"
+		countArgs = append(countArgs, robotTypeID)
+	}
 	if hasStatus {
-		countQuery += " AND status = ?"
+		countQuery += " AND ws.status = ?"
 		countArgs = append(countArgs, statusStr)
 	}
 	var total int
@@ -1050,13 +1062,16 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	// Fetch the updated station for response
 	var station stationListRow
 	err = h.db.Get(&station, `
-		SELECT 
+		SELECT
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			r.robot_type_id, rt.model AS robot_type_model,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
 			ws.factory_id, f.name AS factory_name,
 			ws.organization_id, o.name AS organization_name,
 			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
+		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
 		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		WHERE ws.id = ? AND ws.deleted_at IS NULL
@@ -1094,13 +1109,16 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 
 	var station stationListRow
 	err = h.db.Get(&station, `
-		SELECT 
+		SELECT
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			r.robot_type_id, rt.model AS robot_type_model,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
 			ws.factory_id, f.name AS factory_name,
 			ws.organization_id, o.name AS organization_name,
 			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
+		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
 		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		WHERE ws.id = ? AND ws.deleted_at IS NULL

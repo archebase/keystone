@@ -1206,13 +1206,20 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 		return
 	}
 
-	// Lock order for quota check
-	var targetCount int
-	if err := tx.Get(&targetCount, "SELECT target_count FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", batch.OrderID); err != nil {
+	// Lock order for quota check and read organization_id (consistent with CreateBatch).
+	type orderQuotaRow struct {
+		TargetCount    int   `db:"target_count"`
+		OrganizationID int64 `db:"organization_id"`
+	}
+	var orderQuota orderQuotaRow
+	if err := tx.Get(&orderQuota, "SELECT target_count, organization_id FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", batch.OrderID); err != nil {
 		logger.Printf("[BATCH] Failed to lock order: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
 	}
+	targetCount := orderQuota.TargetCount
+	// organization_id is derived from the order (same as CreateBatch).
+	organizationID := orderQuota.OrganizationID
 
 	// Count current order-level completed count for quota check (completed-only).
 	var orderCompletedCount int
@@ -1224,18 +1231,15 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 
 	// Validate workstation for new tasks
 	type wsRow struct {
-		ID             int64 `db:"id"`
-		FactoryID      int64 `db:"factory_id"`
-		OrganizationID int64 `db:"organization_id"`
+		ID        int64 `db:"id"`
+		FactoryID int64 `db:"factory_id"`
 	}
 	var ws wsRow
-	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", batch.WorkstationID); err != nil {
+	if err := tx.Get(&ws, "SELECT id, factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", batch.WorkstationID); err != nil {
 		logger.Printf("[BATCH] Failed to get workstation: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
 	}
-	// organization_id is stored directly on the workstation row (denormalized from data_collectors).
-	organizationID := ws.OrganizationID
 
 	// Get batch name for denormalization
 	var batchName string

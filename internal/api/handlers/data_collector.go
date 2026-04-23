@@ -680,9 +680,10 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 	// Fetch the updated data collector
 	var dc dataCollectorRow
 	err = h.db.Get(&dc, `
-		SELECT 
+		SELECT
 			dc.id,
 			dc.organization_id,
+			o.name AS organization_name,
 			dc.name,
 			dc.operator_id,
 			dc.email,
@@ -692,6 +693,7 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
+		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`, id)
 	if err != nil {
