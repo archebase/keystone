@@ -554,15 +554,24 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 		return
 	}
 
-	// Check if organization exists
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", id)
+	// All existence checks and the soft-delete run inside a single transaction so that
+	// no concurrent INSERT of a data_collector/inspector/order can slip in between the
+	// COUNT queries and the UPDATE (TOCTOU prevention).
+	tx, err := h.db.Beginx()
 	if err != nil {
-		logger.Printf("[ORGANIZATION] Failed to check organization existence: %v", err)
+		logger.Printf("[ORGANIZATION] Failed to begin transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
 		return
 	}
+	defer tx.Rollback() //nolint:errcheck
 
+	// Lock the organization row for the duration of the transaction.
+	var exists bool
+	if err = tx.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL FOR UPDATE)", id); err != nil {
+		logger.Printf("[ORGANIZATION] Failed to lock organization row: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
+		return
+	}
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "organization not found"})
 		return
@@ -570,7 +579,7 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 
 	// Block deletion if the organization still has active data_collectors, inspectors, or orders.
 	var dcCount int
-	if err = h.db.Get(&dcCount, "SELECT COUNT(*) FROM data_collectors WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
+	if err = tx.Get(&dcCount, "SELECT COUNT(*) FROM data_collectors WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to check data_collector count: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
 		return
@@ -581,7 +590,7 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 	}
 
 	var inspectorCount int
-	if err = h.db.Get(&inspectorCount, "SELECT COUNT(*) FROM inspectors WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
+	if err = tx.Get(&inspectorCount, "SELECT COUNT(*) FROM inspectors WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to check inspector count: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
 		return
@@ -592,7 +601,7 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 	}
 
 	var orderCount int
-	if err = h.db.Get(&orderCount, "SELECT COUNT(*) FROM orders WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
+	if err = tx.Get(&orderCount, "SELECT COUNT(*) FROM orders WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to check order count: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
 		return
@@ -604,10 +613,15 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 
 	now := time.Now().UTC()
 
-	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE organizations SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id)
-	if err != nil {
+	// Perform soft delete by setting deleted_at.
+	if _, err = tx.Exec("UPDATE organizations SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to delete organization: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		logger.Printf("[ORGANIZATION] Failed to commit transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
 		return
 	}
