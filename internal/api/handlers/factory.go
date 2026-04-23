@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -38,6 +39,7 @@ type FactoryResponse struct {
 	Timezone   string      `json:"timezone,omitempty"`
 	Settings   interface{} `json:"settings"`
 	SceneCount int         `json:"sceneCount"`
+	OrgCount   int         `json:"orgCount"`
 	CreatedAt  string      `json:"created_at,omitempty"`
 	UpdatedAt  string      `json:"updated_at,omitempty"`
 }
@@ -48,9 +50,9 @@ type FactoryListResponse struct {
 }
 
 // CreateFactoryRequest represents the request body for creating a factory.
+// The server assigns a unique slug (fac- plus 10 random [a-z0-9] characters).
 type CreateFactoryRequest struct {
 	Name     string      `json:"name"`
-	Slug     string      `json:"slug"`
 	Location string      `json:"location,omitempty"`
 	Timezone string      `json:"timezone,omitempty"`
 	Settings interface{} `json:"settings,omitempty"`
@@ -84,6 +86,7 @@ type factoryRow struct {
 	Timezone   sql.NullString `db:"timezone"`
 	Settings   sql.NullString `db:"settings"`
 	SceneCount int            `db:"scene_count"`
+	OrgCount   int            `db:"org_count"`
 	CreatedAt  sql.NullTime   `db:"created_at"`
 	UpdatedAt  sql.NullTime   `db:"updated_at"`
 }
@@ -93,6 +96,44 @@ func factorySettingsFromDB(ns sql.NullString) interface{} {
 		return nil
 	}
 	return json.RawMessage(ns.String)
+}
+
+const (
+	factorySlugPrefix   = "fac-"
+	factorySlugRandLen  = 10
+	factorySlugRetries  = 20
+	factorySlugAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+)
+
+func randomFactorySlugSuffix() (string, error) {
+	raw := make([]byte, factorySlugRandLen)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	out := make([]byte, factorySlugRandLen)
+	for i := range out {
+		out[i] = factorySlugAlphabet[int(raw[i])%len(factorySlugAlphabet)]
+	}
+	return string(out), nil
+}
+
+func (h *FactoryHandler) allocateFactorySlug() (string, error) {
+	for i := 0; i < factorySlugRetries; i++ {
+		suffix, err := randomFactorySlugSuffix()
+		if err != nil {
+			return "", err
+		}
+		slug := factorySlugPrefix + suffix
+		var exists bool
+		if err := h.db.Get(&exists,
+			"SELECT EXISTS(SELECT 1 FROM factories WHERE slug = ? AND deleted_at IS NULL)", slug); err != nil {
+			return "", err
+		}
+		if !exists {
+			return slug, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate unique factory slug")
 }
 
 // ListFactories handles factory listing requests with filtering and pagination.
@@ -132,6 +173,7 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 			timezone,
 			settings,
 			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
+			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
 			created_at,
 			updated_at
 		FROM factories
@@ -169,7 +211,7 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 // CreateFactory handles factory creation requests.
 //
 // @Summary      Create factory
-// @Description  Creates a new factory
+// @Description  Creates a new factory. The server assigns a unique fac- prefix plus 10 random characters as slug. Factory names must be unique among non-deleted rows.
 // @Tags         factories
 // @Accept       json
 // @Produce      json
@@ -186,7 +228,6 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 	}
 
 	req.Name = strings.TrimSpace(req.Name)
-	req.Slug = strings.TrimSpace(req.Slug)
 	req.Location = strings.TrimSpace(req.Location)
 	req.Timezone = strings.TrimSpace(req.Timezone)
 
@@ -195,15 +236,22 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 		return
 	}
 
-	if req.Slug == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug is required"})
+	var nameTaken bool
+	if err := h.db.Get(&nameTaken,
+		"SELECT EXISTS(SELECT 1 FROM factories WHERE name = ? AND deleted_at IS NULL)", req.Name); err != nil {
+		logger.Printf("[FACTORY] Failed to check factory name: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create factory"})
+		return
+	}
+	if nameTaken {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "factory name already exists"})
 		return
 	}
 
-	// Check if slug already exists
-	var exists bool
-	if err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE slug = ? AND deleted_at IS NULL)", req.Slug); err == nil && exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists"})
+	slug, err := h.allocateFactorySlug()
+	if err != nil {
+		logger.Printf("[FACTORY] Failed to allocate slug: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create factory"})
 		return
 	}
 
@@ -246,7 +294,7 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 			updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		req.Name,
-		req.Slug,
+		slug,
 		locationStr,
 		timezoneStr,
 		settingsStr,
@@ -269,7 +317,7 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 	c.JSON(http.StatusCreated, CreateFactoryResponse{
 		ID:        fmt.Sprintf("%d", id),
 		Name:      req.Name,
-		Slug:      req.Slug,
+		Slug:      slug,
 		Location:  req.Location,
 		Timezone:  timezone,
 		CreatedAt: now.Format(time.RFC3339),
@@ -301,6 +349,7 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 	if err := h.db.Get(&f, `
 		SELECT id, name, slug, location, timezone, settings,
 			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
+			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
 			created_at, updated_at
 		FROM factories
 		WHERE id = ? AND deleted_at IS NULL
@@ -318,9 +367,9 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 }
 
 // UpdateFactoryRequest represents the request body for updating a factory.
+// Factory slug is immutable after creation; a slug field in JSON, if sent, is ignored.
 type UpdateFactoryRequest struct {
 	Name     *string                   `json:"name,omitempty"`
-	Slug     *string                   `json:"slug,omitempty"`
 	Location *string                   `json:"location,omitempty"`
 	Timezone *string                   `json:"timezone,omitempty"`
 	Settings organizationSettingsPatch `json:"settings,omitempty"`
@@ -329,7 +378,7 @@ type UpdateFactoryRequest struct {
 // UpdateFactory handles updating a factory.
 //
 // @Summary      Update factory
-// @Description  Updates an existing factory
+// @Description  Updates an existing factory. Factory slug cannot be changed after creation.
 // @Tags         factories
 // @Accept       json
 // @Produce      json
@@ -374,21 +423,19 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name != "" {
-			updates = append(updates, "name = ?")
-			args = append(args, name)
-		}
-	}
-
-	if req.Slug != nil {
-		slug := strings.TrimSpace(*req.Slug)
-		if slug != "" {
-			var exists bool
-			if err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE slug = ? AND id != ? AND deleted_at IS NULL)", slug, id); err == nil && exists {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists"})
+			var taken bool
+			if err := h.db.Get(&taken,
+				"SELECT EXISTS(SELECT 1 FROM factories WHERE name = ? AND id != ? AND deleted_at IS NULL)", name, id); err != nil {
+				logger.Printf("[FACTORY] Failed to check factory name: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update factory"})
 				return
 			}
-			updates = append(updates, "slug = ?")
-			args = append(args, slug)
+			if taken {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "factory name already exists"})
+				return
+			}
+			updates = append(updates, "name = ?")
+			args = append(args, name)
 		}
 	}
 
@@ -447,6 +494,7 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 	err = h.db.Get(&f, `
 		SELECT id, name, slug, location, timezone, settings,
 			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
+			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
 			created_at, updated_at
 		FROM factories WHERE id = ?`, id)
 	if err != nil {
@@ -559,6 +607,7 @@ func factoryResponseFromRow(f factoryRow) FactoryResponse {
 		Timezone:   timezone,
 		Settings:   factorySettingsFromDB(f.Settings),
 		SceneCount: f.SceneCount,
+		OrgCount:   f.OrgCount,
 		CreatedAt:  createdAt,
 		UpdatedAt:  updatedAt,
 	}
