@@ -7,6 +7,7 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -34,14 +35,12 @@ func NewStationHandler(db *sqlx.DB) *StationHandler {
 type CreateStationRequest struct {
 	RobotID         string      `json:"robot_id"`
 	DataCollectorID string      `json:"data_collector_id"`
-	Name            string      `json:"name"`
 	Metadata        interface{} `json:"metadata,omitempty"`
 }
 
 // UpdateStationRequest represents the request body for updating a station.
 // Optional fields use pointers / json.RawMessage so callers can omit keys.
 type UpdateStationRequest struct {
-	Name            *string         `json:"name,omitempty"`
 	RobotID         *string         `json:"robot_id,omitempty"`
 	DataCollectorID *string         `json:"data_collector_id,omitempty"`
 	Status          *string         `json:"status,omitempty"`
@@ -58,7 +57,9 @@ type StationResponse struct {
 	CollectorName       string      `json:"collector_name,omitempty"`
 	CollectorOperatorID string      `json:"collector_operator_id,omitempty"`
 	FactoryID           string      `json:"factory_id"`
+	FactoryName         string      `json:"factory_name,omitempty"`
 	OrganizationID      string      `json:"organization_id"`
+	OrganizationName    string      `json:"organization_name,omitempty"`
 	Status              string      `json:"status"`
 	Name                string      `json:"name"`
 	Metadata            interface{} `json:"metadata,omitempty"`
@@ -71,6 +72,44 @@ func stationMetadataFromDB(ns sql.NullString) interface{} {
 		return nil
 	}
 	return parseJSONRaw(ns.String)
+}
+
+const (
+	stationNamePrefix   = "ws-"
+	stationNameRandLen  = 8
+	stationNameRetries  = 20
+	stationNameAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+)
+
+func randomStationNameSuffix() (string, error) {
+	raw := make([]byte, stationNameRandLen)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	out := make([]byte, stationNameRandLen)
+	for i := range out {
+		out[i] = stationNameAlphabet[int(raw[i])%len(stationNameAlphabet)]
+	}
+	return string(out), nil
+}
+
+func (h *StationHandler) allocateStationName() (string, error) {
+	for i := 0; i < stationNameRetries; i++ {
+		suffix, err := randomStationNameSuffix()
+		if err != nil {
+			return "", err
+		}
+		name := stationNamePrefix + suffix
+		var exists bool
+		if err := h.db.Get(&exists,
+			"SELECT EXISTS(SELECT 1 FROM workstations WHERE name = ? AND deleted_at IS NULL)", name); err != nil {
+			return "", err
+		}
+		if !exists {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate unique station name")
 }
 
 // RegisterRoutes registers station related routes.
@@ -129,7 +168,6 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 
 	req.RobotID = strings.TrimSpace(req.RobotID)
 	req.DataCollectorID = strings.TrimSpace(req.DataCollectorID)
-	req.Name = strings.TrimSpace(req.Name)
 
 	// Validate required fields
 	if req.RobotID == "" {
@@ -274,6 +312,13 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		metadataStr = sql.NullString{String: string(metadataJSON), Valid: true}
 	}
 
+	stationName, err := h.allocateStationName()
+	if err != nil {
+		logger.Printf("[STATION] Failed to allocate station name: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
+		return
+	}
+
 	// Insert the workstation (station)
 	result, err := h.db.Exec(`
 		INSERT INTO workstations (
@@ -300,7 +345,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		dcInfo.OperatorID,     // collector_operator_id
 		robotInfo.FactoryID,   // factory_id from robot
 		dcInfo.OrganizationID, // organization_id from data_collector
-		req.Name,
+		stationName,
 		"offline",
 		metadataStr,
 		now,
@@ -323,18 +368,24 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 	if metadataStr.Valid {
 		metaOut = stationMetadataFromDB(metadataStr)
 	}
+	var factoryName string
+	_ = h.db.Get(&factoryName, "SELECT name FROM factories WHERE id = ? AND deleted_at IS NULL", robotInfo.FactoryID)
+	var orgName string
+	_ = h.db.Get(&orgName, "SELECT name FROM organizations WHERE id = ? AND deleted_at IS NULL", dcInfo.OrganizationID)
 
 	c.JSON(http.StatusCreated, StationResponse{
-		ID:              fmt.Sprintf("ws_%d", stationID),
-		RobotID:         fmt.Sprintf("%d", robotInfo.ID),
-		DataCollectorID: fmt.Sprintf("%d", dcInfo.ID),
-		FactoryID:       fmt.Sprintf("%d", robotInfo.FactoryID),
-		OrganizationID:  fmt.Sprintf("%d", dcInfo.OrganizationID),
-		Status:          "offline",
-		Name:            req.Name,
-		Metadata:        metaOut,
-		CreatedAt:       now.Format(time.RFC3339),
-		UpdatedAt:       now.Format(time.RFC3339),
+		ID:               fmt.Sprintf("%d", stationID),
+		RobotID:          fmt.Sprintf("%d", robotInfo.ID),
+		DataCollectorID:  fmt.Sprintf("%d", dcInfo.ID),
+		FactoryID:        fmt.Sprintf("%d", robotInfo.FactoryID),
+		FactoryName:      factoryName,
+		OrganizationID:   fmt.Sprintf("%d", dcInfo.OrganizationID),
+		OrganizationName: orgName,
+		Status:           "offline",
+		Name:             stationName,
+		Metadata:         metaOut,
+		CreatedAt:        now.Format(time.RFC3339),
+		UpdatedAt:        now.Format(time.RFC3339),
 	})
 }
 
@@ -348,12 +399,57 @@ type stationListRow struct {
 	CollectorName       string         `db:"collector_name"`
 	CollectorOperatorID string         `db:"collector_operator_id"`
 	FactoryID           int64          `db:"factory_id"`
+	FactoryName         sql.NullString `db:"factory_name"`
 	OrganizationID      int64          `db:"organization_id"`
+	OrganizationName    sql.NullString `db:"organization_name"`
 	Name                sql.NullString `db:"name"`
 	Status              string         `db:"status"`
 	Metadata            sql.NullString `db:"metadata"`
 	CreatedAt           sql.NullTime   `db:"created_at"`
 	UpdatedAt           sql.NullTime   `db:"updated_at"`
+}
+
+func stationResponseFromRow(s stationListRow) StationResponse {
+	name := ""
+	if s.Name.Valid {
+		name = s.Name.String
+	}
+	factoryName := ""
+	if s.FactoryName.Valid {
+		factoryName = s.FactoryName.String
+	}
+	orgName := ""
+	if s.OrganizationName.Valid {
+		orgName = s.OrganizationName.String
+	}
+	meta := stationMetadataFromDB(s.Metadata)
+	createdAt := ""
+	if s.CreatedAt.Valid {
+		createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	updatedAt := ""
+	if s.UpdatedAt.Valid {
+		updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
+
+	return StationResponse{
+		ID:                  fmt.Sprintf("%d", s.ID),
+		RobotID:             fmt.Sprintf("%d", s.RobotID),
+		RobotName:           s.RobotName,
+		RobotSerial:         s.RobotSerial,
+		DataCollectorID:     fmt.Sprintf("%d", s.DataCollectorID),
+		CollectorName:       s.CollectorName,
+		CollectorOperatorID: s.CollectorOperatorID,
+		FactoryID:           fmt.Sprintf("%d", s.FactoryID),
+		FactoryName:         factoryName,
+		OrganizationID:      fmt.Sprintf("%d", s.OrganizationID),
+		OrganizationName:    orgName,
+		Status:              s.Status,
+		Name:                name,
+		Metadata:            meta,
+		CreatedAt:           createdAt,
+		UpdatedAt:           updatedAt,
+	}
 }
 
 // ListStations handles listing all stations.
@@ -386,11 +482,15 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 	var stations []stationListRow
 	err = h.db.Select(&stations, `
 		SELECT 
-			id, robot_id, robot_name, robot_serial,
-			data_collector_id, collector_name, collector_operator_id,
-			factory_id, organization_id, name, status, metadata, created_at, updated_at
-		FROM workstations 
-		WHERE deleted_at IS NULL
+			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
+			ws.factory_id, f.name AS factory_name,
+			ws.organization_id, o.name AS organization_name,
+			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
+		FROM workstations ws
+		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
+		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		WHERE ws.deleted_at IS NULL
 		ORDER BY id DESC
 		LIMIT ? OFFSET ?
 	`, pagination.Limit, pagination.Offset)
@@ -628,7 +728,6 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		return
 	}
 
-	hasName := req.Name != nil
 	hasRobot := req.RobotID != nil
 	hasDC := req.DataCollectorID != nil
 	hasStatus := req.Status != nil
@@ -643,7 +742,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		return
 	}
 
-	if !hasName && !hasRobot && !hasDC && !hasStatus && !hasMeta {
+	if !hasRobot && !hasDC && !hasStatus && !hasMeta {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
 		return
 	}
@@ -763,16 +862,6 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	updates := []string{}
 	args := []interface{}{}
 
-	if hasName {
-		name := strings.TrimSpace(*req.Name)
-		if name == "" {
-			updates = append(updates, "name = NULL")
-		} else {
-			updates = append(updates, "name = ?")
-			args = append(args, name)
-		}
-	}
-
 	if hasRobot {
 		updates = append(updates, "robot_id = ?", "robot_name = ?", "robot_serial = ?", "factory_id = ?")
 		args = append(args, robotInfo.ID, robotType.Name, robotInfo.DeviceID, robotInfo.FactoryID)
@@ -863,11 +952,15 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	var station stationListRow
 	err = h.db.Get(&station, `
 		SELECT 
-			id, robot_id, robot_name, robot_serial,
-			data_collector_id, collector_name, collector_operator_id,
-			factory_id, organization_id, name, status, metadata, created_at, updated_at
-		FROM workstations 
-		WHERE id = ? AND deleted_at IS NULL
+			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
+			ws.factory_id, f.name AS factory_name,
+			ws.organization_id, o.name AS organization_name,
+			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
+		FROM workstations ws
+		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
+		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		WHERE ws.id = ? AND ws.deleted_at IS NULL
 	`, stationID)
 	if err != nil {
 		logger.Printf("[STATION] Failed to fetch updated station: %v", err)
@@ -903,11 +996,15 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 	var station stationListRow
 	err = h.db.Get(&station, `
 		SELECT 
-			id, robot_id, robot_name, robot_serial,
-			data_collector_id, collector_name, collector_operator_id,
-			factory_id, organization_id, name, status, metadata, created_at, updated_at
-		FROM workstations 
-		WHERE id = ? AND deleted_at IS NULL
+			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
+			ws.factory_id, f.name AS factory_name,
+			ws.organization_id, o.name AS organization_name,
+			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
+		FROM workstations ws
+		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
+		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		WHERE ws.id = ? AND ws.deleted_at IS NULL
 	`, stationID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -990,32 +1087,4 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
-}
-
-// stationResponseFromRow converts a stationListRow to a StationResponse.
-func stationResponseFromRow(s stationListRow) StationResponse {
-	createdAt := ""
-	if s.CreatedAt.Valid {
-		createdAt = s.CreatedAt.Time.UTC().Format(time.RFC3339)
-	}
-	updatedAt := ""
-	if s.UpdatedAt.Valid {
-		updatedAt = s.UpdatedAt.Time.UTC().Format(time.RFC3339)
-	}
-	return StationResponse{
-		ID:                  fmt.Sprintf("%d", s.ID),
-		RobotID:             fmt.Sprintf("%d", s.RobotID),
-		RobotName:           s.RobotName,
-		RobotSerial:         s.RobotSerial,
-		DataCollectorID:     fmt.Sprintf("%d", s.DataCollectorID),
-		CollectorName:       s.CollectorName,
-		CollectorOperatorID: s.CollectorOperatorID,
-		FactoryID:           fmt.Sprintf("%d", s.FactoryID),
-		OrganizationID:      fmt.Sprintf("%d", s.OrganizationID),
-		Status:              s.Status,
-		Name:                s.Name.String,
-		Metadata:            stationMetadataFromDB(s.Metadata),
-		CreatedAt:           createdAt,
-		UpdatedAt:           updatedAt,
-	}
 }

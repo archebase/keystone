@@ -34,16 +34,17 @@ func NewDataCollectorHandler(db *sqlx.DB) *DataCollectorHandler {
 
 // DataCollectorResponse represents a data collector in the response.
 type DataCollectorResponse struct {
-	ID             string      `json:"id"`
-	OrganizationID string      `json:"organization_id"`
-	Name           string      `json:"name"`
-	OperatorID     string      `json:"operator_id"`
-	Email          string      `json:"email,omitempty"`
-	Certification  string      `json:"certification,omitempty"`
-	Status         string      `json:"status"`
-	Metadata       interface{} `json:"metadata,omitempty"`
-	CreatedAt      string      `json:"created_at,omitempty"`
-	UpdatedAt      string      `json:"updated_at,omitempty"`
+	ID               string      `json:"id"`
+	OrganizationID   string      `json:"organization_id"`
+	OrganizationName string      `json:"organization_name,omitempty"`
+	Name             string      `json:"name"`
+	OperatorID       string      `json:"operator_id"`
+	Email            string      `json:"email,omitempty"`
+	Certification    string      `json:"certification,omitempty"`
+	Status           string      `json:"status"`
+	Metadata         interface{} `json:"metadata,omitempty"`
+	CreatedAt        string      `json:"created_at,omitempty"`
+	UpdatedAt        string      `json:"updated_at,omitempty"`
 }
 
 // DataCollectorListResponse represents the response for listing data collectors.
@@ -69,16 +70,17 @@ type CreateDataCollectorRequest struct {
 
 // CreateDataCollectorResponse represents the response for creating a data collector.
 type CreateDataCollectorResponse struct {
-	ID             string      `json:"id"`
-	OrganizationID string      `json:"organization_id"`
-	Name           string      `json:"name"`
-	OperatorID     string      `json:"operator_id"`
-	Email          string      `json:"email,omitempty"`
-	Certification  string      `json:"certification,omitempty"`
-	Status         string      `json:"status"`
-	Metadata       interface{} `json:"metadata,omitempty"`
-	CreatedAt      string      `json:"created_at"`
-	UpdatedAt      string      `json:"updated_at,omitempty"`
+	ID               string      `json:"id"`
+	OrganizationID   string      `json:"organization_id"`
+	OrganizationName string      `json:"organization_name,omitempty"`
+	Name             string      `json:"name"`
+	OperatorID       string      `json:"operator_id"`
+	Email            string      `json:"email,omitempty"`
+	Certification    string      `json:"certification,omitempty"`
+	Status           string      `json:"status"`
+	Metadata         interface{} `json:"metadata,omitempty"`
+	CreatedAt        string      `json:"created_at"`
+	UpdatedAt        string      `json:"updated_at,omitempty"`
 }
 
 // RegisterRoutes registers data collector related routes.
@@ -92,16 +94,17 @@ func (h *DataCollectorHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // dataCollectorRow represents a data collector in the database
 type dataCollectorRow struct {
-	ID             int64          `db:"id"`
-	OrganizationID int64          `db:"organization_id"`
-	Name           string         `db:"name"`
-	OperatorID     string         `db:"operator_id"`
-	Email          sql.NullString `db:"email"`
-	Certification  sql.NullString `db:"certification"`
-	Status         string         `db:"status"`
-	Metadata       sql.NullString `db:"metadata"`
-	CreatedAt      sql.NullTime   `db:"created_at"`
-	UpdatedAt      sql.NullTime   `db:"updated_at"`
+	ID               int64          `db:"id"`
+	OrganizationID   int64          `db:"organization_id"`
+	OrganizationName sql.NullString `db:"organization_name"`
+	Name             string         `db:"name"`
+	OperatorID       string         `db:"operator_id"`
+	Email            sql.NullString `db:"email"`
+	Certification    sql.NullString `db:"certification"`
+	Status           string         `db:"status"`
+	Metadata         sql.NullString `db:"metadata"`
+	CreatedAt        sql.NullTime   `db:"created_at"`
+	UpdatedAt        sql.NullTime   `db:"updated_at"`
 }
 
 func dcMetadataFromDB(ns sql.NullString) interface{} {
@@ -116,6 +119,10 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 	if dc.Email.Valid {
 		email = dc.Email.String
 	}
+	orgName := ""
+	if dc.OrganizationName.Valid {
+		orgName = dc.OrganizationName.String
+	}
 	certification := ""
 	if dc.Certification.Valid {
 		certification = dc.Certification.String
@@ -129,16 +136,17 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 		updatedAt = dc.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	return DataCollectorResponse{
-		ID:             fmt.Sprintf("%d", dc.ID),
-		OrganizationID: fmt.Sprintf("%d", dc.OrganizationID),
-		Name:           dc.Name,
-		OperatorID:     dc.OperatorID,
-		Email:          email,
-		Certification:  certification,
-		Status:         dc.Status,
-		Metadata:       dcMetadataFromDB(dc.Metadata),
-		CreatedAt:      createdAt,
-		UpdatedAt:      updatedAt,
+		ID:               fmt.Sprintf("%d", dc.ID),
+		OrganizationID:   fmt.Sprintf("%d", dc.OrganizationID),
+		OrganizationName: orgName,
+		Name:             dc.Name,
+		OperatorID:       dc.OperatorID,
+		Email:            email,
+		Certification:    certification,
+		Status:           dc.Status,
+		Metadata:         dcMetadataFromDB(dc.Metadata),
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
 	}
 }
 
@@ -197,6 +205,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 		SELECT 
 			dc.id,
 			dc.organization_id,
+			o.name AS organization_name,
 			dc.name,
 			dc.operator_id,
 			dc.email,
@@ -206,6 +215,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
+		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		` + whereClause + `
 		ORDER BY dc.id DESC
 		LIMIT ? OFFSET ?
@@ -382,6 +392,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		SELECT 
 			dc.id,
 			dc.organization_id,
+			o.name AS organization_name,
 			dc.name,
 			dc.operator_id,
 			dc.email,
@@ -391,6 +402,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
+		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`, id)
 	if err != nil {
@@ -428,6 +440,7 @@ func (h *DataCollectorHandler) GetDataCollector(c *gin.Context) {
 		SELECT 
 			dc.id,
 			dc.organization_id,
+			o.name AS organization_name,
 			dc.name,
 			dc.operator_id,
 			dc.email,
@@ -437,6 +450,7 @@ func (h *DataCollectorHandler) GetDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
+		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`
 

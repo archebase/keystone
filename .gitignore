@@ -48,6 +48,11 @@ __debug_bin
 *.log
 logs/
 
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
 # Temporary files
 tmp/
 temp/

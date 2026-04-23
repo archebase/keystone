@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -52,10 +53,10 @@ type OrganizationListResponse struct {
 }
 
 // CreateOrganizationRequest represents the request body for creating an organization.
+// The server assigns a unique slug (org- plus 10 random [a-z0-9] characters).
 type CreateOrganizationRequest struct {
 	FactoryID   string      `json:"factory_id"`
 	Name        string      `json:"name"`
-	Slug        string      `json:"slug"`
 	Description string      `json:"description,omitempty"`
 	Settings    interface{} `json:"settings,omitempty"`
 }
@@ -89,9 +90,9 @@ func (p *organizationSettingsPatch) UnmarshalJSON(data []byte) error {
 }
 
 // UpdateOrganizationRequest represents the request body for updating an organization.
+// Organization slug is immutable after creation.
 type UpdateOrganizationRequest struct {
 	Name        string                    `json:"name,omitempty"`
-	Slug        string                    `json:"slug,omitempty"`
 	Description *string                   `json:"description,omitempty"`
 	Settings    organizationSettingsPatch `json:"settings,omitempty"`
 }
@@ -103,6 +104,44 @@ func (h *OrganizationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/organizations/:id", h.GetOrganization)
 	apiV1.PUT("/organizations/:id", h.UpdateOrganization)
 	apiV1.DELETE("/organizations/:id", h.DeleteOrganization)
+}
+
+const (
+	orgSlugPrefix   = "org-"
+	orgSlugRandLen  = 10
+	orgSlugRetries  = 20
+	orgSlugAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+)
+
+func randomOrgSlugSuffix() (string, error) {
+	raw := make([]byte, orgSlugRandLen)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	out := make([]byte, orgSlugRandLen)
+	for i := range out {
+		out[i] = orgSlugAlphabet[int(raw[i])%len(orgSlugAlphabet)]
+	}
+	return string(out), nil
+}
+
+func (h *OrganizationHandler) allocateOrganizationSlug() (string, error) {
+	for i := 0; i < orgSlugRetries; i++ {
+		suffix, err := randomOrgSlugSuffix()
+		if err != nil {
+			return "", err
+		}
+		slug := orgSlugPrefix + suffix
+		var exists bool
+		if err := h.db.Get(&exists,
+			"SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = ? AND deleted_at IS NULL)", slug); err != nil {
+			return "", err
+		}
+		if !exists {
+			return slug, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate unique organization slug")
 }
 
 // organizationRow represents an organization in the database
@@ -228,7 +267,7 @@ func (h *OrganizationHandler) GetOrganization(c *gin.Context) {
 // CreateOrganization handles organization creation requests.
 //
 // @Summary      Create organization
-// @Description  Creates a new organization
+// @Description  Creates a new organization. The server assigns a unique org- prefix plus 10 random characters as slug. Organization names must be unique among non-deleted rows.
 // @Tags         organizations
 // @Accept       json
 // @Produce      json
@@ -246,7 +285,6 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 
 	req.FactoryID = strings.TrimSpace(req.FactoryID)
 	req.Name = strings.TrimSpace(req.Name)
-	req.Slug = strings.TrimSpace(req.Slug)
 	req.Description = strings.TrimSpace(req.Description)
 
 	if req.FactoryID == "" {
@@ -272,21 +310,22 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 		return
 	}
 
-	if req.Slug == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug is required"})
+	var nameTaken bool
+	if err := h.db.Get(&nameTaken,
+		"SELECT EXISTS(SELECT 1 FROM organizations WHERE name = ? AND deleted_at IS NULL)", req.Name); err != nil {
+		logger.Printf("[ORGANIZATION] Failed to check organization name: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create organization"})
+		return
+	}
+	if nameTaken {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization name already exists"})
 		return
 	}
 
-	// Validate slug format (alphanumeric and hyphens only)
-	if !isValidSlug(req.Slug) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
-		return
-	}
-
-	// Check if slug already exists
-	var exists bool
-	if err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = ? AND deleted_at IS NULL)", req.Slug); err == nil && exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists"})
+	slug, err := h.allocateOrganizationSlug()
+	if err != nil {
+		logger.Printf("[ORGANIZATION] Failed to allocate slug: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create organization"})
 		return
 	}
 
@@ -319,7 +358,7 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		factoryID,
 		req.Name,
-		req.Slug,
+		slug,
 		descriptionStr,
 		settingsStr,
 		now,
@@ -342,7 +381,7 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 		ID:          fmt.Sprintf("%d", id),
 		FactoryID:   req.FactoryID,
 		Name:        req.Name,
-		Slug:        req.Slug,
+		Slug:        slug,
 		Description: req.Description,
 		CreatedAt:   now.Format(time.RFC3339),
 	})
@@ -351,7 +390,7 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 // UpdateOrganization handles organization update requests.
 //
 // @Summary      Update organization
-// @Description  Updates an existing organization
+// @Description  Updates an existing organization. Slug cannot be changed. Organization names must be unique among non-deleted rows.
 // @Tags         organizations
 // @Accept       json
 // @Produce      json
@@ -396,28 +435,21 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 	args := []interface{}{}
 
 	req.Name = strings.TrimSpace(req.Name)
-	req.Slug = strings.TrimSpace(req.Slug)
 
 	if req.Name != "" {
+		var nameTaken bool
+		if err := h.db.Get(&nameTaken,
+			"SELECT EXISTS(SELECT 1 FROM organizations WHERE name = ? AND id != ? AND deleted_at IS NULL)", req.Name, id); err != nil {
+			logger.Printf("[ORGANIZATION] Failed to check organization name: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update organization"})
+			return
+		}
+		if nameTaken {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "organization name already exists"})
+			return
+		}
 		updates = append(updates, "name = ?")
 		args = append(args, req.Name)
-	}
-
-	if req.Slug != "" {
-		// Validate slug format
-		if !isValidSlug(req.Slug) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": invalidSlugUserMessage})
-			return
-		}
-		// Check if new slug already exists for another organization
-		var exists bool
-		err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = ? AND id != ? AND deleted_at IS NULL)", req.Slug, id)
-		if err == nil && exists {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists"})
-			return
-		}
-		updates = append(updates, "slug = ?")
-		args = append(args, req.Slug)
 	}
 
 	if req.Description != nil {
