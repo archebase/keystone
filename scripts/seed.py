@@ -176,6 +176,8 @@ ROBOTS = [
     {"robot_type_model": "SynGloves", "device_id": "robot_dc93"},
     # M1
     {"robot_type_model": "M1", "device_id": "robot_m1"},
+    # WA1
+    {"robot_type_model": "WA1", "device_id": "robot_wa01"},
 ]
 
 DATA_COLLECTORS = [
