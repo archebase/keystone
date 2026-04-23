@@ -118,6 +118,7 @@ type inspectorRow struct {
 // @Accept       json
 // @Produce      json
 // @Param        organization_id query string false "Filter by organization ID"
+// @Param        certification_level query string false "Filter by certification level (level_1, level_2, senior)"
 // @Param        status          query string false "Filter by status (active, inactive)"
 // @Param        limit           query int    false "Max results (default 50, max 100)"
 // @Param        offset          query int    false "Pagination offset (default 0)"
@@ -133,6 +134,7 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 	}
 
 	orgID := c.Query("organization_id")
+	certLevel := strings.TrimSpace(c.Query("certification_level"))
 	status := c.Query("status")
 
 	whereClause := "WHERE deleted_at IS NULL"
@@ -146,6 +148,16 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		}
 		whereClause += " AND organization_id = ?"
 		args = append(args, parsedOrgID)
+	}
+
+	if certLevel != "" {
+		certLevel = strings.ToLower(certLevel)
+		if certLevel != "level_1" && certLevel != "level_2" && certLevel != "senior" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid certification_level, must be one of: level_1, level_2, senior"})
+			return
+		}
+		whereClause += " AND certification_level = ?"
+		args = append(args, certLevel)
 	}
 
 	if status != "" {

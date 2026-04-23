@@ -53,6 +53,8 @@ type StationResponse struct {
 	RobotID             string      `json:"robot_id"`
 	RobotName           string      `json:"robot_name,omitempty"`
 	RobotSerial         string      `json:"robot_serial,omitempty"`
+	RobotTypeID         string      `json:"robot_type_id,omitempty"`
+	RobotTypeModel      string      `json:"robot_type_model,omitempty"`
 	DataCollectorID     string      `json:"data_collector_id"`
 	CollectorName       string      `json:"collector_name,omitempty"`
 	CollectorOperatorID string      `json:"collector_operator_id,omitempty"`
@@ -395,6 +397,8 @@ type stationListRow struct {
 	RobotID             int64          `db:"robot_id"`
 	RobotName           string         `db:"robot_name"`
 	RobotSerial         string         `db:"robot_serial"`
+	RobotTypeID         sql.NullInt64  `db:"robot_type_id"`
+	RobotTypeModel      sql.NullString `db:"robot_type_model"`
 	DataCollectorID     int64          `db:"data_collector_id"`
 	CollectorName       string         `db:"collector_name"`
 	CollectorOperatorID string         `db:"collector_operator_id"`
@@ -422,6 +426,14 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 	if s.OrganizationName.Valid {
 		orgName = s.OrganizationName.String
 	}
+	robotTypeID := ""
+	if s.RobotTypeID.Valid {
+		robotTypeID = fmt.Sprintf("%d", s.RobotTypeID.Int64)
+	}
+	robotTypeModel := ""
+	if s.RobotTypeModel.Valid {
+		robotTypeModel = s.RobotTypeModel.String
+	}
 	meta := stationMetadataFromDB(s.Metadata)
 	createdAt := ""
 	if s.CreatedAt.Valid {
@@ -437,6 +449,8 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 		RobotID:             fmt.Sprintf("%d", s.RobotID),
 		RobotName:           s.RobotName,
 		RobotSerial:         s.RobotSerial,
+		RobotTypeID:         robotTypeID,
+		RobotTypeModel:      robotTypeModel,
 		DataCollectorID:     fmt.Sprintf("%d", s.DataCollectorID),
 		CollectorName:       s.CollectorName,
 		CollectorOperatorID: s.CollectorOperatorID,
@@ -458,6 +472,10 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 // @Description  Returns a list of all workstations with pagination
 // @Tags         stations
 // @Produce      json
+// @Param        factory_id      query int false "Filter by factory ID"
+// @Param        organization_id query int false "Filter by organization ID"
+// @Param        robot_type_id   query int false "Filter by robot type ID"
+// @Param        status          query string false "Filter by status (active, inactive, break, offline)"
 // @Param        limit  query int false "Max results (default 50, max 100)"
 // @Param        offset query int false "Pagination offset (default 0)"
 // @Success      200 {object} ListResponse
@@ -471,29 +489,110 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		return
 	}
 
+	factoryIDStr := strings.TrimSpace(c.Query("factory_id"))
+	orgIDStr := strings.TrimSpace(c.Query("organization_id"))
+	robotTypeIDStr := strings.TrimSpace(c.Query("robot_type_id"))
+	statusStr := strings.TrimSpace(c.Query("status"))
+	var factoryID int64
+	var orgID int64
+	var robotTypeID int64
+	hasFactory := factoryIDStr != ""
+	hasOrg := orgIDStr != ""
+	hasRobotType := robotTypeIDStr != ""
+	hasStatus := statusStr != ""
+	if hasFactory {
+		var err error
+		factoryID, err = strconv.ParseInt(factoryIDStr, 10, 64)
+		if err != nil || factoryID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+			return
+		}
+	}
+	if hasOrg {
+		var err error
+		orgID, err = strconv.ParseInt(orgIDStr, 10, 64)
+		if err != nil || orgID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+			return
+		}
+	}
+	if hasRobotType {
+		var err error
+		robotTypeID, err = strconv.ParseInt(robotTypeIDStr, 10, 64)
+		if err != nil || robotTypeID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
+			return
+		}
+	}
+	if hasStatus {
+		statusStr = strings.ToLower(statusStr)
+		if _, ok := validStationStatuses[statusStr]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
+	}
+
 	countQuery := "SELECT COUNT(*) FROM workstations WHERE deleted_at IS NULL"
+	countArgs := []any{}
+	if hasFactory {
+		countQuery += " AND factory_id = ?"
+		countArgs = append(countArgs, factoryID)
+	}
+	if hasOrg {
+		countQuery += " AND organization_id = ?"
+		countArgs = append(countArgs, orgID)
+	}
+	if hasStatus {
+		countQuery += " AND status = ?"
+		countArgs = append(countArgs, statusStr)
+	}
 	var total int
-	if err := h.db.Get(&total, countQuery); err != nil {
+	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
 		logger.Printf("[STATION] Failed to count stations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})
 		return
 	}
 
 	var stations []stationListRow
-	err = h.db.Select(&stations, `
+	query := `
 		SELECT 
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			r.robot_type_id, rt.model AS robot_type_model,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
 			ws.factory_id, f.name AS factory_name,
 			ws.organization_id, o.name AS organization_name,
 			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
+		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
 		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		WHERE ws.deleted_at IS NULL
-		ORDER BY id DESC
+	`
+	args := []any{}
+	if hasFactory {
+		query += " AND ws.factory_id = ?\n"
+		args = append(args, factoryID)
+	}
+	if hasOrg {
+		query += " AND ws.organization_id = ?\n"
+		args = append(args, orgID)
+	}
+	if hasRobotType {
+		query += " AND r.robot_type_id = ?\n"
+		args = append(args, robotTypeID)
+	}
+	if hasStatus {
+		query += " AND ws.status = ?\n"
+		args = append(args, statusStr)
+	}
+	query += `
+		ORDER BY ws.id DESC
 		LIMIT ? OFFSET ?
-	`, pagination.Limit, pagination.Offset)
+	`
+	args = append(args, pagination.Limit, pagination.Offset)
+
+	err = h.db.Select(&stations, query, args...)
 	if err != nil && err != sql.ErrNoRows {
 		logger.Printf("[STATION] Failed to query stations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list stations"})

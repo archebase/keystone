@@ -163,6 +163,7 @@ type organizationRow struct {
 // @Tags         organizations
 // @Accept       json
 // @Produce      json
+// @Param        factory_id query     string false "Filter by factory ID"
 // @Param        limit  query     int  false  "Max results (default 50, max 100)"
 // @Param        offset query     int  false  "Pagination offset (default 0)"
 // @Success      200 {object} OrganizationListResponse
@@ -176,9 +177,27 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 		return
 	}
 
+	factoryIDStr := strings.TrimSpace(c.Query("factory_id"))
+	var factoryID int64
+	hasFactoryFilter := factoryIDStr != ""
+	if hasFactoryFilter {
+		var err error
+		factoryID, err = strconv.ParseInt(factoryIDStr, 10, 64)
+		if err != nil || factoryID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+			return
+		}
+	}
+
 	countQuery := "SELECT COUNT(*) FROM organizations WHERE deleted_at IS NULL"
+	countArgs := []any{}
+	if hasFactoryFilter {
+		countQuery += " AND factory_id = ?"
+		countArgs = append(countArgs, factoryID)
+	}
+
 	var total int
-	if err := h.db.Get(&total, countQuery); err != nil {
+	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to count organizations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list organizations"})
 		return
@@ -196,12 +215,20 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 			o.updated_at
 		FROM organizations o
 		WHERE o.deleted_at IS NULL
+	`
+	args := []any{}
+	if hasFactoryFilter {
+		query += " AND o.factory_id = ?\n"
+		args = append(args, factoryID)
+	}
+	query += `
 		ORDER BY o.id DESC
 		LIMIT ? OFFSET ?
 	`
+	args = append(args, pagination.Limit, pagination.Offset)
 
 	var dbRows []organizationRow
-	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
+	if err := h.db.Select(&dbRows, query, args...); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to query organizations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list organizations"})
 		return
