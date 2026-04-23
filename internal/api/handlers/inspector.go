@@ -33,6 +33,7 @@ func NewInspectorHandler(db *sqlx.DB) *InspectorHandler {
 // InspectorResponse represents an inspector in the response.
 type InspectorResponse struct {
 	ID                 string      `json:"id"`
+	OrganizationID     string      `json:"organization_id"`
 	Name               string      `json:"name"`
 	InspectorID        string      `json:"inspector_id"`
 	Email              string      `json:"email,omitempty"`
@@ -55,6 +56,7 @@ type InspectorListResponse struct {
 
 // CreateInspectorRequest represents the request body for creating an inspector.
 type CreateInspectorRequest struct {
+	OrganizationID     string      `json:"organization_id"`
 	Name               string      `json:"name"`
 	InspectorID        string      `json:"inspector_id"`
 	Email              string      `json:"email,omitempty"`
@@ -65,6 +67,7 @@ type CreateInspectorRequest struct {
 // CreateInspectorResponse represents the response for creating an inspector.
 type CreateInspectorResponse struct {
 	ID                 string      `json:"id"`
+	OrganizationID     string      `json:"organization_id"`
 	Name               string      `json:"name"`
 	InspectorID        string      `json:"inspector_id"`
 	CertificationLevel string      `json:"certification_level"`
@@ -96,6 +99,7 @@ func (h *InspectorHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // inspectorRow represents an inspector in the database
 type inspectorRow struct {
 	ID                 int64          `db:"id"`
+	OrganizationID     int64          `db:"organization_id"`
 	Name               string         `db:"name"`
 	InspectorID        string         `db:"inspector_id"`
 	Email              sql.NullString `db:"email"`
@@ -113,9 +117,11 @@ type inspectorRow struct {
 // @Tags         inspectors
 // @Accept       json
 // @Produce      json
-// @Param        status query string false "Filter by status (active, inactive)"
-// @Param        limit  query int    false "Max results (default 50, max 100)"
-// @Param        offset query int    false "Pagination offset (default 0)"
+// @Param        organization_id query string false "Filter by organization ID"
+// @Param        certification_level query string false "Filter by certification level (level_1, level_2, senior)"
+// @Param        status          query string false "Filter by status (active, inactive)"
+// @Param        limit           query int    false "Max results (default 50, max 100)"
+// @Param        offset          query int    false "Pagination offset (default 0)"
 // @Success      200 {object} InspectorListResponse
 // @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
@@ -127,10 +133,32 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		return
 	}
 
+	orgID := c.Query("organization_id")
+	certLevel := strings.TrimSpace(c.Query("certification_level"))
 	status := c.Query("status")
 
 	whereClause := "WHERE deleted_at IS NULL"
 	args := []interface{}{}
+
+	if orgID != "" {
+		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+			return
+		}
+		whereClause += " AND organization_id = ?"
+		args = append(args, parsedOrgID)
+	}
+
+	if certLevel != "" {
+		certLevel = strings.ToLower(certLevel)
+		if certLevel != "level_1" && certLevel != "level_2" && certLevel != "senior" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid certification_level, must be one of: level_1, level_2, senior"})
+			return
+		}
+		whereClause += " AND certification_level = ?"
+		args = append(args, certLevel)
+	}
 
 	if status != "" {
 		whereClause += " AND status = ?"
@@ -148,6 +176,7 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 	query := `
 		SELECT 
 			id,
+			organization_id,
 			name,
 			inspector_id,
 			email,
@@ -173,38 +202,7 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 
 	inspectors := []InspectorResponse{}
 	for _, i := range dbRows {
-		email := ""
-		if i.Email.Valid {
-			email = i.Email.String
-		}
-		certLevel := "level_1"
-		if i.CertificationLevel != "" {
-			certLevel = i.CertificationLevel
-		}
-		var metadata interface{}
-		if i.Metadata.Valid && i.Metadata.String != "" && i.Metadata.String != "null" {
-			metadata = parseJSONRaw(i.Metadata.String)
-		}
-		createdAt := ""
-		if i.CreatedAt.Valid {
-			createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
-		}
-		updatedAt := ""
-		if i.UpdatedAt.Valid {
-			updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
-		}
-
-		inspectors = append(inspectors, InspectorResponse{
-			ID:                 fmt.Sprintf("%d", i.ID),
-			Name:               i.Name,
-			InspectorID:        i.InspectorID,
-			Email:              email,
-			CertificationLevel: certLevel,
-			Status:             i.Status,
-			Metadata:           metadata,
-			CreatedAt:          createdAt,
-			UpdatedAt:          updatedAt,
-		})
+		inspectors = append(inspectors, inspectorResponseFromRow(i))
 	}
 
 	hasNext := (pagination.Offset + pagination.Limit) < total
@@ -241,23 +239,13 @@ func (h *InspectorHandler) GetInspector(c *gin.Context) {
 		return
 	}
 
-	query := `
-		SELECT 
-			id,
-			name,
-			inspector_id,
-			email,
-			certification_level,
-			status,
-			metadata,
-			created_at,
-			updated_at
+	var i inspectorRow
+	if err := h.db.Get(&i, `
+		SELECT id, organization_id, name, inspector_id, email, certification_level,
+			status, metadata, created_at, updated_at
 		FROM inspectors
 		WHERE id = ? AND deleted_at IS NULL
-	`
-
-	var i inspectorRow
-	if err := h.db.Get(&i, query, id); err != nil {
+	`, id); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "inspector not found"})
 			return
@@ -267,38 +255,7 @@ func (h *InspectorHandler) GetInspector(c *gin.Context) {
 		return
 	}
 
-	email := ""
-	if i.Email.Valid {
-		email = i.Email.String
-	}
-	certLevel := "level_1"
-	if i.CertificationLevel != "" {
-		certLevel = i.CertificationLevel
-	}
-	var metadata interface{}
-	if i.Metadata.Valid && i.Metadata.String != "" && i.Metadata.String != "null" {
-		metadata = parseJSONRaw(i.Metadata.String)
-	}
-	createdAt := ""
-	if i.CreatedAt.Valid {
-		createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
-	}
-	updatedAt := ""
-	if i.UpdatedAt.Valid {
-		updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	c.JSON(http.StatusOK, InspectorResponse{
-		ID:                 fmt.Sprintf("%d", i.ID),
-		Name:               i.Name,
-		InspectorID:        i.InspectorID,
-		Email:              email,
-		CertificationLevel: certLevel,
-		Status:             i.Status,
-		Metadata:           metadata,
-		CreatedAt:          createdAt,
-		UpdatedAt:          updatedAt,
-	})
+	c.JSON(http.StatusOK, inspectorResponseFromRow(i))
 }
 
 // CreateInspector handles inspector creation requests.
@@ -320,9 +277,27 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 		return
 	}
 
+	req.OrganizationID = strings.TrimSpace(req.OrganizationID)
 	req.Name = strings.TrimSpace(req.Name)
 	req.InspectorID = strings.TrimSpace(req.InspectorID)
 	req.Email = strings.TrimSpace(req.Email)
+
+	if req.OrganizationID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
+		return
+	}
+
+	orgID, err := strconv.ParseInt(req.OrganizationID, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+		return
+	}
+
+	var orgExists bool
+	if err := h.db.Get(&orgExists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID); err != nil || !orgExists {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
+		return
+	}
 
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
@@ -336,8 +311,7 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 
 	// Check if inspector_id already exists
 	var exists bool
-	err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM inspectors WHERE inspector_id = ? AND deleted_at IS NULL)", req.InspectorID)
-	if err == nil && exists {
+	if err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM inspectors WHERE inspector_id = ? AND deleted_at IS NULL)", req.InspectorID); err == nil && exists {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "inspector_id already exists"})
 		return
 	}
@@ -376,6 +350,7 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 
 	result, err := h.db.Exec(
 		`INSERT INTO inspectors (
+			organization_id,
 			name,
 			inspector_id,
 			email,
@@ -384,7 +359,8 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		orgID,
 		req.Name,
 		req.InspectorID,
 		emailStr,
@@ -414,6 +390,7 @@ func (h *InspectorHandler) CreateInspector(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, CreateInspectorResponse{
 		ID:                 fmt.Sprintf("%d", id),
+		OrganizationID:     req.OrganizationID,
 		Name:               req.Name,
 		InspectorID:        req.InspectorID,
 		CertificationLevel: certLevel,
@@ -568,45 +545,17 @@ func (h *InspectorHandler) UpdateInspector(c *gin.Context) {
 
 	// Fetch the updated inspector
 	var i inspectorRow
-	err = h.db.Get(&i, "SELECT id, name, inspector_id, email, certification_level, status, metadata, created_at, updated_at FROM inspectors WHERE id = ?", id)
+	err = h.db.Get(&i, `
+		SELECT id, organization_id, name, inspector_id, email, certification_level,
+			status, metadata, created_at, updated_at
+		FROM inspectors WHERE id = ?`, id)
 	if err != nil {
 		logger.Printf("[INSPECTOR] Failed to fetch updated inspector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated inspector"})
 		return
 	}
 
-	email := ""
-	if i.Email.Valid {
-		email = i.Email.String
-	}
-	certLevel := "level_1"
-	if i.CertificationLevel != "" {
-		certLevel = i.CertificationLevel
-	}
-	var metadata interface{}
-	if i.Metadata.Valid && i.Metadata.String != "" && i.Metadata.String != "null" {
-		metadata = parseJSONRaw(i.Metadata.String)
-	}
-	createdAt := ""
-	if i.CreatedAt.Valid {
-		createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
-	}
-	updatedAt := ""
-	if i.UpdatedAt.Valid {
-		updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	c.JSON(http.StatusOK, InspectorResponse{
-		ID:                 fmt.Sprintf("%d", i.ID),
-		Name:               i.Name,
-		InspectorID:        i.InspectorID,
-		Email:              email,
-		CertificationLevel: certLevel,
-		Status:             i.Status,
-		Metadata:           metadata,
-		CreatedAt:          createdAt,
-		UpdatedAt:          updatedAt,
-	})
+	c.JSON(http.StatusOK, inspectorResponseFromRow(i))
 }
 
 // DeleteInspector handles inspector deletion requests (soft delete).
@@ -655,4 +604,40 @@ func (h *InspectorHandler) DeleteInspector(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// inspectorResponseFromRow converts an inspectorRow to an InspectorResponse.
+func inspectorResponseFromRow(i inspectorRow) InspectorResponse {
+	email := ""
+	if i.Email.Valid {
+		email = i.Email.String
+	}
+	certLevel := "level_1"
+	if i.CertificationLevel != "" {
+		certLevel = i.CertificationLevel
+	}
+	var metadata interface{}
+	if i.Metadata.Valid && i.Metadata.String != "" && i.Metadata.String != "null" {
+		metadata = parseJSONRaw(i.Metadata.String)
+	}
+	createdAt := ""
+	if i.CreatedAt.Valid {
+		createdAt = i.CreatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	updatedAt := ""
+	if i.UpdatedAt.Valid {
+		updatedAt = i.UpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	return InspectorResponse{
+		ID:                 fmt.Sprintf("%d", i.ID),
+		OrganizationID:     fmt.Sprintf("%d", i.OrganizationID),
+		Name:               i.Name,
+		InspectorID:        i.InspectorID,
+		Email:              email,
+		CertificationLevel: certLevel,
+		Status:             i.Status,
+		Metadata:           metadata,
+		CreatedAt:          createdAt,
+		UpdatedAt:          updatedAt,
+	}
 }

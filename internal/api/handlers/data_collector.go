@@ -34,15 +34,17 @@ func NewDataCollectorHandler(db *sqlx.DB) *DataCollectorHandler {
 
 // DataCollectorResponse represents a data collector in the response.
 type DataCollectorResponse struct {
-	ID            string      `json:"id"`
-	Name          string      `json:"name"`
-	OperatorID    string      `json:"operator_id"`
-	Email         string      `json:"email,omitempty"`
-	Certification string      `json:"certification,omitempty"`
-	Status        string      `json:"status"`
-	Metadata      interface{} `json:"metadata,omitempty"`
-	CreatedAt     string      `json:"created_at,omitempty"`
-	UpdatedAt     string      `json:"updated_at,omitempty"`
+	ID               string      `json:"id"`
+	OrganizationID   string      `json:"organization_id"`
+	OrganizationName string      `json:"organization_name,omitempty"`
+	Name             string      `json:"name"`
+	OperatorID       string      `json:"operator_id"`
+	Email            string      `json:"email,omitempty"`
+	Certification    string      `json:"certification,omitempty"`
+	Status           string      `json:"status"`
+	Metadata         interface{} `json:"metadata,omitempty"`
+	CreatedAt        string      `json:"created_at,omitempty"`
+	UpdatedAt        string      `json:"updated_at,omitempty"`
 }
 
 // DataCollectorListResponse represents the response for listing data collectors.
@@ -57,25 +59,28 @@ type DataCollectorListResponse struct {
 
 // CreateDataCollectorRequest represents the request body for creating a data collector.
 type CreateDataCollectorRequest struct {
-	Name          string      `json:"name"`
-	OperatorID    string      `json:"operator_id"`
-	Email         string      `json:"email,omitempty"`
-	Certification string      `json:"certification,omitempty"`
-	Password      string      `json:"password,omitempty"` // #nosec G117 -- request DTO may include password for initial set
-	Metadata      interface{} `json:"metadata,omitempty"`
+	OrganizationID string      `json:"organization_id"`
+	Name           string      `json:"name"`
+	OperatorID     string      `json:"operator_id"`
+	Email          string      `json:"email,omitempty"`
+	Certification  string      `json:"certification,omitempty"`
+	Password       string      `json:"password,omitempty"` // #nosec G117 -- request DTO may include password for initial set
+	Metadata       interface{} `json:"metadata,omitempty"`
 }
 
 // CreateDataCollectorResponse represents the response for creating a data collector.
 type CreateDataCollectorResponse struct {
-	ID            string      `json:"id"`
-	Name          string      `json:"name"`
-	OperatorID    string      `json:"operator_id"`
-	Email         string      `json:"email,omitempty"`
-	Certification string      `json:"certification,omitempty"`
-	Status        string      `json:"status"`
-	Metadata      interface{} `json:"metadata,omitempty"`
-	CreatedAt     string      `json:"created_at"`
-	UpdatedAt     string      `json:"updated_at,omitempty"`
+	ID               string      `json:"id"`
+	OrganizationID   string      `json:"organization_id"`
+	OrganizationName string      `json:"organization_name,omitempty"`
+	Name             string      `json:"name"`
+	OperatorID       string      `json:"operator_id"`
+	Email            string      `json:"email,omitempty"`
+	Certification    string      `json:"certification,omitempty"`
+	Status           string      `json:"status"`
+	Metadata         interface{} `json:"metadata,omitempty"`
+	CreatedAt        string      `json:"created_at"`
+	UpdatedAt        string      `json:"updated_at,omitempty"`
 }
 
 // RegisterRoutes registers data collector related routes.
@@ -89,15 +94,17 @@ func (h *DataCollectorHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // dataCollectorRow represents a data collector in the database
 type dataCollectorRow struct {
-	ID            int64          `db:"id"`
-	Name          string         `db:"name"`
-	OperatorID    string         `db:"operator_id"`
-	Email         sql.NullString `db:"email"`
-	Certification sql.NullString `db:"certification"`
-	Status        string         `db:"status"`
-	Metadata      sql.NullString `db:"metadata"`
-	CreatedAt     sql.NullTime   `db:"created_at"`
-	UpdatedAt     sql.NullTime   `db:"updated_at"`
+	ID               int64          `db:"id"`
+	OrganizationID   int64          `db:"organization_id"`
+	OrganizationName sql.NullString `db:"organization_name"`
+	Name             string         `db:"name"`
+	OperatorID       string         `db:"operator_id"`
+	Email            sql.NullString `db:"email"`
+	Certification    sql.NullString `db:"certification"`
+	Status           string         `db:"status"`
+	Metadata         sql.NullString `db:"metadata"`
+	CreatedAt        sql.NullTime   `db:"created_at"`
+	UpdatedAt        sql.NullTime   `db:"updated_at"`
 }
 
 func dcMetadataFromDB(ns sql.NullString) interface{} {
@@ -112,6 +119,10 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 	if dc.Email.Valid {
 		email = dc.Email.String
 	}
+	orgName := ""
+	if dc.OrganizationName.Valid {
+		orgName = dc.OrganizationName.String
+	}
 	certification := ""
 	if dc.Certification.Valid {
 		certification = dc.Certification.String
@@ -125,28 +136,31 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 		updatedAt = dc.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	return DataCollectorResponse{
-		ID:            fmt.Sprintf("%d", dc.ID),
-		Name:          dc.Name,
-		OperatorID:    dc.OperatorID,
-		Email:         email,
-		Certification: certification,
-		Status:        dc.Status,
-		Metadata:      dcMetadataFromDB(dc.Metadata),
-		CreatedAt:     createdAt,
-		UpdatedAt:     updatedAt,
+		ID:               fmt.Sprintf("%d", dc.ID),
+		OrganizationID:   fmt.Sprintf("%d", dc.OrganizationID),
+		OrganizationName: orgName,
+		Name:             dc.Name,
+		OperatorID:       dc.OperatorID,
+		Email:            email,
+		Certification:    certification,
+		Status:           dc.Status,
+		Metadata:         dcMetadataFromDB(dc.Metadata),
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
 	}
 }
 
 // ListDataCollectors handles data collector listing requests with filtering.
 //
 // @Summary      List data collectors
-// @Description  Lists all data collectors with optional status filtering
+// @Description  Lists all data collectors with optional filtering
 // @Tags         data_collectors
 // @Accept       json
 // @Produce      json
-// @Param        status  query     string  false  "Filter by status (active, inactive, on_leave)"
-// @Param        limit   query     int     false  "Max results (default 50, max 100)"
-// @Param        offset  query     int     false  "Pagination offset (default 0)"
+// @Param        organization_id query     string  false  "Filter by organization ID"
+// @Param        status          query     string  false  "Filter by status (active, inactive, on_leave)"
+// @Param        limit           query     int     false  "Max results (default 50, max 100)"
+// @Param        offset          query     int     false  "Pagination offset (default 0)"
 // @Success      200     {object}  DataCollectorListResponse
 // @Failure      400     {object}  map[string]string
 // @Failure      500     {object}  map[string]string
@@ -158,10 +172,21 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 		return
 	}
 
+	orgID := c.Query("organization_id")
 	status := c.Query("status")
 
 	whereClause := "WHERE dc.deleted_at IS NULL"
 	args := []interface{}{}
+
+	if orgID != "" {
+		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+			return
+		}
+		whereClause += " AND dc.organization_id = ?"
+		args = append(args, parsedOrgID)
+	}
 
 	if status != "" {
 		whereClause += " AND dc.status = ?"
@@ -179,6 +204,8 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 	query := `
 		SELECT 
 			dc.id,
+			dc.organization_id,
+			o.name AS organization_name,
 			dc.name,
 			dc.operator_id,
 			dc.email,
@@ -188,6 +215,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
+		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		` + whereClause + `
 		ORDER BY dc.id DESC
 		LIMIT ? OFFSET ?
@@ -239,11 +267,30 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		return
 	}
 
+	req.OrganizationID = strings.TrimSpace(req.OrganizationID)
 	req.Name = strings.TrimSpace(req.Name)
 	req.OperatorID = strings.TrimSpace(req.OperatorID)
 	req.Email = strings.TrimSpace(req.Email)
 	req.Certification = strings.TrimSpace(req.Certification)
 	req.Password = strings.TrimSpace(req.Password)
+
+	if req.OrganizationID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
+		return
+	}
+
+	orgID, err := strconv.ParseInt(req.OrganizationID, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+		return
+	}
+
+	// Verify organization exists
+	var orgExists bool
+	if err := h.db.Get(&orgExists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID); err != nil || !orgExists {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
+		return
+	}
 
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
@@ -257,8 +304,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 
 	// Check if operator_id already exists
 	var exists bool
-	err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM data_collectors WHERE operator_id = ? AND deleted_at IS NULL)", req.OperatorID)
-	if err != nil {
+	if err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM data_collectors WHERE operator_id = ? AND deleted_at IS NULL)", req.OperatorID); err != nil {
 		logger.Printf("[DC] Failed to check operator_id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create data collector"})
 		return
@@ -306,6 +352,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 
 	result, err := h.db.Exec(
 		`INSERT INTO data_collectors (
+			organization_id,
 			name,
 			operator_id,
 			email,
@@ -315,7 +362,8 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		orgID,
 		req.Name,
 		req.OperatorID,
 		emailStr,
@@ -343,6 +391,8 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 	err = h.db.Get(&row, `
 		SELECT 
 			dc.id,
+			dc.organization_id,
+			o.name AS organization_name,
 			dc.name,
 			dc.operator_id,
 			dc.email,
@@ -352,6 +402,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
+		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`, id)
 	if err != nil {
@@ -388,6 +439,8 @@ func (h *DataCollectorHandler) GetDataCollector(c *gin.Context) {
 	query := `
 		SELECT 
 			dc.id,
+			dc.organization_id,
+			o.name AS organization_name,
 			dc.name,
 			dc.operator_id,
 			dc.email,
@@ -397,6 +450,7 @@ func (h *DataCollectorHandler) GetDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
+		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`
 
@@ -626,8 +680,10 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 	// Fetch the updated data collector
 	var dc dataCollectorRow
 	err = h.db.Get(&dc, `
-		SELECT 
+		SELECT
 			dc.id,
+			dc.organization_id,
+			o.name AS organization_name,
 			dc.name,
 			dc.operator_id,
 			dc.email,
@@ -637,6 +693,7 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
+		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`, id)
 	if err != nil {

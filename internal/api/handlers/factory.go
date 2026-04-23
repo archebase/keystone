@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -31,16 +32,16 @@ func NewFactoryHandler(db *sqlx.DB) *FactoryHandler {
 
 // FactoryResponse represents a factory in the response.
 type FactoryResponse struct {
-	ID             string      `json:"id"`
-	OrganizationID string      `json:"organization_id"`
-	Name           string      `json:"name"`
-	Slug           string      `json:"slug"`
-	Location       string      `json:"location,omitempty"`
-	Timezone       string      `json:"timezone,omitempty"`
-	Settings       interface{} `json:"settings"`
-	SceneCount     int         `json:"sceneCount"`
-	CreatedAt      string      `json:"created_at,omitempty"`
-	UpdatedAt      string      `json:"updated_at,omitempty"`
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	Slug       string      `json:"slug"`
+	Location   string      `json:"location,omitempty"`
+	Timezone   string      `json:"timezone,omitempty"`
+	Settings   interface{} `json:"settings"`
+	SceneCount int         `json:"sceneCount"`
+	OrgCount   int         `json:"orgCount"`
+	CreatedAt  string      `json:"created_at,omitempty"`
+	UpdatedAt  string      `json:"updated_at,omitempty"`
 }
 
 // FactoryListResponse represents the response for listing factories.
@@ -49,24 +50,22 @@ type FactoryListResponse struct {
 }
 
 // CreateFactoryRequest represents the request body for creating a factory.
+// The server assigns a unique slug (fac- plus 10 random [a-z0-9] characters).
 type CreateFactoryRequest struct {
-	OrganizationID string      `json:"organization_id"`
-	Name           string      `json:"name"`
-	Slug           string      `json:"slug"`
-	Location       string      `json:"location,omitempty"`
-	Timezone       string      `json:"timezone,omitempty"`
-	Settings       interface{} `json:"settings,omitempty"`
+	Name     string      `json:"name"`
+	Location string      `json:"location,omitempty"`
+	Timezone string      `json:"timezone,omitempty"`
+	Settings interface{} `json:"settings,omitempty"`
 }
 
 // CreateFactoryResponse represents the response for creating a factory.
 type CreateFactoryResponse struct {
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	Name           string `json:"name"`
-	Slug           string `json:"slug"`
-	Location       string `json:"location,omitempty"`
-	Timezone       string `json:"timezone,omitempty"`
-	CreatedAt      string `json:"created_at"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Slug      string `json:"slug"`
+	Location  string `json:"location,omitempty"`
+	Timezone  string `json:"timezone,omitempty"`
+	CreatedAt string `json:"created_at"`
 }
 
 // RegisterRoutes registers factory related routes.
@@ -80,16 +79,16 @@ func (h *FactoryHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // factoryRow represents a factory in the database
 type factoryRow struct {
-	ID             int64          `db:"id"`
-	OrganizationID int64          `db:"organization_id"`
-	Name           string         `db:"name"`
-	Slug           string         `db:"slug"`
-	Location       sql.NullString `db:"location"`
-	Timezone       sql.NullString `db:"timezone"`
-	Settings       sql.NullString `db:"settings"`
-	SceneCount     int            `db:"scene_count"`
-	CreatedAt      sql.NullTime   `db:"created_at"`
-	UpdatedAt      sql.NullTime   `db:"updated_at"`
+	ID         int64          `db:"id"`
+	Name       string         `db:"name"`
+	Slug       string         `db:"slug"`
+	Location   sql.NullString `db:"location"`
+	Timezone   sql.NullString `db:"timezone"`
+	Settings   sql.NullString `db:"settings"`
+	SceneCount int            `db:"scene_count"`
+	OrgCount   int            `db:"org_count"`
+	CreatedAt  sql.NullTime   `db:"created_at"`
+	UpdatedAt  sql.NullTime   `db:"updated_at"`
 }
 
 func factorySettingsFromDB(ns sql.NullString) interface{} {
@@ -99,19 +98,56 @@ func factorySettingsFromDB(ns sql.NullString) interface{} {
 	return json.RawMessage(ns.String)
 }
 
+const (
+	factorySlugPrefix   = "fac-"
+	factorySlugRandLen  = 10
+	factorySlugRetries  = 20
+	factorySlugAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+)
+
+func randomFactorySlugSuffix() (string, error) {
+	raw := make([]byte, factorySlugRandLen)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	out := make([]byte, factorySlugRandLen)
+	for i := range out {
+		out[i] = factorySlugAlphabet[int(raw[i])%len(factorySlugAlphabet)]
+	}
+	return string(out), nil
+}
+
+func (h *FactoryHandler) allocateFactorySlug() (string, error) {
+	for i := 0; i < factorySlugRetries; i++ {
+		suffix, err := randomFactorySlugSuffix()
+		if err != nil {
+			return "", err
+		}
+		slug := factorySlugPrefix + suffix
+		var exists bool
+		if err := h.db.Get(&exists,
+			"SELECT EXISTS(SELECT 1 FROM factories WHERE slug = ? AND deleted_at IS NULL)", slug); err != nil {
+			return "", err
+		}
+		if !exists {
+			return slug, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate unique factory slug")
+}
+
 // ListFactories handles factory listing requests with filtering and pagination.
 //
 // @Summary      List factories
-// @Description  Lists factories with optional filtering by organization_id
+// @Description  Lists all factories
 // @Tags         factories
 // @Accept       json
 // @Produce      json
-// @Param        organization_id query     string  false  "Filter by organization ID"
-// @Param        limit            query     int     false  "Max results (default 50, max 100)"
-// @Param        offset           query     int     false  "Pagination offset (default 0)"
-// @Success      200               {object}  ListResponse
-// @Failure      400               {object}  map[string]string
-// @Failure      500               {object}  map[string]string
+// @Param        limit  query     int     false  "Max results (default 50, max 100)"
+// @Param        offset query     int     false  "Pagination offset (default 0)"
+// @Success      200    {object}  ListResponse
+// @Failure      400    {object}  map[string]string
+// @Failure      500    {object}  map[string]string
 // @Router       /factories [get]
 func (h *FactoryHandler) ListFactories(c *gin.Context) {
 	pagination, err := ParsePagination(c)
@@ -120,24 +156,9 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 		return
 	}
 
-	orgID := c.Query("organization_id")
-
-	whereClause := "WHERE deleted_at IS NULL"
-	args := []interface{}{}
-
-	if orgID != "" {
-		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-			return
-		}
-		whereClause += " AND organization_id = ?"
-		args = append(args, parsedOrgID)
-	}
-
-	countQuery := "SELECT COUNT(*) FROM factories " + whereClause
+	countQuery := "SELECT COUNT(*) FROM factories WHERE deleted_at IS NULL"
 	var total int
-	if err := h.db.Get(&total, countQuery, args...); err != nil {
+	if err := h.db.Get(&total, countQuery); err != nil {
 		logger.Printf("[FACTORY] Failed to count factories: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list factories"})
 		return
@@ -146,57 +167,32 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 	query := `
 		SELECT 
 			id,
-			organization_id,
 			name,
 			slug,
 			location,
 			timezone,
 			settings,
 			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
+			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
 			created_at,
 			updated_at
 		FROM factories
-		` + whereClause + `
+		WHERE deleted_at IS NULL
 		ORDER BY id DESC
 		LIMIT ? OFFSET ?
 	`
 
-	queryArgs := append(args, pagination.Limit, pagination.Offset)
-
 	factories := []FactoryResponse{}
 
 	var dbRows []factoryRow
-	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
+	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
 		logger.Printf("[FACTORY] Failed to query factories: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list factories"})
 		return
 	}
 
 	for _, f := range dbRows {
-		location := ""
-		if f.Location.Valid {
-			location = f.Location.String
-		}
-		timezone := "UTC"
-		if f.Timezone.Valid {
-			timezone = f.Timezone.String
-		}
-		createdAt := ""
-		if f.CreatedAt.Valid {
-			createdAt = f.CreatedAt.Time.UTC().Format(time.RFC3339)
-		}
-
-		factories = append(factories, FactoryResponse{
-			ID:             fmt.Sprintf("%d", f.ID),
-			OrganizationID: fmt.Sprintf("%d", f.OrganizationID),
-			Name:           f.Name,
-			Slug:           f.Slug,
-			Location:       location,
-			Timezone:       timezone,
-			Settings:       factorySettingsFromDB(f.Settings),
-			SceneCount:     f.SceneCount,
-			CreatedAt:      createdAt,
-		})
+		factories = append(factories, factoryResponseFromRow(f))
 	}
 
 	hasNext := (pagination.Offset + pagination.Limit) < total
@@ -215,7 +211,7 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 // CreateFactory handles factory creation requests.
 //
 // @Summary      Create factory
-// @Description  Creates a new factory
+// @Description  Creates a new factory. The server assigns a unique fac- prefix plus 10 random characters as slug. Factory names must be unique among non-deleted rows.
 // @Tags         factories
 // @Accept       json
 // @Produce      json
@@ -231,46 +227,31 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 		return
 	}
 
-	req.OrganizationID = strings.TrimSpace(req.OrganizationID)
 	req.Name = strings.TrimSpace(req.Name)
-	req.Slug = strings.TrimSpace(req.Slug)
 	req.Location = strings.TrimSpace(req.Location)
 	req.Timezone = strings.TrimSpace(req.Timezone)
-
-	if req.OrganizationID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
-		return
-	}
 
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
 
-	if req.Slug == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug is required"})
+	var nameTaken bool
+	if err := h.db.Get(&nameTaken,
+		"SELECT EXISTS(SELECT 1 FROM factories WHERE name = ? AND deleted_at IS NULL)", req.Name); err != nil {
+		logger.Printf("[FACTORY] Failed to check factory name: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create factory"})
+		return
+	}
+	if nameTaken {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "factory name already exists"})
 		return
 	}
 
-	// Parse organization_id
-	orgID, err := strconv.ParseInt(req.OrganizationID, 10, 64)
+	slug, err := h.allocateFactorySlug()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-		return
-	}
-
-	// Verify organization exists
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID)
-	if err != nil || !exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
-		return
-	}
-
-	// Check if slug already exists for this organization
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE organization_id = ? AND slug = ? AND deleted_at IS NULL)", orgID, req.Slug)
-	if err == nil && exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
+		logger.Printf("[FACTORY] Failed to allocate slug: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create factory"})
 		return
 	}
 
@@ -304,7 +285,6 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 
 	result, err := h.db.Exec(
 		`INSERT INTO factories (
-			organization_id,
 			name,
 			slug,
 			location,
@@ -312,10 +292,9 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 			settings,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		orgID,
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		req.Name,
-		req.Slug,
+		slug,
 		locationStr,
 		timezoneStr,
 		settingsStr,
@@ -336,13 +315,12 @@ func (h *FactoryHandler) CreateFactory(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, CreateFactoryResponse{
-		ID:             fmt.Sprintf("%d", id),
-		OrganizationID: req.OrganizationID,
-		Name:           req.Name,
-		Slug:           req.Slug,
-		Location:       req.Location,
-		Timezone:       timezone,
-		CreatedAt:      now.Format(time.RFC3339),
+		ID:        fmt.Sprintf("%d", id),
+		Name:      req.Name,
+		Slug:      slug,
+		Location:  req.Location,
+		Timezone:  timezone,
+		CreatedAt: now.Format(time.RFC3339),
 	})
 }
 
@@ -367,24 +345,15 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 		return
 	}
 
-	query := `
-		SELECT 
-			id,
-			organization_id,
-			name,
-			slug,
-			location,
-			timezone,
-			settings,
+	var f factoryRow
+	if err := h.db.Get(&f, `
+		SELECT id, name, slug, location, timezone, settings,
 			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
-			created_at,
-			updated_at
+			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
+			created_at, updated_at
 		FROM factories
 		WHERE id = ? AND deleted_at IS NULL
-	`
-
-	var f factoryRow
-	if err := h.db.Get(&f, query, id); err != nil {
+	`, id); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "factory not found"})
 			return
@@ -394,51 +363,22 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 		return
 	}
 
-	location := ""
-	if f.Location.Valid {
-		location = f.Location.String
-	}
-	timezone := "UTC"
-	if f.Timezone.Valid {
-		timezone = f.Timezone.String
-	}
-	createdAt := ""
-	if f.CreatedAt.Valid {
-		createdAt = f.CreatedAt.Time.UTC().Format(time.RFC3339)
-	}
-	updatedAt := ""
-	if f.UpdatedAt.Valid {
-		updatedAt = f.UpdatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	c.JSON(http.StatusOK, FactoryResponse{
-		ID:             fmt.Sprintf("%d", f.ID),
-		OrganizationID: fmt.Sprintf("%d", f.OrganizationID),
-		Name:           f.Name,
-		Slug:           f.Slug,
-		Location:       location,
-		Timezone:       timezone,
-		Settings:       factorySettingsFromDB(f.Settings),
-		SceneCount:     f.SceneCount,
-		CreatedAt:      createdAt,
-		UpdatedAt:      updatedAt,
-	})
+	c.JSON(http.StatusOK, factoryResponseFromRow(f))
 }
 
 // UpdateFactoryRequest represents the request body for updating a factory.
+// Factory slug is immutable after creation; a slug field in JSON, if sent, is ignored.
 type UpdateFactoryRequest struct {
-	OrganizationID *string                   `json:"organization_id,omitempty"`
-	Name           *string                   `json:"name,omitempty"`
-	Slug           *string                   `json:"slug,omitempty"`
-	Location       *string                   `json:"location,omitempty"`
-	Timezone       *string                   `json:"timezone,omitempty"`
-	Settings       organizationSettingsPatch `json:"settings,omitempty"`
+	Name     *string                   `json:"name,omitempty"`
+	Location *string                   `json:"location,omitempty"`
+	Timezone *string                   `json:"timezone,omitempty"`
+	Settings organizationSettingsPatch `json:"settings,omitempty"`
 }
 
 // UpdateFactory handles updating a factory.
 //
 // @Summary      Update factory
-// @Description  Updates an existing factory
+// @Description  Updates an existing factory. Factory slug cannot be changed after creation.
 // @Tags         factories
 // @Accept       json
 // @Produce      json
@@ -465,7 +405,7 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 
 	// Check if factory exists
 	var existing factoryRow
-	err = h.db.Get(&existing, "SELECT id, organization_id, name, slug, location, timezone, settings, created_at, updated_at FROM factories WHERE id = ? AND deleted_at IS NULL", id)
+	err = h.db.Get(&existing, "SELECT id, name, slug, location, timezone, settings, created_at, updated_at FROM factories WHERE id = ? AND deleted_at IS NULL", id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "factory not found"})
@@ -476,25 +416,6 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 		return
 	}
 
-	effectiveOrgID := existing.OrganizationID
-	if req.OrganizationID != nil {
-		s := strings.TrimSpace(*req.OrganizationID)
-		if s != "" {
-			orgID, err := strconv.ParseInt(s, 10, 64)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-				return
-			}
-			var exists bool
-			err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID)
-			if err != nil || !exists {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
-				return
-			}
-			effectiveOrgID = orgID
-		}
-	}
-
 	// Build update query dynamically
 	updates := []string{}
 	args := []interface{}{}
@@ -502,23 +423,19 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name != "" {
-			updates = append(updates, "name = ?")
-			args = append(args, name)
-		}
-	}
-
-	if req.Slug != nil {
-		slug := strings.TrimSpace(*req.Slug)
-		if slug != "" {
-			// Check if slug already exists for the target organization
-			var exists bool
-			err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE organization_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", effectiveOrgID, slug, id)
-			if err == nil && exists {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
+			var taken bool
+			if err := h.db.Get(&taken,
+				"SELECT EXISTS(SELECT 1 FROM factories WHERE name = ? AND id != ? AND deleted_at IS NULL)", name, id); err != nil {
+				logger.Printf("[FACTORY] Failed to check factory name: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update factory"})
 				return
 			}
-			updates = append(updates, "slug = ?")
-			args = append(args, slug)
+			if taken {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "factory name already exists"})
+				return
+			}
+			updates = append(updates, "name = ?")
+			args = append(args, name)
 		}
 	}
 
@@ -553,21 +470,6 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 		args = append(args, sql.NullString{String: jsonStringOrEmptyObject(raw), Valid: true})
 	}
 
-	if effectiveOrgID != existing.OrganizationID {
-		// Moving to another org: ensure current slug is unique there when slug is not updated in this request
-		slugChanging := req.Slug != nil && strings.TrimSpace(*req.Slug) != ""
-		if !slugChanging {
-			var exists bool
-			err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE organization_id = ? AND slug = ? AND id != ? AND deleted_at IS NULL)", effectiveOrgID, existing.Slug, id)
-			if err == nil && exists {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists for this organization"})
-				return
-			}
-		}
-		updates = append(updates, "organization_id = ?")
-		args = append(args, effectiveOrgID)
-	}
-
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
 		return
@@ -589,44 +491,19 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 
 	// Fetch the updated factory
 	var f factoryRow
-	err = h.db.Get(&f, `SELECT id, organization_id, name, slug, location, timezone, settings,
-		(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
-		created_at, updated_at FROM factories WHERE id = ?`, id)
+	err = h.db.Get(&f, `
+		SELECT id, name, slug, location, timezone, settings,
+			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
+			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
+			created_at, updated_at
+		FROM factories WHERE id = ?`, id)
 	if err != nil {
 		logger.Printf("[FACTORY] Failed to fetch updated factory: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated factory"})
 		return
 	}
 
-	location := ""
-	if f.Location.Valid {
-		location = f.Location.String
-	}
-	timezone := "UTC"
-	if f.Timezone.Valid {
-		timezone = f.Timezone.String
-	}
-	createdAt := ""
-	if f.CreatedAt.Valid {
-		createdAt = f.CreatedAt.Time.UTC().Format(time.RFC3339)
-	}
-	updatedAt := ""
-	if f.UpdatedAt.Valid {
-		updatedAt = f.UpdatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	c.JSON(http.StatusOK, FactoryResponse{
-		ID:             fmt.Sprintf("%d", f.ID),
-		OrganizationID: fmt.Sprintf("%d", f.OrganizationID),
-		Name:           f.Name,
-		Slug:           f.Slug,
-		Location:       location,
-		Timezone:       timezone,
-		Settings:       factorySettingsFromDB(f.Settings),
-		SceneCount:     f.SceneCount,
-		CreatedAt:      createdAt,
-		UpdatedAt:      updatedAt,
-	})
+	c.JSON(http.StatusOK, factoryResponseFromRow(f))
 }
 
 // DeleteFactory handles factory deletion requests (soft delete).
@@ -702,4 +579,36 @@ func (h *FactoryHandler) DeleteFactory(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// factoryResponseFromRow converts a factoryRow to a FactoryResponse.
+func factoryResponseFromRow(f factoryRow) FactoryResponse {
+	location := ""
+	if f.Location.Valid {
+		location = f.Location.String
+	}
+	timezone := "UTC"
+	if f.Timezone.Valid {
+		timezone = f.Timezone.String
+	}
+	createdAt := ""
+	if f.CreatedAt.Valid {
+		createdAt = f.CreatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	updatedAt := ""
+	if f.UpdatedAt.Valid {
+		updatedAt = f.UpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	return FactoryResponse{
+		ID:         fmt.Sprintf("%d", f.ID),
+		Name:       f.Name,
+		Slug:       f.Slug,
+		Location:   location,
+		Timezone:   timezone,
+		Settings:   factorySettingsFromDB(f.Settings),
+		SceneCount: f.SceneCount,
+		OrgCount:   f.OrgCount,
+		CreatedAt:  createdAt,
+		UpdatedAt:  updatedAt,
+	}
 }

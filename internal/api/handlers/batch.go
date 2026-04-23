@@ -102,23 +102,25 @@ var validBatchStatuses = map[string]struct{}{
 
 // BatchListItem represents a batch item in list responses.
 type BatchListItem struct {
-	ID             string `json:"id" db:"id"`
-	BatchID        string `json:"batch_id" db:"batch_id"`
-	OrderID        string `json:"order_id" db:"order_id"`
-	WorkstationID  string `json:"workstation_id" db:"workstation_id"`
-	Name           string `json:"name" db:"name"`
-	Notes          string `json:"notes,omitempty" db:"notes"`
-	Status         string `json:"status" db:"status"`
-	CompletedCount int    `json:"completed_count" db:"completed_count"`
-	TaskCount      int    `json:"task_count" db:"task_count"`
-	CancelledCount int    `json:"cancelled_count" db:"cancelled_count"`
-	FailedCount    int    `json:"failed_count" db:"failed_count"`
-	EpisodeCount   int    `json:"episode_count" db:"episode_count"`
-	StartedAt      string `json:"started_at,omitempty"`
-	EndedAt        string `json:"ended_at,omitempty"`
-	Metadata       any    `json:"metadata,omitempty"`
-	CreatedAt      string `json:"created_at,omitempty"`
-	UpdatedAt      string `json:"updated_at,omitempty"`
+	ID               string `json:"id" db:"id"`
+	BatchID          string `json:"batch_id" db:"batch_id"`
+	OrderID          string `json:"order_id" db:"order_id"`
+	WorkstationID    string `json:"workstation_id" db:"workstation_id"`
+	OrganizationID   string `json:"organization_id" db:"organization_id"`
+	OrganizationName string `json:"organization_name,omitempty" db:"organization_name"`
+	Name             string `json:"name" db:"name"`
+	Notes            string `json:"notes,omitempty" db:"notes"`
+	Status           string `json:"status" db:"status"`
+	CompletedCount   int    `json:"completed_count" db:"completed_count"`
+	TaskCount        int    `json:"task_count" db:"task_count"`
+	CancelledCount   int    `json:"cancelled_count" db:"cancelled_count"`
+	FailedCount      int    `json:"failed_count" db:"failed_count"`
+	EpisodeCount     int    `json:"episode_count" db:"episode_count"`
+	StartedAt        string `json:"started_at,omitempty"`
+	EndedAt          string `json:"ended_at,omitempty"`
+	Metadata         any    `json:"metadata,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
+	UpdatedAt        string `json:"updated_at,omitempty"`
 }
 
 // ListBatchesResponse represents the response body for listing batches.
@@ -132,23 +134,25 @@ type ListBatchesResponse struct {
 }
 
 type batchRow struct {
-	ID             int64          `db:"id"`
-	BatchID        string         `db:"batch_id"`
-	OrderID        int64          `db:"order_id"`
-	WorkstationID  int64          `db:"workstation_id"`
-	Name           sql.NullString `db:"name"`
-	Notes          sql.NullString `db:"notes"`
-	Status         string         `db:"status"`
-	CompletedCount int            `db:"completed_count"`
-	TaskCount      int            `db:"task_count"`
-	CancelledCount int            `db:"cancelled_count"`
-	FailedCount    int            `db:"failed_count"`
-	EpisodeCount   int            `db:"episode_count"`
-	StartedAt      sql.NullTime   `db:"started_at"`
-	EndedAt        sql.NullTime   `db:"ended_at"`
-	Metadata       sql.NullString `db:"metadata"`
-	CreatedAt      sql.NullTime   `db:"created_at"`
-	UpdatedAt      sql.NullTime   `db:"updated_at"`
+	ID               int64          `db:"id"`
+	BatchID          string         `db:"batch_id"`
+	OrderID          int64          `db:"order_id"`
+	WorkstationID    int64          `db:"workstation_id"`
+	OrganizationID   int64          `db:"organization_id"`
+	OrganizationName sql.NullString `db:"organization_name"`
+	Name             sql.NullString `db:"name"`
+	Notes            sql.NullString `db:"notes"`
+	Status           string         `db:"status"`
+	CompletedCount   int            `db:"completed_count"`
+	TaskCount        int            `db:"task_count"`
+	CancelledCount   int            `db:"cancelled_count"`
+	FailedCount      int            `db:"failed_count"`
+	EpisodeCount     int            `db:"episode_count"`
+	StartedAt        sql.NullTime   `db:"started_at"`
+	EndedAt          sql.NullTime   `db:"ended_at"`
+	Metadata         sql.NullString `db:"metadata"`
+	CreatedAt        sql.NullTime   `db:"created_at"`
+	UpdatedAt        sql.NullTime   `db:"updated_at"`
 }
 
 func parseNullableJSON(v sql.NullString) any {
@@ -171,6 +175,10 @@ func batchListItemFromRow(r batchRow) BatchListItem {
 	notes := ""
 	if r.Notes.Valid {
 		notes = r.Notes.String
+	}
+	orgName := ""
+	if r.OrganizationName.Valid {
+		orgName = r.OrganizationName.String
 	}
 
 	startedAt := ""
@@ -196,23 +204,25 @@ func batchListItemFromRow(r batchRow) BatchListItem {
 		nameOut = r.Name.String
 	}
 	return BatchListItem{
-		ID:             fmt.Sprintf("%d", r.ID),
-		BatchID:        r.BatchID,
-		OrderID:        fmt.Sprintf("%d", r.OrderID),
-		WorkstationID:  fmt.Sprintf("%d", r.WorkstationID),
-		Name:           nameOut,
-		Notes:          notes,
-		Status:         r.Status,
-		CompletedCount: r.CompletedCount,
-		TaskCount:      r.TaskCount,
-		CancelledCount: r.CancelledCount,
-		FailedCount:    r.FailedCount,
-		EpisodeCount:   r.EpisodeCount,
-		StartedAt:      startedAt,
-		EndedAt:        endedAt,
-		Metadata:       parseNullableJSON(r.Metadata),
-		CreatedAt:      createdAt,
-		UpdatedAt:      updatedAt,
+		ID:               fmt.Sprintf("%d", r.ID),
+		BatchID:          r.BatchID,
+		OrderID:          fmt.Sprintf("%d", r.OrderID),
+		WorkstationID:    fmt.Sprintf("%d", r.WorkstationID),
+		OrganizationID:   fmt.Sprintf("%d", r.OrganizationID),
+		OrganizationName: orgName,
+		Name:             nameOut,
+		Notes:            notes,
+		Status:           r.Status,
+		CompletedCount:   r.CompletedCount,
+		TaskCount:        r.TaskCount,
+		CancelledCount:   r.CancelledCount,
+		FailedCount:      r.FailedCount,
+		EpisodeCount:     r.EpisodeCount,
+		StartedAt:        startedAt,
+		EndedAt:          endedAt,
+		Metadata:         parseNullableJSON(r.Metadata),
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
 	}
 }
 
@@ -224,6 +234,10 @@ func batchListItemFromRow(r batchRow) BatchListItem {
 // @Produce      json
 // @Param        order_id       query     string  false  "Filter by order ID"
 // @Param        workstation_id query     string  false  "Filter by workstation ID"
+// @Param        organization_id query    string  false  "Filter by organization ID"
+// @Param        device_id      query     string  false  "Filter by robot device ID"
+// @Param        collector_operator_id query string false "Filter by collector operator ID"
+// @Param        scene_id        query     string  false  "Filter by scene ID (derived from order)"
 // @Param        status         query     string  false  "Filter by status"
 // @Param        limit          query     int     false  "Max results"       default(50)
 // @Param        offset         query     int     false  "Pagination offset" default(0)
@@ -236,6 +250,10 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 
 	orderID := strings.TrimSpace(c.Query("order_id"))
 	workstationID := strings.TrimSpace(c.Query("workstation_id"))
+	orgID := strings.TrimSpace(c.Query("organization_id"))
+	deviceID := strings.TrimSpace(c.Query("device_id"))
+	collectorOpID := strings.TrimSpace(c.Query("collector_operator_id"))
+	sceneID := strings.TrimSpace(c.Query("scene_id"))
 	status := strings.TrimSpace(c.Query("status"))
 
 	limit := defaultLimit
@@ -265,26 +283,50 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 		}
 	}
 
-	conditions := []string{"deleted_at IS NULL"}
+	conditions := []string{"b.deleted_at IS NULL"}
 	args := make([]interface{}, 0, 6)
 
 	if orderID != "" {
-		conditions = append(conditions, "CAST(order_id AS CHAR) = ?")
+		conditions = append(conditions, "CAST(b.order_id AS CHAR) = ?")
 		args = append(args, orderID)
 	}
 	if workstationID != "" {
-		conditions = append(conditions, "CAST(workstation_id AS CHAR) = ?")
+		conditions = append(conditions, "CAST(b.workstation_id AS CHAR) = ?")
 		args = append(args, workstationID)
 	}
+	if orgID != "" {
+		conditions = append(conditions, "CAST(b.organization_id AS CHAR) = ?")
+		args = append(args, orgID)
+	}
 	if status != "" {
-		conditions = append(conditions, "status = ?")
+		conditions = append(conditions, "b.status = ?")
 		args = append(args, status)
+	}
+	if deviceID != "" {
+		// robot_serial is denormalized from robots.device_id on workstations.
+		conditions = append(conditions, "ws.robot_serial = ?")
+		args = append(args, deviceID)
+	}
+	if collectorOpID != "" {
+		// collector_operator_id is denormalized from data_collectors.operator_id on workstations.
+		conditions = append(conditions, "ws.collector_operator_id = ?")
+		args = append(args, collectorOpID)
+	}
+	if sceneID != "" {
+		conditions = append(conditions, "CAST(o.scene_id AS CHAR) = ?")
+		args = append(args, sceneID)
 	}
 
 	whereClause := strings.Join(conditions, " AND ")
 
 	var total int
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM batches WHERE %s", whereClause)
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM batches b
+		LEFT JOIN workstations ws ON ws.id = b.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN orders o ON o.id = b.order_id AND o.deleted_at IS NULL
+		WHERE %s
+	`, whereClause)
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[BATCH] Failed to count batches: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list batches"})
@@ -297,6 +339,8 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 			b.batch_id,
 			b.order_id,
 			b.workstation_id,
+			b.organization_id,
+			org.name AS organization_name,
 			b.name,
 			b.notes,
 			b.status,
@@ -311,6 +355,9 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 			b.created_at,
 			b.updated_at
 		FROM batches b
+		LEFT JOIN workstations ws ON ws.id = b.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN organizations org ON org.id = b.organization_id AND org.deleted_at IS NULL
+		LEFT JOIN orders o ON o.id = b.order_id AND o.deleted_at IS NULL
 		LEFT JOIN (
 			SELECT
 				batch_id,
@@ -380,6 +427,8 @@ func (h *BatchHandler) GetBatch(c *gin.Context) {
 			b.batch_id,
 			b.order_id,
 			b.workstation_id,
+			b.organization_id,
+			org.name AS organization_name,
 			b.name,
 			b.notes,
 			b.status,
@@ -394,6 +443,7 @@ func (h *BatchHandler) GetBatch(c *gin.Context) {
 			b.created_at,
 			b.updated_at
 		FROM batches b
+		LEFT JOIN organizations org ON org.id = b.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN (
 			SELECT
 				batch_id,
@@ -768,7 +818,6 @@ type TaskGroupItem struct {
 type CreateBatchRequest struct {
 	OrderID       int64           `json:"order_id"`
 	WorkstationID int64           `json:"workstation_id"`
-	Name          string          `json:"name,omitempty"`
 	Notes         string          `json:"notes,omitempty"`
 	TaskGroups    []TaskGroupItem `json:"task_groups"`
 	Metadata      json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
@@ -863,10 +912,11 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 
 	// Lock order and validate quota
 	type orderQuotaRow struct {
-		TargetCount int `db:"target_count"`
+		TargetCount    int   `db:"target_count"`
+		OrganizationID int64 `db:"organization_id"`
 	}
 	var orderQuota orderQuotaRow
-	if err := tx.Get(&orderQuota, "SELECT target_count FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", req.OrderID); err != nil {
+	if err := tx.Get(&orderQuota, "SELECT target_count, organization_id FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", req.OrderID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("order not found: %d", req.OrderID)})
 			return
@@ -898,11 +948,12 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 
 	// Validate workstation
 	type wsRow struct {
-		ID        int64 `db:"id"`
-		FactoryID int64 `db:"factory_id"`
+		ID             int64 `db:"id"`
+		FactoryID      int64 `db:"factory_id"`
+		OrganizationID int64 `db:"organization_id"`
 	}
 	var ws wsRow
-	if err := tx.Get(&ws, "SELECT id, factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", req.WorkstationID); err != nil {
+	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", req.WorkstationID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("workstation not found: %d", req.WorkstationID)})
 			return
@@ -912,19 +963,10 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 		return
 	}
 
-	// Resolve organization_id from factory
-	var organizationID int64
-	if err := tx.Get(&organizationID, "SELECT organization_id FROM factories WHERE id = ? AND deleted_at IS NULL LIMIT 1", ws.FactoryID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "workstation factory not found"})
-			return
-		}
-		logger.Printf("[BATCH] Failed to resolve organization_id: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
-		return
-	}
+	// Persist organization_id on batches for filtering (derived from order).
+	organizationID := orderQuota.OrganizationID
 
-	batchName := strings.TrimSpace(req.Name)
+	batchName := ""
 	// Generate batch_id (unique even under bulk creates)
 	batchIDStr, err := newPublicBatchID(now, 0)
 	if err != nil {
@@ -933,13 +975,7 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 		return
 	}
 	nameArg := sql.NullString{}
-	if batchName != "" {
-		nameArg = sql.NullString{String: batchName, Valid: true}
-	}
 	var taskBatchName any
-	if batchName != "" {
-		taskBatchName = batchName
-	}
 
 	// Handle metadata
 	var metadataStr sql.NullString
@@ -958,9 +994,9 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 
 	// Insert batch
 	res, err := tx.Exec(
-		`INSERT INTO batches (batch_id, order_id, workstation_id, name, notes, status, metadata, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-		batchIDStr, req.OrderID, req.WorkstationID, nameArg, notesStr, metadataStr, now, now,
+		`INSERT INTO batches (batch_id, order_id, workstation_id, organization_id, name, notes, status, metadata, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+		batchIDStr, req.OrderID, req.WorkstationID, organizationID, nameArg, notesStr, metadataStr, now, now,
 	)
 	if err != nil {
 		logger.Printf("[BATCH] Failed to insert batch: %v", err)
@@ -1085,8 +1121,6 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 // AdjustBatchTasksRequest is the request body for adjusting batch tasks declaratively.
 type AdjustBatchTasksRequest struct {
 	TaskGroups []TaskGroupItem `json:"task_groups"`
-	// Name optional: if present, updates batch display name; empty string clears (NULL).
-	Name *string `json:"name,omitempty"`
 }
 
 // AdjustBatchTasksResponse is the response body for adjusting batch tasks.
@@ -1172,36 +1206,20 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 		return
 	}
 
-	if req.Name != nil {
-		if strings.TrimSpace(*req.Name) == "" {
-			if _, err := tx.Exec(
-				`UPDATE batches SET name = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
-				now, batchNumID,
-			); err != nil {
-				logger.Printf("[BATCH] Failed to clear batch name: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
-				return
-			}
-		} else {
-			n := strings.TrimSpace(*req.Name)
-			if _, err := tx.Exec(
-				`UPDATE batches SET name = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
-				n, now, batchNumID,
-			); err != nil {
-				logger.Printf("[BATCH] Failed to update batch name: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
-				return
-			}
-		}
+	// Lock order for quota check and read organization_id (consistent with CreateBatch).
+	type orderQuotaRow struct {
+		TargetCount    int   `db:"target_count"`
+		OrganizationID int64 `db:"organization_id"`
 	}
-
-	// Lock order for quota check
-	var targetCount int
-	if err := tx.Get(&targetCount, "SELECT target_count FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", batch.OrderID); err != nil {
+	var orderQuota orderQuotaRow
+	if err := tx.Get(&orderQuota, "SELECT target_count, organization_id FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", batch.OrderID); err != nil {
 		logger.Printf("[BATCH] Failed to lock order: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
 	}
+	targetCount := orderQuota.TargetCount
+	// organization_id is derived from the order (same as CreateBatch).
+	organizationID := orderQuota.OrganizationID
 
 	// Count current order-level completed count for quota check (completed-only).
 	var orderCompletedCount int
@@ -1219,12 +1237,6 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 	var ws wsRow
 	if err := tx.Get(&ws, "SELECT id, factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", batch.WorkstationID); err != nil {
 		logger.Printf("[BATCH] Failed to get workstation: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
-		return
-	}
-	var organizationID int64
-	if err := tx.Get(&organizationID, "SELECT organization_id FROM factories WHERE id = ? AND deleted_at IS NULL LIMIT 1", ws.FactoryID); err != nil {
-		logger.Printf("[BATCH] Failed to resolve organization_id: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
 	}
