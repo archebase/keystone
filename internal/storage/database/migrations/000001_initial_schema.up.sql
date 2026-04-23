@@ -457,26 +457,3 @@ CREATE TABLE IF NOT EXISTS sync_logs (
     INDEX idx_status (status),
     INDEX idx_started (started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ============================================================
--- Sample Data
--- ============================================================
-
-INSERT INTO organizations (name, slug, settings) VALUES
-    ('RoboticsLab Internal', 'roboticslab', '{}')
-ON DUPLICATE KEY UPDATE name=VALUES(name), settings=VALUES(settings);
-
-INSERT INTO factories (organization_id, name, slug, location, timezone, settings) VALUES
-(1, 'Shanghai Factory', 'factory-sh', 'Shanghai, China', 'Asia/Shanghai', '{}'),
-(1, 'San Francisco Factory', 'factory-sf', 'San Francisco, USA', 'America/Los_Angeles', '{}')
-ON DUPLICATE KEY UPDATE name=VALUES(name), location=VALUES(location), timezone=VALUES(timezone), settings=VALUES(settings);
-
-INSERT INTO skills (slug, description) VALUES
-    ('pick', 'Grasp and lift an object'),
-    ('place', 'Put an object at a target location'),
-    ('drop', 'Release an object without precision'),
-    ('push', 'Move an object without grasping'),
-    ('wipe', 'Clean a surface with wiping motion'),
-    ('navigate', 'Move from one location to another'),
-    ('pour', 'Transfer liquid between containers')
-ON DUPLICATE KEY UPDATE description=VALUES(description);

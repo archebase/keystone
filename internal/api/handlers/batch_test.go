@@ -502,7 +502,6 @@ func newTestBatchHandlerDB(t *testing.T) *sqlx.DB {
 		)`,
 		`CREATE TABLE factories (
 			id INTEGER PRIMARY KEY,
-			organization_id INTEGER NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE sops (
@@ -572,7 +571,7 @@ func seedBatchCreateFixtures(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	stmts := []string{
 		`INSERT INTO orders (id, target_count) VALUES (10, 10)`,
-		`INSERT INTO factories (id, organization_id) VALUES (30, 60)`,
+		`INSERT INTO factories (id) VALUES (30)`,
 		`INSERT INTO workstations (id, factory_id, status) VALUES (20, 30, 'idle')`,
 		`INSERT INTO sops (id) VALUES (40)`,
 		`INSERT INTO scenes (id, name) VALUES (70, 'scene-a')`,

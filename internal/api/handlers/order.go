@@ -89,12 +89,13 @@ type OrderResponse struct {
 
 // CreateOrderRequest is the request body for creating an order.
 type CreateOrderRequest struct {
-	SceneID     string          `json:"scene_id"`
-	Name        string          `json:"name"`
-	TargetCount int             `json:"target_count"`
-	Priority    string          `json:"priority"`
-	Deadline    *string         `json:"deadline,omitempty"` // RFC3339
-	Metadata    json.RawMessage `json:"metadata,omitempty"` // JSON object
+	OrganizationID string          `json:"organization_id"`
+	SceneID        string          `json:"scene_id"`
+	Name           string          `json:"name"`
+	TargetCount    int             `json:"target_count"`
+	Priority       string          `json:"priority"`
+	Deadline       *string         `json:"deadline,omitempty"` // RFC3339
+	Metadata       json.RawMessage `json:"metadata,omitempty"` // JSON object
 }
 
 // UpdateOrderRequest is the request body for partially updating an order.
@@ -171,6 +172,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		return
 	}
 
+	orgIDStr := strings.TrimSpace(c.Query("organization_id"))
 	status := strings.TrimSpace(c.Query("status"))
 	if status != "" {
 		if _, ok := validOrderStatuses[status]; !ok {
@@ -181,6 +183,15 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 
 	countQuery := "SELECT COUNT(*) FROM orders WHERE deleted_at IS NULL"
 	countArgs := []any{}
+	if orgIDStr != "" {
+		parsedOrgID, err := strconv.ParseInt(orgIDStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+			return
+		}
+		countQuery += " AND organization_id = ?"
+		countArgs = append(countArgs, parsedOrgID)
+	}
 	if status != "" {
 		countQuery += " AND status = ?"
 		countArgs = append(countArgs, status)
@@ -211,6 +222,11 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		WHERE o.deleted_at IS NULL
 	`
 	args := []any{}
+	if orgIDStr != "" {
+		parsedOrgID, _ := strconv.ParseInt(orgIDStr, 10, 64)
+		query += " AND o.organization_id = ?\n"
+		args = append(args, parsedOrgID)
+	}
 	if status != "" {
 		query += " AND o.status = ?\n"
 		args = append(args, status)
@@ -431,9 +447,15 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
+	req.OrganizationID = strings.TrimSpace(req.OrganizationID)
 	req.SceneID = strings.TrimSpace(req.SceneID)
 	req.Name = strings.TrimSpace(req.Name)
 	req.Priority = strings.TrimSpace(req.Priority)
+
+	if req.OrganizationID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
+		return
+	}
 
 	if req.SceneID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "scene_id is required"})
@@ -483,28 +505,48 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		}
 	}
 
+	organizationID, err := strconv.ParseInt(req.OrganizationID, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
+		return
+	}
+
 	sceneID, err := strconv.ParseInt(req.SceneID, 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
 		return
 	}
 
-	// Derive organization_id from scene -> factory -> organization
-	var organizationID int64
+	// Validate: organization must exist and belong to the same factory as the scene.
+	var orgFactoryID int64
+	if err = h.db.Get(&orgFactoryID, "SELECT factory_id FROM organizations WHERE id = ? AND deleted_at IS NULL", organizationID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
+			return
+		}
+		logger.Printf("[ORDER] Failed to query organization: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create order"})
+		return
+	}
+
+	var sceneFactoryID int64
 	var sceneName string
-	err = h.db.QueryRowx(`
-		SELECT f.organization_id, s.name
+	if err = h.db.QueryRowx(`
+		SELECT s.factory_id, s.name
 		FROM scenes s
-		JOIN factories f ON f.id = s.factory_id
-		WHERE s.id = ? AND s.deleted_at IS NULL AND f.deleted_at IS NULL
-	`, sceneID).Scan(&organizationID, &sceneName)
-	if err != nil {
+		WHERE s.id = ? AND s.deleted_at IS NULL
+	`, sceneID).Scan(&sceneFactoryID, &sceneName); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
 			return
 		}
-		logger.Printf("[ORDER] Failed to derive organization_id: %v", err)
+		logger.Printf("[ORDER] Failed to query scene: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create order"})
+		return
+	}
+
+	if orgFactoryID != sceneFactoryID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization does not belong to the same factory as the scene"})
 		return
 	}
 

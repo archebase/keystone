@@ -898,11 +898,12 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 
 	// Validate workstation
 	type wsRow struct {
-		ID        int64 `db:"id"`
-		FactoryID int64 `db:"factory_id"`
+		ID             int64 `db:"id"`
+		FactoryID      int64 `db:"factory_id"`
+		OrganizationID int64 `db:"organization_id"`
 	}
 	var ws wsRow
-	if err := tx.Get(&ws, "SELECT id, factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", req.WorkstationID); err != nil {
+	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", req.WorkstationID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("workstation not found: %d", req.WorkstationID)})
 			return
@@ -912,17 +913,8 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 		return
 	}
 
-	// Resolve organization_id from factory
-	var organizationID int64
-	if err := tx.Get(&organizationID, "SELECT organization_id FROM factories WHERE id = ? AND deleted_at IS NULL LIMIT 1", ws.FactoryID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "workstation factory not found"})
-			return
-		}
-		logger.Printf("[BATCH] Failed to resolve organization_id: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
-		return
-	}
+	// organization_id is stored directly on the workstation row (denormalized from data_collectors).
+	organizationID := ws.OrganizationID
 
 	batchName := strings.TrimSpace(req.Name)
 	// Generate batch_id (unique even under bulk creates)
@@ -1213,21 +1205,18 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 
 	// Validate workstation for new tasks
 	type wsRow struct {
-		ID        int64 `db:"id"`
-		FactoryID int64 `db:"factory_id"`
+		ID             int64 `db:"id"`
+		FactoryID      int64 `db:"factory_id"`
+		OrganizationID int64 `db:"organization_id"`
 	}
 	var ws wsRow
-	if err := tx.Get(&ws, "SELECT id, factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", batch.WorkstationID); err != nil {
+	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", batch.WorkstationID); err != nil {
 		logger.Printf("[BATCH] Failed to get workstation: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
 	}
-	var organizationID int64
-	if err := tx.Get(&organizationID, "SELECT organization_id FROM factories WHERE id = ? AND deleted_at IS NULL LIMIT 1", ws.FactoryID); err != nil {
-		logger.Printf("[BATCH] Failed to resolve organization_id: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
-		return
-	}
+	// organization_id is stored directly on the workstation row (denormalized from data_collectors).
+	organizationID := ws.OrganizationID
 
 	// Get batch name for denormalization
 	var batchName string

@@ -31,14 +31,14 @@ func NewOrganizationHandler(db *sqlx.DB) *OrganizationHandler {
 
 // OrganizationResponse represents an organization in the response.
 type OrganizationResponse struct {
-	ID           string      `json:"id"`
-	Name         string      `json:"name"`
-	Slug         string      `json:"slug"`
-	Description  string      `json:"description,omitempty"`
-	Settings     interface{} `json:"settings,omitempty"`
-	CreatedAt    string      `json:"created_at,omitempty"`
-	UpdatedAt    string      `json:"updated_at,omitempty"`
-	FactoryCount int         `json:"factoryCount"`
+	ID          string      `json:"id"`
+	FactoryID   string      `json:"factory_id"`
+	Name        string      `json:"name"`
+	Slug        string      `json:"slug"`
+	Description string      `json:"description,omitempty"`
+	Settings    interface{} `json:"settings,omitempty"`
+	CreatedAt   string      `json:"created_at,omitempty"`
+	UpdatedAt   string      `json:"updated_at,omitempty"`
 }
 
 // OrganizationListResponse represents the response for listing organizations.
@@ -53,6 +53,7 @@ type OrganizationListResponse struct {
 
 // CreateOrganizationRequest represents the request body for creating an organization.
 type CreateOrganizationRequest struct {
+	FactoryID   string      `json:"factory_id"`
 	Name        string      `json:"name"`
 	Slug        string      `json:"slug"`
 	Description string      `json:"description,omitempty"`
@@ -62,6 +63,7 @@ type CreateOrganizationRequest struct {
 // CreateOrganizationResponse represents the response for creating an organization.
 type CreateOrganizationResponse struct {
 	ID          string `json:"id"`
+	FactoryID   string `json:"factory_id"`
 	Name        string `json:"name"`
 	Slug        string `json:"slug"`
 	Description string `json:"description,omitempty"`
@@ -105,14 +107,14 @@ func (h *OrganizationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // organizationRow represents an organization in the database
 type organizationRow struct {
-	ID           int64          `db:"id"`
-	Name         string         `db:"name"`
-	Slug         string         `db:"slug"`
-	Description  sql.NullString `db:"description"`
-	Settings     sql.NullString `db:"settings"`
-	CreatedAt    sql.NullTime   `db:"created_at"`
-	UpdatedAt    sql.NullTime   `db:"updated_at"`
-	FactoryCount int            `db:"factory_count"`
+	ID          int64          `db:"id"`
+	FactoryID   int64          `db:"factory_id"`
+	Name        string         `db:"name"`
+	Slug        string         `db:"slug"`
+	Description sql.NullString `db:"description"`
+	Settings    sql.NullString `db:"settings"`
+	CreatedAt   sql.NullTime   `db:"created_at"`
+	UpdatedAt   sql.NullTime   `db:"updated_at"`
 }
 
 // ListOrganizations handles organization listing requests.
@@ -146,14 +148,13 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 	query := `
 		SELECT 
 			o.id,
+			o.factory_id,
 			o.name,
 			o.slug,
 			o.description,
 			o.settings,
 			o.created_at,
-			o.updated_at,
-			(SELECT COUNT(*) FROM factories f 
-			 WHERE f.organization_id = o.id AND f.deleted_at IS NULL) as factory_count
+			o.updated_at
 		FROM organizations o
 		WHERE o.deleted_at IS NULL
 		ORDER BY o.id DESC
@@ -169,36 +170,7 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 
 	organizations := []OrganizationResponse{}
 	for _, org := range dbRows {
-		description := ""
-		if org.Description.Valid {
-			description = org.Description.String
-		}
-
-		var settings interface{}
-		if org.Settings.Valid && org.Settings.String != "" && org.Settings.String != "null" {
-			settings = parseJSONRaw(org.Settings.String)
-		}
-
-		createdAt := ""
-		if org.CreatedAt.Valid {
-			createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
-		}
-
-		updatedAt := ""
-		if org.UpdatedAt.Valid {
-			updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
-		}
-
-		organizations = append(organizations, OrganizationResponse{
-			ID:           fmt.Sprintf("%d", org.ID),
-			Name:         org.Name,
-			Slug:         org.Slug,
-			Description:  description,
-			Settings:     settings,
-			CreatedAt:    createdAt,
-			UpdatedAt:    updatedAt,
-			FactoryCount: org.FactoryCount,
-		})
+		organizations = append(organizations, orgResponseFromRow(org))
 	}
 
 	hasNext := (pagination.Offset + pagination.Limit) < total
@@ -235,23 +207,12 @@ func (h *OrganizationHandler) GetOrganization(c *gin.Context) {
 		return
 	}
 
-	query := `
-		SELECT 
-			o.id,
-			o.name,
-			o.slug,
-			o.description,
-			o.settings,
-			o.created_at,
-			o.updated_at,
-			(SELECT COUNT(*) FROM factories f 
-			 WHERE f.organization_id = o.id AND f.deleted_at IS NULL) as factory_count
-		FROM organizations o
-		WHERE o.id = ? AND o.deleted_at IS NULL
-	`
-
 	var org organizationRow
-	if err := h.db.Get(&org, query, id); err != nil {
+	if err := h.db.Get(&org, `
+		SELECT id, factory_id, name, slug, description, settings, created_at, updated_at
+		FROM organizations
+		WHERE id = ? AND deleted_at IS NULL
+	`, id); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "organization not found"})
 			return
@@ -261,36 +222,7 @@ func (h *OrganizationHandler) GetOrganization(c *gin.Context) {
 		return
 	}
 
-	description := ""
-	if org.Description.Valid {
-		description = org.Description.String
-	}
-
-	var settings interface{}
-	if org.Settings.Valid && org.Settings.String != "" && org.Settings.String != "null" {
-		settings = parseJSONRaw(org.Settings.String)
-	}
-
-	createdAt := ""
-	if org.CreatedAt.Valid {
-		createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	updatedAt := ""
-	if org.UpdatedAt.Valid {
-		updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	c.JSON(http.StatusOK, OrganizationResponse{
-		ID:           fmt.Sprintf("%d", org.ID),
-		Name:         org.Name,
-		Slug:         org.Slug,
-		Description:  description,
-		Settings:     settings,
-		CreatedAt:    createdAt,
-		UpdatedAt:    updatedAt,
-		FactoryCount: org.FactoryCount,
-	})
+	c.JSON(http.StatusOK, orgResponseFromRow(org))
 }
 
 // CreateOrganization handles organization creation requests.
@@ -312,9 +244,28 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 		return
 	}
 
+	req.FactoryID = strings.TrimSpace(req.FactoryID)
 	req.Name = strings.TrimSpace(req.Name)
 	req.Slug = strings.TrimSpace(req.Slug)
 	req.Description = strings.TrimSpace(req.Description)
+
+	if req.FactoryID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "factory_id is required"})
+		return
+	}
+
+	factoryID, err := strconv.ParseInt(req.FactoryID, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
+		return
+	}
+
+	// Verify factory exists
+	var factoryExists bool
+	if err := h.db.Get(&factoryExists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", factoryID); err != nil || !factoryExists {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "factory not found"})
+		return
+	}
 
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
@@ -334,8 +285,7 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 
 	// Check if slug already exists
 	var exists bool
-	err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = ? AND deleted_at IS NULL)", req.Slug)
-	if err == nil && exists {
+	if err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE slug = ? AND deleted_at IS NULL)", req.Slug); err == nil && exists {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "slug already exists"})
 		return
 	}
@@ -359,13 +309,15 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 
 	result, err := h.db.Exec(
 		`INSERT INTO organizations (
+			factory_id,
 			name,
 			slug,
 			description,
 			settings,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		factoryID,
 		req.Name,
 		req.Slug,
 		descriptionStr,
@@ -388,6 +340,7 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, CreateOrganizationResponse{
 		ID:          fmt.Sprintf("%d", id),
+		FactoryID:   req.FactoryID,
 		Name:        req.Name,
 		Slug:        req.Slug,
 		Description: req.Description,
@@ -426,7 +379,7 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 	// Check if organization exists
 	var existingOrg organizationRow
 	err = h.db.Get(&existingOrg,
-		"SELECT id, name, slug, description, settings, created_at, updated_at FROM organizations WHERE id = ? AND deleted_at IS NULL",
+		"SELECT id, factory_id, name, slug, description, settings, created_at, updated_at FROM organizations WHERE id = ? AND deleted_at IS NULL",
 		id)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -510,17 +463,7 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 	// Fetch the updated organization
 	var org organizationRow
 	err = h.db.Get(&org,
-		`SELECT 
-			o.id,
-			o.name,
-			o.slug,
-			o.description,
-			o.settings,
-			o.created_at,
-			o.updated_at,
-			(SELECT COUNT(*) FROM factories f 
-			 WHERE f.organization_id = o.id AND f.deleted_at IS NULL) as factory_count
-		FROM organizations o WHERE o.id = ?`,
+		"SELECT id, factory_id, name, slug, description, settings, created_at, updated_at FROM organizations WHERE id = ?",
 		id)
 	if err != nil {
 		logger.Printf("[ORGANIZATION] Failed to fetch updated organization: %v", err)
@@ -528,36 +471,7 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 		return
 	}
 
-	description := ""
-	if org.Description.Valid {
-		description = org.Description.String
-	}
-
-	var settings interface{}
-	if org.Settings.Valid && org.Settings.String != "" && org.Settings.String != "null" {
-		settings = parseJSONRaw(org.Settings.String)
-	}
-
-	createdAt := ""
-	if org.CreatedAt.Valid {
-		createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	updatedAt := ""
-	if org.UpdatedAt.Valid {
-		updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	c.JSON(http.StatusOK, OrganizationResponse{
-		ID:           fmt.Sprintf("%d", org.ID),
-		Name:         org.Name,
-		Slug:         org.Slug,
-		Description:  description,
-		Settings:     settings,
-		CreatedAt:    createdAt,
-		UpdatedAt:    updatedAt,
-		FactoryCount: org.FactoryCount,
-	})
+	c.JSON(http.StatusOK, orgResponseFromRow(org))
 }
 
 // DeleteOrganization handles organization deletion requests (soft delete).
@@ -595,17 +509,37 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 		return
 	}
 
-	// Check if organization has associated factories
-	var factoryCount int
-	err = h.db.Get(&factoryCount, "SELECT COUNT(*) FROM factories WHERE organization_id = ? AND deleted_at IS NULL", id)
-	if err != nil {
-		logger.Printf("[ORGANIZATION] Failed to check factory count: %v", err)
+	// Block deletion if the organization still has active data_collectors, inspectors, or orders.
+	var dcCount int
+	if err = h.db.Get(&dcCount, "SELECT COUNT(*) FROM data_collectors WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
+		logger.Printf("[ORGANIZATION] Failed to check data_collector count: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
 		return
 	}
+	if dcCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete organization with %d associated data collectors", dcCount)})
+		return
+	}
 
-	if factoryCount > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete organization with %d associated factories", factoryCount)})
+	var inspectorCount int
+	if err = h.db.Get(&inspectorCount, "SELECT COUNT(*) FROM inspectors WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
+		logger.Printf("[ORGANIZATION] Failed to check inspector count: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
+		return
+	}
+	if inspectorCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete organization with %d associated inspectors", inspectorCount)})
+		return
+	}
+
+	var orderCount int
+	if err = h.db.Get(&orderCount, "SELECT COUNT(*) FROM orders WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
+		logger.Printf("[ORGANIZATION] Failed to check order count: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
+		return
+	}
+	if orderCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete organization with %d associated orders", orderCount)})
 		return
 	}
 
@@ -620,4 +554,38 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// orgResponseFromRow converts an organizationRow to an OrganizationResponse.
+func orgResponseFromRow(org organizationRow) OrganizationResponse {
+	description := ""
+	if org.Description.Valid {
+		description = org.Description.String
+	}
+
+	var settings interface{}
+	if org.Settings.Valid && org.Settings.String != "" && org.Settings.String != "null" {
+		settings = parseJSONRaw(org.Settings.String)
+	}
+
+	createdAt := ""
+	if org.CreatedAt.Valid {
+		createdAt = org.CreatedAt.Time.UTC().Format(time.RFC3339)
+	}
+
+	updatedAt := ""
+	if org.UpdatedAt.Valid {
+		updatedAt = org.UpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
+
+	return OrganizationResponse{
+		ID:          fmt.Sprintf("%d", org.ID),
+		FactoryID:   fmt.Sprintf("%d", org.FactoryID),
+		Name:        org.Name,
+		Slug:        org.Slug,
+		Description: description,
+		Settings:    settings,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+	}
 }
