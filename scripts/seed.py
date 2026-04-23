@@ -262,6 +262,56 @@ SCENE_TREE = {
     "厨房": ["冰箱", "备菜台", "灶台"],
 }
 
+ORDERS = [
+    {
+        "name": "卧室整理",
+        "scene_name": "卧室",
+        "target_count": 10,
+        "priority": "normal",
+        "metadata": {"seeded": True},
+    },
+    {
+        "name": "厨房取物",
+        "scene_name": "厨房",
+        "target_count": 5,
+        "priority": "high",
+        "metadata": {"seeded": True},
+    },
+    {
+        "name": "厨房移动水瓶",
+        "scene_name": "厨房",
+        "target_count": 6,
+        "priority": "normal",
+        "metadata": {"seeded": True},
+    },
+    {
+        "name": "快递站分拣",
+        "scene_name": "快递站",
+        "target_count": 8,
+        "priority": "urgent",
+        "metadata": {"seeded": True},
+    },
+]
+
+BATCHES = [
+    # For each order, create one batch on a workstation.
+    {"order_name": "卧室整理", "workstation_robot_device_id": "robot_dc93"},
+    {"order_name": "卧室整理", "workstation_robot_device_id": "robot_dc86"},
+    {"order_name": "厨房取物", "workstation_index": 1, "quantity": 2},
+    {"order_name": "厨房移动水瓶", "workstation_robot_device_id": "robot_dc93"},
+    {"order_name": "厨房移动水瓶", "workstation_robot_device_id": "robot_dc86"},
+    {"order_name": "快递站分拣", "workstation_index": 2, "quantity": 4},
+]
+
+# Hard-coded batch task quotas per order (seed only).
+# NOTE: We keep these explicit (sop_slug + subscene_name + quantity) so seeding
+# does not "guess" task groups from scene structure.
+BATCH_TASK_GROUPS_BY_ORDER = {
+    "卧室整理": [{"sop_slug": "bathroom-fold-towel", "subscene_name": "桌子", "quantity": 3}],
+    "厨房取物": [{"sop_slug": "kitchen-fridge-retrieve", "subscene_name": "冰箱", "quantity": 2}],
+    "厨房移动水瓶": [{"sop_slug": "kitchen-move-water-bottle", "subscene_name": "备菜台", "quantity": 3}],
+    "快递站分拣": [{"sop_slug": "delivery-station-intake", "subscene_name": "分拣处", "quantity": 4}],
+}
 
 def _post_json(path, body):
     url = f"{API_BASE.rstrip('/')}{path}"
@@ -487,6 +537,64 @@ def _ensure_inspector(organization_id, insp):
         payload["certification_level"] = certification_level
     return _post_json("/inspectors", payload)
 
+def _ensure_order(organization_id, scene_id, order):
+    name = str(order.get("name", "")).strip()
+    if not name:
+        raise ValueError("order name is required")
+
+    # Idempotency: unique by (organization_id, scene_id, name).
+    for existing in _list_items(
+        "/orders",
+        params={"organization_id": str(organization_id), "limit": 500, "offset": 0},
+    ):
+        if str(existing.get("scene_id", "")).strip() == str(scene_id) and str(existing.get("name", "")).strip() == name:
+            return existing
+
+    payload = {
+        "organization_id": str(organization_id),
+        "scene_id": str(scene_id),
+        "name": name,
+        "target_count": int(order.get("target_count") or 0),
+        "priority": str(order.get("priority") or "normal").strip() or "normal",
+    }
+    if order.get("deadline"):
+        payload["deadline"] = str(order["deadline"]).strip()
+    if order.get("metadata") is not None:
+        payload["metadata"] = order["metadata"]
+    return _post_json("/orders", payload)
+
+def _ensure_batch(order_id, workstation_id, task_groups, notes="", metadata=None):
+    order_id = int(order_id)
+    workstation_id = int(workstation_id)
+    if order_id <= 0:
+        raise ValueError("batch order_id must be positive")
+    if workstation_id <= 0:
+        raise ValueError("batch workstation_id must be positive")
+    if not task_groups:
+        raise ValueError("batch task_groups must not be empty")
+
+    # Idempotency: first batch for (order_id, workstation_id).
+    for existing in _list_items(
+        "/batches",
+        params={"order_id": str(order_id), "workstation_id": str(workstation_id), "limit": 200, "offset": 0},
+    ):
+        return existing
+
+    payload = {
+        "order_id": order_id,
+        "workstation_id": workstation_id,
+        "task_groups": task_groups,
+    }
+    if notes:
+        payload["notes"] = notes
+    if metadata is not None:
+        payload["metadata"] = metadata
+    resp = _post_json("/batches", payload)
+    # CreateBatchResponse returns {batch, tasks}; return batch object for consistency.
+    if isinstance(resp, dict) and "batch" in resp:
+        return resp["batch"]
+    return resp
+
 
 if __name__ == "__main__":
     try:
@@ -502,6 +610,8 @@ if __name__ == "__main__":
             "robots": [],
             "data_collectors": [],
             "inspectors": [],
+            "orders": [],
+            "batches": [],
             "stations": [],
             "scenes": {},
         }
@@ -562,6 +672,116 @@ if __name__ == "__main__":
             for sub_name in subscene_names:
                 sub = _ensure_subscene(scene["id"], sub_name)
                 created["scenes"][scene_name]["subscenes"].append(sub)
+
+        for order in ORDERS:
+            scene_name = str(order.get("scene_name", "")).strip()
+            scene_entry = created["scenes"].get(scene_name) if scene_name else None
+            if not scene_entry:
+                raise KeyError(f"scene not found for order {order.get('name')!r}: {scene_name!r}")
+            scene_id = scene_entry["scene"]["id"]
+            created["orders"].append(_ensure_order(organization["id"], scene_id, order))
+
+        # Create batches for orders on workstations.
+        if not created["sops"]:
+            raise RuntimeError("no sops created; cannot create batches")
+        kitchen_sop_id = next(
+            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "kitchen-fridge-retrieve"),
+            None,
+        )
+        delivery_sop_id = next(
+            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "delivery-station-intake"),
+            None,
+        )
+        fold_towel_sop_id = next(
+            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "bathroom-fold-towel"),
+            None,
+        )
+        if not kitchen_sop_id:
+            raise KeyError("sop not found: 'kitchen-fridge-retrieve'")
+        if not delivery_sop_id:
+            raise KeyError("sop not found: 'delivery-station-intake'")
+        if not fold_towel_sop_id:
+            raise KeyError("sop not found: 'bathroom-fold-towel'")
+
+        orders_by_name = {str(o.get("name", "")).strip(): o for o in created["orders"]}
+        for b in BATCHES:
+            order_name = str(b.get("order_name", "")).strip()
+            order_obj = orders_by_name.get(order_name)
+            if not order_obj:
+                raise KeyError(f"order not found for batch: {order_name!r}")
+            order_id = int(order_obj["id"])
+
+            ws_robot_device_id = str(b.get("workstation_robot_device_id", "")).strip()
+            if ws_robot_device_id:
+                # Workstation.robot_serial is denormalized from robots.device_id (see station.go).
+                ws = next(
+                    (w for w in created["stations"] if str(w.get("robot_serial", "")).strip() == ws_robot_device_id),
+                    None,
+                )
+                if not ws:
+                    # Fall back: fetch all stations from API (in case some pre-exist and were not created in this run).
+                    all_ws = _list_items("/stations", params={"limit": 500, "offset": 0})
+                    ws = next(
+                        (w for w in all_ws if str(w.get("robot_serial", "")).strip() == ws_robot_device_id),
+                        None,
+                    )
+                if not ws:
+                    raise KeyError(f"workstation not found for robot device_id: {ws_robot_device_id!r}")
+                ws_id = int(ws["id"])
+            else:
+                idx = int(b.get("workstation_index") or 0)
+                if idx < 0 or idx >= len(created["stations"]):
+                    raise IndexError(f"workstation_index out of range: {idx}")
+                ws_id = int(created["stations"][idx]["id"])
+
+            quotas = BATCH_TASK_GROUPS_BY_ORDER.get(order_name)
+            if not quotas:
+                raise KeyError(f"batch task_groups not configured for order: {order_name!r}")
+
+            task_groups = []
+            for q in quotas:
+                sop_slug = str(q.get("sop_slug", "")).strip()
+                subscene_name = str(q.get("subscene_name", "")).strip()
+                qty = int(q.get("quantity") or 0)
+                if not sop_slug:
+                    raise ValueError(f"batch task_groups.sop_slug is required for order {order_name!r}")
+                if not subscene_name:
+                    raise ValueError(f"batch task_groups.subscene_name is required for order {order_name!r}")
+                if qty <= 0:
+                    raise ValueError(f"batch task_groups.quantity must be positive for order {order_name!r}")
+
+                if sop_slug == "kitchen-fridge-retrieve":
+                    sop_id = kitchen_sop_id
+                elif sop_slug == "delivery-station-intake":
+                    sop_id = delivery_sop_id
+                elif sop_slug == "bathroom-fold-towel":
+                    sop_id = fold_towel_sop_id
+                elif sop_slug == "kitchen-move-water-bottle":
+                    sop_id = next(
+                        (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "kitchen-move-water-bottle"),
+                        None,
+                    )
+                    if not sop_id:
+                        raise KeyError("sop not found: 'kitchen-move-water-bottle'")
+                else:
+                    raise KeyError(f"unsupported sop_slug in batch task_groups for order {order_name!r}: {sop_slug!r}")
+
+                scene_name = str(next((o for o in ORDERS if o["name"] == order_name), {}).get("scene_name", "")).strip()
+                subscenes = (created["scenes"].get(scene_name) or {}).get("subscenes") or []
+                sub = next((ss for ss in subscenes if str(ss.get("name", "")).strip() == subscene_name), None)
+                if not sub:
+                    raise KeyError(f"subscene not found for order {order_name!r}: {scene_name!r}/{subscene_name!r}")
+                subscene_id = int(sub["id"])
+
+                task_groups.append({"sop_id": sop_id, "subscene_id": subscene_id, "quantity": qty})
+            created["batches"].append(
+                _ensure_batch(
+                    order_id=order_id,
+                    workstation_id=ws_id,
+                    task_groups=task_groups,
+                    metadata={"seeded": True},
+                )
+            )
 
         print(json.dumps(created, indent=2, ensure_ascii=False))
     except urllib.error.HTTPError as e:

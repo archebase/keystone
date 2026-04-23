@@ -54,37 +54,41 @@ type OrderListResponse struct {
 
 // OrderListItemResponse is the response body for an order item in list views.
 type OrderListItemResponse struct {
-	ID             string `json:"id"`
-	SceneID        string `json:"scene_id"`
-	SceneName      string `json:"scene_name,omitempty"`
-	Name           string `json:"name"`
-	TargetCount    int    `json:"target_count"`
-	CompletedCount int    `json:"completed_count"`
-	Status         string `json:"status"`
-	Priority       string `json:"priority"`
-	Deadline       string `json:"deadline,omitempty"`
-	Metadata       any    `json:"metadata,omitempty"`
-	CreatedAt      string `json:"created_at,omitempty"`
-	UpdatedAt      string `json:"updated_at,omitempty"`
+	ID               string `json:"id"`
+	SceneID          string `json:"scene_id"`
+	SceneName        string `json:"scene_name,omitempty"`
+	OrganizationID   string `json:"organization_id"`
+	OrganizationName string `json:"organization_name,omitempty"`
+	Name             string `json:"name"`
+	TargetCount      int    `json:"target_count"`
+	CompletedCount   int    `json:"completed_count"`
+	Status           string `json:"status"`
+	Priority         string `json:"priority"`
+	Deadline         string `json:"deadline,omitempty"`
+	Metadata         any    `json:"metadata,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
+	UpdatedAt        string `json:"updated_at,omitempty"`
 }
 
 // OrderResponse is the response body for a single order.
 type OrderResponse struct {
-	ID             string `json:"id"`
-	SceneID        string `json:"scene_id"`
-	SceneName      string `json:"scene_name,omitempty"`
-	Name           string `json:"name"`
-	TargetCount    int    `json:"target_count"`
-	TaskCount      int    `json:"task_count"`
-	CompletedCount int    `json:"completed_count"`
-	CancelledCount int    `json:"cancelled_count"`
-	FailedCount    int    `json:"failed_count"`
-	Status         string `json:"status"`
-	Priority       string `json:"priority"`
-	Deadline       string `json:"deadline,omitempty"`
-	Metadata       any    `json:"metadata,omitempty"`
-	CreatedAt      string `json:"created_at,omitempty"`
-	UpdatedAt      string `json:"updated_at,omitempty"`
+	ID               string `json:"id"`
+	SceneID          string `json:"scene_id"`
+	SceneName        string `json:"scene_name,omitempty"`
+	OrganizationID   string `json:"organization_id"`
+	OrganizationName string `json:"organization_name,omitempty"`
+	Name             string `json:"name"`
+	TargetCount      int    `json:"target_count"`
+	TaskCount        int    `json:"task_count"`
+	CompletedCount   int    `json:"completed_count"`
+	CancelledCount   int    `json:"cancelled_count"`
+	FailedCount      int    `json:"failed_count"`
+	Status           string `json:"status"`
+	Priority         string `json:"priority"`
+	Deadline         string `json:"deadline,omitempty"`
+	Metadata         any    `json:"metadata,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
+	UpdatedAt        string `json:"updated_at,omitempty"`
 }
 
 // CreateOrderRequest is the request body for creating an order.
@@ -112,36 +116,40 @@ type UpdateOrderRequest struct {
 }
 
 type orderRow struct {
-	ID             int64          `db:"id"`
-	SceneID        int64          `db:"scene_id"`
-	SceneName      sql.NullString `db:"scene_name"`
-	Name           string         `db:"name"`
-	TargetCount    int            `db:"target_count"`
-	TaskCount      int            `db:"task_count"`
-	CompletedCount int            `db:"completed_count"`
-	CancelledCount int            `db:"cancelled_count"`
-	FailedCount    int            `db:"failed_count"`
-	Status         string         `db:"status"`
-	Priority       string         `db:"priority"`
-	Deadline       sql.NullTime   `db:"deadline"`
-	Metadata       sql.NullString `db:"metadata"`
-	CreatedAt      sql.NullTime   `db:"created_at"`
-	UpdatedAt      sql.NullTime   `db:"updated_at"`
+	ID               int64          `db:"id"`
+	SceneID          int64          `db:"scene_id"`
+	SceneName        sql.NullString `db:"scene_name"`
+	OrganizationID   int64          `db:"organization_id"`
+	OrganizationName sql.NullString `db:"organization_name"`
+	Name             string         `db:"name"`
+	TargetCount      int            `db:"target_count"`
+	TaskCount        int            `db:"task_count"`
+	CompletedCount   int            `db:"completed_count"`
+	CancelledCount   int            `db:"cancelled_count"`
+	FailedCount      int            `db:"failed_count"`
+	Status           string         `db:"status"`
+	Priority         string         `db:"priority"`
+	Deadline         sql.NullTime   `db:"deadline"`
+	Metadata         sql.NullString `db:"metadata"`
+	CreatedAt        sql.NullTime   `db:"created_at"`
+	UpdatedAt        sql.NullTime   `db:"updated_at"`
 }
 
 type orderListRow struct {
-	ID             int64          `db:"id"`
-	SceneID        int64          `db:"scene_id"`
-	SceneName      sql.NullString `db:"scene_name"`
-	Name           string         `db:"name"`
-	TargetCount    int            `db:"target_count"`
-	CompletedCount int            `db:"completed_count"`
-	Status         string         `db:"status"`
-	Priority       string         `db:"priority"`
-	Deadline       sql.NullTime   `db:"deadline"`
-	Metadata       sql.NullString `db:"metadata"`
-	CreatedAt      sql.NullTime   `db:"created_at"`
-	UpdatedAt      sql.NullTime   `db:"updated_at"`
+	ID               int64          `db:"id"`
+	SceneID          int64          `db:"scene_id"`
+	SceneName        sql.NullString `db:"scene_name"`
+	OrganizationID   int64          `db:"organization_id"`
+	OrganizationName sql.NullString `db:"organization_name"`
+	Name             string         `db:"name"`
+	TargetCount      int            `db:"target_count"`
+	CompletedCount   int            `db:"completed_count"`
+	Status           string         `db:"status"`
+	Priority         string         `db:"priority"`
+	Deadline         sql.NullTime   `db:"deadline"`
+	Metadata         sql.NullString `db:"metadata"`
+	CreatedAt        sql.NullTime   `db:"created_at"`
+	UpdatedAt        sql.NullTime   `db:"updated_at"`
 }
 
 type orderCompletedAggRow struct {
@@ -173,10 +181,18 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	}
 
 	orgIDStr := strings.TrimSpace(c.Query("organization_id"))
+	sceneIDStr := strings.TrimSpace(c.Query("scene_id"))
+	priority := strings.TrimSpace(c.Query("priority"))
 	status := strings.TrimSpace(c.Query("status"))
 	if status != "" {
 		if _, ok := validOrderStatuses[status]; !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
+		}
+	}
+	if priority != "" {
+		if _, ok := validOrderPriorities[priority]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid priority"})
 			return
 		}
 	}
@@ -192,9 +208,22 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		countQuery += " AND organization_id = ?"
 		countArgs = append(countArgs, parsedOrgID)
 	}
+	if sceneIDStr != "" {
+		parsedSceneID, err := strconv.ParseInt(sceneIDStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
+			return
+		}
+		countQuery += " AND scene_id = ?"
+		countArgs = append(countArgs, parsedSceneID)
+	}
 	if status != "" {
 		countQuery += " AND status = ?"
 		countArgs = append(countArgs, status)
+	}
+	if priority != "" {
+		countQuery += " AND priority = ?"
+		countArgs = append(countArgs, priority)
 	}
 	var total int
 	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
@@ -208,6 +237,8 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			o.id,
 			o.scene_id,
 			s.name AS scene_name,
+			o.organization_id,
+			org.name AS organization_name,
 			o.name,
 			o.target_count,
 			0 AS completed_count,
@@ -218,6 +249,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			o.created_at,
 			o.updated_at
 		FROM orders o
+		LEFT JOIN organizations org ON org.id = o.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
 		WHERE o.deleted_at IS NULL
 	`
@@ -227,9 +259,18 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		query += " AND o.organization_id = ?\n"
 		args = append(args, parsedOrgID)
 	}
+	if sceneIDStr != "" {
+		parsedSceneID, _ := strconv.ParseInt(sceneIDStr, 10, 64)
+		query += " AND o.scene_id = ?\n"
+		args = append(args, parsedSceneID)
+	}
 	if status != "" {
 		query += " AND o.status = ?\n"
 		args = append(args, status)
+	}
+	if priority != "" {
+		query += " AND o.priority = ?\n"
+		args = append(args, priority)
 	}
 	query += `
 		ORDER BY o.id DESC
@@ -312,19 +353,25 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		if r.SceneName.Valid {
 			sceneName = r.SceneName.String
 		}
+		orgName := ""
+		if r.OrganizationName.Valid {
+			orgName = r.OrganizationName.String
+		}
 		orders = append(orders, OrderListItemResponse{
-			ID:             fmt.Sprintf("%d", r.ID),
-			SceneID:        fmt.Sprintf("%d", r.SceneID),
-			SceneName:      sceneName,
-			Name:           r.Name,
-			TargetCount:    r.TargetCount,
-			CompletedCount: r.CompletedCount,
-			Status:         r.Status,
-			Priority:       r.Priority,
-			Deadline:       deadline,
-			Metadata:       metadata,
-			CreatedAt:      createdAt,
-			UpdatedAt:      updatedAt,
+			ID:               fmt.Sprintf("%d", r.ID),
+			SceneID:          fmt.Sprintf("%d", r.SceneID),
+			SceneName:        sceneName,
+			OrganizationID:   fmt.Sprintf("%d", r.OrganizationID),
+			OrganizationName: orgName,
+			Name:             r.Name,
+			TargetCount:      r.TargetCount,
+			CompletedCount:   r.CompletedCount,
+			Status:           r.Status,
+			Priority:         r.Priority,
+			Deadline:         deadline,
+			Metadata:         metadata,
+			CreatedAt:        createdAt,
+			UpdatedAt:        updatedAt,
 		})
 	}
 
@@ -355,6 +402,8 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 			o.id,
 			o.scene_id,
 			s.name AS scene_name,
+			o.organization_id,
+			org.name AS organization_name,
 			o.name,
 			o.target_count,
 			o.status,
@@ -368,6 +417,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 			SUM(CASE WHEN t.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
 			SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed_count
 		FROM orders o
+		LEFT JOIN organizations org ON org.id = o.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
 		LEFT JOIN tasks t ON t.order_id = o.id AND t.deleted_at IS NULL
 		WHERE o.id = ? AND o.deleted_at IS NULL
@@ -419,23 +469,29 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 	if r.SceneName.Valid {
 		sceneName = r.SceneName.String
 	}
+	orgName := ""
+	if r.OrganizationName.Valid {
+		orgName = r.OrganizationName.String
+	}
 
 	c.JSON(http.StatusOK, OrderResponse{
-		ID:             fmt.Sprintf("%d", r.ID),
-		SceneID:        fmt.Sprintf("%d", r.SceneID),
-		SceneName:      sceneName,
-		Name:           r.Name,
-		TargetCount:    r.TargetCount,
-		TaskCount:      r.TaskCount,
-		CompletedCount: r.CompletedCount,
-		CancelledCount: r.CancelledCount,
-		FailedCount:    r.FailedCount,
-		Status:         r.Status,
-		Priority:       r.Priority,
-		Deadline:       deadline,
-		Metadata:       metadata,
-		CreatedAt:      createdAt,
-		UpdatedAt:      updatedAt,
+		ID:               fmt.Sprintf("%d", r.ID),
+		SceneID:          fmt.Sprintf("%d", r.SceneID),
+		SceneName:        sceneName,
+		OrganizationID:   fmt.Sprintf("%d", r.OrganizationID),
+		OrganizationName: orgName,
+		Name:             r.Name,
+		TargetCount:      r.TargetCount,
+		TaskCount:        r.TaskCount,
+		CompletedCount:   r.CompletedCount,
+		CancelledCount:   r.CancelledCount,
+		FailedCount:      r.FailedCount,
+		Status:           r.Status,
+		Priority:         r.Priority,
+		Deadline:         deadline,
+		Metadata:         metadata,
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
 	})
 }
 
