@@ -11,6 +11,7 @@
 
 CREATE TABLE IF NOT EXISTS organizations (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    factory_id BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(100) NOT NULL,
     description TEXT,
@@ -19,13 +20,15 @@ CREATE TABLE IF NOT EXISTS organizations (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL,
     _slug_unique VARCHAR(200) GENERATED ALWAYS AS (CONCAT(IFNULL(slug, ''), '|', IFNULL(deleted_at, ''))) STORED,
+    _name_unique VARCHAR(400) GENERATED ALWAYS AS (CONCAT(IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
     UNIQUE INDEX idx_slug_del (_slug_unique),
+    UNIQUE INDEX idx_name_del (_name_unique),
+    INDEX idx_factory (factory_id),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS factories (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    organization_id BIGINT NOT NULL,
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(100) NOT NULL,
     location VARCHAR(255),
@@ -35,8 +38,9 @@ CREATE TABLE IF NOT EXISTS factories (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL,
     _slug_unique VARCHAR(200) GENERATED ALWAYS AS (CONCAT(IFNULL(slug, ''), '|', IFNULL(deleted_at, ''))) STORED,
+    _name_unique VARCHAR(400) GENERATED ALWAYS AS (CONCAT(IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
     UNIQUE INDEX idx_slug_del (_slug_unique),
-    INDEX idx_org (organization_id),
+    UNIQUE INDEX idx_name_del (_name_unique),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -153,6 +157,7 @@ CREATE TABLE IF NOT EXISTS robots (
 
 CREATE TABLE IF NOT EXISTS data_collectors (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    organization_id BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(255) NOT NULL,
     operator_id VARCHAR(100) NOT NULL,
     email VARCHAR(255),
@@ -166,6 +171,7 @@ CREATE TABLE IF NOT EXISTS data_collectors (
     deleted_at TIMESTAMP NULL,
     _operator_unique VARCHAR(200) GENERATED ALWAYS AS (CONCAT(IFNULL(operator_id, ''), '|', IFNULL(deleted_at, ''))) STORED,
     UNIQUE INDEX idx_operator_del (_operator_unique),
+    INDEX idx_organization (organization_id),
     INDEX idx_status (status),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -179,6 +185,7 @@ CREATE TABLE IF NOT EXISTS workstations (
     collector_name VARCHAR(255) COMMENT 'Denormalized: avoids join to data_collectors',
     collector_operator_id VARCHAR(100) COMMENT 'Denormalized: avoids join to data_collectors',
     factory_id BIGINT NOT NULL,
+    organization_id BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(255),
     status ENUM('active', 'inactive', 'break', 'offline') DEFAULT 'active',
     metadata JSON DEFAULT NULL,
@@ -190,12 +197,14 @@ CREATE TABLE IF NOT EXISTS workstations (
     INDEX idx_robot (robot_id),
     INDEX idx_collector (data_collector_id),
     INDEX idx_factory (factory_id),
+    INDEX idx_organization (organization_id),
     INDEX idx_status (status),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS inspectors (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    organization_id BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(255) NOT NULL,
     inspector_id VARCHAR(100) NOT NULL,
     email VARCHAR(255),
@@ -207,6 +216,7 @@ CREATE TABLE IF NOT EXISTS inspectors (
     deleted_at TIMESTAMP NULL,
     _inspector_unique VARCHAR(200) GENERATED ALWAYS AS (CONCAT(IFNULL(inspector_id, ''), '|', IFNULL(deleted_at, ''))) STORED,
     UNIQUE INDEX idx_inspector_del (_inspector_unique),
+    INDEX idx_organization (organization_id),
     INDEX idx_status (status),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -243,6 +253,7 @@ CREATE TABLE IF NOT EXISTS batches (
     batch_id VARCHAR(100) NOT NULL,
     order_id BIGINT NOT NULL,
     workstation_id BIGINT NOT NULL,
+    organization_id BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(255) NULL COMMENT 'Human-readable name',
     notes TEXT,
     status ENUM('pending', 'active', 'completed', 'cancelled', 'recalled') DEFAULT 'pending',
@@ -258,6 +269,7 @@ CREATE TABLE IF NOT EXISTS batches (
     INDEX idx_batch_id (batch_id),
     INDEX idx_order (order_id),
     INDEX idx_workstation (workstation_id),
+    INDEX idx_org (organization_id),
     INDEX idx_status (status),
     INDEX idx_started (started_at),
     INDEX idx_deleted (deleted_at)
@@ -298,6 +310,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     INDEX idx_workstation (workstation_id),
     INDEX idx_factory (factory_id),
     INDEX idx_organization (organization_id),
+    INDEX idx_tasks_order_status_del (order_id, status, deleted_at),
     INDEX idx_status (status),
     INDEX idx_assigned (assigned_at),
     INDEX idx_created (created_at),
@@ -451,9 +464,14 @@ CREATE TABLE IF NOT EXISTS sync_logs (
     bytes_transferred BIGINT,
     duration_sec INT,
     error_message TEXT,
+    attempt_count INT NOT NULL DEFAULT 0,
+    next_retry_at TIMESTAMP NULL,
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP NULL,
     INDEX idx_episode (episode_id),
     INDEX idx_status (status),
-    INDEX idx_started (started_at)
+    INDEX idx_started (started_at),
+    INDEX idx_sync_retry (status, next_retry_at),
+    INDEX idx_sync_episode_status (episode_id, status),
+    INDEX idx_sync_episode_latest (episode_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
