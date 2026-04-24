@@ -34,48 +34,51 @@ ALTER TABLE factories
     DROP INDEX idx_org,
     DROP COLUMN organization_id;
 
--- Step 3: Add organization_id to data_collectors
-ALTER TABLE data_collectors
-    ADD COLUMN organization_id BIGINT NOT NULL DEFAULT 0 AFTER id;
+    -- Step 3: Add organization_id to data_collectors
+    -- NOTE: Development-only migration. No historical backfill to avoid cross-tenant corruption.
+    -- If you need existing data, map collectors to correct organizations manually before running.
+    ALTER TABLE data_collectors
+        ADD COLUMN organization_id BIGINT NOT NULL DEFAULT 0 AFTER id;
+    
+    -- Intentionally no backfill: MIN(id) would assign all collectors to a single org and
+    -- silently corrupt tenant boundaries in multi-factory deployments.
+    -- Remove this default and assign correct organization_id in seed/test data.
+    
+    ALTER TABLE data_collectors
+        MODIFY COLUMN organization_id BIGINT NOT NULL,
+        ADD INDEX idx_organization (organization_id);
 
-UPDATE data_collectors dc
-    INNER JOIN (
-        SELECT MIN(id) AS org_id FROM organizations WHERE deleted_at IS NULL
-    ) first_org ON TRUE
-SET dc.organization_id = first_org.org_id
-WHERE dc.organization_id = 0;
+    -- Step 4: Add organization_id to inspectors
+    -- NOTE: Development-only migration. No historical backfill to avoid cross-tenant corruption.
+    -- If you need existing data, map inspectors to correct organizations manually before running.
+    ALTER TABLE inspectors
+        ADD COLUMN organization_id BIGINT NOT NULL DEFAULT 0 AFTER id;
+    
+    -- Intentionally no backfill: MIN(id) would assign all inspectors to a single org and
+    -- silently corrupt tenant boundaries in multi-factory deployments.
+    -- Remove this default and assign correct organization_id in seed/test data.
+    
+    ALTER TABLE inspectors
+        MODIFY COLUMN organization_id BIGINT NOT NULL,
+        ADD INDEX idx_organization (organization_id);
 
-ALTER TABLE data_collectors
-    MODIFY COLUMN organization_id BIGINT NOT NULL,
-    ADD INDEX idx_organization (organization_id);
-
--- Step 4: Add organization_id to inspectors
-ALTER TABLE inspectors
-    ADD COLUMN organization_id BIGINT NOT NULL DEFAULT 0 AFTER id;
-
-UPDATE inspectors ins
-    INNER JOIN (
-        SELECT MIN(id) AS org_id FROM organizations WHERE deleted_at IS NULL
-    ) first_org ON TRUE
-SET ins.organization_id = first_org.org_id
-WHERE ins.organization_id = 0;
-
-ALTER TABLE inspectors
-    MODIFY COLUMN organization_id BIGINT NOT NULL,
-    ADD INDEX idx_organization (organization_id);
-
--- Step 5: Add organization_id to workstations
-ALTER TABLE workstations
-    ADD COLUMN organization_id BIGINT NOT NULL DEFAULT 0 AFTER factory_id;
-
-UPDATE workstations ws
-    INNER JOIN data_collectors dc ON dc.id = ws.data_collector_id
-SET ws.organization_id = dc.organization_id
-WHERE ws.organization_id = 0;
-
-ALTER TABLE workstations
-    MODIFY COLUMN organization_id BIGINT NOT NULL,
-    ADD INDEX idx_organization (organization_id);
+    -- Step 5: Add organization_id to workstations
+    -- NOTE: Development-only migration. Derive from data_collectors only when those are already
+    -- mapped to correct organizations. If collectors still use default/incorrect org, do not run
+    -- this row-level update on production.
+    ALTER TABLE workstations
+        ADD COLUMN organization_id BIGINT NOT NULL DEFAULT 0 AFTER factory_id;
+    
+    -- Derive workstation.organization_id from data_collectors.organization_id only when
+    -- collectors already have correct tenant mapping. Otherwise reset in seed/test data.
+    UPDATE workstations ws
+        INNER JOIN data_collectors dc ON dc.id = ws.data_collector_id
+    SET ws.organization_id = dc.organization_id
+    WHERE ws.organization_id = 0;
+    
+    ALTER TABLE workstations
+        MODIFY COLUMN organization_id BIGINT NOT NULL,
+        ADD INDEX idx_organization (organization_id);
 
 -- ============================================================
 -- Part B: Unique name constraints (non-deleted)
