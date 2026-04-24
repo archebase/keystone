@@ -963,6 +963,17 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 		return
 	}
 
+	// Enforce tenant isolation: workstation must belong to the same organization as the order.
+	if ws.OrganizationID != orderQuota.OrganizationID {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf(
+				"workstation %d belongs to organization %d but order %d belongs to organization %d",
+				req.WorkstationID, ws.OrganizationID, req.OrderID, orderQuota.OrganizationID,
+			),
+		})
+		return
+	}
+
 	// Persist organization_id on batches for filtering (derived from order).
 	organizationID := orderQuota.OrganizationID
 
@@ -1231,13 +1242,25 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 
 	// Validate workstation for new tasks
 	type wsRow struct {
-		ID        int64 `db:"id"`
-		FactoryID int64 `db:"factory_id"`
+		ID             int64 `db:"id"`
+		FactoryID      int64 `db:"factory_id"`
+		OrganizationID int64 `db:"organization_id"`
 	}
 	var ws wsRow
-	if err := tx.Get(&ws, "SELECT id, factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", batch.WorkstationID); err != nil {
+	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", batch.WorkstationID); err != nil {
 		logger.Printf("[BATCH] Failed to get workstation: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+
+	// Enforce tenant isolation: workstation must belong to the same organization as the order.
+	if ws.OrganizationID != orderQuota.OrganizationID {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf(
+				"workstation %d belongs to organization %d but order %d belongs to organization %d",
+				batch.WorkstationID, ws.OrganizationID, batch.OrderID, orderQuota.OrganizationID,
+			),
+		})
 		return
 	}
 
