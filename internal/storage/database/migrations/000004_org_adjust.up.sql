@@ -63,19 +63,17 @@ ALTER TABLE factories
         ADD INDEX idx_organization (organization_id);
 
     -- Step 5: Add organization_id to workstations
-    -- NOTE: Development-only migration. Derive from data_collectors only when those are already
-    -- mapped to correct organizations. If collectors still use default/incorrect org, do not run
-    -- this row-level update on production.
+    -- NOTE: Development-only migration. No historical backfill to avoid propagating
+    -- the zeroed organization_id from data_collectors (Steps 3-4 leave those as 0).
+    -- Assign correct organization_id in seed/test data after migration.
     ALTER TABLE workstations
         ADD COLUMN organization_id BIGINT NOT NULL DEFAULT 0 AFTER factory_id;
-    
-    -- Derive workstation.organization_id from data_collectors.organization_id only when
-    -- collectors already have correct tenant mapping. Otherwise reset in seed/test data.
-    UPDATE workstations ws
-        INNER JOIN data_collectors dc ON dc.id = ws.data_collector_id
-    SET ws.organization_id = dc.organization_id
-    WHERE ws.organization_id = 0;
-    
+
+    -- Intentionally no backfill: data_collectors.organization_id is 0 at this point
+    -- (Steps 3-4 removed the backfill), so deriving from it would stamp 0 on every
+    -- workstation row, which is equivalent to no mapping and silently invalidates
+    -- the tenant isolation checks in CreateBatch/AdjustBatchTasks.
+
     ALTER TABLE workstations
         MODIFY COLUMN organization_id BIGINT NOT NULL,
         ADD INDEX idx_organization (organization_id);
