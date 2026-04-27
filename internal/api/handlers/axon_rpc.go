@@ -640,6 +640,12 @@ func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderCo
 	case "connected":
 		// #nosec G706 -- Set aside for now
 		logger.Printf("[RECORDER] Recorder %s sent connected event", deviceID)
+	case "config_applied":
+		data := mapValue(msg, "data")
+		inner := mapValue(data, "data")
+		taskID := stringValue(inner, "task_id")
+		// #nosec G706 -- Set aside for now
+		logger.Printf("[RECORDER] Recorder %s config applied task=%s", deviceID, taskID)
 	default:
 		// #nosec G706 -- Set aside for now
 		logger.Printf("[RECORDER] Recorder %s unknown message type %q", deviceID, msgType)
