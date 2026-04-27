@@ -575,7 +575,11 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 
 	// Validate: organization must exist and belong to the same factory as the scene.
 	var orgFactoryID int64
-	if err = h.db.Get(&orgFactoryID, "SELECT factory_id FROM organizations WHERE id = ? AND deleted_at IS NULL", organizationID); err != nil {
+	var orgName string
+	if err = h.db.QueryRowx(
+		"SELECT factory_id, name FROM organizations WHERE id = ? AND deleted_at IS NULL",
+		organizationID,
+	).Scan(&orgFactoryID, &orgName); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
 			return
@@ -657,21 +661,23 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, OrderResponse{
-		ID:             fmt.Sprintf("%d", id),
-		SceneID:        fmt.Sprintf("%d", sceneID),
-		SceneName:      sceneName,
-		Name:           req.Name,
-		TargetCount:    req.TargetCount,
-		TaskCount:      0,
-		CompletedCount: 0,
-		CancelledCount: 0,
-		FailedCount:    0,
-		Status:         "created",
-		Priority:       req.Priority,
-		Deadline:       deadlineOut,
-		Metadata:       metadata,
-		CreatedAt:      now.Format(time.RFC3339),
-		UpdatedAt:      now.Format(time.RFC3339),
+		ID:               fmt.Sprintf("%d", id),
+		SceneID:          fmt.Sprintf("%d", sceneID),
+		SceneName:        sceneName,
+		OrganizationID:   fmt.Sprintf("%d", organizationID),
+		OrganizationName: strings.TrimSpace(orgName),
+		Name:             req.Name,
+		TargetCount:      req.TargetCount,
+		TaskCount:        0,
+		CompletedCount:   0,
+		CancelledCount:   0,
+		FailedCount:      0,
+		Status:           "created",
+		Priority:         req.Priority,
+		Deadline:         deadlineOut,
+		Metadata:         metadata,
+		CreatedAt:        now.Format(time.RFC3339),
+		UpdatedAt:        now.Format(time.RFC3339),
 	})
 }
 
