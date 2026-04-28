@@ -184,6 +184,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	sceneIDStr := strings.TrimSpace(c.Query("scene_id"))
 	priority := strings.TrimSpace(c.Query("priority"))
 	status := strings.TrimSpace(c.Query("status"))
+	idsStr := strings.TrimSpace(c.Query("ids")) // comma-separated numeric IDs for batch lookup
 	if status != "" {
 		if _, ok := validOrderStatuses[status]; !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
@@ -194,6 +195,23 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		if _, ok := validOrderPriorities[priority]; !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid priority"})
 			return
+		}
+	}
+
+	// Parse and validate the ids filter (comma-separated numeric IDs).
+	var filterIDs []int64
+	if idsStr != "" {
+		for _, raw := range strings.Split(idsStr, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			parsed, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ids format: each id must be a number"})
+				return
+			}
+			filterIDs = append(filterIDs, parsed)
 		}
 	}
 
@@ -225,8 +243,18 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		countQuery += " AND priority = ?"
 		countArgs = append(countArgs, priority)
 	}
+	if len(filterIDs) > 0 {
+		inQ, inArgs, err := sqlx.In("AND id IN (?)", filterIDs)
+		if err != nil {
+			logger.Printf("[ORDER] Failed to build ids IN clause for count: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
+			return
+		}
+		countQuery += " " + inQ
+		countArgs = append(countArgs, inArgs...)
+	}
 	var total int
-	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
+	if err := h.db.Get(&total, h.db.Rebind(countQuery), countArgs...); err != nil {
 		logger.Printf("[ORDER] Failed to count orders: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
 		return
@@ -272,11 +300,22 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		query += " AND o.priority = ?\n"
 		args = append(args, priority)
 	}
+	if len(filterIDs) > 0 {
+		inQ, inArgs, err := sqlx.In("AND o.id IN (?)", filterIDs)
+		if err != nil {
+			logger.Printf("[ORDER] Failed to build ids IN clause: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
+			return
+		}
+		query += " " + inQ + "\n"
+		args = append(args, inArgs...)
+	}
 	query += `
 		ORDER BY o.id DESC
 		LIMIT ? OFFSET ?
 	`
 	args = append(args, pagination.Limit, pagination.Offset)
+	query = h.db.Rebind(query)
 
 	var rows []orderListRow
 	if err := h.db.Select(&rows, query, args...); err != nil {
@@ -575,7 +614,11 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 
 	// Validate: organization must exist and belong to the same factory as the scene.
 	var orgFactoryID int64
-	if err = h.db.Get(&orgFactoryID, "SELECT factory_id FROM organizations WHERE id = ? AND deleted_at IS NULL", organizationID); err != nil {
+	var orgName string
+	if err = h.db.QueryRowx(
+		"SELECT factory_id, name FROM organizations WHERE id = ? AND deleted_at IS NULL",
+		organizationID,
+	).Scan(&orgFactoryID, &orgName); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
 			return
@@ -657,21 +700,23 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, OrderResponse{
-		ID:             fmt.Sprintf("%d", id),
-		SceneID:        fmt.Sprintf("%d", sceneID),
-		SceneName:      sceneName,
-		Name:           req.Name,
-		TargetCount:    req.TargetCount,
-		TaskCount:      0,
-		CompletedCount: 0,
-		CancelledCount: 0,
-		FailedCount:    0,
-		Status:         "created",
-		Priority:       req.Priority,
-		Deadline:       deadlineOut,
-		Metadata:       metadata,
-		CreatedAt:      now.Format(time.RFC3339),
-		UpdatedAt:      now.Format(time.RFC3339),
+		ID:               fmt.Sprintf("%d", id),
+		SceneID:          fmt.Sprintf("%d", sceneID),
+		SceneName:        sceneName,
+		OrganizationID:   fmt.Sprintf("%d", organizationID),
+		OrganizationName: strings.TrimSpace(orgName),
+		Name:             req.Name,
+		TargetCount:      req.TargetCount,
+		TaskCount:        0,
+		CompletedCount:   0,
+		CancelledCount:   0,
+		FailedCount:      0,
+		Status:           "created",
+		Priority:         req.Priority,
+		Deadline:         deadlineOut,
+		Metadata:         metadata,
+		CreatedAt:        now.Format(time.RFC3339),
+		UpdatedAt:        now.Format(time.RFC3339),
 	})
 }
 

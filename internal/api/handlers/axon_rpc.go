@@ -640,6 +640,29 @@ func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderCo
 	case "connected":
 		// #nosec G706 -- Set aside for now
 		logger.Printf("[RECORDER] Recorder %s sent connected event", deviceID)
+	case "config_applied":
+		data := mapValue(msg, "data")
+		taskID := stringValue(data, "task_id")
+		// #nosec G706 -- Set aside for now
+		logger.Printf("[RECORDER] Recorder %s config applied task=%s", deviceID, taskID)
+		// Advance task status: pending -> ready (best-effort, mirrors HTTP Config handler).
+		if taskID != "" && h.db != nil {
+			now := time.Now().UTC()
+			res, err := h.db.Exec(
+				`UPDATE tasks
+				 SET
+				   status = 'ready',
+				   ready_at = CASE WHEN ready_at IS NULL THEN ? ELSE ready_at END,
+				   updated_at = ?
+				 WHERE task_id = ? AND status = 'pending' AND deleted_at IS NULL`,
+				now, now, taskID,
+			)
+			if err != nil {
+				logger.Printf("[RECORDER] Recorder %s: failed to advance task pending->ready after config_applied: task=%s err=%v", deviceID, taskID, err)
+			} else if n, _ := res.RowsAffected(); n == 0 {
+				logger.Printf("[RECORDER] Recorder %s: task pending->ready skipped after config_applied (not found or not pending): task=%s", deviceID, taskID)
+			}
+		}
 	default:
 		// #nosec G706 -- Set aside for now
 		logger.Printf("[RECORDER] Recorder %s unknown message type %q", deviceID, msgType)
