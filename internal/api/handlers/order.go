@@ -184,6 +184,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	sceneIDStr := strings.TrimSpace(c.Query("scene_id"))
 	priority := strings.TrimSpace(c.Query("priority"))
 	status := strings.TrimSpace(c.Query("status"))
+	idsStr := strings.TrimSpace(c.Query("ids")) // comma-separated numeric IDs for batch lookup
 	if status != "" {
 		if _, ok := validOrderStatuses[status]; !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
@@ -194,6 +195,23 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		if _, ok := validOrderPriorities[priority]; !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid priority"})
 			return
+		}
+	}
+
+	// Parse and validate the ids filter (comma-separated numeric IDs).
+	var filterIDs []int64
+	if idsStr != "" {
+		for _, raw := range strings.Split(idsStr, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			parsed, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ids format: each id must be a number"})
+				return
+			}
+			filterIDs = append(filterIDs, parsed)
 		}
 	}
 
@@ -225,8 +243,18 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		countQuery += " AND priority = ?"
 		countArgs = append(countArgs, priority)
 	}
+	if len(filterIDs) > 0 {
+		inQ, inArgs, err := sqlx.In("AND id IN (?)", filterIDs)
+		if err != nil {
+			logger.Printf("[ORDER] Failed to build ids IN clause for count: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
+			return
+		}
+		countQuery += " " + inQ
+		countArgs = append(countArgs, inArgs...)
+	}
 	var total int
-	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
+	if err := h.db.Get(&total, h.db.Rebind(countQuery), countArgs...); err != nil {
 		logger.Printf("[ORDER] Failed to count orders: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
 		return
@@ -272,11 +300,22 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		query += " AND o.priority = ?\n"
 		args = append(args, priority)
 	}
+	if len(filterIDs) > 0 {
+		inQ, inArgs, err := sqlx.In("AND o.id IN (?)", filterIDs)
+		if err != nil {
+			logger.Printf("[ORDER] Failed to build ids IN clause: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
+			return
+		}
+		query += " " + inQ + "\n"
+		args = append(args, inArgs...)
+	}
 	query += `
 		ORDER BY o.id DESC
 		LIMIT ? OFFSET ?
 	`
 	args = append(args, pagination.Limit, pagination.Offset)
+	query = h.db.Rebind(query)
 
 	var rows []orderListRow
 	if err := h.db.Select(&rows, query, args...); err != nil {
