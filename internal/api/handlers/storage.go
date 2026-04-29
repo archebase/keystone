@@ -36,9 +36,10 @@ func NewStorageHandler(s3Client *s3.Client, authCfg *config.AuthConfig) *Storage
 }
 
 func (h *StorageHandler) requireBearerToken(c *gin.Context) bool {
-	// Require a valid collector token unless explicitly allowed in dev.
-	if h.authCfg == nil || h.authCfg.AllowNoAuthOnDev {
-		return true
+	if h.authCfg == nil {
+		logger.Printf("[S3] auth config is nil; refusing request")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth is not configured"})
+		return false
 	}
 
 	authHeader := strings.TrimSpace(c.GetHeader("Authorization"))

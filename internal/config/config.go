@@ -132,12 +132,11 @@ type RecorderConfig struct {
 
 // AuthConfig JWT authentication configuration (collector login).
 type AuthConfig struct {
-	JWTSecret        string // #nosec G117 -- signing secret loaded from env; must exist in config struct
-	Issuer           string
-	JWTExpiryHours   int
-	AllowNoAuthOnDev bool
-	AdminUsername    string // #nosec G101 -- admin account name loaded from env
-	AdminPassword    string // #nosec G101 -- admin password loaded from env; never logged
+	JWTSecret      string // #nosec G117 -- signing secret loaded from env; must exist in config struct
+	Issuer         string
+	JWTExpiryHours int
+	AdminUsername  string // #nosec G101 -- admin account name loaded from env
+	AdminPassword  string // #nosec G101 -- admin password loaded from env; never logged
 }
 
 // Load loads configuration from environment variables and defaults
