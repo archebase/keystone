@@ -52,12 +52,15 @@ type episodeRow struct {
 	McapPath           string          `db:"mcap_path"`
 	SidecarPath        string          `db:"sidecar_path"`
 	Checksum           sql.NullString  `db:"checksum"`
+	FileSizeBytes      sql.NullInt64   `db:"file_size_bytes"`
+	DurationSec        sql.NullFloat64 `db:"duration_sec"`
 	QaStatus           string          `db:"qa_status"`
 	QaScore            sql.NullFloat64 `db:"qa_score"`
 	AutoApproved       bool            `db:"auto_approved"`
 	InspectorID        sql.NullString  `db:"inspector_id"`
 	InspectionDecision sql.NullString  `db:"inspection_decision"`
 	InspectedAt        sql.NullTime    `db:"inspected_at"`
+	CloudSynced        bool            `db:"cloud_synced"`
 	CloudProcessed     bool            `db:"cloud_processed"`
 	CloudSyncedAt      sql.NullTime    `db:"cloud_synced_at"`
 	CreatedAt          time.Time       `db:"created_at"`
@@ -79,12 +82,15 @@ type Episode struct {
 	McapPath           string   `json:"mcap_path"`
 	SidecarPath        string   `json:"sidecar_path"`
 	Checksum           *string  `json:"checksum"`
+	FileSizeBytes      *int64   `json:"file_size_bytes"`
+	DurationSec        *float64 `json:"duration_sec"`
 	QaStatus           string   `json:"qa_status"`
 	QaScore            *float64 `json:"qa_score"`
 	AutoApproved       bool     `json:"auto_approved"`
 	InspectorID        *string  `json:"inspector_id"`
 	InspectionDecision *string  `json:"inspection_decision"`
 	InspectedAt        *string  `json:"inspected_at"`
+	CloudSynced        bool     `json:"cloud_synced"`
 	CloudProcessed     bool     `json:"cloud_processed"`
 	CloudSyncedAt      *string  `json:"cloud_synced_at"`
 	CreatedAt          string   `json:"created_at"`
@@ -126,6 +132,7 @@ func nullableFloat64(value sql.NullFloat64) *float64 {
 	return &v
 }
 
+
 func nullableTime(value sql.NullTime) *string {
 	if !value.Valid {
 		return nil
@@ -153,16 +160,17 @@ func episodeLabelsFromDB(ns sql.NullString) []string {
 // ListEpisodes returns a list of episodes with filtering and pagination
 //
 // @Summary      List episodes
-// @Description  Returns a list of episodes with optional filtering by task_id, qa_status, auto_approved, and cloud_processed
+// @Description  Returns a list of episodes with optional filtering by task_id, qa_status, auto_approved, cloud_processed, and collector_operator_id
 // @Tags         episodes
 // @Produce      json
-// @Param        task_id          query     string  false  "Filter by task numeric id (or legacy public task_id string)"
-// @Param        qa_status        query     string  false  "Filter by QA status"
-// @Param        auto_approved    query     bool    false  "Filter by auto-approval status"
-// @Param        cloud_processed  query     bool    false  "Filter by cloud processing status"
-// @Param        limit            query     int     false  "Max results (default 50)"
-// @Param        offset           query     int     false  "Pagination offset (default 0)"
-// @Success      200              {object}  EpisodeListResponse
+// @Param        task_id                query     string  false  "Filter by task numeric id (or legacy public task_id string)"
+// @Param        qa_status              query     string  false  "Filter by QA status"
+// @Param        auto_approved          query     bool    false  "Filter by auto-approval status"
+// @Param        cloud_processed        query     bool    false  "Filter by cloud processing status"
+// @Param        collector_operator_id  query     string  false  "Filter by data collector operator ID"
+// @Param        limit                  query     int     false  "Max results (default 50)"
+// @Param        offset                 query     int     false  "Pagination offset (default 0)"
+// @Success      200                    {object}  EpisodeListResponse
 // @Router       /episodes [get]
 func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	// Parse query parameters
@@ -170,6 +178,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	qaStatus := c.Query("qa_status")
 	autoApproved := c.Query("auto_approved")
 	cloudProcessed := c.Query("cloud_processed")
+	collectorOperatorID := c.Query("collector_operator_id")
 
 	// Parse limit and offset with defaults
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -201,10 +210,14 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.mcap_path,
 			e.sidecar_path,
 			e.checksum,
+			e.file_size_bytes,
+			e.duration_sec,
 			COALESCE(e.qa_status, '') as qa_status,
 			e.qa_score,
 			e.auto_approved,
+			e.cloud_synced,
 			e.cloud_processed,
+			e.cloud_synced_at,
 			e.created_at,
 			e.labels
 		FROM episodes e
@@ -269,6 +282,14 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		}
 	}
 
+	if collectorOperatorID != "" {
+		sub := " AND EXISTS (SELECT 1 FROM workstations ws2 INNER JOIN data_collectors dc2 ON dc2.id = ws2.data_collector_id AND dc2.deleted_at IS NULL WHERE ws2.id = e.workstation_id AND dc2.operator_id = ?)"
+		query += sub
+		countQuery += sub
+		args = append(args, collectorOperatorID)
+		argsCount = append(argsCount, collectorOperatorID)
+	}
+
 	// Get total count
 	var total int
 	err = h.db.Get(&total, countQuery, argsCount...)
@@ -308,12 +329,15 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			McapPath:           r.McapPath,
 			SidecarPath:        r.SidecarPath,
 			Checksum:           nullableString(r.Checksum),
+			FileSizeBytes:      nullableInt64(r.FileSizeBytes),
+			DurationSec:        nullableFloat64(r.DurationSec),
 			QaStatus:           r.QaStatus,
 			QaScore:            nullableFloat64(r.QaScore),
 			AutoApproved:       r.AutoApproved,
 			InspectorID:        nullableString(r.InspectorID),
 			InspectionDecision: nullableString(r.InspectionDecision),
 			InspectedAt:        nullableTime(r.InspectedAt),
+			CloudSynced:        r.CloudSynced,
 			CloudProcessed:     r.CloudProcessed,
 			CloudSyncedAt:      nullableTime(r.CloudSyncedAt),
 			CreatedAt:          r.CreatedAt.UTC().Format(time.RFC3339),
@@ -458,12 +482,15 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.mcap_path,
 			e.sidecar_path,
 			e.checksum,
+			e.file_size_bytes,
+			e.duration_sec,
 			COALESCE(e.qa_status, '') AS qa_status,
 			e.qa_score,
 			e.auto_approved,
 			CASE WHEN i.inspector_id IS NULL THEN NULL ELSE ins.inspector_id END AS inspector_id,
 			CASE WHEN i.decision IS NULL THEN NULL ELSE i.decision END AS inspection_decision,
 			i.inspected_at,
+			e.cloud_synced,
 			e.cloud_processed,
 			e.cloud_synced_at,
 			e.created_at,
@@ -506,12 +533,15 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		McapPath:           row.McapPath,
 		SidecarPath:        row.SidecarPath,
 		Checksum:           nullableString(row.Checksum),
+		FileSizeBytes:      nullableInt64(row.FileSizeBytes),
+		DurationSec:        nullableFloat64(row.DurationSec),
 		QaStatus:           row.QaStatus,
 		QaScore:            nullableFloat64(row.QaScore),
 		AutoApproved:       row.AutoApproved,
 		InspectorID:        nullableString(row.InspectorID),
 		InspectionDecision: nullableString(row.InspectionDecision),
 		InspectedAt:        nullableTime(row.InspectedAt),
+		CloudSynced:        row.CloudSynced,
 		CloudProcessed:     row.CloudProcessed,
 		CloudSyncedAt:      nullableTime(row.CloudSyncedAt),
 		CreatedAt:          row.CreatedAt.UTC().Format(time.RFC3339),

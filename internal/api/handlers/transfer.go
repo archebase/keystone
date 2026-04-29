@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/minio/minio-go/v7"
 
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
@@ -281,6 +283,42 @@ func (h *TransferHandler) onUploadProgress(dc *services.TransferConn, msg map[st
 	logger.Printf("[TRANSFER] Device %s: upload progress task=%s %d%%", dc.DeviceID, taskID, percent)
 }
 
+// sidecarRecording is the subset of the sidecar JSON "recording" block we care about.
+type sidecarRecording struct {
+	DurationSec   float64 `json:"duration_sec"`
+	FileSizeBytes int64   `json:"file_size_bytes"`
+	ChecksumSHA256 string `json:"checksum_sha256"`
+}
+
+// sidecarJSON is the top-level structure of the task sidecar JSON file.
+type sidecarJSON struct {
+	Recording sidecarRecording `json:"recording"`
+}
+
+// readSidecarFromS3 downloads the sidecar JSON object from MinIO and returns the parsed result.
+// Returns nil without error if the object cannot be read, so callers can treat it as best-effort.
+func readSidecarFromS3(ctx context.Context, s3Client *s3.Client, bucket, jsonKey string) *sidecarJSON {
+	obj, err := s3Client.GetObject(ctx, bucket, jsonKey, minio.GetObjectOptions{})
+	if err != nil {
+		logger.Printf("[TRANSFER] readSidecarFromS3: GetObject %s: %v", jsonKey, err)
+		return nil
+	}
+	defer func() { _ = obj.Close() }()
+
+	data, err := io.ReadAll(obj)
+	if err != nil {
+		logger.Printf("[TRANSFER] readSidecarFromS3: ReadAll %s: %v", jsonKey, err)
+		return nil
+	}
+
+	var sc sidecarJSON
+	if err := json.Unmarshal(data, &sc); err != nil {
+		logger.Printf("[TRANSFER] readSidecarFromS3: unmarshal %s: %v", jsonKey, err)
+		return nil
+	}
+	return &sc
+}
+
 // onUploadComplete handles "upload_complete" and runs the Verified ACK flow:
 //  1. Verify S3 files exist
 //  2. Update episodes table
@@ -352,6 +390,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			dc.DeviceID, taskID)
 		return
 	}
+
+	// Read sidecar JSON to extract recording metadata (best-effort: nil on failure).
+	sc := readSidecarFromS3(ctx, h.s3, h.bucket, jsonKey)
 
 	// Step 2: Insert into episodes table
 	tx, err := h.db.BeginTx(ctx, nil)
@@ -468,6 +509,23 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 
 		if errors.Is(err, sql.ErrNoRows) {
 			episodeID := uuid.New().String()
+
+			// Extract recording metadata from sidecar JSON (nullable).
+			var durationSec sql.NullFloat64
+			var fileSizeBytes sql.NullInt64
+			var checksum sql.NullString
+			if sc != nil {
+				if sc.Recording.DurationSec > 0 {
+					durationSec = sql.NullFloat64{Float64: sc.Recording.DurationSec, Valid: true}
+				}
+				if sc.Recording.FileSizeBytes > 0 {
+					fileSizeBytes = sql.NullInt64{Int64: sc.Recording.FileSizeBytes, Valid: true}
+				}
+				if sc.Recording.ChecksumSHA256 != "" {
+					checksum = sql.NullString{String: sc.Recording.ChecksumSHA256, Valid: true}
+				}
+			}
+
 			_, dbErr := tx.ExecContext(ctx,
 				`INSERT INTO episodes (
 					episode_id,
@@ -482,8 +540,11 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					sop_id,
 					mcap_path,
 					sidecar_path,
+					duration_sec,
+					file_size_bytes,
+					checksum,
 					qa_status
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				episodeID,
 				taskRow.ID,
 				taskRow.BatchID,
@@ -496,6 +557,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				taskRow.SOPID,
 				mcapPath,
 				sidecarPath,
+				durationSec,
+				fileSizeBytes,
+				checksum,
 				"approved",
 			)
 			if dbErr != nil {
