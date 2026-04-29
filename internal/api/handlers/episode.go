@@ -132,7 +132,6 @@ func nullableFloat64(value sql.NullFloat64) *float64 {
 	return &v
 }
 
-
 func nullableTime(value sql.NullTime) *string {
 	if !value.Valid {
 		return nil

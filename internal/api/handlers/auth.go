@@ -34,18 +34,18 @@ func NewAuthHandler(db *sqlx.DB, cfg *config.AuthConfig) *AuthHandler {
 // Accepts either "account" (admin or any identity) or the legacy "operator_id"
 // field for data collectors. "account" takes priority when both are present.
 type LoginRequest struct {
-	Account    string `json:"account"`     // preferred unified field
-	OperatorID string `json:"operator_id"` // legacy collector field
+	Account    string `json:"account"`                     // preferred unified field
+	OperatorID string `json:"operator_id"`                 // legacy collector field
 	Password   string `json:"password" binding:"required"` // #nosec G117 -- request DTO intentionally contains password
 }
 
 // LoginResponse is the unified login response.
 type LoginResponse struct {
-	AccessToken string          `json:"access_token"` // #nosec G117 -- response DTO intentionally returns access token
-	TokenType   string          `json:"token_type"`
-	ExpiresIn   int             `json:"expires_in"`
-	Role        string          `json:"role"`
-	Collector   *collectorInfo  `json:"collector"`
+	AccessToken string         `json:"access_token"` // #nosec G117 -- response DTO intentionally returns access token
+	TokenType   string         `json:"token_type"`
+	ExpiresIn   int            `json:"expires_in"`
+	Role        string         `json:"role"`
+	Collector   *collectorInfo `json:"collector"`
 }
 
 type collectorInfo struct {

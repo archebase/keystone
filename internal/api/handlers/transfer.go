@@ -285,9 +285,9 @@ func (h *TransferHandler) onUploadProgress(dc *services.TransferConn, msg map[st
 
 // sidecarRecording is the subset of the sidecar JSON "recording" block we care about.
 type sidecarRecording struct {
-	DurationSec   float64 `json:"duration_sec"`
-	FileSizeBytes int64   `json:"file_size_bytes"`
-	ChecksumSHA256 string `json:"checksum_sha256"`
+	DurationSec    float64 `json:"duration_sec"`
+	FileSizeBytes  int64   `json:"file_size_bytes"`
+	ChecksumSHA256 string  `json:"checksum_sha256"`
 }
 
 // sidecarJSON is the top-level structure of the task sidecar JSON file.
