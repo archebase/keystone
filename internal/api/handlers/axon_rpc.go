@@ -232,7 +232,7 @@ func (h *RecorderHandler) Config(c *gin.Context) {
 	// This is best-effort; failures should not change the RPC response.
 	if taskID != "" && h.db != nil {
 		now := time.Now().UTC()
-		res, err := h.db.Exec(
+		_, err := h.db.Exec(
 			`UPDATE tasks
 			 SET
 			   status = 'ready',
@@ -244,9 +244,6 @@ func (h *RecorderHandler) Config(c *gin.Context) {
 		if err != nil {
 			logger.Printf("[RECORDER] Device %s: failed to advance task pending->ready after config: task=%s err=%v", c.Param("device_id"), taskID, err)
 			return
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			logger.Printf("[RECORDER] Device %s: task pending->ready skipped after config (not found or not pending): task=%s", c.Param("device_id"), taskID)
 		}
 	}
 }

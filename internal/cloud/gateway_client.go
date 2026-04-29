@@ -84,16 +84,25 @@ func (c *GatewayClient) CreateLogicalUpload(ctx context.Context, clientHints map
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer cancel()
-
-	ctx, err = c.attachAuth(ctx)
+	// Auth and RPC each get their own independent deadline rooted at the caller's ctx.
+	// Auth deadline is separate so token acquisition (TCP+TLS dial + ExchangeCredential RPC)
+	// does not consume the budget intended for the gateway RPC itself.
+	// The auth header string is extracted before authCancel(), then injected directly into
+	// rpcCtx — which is derived from the original ctx, not from authCtx — so cancelling
+	// authCtx never propagates into the RPC call.
+	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	authHeader, err := c.authClient.GetAuthHeader(authCtx)
+	authCancel()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get auth header: %w", err)
 	}
 
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer rpcCancel()
+	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
+
 	client := pb.NewDataGatewayServiceClient(conn)
-	resp, err := client.CreateLogicalUpload(ctx, &pb.CreateLogicalUploadRequest{
+	resp, err := client.CreateLogicalUpload(rpcCtx, &pb.CreateLogicalUploadRequest{
 		ClientHints:         clientHints,
 		RestartFromUploadId: restartFromUploadID,
 	})
@@ -118,16 +127,19 @@ func (c *GatewayClient) GetUploadRecovery(ctx context.Context, logicalUploadID s
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer cancel()
-
-	ctx, err = c.attachAuth(ctx)
+	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	authHeader, err := c.authClient.GetAuthHeader(authCtx)
+	authCancel()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get auth header: %w", err)
 	}
 
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer rpcCancel()
+	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
+
 	client := pb.NewDataGatewayServiceClient(conn)
-	resp, err := client.GetUploadRecovery(ctx, &pb.GetUploadRecoveryRequest{
+	resp, err := client.GetUploadRecovery(rpcCtx, &pb.GetUploadRecoveryRequest{
 		LogicalUploadId: logicalUploadID,
 	})
 	if err != nil {
@@ -162,16 +174,19 @@ func (c *GatewayClient) ReissueUploadCredentials(ctx context.Context, uploadID s
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer cancel()
-
-	ctx, err = c.attachAuth(ctx)
+	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	authHeader, err := c.authClient.GetAuthHeader(authCtx)
+	authCancel()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get auth header: %w", err)
 	}
 
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer rpcCancel()
+	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
+
 	client := pb.NewDataGatewayServiceClient(conn)
-	resp, err := client.ReissueUploadCredentials(ctx, &pb.ReissueUploadCredentialsRequest{
+	resp, err := client.ReissueUploadCredentials(rpcCtx, &pb.ReissueUploadCredentialsRequest{
 		UploadId: uploadID,
 	})
 	if err != nil {
@@ -194,16 +209,19 @@ func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string,
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer cancel()
-
-	ctx, err = c.attachAuth(ctx)
+	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	authHeader, err := c.authClient.GetAuthHeader(authCtx)
+	authCancel()
 	if err != nil {
 		return err
 	}
 
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer rpcCancel()
+	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
+
 	client := pb.NewDataGatewayServiceClient(conn)
-	_, err = client.AbortUpload(ctx, &pb.AbortUploadRequest{
+	_, err = client.AbortUpload(rpcCtx, &pb.AbortUploadRequest{
 		LogicalUploadId: logicalUploadID,
 		Reason:          reason,
 	})
@@ -223,16 +241,19 @@ func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fil
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer cancel()
-
-	ctx, err = c.attachAuth(ctx)
+	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	authHeader, err := c.authClient.GetAuthHeader(authCtx)
+	authCancel()
 	if err != nil {
 		return err
 	}
 
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer rpcCancel()
+	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
+
 	client := pb.NewDataGatewayServiceClient(conn)
-	_, err = client.CompleteUpload(ctx, &pb.CompleteUploadRequest{
+	_, err = client.CompleteUpload(rpcCtx, &pb.CompleteUploadRequest{
 		UploadId:           uploadID,
 		FileSize:           fileSize,
 		RawTags:            rawTags,
@@ -286,15 +307,6 @@ func (c *GatewayClient) Close() error {
 	}
 	c.conn = nil
 	return err
-}
-
-func (c *GatewayClient) attachAuth(ctx context.Context) (context.Context, error) {
-	header, err := c.authClient.GetAuthHeader(ctx)
-	if err != nil {
-		return ctx, fmt.Errorf("get auth header: %w", err)
-	}
-	md := metadata.Pairs("authorization", header)
-	return metadata.NewOutgoingContext(ctx, md), nil
 }
 
 func (c *GatewayClient) sessionFromCreateResponse(logicalUploadID, uploadID string, creds *pb.UploadCredentials) (*UploadSession, error) {

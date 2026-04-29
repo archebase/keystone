@@ -51,3 +51,30 @@ func GetClaims(c *gin.Context) *auth.Claims {
 	}
 	return nil
 }
+
+// RequireRole returns a middleware that allows only requests whose JWT claims
+// carry one of the specified roles. JWTAuth must run before this middleware.
+func RequireRole(roles ...string) gin.HandlerFunc {
+	allowed := make(map[string]struct{}, len(roles))
+	for _, r := range roles {
+		allowed[r] = struct{}{}
+	}
+	return func(c *gin.Context) {
+		claims := GetClaims(c)
+		if claims == nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		if _, ok := allowed[claims.Role]; !ok {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// RequireAnyRole is an alias for RequireRole with multiple roles — provided for
+// readability at call sites where two or more roles are explicitly enumerated.
+func RequireAnyRole(roles ...string) gin.HandlerFunc {
+	return RequireRole(roles...)
+}
