@@ -196,6 +196,46 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "Missing JWTSecret",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "edge"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
+				Auth:     AuthConfig{JWTSecret: ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Only admin username set (no password)",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "edge"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
+				Auth:     AuthConfig{JWTSecret: "secret", AdminUsername: "admin", AdminPassword: ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Only admin password set (no username)",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "edge"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
+				Auth:     AuthConfig{JWTSecret: "secret", AdminUsername: "", AdminPassword: "pass"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Valid admin credentials",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "edge"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
+				Auth:     AuthConfig{JWTSecret: "secret", AdminUsername: "admin", AdminPassword: "pass"},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

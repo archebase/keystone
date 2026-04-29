@@ -136,6 +136,8 @@ type AuthConfig struct {
 	Issuer           string
 	JWTExpiryHours   int
 	AllowNoAuthOnDev bool
+	AdminUsername    string // #nosec G101 -- admin account name loaded from env
+	AdminPassword    string // #nosec G101 -- admin password loaded from env; never logged
 }
 
 // Load loads configuration from environment variables and defaults
@@ -200,6 +202,8 @@ func Load() (*Config, error) {
 			JWTSecret:      getEnv("KEYSTONE_JWT_SECRET", ""),
 			Issuer:         getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
 			JWTExpiryHours: getEnvInt("KEYSTONE_JWT_EXPIRY_HOURS", 24),
+			AdminUsername:  getEnv("KEYSTONE_ADMIN_USERNAME", ""),
+			AdminPassword:  getEnv("KEYSTONE_ADMIN_PASSWORD", ""),
 		},
 		Features: FeaturesConfig{
 			StrataEnabled:  false,
@@ -247,6 +251,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.AccessKey == "" || c.Storage.SecretKey == "" {
 		return fmt.Errorf("storage access key and secret key are required")
+	}
+	if strings.TrimSpace(c.Auth.JWTSecret) == "" {
+		return fmt.Errorf("KEYSTONE_JWT_SECRET is required")
+	}
+	adminUser := strings.TrimSpace(c.Auth.AdminUsername)
+	adminPass := strings.TrimSpace(c.Auth.AdminPassword)
+	if (adminUser == "") != (adminPass == "") {
+		return fmt.Errorf("KEYSTONE_ADMIN_USERNAME and KEYSTONE_ADMIN_PASSWORD must both be set or both be empty")
 	}
 	if c.Sync.Enabled {
 		if strings.TrimSpace(c.Sync.AuthEndpoint) == "" {

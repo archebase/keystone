@@ -23,3 +23,11 @@ func NewCollectorClaims(collectorID int64, operatorID string) *Claims {
 		Role:        "data_collector",
 	}
 }
+
+// NewAdminClaims creates claims for an admin identity.
+// CollectorID is intentionally zero — admin accounts are not stored in the database.
+func NewAdminClaims() *Claims {
+	return &Claims{
+		Role: "admin",
+	}
+}

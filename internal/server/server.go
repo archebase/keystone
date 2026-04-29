@@ -22,6 +22,7 @@ import (
 	"archebase.com/keystone-edge/internal/api/handlers"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
 
@@ -208,7 +209,16 @@ func (s *Server) buildRoutes() http.Handler {
 
 	v1Routes := v1.Group("")
 	if s.auth != nil {
+		// Public auth routes (login, logout) — no middleware required.
 		s.auth.RegisterRoutes(v1Routes)
+
+		// Authenticated auth routes:
+		//   GET  /auth/me          — any valid token (admin or data_collector)
+		//   POST /auth/me/station/* — data_collector only
+		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
+		meGroup := v1Routes.Group("/auth/me", jwtMw)
+		stationGroup := v1Routes.Group("/auth/me/station", jwtMw, middleware.RequireRole("data_collector"))
+		s.auth.RegisterAuthenticatedRoutes(meGroup, stationGroup)
 	}
 	if s.storage != nil {
 		s.storage.RegisterRoutes(v1Routes)
