@@ -211,7 +211,11 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch object"})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Printf("[S3] proxy body close failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+		}
+	}()
 
 	for _, header := range []string{
 		"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges",
