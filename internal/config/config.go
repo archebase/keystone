@@ -197,10 +197,9 @@ func Load() (*Config, error) {
 			MaxRestartCount:    getEnvInt("KEYSTONE_SYNC_MAX_RESTART_COUNT", 3),
 		},
 		Auth: AuthConfig{
-			JWTSecret:        getEnv("KEYSTONE_JWT_SECRET", ""),
-			Issuer:           getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
-			JWTExpiryHours:   getEnvInt("KEYSTONE_JWT_EXPIRY_HOURS", 24),
-			AllowNoAuthOnDev: getEnvBool("KEYSTONE_AUTH_ALLOW_NO_AUTH_ON_DEV", false),
+			JWTSecret:      getEnv("KEYSTONE_JWT_SECRET", ""),
+			Issuer:         getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
+			JWTExpiryHours: getEnvInt("KEYSTONE_JWT_EXPIRY_HOURS", 24),
 		},
 		Features: FeaturesConfig{
 			StrataEnabled:  false,
