@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -425,28 +426,12 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 		return
 	}
 
-	expSeconds := 600
-	if raw := strings.TrimSpace(c.Query("expires_seconds")); raw != "" {
-		v, convErr := strconv.Atoi(raw)
-		if convErr != nil || v < 1 || v > 3600 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "expires_seconds must be between 1 and 3600"})
-			return
-		}
-		expSeconds = v
-	}
-
-	u, err := h.s3.PresignedGetObject(c.Request.Context(), bucket, objectName, time.Duration(expSeconds)*time.Second, nil)
-	if err != nil {
-		logger.Printf("[EPISODE] Presign failed: id=%d, bucket=%s, object=%s, err=%v", episodeID, bucket, objectName, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to presign url"})
-		return
-	}
-
-	path := "/s3" + u.EscapedPath()
-	if u.RawQuery != "" {
-		path += "?" + u.RawQuery
-	}
-
+	// The frontend should not connect to MinIO directly. Return a Keystone
+	// object proxy URL so all environments consistently use backend storage config.
+	params := url.Values{}
+	params.Set("bucket", bucket)
+	params.Set("object", objectName)
+	path := "/api/v1/storage/object?" + params.Encode()
 	c.JSON(http.StatusOK, presignResponse{URL: path})
 }
 

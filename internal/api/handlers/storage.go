@@ -5,7 +5,9 @@
 package handlers
 
 import (
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +33,7 @@ func NewStorageHandler(s3Client *s3.Client, authCfg *config.AuthConfig) *Storage
 // RegisterRoutes registers storage-related routes on the given router group.
 func (h *StorageHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/storage/presign", h.PresignGetObject)
+	r.GET("/storage/object", h.GetObject)
 }
 
 type presignResponse struct {
@@ -98,4 +101,73 @@ func (h *StorageHandler) PresignGetObject(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, presignResponse{URL: path})
+}
+
+// GetObject proxies object download through Keystone so frontend does not
+// directly depend on MinIO endpoint/proxy target configuration.
+func (h *StorageHandler) GetObject(c *gin.Context) {
+	if h.s3 == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
+		return
+	}
+
+	bucket := strings.TrimSpace(c.Query("bucket"))
+	objectName := strings.TrimSpace(c.Query("object"))
+	if bucket == "" || objectName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bucket and object are required"})
+		return
+	}
+	if strings.Contains(bucket, "..") || strings.Contains(objectName, "..") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bucket or object"})
+		return
+	}
+	objectName = strings.TrimPrefix(objectName, "/")
+
+	// Keep presigned URL short-lived since it is only used server-side.
+	u, err := h.s3.PresignedGetObject(c.Request.Context(), bucket, objectName, 2*time.Minute, nil)
+	if err != nil {
+		logger.Printf("[S3] proxy presign failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare object download"})
+		return
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, u.String(), nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build upstream request"})
+		return
+	}
+
+	// Forward key headers used by media/file readers.
+	for _, header := range []string{"Range", "If-None-Match", "If-Modified-Since"} {
+		if v := strings.TrimSpace(c.GetHeader(header)); v != "" {
+			req.Header.Set(header, v)
+		}
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		logger.Printf("[S3] proxy get failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch object"})
+		return
+	}
+	defer resp.Body.Close()
+
+	for _, header := range []string{
+		"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges",
+		"ETag", "Last-Modified", "Cache-Control",
+	} {
+		if v := strings.TrimSpace(resp.Header.Get(header)); v != "" {
+			c.Header(header, v)
+		}
+	}
+	if dispo := strings.TrimSpace(resp.Header.Get("Content-Disposition")); dispo != "" {
+		c.Header("Content-Disposition", dispo)
+	} else {
+		c.Header("Content-Disposition", "inline; filename*=UTF-8''"+url.QueryEscape(objectName))
+	}
+
+	c.Status(resp.StatusCode)
+	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		logger.Printf("[S3] proxy stream interrupted: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+	}
 }
