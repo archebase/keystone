@@ -149,6 +149,9 @@ func (c *AuthClient) getConn() (*grpc.ClientConn, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	logger.Printf("[CLOUD-AUTH] connecting to %s", c.cfg.Endpoint)
+
 	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("grpc dial %s: %w", c.cfg.Endpoint, err)
