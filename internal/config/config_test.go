@@ -248,6 +248,178 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestDecodeAPIKey(t *testing.T) {
+	tests := []struct {
+		name           string
+		apiKey         string
+		wantSiteID     int64
+		wantAPISecret  string
+		wantErr        bool
+		wantErrContain string
+	}{
+		{
+			// site_id=42, secret="test-secret-value"
+			// Generated: base64url_no_pad( i64_be(42) + "." + "test-secret-value" )
+			name:          "valid key",
+			apiKey:        "AAAAAAAAACoudGVzdC1zZWNyZXQtdmFsdWU",
+			wantSiteID:    42,
+			wantAPISecret: "test-secret-value",
+			wantErr:       false,
+		},
+		{
+			name:           "empty key",
+			apiKey:         "",
+			wantErr:        true,
+			wantErrContain: "must not be empty",
+		},
+		{
+			name:           "whitespace only",
+			apiKey:         "   ",
+			wantErr:        true,
+			wantErrContain: "must not be empty",
+		},
+		{
+			name:           "invalid base64",
+			apiKey:         "!!!notbase64!!!",
+			wantErr:        true,
+			wantErrContain: "base64 decode failed",
+		},
+		{
+			name:           "too short (no separator)",
+			apiKey:         "AAAAAAAA",
+			wantErr:        true,
+			wantErrContain: "invalid format",
+		},
+		{
+			name:           "wrong separator byte",
+			apiKey:         "AAAAAAAAAX9zZWNyZXQ", // 8 zero bytes + 'A' (0x41) instead of '.' (0x2E) + "secret"
+			wantErr:        true,
+			wantErrContain: "invalid format",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			siteID, apiSecret, err := decodeAPIKey(tt.apiKey)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("decodeAPIKey() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if tt.wantErrContain != "" && err != nil {
+					if !contains(err.Error(), tt.wantErrContain) {
+						t.Errorf("decodeAPIKey() error = %q, want to contain %q", err.Error(), tt.wantErrContain)
+					}
+				}
+				return
+			}
+			if siteID != tt.wantSiteID {
+				t.Errorf("decodeAPIKey() siteID = %d, want %d", siteID, tt.wantSiteID)
+			}
+			if apiSecret != tt.wantAPISecret {
+				t.Errorf("decodeAPIKey() apiSecret = %q, want %q", apiSecret, tt.wantAPISecret)
+			}
+		})
+	}
+}
+
+func TestValidateSyncAPIKey(t *testing.T) {
+	validBase := Config{
+		Server:   ServerConfig{Mode: "edge"},
+		Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+		Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
+		Auth:     AuthConfig{JWTSecret: "jwt-secret"},
+	}
+
+	t.Run("sync disabled — no API key required", func(t *testing.T) {
+		cfg := validBase
+		cfg.Sync = SyncConfig{Enabled: false}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error = %v", err)
+		}
+	})
+
+	t.Run("sync enabled — missing API key", func(t *testing.T) {
+		cfg := validBase
+		cfg.Sync = SyncConfig{
+			Enabled:           true,
+			AuthEndpoint:      "auth:443",
+			GatewayEndpoint:   "gateway:443",
+			APIKey:            "",
+			BatchSize:         10,
+			MaxRetries:        5,
+			MaxConcurrent:     2,
+			WorkerIntervalSec: 60,
+			RequestTimeoutSec: 30,
+			OSSTimeoutSec:     300,
+			RetryBaseSec:      30,
+			RetryMaxSec:       1800,
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for missing API key, got nil")
+		}
+	})
+
+	t.Run("sync enabled — invalid API key", func(t *testing.T) {
+		cfg := validBase
+		cfg.Sync = SyncConfig{
+			Enabled:           true,
+			AuthEndpoint:      "auth:443",
+			GatewayEndpoint:   "gateway:443",
+			APIKey:            "notvalidbase64!!!",
+			BatchSize:         10,
+			MaxRetries:        5,
+			MaxConcurrent:     2,
+			WorkerIntervalSec: 60,
+			RequestTimeoutSec: 30,
+			OSSTimeoutSec:     300,
+			RetryBaseSec:      30,
+			RetryMaxSec:       1800,
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for invalid API key, got nil")
+		}
+	})
+
+	t.Run("sync enabled — valid API key populates SiteID and APISecret", func(t *testing.T) {
+		cfg := validBase
+		cfg.Sync = SyncConfig{
+			Enabled:           true,
+			AuthEndpoint:      "auth:443",
+			GatewayEndpoint:   "gateway:443",
+			APIKey:            "AAAAAAAAACoudGVzdC1zZWNyZXQtdmFsdWU", // site_id=42, secret="test-secret-value"
+			BatchSize:         10,
+			MaxRetries:        5,
+			MaxConcurrent:     2,
+			WorkerIntervalSec: 60,
+			RequestTimeoutSec: 30,
+			OSSTimeoutSec:     300,
+			RetryBaseSec:      30,
+			RetryMaxSec:       1800,
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error = %v", err)
+		}
+		if cfg.Sync.SiteID != 42 {
+			t.Errorf("SiteID = %d, want 42", cfg.Sync.SiteID)
+		}
+		if cfg.Sync.APISecret != "test-secret-value" {
+			t.Errorf("APISecret = %q, want %q", cfg.Sync.APISecret, "test-secret-value")
+		}
+	})
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return true
+				}
+			}
+			return false
+		}())
+}
+
 func TestGetEnv(t *testing.T) {
 	// Test non-existent environment variable
 	got := getEnv("NONEXISTENT_ENV_VAR_12345", "default")
