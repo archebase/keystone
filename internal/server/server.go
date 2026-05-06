@@ -52,6 +52,7 @@ type Server struct {
 	scene            *handlers.SceneHandler
 	subscene         *handlers.SubsceneHandler
 	order            *handlers.OrderHandler
+	dataStats        *handlers.DataProductionStatisticsHandler
 	syncHandler      *handlers.SyncHandler
 	syncWorker       *services.SyncWorker
 	httpServer       *http.Server
@@ -113,6 +114,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sceneHandler         *handlers.SceneHandler
 		subsceneHandler      *handlers.SubsceneHandler
 		orderHandler         *handlers.OrderHandler
+		dataStatsHandler     *handlers.DataProductionStatisticsHandler
 	)
 	if db != nil {
 		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
@@ -128,6 +130,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
 		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
+		dataStatsHandler = handlers.NewDataProductionStatisticsHandler(db)
 	}
 
 	// Create SyncHandler for cloud sync API
@@ -158,6 +161,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		scene:         sceneHandler,
 		subscene:      subsceneHandler,
 		order:         orderHandler,
+		dataStats:     dataStatsHandler,
 		syncHandler:   syncHandler,
 		syncWorker:    syncWorker,
 		engine:        engine,
@@ -273,6 +277,11 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.order != nil {
 		s.order.RegisterRoutes(v1Tasks)
+	}
+	if s.dataStats != nil {
+		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
+		adminStats := v1Routes.Group("/admin/statistics/data-production", jwtMw, middleware.RequireRole("admin"))
+		s.dataStats.RegisterRoutes(adminStats)
 	}
 
 	// Cloud Sync API
