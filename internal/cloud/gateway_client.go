@@ -236,6 +236,9 @@ func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fil
 // retry or connection reset, because they represent permanent server-side failures rather
 // than transport issues.
 func (c *GatewayClient) doRPC(ctx context.Context, rpcName string, fn func(*grpc.ClientConn) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	conn, err := c.connect()
 	if err != nil {
 		return err
@@ -256,6 +259,9 @@ func (c *GatewayClient) doRPC(ctx context.Context, rpcName string, fn func(*grpc
 		logger.Printf("[CLOUD-GATEWAY] failed to close stale connection: %v", closeErr)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	conn, err = c.connect()
 	if err != nil {
 		return err
