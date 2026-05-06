@@ -605,7 +605,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
 
-	// After upload_ack is sent, mark task as completed (in_progress -> completed).
+	// After upload_ack is sent, mark task as completed (ready or in_progress -> completed).
+	// ready is allowed when begin RPC timed out on edge but recording+upload succeeded (episode row committed above).
 	// Best-effort: do not affect the already-sent acknowledgement.
 	now := time.Now().UTC()
 	if _, err := h.db.ExecContext(ctx, `
@@ -614,10 +615,10 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			status = 'completed',
 			completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
 			updated_at = ?
-		WHERE id = ? AND status = 'in_progress' AND deleted_at IS NULL
+		WHERE id = ? AND status IN ('in_progress', 'ready') AND deleted_at IS NULL
 	`, now, now, taskPK); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to mark task in_progress->completed after upload_ack: task=%s err=%v", dc.DeviceID, taskID, err)
+		logger.Printf("[TRANSFER] Device %s: failed to mark task ready/in_progress->completed after upload_ack: task=%s err=%v", dc.DeviceID, taskID, err)
 	} else {
 		if batchIDForAdvance > 0 {
 			// Must run after the task row is terminal: tryAdvanceBatchStatus counts tasks in DB.
@@ -1111,7 +1112,7 @@ func (h *TransferHandler) ManualACK(c *gin.Context) {
 		return
 	}
 
-	// After upload_ack is sent, mark task as completed (in_progress -> completed).
+	// After upload_ack is sent, mark task as completed (ready or in_progress -> completed).
 	// Best-effort: do not fail the acknowledgement response.
 	if h.db != nil {
 		now := time.Now().UTC()
@@ -1121,11 +1122,11 @@ func (h *TransferHandler) ManualACK(c *gin.Context) {
 			   status = 'completed',
 			   completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
 			   updated_at = ?
-			 WHERE task_id = ? AND status = 'in_progress' AND deleted_at IS NULL`,
+			 WHERE task_id = ? AND status IN ('in_progress', 'ready') AND deleted_at IS NULL`,
 			now, now, body.TaskID,
 		); err != nil {
 			// #nosec G706 -- Set aside for now
-			logger.Printf("[TRANSFER] Device %s: failed to mark task in_progress->completed after manual upload_ack: task=%s err=%v", deviceID, body.TaskID, err)
+			logger.Printf("[TRANSFER] Device %s: failed to mark task ready/in_progress->completed after manual upload_ack: task=%s err=%v", deviceID, body.TaskID, err)
 		} else {
 			var batchID int64
 			if err := h.db.Get(&batchID, "SELECT batch_id FROM tasks WHERE task_id = ? AND deleted_at IS NULL LIMIT 1", body.TaskID); err == nil && batchID > 0 {
