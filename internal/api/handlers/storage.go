@@ -55,6 +55,34 @@ func (h *StorageHandler) requireBearerToken(c *gin.Context) bool {
 	return true
 }
 
+// authorizeGetObject allows either a valid Bearer JWT (e.g. Range reads from the SPA worker)
+// or a short-lived dl_token query parameter (e.g. <a download> navigation without custom headers).
+func (h *StorageHandler) authorizeGetObject(c *gin.Context, bucket, objectName string) (usedDownloadToken bool, ok bool) {
+	if h.authCfg == nil {
+		logger.Printf("[S3] auth config is nil; refusing request")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth is not configured"})
+		return false, false
+	}
+
+	dl := strings.TrimSpace(c.Query("dl_token"))
+	if dl != "" {
+		if err := auth.ParseStorageDownloadToken(dl, h.authCfg, bucket, objectName); err != nil {
+			if err == auth.ErrExpiredToken {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "download token has expired"})
+				return false, false
+			}
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid download token"})
+			return false, false
+		}
+		return true, true
+	}
+
+	if !h.requireBearerToken(c) {
+		return false, false
+	}
+	return false, true
+}
+
 // RegisterRoutes registers storage-related routes on the given router group.
 func (h *StorageHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/storage/presign", h.PresignGetObject)
@@ -176,13 +204,14 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 		return
 	}
 
-	if !h.requireBearerToken(c) {
-		return
-	}
-
 	bucket, objectName, err := validateS3Location(c.Query("bucket"), c.Query("object"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bucket or object"})
+		return
+	}
+
+	usedDownloadToken, authed := h.authorizeGetObject(c, bucket, objectName)
+	if !authed {
 		return
 	}
 
@@ -262,7 +291,13 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 	}
 	c.Header("Content-Length", strconv.FormatInt(contentLen, 10))
 
-	c.Header("Content-Disposition", "inline; filename*=UTF-8''"+url.QueryEscape(objectName))
+	// dl_token is used for browser download navigations; suggest attachment so large MCAP/JSON
+	// save instead of opening inline. Bearer-only requests keep inline for in-app preview.
+	if usedDownloadToken {
+		c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+url.QueryEscape(objectName))
+	} else {
+		c.Header("Content-Disposition", "inline; filename*=UTF-8''"+url.QueryEscape(objectName))
+	}
 
 	c.Status(statusCode)
 	if _, err := io.Copy(c.Writer, obj); err != nil {

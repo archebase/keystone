@@ -17,24 +17,42 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 
+	"archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
 // EpisodeHandler handles episode-related HTTP requests
 type EpisodeHandler struct {
-	db     *sqlx.DB
-	s3     *s3.Client
-	bucket string
+	db      *sqlx.DB
+	s3      *s3.Client
+	bucket  string
+	authCfg *config.AuthConfig
 }
 
 // NewEpisodeHandler creates a new EpisodeHandler
-func NewEpisodeHandler(db *sqlx.DB, s3Client *s3.Client, bucket string) *EpisodeHandler {
+func NewEpisodeHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCfg *config.AuthConfig) *EpisodeHandler {
 	return &EpisodeHandler{
-		db:     db,
-		s3:     s3Client,
-		bucket: strings.TrimSpace(bucket),
+		db:      db,
+		s3:      s3Client,
+		bucket:  strings.TrimSpace(bucket),
+		authCfg: authCfg,
 	}
+}
+
+func (h *EpisodeHandler) requireBearerJWT(c *gin.Context) bool {
+	authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid authorization header"})
+		return false
+	}
+	if _, err := auth.ParseToken(parts[1], h.authCfg); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return false
+	}
+	return true
 }
 
 // episodeRow represents an episode row from the database.
@@ -409,6 +427,11 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
 		return
 	}
+	if h.authCfg != nil {
+		if !h.requireBearerJWT(c) {
+			return
+		}
+	}
 
 	episodeID, ok := parseEpisodeIDParam(c)
 	if !ok {
@@ -454,6 +477,15 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 	params := url.Values{}
 	params.Set("bucket", bucket)
 	params.Set("object", objectName)
+	if h.authCfg != nil {
+		dlTok, err := auth.SignStorageDownloadToken(bucket, objectName, auth.DefaultStorageDownloadTTL, h.authCfg)
+		if err != nil {
+			logger.Printf("[EPISODE] download token sign failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue download token"})
+			return
+		}
+		params.Set("dl_token", dlTok)
+	}
 	path := "/api/v1/storage/object?" + params.Encode()
 	c.JSON(http.StatusOK, presignResponse{URL: path})
 }
