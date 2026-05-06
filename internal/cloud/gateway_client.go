@@ -79,40 +79,25 @@ func NewGatewayClient(cfg GatewayClientConfig, authClient *AuthClient) *GatewayC
 // CreateLogicalUpload calls DataGatewayService.CreateLogicalUpload to create a new logical upload
 // session (or restart an existing one) and obtain STS credentials and the target object key.
 func (c *GatewayClient) CreateLogicalUpload(ctx context.Context, clientHints map[string]string, restartFromUploadID string) (*UploadSession, error) {
-	conn, err := c.connect()
+	authHeader, err := c.getAuthHeader(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Auth and RPC each get their own independent deadline rooted at the caller's ctx.
-	// Auth deadline is separate so token acquisition (TCP+TLS dial + ExchangeCredential RPC)
-	// does not consume the budget intended for the gateway RPC itself.
-	// The auth header string is extracted before authCancel(), then injected directly into
-	// rpcCtx — which is derived from the original ctx, not from authCtx — so cancelling
-	// authCtx never propagates into the RPC call.
-	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	authHeader, err := c.authClient.GetAuthHeader(authCtx)
-	authCancel()
-	if err != nil {
-		return nil, fmt.Errorf("get auth header: %w", err)
-	}
+	var resp *pb.CreateLogicalUploadResponse
+	err = c.doRPC(ctx, "CreateLogicalUpload", func(conn *grpc.ClientConn) error {
+		rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+		defer rpcCancel()
+		rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
 
-	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer rpcCancel()
-	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
-
-	client := pb.NewDataGatewayServiceClient(conn)
-	resp, err := client.CreateLogicalUpload(rpcCtx, &pb.CreateLogicalUploadRequest{
-		ClientHints:         clientHints,
-		RestartFromUploadId: restartFromUploadID,
+		var rpcErr error
+		resp, rpcErr = pb.NewDataGatewayServiceClient(conn).CreateLogicalUpload(rpcCtx, &pb.CreateLogicalUploadRequest{
+			ClientHints:         clientHints,
+			RestartFromUploadId: restartFromUploadID,
+		})
+		return rpcErr
 	})
 	if err != nil {
-		logger.Printf("[CLOUD-GATEWAY] CreateLogicalUpload RPC failed, resetting gRPC connection: %v", err)
-		if closeErr := c.Close(); closeErr != nil {
-			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after CreateLogicalUpload error: %v", closeErr)
-		} else {
-			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after CreateLogicalUpload error")
-		}
 		return nil, fmt.Errorf("CreateLogicalUpload RPC: %w", err)
 	}
 
@@ -122,38 +107,34 @@ func (c *GatewayClient) CreateLogicalUpload(ctx context.Context, clientHints map
 // GetUploadRecovery calls DataGatewayService.GetUploadRecovery to determine the recovery action
 // for an existing logical upload (e.g. after a process restart).
 func (c *GatewayClient) GetUploadRecovery(ctx context.Context, logicalUploadID string) (*UploadRecoveryInfo, error) {
-	conn, err := c.connect()
+	authHeader, err := c.getAuthHeader(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	authHeader, err := c.authClient.GetAuthHeader(authCtx)
-	authCancel()
-	if err != nil {
-		return nil, fmt.Errorf("get auth header: %w", err)
-	}
+	var resp *pb.GetUploadRecoveryResponse
+	err = c.doRPC(ctx, "GetUploadRecovery", func(conn *grpc.ClientConn) error {
+		rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+		defer rpcCancel()
+		rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
 
-	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer rpcCancel()
-	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
-
-	client := pb.NewDataGatewayServiceClient(conn)
-	resp, err := client.GetUploadRecovery(rpcCtx, &pb.GetUploadRecoveryRequest{
-		LogicalUploadId: logicalUploadID,
+		var rpcErr error
+		resp, rpcErr = pb.NewDataGatewayServiceClient(conn).GetUploadRecovery(rpcCtx, &pb.GetUploadRecoveryRequest{
+			LogicalUploadId: logicalUploadID,
+		})
+		// NOT_FOUND means the logical upload session no longer exists on the server.
+		// Wrap as sentinel so doRPC does not reset the connection — this is not a
+		// transient transport error but a permanent business-logic failure.
+		if rpcErr != nil {
+			if st, ok := status.FromError(rpcErr); ok && st.Code() == codes.NotFound {
+				return ErrLogicalUploadNotFound
+			}
+		}
+		return rpcErr
 	})
 	if err != nil {
-		// NOT_FOUND means the logical upload session no longer exists on the server.
-		// Return the sentinel directly — no connection reset needed, this is not a
-		// transient error and the caller must treat it as permanent failure.
-		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+		if errors.Is(err, ErrLogicalUploadNotFound) {
 			return nil, ErrLogicalUploadNotFound
-		}
-		logger.Printf("[CLOUD-GATEWAY] GetUploadRecovery RPC failed, resetting gRPC connection: %v", err)
-		if closeErr := c.Close(); closeErr != nil {
-			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after GetUploadRecovery error: %v", closeErr)
-		} else {
-			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after GetUploadRecovery error")
 		}
 		return nil, fmt.Errorf("GetUploadRecovery RPC: %w", err)
 	}
@@ -169,33 +150,24 @@ func (c *GatewayClient) GetUploadRecovery(ctx context.Context, logicalUploadID s
 
 // ReissueUploadCredentials refreshes STS credentials for an existing upload session.
 func (c *GatewayClient) ReissueUploadCredentials(ctx context.Context, uploadID string) (*UploadSession, error) {
-	conn, err := c.connect()
+	authHeader, err := c.getAuthHeader(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	authHeader, err := c.authClient.GetAuthHeader(authCtx)
-	authCancel()
-	if err != nil {
-		return nil, fmt.Errorf("get auth header: %w", err)
-	}
+	var resp *pb.ReissueUploadCredentialsResponse
+	err = c.doRPC(ctx, "ReissueUploadCredentials", func(conn *grpc.ClientConn) error {
+		rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+		defer rpcCancel()
+		rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
 
-	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer rpcCancel()
-	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
-
-	client := pb.NewDataGatewayServiceClient(conn)
-	resp, err := client.ReissueUploadCredentials(rpcCtx, &pb.ReissueUploadCredentialsRequest{
-		UploadId: uploadID,
+		var rpcErr error
+		resp, rpcErr = pb.NewDataGatewayServiceClient(conn).ReissueUploadCredentials(rpcCtx, &pb.ReissueUploadCredentialsRequest{
+			UploadId: uploadID,
+		})
+		return rpcErr
 	})
 	if err != nil {
-		logger.Printf("[CLOUD-GATEWAY] ReissueUploadCredentials RPC failed, resetting gRPC connection: %v", err)
-		if closeErr := c.Close(); closeErr != nil {
-			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after ReissueUploadCredentials error: %v", closeErr)
-		} else {
-			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after ReissueUploadCredentials error")
-		}
 		return nil, fmt.Errorf("ReissueUploadCredentials RPC: %w", err)
 	}
 
@@ -203,15 +175,14 @@ func (c *GatewayClient) ReissueUploadCredentials(ctx context.Context, uploadID s
 }
 
 // AbortUpload cancels a logical upload session on the data-gateway.
+// AbortUpload is best-effort: it does not reset the shared connection on failure.
 func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string, reason string) error {
-	conn, err := c.connect()
+	authHeader, err := c.getAuthHeader(ctx)
 	if err != nil {
 		return err
 	}
 
-	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	authHeader, err := c.authClient.GetAuthHeader(authCtx)
-	authCancel()
+	conn, err := c.connect()
 	if err != nil {
 		return err
 	}
@@ -220,8 +191,7 @@ func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string,
 	defer rpcCancel()
 	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
 
-	client := pb.NewDataGatewayServiceClient(conn)
-	_, err = client.AbortUpload(rpcCtx, &pb.AbortUploadRequest{
+	_, err = pb.NewDataGatewayServiceClient(conn).AbortUpload(rpcCtx, &pb.AbortUploadRequest{
 		LogicalUploadId: logicalUploadID,
 		Reason:          reason,
 	})
@@ -236,40 +206,90 @@ func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string,
 
 // CompleteUpload notifies the data-gateway that all parts have been uploaded to OSS.
 func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, ossObjectEtag string) error {
+	authHeader, err := c.getAuthHeader(ctx)
+	if err != nil {
+		return err
+	}
+
+	return c.doRPC(ctx, "CompleteUpload", func(conn *grpc.ClientConn) error {
+		rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+		defer rpcCancel()
+		rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
+
+		_, rpcErr := pb.NewDataGatewayServiceClient(conn).CompleteUpload(rpcCtx, &pb.CompleteUploadRequest{
+			UploadId:           uploadID,
+			FileSize:           fileSize,
+			RawTags:            rawTags,
+			CompletedPartCount: completedPartCount,
+			OssObjectEtag:      ossObjectEtag,
+		})
+		return rpcErr
+	})
+}
+
+// doRPC executes fn with the current shared connection. If fn returns an error, the
+// connection is reset and fn is retried once with a fresh connection. This transparently
+// recovers from stale connections cut by NLB idle timeout without surfacing a transient
+// failure to the caller.
+//
+// Sentinel errors (e.g. ErrLogicalUploadNotFound) are returned immediately without a
+// retry or connection reset, because they represent permanent server-side failures rather
+// than transport issues.
+func (c *GatewayClient) doRPC(ctx context.Context, rpcName string, fn func(*grpc.ClientConn) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	conn, err := c.connect()
 	if err != nil {
 		return err
 	}
 
-	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	authHeader, err := c.authClient.GetAuthHeader(authCtx)
-	authCancel()
+	if err = fn(conn); err == nil {
+		return nil
+	}
+
+	// Sentinel errors are permanent business failures — do not reset the connection.
+	if errors.Is(err, ErrLogicalUploadNotFound) {
+		return err
+	}
+
+	// First attempt failed. Reset the stale connection and retry once with a fresh one.
+	logger.Printf("[CLOUD-GATEWAY] %s RPC failed, resetting connection and retrying: %v", rpcName, err)
+	if closeErr := c.Close(); closeErr != nil {
+		logger.Printf("[CLOUD-GATEWAY] failed to close stale connection: %v", closeErr)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	conn, err = c.connect()
 	if err != nil {
 		return err
 	}
 
-	rpcCtx, rpcCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
-	defer rpcCancel()
-	rpcCtx = metadata.NewOutgoingContext(rpcCtx, metadata.Pairs("authorization", authHeader))
-
-	client := pb.NewDataGatewayServiceClient(conn)
-	_, err = client.CompleteUpload(rpcCtx, &pb.CompleteUploadRequest{
-		UploadId:           uploadID,
-		FileSize:           fileSize,
-		RawTags:            rawTags,
-		CompletedPartCount: completedPartCount,
-		OssObjectEtag:      ossObjectEtag,
-	})
-	if err != nil {
-		logger.Printf("[CLOUD-GATEWAY] CompleteUpload RPC failed, resetting gRPC connection: %v", err)
+	if err = fn(conn); err != nil {
+		// Retry also failed — this is a genuine server-side error, not a stale connection.
+		logger.Printf("[CLOUD-GATEWAY] %s RPC failed after reconnect: %v", rpcName, err)
 		if closeErr := c.Close(); closeErr != nil {
-			logger.Printf("[CLOUD-GATEWAY] failed to reset gRPC connection after CompleteUpload error: %v", closeErr)
-		} else {
-			logger.Printf("[CLOUD-GATEWAY] gRPC connection reset after CompleteUpload error")
+			logger.Printf("[CLOUD-GATEWAY] failed to close connection after retry failure: %v", closeErr)
 		}
-		return fmt.Errorf("CompleteUpload RPC: %w", err)
+		return err
 	}
+
+	logger.Printf("[CLOUD-GATEWAY] %s RPC succeeded after reconnect", rpcName)
 	return nil
+}
+
+// getAuthHeader obtains a JWT auth header with its own deadline so token acquisition
+// does not consume the budget of the gateway RPC itself.
+func (c *GatewayClient) getAuthHeader(ctx context.Context) (string, error) {
+	authCtx, authCancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
+	defer authCancel()
+	header, err := c.authClient.GetAuthHeader(authCtx)
+	if err != nil {
+		return "", fmt.Errorf("get auth header: %w", err)
+	}
+	return header, nil
 }
 
 func (c *GatewayClient) connect() (*grpc.ClientConn, error) {
@@ -284,10 +304,14 @@ func (c *GatewayClient) connect() (*grpc.ClientConn, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	logger.Printf("[CLOUD-GATEWAY] connecting to %s", c.cfg.Endpoint)
+
 	conn, err := grpc.NewClient(c.cfg.Endpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("grpc dial %s: %w", c.cfg.Endpoint, err)
 	}
+
 	c.conn = conn
 	return conn, nil
 }

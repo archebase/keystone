@@ -93,7 +93,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.AxonTransfer, db, s3Client, cfg.Storage.Bucket, cfg.AxonTransfer.FactoryID, recorderHub, recorderRPCTimeout)
 
 	// Create EpisodeHandler for episode listing
-	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket)
+	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
 
 	// Create TaskHandler for task configuration
 	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout)
