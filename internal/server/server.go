@@ -31,35 +31,36 @@ import (
 
 // Server represents the HTTP server
 type Server struct {
-	cfg              *config.Config
-	health           *handlers.HealthHandler
-	auth             *handlers.AuthHandler
-	storage          *handlers.StorageHandler
-	transfer         *handlers.TransferHandler
-	recorder         *handlers.RecorderHandler
-	episode          *handlers.EpisodeHandler
-	task             *handlers.TaskHandler
-	batch            *handlers.BatchHandler
-	robotType        *handlers.RobotTypeHandler
-	robot            *handlers.RobotHandler
-	factory          *handlers.FactoryHandler
-	dataCollector    *handlers.DataCollectorHandler
-	station          *handlers.StationHandler
-	organization     *handlers.OrganizationHandler
-	skill            *handlers.SkillHandler
-	inspector        *handlers.InspectorHandler
-	sop              *handlers.SOPHandler
-	scene            *handlers.SceneHandler
-	subscene         *handlers.SubsceneHandler
-	order            *handlers.OrderHandler
-	syncHandler      *handlers.SyncHandler
-	syncWorker       *services.SyncWorker
-	httpServer       *http.Server
-	transferWSServer *http.Server
-	recorderWSServer *http.Server
-	shutdownMu       sync.RWMutex
-	isRunning        bool
-	engine           *gin.Engine
+	cfg                *config.Config
+	health             *handlers.HealthHandler
+	auth               *handlers.AuthHandler
+	storage            *handlers.StorageHandler
+	transfer           *handlers.TransferHandler
+	recorder           *handlers.RecorderHandler
+	episode            *handlers.EpisodeHandler
+	task               *handlers.TaskHandler
+	batch              *handlers.BatchHandler
+	robotType          *handlers.RobotTypeHandler
+	robot              *handlers.RobotHandler
+	deviceRegistration *handlers.DeviceRegistrationHandler
+	factory            *handlers.FactoryHandler
+	dataCollector      *handlers.DataCollectorHandler
+	station            *handlers.StationHandler
+	organization       *handlers.OrganizationHandler
+	skill              *handlers.SkillHandler
+	inspector          *handlers.InspectorHandler
+	sop                *handlers.SOPHandler
+	scene              *handlers.SceneHandler
+	subscene           *handlers.SubsceneHandler
+	order              *handlers.OrderHandler
+	syncHandler        *handlers.SyncHandler
+	syncWorker         *services.SyncWorker
+	httpServer         *http.Server
+	transferWSServer   *http.Server
+	recorderWSServer   *http.Server
+	shutdownMu         sync.RWMutex
+	isRunning          bool
+	engine             *gin.Engine
 }
 
 // New creates a new server instance.
@@ -100,24 +101,26 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create database-dependent handlers only when DB is available
 	var (
-		batchHandler         *handlers.BatchHandler
-		robotTypeHandler     *handlers.RobotTypeHandler
-		robotHandler         *handlers.RobotHandler
-		factoryHandler       *handlers.FactoryHandler
-		dataCollectorHandler *handlers.DataCollectorHandler
-		stationHandler       *handlers.StationHandler
-		organizationHandler  *handlers.OrganizationHandler
-		skillHandler         *handlers.SkillHandler
-		inspectorHandler     *handlers.InspectorHandler
-		sopHandler           *handlers.SOPHandler
-		sceneHandler         *handlers.SceneHandler
-		subsceneHandler      *handlers.SubsceneHandler
-		orderHandler         *handlers.OrderHandler
+		batchHandler              *handlers.BatchHandler
+		robotTypeHandler          *handlers.RobotTypeHandler
+		robotHandler              *handlers.RobotHandler
+		deviceRegistrationHandler *handlers.DeviceRegistrationHandler
+		factoryHandler            *handlers.FactoryHandler
+		dataCollectorHandler      *handlers.DataCollectorHandler
+		stationHandler            *handlers.StationHandler
+		organizationHandler       *handlers.OrganizationHandler
+		skillHandler              *handlers.SkillHandler
+		inspectorHandler          *handlers.InspectorHandler
+		sopHandler                *handlers.SOPHandler
+		sceneHandler              *handlers.SceneHandler
+		subsceneHandler           *handlers.SubsceneHandler
+		orderHandler              *handlers.OrderHandler
 	)
 	if db != nil {
 		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub)
+		deviceRegistrationHandler = handlers.NewDeviceRegistrationHandler(db)
 		factoryHandler = handlers.NewFactoryHandler(db)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
@@ -137,30 +140,31 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	}
 
 	s := &Server{
-		cfg:           cfg,
-		health:        healthHandler,
-		auth:          authHandler,
-		storage:       storageHandler,
-		transfer:      transferHandler,
-		recorder:      recorderHandler,
-		episode:       episodeHandler,
-		task:          taskHandler,
-		batch:         batchHandler,
-		robotType:     robotTypeHandler,
-		robot:         robotHandler,
-		factory:       factoryHandler,
-		dataCollector: dataCollectorHandler,
-		station:       stationHandler,
-		organization:  organizationHandler,
-		skill:         skillHandler,
-		inspector:     inspectorHandler,
-		sop:           sopHandler,
-		scene:         sceneHandler,
-		subscene:      subsceneHandler,
-		order:         orderHandler,
-		syncHandler:   syncHandler,
-		syncWorker:    syncWorker,
-		engine:        engine,
+		cfg:                cfg,
+		health:             healthHandler,
+		auth:               authHandler,
+		storage:            storageHandler,
+		transfer:           transferHandler,
+		recorder:           recorderHandler,
+		episode:            episodeHandler,
+		task:               taskHandler,
+		batch:              batchHandler,
+		robotType:          robotTypeHandler,
+		robot:              robotHandler,
+		deviceRegistration: deviceRegistrationHandler,
+		factory:            factoryHandler,
+		dataCollector:      dataCollectorHandler,
+		station:            stationHandler,
+		organization:       organizationHandler,
+		skill:              skillHandler,
+		inspector:          inspectorHandler,
+		sop:                sopHandler,
+		scene:              sceneHandler,
+		subscene:           subsceneHandler,
+		order:              orderHandler,
+		syncHandler:        syncHandler,
+		syncWorker:         syncWorker,
+		engine:             engine,
 	}
 
 	s.httpServer = &http.Server{
@@ -243,6 +247,9 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.robot != nil {
 		s.robot.RegisterRoutes(v1Tasks)
+	}
+	if s.deviceRegistration != nil {
+		s.deviceRegistration.RegisterRoutes(v1Tasks)
 	}
 	if s.factory != nil {
 		s.factory.RegisterRoutes(v1Tasks)

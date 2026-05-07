@@ -8,6 +8,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -132,6 +133,20 @@ func (h *EpisodeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/:id/presign", h.GetEpisodePresignedURL)
 }
 
+// parseEpisodeRFC3339 parses RFC3339 / RFC3339Nano timestamps for episode list filters (UTC).
+func parseEpisodeRFC3339(raw string) (time.Time, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty timestamp")
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid timestamp")
+}
+
 func nullableString(value sql.NullString) *string {
 	if !value.Valid {
 		return nil
@@ -177,14 +192,19 @@ func episodeLabelsFromDB(ns sql.NullString) []string {
 // ListEpisodes returns a list of episodes with filtering and pagination
 //
 // @Summary      List episodes
-// @Description  Returns a list of episodes with optional filtering by task_id, qa_status, auto_approved, cloud_processed, and collector_operator_id
+// @Description  Returns a list of episodes with optional filtering by task_id, scene_id, qa_status, auto_approved, cloud_processed, cloud_synced, robot_device_id, collector_operator_id, and created_at range
 // @Tags         episodes
 // @Produce      json
 // @Param        task_id                query     string  false  "Filter by task numeric id (or legacy public task_id string)"
+// @Param        scene_id               query     int     false  "Filter by task scene_id (numeric)"
 // @Param        qa_status              query     string  false  "Filter by QA status"
 // @Param        auto_approved          query     bool    false  "Filter by auto-approval status"
 // @Param        cloud_processed        query     bool    false  "Filter by cloud processing status"
+// @Param        cloud_synced           query     bool    false  "Filter by cloud sync flag (uploaded to cloud storage)"
+// @Param        robot_device_id        query     string  false  "Filter by robot device_id (workstation robot)"
 // @Param        collector_operator_id  query     string  false  "Filter by data collector operator ID"
+// @Param        created_at_from        query     string  false  "Filter: created_at >= (RFC3339 / RFC3339Nano)"
+// @Param        created_at_to          query     string  false  "Filter: created_at <= (RFC3339 / RFC3339Nano)"
 // @Param        limit                  query     int     false  "Max results (default 50)"
 // @Param        offset                 query     int     false  "Pagination offset (default 0)"
 // @Success      200                    {object}  EpisodeListResponse
@@ -195,7 +215,12 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	qaStatus := c.Query("qa_status")
 	autoApproved := c.Query("auto_approved")
 	cloudProcessed := c.Query("cloud_processed")
+	cloudSynced := c.Query("cloud_synced")
 	collectorOperatorID := c.Query("collector_operator_id")
+	robotDeviceID := c.Query("robot_device_id")
+	sceneID := c.Query("scene_id")
+	createdAtFrom := strings.TrimSpace(c.Query("created_at_from"))
+	createdAtTo := strings.TrimSpace(c.Query("created_at_to"))
 
 	// Parse limit and offset with defaults
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -272,6 +297,16 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		}
 	}
 
+	if sceneID != "" {
+		if parsed, err := strconv.ParseInt(sceneID, 10, 64); err == nil {
+			sub := " AND EXISTS (SELECT 1 FROM tasks ts WHERE ts.id = e.task_id AND ts.scene_id = ? AND ts.deleted_at IS NULL)"
+			query += sub
+			countQuery += sub
+			args = append(args, parsed)
+			argsCount = append(argsCount, parsed)
+		}
+	}
+
 	if qaStatus != "" {
 		query += " AND e.qa_status = ?"
 		countQuery += " AND e.qa_status = ?"
@@ -299,12 +334,54 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		}
 	}
 
+	if cloudSynced != "" {
+		synced, err := strconv.ParseBool(cloudSynced)
+		if err == nil {
+			query += " AND e.cloud_synced = ?"
+			countQuery += " AND e.cloud_synced = ?"
+			args = append(args, synced)
+			argsCount = append(argsCount, synced)
+		}
+	}
+
 	if collectorOperatorID != "" {
 		sub := " AND EXISTS (SELECT 1 FROM workstations ws2 INNER JOIN data_collectors dc2 ON dc2.id = ws2.data_collector_id AND dc2.deleted_at IS NULL WHERE ws2.id = e.workstation_id AND dc2.operator_id = ?)"
 		query += sub
 		countQuery += sub
 		args = append(args, collectorOperatorID)
 		argsCount = append(argsCount, collectorOperatorID)
+	}
+
+	if robotDeviceID != "" {
+		sub := " AND EXISTS (SELECT 1 FROM workstations ws2 INNER JOIN robots r2 ON r2.id = ws2.robot_id AND r2.deleted_at IS NULL WHERE ws2.id = e.workstation_id AND r2.device_id = ?)"
+		query += sub
+		countQuery += sub
+		args = append(args, robotDeviceID)
+		argsCount = append(argsCount, robotDeviceID)
+	}
+
+	if createdAtFrom != "" {
+		fromT, err := parseEpisodeRFC3339(createdAtFrom)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid created_at_from"})
+			return
+		}
+		query += " AND e.created_at >= ?"
+		countQuery += " AND e.created_at >= ?"
+		args = append(args, fromT)
+		argsCount = append(argsCount, fromT)
+	}
+
+	if createdAtTo != "" {
+		toT, err := parseEpisodeRFC3339(createdAtTo)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid created_at_to"})
+			return
+		}
+		query += " AND e.created_at <= ?"
+		countQuery += " AND e.created_at <= ?"
+		args = append(args, toT)
+		argsCount = append(argsCount, toT)
 	}
 
 	// Get total count
