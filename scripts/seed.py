@@ -82,38 +82,38 @@ SKILLS = [
 
 SOPS = [
     {
-        "slug": "kitchen-fridge-retrieve",
-        "description": "Retrieve an item from the fridge and place it on prep table.",
+        "slug": "厨房取物",
+        "description": "从冰箱取出物品并放到备菜台上。",
         "version": "1.0.0",
         "skill_sequence": ["move-base", "open-fridge", "pick-item", "place-item"],
     },
     {
-        "slug": "delivery-station-intake",
-        "description": "Scan and sort incoming packages at delivery station.",
+        "slug": "快递分拣",
+        "description": "在快递站扫描并分拣到达的包裹。",
         "version": "1.0.0",
         "skill_sequence": ["move-base", "scan-qr", "sort-package"],
     },
     {
-        "slug": "bathroom-quick-clean",
-        "description": "Quick clean routine for bathroom sink.",
+        "slug": "卫浴快清",
+        "description": "卫生间洗手池的快速清洁流程。",
         "version": "1.0.0",
         "skill_sequence": ["move-base", "clean-sink"],
     },
     {
-        "slug": "bedroom-tidy",
-        "description": "Tidy bedroom by making the bed.",
+        "slug": "卧室整理",
+        "description": "通过整理床铺来完成卧室收纳。",
         "version": "1.0.0",
         "skill_sequence": ["move-base", "make-bed"],
     },
     {
-        "slug": "bathroom-fold-towel",
-        "description": "Fold towel in bathroom and place it properly.",
+        "slug": "折叠毛巾",
+        "description": "在卫生间折叠毛巾并整齐摆放。",
         "version": "1.0.0",
         "skill_sequence": ["move-base", "fold-towel", "place-item"],
     },
     {
-        "slug": "kitchen-move-water-bottle",
-        "description": "Move a water bottle to a target location in kitchen.",
+        "slug": "移动水瓶",
+        "description": "将水瓶移动到厨房指定位置。",
         "version": "1.0.0",
         "skill_sequence": ["move-base", "pick-item", "place-item"],
     },
@@ -310,10 +310,10 @@ BATCHES = [
 # NOTE: We keep these explicit (sop_slug + subscene_name + quantity) so seeding
 # does not "guess" task groups from scene structure.
 BATCH_TASK_GROUPS_BY_ORDER = {
-    "卧室整理": [{"sop_slug": "bathroom-fold-towel", "subscene_name": "桌子", "quantity": 3}],
-    "厨房取物": [{"sop_slug": "kitchen-fridge-retrieve", "subscene_name": "冰箱", "quantity": 2}],
-    "厨房移动水瓶": [{"sop_slug": "kitchen-move-water-bottle", "subscene_name": "备菜台", "quantity": 3}],
-    "快递站分拣": [{"sop_slug": "delivery-station-intake", "subscene_name": "分拣处", "quantity": 4}],
+    "卧室整理": [{"sop_slug": "折叠毛巾", "subscene_name": "桌子", "quantity": 3}],
+    "厨房取物": [{"sop_slug": "厨房取物", "subscene_name": "冰箱", "quantity": 2}],
+    "厨房移动水瓶": [{"sop_slug": "移动水瓶", "subscene_name": "备菜台", "quantity": 3}],
+    "快递站分拣": [{"sop_slug": "快递分拣", "subscene_name": "分拣处", "quantity": 4}],
 }
 
 def _post_json(path, body):
@@ -688,23 +688,23 @@ if __name__ == "__main__":
         if not created["sops"]:
             raise RuntimeError("no sops created; cannot create batches")
         kitchen_sop_id = next(
-            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "kitchen-fridge-retrieve"),
+            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "厨房取物"),
             None,
         )
         delivery_sop_id = next(
-            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "delivery-station-intake"),
+            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "快递分拣"),
             None,
         )
         fold_towel_sop_id = next(
-            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "bathroom-fold-towel"),
+            (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "折叠毛巾"),
             None,
         )
         if not kitchen_sop_id:
-            raise KeyError("sop not found: 'kitchen-fridge-retrieve'")
+            raise KeyError("sop not found: '厨房取物'")
         if not delivery_sop_id:
-            raise KeyError("sop not found: 'delivery-station-intake'")
+            raise KeyError("sop not found: '快递分拣'")
         if not fold_towel_sop_id:
-            raise KeyError("sop not found: 'bathroom-fold-towel'")
+            raise KeyError("sop not found: '折叠毛巾'")
 
         orders_by_name = {str(o.get("name", "")).strip(): o for o in created["orders"]}
         for b in BATCHES:
@@ -753,19 +753,19 @@ if __name__ == "__main__":
                 if qty <= 0:
                     raise ValueError(f"batch task_groups.quantity must be positive for order {order_name!r}")
 
-                if sop_slug == "kitchen-fridge-retrieve":
+                if sop_slug == "厨房取物":
                     sop_id = kitchen_sop_id
-                elif sop_slug == "delivery-station-intake":
+                elif sop_slug == "快递分拣":
                     sop_id = delivery_sop_id
-                elif sop_slug == "bathroom-fold-towel":
+                elif sop_slug == "折叠毛巾":
                     sop_id = fold_towel_sop_id
-                elif sop_slug == "kitchen-move-water-bottle":
+                elif sop_slug == "移动水瓶":
                     sop_id = next(
-                        (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "kitchen-move-water-bottle"),
+                        (int(s["id"]) for s in created["sops"] if str(s.get("slug", "")).strip() == "移动水瓶"),
                         None,
                     )
                     if not sop_id:
-                        raise KeyError("sop not found: 'kitchen-move-water-bottle'")
+                        raise KeyError("sop not found: '移动水瓶'")
                 else:
                     raise KeyError(f"unsupported sop_slug in batch task_groups for order {order_name!r}: {sop_slug!r}")
 
