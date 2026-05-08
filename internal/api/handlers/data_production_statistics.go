@@ -78,11 +78,24 @@ type statsSizeMetrics struct {
 	MaxBytes     int64 `json:"max_bytes"`
 }
 
+type statsQAMetrics struct {
+	Approved int64   `json:"approved"`
+	PassRate float64 `json:"pass_rate"`
+}
+
+type statsCloudSyncMetrics struct {
+	Synced   int64   `json:"synced"`
+	Unsynced int64   `json:"unsynced"`
+	SyncRate float64 `json:"sync_rate"`
+}
+
 type dataProductionSummaryResponse struct {
-	Count    statsCountMetrics    `json:"count"`
-	Duration statsDurationMetrics `json:"duration"`
-	Size     statsSizeMetrics     `json:"size"`
-	Compare  *statsCompareMetrics `json:"compare,omitempty"`
+	Count    statsCountMetrics     `json:"count"`
+	Duration statsDurationMetrics  `json:"duration"`
+	Size     statsSizeMetrics      `json:"size"`
+	QA       statsQAMetrics        `json:"qa"`
+	Cloud    statsCloudSyncMetrics `json:"cloud_sync"`
+	Compare  *statsCompareMetrics  `json:"compare,omitempty"`
 }
 
 type statsCompareMetrics struct {
@@ -139,6 +152,7 @@ type dataProductionDetailItem struct {
 	DataType            string `json:"data_type" db:"data_type"`
 	Status              string `json:"status" db:"status"`
 	QAStatus            string `json:"qa_status" db:"qa_status"`
+	CloudSynced         bool   `json:"cloud_synced" db:"cloud_synced"`
 	Count               int64  `json:"count" db:"count_value"`
 	DurationMs          *int64 `json:"duration_ms" db:"duration_ms"`
 	SizeBytes           *int64 `json:"size_bytes" db:"size_bytes"`
@@ -160,6 +174,9 @@ type aggregateStatsRow struct {
 	SuccessCount    sql.NullInt64   `db:"success_count"`
 	FailedCount     sql.NullInt64   `db:"failed_count"`
 	ProcessingCount sql.NullInt64   `db:"processing_count"`
+	ApprovedQACount sql.NullInt64   `db:"approved_qa_count"`
+	CloudSynced     sql.NullInt64   `db:"cloud_synced_count"`
+	CloudUnsynced   sql.NullInt64   `db:"cloud_unsynced_count"`
 	TotalDurationMs sql.NullFloat64 `db:"total_duration_ms"`
 	AvgDurationMs   sql.NullFloat64 `db:"avg_duration_ms"`
 	MaxDurationMs   sql.NullFloat64 `db:"max_duration_ms"`
@@ -176,6 +193,9 @@ type trendStatsRow struct {
 	SuccessCount    sql.NullInt64   `db:"success_count"`
 	FailedCount     sql.NullInt64   `db:"failed_count"`
 	ProcessingCount sql.NullInt64   `db:"processing_count"`
+	ApprovedQACount sql.NullInt64   `db:"approved_qa_count"`
+	CloudSynced     sql.NullInt64   `db:"cloud_synced_count"`
+	CloudUnsynced   sql.NullInt64   `db:"cloud_unsynced_count"`
 	TotalDurationMs sql.NullFloat64 `db:"total_duration_ms"`
 	AvgDurationMs   sql.NullFloat64 `db:"avg_duration_ms"`
 	MaxDurationMs   sql.NullFloat64 `db:"max_duration_ms"`
@@ -349,6 +369,9 @@ func (h *DataProductionStatisticsHandler) GetTrend(c *gin.Context) {
 			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
 			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
 			COALESCE(SUM(CASE WHEN status = 'processing' THEN count_value ELSE 0 END), 0) AS processing_count,
+			COALESCE(SUM(CASE WHEN qa_status IN ('approved', 'inspector_approved') THEN count_value ELSE 0 END), 0) AS approved_qa_count,
+			COALESCE(SUM(CASE WHEN cloud_synced THEN count_value ELSE 0 END), 0) AS cloud_synced_count,
+			COALESCE(SUM(CASE WHEN NOT COALESCE(cloud_synced, FALSE) THEN count_value ELSE 0 END), 0) AS cloud_unsynced_count,
 			SUM(duration_ms) AS total_duration_ms,
 			AVG(duration_ms) AS avg_duration_ms,
 			MAX(duration_ms) AS max_duration_ms,
@@ -527,6 +550,7 @@ func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) s
 			data_type,
 			status,
 			qa_status,
+			COALESCE(cloud_synced, FALSE) AS cloud_synced,
 			count_value,
 			duration_ms,
 			size_bytes,
@@ -609,6 +633,9 @@ func (h *DataProductionStatisticsHandler) aggregateStats(q dataProductionStatsQu
 			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
 			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
 			COALESCE(SUM(CASE WHEN status = 'processing' THEN count_value ELSE 0 END), 0) AS processing_count,
+			COALESCE(SUM(CASE WHEN qa_status IN ('approved', 'inspector_approved') THEN count_value ELSE 0 END), 0) AS approved_qa_count,
+			COALESCE(SUM(CASE WHEN cloud_synced THEN count_value ELSE 0 END), 0) AS cloud_synced_count,
+			COALESCE(SUM(CASE WHEN NOT COALESCE(cloud_synced, FALSE) THEN count_value ELSE 0 END), 0) AS cloud_unsynced_count,
 			SUM(duration_ms) AS total_duration_ms,
 			AVG(duration_ms) AS avg_duration_ms,
 			MAX(duration_ms) AS max_duration_ms,
@@ -812,6 +839,8 @@ func productionRecordsSQL() string {
 func aggregateRowToSummary(row aggregateStatsRow, p95 int64) dataProductionSummaryResponse {
 	total := nullInt64(row.TotalCount)
 	success := nullInt64(row.SuccessCount)
+	approvedQA := nullInt64(row.ApprovedQACount)
+	cloudSynced := nullInt64(row.CloudSynced)
 	return dataProductionSummaryResponse{
 		Count: statsCountMetrics{
 			Total:       total,
@@ -832,6 +861,15 @@ func aggregateRowToSummary(row aggregateStatsRow, p95 int64) dataProductionSumma
 			FailedBytes:  nullInt64(row.FailedBytes),
 			AvgBytes:     roundNullFloat(row.AvgBytes),
 			MaxBytes:     nullInt64(row.MaxBytes),
+		},
+		QA: statsQAMetrics{
+			Approved: approvedQA,
+			PassRate: rate(approvedQA, total),
+		},
+		Cloud: statsCloudSyncMetrics{
+			Synced:   cloudSynced,
+			Unsynced: nullInt64(row.CloudUnsynced),
+			SyncRate: rate(cloudSynced, total),
 		},
 	}
 }

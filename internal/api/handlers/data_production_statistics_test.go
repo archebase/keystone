@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,10 +60,27 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 
 func TestDataProductionDetailsSQLSelectsSOPFields(t *testing.T) {
 	querySQL := dataProductionDetailsSQL("SELECT 1", "time", "DESC")
-	for _, want := range []string{"sop_id", "sop,", "qa_status"} {
+	for _, want := range []string{"sop_id", "sop,", "qa_status", "cloud_synced"} {
 		if !strings.Contains(querySQL, want) {
 			t.Fatalf("detail SQL should select %q: %s", want, querySQL)
 		}
+	}
+}
+
+func TestAggregateRowToSummaryIncludesQAAndCloudSync(t *testing.T) {
+	resp := aggregateRowToSummary(aggregateStatsRow{
+		TotalCount:      sql.NullInt64{Int64: 10, Valid: true},
+		SuccessCount:    sql.NullInt64{Int64: 10, Valid: true},
+		ApprovedQACount: sql.NullInt64{Int64: 7, Valid: true},
+		CloudSynced:     sql.NullInt64{Int64: 8, Valid: true},
+		CloudUnsynced:   sql.NullInt64{Int64: 2, Valid: true},
+	}, 0)
+
+	if resp.QA.Approved != 7 || resp.QA.PassRate != 0.7 {
+		t.Fatalf("unexpected QA summary: %+v", resp.QA)
+	}
+	if resp.Cloud.Synced != 8 || resp.Cloud.Unsynced != 2 || resp.Cloud.SyncRate != 0.8 {
+		t.Fatalf("unexpected cloud sync summary: %+v", resp.Cloud)
 	}
 }
 
