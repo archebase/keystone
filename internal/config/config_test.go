@@ -7,6 +7,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +55,9 @@ func TestLoad(t *testing.T) {
 	// Verify reading from environment variables
 	if cfg.Database.DSN == "" {
 		t.Error("Load().Database.DSN is empty")
+	}
+	if !strings.Contains(cfg.Database.DSN, "time_zone=%27%2B00%3A00%27") {
+		t.Errorf("Load().Database.DSN should set session time_zone to UTC: %s", cfg.Database.DSN)
 	}
 
 	if cfg.Storage.Bucket != "edge-factory-test" {

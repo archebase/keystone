@@ -299,9 +299,8 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 
 	if sceneID != "" {
 		if parsed, err := strconv.ParseInt(sceneID, 10, 64); err == nil {
-			sub := " AND EXISTS (SELECT 1 FROM tasks ts WHERE ts.id = e.task_id AND ts.scene_id = ? AND ts.deleted_at IS NULL)"
-			query += sub
-			countQuery += sub
+			query += " AND e.scene_id = ?"
+			countQuery += " AND e.scene_id = ?"
 			args = append(args, parsed)
 			argsCount = append(argsCount, parsed)
 		}

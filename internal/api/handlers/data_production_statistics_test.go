@@ -48,6 +48,7 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"ws.id = COALESCE(e.workstation_id, t.workstation_id)",
 		"COALESCE(CAST(e.sop_id AS CHAR), CAST(t.sop_id AS CHAR), '') AS sop_id",
 		"s.id = COALESCE(e.sop_id, t.sop_id)",
 		"CONCAT('SOP #', CAST(COALESCE(e.sop_id, t.sop_id) AS CHAR))",
@@ -60,7 +61,14 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 
 func TestDataProductionDetailsSQLSelectsSOPFields(t *testing.T) {
 	querySQL := dataProductionDetailsSQL("SELECT 1", "time", "DESC")
-	for _, want := range []string{"sop_id", "sop,", "qa_status", "cloud_synced"} {
+	for _, want := range []string{
+		"COALESCE(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), event_time)",
+		"collector_name",
+		"sop_id",
+		"sop,",
+		"qa_status",
+		"cloud_synced",
+	} {
 		if !strings.Contains(querySQL, want) {
 			t.Fatalf("detail SQL should select %q: %s", want, querySQL)
 		}
@@ -277,16 +285,19 @@ func TestStatsBucketExpressionUsesLocalTimezoneOffset(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.granularity, func(t *testing.T) {
 			expr, args := statsBucketExpression(tt.granularity, "+08:00")
-			if !strings.Contains(expr, "CONVERT_TZ(event_time, @@session.time_zone, ?)") {
-				t.Fatalf("bucket expression should convert event_time into local timezone: %s", expr)
+			if !strings.Contains(expr, "COALESCE(CONVERT_TZ(event_time, @@session.time_zone, ?), event_time)") {
+				t.Fatalf("bucket expression should convert event_time into local timezone with fallback: %s", expr)
 			}
-			if !strings.Contains(expr, "CONVERT_TZ(") || !strings.Contains(expr, "'+00:00'") {
-				t.Fatalf("bucket expression should convert local bucket back to UTC: %s", expr)
+			if !strings.Contains(expr, "TIMESTAMPADD(MINUTE, ?") || !strings.Contains(expr, "'%Y-%m-%dT%H:%i:%sZ'") {
+				t.Fatalf("bucket expression should shift local bucket back to UTC: %s", expr)
 			}
 			if len(args) != tt.argCount {
 				t.Fatalf("arg count = %d, want %d", len(args), tt.argCount)
 			}
-			for _, arg := range args {
+			if args[0] != -480 {
+				t.Fatalf("bucket UTC shift arg = %v, want -480", args[0])
+			}
+			for _, arg := range args[1:] {
 				if arg != "+08:00" {
 					t.Fatalf("bucket arg = %v, want +08:00", arg)
 				}

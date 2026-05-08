@@ -555,7 +555,7 @@ func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) s
 	return fmt.Sprintf(`
 		SELECT
 			id,
-			DATE_FORMAT(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') AS time,
+			DATE_FORMAT(COALESCE(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), event_time), '%%Y-%%m-%%dT%%H:%%i:%%sZ') AS time,
 			source_id,
 			source_name,
 			scene_id,
@@ -564,6 +564,7 @@ func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) s
 			robot_type_id,
 			robot_type_name,
 			collector_operator_id,
+			collector_name,
 			task_id,
 			task_name,
 			sop_id,
@@ -824,8 +825,8 @@ func productionRecordsSQL() string {
 			CONCAT('episode:', e.id) AS id,
 			COALESCE(e.episode_id, '') AS episode_id,
 			COALESCE(t.completed_at, e.created_at) AS event_time,
-			COALESCE(r.device_id, ws.robot_serial, CAST(t.workstation_id AS CHAR), '') AS source_id,
-			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(t.workstation_id AS CHAR)), 'unknown') AS source_name,
+			COALESCE(r.device_id, ws.robot_serial, CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR), '') AS source_id,
+			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR)), 'unknown') AS source_name,
 			e.scene_id AS scene_id,
 			COALESCE(e.scene_name, t.scene_name, '') AS scene_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
@@ -856,7 +857,7 @@ func productionRecordsSQL() string {
 			'' AS error_message
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
@@ -954,17 +955,17 @@ func breakdownRowToItem(row breakdownStatsRow) dataProductionBreakdownItem {
 }
 
 func statsBucketExpression(granularity string, timezoneOffset string) (string, []interface{}) {
-	localEvent := "CONVERT_TZ(event_time, @@session.time_zone, ?)"
+	localEvent := "COALESCE(CONVERT_TZ(event_time, @@session.time_zone, ?), event_time)"
 	utcBucket := func(localBucket string, argCount int) (string, []interface{}) {
 		expr := fmt.Sprintf(
-			"DATE_FORMAT(CONVERT_TZ(%s, ?, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ')",
+			"DATE_FORMAT(TIMESTAMPADD(MINUTE, ?, %s), '%%Y-%%m-%%dT%%H:%%i:%%sZ')",
 			localBucket,
 		)
 		args := make([]interface{}, 0, argCount+1)
+		args = append(args, -statsTimezoneOffsetMinutes(timezoneOffset))
 		for i := 0; i < argCount; i++ {
 			args = append(args, timezoneOffset)
 		}
-		args = append(args, timezoneOffset)
 		return expr, args
 	}
 
@@ -983,6 +984,16 @@ func statsBucketExpression(granularity string, timezoneOffset string) (string, [
 	default:
 		return utcBucket(fmt.Sprintf("DATE_FORMAT(%s, '%%Y-%%m-%%d 00:00:00')", localEvent), 1)
 	}
+}
+
+func statsTimezoneOffsetMinutes(timezoneOffset string) int {
+	sign := 1
+	if strings.HasPrefix(timezoneOffset, "-") {
+		sign = -1
+	}
+	hours, _ := strconv.Atoi(timezoneOffset[1:3])
+	minutes, _ := strconv.Atoi(timezoneOffset[4:6])
+	return sign * (hours*60 + minutes)
 }
 
 func statsBreakdownExpressions(dimension string) (string, string, error) {
