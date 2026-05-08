@@ -81,6 +81,15 @@ func PaginationErrorResponse(c *gin.Context, err error) {
 	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 }
 
+func firstNonEmptyQuery(c *gin.Context, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(c.Query(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // isValidSlug checks non-empty slug, length <= maxSlugLength (in runes), and allows Unicode letters/digits plus hyphen.
 func isValidSlug(s string) bool {
 	if s == "" {
