@@ -153,7 +153,7 @@ func Load() (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			Driver: "mysql",
-			DSN: fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=UTC&charset=utf8mb4&multiStatements=true",
+			DSN: fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&loc=UTC&charset=utf8mb4&multiStatements=true&time_zone=%%27%%2B00%%3A00%%27",
 				getEnv("KEYSTONE_MYSQL_USER", "keystone"),
 				getEnv("KEYSTONE_MYSQL_PASSWORD", ""),
 				getEnv("KEYSTONE_MYSQL_HOST", "localhost"),

@@ -153,12 +153,16 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 // ListDataCollectors handles data collector listing requests with filtering.
 //
 // @Summary      List data collectors
-// @Description  Lists all data collectors with optional filtering
+// @Description  Lists all data collectors with optional filtering and keyword search
 // @Tags         data_collectors
 // @Accept       json
 // @Produce      json
 // @Param        organization_id query     string  false  "Filter by organization ID"
 // @Param        status          query     string  false  "Filter by status (active, inactive, on_leave)"
+// @Param        keyword         query     string  false  "Search by name, operator ID, or email"
+// @Param        q               query     string  false  "Alias of keyword"
+// @Param        search          query     string  false  "Alias of keyword"
+// @Param        operator_id     query     string  false  "Alias of keyword for operator ID search"
 // @Param        limit           query     int     false  "Max results (default 50, max 100)"
 // @Param        offset          query     int     false  "Pagination offset (default 0)"
 // @Success      200     {object}  DataCollectorListResponse
@@ -174,6 +178,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 
 	orgID := c.Query("organization_id")
 	status := c.Query("status")
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search", "operator_id")
 
 	whereClause := "WHERE dc.deleted_at IS NULL"
 	args := []interface{}{}
@@ -191,6 +196,12 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 	if status != "" {
 		whereClause += " AND dc.status = ?"
 		args = append(args, status)
+	}
+
+	if keyword != "" {
+		likeKeyword := "%" + keyword + "%"
+		whereClause += " AND (dc.name LIKE ? OR dc.operator_id LIKE ? OR dc.email LIKE ?)"
+		args = append(args, likeKeyword, likeKeyword, likeKeyword)
 	}
 
 	countQuery := "SELECT COUNT(*) FROM data_collectors dc " + whereClause

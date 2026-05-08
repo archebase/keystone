@@ -184,7 +184,7 @@ func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
 // ListRobots handles robot listing requests with filtering.
 //
 // @Summary      List robots
-// @Description  Lists robots with optional filtering by factory_id, status, robot_type_id, and connection status
+// @Description  Lists robots with optional filtering by factory_id, status, robot_type_id, connection status, and keyword
 // @Tags         robots
 // @Accept       json
 // @Produce      json
@@ -192,6 +192,10 @@ func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
 // @Param        status        query     string  false  "Filter by status (active, maintenance, retired)"
 // @Param        robot_type_id query     string  false  "Filter by robot type id"
 // @Param        connected     query     string  false  "Filter by connection status (true/false)"
+// @Param        keyword       query     string  false  "Search by device ID or asset ID"
+// @Param        q             query     string  false  "Alias of keyword"
+// @Param        search        query     string  false  "Alias of keyword"
+// @Param        device_id     query     string  false  "Alias of keyword for device ID search"
 // @Param        limit         query     int     false  "Max results (default 50, max 100)"
 // @Param        offset        query     int     false  "Pagination offset (default 0)"
 // @Success      200           {object}  RobotListResponse
@@ -209,6 +213,7 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	status := c.Query("status")
 	robotTypeID := c.Query("robot_type_id")
 	connectedParam := c.Query("connected")
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search", "device_id")
 
 	var connectedFilter *bool
 	if connectedParam != "" {
@@ -246,6 +251,12 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		}
 		whereClause += " AND r.robot_type_id = ?"
 		args = append(args, parsedRobotTypeID)
+	}
+
+	if keyword != "" {
+		likeKeyword := "%" + keyword + "%"
+		whereClause += " AND (r.device_id LIKE ? OR r.asset_id LIKE ?)"
+		args = append(args, likeKeyword, likeKeyword)
 	}
 
 	countQuery := "SELECT COUNT(*) FROM robots r " + whereClause
