@@ -333,6 +333,7 @@ func parseStatsStringListQuery(c *gin.Context, key string) []string {
 	return values
 }
 
+// GetSummary returns aggregate data production statistics for the requested filters.
 func (h *DataProductionStatisticsHandler) GetSummary(c *gin.Context) {
 	q, err := parseDataProductionStatsQuery(c, false)
 	if err != nil {
@@ -369,6 +370,7 @@ func (h *DataProductionStatisticsHandler) GetSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// GetTrend returns bucketed data production statistics for chart rendering.
 func (h *DataProductionStatisticsHandler) GetTrend(c *gin.Context) {
 	q, err := parseDataProductionStatsQuery(c, true)
 	if err != nil {
@@ -419,6 +421,7 @@ func (h *DataProductionStatisticsHandler) GetTrend(c *gin.Context) {
 	c.JSON(http.StatusOK, dataProductionTrendResponse{Granularity: q.Granularity, Items: items})
 }
 
+// GetBreakdown returns paginated statistics grouped by the requested dimension.
 func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 	q, err := parseDataProductionStatsQuery(c, false)
 	if err != nil {
@@ -505,6 +508,7 @@ func dataProductionBreakdownSQL(idExpr string, nameExpr string, baseSQL string) 
 	`, idExpr, nameExpr, baseSQL, idExpr)
 }
 
+// ListDetails returns paginated episode-level records backing the statistics.
 func (h *DataProductionStatisticsHandler) ListDetails(c *gin.Context) {
 	q, err := parseDataProductionStatsQuery(c, false)
 	if err != nil {
@@ -584,6 +588,7 @@ func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) s
 	`, baseSQL, sortBy, sortOrder)
 }
 
+// ExportCSV streams filtered data production detail records as CSV.
 func (h *DataProductionStatisticsHandler) ExportCSV(c *gin.Context) {
 	q, err := parseDataProductionStatsQuery(c, false)
 	if err != nil {
@@ -1073,13 +1078,6 @@ func roundNullFloat(v sql.NullFloat64) int64 {
 		return 0
 	}
 	return int64(math.Round(v.Float64))
-}
-
-func formatNullableInt64(value *int64) string {
-	if value == nil {
-		return ""
-	}
-	return strconv.FormatInt(*value, 10)
 }
 
 func formatExportDuration(value *int64) string {
