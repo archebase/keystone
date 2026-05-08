@@ -18,7 +18,7 @@ The page is intended to answer:
 - Was the production process stable and successful?
 - How long did production take?
 - How large was the produced data?
-- Which source, task, data type, or project caused volume changes or failures?
+- Which device ID, device type, collector, or source caused volume changes or failures?
 
 The core statistical dimensions are:
 
@@ -39,7 +39,7 @@ The current requirement is not a full BI system. The first version should provid
 - Provide time-range based data production statistics in Synapse Admin.
 - Define stable metric semantics for count, duration, and size.
 - Support trend analysis by time granularity.
-- Support breakdown by source, task, and data type.
+- Support breakdown by robot device ID, collector operator ID, and robot type.
 - Support detail-level investigation and export.
 - Keep API and data model extensible for future alerting and reporting.
 
@@ -61,7 +61,7 @@ The current requirement is not a full BI system. The first version should provid
 
 - **Developer / maintainer**
   - Investigates production drops, high failure rates, or high duration.
-  - Locates abnormal source, task, data type, or project.
+  - Locates abnormal device ID, device type, collector, or source.
   - Jumps from statistics to logs or task details when available.
 
 - **Project owner**
@@ -72,8 +72,8 @@ The current requirement is not a full BI system. The first version should provid
 
 - View data production summary for the last 7 days.
 - Compare count, duration, and size trends over a selected period.
-- Find top sources by produced count or failed count.
-- Find tasks with high average or P95 duration.
+- Find top devices, collectors, or device types by produced count or failed count.
+- Find devices or device types with high average or P95 duration.
 - Inspect details for a specific time bucket and dimension.
 - Export the current filtered result.
 
@@ -101,14 +101,14 @@ If Synapse Admin does not have a Statistics menu yet, this page can temporarily 
 ```text
 Data Production Statistics
 
-[Time Range] [Granularity] [Source] [Data Type] [Status] [Query] [Reset] [Export]
+[Time Range] [Granularity] [Status] [Robot Device ID] [Robot Type] [Collector Operator ID] [SOP] [Query] [Reset] [Export]
 
 [Total Count] [Success Count] [Failed Count] [Success Rate]
 [Average Duration] [P95 Duration] [Total Size] [Average Size]
 
 [Count Trend] [Duration Trend] [Size Trend]
 
-[Breakdown: Source / Task / Data Type]
+[Breakdown: Robot Device ID / Collector Operator ID / Robot Type]
 
 [Detail Table]
 ```
@@ -121,10 +121,10 @@ Required filters for MVP:
 |---|---|---|
 | Time range | Statistics period | Last 7 days |
 | Granularity | Time bucket: hour, day, week, month | Day |
-| Source | Data source, robot, device, or service | All |
 | Robot device ID | Robot device identifier | All |
+| Robot type | Robot type name, backed by `robot_type_id` | All |
 | Collector operator ID | Data collector operator identifier | All |
-| Data type | Produced data category | All |
+| SOP | Standard operating procedure, backed by `sop_id` | All |
 | Status | Success, failed, processing, discarded | All |
 
 Recommended behavior:
@@ -184,19 +184,24 @@ The UI may use tabs for the first version:
 [Count] [Duration] [Size]
 ```
 
+The trend chart should render a continuous local-time axis. If a bucket has no
+records, the frontend should display that bucket with zero values instead of
+removing it from the chart.
+
 ### 4.6 Breakdown Tables
 
 Breakdown dimensions:
 
 - Source
-- Task
-- Data type
+- Robot device ID
+- Collector operator ID
+- Robot type
 
 Common columns:
 
 | Column | Description |
 |---|---|
-| Dimension name | Source name, task name, or data type |
+| Dimension name | Source name, robot device ID, collector operator ID, or robot type name |
 | Total count | Total production count |
 | Success count | Successful production count |
 | Failed count | Failed production count |
@@ -308,14 +313,15 @@ All paths below are proposed Keystone Admin API paths. Final path prefixes shoul
 | `start_time` | RFC3339 string | Yes | Inclusive start time |
 | `end_time` | RFC3339 string | Yes | Exclusive end time |
 | `granularity` | string | Trend only | `hour`, `day`, `week`, `month` |
+| `timezone_offset` | string | Trend and export only | Browser timezone offset such as `+08:00` |
 | `source_id` | string | No | Data source filter |
 | `robot_device_id` | string | No | Robot device ID filter |
+| `robot_type_id` | string | No | Robot type filter |
 | `collector_operator_id` | string | No | Data collector operator ID filter |
-| `data_type` | string | No | Data type filter |
+| `sop_id` | string | No | SOP filter |
 | `status` | string | No | Production status filter |
-| `task_id` | string | No | Task filter |
-| `limit` | int | Detail only | Page size |
-| `offset` | int | Detail only | Page offset |
+| `limit` | int | Breakdown and detail only | Page size |
+| `offset` | int | Breakdown and detail only | Page offset |
 | `sort_by` | string | Detail only | Sort field |
 | `sort_order` | string | Detail only | `asc` or `desc` |
 
@@ -359,8 +365,14 @@ Response:
 ### 6.3 Trend
 
 ```http
-GET /api/v1/admin/statistics/data-production/trend
+GET /api/v1/admin/statistics/data-production/trend?granularity=day&timezone_offset=%2B08:00
 ```
+
+Trend buckets should be grouped by the browser local timezone represented by
+`timezone_offset`, for example `+08:00`. The `+` sign must be URL encoded as
+`%2B` when written directly in a query string. The response `time` is still an
+RFC3339 UTC instant for the local bucket start, so the frontend can render it in
+browser local time.
 
 Response:
 
@@ -394,7 +406,7 @@ Response:
 ### 6.4 Breakdown
 
 ```http
-GET /api/v1/admin/statistics/data-production/breakdown?dimension=source
+GET /api/v1/admin/statistics/data-production/breakdown?dimension=source&limit=20&offset=0
 ```
 
 Supported dimensions:
@@ -402,14 +414,18 @@ Supported dimensions:
 - `source`
 - `robot_device`
 - `collector`
-- `task`
-- `data_type`
+- `robot_type`
 
 Response:
 
 ```json
 {
   "dimension": "source",
+  "total": 156,
+  "limit": 20,
+  "offset": 0,
+  "hasNext": true,
+  "hasPrev": false,
   "items": [
     {
       "id": "source-001",
@@ -452,6 +468,9 @@ Response:
       "time": "2026-05-01T10:15:20Z",
       "source_id": "source-001",
       "source_name": "Robot A",
+      "robot_device_id": "AB-F0001-T0001-000001",
+      "robot_type_id": "1",
+      "robot_type_name": "UR5",
       "task_id": "task-001",
       "task_name": "Capture Task 001",
       "data_type": "episode",
@@ -476,6 +495,11 @@ Rules:
 
 - Export must use the same query parameters as the page.
 - First version can export CSV.
+- CSV export should format `time` in the browser's local timezone by passing `timezone_offset`.
+- CSV `id` should use the database `episodes.episode_id` value.
+- CSV columns are `id`, `time`, `设备ID`, `设备型号`, `数采员工号`, `数采员姓名`, `task_id`, `sop`, `时长`, and `大小`.
+- CSV `duration` should use a readable format such as `2381.65秒 (0.66h)`.
+- CSV `size` should use a readable format such as `41632802361 字节 (41.63GB)`.
 - Large exports should be asynchronous if they may exceed request timeout.
 - Export permission must be checked separately from view permission.
 
@@ -520,9 +544,10 @@ id
 time_bucket
 source_id
 source_name
-task_id
-task_name
-data_type
+robot_device_id
+robot_type_id
+robot_type_name
+collector_operator_id
 status
 total_count
 success_count
@@ -563,7 +588,7 @@ Recommended when:
 
 Use real-time aggregation first if current data volume is manageable. Add the following guardrails:
 
-- Add indexes for time, status, source, task, and data type filters.
+- Add indexes for time, status, source, robot device ID, collector operator ID, and robot type filters.
 - Limit maximum query range for hour granularity.
 - Use pagination for details.
 - Log slow queries.
@@ -657,18 +682,16 @@ Tasks:
 P0:
 
 - Time range and granularity filter.
-- Source, data type, and status filters.
+- Robot device ID, robot type, collector operator ID, SOP, and status filters.
 - Summary cards for count, duration, and size.
 - Count trend, duration trend, and size trend.
-- Source breakdown.
+- Robot device ID, collector operator ID, and robot type breakdown.
 - Detail table.
 - View permission.
 
 P1:
 
-- Task and data type breakdown.
 - CSV export.
-- Compare with previous period.
 - P95 duration if not available in P0.
 
 P2:
@@ -686,7 +709,7 @@ P2:
 - Admin can query statistics by selected time range.
 - The page shows count, duration, and size metrics.
 - The page shows trends using the selected granularity.
-- The page shows source breakdown and detail table.
+- The page shows robot device ID, collector operator ID, robot type breakdown, and detail table.
 - Empty, loading, and error states are handled.
 - Backend APIs enforce permissions.
 - Export uses the same filters as the page if export is implemented.

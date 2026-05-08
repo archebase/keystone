@@ -45,7 +45,9 @@ type dataProductionStatsQuery struct {
 	Granularity         string
 	SourceID            string
 	RobotDeviceID       string
+	RobotTypeID         string
 	CollectorOperatorID string
+	SOPID               string
 	DataType            string
 	Status              string
 	TaskID              string
@@ -101,6 +103,11 @@ type dataProductionTrendItem struct {
 type dataProductionBreakdownResponse struct {
 	Dimension string                        `json:"dimension"`
 	Items     []dataProductionBreakdownItem `json:"items"`
+	Total     int64                         `json:"total"`
+	Limit     int                           `json:"limit"`
+	Offset    int                           `json:"offset"`
+	HasNext   bool                          `json:"hasNext,omitempty"`
+	HasPrev   bool                          `json:"hasPrev,omitempty"`
 }
 
 type dataProductionBreakdownItem struct {
@@ -117,9 +124,13 @@ type dataProductionDetailItem struct {
 	SourceID            string `json:"source_id" db:"source_id"`
 	SourceName          string `json:"source_name" db:"source_name"`
 	RobotDeviceID       string `json:"robot_device_id" db:"robot_device_id"`
+	RobotTypeID         string `json:"robot_type_id" db:"robot_type_id"`
+	RobotTypeName       string `json:"robot_type_name" db:"robot_type_name"`
 	CollectorOperatorID string `json:"collector_operator_id" db:"collector_operator_id"`
+	CollectorName       string `json:"collector_name" db:"collector_name"`
 	TaskID              string `json:"task_id" db:"task_id"`
 	TaskName            string `json:"task_name" db:"task_name"`
+	SOP                 string `json:"sop" db:"sop"`
 	DataType            string `json:"data_type" db:"data_type"`
 	Status              string `json:"status" db:"status"`
 	Count               int64  `json:"count" db:"count_value"`
@@ -159,6 +170,7 @@ type trendStatsRow struct {
 	SuccessCount    sql.NullInt64   `db:"success_count"`
 	FailedCount     sql.NullInt64   `db:"failed_count"`
 	ProcessingCount sql.NullInt64   `db:"processing_count"`
+	TotalDurationMs sql.NullFloat64 `db:"total_duration_ms"`
 	AvgDurationMs   sql.NullFloat64 `db:"avg_duration_ms"`
 	MaxDurationMs   sql.NullFloat64 `db:"max_duration_ms"`
 	TotalBytes      sql.NullInt64   `db:"total_bytes"`
@@ -227,7 +239,9 @@ func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dat
 		Granularity:         granularity,
 		SourceID:            strings.TrimSpace(c.Query("source_id")),
 		RobotDeviceID:       strings.TrimSpace(c.Query("robot_device_id")),
+		RobotTypeID:         strings.TrimSpace(c.Query("robot_type_id")),
 		CollectorOperatorID: strings.TrimSpace(c.Query("collector_operator_id")),
+		SOPID:               strings.TrimSpace(c.Query("sop_id")),
 		DataType:            strings.TrimSpace(c.Query("data_type")),
 		Status:              status,
 		TaskID:              strings.TrimSpace(c.Query("task_id")),
@@ -289,8 +303,13 @@ func (h *DataProductionStatisticsHandler) GetTrend(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	timezoneOffset, err := parseStatsTimezoneOffset(c.Query("timezone_offset"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-	bucketExpr := statsBucketExpression(q.Granularity)
+	bucketExpr, bucketArgs := statsBucketExpression(q.Granularity, timezoneOffset)
 	baseSQL, args := h.filteredProductionRecordsSQL(q)
 	query := fmt.Sprintf(`
 		SELECT
@@ -299,6 +318,7 @@ func (h *DataProductionStatisticsHandler) GetTrend(c *gin.Context) {
 			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
 			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
 			COALESCE(SUM(CASE WHEN status = 'processing' THEN count_value ELSE 0 END), 0) AS processing_count,
+			SUM(duration_ms) AS total_duration_ms,
 			AVG(duration_ms) AS avg_duration_ms,
 			MAX(duration_ms) AS max_duration_ms,
 			COALESCE(SUM(COALESCE(size_bytes, 0)), 0) AS total_bytes,
@@ -310,7 +330,8 @@ func (h *DataProductionStatisticsHandler) GetTrend(c *gin.Context) {
 	`, bucketExpr, baseSQL)
 
 	var rows []trendStatsRow
-	if err := h.db.Select(&rows, query, args...); err != nil {
+	queryArgs := append(bucketArgs, args...)
+	if err := h.db.Select(&rows, query, queryArgs...); err != nil {
 		logger.Printf("[DATA_STATS] trend query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get data production trend"})
 		return
@@ -329,6 +350,11 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
 
 	dimension := strings.TrimSpace(c.DefaultQuery("dimension", "source"))
 	idExpr, nameExpr, err := statsBreakdownExpressions(dimension)
@@ -338,10 +364,26 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 	}
 
 	baseSQL, args := h.filteredProductionRecordsSQL(q)
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(1)
+		FROM (
+			SELECT %s AS id
+			FROM (%s) p
+			GROUP BY id
+		) grouped
+	`, idExpr, baseSQL)
+
+	var total int64
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
+		logger.Printf("[DATA_STATS] breakdown count query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get data production breakdown"})
+		return
+	}
+
 	query := fmt.Sprintf(`
 		SELECT
 			%s AS id,
-			%s AS name,
+			MAX(%s) AS name,
 			COALESCE(SUM(count_value), 0) AS total_count,
 			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
 			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
@@ -352,13 +394,14 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 			AVG(size_bytes) AS avg_bytes,
 			MAX(size_bytes) AS max_bytes
 		FROM (%s) p
-		GROUP BY id, name
-		ORDER BY total_count DESC, failed_count DESC
-		LIMIT 100
+		GROUP BY id
+		ORDER BY total_count DESC, failed_count DESC, id ASC
+		LIMIT ? OFFSET ?
 	`, idExpr, nameExpr, baseSQL)
 
 	var rows []breakdownStatsRow
-	if err := h.db.Select(&rows, query, args...); err != nil {
+	queryArgs := append(args, pagination.Limit, pagination.Offset)
+	if err := h.db.Select(&rows, query, queryArgs...); err != nil {
 		logger.Printf("[DATA_STATS] breakdown query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get data production breakdown"})
 		return
@@ -368,7 +411,15 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 	for _, row := range rows {
 		items = append(items, breakdownRowToItem(row))
 	}
-	c.JSON(http.StatusOK, dataProductionBreakdownResponse{Dimension: dimension, Items: items})
+	c.JSON(http.StatusOK, dataProductionBreakdownResponse{
+		Dimension: dimension,
+		Items:     items,
+		Total:     total,
+		Limit:     pagination.Limit,
+		Offset:    pagination.Offset,
+		HasNext:   int64(pagination.Offset+pagination.Limit) < total,
+		HasPrev:   pagination.Offset > 0,
+	})
 }
 
 func (h *DataProductionStatisticsHandler) ListDetails(c *gin.Context) {
@@ -404,6 +455,8 @@ func (h *DataProductionStatisticsHandler) ListDetails(c *gin.Context) {
 			source_id,
 			source_name,
 			robot_device_id,
+			robot_type_id,
+			robot_type_name,
 			collector_operator_id,
 			task_id,
 			task_name,
@@ -443,32 +496,33 @@ func (h *DataProductionStatisticsHandler) ExportCSV(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	timezoneOffset, err := parseStatsTimezoneOffset(c.Query("timezone_offset"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	baseSQL, args := h.filteredProductionRecordsSQL(q)
 	query := fmt.Sprintf(`
 		SELECT
-			id,
-			DATE_FORMAT(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') AS time,
-			source_id,
-			source_name,
+			episode_id AS id,
+			DATE_FORMAT(COALESCE(CONVERT_TZ(event_time, @@session.time_zone, ?), event_time), '%%Y-%%m-%%d %%H:%%i:%%s') AS time,
 			robot_device_id,
+			robot_type_name,
 			collector_operator_id,
+			collector_name,
 			task_id,
-			task_name,
-			data_type,
-			status,
-			count_value,
+			sop,
 			duration_ms,
-			size_bytes,
-			error_code,
-			error_message
+			size_bytes
 		FROM (%s) p
 		ORDER BY event_time DESC
 		LIMIT 10000
 	`, baseSQL)
 
 	var items []dataProductionDetailItem
-	if err := h.db.Select(&items, query, args...); err != nil {
+	queryArgs := append([]interface{}{timezoneOffset}, args...)
+	if err := h.db.Select(&items, query, queryArgs...); err != nil {
 		logger.Printf("[DATA_STATS] export query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to export data production details"})
 		return
@@ -479,26 +533,20 @@ func (h *DataProductionStatisticsHandler) ExportCSV(c *gin.Context) {
 
 	writer := csv.NewWriter(c.Writer)
 	_ = writer.Write([]string{
-		"id", "time", "source_id", "source_name", "robot_device_id", "collector_operator_id", "task_id", "task_name",
-		"data_type", "status", "count", "duration_ms", "size_bytes", "error_code", "error_message",
+		"id", "time", "设备ID", "设备型号", "数采员工号", "数采员姓名", "task_id", "sop", "时长", "大小",
 	})
 	for _, item := range items {
 		_ = writer.Write([]string{
 			item.ID,
 			item.Time,
-			item.SourceID,
-			item.SourceName,
 			item.RobotDeviceID,
+			item.RobotTypeName,
 			item.CollectorOperatorID,
+			item.CollectorName,
 			item.TaskID,
-			item.TaskName,
-			item.DataType,
-			item.Status,
-			strconv.FormatInt(item.Count, 10),
-			formatNullableInt64(item.DurationMs),
-			formatNullableInt64(item.SizeBytes),
-			item.ErrorCode,
-			item.ErrorMessage,
+			item.SOP,
+			formatExportDuration(item.DurationMs),
+			formatExportSize(item.SizeBytes),
 		})
 	}
 	writer.Flush()
@@ -592,6 +640,30 @@ func (h *DataProductionStatisticsHandler) percentileDuration(q dataProductionSta
 	return roundNullFloat(value), nil
 }
 
+func parseStatsTimezoneOffset(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "+00:00", nil
+	}
+	if len(value) != 6 || (value[0] != '+' && value[0] != '-') || value[3] != ':' {
+		return "", fmt.Errorf("timezone_offset must be formatted as +08:00 or -05:00")
+	}
+
+	hours, err := strconv.Atoi(value[1:3])
+	if err != nil {
+		return "", fmt.Errorf("timezone_offset must be formatted as +08:00 or -05:00")
+	}
+	minutes, err := strconv.Atoi(value[4:6])
+	if err != nil {
+		return "", fmt.Errorf("timezone_offset must be formatted as +08:00 or -05:00")
+	}
+	if hours > 14 || minutes > 59 || (hours == 14 && minutes != 0) {
+		return "", fmt.Errorf("timezone_offset is out of range")
+	}
+
+	return value, nil
+}
+
 func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataProductionStatsQuery) (string, []interface{}) {
 	baseSQL := productionRecordsSQL()
 	conditions := []string{"event_time >= ?", "event_time < ?"}
@@ -605,9 +677,17 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 		conditions = append(conditions, "robot_device_id = ?")
 		args = append(args, q.RobotDeviceID)
 	}
+	if q.RobotTypeID != "" {
+		conditions = append(conditions, "robot_type_id = ?")
+		args = append(args, q.RobotTypeID)
+	}
 	if q.CollectorOperatorID != "" {
 		conditions = append(conditions, "collector_operator_id = ?")
 		args = append(args, q.CollectorOperatorID)
+	}
+	if q.SOPID != "" {
+		conditions = append(conditions, "sop_id = ?")
+		args = append(args, q.SOPID)
 	}
 	if q.DataType != "" {
 		conditions = append(conditions, "data_type = ?")
@@ -630,13 +710,23 @@ func productionRecordsSQL() string {
 	return `
 		SELECT
 			CONCAT('episode:', e.id) AS id,
+			COALESCE(e.episode_id, '') AS episode_id,
 			COALESCE(t.completed_at, e.created_at) AS event_time,
 			COALESCE(r.device_id, ws.robot_serial, CAST(t.workstation_id AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(t.workstation_id AS CHAR)), 'unknown') AS source_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
+			COALESCE(CAST(r.robot_type_id AS CHAR), '') AS robot_type_id,
+			COALESCE(NULLIF(rt.name, ''), NULLIF(ws.robot_name, ''), '') AS robot_type_name,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
+			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_id,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_name,
+			COALESCE(CAST(t.sop_id AS CHAR), '') AS sop_id,
+			CASE
+				WHEN NULLIF(s.slug, '') IS NULL THEN ''
+				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
+				ELSE CONCAT(s.slug, ' @ ', s.version)
+			END AS sop,
 			'episode' AS data_type,
 			'success' AS status,
 			1 AS count_value,
@@ -648,20 +738,32 @@ func productionRecordsSQL() string {
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
+		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		WHERE e.deleted_at IS NULL
 
 		UNION ALL
 
 		SELECT
 			CONCAT('task:', t.id) AS id,
+			'' AS episode_id,
 			COALESCE(t.completed_at, t.updated_at) AS event_time,
 			COALESCE(r.device_id, ws.robot_serial, CAST(t.workstation_id AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(t.workstation_id AS CHAR)), 'unknown') AS source_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
+			COALESCE(CAST(r.robot_type_id AS CHAR), '') AS robot_type_id,
+			COALESCE(NULLIF(rt.name, ''), NULLIF(ws.robot_name, ''), '') AS robot_type_name,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
+			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
 			t.task_id AS task_id,
 			t.task_id AS task_name,
+			COALESCE(CAST(t.sop_id AS CHAR), '') AS sop_id,
+			CASE
+				WHEN NULLIF(s.slug, '') IS NULL THEN ''
+				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
+				ELSE CONCAT(s.slug, ' @ ', s.version)
+			END AS sop,
 			'episode' AS data_type,
 			CASE WHEN t.status = 'cancelled' THEN 'cancelled' ELSE 'failed' END AS status,
 			1 AS count_value,
@@ -676,7 +778,9 @@ func productionRecordsSQL() string {
 		FROM tasks t
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
+		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		WHERE t.deleted_at IS NULL
 		  AND t.status IN ('failed', 'cancelled')
 		  AND t.episode_id IS NULL
@@ -685,13 +789,23 @@ func productionRecordsSQL() string {
 
 		SELECT
 			CONCAT('task:', t.id) AS id,
+			'' AS episode_id,
 			COALESCE(t.started_at, t.ready_at, t.updated_at) AS event_time,
 			COALESCE(r.device_id, ws.robot_serial, CAST(t.workstation_id AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(t.workstation_id AS CHAR)), 'unknown') AS source_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
+			COALESCE(CAST(r.robot_type_id AS CHAR), '') AS robot_type_id,
+			COALESCE(NULLIF(rt.name, ''), NULLIF(ws.robot_name, ''), '') AS robot_type_name,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
+			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
 			t.task_id AS task_id,
 			t.task_id AS task_name,
+			COALESCE(CAST(t.sop_id AS CHAR), '') AS sop_id,
+			CASE
+				WHEN NULLIF(s.slug, '') IS NULL THEN ''
+				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
+				ELSE CONCAT(s.slug, ' @ ', s.version)
+			END AS sop,
 			'episode' AS data_type,
 			'processing' AS status,
 			1 AS count_value,
@@ -702,7 +816,9 @@ func productionRecordsSQL() string {
 		FROM tasks t
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
+		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		WHERE t.deleted_at IS NULL
 		  AND t.status IN ('ready', 'in_progress')
 		  AND t.episode_id IS NULL
@@ -749,8 +865,9 @@ func trendRowToItem(row trendStatsRow) dataProductionTrendItem {
 			SuccessRate: rate(success, total),
 		},
 		Duration: statsDurationMetrics{
-			AvgMs: roundNullFloat(row.AvgDurationMs),
-			MaxMs: roundNullFloat(row.MaxDurationMs),
+			TotalMs: roundNullFloat(row.TotalDurationMs),
+			AvgMs:   roundNullFloat(row.AvgDurationMs),
+			MaxMs:   roundNullFloat(row.MaxDurationMs),
 		},
 		Size: statsSizeMetrics{
 			TotalBytes: nullInt64(row.TotalBytes),
@@ -785,16 +902,35 @@ func breakdownRowToItem(row breakdownStatsRow) dataProductionBreakdownItem {
 	}
 }
 
-func statsBucketExpression(granularity string) string {
+func statsBucketExpression(granularity string, timezoneOffset string) (string, []interface{}) {
+	localEvent := "CONVERT_TZ(event_time, @@session.time_zone, ?)"
+	utcBucket := func(localBucket string, argCount int) (string, []interface{}) {
+		expr := fmt.Sprintf(
+			"DATE_FORMAT(CONVERT_TZ(%s, ?, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ')",
+			localBucket,
+		)
+		args := make([]interface{}, 0, argCount+1)
+		for i := 0; i < argCount; i++ {
+			args = append(args, timezoneOffset)
+		}
+		args = append(args, timezoneOffset)
+		return expr, args
+	}
+
 	switch granularity {
 	case "hour":
-		return "DATE_FORMAT(event_time, '%Y-%m-%dT%H:00:00Z')"
+		return utcBucket(fmt.Sprintf("DATE_FORMAT(%s, '%%Y-%%m-%%d %%H:00:00')", localEvent), 1)
 	case "week":
-		return "DATE_FORMAT(DATE_SUB(DATE(event_time), INTERVAL WEEKDAY(event_time) DAY), '%Y-%m-%dT00:00:00Z')"
+		localBucket := fmt.Sprintf(
+			"DATE_FORMAT(DATE_SUB(DATE(%s), INTERVAL WEEKDAY(%s) DAY), '%%Y-%%m-%%d 00:00:00')",
+			localEvent,
+			localEvent,
+		)
+		return utcBucket(localBucket, 2)
 	case "month":
-		return "DATE_FORMAT(event_time, '%Y-%m-01T00:00:00Z')"
+		return utcBucket(fmt.Sprintf("DATE_FORMAT(%s, '%%Y-%%m-01 00:00:00')", localEvent), 1)
 	default:
-		return "DATE_FORMAT(event_time, '%Y-%m-%dT00:00:00Z')"
+		return utcBucket(fmt.Sprintf("DATE_FORMAT(%s, '%%Y-%%m-%%d 00:00:00')", localEvent), 1)
 	}
 }
 
@@ -806,12 +942,10 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 		return "robot_device_id", "robot_device_id", nil
 	case "collector":
 		return "collector_operator_id", "collector_operator_id", nil
-	case "task":
-		return "task_id", "task_name", nil
-	case "data_type":
-		return "data_type", "data_type", nil
+	case "robot_type":
+		return "robot_type_id", "robot_type_name", nil
 	default:
-		return "", "", fmt.Errorf("dimension must be one of source, robot_device, collector, task, data_type")
+		return "", "", fmt.Errorf("dimension must be one of source, robot_device, collector, robot_type")
 	}
 }
 
@@ -867,4 +1001,33 @@ func formatNullableInt64(value *int64) string {
 		return ""
 	}
 	return strconv.FormatInt(*value, 10)
+}
+
+func formatExportDuration(value *int64) string {
+	if value == nil {
+		return ""
+	}
+	seconds := float64(*value) / 1000
+	return fmt.Sprintf("%.2f秒 (%.2fh)", seconds, seconds/3600)
+}
+
+func formatExportSize(value *int64) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d 字节 (%s)", *value, formatDecimalBytes(*value))
+}
+
+func formatDecimalBytes(bytes int64) string {
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	value := float64(bytes)
+	unitIndex := 0
+	for value >= 1000 && unitIndex < len(units)-1 {
+		value /= 1000
+		unitIndex++
+	}
+	if unitIndex == 0 {
+		return fmt.Sprintf("%.0f%s", value, units[unitIndex])
+	}
+	return fmt.Sprintf("%.2f%s", value, units[unitIndex])
 }
