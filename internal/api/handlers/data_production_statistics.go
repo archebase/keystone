@@ -40,19 +40,19 @@ func (h *DataProductionStatisticsHandler) RegisterRoutes(apiV1 *gin.RouterGroup)
 }
 
 type dataProductionStatsQuery struct {
-	StartTime           time.Time
-	EndTime             time.Time
-	Granularity         string
-	SourceID            string
-	SceneID             int64
-	RobotDeviceID       string
-	RobotTypeID         string
-	CollectorOperatorID string
-	SOPID               string
-	QAStatus            string
-	CloudSynced         *bool
-	DataType            string
-	TaskID              string
+	StartTime            time.Time
+	EndTime              time.Time
+	Granularity          string
+	SourceID             string
+	SceneID              int64
+	RobotDeviceIDs       []string
+	RobotTypeID          string
+	CollectorOperatorIDs []string
+	SOPID                string
+	QAStatus             string
+	CloudSynced          *bool
+	DataType             string
+	TaskID               string
 }
 
 type statsCountMetrics struct {
@@ -283,19 +283,19 @@ func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dat
 	}
 
 	return dataProductionStatsQuery{
-		StartTime:           startTime,
-		EndTime:             endTime,
-		Granularity:         granularity,
-		SourceID:            strings.TrimSpace(c.Query("source_id")),
-		SceneID:             sceneID,
-		RobotDeviceID:       strings.TrimSpace(c.Query("robot_device_id")),
-		RobotTypeID:         strings.TrimSpace(c.Query("robot_type_id")),
-		CollectorOperatorID: strings.TrimSpace(c.Query("collector_operator_id")),
-		SOPID:               strings.TrimSpace(c.Query("sop_id")),
-		QAStatus:            qaStatus,
-		CloudSynced:         cloudSynced,
-		DataType:            strings.TrimSpace(c.Query("data_type")),
-		TaskID:              strings.TrimSpace(c.Query("task_id")),
+		StartTime:            startTime,
+		EndTime:              endTime,
+		Granularity:          granularity,
+		SourceID:             strings.TrimSpace(c.Query("source_id")),
+		SceneID:              sceneID,
+		RobotDeviceIDs:       parseStatsStringListQuery(c, "robot_device_id"),
+		RobotTypeID:          strings.TrimSpace(c.Query("robot_type_id")),
+		CollectorOperatorIDs: parseStatsStringListQuery(c, "collector_operator_id"),
+		SOPID:                strings.TrimSpace(c.Query("sop_id")),
+		QAStatus:             qaStatus,
+		CloudSynced:          cloudSynced,
+		DataType:             strings.TrimSpace(c.Query("data_type")),
+		TaskID:               strings.TrimSpace(c.Query("task_id")),
 	}, nil
 }
 
@@ -310,6 +310,27 @@ func parseStatsTime(raw string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("invalid timestamp")
+}
+
+func parseStatsStringListQuery(c *gin.Context, key string) []string {
+	seen := map[string]struct{}{}
+	values := []string{}
+
+	for _, rawValue := range c.QueryArray(key) {
+		for _, part := range strings.Split(rawValue, ",") {
+			value := strings.TrimSpace(part)
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			values = append(values, value)
+		}
+	}
+
+	return values
 }
 
 func (h *DataProductionStatisticsHandler) GetSummary(c *gin.Context) {
@@ -752,18 +773,12 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 		conditions = append(conditions, "scene_id = ?")
 		args = append(args, q.SceneID)
 	}
-	if q.RobotDeviceID != "" {
-		conditions = append(conditions, "robot_device_id = ?")
-		args = append(args, q.RobotDeviceID)
-	}
+	conditions, args = appendStatsInCondition(conditions, args, "robot_device_id", q.RobotDeviceIDs)
 	if q.RobotTypeID != "" {
 		conditions = append(conditions, "robot_type_id = ?")
 		args = append(args, q.RobotTypeID)
 	}
-	if q.CollectorOperatorID != "" {
-		conditions = append(conditions, "collector_operator_id = ?")
-		args = append(args, q.CollectorOperatorID)
-	}
+	conditions, args = appendStatsInCondition(conditions, args, "collector_operator_id", q.CollectorOperatorIDs)
 	if q.SOPID != "" {
 		conditions = append(conditions, "sop_id = ?")
 		args = append(args, q.SOPID)
@@ -787,6 +802,20 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 
 	query := fmt.Sprintf("SELECT * FROM (%s) production_records WHERE %s", baseSQL, strings.Join(conditions, " AND "))
 	return query, args
+}
+
+func appendStatsInCondition(conditions []string, args []interface{}, column string, values []string) ([]string, []interface{}) {
+	if len(values) == 0 {
+		return conditions, args
+	}
+
+	placeholders := make([]string, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	conditions = append(conditions, fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ",")))
+	return conditions, args
 }
 
 func productionRecordsSQL() string {
