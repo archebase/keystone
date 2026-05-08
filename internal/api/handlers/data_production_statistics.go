@@ -44,12 +44,14 @@ type dataProductionStatsQuery struct {
 	EndTime             time.Time
 	Granularity         string
 	SourceID            string
+	SceneID             int64
 	RobotDeviceID       string
 	RobotTypeID         string
 	CollectorOperatorID string
 	SOPID               string
+	QAStatus            string
+	CloudSynced         *bool
 	DataType            string
-	Status              string
 	TaskID              string
 }
 
@@ -123,6 +125,8 @@ type dataProductionDetailItem struct {
 	Time                string `json:"time" db:"time"`
 	SourceID            string `json:"source_id" db:"source_id"`
 	SourceName          string `json:"source_name" db:"source_name"`
+	SceneID             string `json:"scene_id" db:"scene_id"`
+	SceneName           string `json:"scene_name" db:"scene_name"`
 	RobotDeviceID       string `json:"robot_device_id" db:"robot_device_id"`
 	RobotTypeID         string `json:"robot_type_id" db:"robot_type_id"`
 	RobotTypeName       string `json:"robot_type_name" db:"robot_type_name"`
@@ -130,9 +134,11 @@ type dataProductionDetailItem struct {
 	CollectorName       string `json:"collector_name" db:"collector_name"`
 	TaskID              string `json:"task_id" db:"task_id"`
 	TaskName            string `json:"task_name" db:"task_name"`
+	SOPID               string `json:"sop_id" db:"sop_id"`
 	SOP                 string `json:"sop" db:"sop"`
 	DataType            string `json:"data_type" db:"data_type"`
 	Status              string `json:"status" db:"status"`
+	QAStatus            string `json:"qa_status" db:"qa_status"`
 	Count               int64  `json:"count" db:"count_value"`
 	DurationMs          *int64 `json:"duration_ms" db:"duration_ms"`
 	SizeBytes           *int64 `json:"size_bytes" db:"size_bytes"`
@@ -192,18 +198,21 @@ type breakdownStatsRow struct {
 	MaxBytes        sql.NullInt64   `db:"max_bytes"`
 }
 
-var validDataProductionStatuses = map[string]struct{}{
-	"success":    {},
-	"failed":     {},
-	"cancelled":  {},
-	"processing": {},
-}
-
 var validStatsGranularities = map[string]struct{}{
 	"hour":  {},
 	"day":   {},
 	"week":  {},
 	"month": {},
+}
+
+var validDataProductionQAStatuses = map[string]struct{}{
+	"pending_qa":         {},
+	"qa_running":         {},
+	"approved":           {},
+	"needs_inspection":   {},
+	"inspector_approved": {},
+	"rejected":           {},
+	"failed":             {},
 }
 
 func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dataProductionStatsQuery, error) {
@@ -226,11 +235,31 @@ func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dat
 		}
 	}
 
-	status := strings.TrimSpace(c.Query("status"))
-	if status != "" {
-		if _, ok := validDataProductionStatuses[status]; !ok {
-			return dataProductionStatsQuery{}, fmt.Errorf("status must be one of success, failed, cancelled, processing")
+	var sceneID int64
+	rawSceneID := strings.TrimSpace(c.Query("scene_id"))
+	if rawSceneID != "" {
+		parsedSceneID, err := strconv.ParseInt(rawSceneID, 10, 64)
+		if err != nil || parsedSceneID <= 0 {
+			return dataProductionStatsQuery{}, fmt.Errorf("scene_id must be a positive integer")
 		}
+		sceneID = parsedSceneID
+	}
+
+	qaStatus := strings.TrimSpace(c.Query("qa_status"))
+	if qaStatus != "" {
+		if _, ok := validDataProductionQAStatuses[qaStatus]; !ok {
+			return dataProductionStatsQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, needs_inspection, inspector_approved, rejected, failed")
+		}
+	}
+
+	var cloudSynced *bool
+	rawCloudSynced := strings.TrimSpace(c.Query("cloud_synced"))
+	if rawCloudSynced != "" {
+		parsedCloudSynced, err := strconv.ParseBool(rawCloudSynced)
+		if err != nil {
+			return dataProductionStatsQuery{}, fmt.Errorf("cloud_synced must be true or false")
+		}
+		cloudSynced = &parsedCloudSynced
 	}
 
 	return dataProductionStatsQuery{
@@ -238,12 +267,14 @@ func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dat
 		EndTime:             endTime,
 		Granularity:         granularity,
 		SourceID:            strings.TrimSpace(c.Query("source_id")),
+		SceneID:             sceneID,
 		RobotDeviceID:       strings.TrimSpace(c.Query("robot_device_id")),
 		RobotTypeID:         strings.TrimSpace(c.Query("robot_type_id")),
 		CollectorOperatorID: strings.TrimSpace(c.Query("collector_operator_id")),
 		SOPID:               strings.TrimSpace(c.Query("sop_id")),
+		QAStatus:            qaStatus,
+		CloudSynced:         cloudSynced,
 		DataType:            strings.TrimSpace(c.Query("data_type")),
-		Status:              status,
 		TaskID:              strings.TrimSpace(c.Query("task_id")),
 	}, nil
 }
@@ -364,14 +395,7 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 	}
 
 	baseSQL, args := h.filteredProductionRecordsSQL(q)
-	countQuery := fmt.Sprintf(`
-		SELECT COUNT(1)
-		FROM (
-			SELECT %s AS id
-			FROM (%s) p
-			GROUP BY id
-		) grouped
-	`, idExpr, baseSQL)
+	countQuery := dataProductionBreakdownCountSQL(idExpr, baseSQL)
 
 	var total int64
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
@@ -380,24 +404,7 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 		return
 	}
 
-	query := fmt.Sprintf(`
-		SELECT
-			%s AS id,
-			MAX(%s) AS name,
-			COALESCE(SUM(count_value), 0) AS total_count,
-			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
-			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
-			COALESCE(SUM(CASE WHEN status = 'processing' THEN count_value ELSE 0 END), 0) AS processing_count,
-			AVG(duration_ms) AS avg_duration_ms,
-			MAX(duration_ms) AS max_duration_ms,
-			COALESCE(SUM(COALESCE(size_bytes, 0)), 0) AS total_bytes,
-			AVG(size_bytes) AS avg_bytes,
-			MAX(size_bytes) AS max_bytes
-		FROM (%s) p
-		GROUP BY id
-		ORDER BY total_count DESC, failed_count DESC, id ASC
-		LIMIT ? OFFSET ?
-	`, idExpr, nameExpr, baseSQL)
+	query := dataProductionBreakdownSQL(idExpr, nameExpr, baseSQL)
 
 	var rows []breakdownStatsRow
 	queryArgs := append(args, pagination.Limit, pagination.Offset)
@@ -420,6 +427,38 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 		HasNext:   int64(pagination.Offset+pagination.Limit) < total,
 		HasPrev:   pagination.Offset > 0,
 	})
+}
+
+func dataProductionBreakdownCountSQL(idExpr string, baseSQL string) string {
+	return fmt.Sprintf(`
+		SELECT COUNT(1)
+		FROM (
+			SELECT %s AS id
+			FROM (%s) p
+			GROUP BY %s
+		) grouped
+	`, idExpr, baseSQL, idExpr)
+}
+
+func dataProductionBreakdownSQL(idExpr string, nameExpr string, baseSQL string) string {
+	return fmt.Sprintf(`
+		SELECT
+			%s AS id,
+			MAX(%s) AS name,
+			COALESCE(SUM(count_value), 0) AS total_count,
+			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
+			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
+			COALESCE(SUM(CASE WHEN status = 'processing' THEN count_value ELSE 0 END), 0) AS processing_count,
+			AVG(duration_ms) AS avg_duration_ms,
+			MAX(duration_ms) AS max_duration_ms,
+			COALESCE(SUM(COALESCE(size_bytes, 0)), 0) AS total_bytes,
+			AVG(size_bytes) AS avg_bytes,
+			MAX(size_bytes) AS max_bytes
+		FROM (%s) p
+		GROUP BY %s
+		ORDER BY total_count DESC, failed_count DESC, id ASC
+		LIMIT ? OFFSET ?
+	`, idExpr, nameExpr, baseSQL, idExpr)
 }
 
 func (h *DataProductionStatisticsHandler) ListDetails(c *gin.Context) {
@@ -448,29 +487,7 @@ func (h *DataProductionStatisticsHandler) ListDetails(c *gin.Context) {
 		return
 	}
 
-	query := fmt.Sprintf(`
-		SELECT
-			id,
-			DATE_FORMAT(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') AS time,
-			source_id,
-			source_name,
-			robot_device_id,
-			robot_type_id,
-			robot_type_name,
-			collector_operator_id,
-			task_id,
-			task_name,
-			data_type,
-			status,
-			count_value,
-			duration_ms,
-			size_bytes,
-			error_code,
-			error_message
-		FROM (%s) p
-		ORDER BY %s %s
-		LIMIT ? OFFSET ?
-	`, baseSQL, sortBy, sortOrder)
+	query := dataProductionDetailsSQL(baseSQL, sortBy, sortOrder)
 	queryArgs := append(args, pagination.Limit, pagination.Offset)
 
 	var items []dataProductionDetailItem
@@ -488,6 +505,37 @@ func (h *DataProductionStatisticsHandler) ListDetails(c *gin.Context) {
 		HasNext: int64(pagination.Offset+pagination.Limit) < total,
 		HasPrev: pagination.Offset > 0,
 	})
+}
+
+func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) string {
+	return fmt.Sprintf(`
+		SELECT
+			id,
+			DATE_FORMAT(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') AS time,
+			source_id,
+			source_name,
+			scene_id,
+			scene_name,
+			robot_device_id,
+			robot_type_id,
+			robot_type_name,
+			collector_operator_id,
+			task_id,
+			task_name,
+			sop_id,
+			sop,
+			data_type,
+			status,
+			qa_status,
+			count_value,
+			duration_ms,
+			size_bytes,
+			error_code,
+			error_message
+		FROM (%s) p
+		ORDER BY %s %s
+		LIMIT ? OFFSET ?
+	`, baseSQL, sortBy, sortOrder)
 }
 
 func (h *DataProductionStatisticsHandler) ExportCSV(c *gin.Context) {
@@ -673,6 +721,10 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 		conditions = append(conditions, "source_id = ?")
 		args = append(args, q.SourceID)
 	}
+	if q.SceneID > 0 {
+		conditions = append(conditions, "scene_id = ?")
+		args = append(args, q.SceneID)
+	}
 	if q.RobotDeviceID != "" {
 		conditions = append(conditions, "robot_device_id = ?")
 		args = append(args, q.RobotDeviceID)
@@ -689,13 +741,17 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 		conditions = append(conditions, "sop_id = ?")
 		args = append(args, q.SOPID)
 	}
+	if q.QAStatus != "" {
+		conditions = append(conditions, "qa_status = ?")
+		args = append(args, q.QAStatus)
+	}
+	if q.CloudSynced != nil {
+		conditions = append(conditions, "cloud_synced = ?")
+		args = append(args, *q.CloudSynced)
+	}
 	if q.DataType != "" {
 		conditions = append(conditions, "data_type = ?")
 		args = append(args, q.DataType)
-	}
-	if q.Status != "" {
-		conditions = append(conditions, "status = ?")
-		args = append(args, q.Status)
 	}
 	if q.TaskID != "" {
 		conditions = append(conditions, "task_id = ?")
@@ -714,6 +770,8 @@ func productionRecordsSQL() string {
 			COALESCE(t.completed_at, e.created_at) AS event_time,
 			COALESCE(r.device_id, ws.robot_serial, CAST(t.workstation_id AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(t.workstation_id AS CHAR)), 'unknown') AS source_name,
+			e.scene_id AS scene_id,
+			COALESCE(e.scene_name, t.scene_name, '') AS scene_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
 			COALESCE(CAST(r.robot_type_id AS CHAR), '') AS robot_type_id,
 			COALESCE(NULLIF(rt.name, ''), NULLIF(ws.robot_name, ''), '') AS robot_type_name,
@@ -721,14 +779,20 @@ func productionRecordsSQL() string {
 			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_id,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_name,
-			COALESCE(CAST(t.sop_id AS CHAR), '') AS sop_id,
+			COALESCE(CAST(e.sop_id AS CHAR), CAST(t.sop_id AS CHAR), '') AS sop_id,
 			CASE
-				WHEN NULLIF(s.slug, '') IS NULL THEN ''
+				WHEN NULLIF(s.slug, '') IS NULL THEN
+					CASE
+						WHEN COALESCE(e.sop_id, t.sop_id) IS NULL THEN ''
+						ELSE CONCAT('SOP #', CAST(COALESCE(e.sop_id, t.sop_id) AS CHAR))
+					END
 				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
 				ELSE CONCAT(s.slug, ' @ ', s.version)
 			END AS sop,
 			'episode' AS data_type,
 			'success' AS status,
+			COALESCE(e.qa_status, '') AS qa_status,
+			e.cloud_synced AS cloud_synced,
 			1 AS count_value,
 			CAST(COALESCE(e.duration_sec * 1000, TIMESTAMPDIFF(MICROSECOND, t.started_at, t.completed_at) / 1000) AS SIGNED) AS duration_ms,
 			e.file_size_bytes AS size_bytes,
@@ -740,88 +804,8 @@ func productionRecordsSQL() string {
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
+		LEFT JOIN sops s ON s.id = COALESCE(e.sop_id, t.sop_id) AND s.deleted_at IS NULL
 		WHERE e.deleted_at IS NULL
-
-		UNION ALL
-
-		SELECT
-			CONCAT('task:', t.id) AS id,
-			'' AS episode_id,
-			COALESCE(t.completed_at, t.updated_at) AS event_time,
-			COALESCE(r.device_id, ws.robot_serial, CAST(t.workstation_id AS CHAR), '') AS source_id,
-			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(t.workstation_id AS CHAR)), 'unknown') AS source_name,
-			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
-			COALESCE(CAST(r.robot_type_id AS CHAR), '') AS robot_type_id,
-			COALESCE(NULLIF(rt.name, ''), NULLIF(ws.robot_name, ''), '') AS robot_type_name,
-			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
-			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
-			t.task_id AS task_id,
-			t.task_id AS task_name,
-			COALESCE(CAST(t.sop_id AS CHAR), '') AS sop_id,
-			CASE
-				WHEN NULLIF(s.slug, '') IS NULL THEN ''
-				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
-				ELSE CONCAT(s.slug, ' @ ', s.version)
-			END AS sop,
-			'episode' AS data_type,
-			CASE WHEN t.status = 'cancelled' THEN 'cancelled' ELSE 'failed' END AS status,
-			1 AS count_value,
-			CASE
-				WHEN t.started_at IS NOT NULL AND t.completed_at IS NOT NULL
-				THEN CAST(TIMESTAMPDIFF(MICROSECOND, t.started_at, t.completed_at) / 1000 AS SIGNED)
-				ELSE NULL
-			END AS duration_ms,
-			NULL AS size_bytes,
-			CASE WHEN t.status = 'cancelled' THEN 'cancelled' ELSE 'failed' END AS error_code,
-			COALESCE(t.error_message, '') AS error_message
-		FROM tasks t
-		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
-		WHERE t.deleted_at IS NULL
-		  AND t.status IN ('failed', 'cancelled')
-		  AND t.episode_id IS NULL
-
-		UNION ALL
-
-		SELECT
-			CONCAT('task:', t.id) AS id,
-			'' AS episode_id,
-			COALESCE(t.started_at, t.ready_at, t.updated_at) AS event_time,
-			COALESCE(r.device_id, ws.robot_serial, CAST(t.workstation_id AS CHAR), '') AS source_id,
-			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(t.workstation_id AS CHAR)), 'unknown') AS source_name,
-			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
-			COALESCE(CAST(r.robot_type_id AS CHAR), '') AS robot_type_id,
-			COALESCE(NULLIF(rt.name, ''), NULLIF(ws.robot_name, ''), '') AS robot_type_name,
-			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
-			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
-			t.task_id AS task_id,
-			t.task_id AS task_name,
-			COALESCE(CAST(t.sop_id AS CHAR), '') AS sop_id,
-			CASE
-				WHEN NULLIF(s.slug, '') IS NULL THEN ''
-				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
-				ELSE CONCAT(s.slug, ' @ ', s.version)
-			END AS sop,
-			'episode' AS data_type,
-			'processing' AS status,
-			1 AS count_value,
-			NULL AS duration_ms,
-			NULL AS size_bytes,
-			'' AS error_code,
-			'' AS error_message
-		FROM tasks t
-		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
-		WHERE t.deleted_at IS NULL
-		  AND t.status IN ('ready', 'in_progress')
-		  AND t.episode_id IS NULL
 	`
 }
 
@@ -944,8 +928,25 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 		return "collector_operator_id", "collector_operator_id", nil
 	case "robot_type":
 		return "robot_type_id", "robot_type_name", nil
+	case "scene":
+		return "scene_id", "scene_name", nil
+	case "sop":
+		return "sop_id", "sop", nil
+	case "qa_status":
+		return "qa_status", `CASE qa_status
+			WHEN 'pending_qa' THEN '待质检'
+			WHEN 'qa_running' THEN '质检中'
+			WHEN 'approved' THEN '已通过'
+			WHEN 'needs_inspection' THEN '需人工复核'
+			WHEN 'inspector_approved' THEN '人工通过'
+			WHEN 'rejected' THEN '已驳回'
+			WHEN 'failed' THEN '质检失败'
+			ELSE qa_status
+		END`, nil
+	case "cloud_synced":
+		return "CASE WHEN cloud_synced THEN 'true' ELSE 'false' END", "CASE WHEN cloud_synced THEN '已同步' ELSE '未同步' END", nil
 	default:
-		return "", "", fmt.Errorf("dimension must be one of source, robot_device, collector, robot_type")
+		return "", "", fmt.Errorf("dimension must be one of source, robot_device, collector, robot_type, scene, sop, qa_status, cloud_synced")
 	}
 }
 

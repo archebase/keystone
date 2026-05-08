@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,7 +17,7 @@ import (
 func TestParseDataProductionStatsQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&source_id=12&data_type=episode&status=success&task_id=task_1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&source_id=12&scene_id=34&qa_status=approved&cloud_synced=false&data_type=episode&task_id=task_1", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -24,8 +25,110 @@ func TestParseDataProductionStatsQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseDataProductionStatsQuery returned error: %v", err)
 	}
-	if got.Granularity != "hour" || got.SourceID != "12" || got.DataType != "episode" || got.Status != "success" || got.TaskID != "task_1" {
+	if got.Granularity != "hour" || got.SourceID != "12" || got.SceneID != 34 || got.QAStatus != "approved" || got.CloudSynced == nil || *got.CloudSynced || got.DataType != "episode" || got.TaskID != "task_1" {
 		t.Fatalf("unexpected query: %+v", got)
+	}
+}
+
+func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
+	sql := productionRecordsSQL()
+	if !strings.Contains(sql, "FROM episodes e") {
+		t.Fatalf("production records SQL should be based on episodes: %s", sql)
+	}
+	if strings.Contains(sql, "UNION ALL") {
+		t.Fatalf("production records SQL should not include task-only unions: %s", sql)
+	}
+	if strings.Contains(sql, "t.status IN ('failed', 'cancelled')") || strings.Contains(sql, "t.status IN ('ready', 'in_progress')") {
+		t.Fatalf("production records SQL should not include task status fallback records: %s", sql)
+	}
+	for _, want := range []string{"e.scene_id AS scene_id", "COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("production records SQL should include %q: %s", want, sql)
+		}
+	}
+	for _, want := range []string{
+		"COALESCE(CAST(e.sop_id AS CHAR), CAST(t.sop_id AS CHAR), '') AS sop_id",
+		"s.id = COALESCE(e.sop_id, t.sop_id)",
+		"CONCAT('SOP #', CAST(COALESCE(e.sop_id, t.sop_id) AS CHAR))",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("production records SQL should prefer episode SOP with task fallback %q: %s", want, sql)
+		}
+	}
+}
+
+func TestDataProductionDetailsSQLSelectsSOPFields(t *testing.T) {
+	querySQL := dataProductionDetailsSQL("SELECT 1", "time", "DESC")
+	for _, want := range []string{"sop_id", "sop,", "qa_status"} {
+		if !strings.Contains(querySQL, want) {
+			t.Fatalf("detail SQL should select %q: %s", want, querySQL)
+		}
+	}
+}
+
+func TestFilteredProductionRecordsSQLIncludesEpisodeFilters(t *testing.T) {
+	cloudSynced := true
+	handler := &DataProductionStatisticsHandler{}
+	query, args := handler.filteredProductionRecordsSQL(dataProductionStatsQuery{
+		StartTime:   mustParseStatsTimeForTest(t, "2026-05-01T00:00:00Z"),
+		EndTime:     mustParseStatsTimeForTest(t, "2026-05-02T00:00:00Z"),
+		SceneID:     34,
+		QAStatus:    "rejected",
+		CloudSynced: &cloudSynced,
+	})
+	for _, want := range []string{"scene_id = ?", "qa_status = ?", "cloud_synced = ?"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("filtered SQL should include %q: %s", want, query)
+		}
+	}
+	if len(args) != 5 {
+		t.Fatalf("arg count = %d, want 5: %#v", len(args), args)
+	}
+}
+
+func TestDataProductionBreakdownSQLGroupsByDimensionExpression(t *testing.T) {
+	countSQL := dataProductionBreakdownCountSQL("robot_device_id", "SELECT 1")
+	if !strings.Contains(countSQL, "GROUP BY robot_device_id") {
+		t.Fatalf("breakdown count SQL should group by the dimension expression: %s", countSQL)
+	}
+	if strings.Contains(countSQL, "GROUP BY id") {
+		t.Fatalf("breakdown count SQL should not group by ambiguous id alias: %s", countSQL)
+	}
+
+	querySQL := dataProductionBreakdownSQL("robot_device_id", "robot_device_id", "SELECT 1")
+	if !strings.Contains(querySQL, "GROUP BY robot_device_id") {
+		t.Fatalf("breakdown SQL should group by the dimension expression: %s", querySQL)
+	}
+	if strings.Contains(querySQL, "GROUP BY id") {
+		t.Fatalf("breakdown SQL should not group by ambiguous id alias: %s", querySQL)
+	}
+}
+
+func TestStatsBreakdownExpressionsSupportsEpisodeDimensions(t *testing.T) {
+	tests := []struct {
+		dimension string
+		wantID    string
+		wantName  string
+	}{
+		{dimension: "scene", wantID: "scene_id", wantName: "scene_name"},
+		{dimension: "sop", wantID: "sop_id", wantName: "sop"},
+		{dimension: "qa_status", wantID: "qa_status", wantName: "WHEN 'pending_qa' THEN '待质检'"},
+		{dimension: "cloud_synced", wantID: "CASE WHEN cloud_synced THEN 'true' ELSE 'false' END", wantName: "CASE WHEN cloud_synced THEN '已同步' ELSE '未同步' END"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.dimension, func(t *testing.T) {
+			idExpr, nameExpr, err := statsBreakdownExpressions(tt.dimension)
+			if err != nil {
+				t.Fatalf("statsBreakdownExpressions(%q) returned error: %v", tt.dimension, err)
+			}
+			if idExpr != tt.wantID {
+				t.Fatalf("idExpr = %q, want %q", idExpr, tt.wantID)
+			}
+			if !strings.Contains(nameExpr, tt.wantName) {
+				t.Fatalf("nameExpr = %q, should contain %q", nameExpr, tt.wantName)
+			}
+		})
 	}
 }
 
@@ -49,8 +152,16 @@ func TestParseDataProductionStatsQueryRejectsInvalidInputs(t *testing.T) {
 			path: "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=minute",
 		},
 		{
-			name: "bad status",
-			path: "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&status=done",
+			name: "bad scene",
+			path: "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&scene_id=bad",
+		},
+		{
+			name: "bad qa status",
+			path: "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&qa_status=done",
+		},
+		{
+			name: "bad cloud sync",
+			path: "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&cloud_synced=maybe",
 		},
 	}
 
@@ -64,6 +175,15 @@ func TestParseDataProductionStatsQueryRejectsInvalidInputs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustParseStatsTimeForTest(t *testing.T, raw string) time.Time {
+	t.Helper()
+	value, err := parseStatsTime(raw)
+	if err != nil {
+		t.Fatalf("parseStatsTime(%q): %v", raw, err)
+	}
+	return value
 }
 
 func TestParseStatsDetailSort(t *testing.T) {
