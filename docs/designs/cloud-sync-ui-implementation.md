@@ -153,35 +153,72 @@ Recommended navigation placement:
 - `Data Management > Cloud Sync`, if Synapse groups data lifecycle features.
 - `System Operations > Cloud Sync`, if Synapse groups operational controls.
 
-The page should behave like an operational console, not a marketing or analytics
-page. It should be dense, scannable, and action-oriented.
+The page should behave like an operational console, not a marketing, help, or
+analytics page. It should be dense, scannable, and action-oriented.
 
-Top status strip:
+First viewport layout:
+
+| Area | Purpose | Notes |
+|------|---------|-------|
+| Header | Page identity and primary action | Title plus one primary enqueue action |
+| Compact status band | Worker health and queue summary | Lower visual weight than the task table |
+| Task panel | Main work area | Status tabs, table, pagination, row actions |
+
+Do not add:
+
+- A separate explanatory card such as "background sync queue".
+- A "view data production statistics" card or shortcut on this page.
+- A top-right refresh button competing with the primary enqueue action.
+- Marketing-style hero copy, oversized metric cards, or decorative panels.
+
+Recommended header action copy:
+
+| Copy | Use |
+|------|-----|
+| `Scan and Queue Eligible Episodes` | Preferred English product copy |
+| `Sync Approved Unsynced Episodes` | Acceptable if the product wants explicit eligibility |
+| `扫描并加入同步队列` | Preferred Chinese product copy |
+| `同步合格未上云片段` | Current implementation-compatible Chinese copy |
+
+The primary action should be disabled when the worker is not running or when the
+request is already in flight. Worker-unavailable state should keep historical
+tasks readable and filterable; only enqueue/retry actions are disabled.
+
+Compact status band:
 
 | Item | Source | Notes |
 |------|--------|-------|
 | Worker running | `/api/v1/sync/config` | Green/gray status |
-| Current concurrency | Future config API | Read-only in first version |
 | Queue / in-progress count | `sync_logs` | Derived from list/count APIs |
-| Failed count | `sync_logs` | Prominent but not alarmist |
+| Failed count | `sync_logs` | Prominent only when greater than zero |
 | Last successful sync | `sync_logs.completed_at` | Useful health signal |
 
-Primary sections:
+The status band should read as a compact control surface, not as four separate
+feature cards. It can use cell separators, narrow borders, or small chips, but
+the task table must remain the visual center of the page.
 
-| Section | Purpose |
-|---------|---------|
-| Overview | Worker state, sync rate, recent success/failure counts |
-| Tasks | Complete `sync_logs` table with filtering and pagination |
-| Failures | Failure-focused table with retry affordances |
-| Diagnostics | Recent errors, worker availability, connection-test TODO |
-| Configuration | TODO only; show read-only summary until backend config APIs exist |
+Task panel:
+
+| Element | Behavior |
+|---------|----------|
+| Status tabs | Above the table; all / pending / in_progress / completed / failed |
+| Failed tab/count | Use alert color only when failed count is greater than zero |
+| Table | Dominates the page; sticky header is recommended |
+| Row navigation | Episode ID opens episode detail when available |
+| Row retry | Show only for failed rows; avoid disabled retry buttons on normal rows |
+| Long paths/errors | Truncate in-cell, expose full value via title; copy/expand is a follow-up |
+| Pagination | Bottom of the task panel |
+
+The failure view should be a status tab and filtered table state, not a separate
+large card. Diagnostics should be represented by row-level error content and
+compact notices until backend health APIs become richer.
 
 Primary actions:
 
 | Action | Current Backend Support | UI Behavior |
 |--------|-------------------------|-------------|
-| Sync all eligible unsynced episodes | `POST /api/v1/sync/episodes` | Confirm before enqueue |
-| Retry one failed episode | `POST /api/v1/sync/episodes/:id` | Row-level action |
+| Scan and queue eligible unsynced episodes | `POST /api/v1/sync/episodes` | Confirm before enqueue, then refresh counts/table |
+| Retry one failed episode | `POST /api/v1/sync/episodes/:id` | Row-level action, then refresh the row/list |
 | Retry failed episodes in bulk | Not explicit yet | TODO; requires backend API semantics |
 | Pause/resume automatic sync | Not supported yet | TODO; do not show as active control |
 | Edit sync configuration | Not supported yet | TODO; read-only summary for now |
@@ -192,6 +229,12 @@ The page should make queue state explicit:
 Not Synced -> Queued -> Syncing -> Synced
                          -> Failed -> Retry
 ```
+
+After any manual trigger, do not rely on the `202 Accepted` message alone. The
+UI should immediately refresh task counts and the affected rows. For single
+retry, the row should feel queued immediately; if the backend returns `409
+already_queued` or `409 already synced`, refresh the latest status and present
+that real state.
 
 ### 4.2 Episode Detail Page
 
@@ -289,16 +332,43 @@ The drawer should support row-level navigation to episode detail when
 | Unavailable | `Unavailable` | Muted badge |
 | Not eligible | `Not Eligible` | Muted outlined badge |
 
-### 5.2 Interaction Principles
+### 5.2 Cloud Sync Center Layout
+
+- Keep the header compact: title, optional short kicker, and one primary action.
+- Keep the status band visually lighter than the task table.
+- Let the task table take most of the vertical space on desktop.
+- Use status tabs as the main filtering control; avoid duplicate filter cards.
+- Keep the failed count easy to notice without turning the whole page into an
+  alarm state.
+- Avoid explanatory text blocks. Empty states and notices can carry short,
+  contextual copy when needed.
+
+### 5.3 Task Table Interaction
+
+- Show retry actions only for `failed` rows.
+- Hide or leave the action cell empty for `pending`, `in_progress`, and
+  `completed` rows instead of showing disabled retry buttons.
+- Keep episode ID, status, attempt count, next retry, started/completed time,
+  destination path, error, and row action visible in the first implementation.
+- Truncate long object paths and error messages in the table; full-value copy or
+  expandable detail rows can be added later.
+- Use sticky table headers when the page grows beyond one viewport.
+- After batch enqueue, refresh config, counts, and the active table page.
+- After single retry, refresh counts and either the active table page or the
+  affected row.
+
+### 5.4 Interaction Principles
 
 - Use compact operational UI, not a marketing layout.
 - Put actions close to the related state.
 - Use confirmation for batch enqueue.
 - Use clear background-job language.
 - Do not imply completion immediately after `202 Accepted`.
-- Use long-path wrapping for source and destination paths.
+- Truncate long paths in tables and provide access to the full value.
 - Keep the statistics page visually quiet: do not add cloud sync control or
   navigation cards there.
+- Keep `.env`-backed configuration read-only/TODO for now; do not design an
+  editable configuration screen until backend semantics are explicit.
 
 ## 6. Frontend Implementation
 
@@ -373,6 +443,10 @@ Recommended responsibilities:
 - Show confirmation before calling batch API.
 - Refresh task list after successful enqueue.
 - Navigate from a sync row to episode detail.
+- Keep the header free of secondary refresh/navigation buttons.
+- Keep retry visible only on failed rows.
+- Keep worker-stopped state action-scoped: disable enqueue/retry, but keep
+  historical task inspection available.
 
 The page should treat `202 Accepted` as a queued background operation, not as
 completion.
