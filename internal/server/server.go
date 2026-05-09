@@ -242,6 +242,8 @@ func (s *Server) buildRoutes() http.Handler {
 
 	// Tasks API
 	v1Tasks := v1Routes.Group("")
+	taskStats := v1Routes.Group("/tasks/statistics", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+	taskStats.GET("/breakdown", s.task.GetTaskBreakdown)
 	s.task.RegisterRoutes(v1Tasks)
 	if s.batch != nil {
 		s.batch.RegisterRoutes(v1Tasks)
