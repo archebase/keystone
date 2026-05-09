@@ -66,7 +66,8 @@ func (h *TaskHandler) GetTaskBreakdown(c *gin.Context) {
 	}
 
 	whereClause, args := taskBreakdownWhereClause(q)
-	if claims.Role == "data_collector" {
+	switch claims.Role {
+	case "data_collector":
 		whereClause += `
 			AND EXISTS (
 				SELECT 1
@@ -76,12 +77,12 @@ func (h *TaskHandler) GetTaskBreakdown(c *gin.Context) {
 					AND ws_scope.deleted_at IS NULL
 			)`
 		args = append(args, claims.CollectorID)
-	} else if claims.Role == "admin" {
+	case "admin":
 		if q.WorkstationID != "" {
 			whereClause += " AND CAST(tasks.workstation_id AS CHAR) = ?"
 			args = append(args, q.WorkstationID)
 		}
-	} else {
+	default:
 		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
 		return
 	}
