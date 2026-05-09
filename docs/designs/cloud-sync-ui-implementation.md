@@ -30,9 +30,9 @@ axon_recorder / axon_transfer
 ```
 
 Product direction: cloud sync should become its own operational surface in
-Synapse. Data production statistics should keep cloud sync as a metric and entry
-point, but should not be the primary place for queue control, retry diagnosis, or
-future sync operations.
+Synapse. Data production statistics should keep cloud sync as a metric only, but
+should not be the primary place for queue control, retry diagnosis, navigation,
+or future sync operations.
 
 ## 2. Current Backend Capability
 
@@ -138,7 +138,7 @@ lighter contextual entry points elsewhere.
 |---------|---------|-------|
 | Cloud Sync Center | Primary operation and diagnosis surface | Global queue, failures, worker state |
 | Episode detail page | Inspect and retry one episode | Single episode |
-| Data production statistics page | Show sync outcome as a production metric | Summary and navigation only |
+| Data production statistics page | Show sync outcome as a production metric | Metrics and filters only |
 
 ### 4.1 Cloud Sync Center Page
 
@@ -226,27 +226,23 @@ status endpoint until the latest status becomes `completed` or `failed`.
 ### 4.3 Data Production Statistics Page
 
 The statistics page should not be the primary cloud sync operation surface. It
-should answer "how much data was produced and how much has reached cloud", then
-link to the dedicated Cloud Sync Center for action.
+should answer "how much data was produced and how much has reached cloud". Users
+should reach Cloud Sync Center from the main navigation, not from an extra card
+inside the statistics page.
 
 Keep:
 
 - Cloud sync rate metric.
 - Cloud sync filters in statistics queries.
-- A small worker health indicator if it is visually quiet.
-- A link/button to `Cloud Sync Center`.
 
 Avoid:
 
 - Large `Cloud Sync` operation cards.
+- Small `Cloud Sync` entry cards that compete with statistics content.
 - Batch enqueue as a primary action on the statistics page.
 - Failure diagnosis tables inside the statistics workflow.
+- Worker health checks or sync configuration calls from the statistics page.
 - Copy that implies statistics filters control the batch sync operation.
-
-If a lightweight entry is kept near the cloud sync metric, recommended copy:
-
-> Cloud sync rate is based on completed uploads. Manage queue, retries, and
-> failures in Cloud Sync Center.
 
 ### 4.4 Sync Jobs Table / Drawer
 
@@ -301,8 +297,8 @@ The drawer should support row-level navigation to episode detail when
 - Use clear background-job language.
 - Do not imply completion immediately after `202 Accepted`.
 - Use long-path wrapping for source and destination paths.
-- Keep the statistics page visually quiet: sync controls there should be
-  secondary navigation, not the dominant card.
+- Keep the statistics page visually quiet: do not add cloud sync control or
+  navigation cards there.
 
 ## 6. Frontend Implementation
 
@@ -384,14 +380,13 @@ completion.
 ### 6.4 Statistics Page Changes
 
 Update `synapse/src/views/admin/statistics/DataProductionStatistics.vue` to
-reduce cloud sync to a summary and entry point:
+remove cloud sync operations and navigation:
 
 - Keep the cloud sync rate metric.
 - Keep cloud sync filters for statistics queries.
-- Optionally fetch `getConfig()` for a small worker status chip.
-- Replace the large cloud sync action card with a compact link to Cloud Sync
-  Center.
-- Do not keep batch enqueue as the primary action on this page.
+- Do not fetch `getConfig()` from this page.
+- Do not render a Cloud Sync card, strip, drawer, or entry button.
+- Do not keep batch enqueue as an action on this page.
 
 ### 6.5 Sync Jobs Table / Drawer Component
 
@@ -551,16 +546,15 @@ Acceptance criteria:
 - Add batch trigger with confirmation.
 - Add sync jobs table with status filtering and pagination.
 - Add failed-job focused view.
-- Link from data production statistics to Cloud Sync Center.
-- Reduce the statistics page cloud sync card to a summary or entry point.
+- Remove Cloud Sync operation/entry cards from data production statistics.
 
 Acceptance criteria:
 
 - Admin can enqueue all eligible unsynced episodes.
 - UI clearly states the operation runs in background.
 - Sync logs can be inspected and filtered in Cloud Sync Center.
-- Data production statistics no longer exposes cloud sync as a dominant
-  operation card.
+- Data production statistics no longer exposes cloud sync operation or entry
+  cards.
 
 ### Phase 3: Backend API Enhancements
 
