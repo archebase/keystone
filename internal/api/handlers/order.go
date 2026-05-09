@@ -184,6 +184,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	sceneIDStr := strings.TrimSpace(c.Query("scene_id"))
 	priority := strings.TrimSpace(c.Query("priority"))
 	status := strings.TrimSpace(c.Query("status"))
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 	idsStr := strings.TrimSpace(c.Query("ids")) // comma-separated numeric IDs for batch lookup
 	if status != "" {
 		if _, ok := validOrderStatuses[status]; !ok {
@@ -215,7 +216,13 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		}
 	}
 
-	countQuery := "SELECT COUNT(*) FROM orders WHERE deleted_at IS NULL"
+	countQuery := `
+		SELECT COUNT(*)
+		FROM orders o
+		LEFT JOIN organizations org ON org.id = o.organization_id AND org.deleted_at IS NULL
+		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
+		WHERE o.deleted_at IS NULL
+	`
 	countArgs := []any{}
 	if orgIDStr != "" {
 		parsedOrgID, err := strconv.ParseInt(orgIDStr, 10, 64)
@@ -223,7 +230,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
 			return
 		}
-		countQuery += " AND organization_id = ?"
+		countQuery += " AND o.organization_id = ?"
 		countArgs = append(countArgs, parsedOrgID)
 	}
 	if sceneIDStr != "" {
@@ -232,19 +239,19 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
 			return
 		}
-		countQuery += " AND scene_id = ?"
+		countQuery += " AND o.scene_id = ?"
 		countArgs = append(countArgs, parsedSceneID)
 	}
 	if status != "" {
-		countQuery += " AND status = ?"
+		countQuery += " AND o.status = ?"
 		countArgs = append(countArgs, status)
 	}
 	if priority != "" {
-		countQuery += " AND priority = ?"
+		countQuery += " AND o.priority = ?"
 		countArgs = append(countArgs, priority)
 	}
 	if len(filterIDs) > 0 {
-		inQ, inArgs, err := sqlx.In("AND id IN (?)", filterIDs)
+		inQ, inArgs, err := sqlx.In("AND o.id IN (?)", filterIDs)
 		if err != nil {
 			logger.Printf("[ORDER] Failed to build ids IN clause for count: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
@@ -253,6 +260,8 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		countQuery += " " + inQ
 		countArgs = append(countArgs, inArgs...)
 	}
+	orderSearchFields := []string{"o.name", "s.name", "org.name"}
+	countQuery, countArgs = appendKeywordSearch(countQuery, countArgs, keyword, orderSearchFields...)
 	var total int
 	if err := h.db.Get(&total, h.db.Rebind(countQuery), countArgs...); err != nil {
 		logger.Printf("[ORDER] Failed to count orders: %v", err)
@@ -310,10 +319,13 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		query += " " + inQ + "\n"
 		args = append(args, inArgs...)
 	}
+	query, args = appendKeywordSearch(query, args, keyword, orderSearchFields...)
+	orderClause, orderArgs := keywordOrderBy(keyword, "o.id DESC", orderSearchFields...)
 	query += `
-		ORDER BY o.id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
+	args = append(args, orderArgs...)
 	args = append(args, pagination.Limit, pagination.Offset)
 	query = h.db.Rebind(query)
 

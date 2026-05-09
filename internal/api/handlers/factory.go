@@ -143,6 +143,9 @@ func (h *FactoryHandler) allocateFactorySlug() (string, error) {
 // @Tags         factories
 // @Accept       json
 // @Produce      json
+// @Param        keyword query     string  false  "Search by name, slug, or location"
+// @Param        q       query     string  false  "Alias of keyword"
+// @Param        search  query     string  false  "Alias of keyword"
 // @Param        limit  query     int     false  "Max results (default 50, max 100)"
 // @Param        offset query     int     false  "Pagination offset (default 0)"
 // @Success      200    {object}  ListResponse
@@ -156,14 +159,20 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 		return
 	}
 
-	countQuery := "SELECT COUNT(*) FROM factories WHERE deleted_at IS NULL"
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
+	whereClause := "WHERE deleted_at IS NULL"
+	args := []any{}
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "name", "slug", "location")
+
+	countQuery := "SELECT COUNT(*) FROM factories " + whereClause
 	var total int
-	if err := h.db.Get(&total, countQuery); err != nil {
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[FACTORY] Failed to count factories: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list factories"})
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "id DESC", "name", "slug", "location")
 	query := `
 		SELECT 
 			id,
@@ -177,15 +186,17 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 			created_at,
 			updated_at
 		FROM factories
-		WHERE deleted_at IS NULL
-		ORDER BY id DESC
+		` + whereClause + `
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	factories := []FactoryResponse{}
 
 	var dbRows []factoryRow
-	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[FACTORY] Failed to query factories: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list factories"})
 		return

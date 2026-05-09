@@ -164,6 +164,9 @@ type organizationRow struct {
 // @Accept       json
 // @Produce      json
 // @Param        factory_id query     string false "Filter by factory ID"
+// @Param        keyword    query     string false "Search by name, slug, or description"
+// @Param        q          query     string false "Alias of keyword"
+// @Param        search     query     string false "Alias of keyword"
 // @Param        limit  query     int  false  "Max results (default 50, max 100)"
 // @Param        offset query     int  false  "Pagination offset (default 0)"
 // @Success      200 {object} OrganizationListResponse
@@ -189,20 +192,24 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 		}
 	}
 
-	countQuery := "SELECT COUNT(*) FROM organizations WHERE deleted_at IS NULL"
-	countArgs := []any{}
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
+	whereClause := "WHERE o.deleted_at IS NULL"
+	args := []any{}
 	if hasFactoryFilter {
-		countQuery += " AND factory_id = ?"
-		countArgs = append(countArgs, factoryID)
+		whereClause += " AND o.factory_id = ?"
+		args = append(args, factoryID)
 	}
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "o.name", "o.slug", "o.description")
 
+	countQuery := "SELECT COUNT(*) FROM organizations o " + whereClause
 	var total int
-	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to count organizations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list organizations"})
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "o.id DESC", "o.name", "o.slug", "o.description")
 	query := `
 		SELECT 
 			o.id,
@@ -214,17 +221,11 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 			o.created_at,
 			o.updated_at
 		FROM organizations o
-		WHERE o.deleted_at IS NULL
-	`
-	args := []any{}
-	if hasFactoryFilter {
-		query += " AND o.factory_id = ?\n"
-		args = append(args, factoryID)
-	}
-	query += `
-		ORDER BY o.id DESC
+		` + whereClause + `
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
+	args = append(args, orderArgs...)
 	args = append(args, pagination.Limit, pagination.Offset)
 
 	var dbRows []organizationRow

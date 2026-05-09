@@ -212,6 +212,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "dc.id DESC", "dc.operator_id", "dc.name", "dc.email")
 	query := `
 		SELECT 
 			dc.id,
@@ -228,11 +229,12 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 		FROM data_collectors dc
 		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		` + whereClause + `
-		ORDER BY dc.id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
 
-	queryArgs := append(args, pagination.Limit, pagination.Offset)
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []dataCollectorRow
 	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {

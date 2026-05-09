@@ -476,6 +476,9 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 // @Param        organization_id query int false "Filter by organization ID"
 // @Param        robot_type_id   query int false "Filter by robot type ID"
 // @Param        status          query string false "Filter by status (active, inactive, break, offline)"
+// @Param        keyword         query string false "Search by name, robot serial, robot name, collector operator ID, or collector name"
+// @Param        q               query string false "Alias of keyword"
+// @Param        search          query string false "Alias of keyword"
 // @Param        limit  query int false "Max results (default 50, max 100)"
 // @Param        offset query int false "Pagination offset (default 0)"
 // @Success      200 {object} ListResponse
@@ -493,6 +496,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 	orgIDStr := strings.TrimSpace(c.Query("organization_id"))
 	robotTypeIDStr := strings.TrimSpace(c.Query("robot_type_id"))
 	statusStr := strings.TrimSpace(c.Query("status"))
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 	var factoryID int64
 	var orgID int64
 	var robotTypeID int64
@@ -558,6 +562,8 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		countQuery += " AND ws.status = ?"
 		countArgs = append(countArgs, statusStr)
 	}
+	stationSearchFields := []string{"ws.name", "ws.robot_serial", "ws.collector_operator_id", "ws.robot_name", "ws.collector_name"}
+	countQuery, countArgs = appendKeywordSearch(countQuery, countArgs, keyword, stationSearchFields...)
 	var total int
 	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
 		logger.Printf("[STATION] Failed to count stations: %v", err)
@@ -598,10 +604,13 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		query += " AND ws.status = ?\n"
 		args = append(args, statusStr)
 	}
+	query, args = appendKeywordSearch(query, args, keyword, stationSearchFields...)
+	orderClause, orderArgs := keywordOrderBy(keyword, "ws.id DESC", stationSearchFields...)
 	query += `
-		ORDER BY ws.id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
+	args = append(args, orderArgs...)
 	args = append(args, pagination.Limit, pagination.Offset)
 
 	err = h.db.Select(&stations, query, args...)

@@ -267,6 +267,7 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "r.id DESC", "r.device_id", "r.asset_id")
 	query := `
 		SELECT 
 			r.id,
@@ -280,11 +281,12 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 			r.updated_at
 		FROM robots r
 		` + whereClause + `
-		ORDER BY r.id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
 
-	queryArgs := append(args, pagination.Limit, pagination.Offset)
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []robotRow
 	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {

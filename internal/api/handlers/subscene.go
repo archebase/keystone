@@ -110,6 +110,9 @@ func (h *SubsceneHandler) getSceneInitialLayoutTemplate(sceneID int64) (sql.Null
 // @Accept       json
 // @Produce      json
 // @Param        scene_id query string false "Filter by scene ID"
+// @Param        keyword  query string false "Search by name or description"
+// @Param        q        query string false "Alias of keyword"
+// @Param        search   query string false "Alias of keyword"
 // @Param        limit    query int    false "Max results (default 50, max 100)"
 // @Param        offset   query int    false "Pagination offset (default 0)"
 // @Success      200 {object} SubsceneListResponse
@@ -124,9 +127,10 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 	}
 
 	sceneID := c.Query("scene_id")
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 
-	whereClause := "WHERE deleted_at IS NULL"
-	args := []interface{}{}
+	whereClause := "WHERE ss.deleted_at IS NULL"
+	args := []any{}
 
 	if sceneID != "" {
 		parsedSceneID, err := strconv.ParseInt(sceneID, 10, 64)
@@ -134,11 +138,12 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
 			return
 		}
-		whereClause += " AND scene_id = ?"
+		whereClause += " AND ss.scene_id = ?"
 		args = append(args, parsedSceneID)
 	}
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "ss.name", "ss.description")
 
-	countQuery := "SELECT COUNT(*) FROM subscenes " + whereClause
+	countQuery := "SELECT COUNT(*) FROM subscenes ss " + whereClause
 	var total int
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[SUBSCENE] Failed to count subscenes: %v", err)
@@ -146,22 +151,24 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "ss.id DESC", "ss.name", "ss.description")
 	query := `
 		SELECT 
-			id,
-			scene_id,
-			name,
-			description,
-			initial_scene_layout,
-			created_at,
-			updated_at
-		FROM subscenes
+			ss.id,
+			ss.scene_id,
+			ss.name,
+			ss.description,
+			ss.initial_scene_layout,
+			ss.created_at,
+			ss.updated_at
+		FROM subscenes ss
 		` + whereClause + `
-		ORDER BY id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
 
-	queryArgs := append(args, pagination.Limit, pagination.Offset)
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []subsceneRow
 	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {

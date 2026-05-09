@@ -7,6 +7,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -88,6 +89,41 @@ func firstNonEmptyQuery(c *gin.Context, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func appendKeywordSearch(whereClause string, args []any, keyword string, fields ...string) (string, []any) {
+	if keyword == "" || len(fields) == 0 {
+		return whereClause, args
+	}
+
+	conditions := make([]string, 0, len(fields))
+	likeKeyword := "%" + keyword + "%"
+	for _, field := range fields {
+		conditions = append(conditions, field+" LIKE ?")
+		args = append(args, likeKeyword)
+	}
+	return whereClause + " AND (" + strings.Join(conditions, " OR ") + ")", args
+}
+
+func keywordOrderBy(keyword string, fallback string, fields ...string) (string, []any) {
+	if keyword == "" || len(fields) == 0 {
+		return "ORDER BY " + fallback, nil
+	}
+
+	clauses := make([]string, 0, len(fields)*2)
+	args := make([]any, 0, len(fields)*2)
+	prefixKeyword := keyword + "%"
+	rank := 0
+	for _, field := range fields {
+		clauses = append(clauses, fmt.Sprintf("WHEN %s = ? THEN %d", field, rank))
+		args = append(args, keyword)
+		rank++
+		clauses = append(clauses, fmt.Sprintf("WHEN %s LIKE ? THEN %d", field, rank))
+		args = append(args, prefixKeyword)
+		rank++
+	}
+
+	return fmt.Sprintf("ORDER BY CASE %s ELSE %d END, %s", strings.Join(clauses, " "), rank, fallback), args
 }
 
 // isValidSlug checks non-empty slug, length <= maxSlugLength (in runes), and allows Unicode letters/digits plus hyphen.

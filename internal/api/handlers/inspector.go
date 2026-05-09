@@ -120,6 +120,9 @@ type inspectorRow struct {
 // @Param        organization_id query string false "Filter by organization ID"
 // @Param        certification_level query string false "Filter by certification level (level_1, level_2, senior)"
 // @Param        status          query string false "Filter by status (active, inactive)"
+// @Param        keyword         query string false "Search by name, inspector ID, or email"
+// @Param        q               query string false "Alias of keyword"
+// @Param        search          query string false "Alias of keyword"
 // @Param        limit           query int    false "Max results (default 50, max 100)"
 // @Param        offset          query int    false "Pagination offset (default 0)"
 // @Success      200 {object} InspectorListResponse
@@ -136,9 +139,10 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 	orgID := c.Query("organization_id")
 	certLevel := strings.TrimSpace(c.Query("certification_level"))
 	status := c.Query("status")
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 
 	whereClause := "WHERE deleted_at IS NULL"
-	args := []interface{}{}
+	args := []any{}
 
 	if orgID != "" {
 		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
@@ -164,6 +168,7 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		whereClause += " AND status = ?"
 		args = append(args, status)
 	}
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "name", "inspector_id", "email")
 
 	countQuery := "SELECT COUNT(*) FROM inspectors " + whereClause
 	var total int
@@ -173,6 +178,7 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "id DESC", "name", "inspector_id", "email")
 	query := `
 		SELECT 
 			id,
@@ -187,11 +193,12 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 			updated_at
 		FROM inspectors
 		` + whereClause + `
-		ORDER BY id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
 
-	queryArgs := append(args, pagination.Limit, pagination.Offset)
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []inspectorRow
 	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
