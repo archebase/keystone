@@ -186,6 +186,11 @@ func (w *SyncWorker) IsRunning() bool {
 	return w.running.Load()
 }
 
+// MaxRetries returns the configured automatic retry limit.
+func (w *SyncWorker) MaxRetries() int {
+	return w.cfg.MaxRetries
+}
+
 // EnqueueEpisode adds a specific episode ID for immediate sync processing.
 func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error {
 	return w.enqueueEpisode(ctx, episodeID, false)

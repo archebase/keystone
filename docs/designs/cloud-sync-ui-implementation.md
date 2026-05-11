@@ -38,14 +38,17 @@ or future sync operations.
 
 ### 2.1 Existing Cloud Sync APIs
 
-Keystone already exposes the following endpoints:
+Keystone exposes the following endpoints today, with the summary/history
+endpoints recommended for the episode-centered Cloud Sync Center redesign:
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/v1/sync/episodes` | Enqueue pending approved, unsynced episodes for cloud sync |
 | `POST` | `/api/v1/sync/episodes/:id` | Enqueue one episode for cloud sync by numeric episode ID |
-| `GET` | `/api/v1/sync/episodes` | List sync log entries |
+| `GET` | `/api/v1/sync/episodes` | Existing: list raw sync log entries for history/diagnosis |
+| `GET` | `/api/v1/sync/episodes/summary` | Recommended new endpoint: list latest sync state grouped by episode |
 | `GET` | `/api/v1/sync/episodes/:id/status` | Get latest sync log for one episode |
+| `GET` | `/api/v1/sync/episodes/:id/logs` | Recommended new endpoint: list raw sync log history for one episode |
 | `GET` | `/api/v1/sync/config` | Get sanitized sync worker configuration |
 
 ### 2.2 SyncWorker Eligibility Rules
@@ -106,6 +109,24 @@ Behavior:
 
 For product clarity, the current batch API should be presented as "scan and
 enqueue eligible pending episodes", not as "force retry all failures".
+
+### 2.4 Listing Model
+
+`sync_logs` is an audit-style attempt-chain table. One episode may have multiple
+rows because manual retry can create a fresh `sync_logs` row when the latest
+failed row is exhausted or still in backoff. Showing raw `sync_logs` as the
+default Cloud Sync Center table can make users think Keystone created duplicate
+work for the same episode.
+
+The default Cloud Sync Center table should therefore be episode-centered:
+
+- one row per `episodes.id`
+- current status from the latest `sync_logs` row for that episode
+- total attempt count summed across all `sync_logs` rows for that episode
+- latest error, retry time, timestamps, and cloud destination from the latest row
+
+Raw `sync_logs` rows should remain available as a history/diagnostic view, such
+as an expandable row, drawer, or "View history" action.
 
 ## 3. Product Goals
 
@@ -189,11 +210,12 @@ Compact status band:
 | Item | Source | Notes |
 |------|--------|-------|
 | Worker running | `/api/v1/sync/config` | Green/gray status |
-| Queue / in-progress count | `sync_logs` | Derived from list/count APIs |
-| Failed count | `sync_logs` | Prominent only when greater than zero |
-| Last successful sync | `sync_logs.completed_at` | Useful health signal |
+| Queued count | Episode sync summary | Latest status is `pending` |
+| In-progress count | Episode sync summary | Latest status is `in_progress` |
+| Failed count | Episode sync summary | Latest status is `failed` |
+| Last successful sync | Latest completed sync log | Useful health signal |
 
-The status band should read as a compact control surface, not as four separate
+The status band should read as a compact control surface, not as five separate
 feature cards. It can use cell separators, narrow borders, or small chips, but
 the task table must remain the visual center of the page.
 
@@ -203,9 +225,10 @@ Task panel:
 |---------|----------|
 | Status tabs | Above the table; all / pending / in_progress / completed / failed |
 | Failed tab/count | Use alert color only when failed count is greater than zero |
-| Table | Dominates the page; sticky header is recommended |
+| Table | Episode summary table; one row per episode; sticky header is recommended |
 | Row navigation | Episode ID opens episode detail when available |
 | Row retry | Show only for failed rows; avoid disabled retry buttons on normal rows |
+| Row history | Optional drawer/expand action showing raw `sync_logs` for the episode |
 | Long paths/errors | Truncate in-cell, expose full value via title; copy/expand is a follow-up |
 | Pagination | Bottom of the task panel |
 
@@ -287,35 +310,42 @@ Avoid:
 - Worker health checks or sync configuration calls from the statistics page.
 - Copy that implies statistics filters control the batch sync operation.
 
-### 4.4 Sync Jobs Table / Drawer
+### 4.4 Episode Summary Table / Sync History
 
-The first implementation may reuse the existing right-side drawer as a stepping
-stone. The long-term target is a dedicated Cloud Sync Center page with the same
-table capabilities.
+The Cloud Sync Center default table should show one row per episode, not one row
+per `sync_logs` entry. This keeps the page aligned with the operator question:
+"which episodes need attention now?" Raw log rows are secondary history.
 
-Columns:
+Default summary columns:
 
 | Column | Source |
 |--------|--------|
 | Episode ID | `episode_public_id` / `episode_id` |
-| Status | `status` |
-| Attempt | `attempt_count` |
-| Source path | `source_path` |
-| Destination path | `destination_path` |
-| Bytes | `bytes_transferred` |
-| Duration | `duration_sec` |
-| Error | `error_message` |
-| Next retry | `next_retry_at` |
-| Started | `started_at` |
-| Completed | `completed_at` |
+| Status | latest `sync_logs.status` |
+| Total attempts | `SUM(sync_logs.attempt_count)` grouped by episode |
+| Latest attempt | latest `sync_logs.attempt_count` |
+| Next retry | latest `sync_logs.next_retry_at`; hide when retry is exhausted |
+| Duration | latest `sync_logs.duration_sec` |
+| Size | latest `sync_logs.bytes_transferred` |
+| Started | latest `sync_logs.started_at` |
+| Completed | latest `sync_logs.completed_at` |
+| Destination path | latest `sync_logs.destination_path` |
+| Error | latest `sync_logs.error_message` |
 
 Filters:
 
 - Status: all / in_progress / completed / failed
 - Limit / offset pagination
 
-The drawer should support row-level navigation to episode detail when
-`episode_id` is available.
+History view:
+
+- available from each summary row
+- lists raw `sync_logs` rows for that episode, ordered by `started_at DESC` or
+  `id DESC`
+- shows each attempt-chain row's status, attempt count, retry time, timestamps,
+  destination path, and error
+- supports row-level navigation back to episode detail when `episode_id` is
+  available
 
 ## 5. Visual Design
 
@@ -325,9 +355,9 @@ The drawer should support row-level navigation to episode detail when
 |-------|-------|------------------|
 | Synced | `Synced` | Green badge |
 | Not synced | `Not Synced` | Neutral badge |
-| Queued | `Queued` | Blue outlined badge |
+| Queued | `Queued` | Amber/yellow badge |
 | Syncing | `Syncing` | Blue badge with subtle spinner |
-| Waiting retry | `Waiting Retry` | Amber badge |
+| Waiting retry | Not shown as a separate main status | Use `Failed`; hide next retry when retry is exhausted |
 | Failed | `Failed` | Red badge |
 | Unavailable | `Unavailable` | Muted badge |
 | Not eligible | `Not Eligible` | Muted outlined badge |
@@ -348,8 +378,11 @@ The drawer should support row-level navigation to episode detail when
 - Show retry actions only for `failed` rows.
 - Hide or leave the action cell empty for `pending`, `in_progress`, and
   `completed` rows instead of showing disabled retry buttons.
-- Keep episode ID, status, attempt count, next retry, started/completed time,
-  destination path, error, and row action visible in the first implementation.
+- Keep episode ID, status, total attempt count, next retry, started/completed
+  time, destination path, error, and row action visible in the first
+  implementation.
+- Use `total_attempt_count` for the default table. Use latest-row
+  `attempt_count` only inside the history/diagnostic view.
 - Truncate long object paths and error messages in the table; full-value copy or
   expandable detail rows can be added later.
 - Use sticky table headers when the page grows beyond one viewport.
@@ -385,7 +418,9 @@ export function useSyncApi() {
   return {
     triggerBatch: () => api.post('/sync/episodes', {}),
     triggerEpisode: (id) => api.post(`/sync/episodes/${id}`, {}),
+    listEpisodeSummaries: (params = {}) => api.get('/sync/episodes/summary', params),
     listJobs: (params = {}) => api.get('/sync/episodes', params),
+    listEpisodeHistory: (id, params = {}) => api.get(`/sync/episodes/${id}/logs`, params),
     getStatus: (id) => api.get(`/sync/episodes/${id}/status`),
     getConfig: () => api.get('/sync/config')
   }
@@ -431,22 +466,23 @@ synapse/src/views/admin/sync/CloudSyncCenter.vue
 Recommended responsibilities:
 
 - Fetch `getConfig()` during page load.
-- Load latest sync jobs from `GET /sync/episodes`.
+- Load episode-centered sync summaries from `GET /sync/episodes/summary`.
 - Provide status filters:
   - all
   - pending
   - in_progress
   - completed
   - failed
-- Show top-level counters derived from sync job queries.
+- Show top-level counters derived from episode summary counts.
 - Provide `Sync all eligible unsynced episodes`.
 - Show confirmation before calling batch API.
 - Refresh task list after successful enqueue.
 - Navigate from a sync row to episode detail.
+- Open raw sync history from a row when diagnosis is needed.
 - Keep the header free of secondary refresh/navigation buttons.
 - Keep retry visible only on failed rows.
 - Keep worker-stopped state action-scoped: disable enqueue/retry, but keep
-  historical task inspection available.
+  historical sync inspection available.
 
 The page should treat `202 Accepted` as a queued background operation, not as
 completion.
@@ -462,31 +498,47 @@ remove cloud sync operations and navigation:
 - Do not render a Cloud Sync card, strip, drawer, or entry button.
 - Do not keep batch enqueue as an action on this page.
 
-### 6.5 Sync Jobs Table / Drawer Component
+### 6.5 Sync Summary Table / History Component
 
-Create a reusable task table component. The existing drawer can be kept as an
-intermediate implementation, but the same table should be usable inside the
-Cloud Sync Center page.
+Create a reusable episode summary table component. A history drawer can be kept
+as a secondary diagnostic component that reads raw `sync_logs` for a selected
+episode.
 
 Example:
 
 ```
-synapse/src/components/sync/SyncJobsDrawer.vue
+synapse/src/components/sync/SyncEpisodeSummaryTable.vue
+synapse/src/components/sync/SyncEpisodeHistoryDrawer.vue
 ```
 
-Props:
+Summary table props:
 
 | Prop | Type | Description |
 |------|------|-------------|
-| `open` | boolean | Drawer visibility |
-| `defaultStatus` | string | Optional initial status filter |
+| `items` | array | Episode-centered summary rows |
+| `loading` | boolean | Loading state |
+| `status` | string | Active status filter |
 
 Events:
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `close` | none | Close drawer |
 | `view-episode` | numeric episode ID | Navigate to episode detail |
+| `view-history` | numeric episode ID | Open raw sync log history |
+| `retry-episode` | numeric episode ID | Trigger single episode sync |
+
+History drawer props:
+
+| Prop | Type | Description |
+|------|------|-------------|
+| `open` | boolean | Drawer visibility |
+| `episodeId` | number | Selected episode numeric ID |
+
+History drawer events:
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `close` | none | Close drawer |
 
 The component should own:
 
@@ -498,10 +550,136 @@ The component should own:
 
 ## 7. Backend Follow-up Recommendations
 
-The MVP can use existing endpoints. For a more robust operator experience,
-add these backend improvements.
+The original MVP can use existing raw log endpoints, but the episode-centered
+Cloud Sync Center requires the summary/history API improvements below.
 
-### 7.1 Add Latest Sync Summary to Episode Responses
+### 7.1 Add Episode Sync Summary Endpoint
+
+Add `GET /api/v1/sync/episodes/summary` for the Cloud Sync Center default table.
+It should return one row per episode, using the latest `sync_logs` row as the
+current state and aggregate attempt counts across all rows for that episode.
+
+Recommended response shape:
+
+```json
+{
+  "items": [
+    {
+      "id": 120,
+      "episode_id": 42,
+      "episode_public_id": "dpstat-devices-20260507083341391413-episode-002",
+      "status": "failed",
+      "total_attempt_count": 12,
+      "latest_attempt_count": 2,
+      "sync_log_count": 6,
+      "next_retry_at": null,
+      "started_at": "2026-05-09T13:02:00Z",
+      "completed_at": "2026-05-09T13:02:02Z",
+      "destination_path": null,
+      "error_message": "The specified key does not exist"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0,
+  "hasNext": false,
+  "hasPrev": false
+}
+```
+
+The default status filter should apply to the latest row status, not historical
+rows. For example, `status=failed` means "episodes whose latest sync state is
+failed", not "all failed sync log rows".
+
+Recommended SQL shape:
+
+```sql
+SELECT
+  latest_log.id,
+  latest_log.episode_id,
+  e.episode_id AS episode_public_id,
+  latest_log.source_path,
+  latest_log.destination_path,
+  latest_log.status,
+  latest_log.bytes_transferred,
+  latest_log.duration_sec,
+  latest_log.error_message,
+  COALESCE(agg.total_attempt_count, 0) AS total_attempt_count,
+  latest_log.attempt_count AS latest_attempt_count,
+  agg.sync_log_count,
+  latest_log.next_retry_at,
+  latest_log.started_at,
+  latest_log.completed_at
+FROM sync_logs latest_log
+JOIN (
+  SELECT episode_id, MAX(id) AS latest_id
+  FROM sync_logs
+  GROUP BY episode_id
+) latest
+  ON latest_log.episode_id = latest.episode_id
+ AND latest_log.id = latest.latest_id
+JOIN (
+  SELECT
+    episode_id,
+    SUM(COALESCE(attempt_count, 0)) AS total_attempt_count,
+    COUNT(*) AS sync_log_count
+  FROM sync_logs
+  GROUP BY episode_id
+) agg
+  ON agg.episode_id = latest_log.episode_id
+LEFT JOIN episodes e
+  ON e.id = latest_log.episode_id
+ AND e.deleted_at IS NULL
+WHERE 1=1
+-- optional latest-state filter:
+-- AND latest_log.status = ?
+ORDER BY latest_log.started_at DESC
+LIMIT ? OFFSET ?;
+```
+
+The count query should use the same latest-row scope:
+
+```sql
+SELECT COUNT(*)
+FROM sync_logs latest_log
+JOIN (
+  SELECT episode_id, MAX(id) AS latest_id
+  FROM sync_logs
+  GROUP BY episode_id
+) latest
+  ON latest_log.episode_id = latest.episode_id
+ AND latest_log.id = latest.latest_id
+WHERE 1=1
+-- optional latest-state filter:
+-- AND latest_log.status = ?;
+```
+
+The existing indexes are sufficient for the first implementation:
+
+```sql
+INDEX idx_sync_episode_latest (episode_id, id)
+INDEX idx_sync_episode_status (episode_id, status)
+INDEX idx_status (status)
+```
+
+Only add a migration after checking `EXPLAIN` on production-like data. Candidate
+follow-up indexes are `(status, episode_id, id)` for status-filtered summary
+queries and `(episode_id, started_at)` for per-episode history ordering.
+
+### 7.2 Add Raw Sync Log History Endpoint
+
+Keep `GET /api/v1/sync/episodes` as the raw log list for compatibility and
+diagnosis. Add a scoped history endpoint for row drill-down:
+
+```http
+GET /api/v1/sync/episodes/:id/logs
+```
+
+This endpoint should return raw `sync_logs` rows for one episode, ordered by
+`id DESC` or `started_at DESC`, with the same pagination shape as the existing
+list API.
+
+### 7.3 Add Latest Sync Summary to Episode Responses
 
 Add optional fields to `GET /episodes` and `GET /episodes/:id`:
 
@@ -518,7 +696,7 @@ Add optional fields to `GET /episodes` and `GET /episodes/:id`:
 
 This avoids N+1 status queries in episode lists.
 
-### 7.2 Clarify Batch Trigger Modes
+### 7.4 Clarify Batch Trigger Modes
 
 Current batch trigger is not a forced retry. Add request body support:
 
@@ -542,7 +720,7 @@ Recommended semantics:
 Until this exists, frontend copy must say "eligible unsynced episodes", not
 "failed episodes" or "current filters".
 
-### 7.3 Return More Sync Config
+### 7.5 Return More Sync Config
 
 For the first Cloud Sync Center version, sync configuration should be read-only.
 Do not move `.env` editing into Synapse yet.
@@ -563,7 +741,7 @@ TODO: decide later whether any config should become editable from Synapse. If
 that is added, keep secret values masked and require admin permissions, audit
 logs, validation, and clear restart/reload semantics.
 
-### 7.4 Require Admin Permission
+### 7.6 Require Admin Permission
 
 Cloud sync trigger APIs should require an authenticated admin role. Batch sync can
 move large files and consume cloud resources, so it should not be available to
@@ -596,7 +774,7 @@ Stop polling when:
 Recommended maximum polling duration for a detail page is 2 minutes. Large MCAP
 uploads can take longer, so after timeout the UI should switch to:
 
-> Sync is still running in the background. Check sync jobs for details.
+> Sync is still running in the background. Check Cloud Sync Center for details.
 
 ## 9. Implementation Phases
 
@@ -618,7 +796,8 @@ Acceptance criteria:
 
 - Add a dedicated Cloud Sync Center route/page.
 - Add batch trigger with confirmation.
-- Add sync jobs table with status filtering and pagination.
+- Add episode summary table with status filtering and pagination.
+- Add per-episode sync history drill-down for raw `sync_logs`.
 - Add failed-job focused view.
 - Remove Cloud Sync operation/entry cards from data production statistics.
 
@@ -626,12 +805,14 @@ Acceptance criteria:
 
 - Admin can enqueue all eligible unsynced episodes.
 - UI clearly states the operation runs in background.
-- Sync logs can be inspected and filtered in Cloud Sync Center.
+- Cloud Sync Center defaults to one row per episode.
+- Raw sync logs can be inspected from an episode row.
 - Data production statistics no longer exposes cloud sync operation or entry
   cards.
 
 ### Phase 3: Backend API Enhancements
 
+- Add episode sync summary and per-episode history endpoints.
 - Add latest sync summary to episode list/detail responses.
 - Add batch trigger body with `force` and filters.
 - Extend sync config response with read-only non-sensitive values.
