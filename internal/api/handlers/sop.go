@@ -102,6 +102,8 @@ type sopRow struct {
 // @Tags         sops
 // @Accept       json
 // @Produce      json
+// @Param        slug    query string false "Filter by SOP slug(s), comma-separated"
+// @Param        sop_slug query string false "Alias of slug"
 // @Param        keyword query string false "Search by slug, description, or version"
 // @Param        q       query string false "Alias of keyword"
 // @Param        search  query string false "Alias of keyword"
@@ -118,9 +120,15 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		return
 	}
 
+	slugs, err := parseNonEmptyStringList(firstNonEmptyQuery(c, "slug", "sop_slug"), "slug")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 	whereClause := "WHERE deleted_at IS NULL"
 	args := []any{}
+	whereClause, args = appendStringInFilter(whereClause, args, "slug", slugs)
 	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "slug", "description", "version")
 
 	countQuery := "SELECT COUNT(*) FROM sops " + whereClause
@@ -131,7 +139,7 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		return
 	}
 
-	orderClause, orderArgs := keywordOrderBy(keyword, "id DESC", "slug", "description", "version")
+	orderClause, orderArgs := keywordOrderBy(keyword, "updated_at DESC, id DESC", "slug", "description", "version")
 	query := `
 		SELECT 
 			id,
@@ -318,14 +326,13 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 		return
 	}
 
-	// Validate skill_sequence
-	if len(req.SkillSequence) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "skill_sequence is required and must not be empty"})
-		return
+	skillSequence := req.SkillSequence
+	if skillSequence == nil {
+		skillSequence = []string{}
 	}
 
 	// Convert skill_sequence to JSON string
-	skillSeqJSON, err := json.Marshal(req.SkillSequence)
+	skillSeqJSON, err := json.Marshal(skillSequence)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process skill_sequence"})
 		return
@@ -370,7 +377,7 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 	c.JSON(http.StatusCreated, CreateSOPResponse{
 		ID:            fmt.Sprintf("%d", id),
 		Slug:          req.Slug,
-		SkillSequence: req.SkillSequence,
+		SkillSequence: skillSequence,
 		Version:       version,
 		CreatedAt:     now.Format(time.RFC3339),
 	})

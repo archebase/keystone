@@ -120,6 +120,8 @@ type skillRow struct {
 // @Tags         skills
 // @Accept       json
 // @Produce      json
+// @Param        slug    query string false "Filter by skill slug(s), comma-separated"
+// @Param        skill_slug query string false "Alias of slug"
 // @Param        keyword query string false "Search by slug, description, or version"
 // @Param        q       query string false "Alias of keyword"
 // @Param        search  query string false "Alias of keyword"
@@ -136,9 +138,15 @@ func (h *SkillHandler) ListSkills(c *gin.Context) {
 		return
 	}
 
+	slugs, err := parseNonEmptyStringList(firstNonEmptyQuery(c, "slug", "skill_slug"), "slug")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 	whereClause := "WHERE deleted_at IS NULL"
 	args := []any{}
+	whereClause, args = appendStringInFilter(whereClause, args, "slug", slugs)
 	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "slug", "description", "version")
 
 	countQuery := "SELECT COUNT(*) FROM skills " + whereClause

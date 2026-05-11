@@ -109,12 +109,14 @@ func (h *SubsceneHandler) getSceneInitialLayoutTemplate(sceneID int64) (sql.Null
 // @Tags         subscenes
 // @Accept       json
 // @Produce      json
-// @Param        scene_id query string false "Filter by scene ID"
-// @Param        keyword  query string false "Search by name or description"
-// @Param        q        query string false "Alias of keyword"
-// @Param        search   query string false "Alias of keyword"
-// @Param        limit    query int    false "Max results (default 50, max 100)"
-// @Param        offset   query int    false "Pagination offset (default 0)"
+// @Param        scene_id    query string false "Filter by scene ID(s), comma-separated"
+// @Param        subscene_id query string false "Filter by subscene ID(s), comma-separated"
+// @Param        id          query string false "Alias of subscene_id"
+// @Param        keyword     query string false "Search by name or description"
+// @Param        q           query string false "Alias of keyword"
+// @Param        search      query string false "Alias of keyword"
+// @Param        limit       query int    false "Max results (default 50, max 100)"
+// @Param        offset      query int    false "Pagination offset (default 0)"
 // @Success      200 {object} SubsceneListResponse
 // @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
@@ -126,21 +128,23 @@ func (h *SubsceneHandler) ListSubscenes(c *gin.Context) {
 		return
 	}
 
-	sceneID := c.Query("scene_id")
+	sceneIDs, err := parsePositiveInt64List(c.Query("scene_id"), "scene_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	subsceneIDs, err := parsePositiveInt64List(firstNonEmptyQuery(c, "subscene_id", "id"), "subscene_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 
 	whereClause := "WHERE ss.deleted_at IS NULL"
 	args := []any{}
 
-	if sceneID != "" {
-		parsedSceneID, err := strconv.ParseInt(sceneID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
-			return
-		}
-		whereClause += " AND ss.scene_id = ?"
-		args = append(args, parsedSceneID)
-	}
+	whereClause, args = appendInt64InFilter(whereClause, args, "ss.scene_id", sceneIDs)
+	whereClause, args = appendInt64InFilter(whereClause, args, "ss.id", subsceneIDs)
 	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "ss.name", "ss.description")
 
 	countQuery := "SELECT COUNT(*) FROM subscenes ss " + whereClause

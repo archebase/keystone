@@ -44,13 +44,13 @@ type dataProductionStatsQuery struct {
 	EndTime              time.Time
 	Granularity          string
 	SourceID             string
-	SceneID              int64
+	SceneIDs             []int64
 	RobotDeviceIDs       []string
-	RobotTypeID          string
+	RobotTypeIDs         []string
 	CollectorOperatorIDs []string
-	SOPID                string
-	QAStatus             string
-	CloudSynced          *bool
+	SOPIDs               []string
+	QAStatuses           []string
+	CloudSyncedValues    []bool
 	DataType             string
 	TaskID               string
 }
@@ -255,31 +255,40 @@ func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dat
 		}
 	}
 
-	var sceneID int64
-	rawSceneID := strings.TrimSpace(c.Query("scene_id"))
-	if rawSceneID != "" {
-		parsedSceneID, err := strconv.ParseInt(rawSceneID, 10, 64)
-		if err != nil || parsedSceneID <= 0 {
-			return dataProductionStatsQuery{}, fmt.Errorf("scene_id must be a positive integer")
-		}
-		sceneID = parsedSceneID
+	sceneIDs, err := parsePositiveInt64List(c.Query("scene_id"), "scene_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
 	}
 
-	qaStatus := strings.TrimSpace(c.Query("qa_status"))
-	if qaStatus != "" {
+	robotDeviceIDs, err := parseStatsStringListQuery(c, "robot_device_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
+	robotTypeIDs, err := parseStatsStringListQuery(c, "robot_type_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
+	collectorOperatorIDs, err := parseStatsStringListQuery(c, "collector_operator_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
+	sopIDs, err := parseStatsStringListQuery(c, "sop_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
+	qaStatuses, err := parseStatsStringListQuery(c, "qa_status")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
+	for _, qaStatus := range qaStatuses {
 		if _, ok := validDataProductionQAStatuses[qaStatus]; !ok {
 			return dataProductionStatsQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, needs_inspection, inspector_approved, rejected, failed")
 		}
 	}
 
-	var cloudSynced *bool
-	rawCloudSynced := strings.TrimSpace(c.Query("cloud_synced"))
-	if rawCloudSynced != "" {
-		parsedCloudSynced, err := strconv.ParseBool(rawCloudSynced)
-		if err != nil {
-			return dataProductionStatsQuery{}, fmt.Errorf("cloud_synced must be true or false")
-		}
-		cloudSynced = &parsedCloudSynced
+	cloudSyncedValues, err := parseStatsBoolListQuery(c, "cloud_synced")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
 	}
 
 	return dataProductionStatsQuery{
@@ -287,13 +296,13 @@ func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dat
 		EndTime:              endTime,
 		Granularity:          granularity,
 		SourceID:             strings.TrimSpace(c.Query("source_id")),
-		SceneID:              sceneID,
-		RobotDeviceIDs:       parseStatsStringListQuery(c, "robot_device_id"),
-		RobotTypeID:          strings.TrimSpace(c.Query("robot_type_id")),
-		CollectorOperatorIDs: parseStatsStringListQuery(c, "collector_operator_id"),
-		SOPID:                strings.TrimSpace(c.Query("sop_id")),
-		QAStatus:             qaStatus,
-		CloudSynced:          cloudSynced,
+		SceneIDs:             sceneIDs,
+		RobotDeviceIDs:       robotDeviceIDs,
+		RobotTypeIDs:         robotTypeIDs,
+		CollectorOperatorIDs: collectorOperatorIDs,
+		SOPIDs:               sopIDs,
+		QAStatuses:           qaStatuses,
+		CloudSyncedValues:    cloudSyncedValues,
 		DataType:             strings.TrimSpace(c.Query("data_type")),
 		TaskID:               strings.TrimSpace(c.Query("task_id")),
 	}, nil
@@ -312,25 +321,30 @@ func parseStatsTime(raw string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid timestamp")
 }
 
-func parseStatsStringListQuery(c *gin.Context, key string) []string {
-	seen := map[string]struct{}{}
-	values := []string{}
+func parseStatsStringListQuery(c *gin.Context, key string) ([]string, error) {
+	return parseNonEmptyStringListValues(c.QueryArray(key), key)
+}
 
-	for _, rawValue := range c.QueryArray(key) {
-		for _, part := range strings.Split(rawValue, ",") {
-			value := strings.TrimSpace(part)
-			if value == "" {
-				continue
-			}
-			if _, ok := seen[value]; ok {
-				continue
-			}
-			seen[value] = struct{}{}
-			values = append(values, value)
+func parseStatsBoolListQuery(c *gin.Context, key string) ([]bool, error) {
+	items, err := splitBoundedMultiValueItems(c.QueryArray(key), key, maxMultiValueFilterStringItemLength)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[bool]struct{}{}
+	values := []bool{}
+	for _, item := range items {
+		parsed, err := strconv.ParseBool(item)
+		if err != nil {
+			return nil, fmt.Errorf("%s must contain true or false", key)
 		}
+		if _, ok := seen[parsed]; ok {
+			continue
+		}
+		seen[parsed] = struct{}{}
+		values = append(values, parsed)
 	}
 
-	return values
+	return values, nil
 }
 
 // GetSummary returns aggregate data production statistics for the requested filters.
@@ -775,28 +789,13 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 		conditions = append(conditions, "source_id = ?")
 		args = append(args, q.SourceID)
 	}
-	if q.SceneID > 0 {
-		conditions = append(conditions, "scene_id = ?")
-		args = append(args, q.SceneID)
-	}
+	conditions, args = appendStatsInt64InCondition(conditions, args, "scene_id", q.SceneIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "robot_device_id", q.RobotDeviceIDs)
-	if q.RobotTypeID != "" {
-		conditions = append(conditions, "robot_type_id = ?")
-		args = append(args, q.RobotTypeID)
-	}
+	conditions, args = appendStatsInCondition(conditions, args, "robot_type_id", q.RobotTypeIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "collector_operator_id", q.CollectorOperatorIDs)
-	if q.SOPID != "" {
-		conditions = append(conditions, "sop_id = ?")
-		args = append(args, q.SOPID)
-	}
-	if q.QAStatus != "" {
-		conditions = append(conditions, "qa_status = ?")
-		args = append(args, q.QAStatus)
-	}
-	if q.CloudSynced != nil {
-		conditions = append(conditions, "cloud_synced = ?")
-		args = append(args, *q.CloudSynced)
-	}
+	conditions, args = appendStatsInCondition(conditions, args, "sop_id", q.SOPIDs)
+	conditions, args = appendStatsInCondition(conditions, args, "qa_status", q.QAStatuses)
+	conditions, args = appendStatsBoolInCondition(conditions, args, "cloud_synced", q.CloudSyncedValues)
 	if q.DataType != "" {
 		conditions = append(conditions, "data_type = ?")
 		args = append(args, q.DataType)
@@ -821,6 +820,30 @@ func appendStatsInCondition(conditions []string, args []interface{}, column stri
 		args = append(args, value)
 	}
 	conditions = append(conditions, fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ",")))
+	return conditions, args
+}
+
+func appendStatsInt64InCondition(conditions []string, args []interface{}, column string, values []int64) ([]string, []interface{}) {
+	if len(values) == 0 {
+		return conditions, args
+	}
+
+	placeholders := make([]string, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	conditions = append(conditions, fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ",")))
+	return conditions, args
+}
+
+func appendStatsBoolInCondition(conditions []string, args []interface{}, column string, values []bool) ([]string, []interface{}) {
+	if len(values) == 0 || len(values) > 1 {
+		return conditions, args
+	}
+
+	conditions = append(conditions, column+" = ?")
+	args = append(args, values[0])
 	return conditions, args
 }
 

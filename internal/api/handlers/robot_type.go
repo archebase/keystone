@@ -249,6 +249,8 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 // @Tags         robot_types
 // @Accept       json
 // @Produce      json
+// @Param        robot_type_id query string false "Filter by robot type ID(s), comma-separated"
+// @Param        id      query     string false "Alias of robot_type_id"
 // @Param        keyword query     string false "Search by name, model, manufacturer, or end effector"
 // @Param        q       query     string false "Alias of keyword"
 // @Param        search  query     string false "Alias of keyword"
@@ -265,9 +267,16 @@ func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
 		return
 	}
 
+	robotTypeIDs, err := parsePositiveInt64List(firstNonEmptyQuery(c, "robot_type_id", "id"), "robot_type_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 	whereClause := "WHERE deleted_at IS NULL"
 	args := []any{}
+	whereClause, args = appendInt64InFilter(whereClause, args, "id", robotTypeIDs)
 	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "name", "model", "manufacturer", "end_effector")
 
 	countQuery := "SELECT COUNT(*) FROM robot_types " + whereClause

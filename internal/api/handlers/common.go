@@ -18,9 +18,13 @@ import (
 )
 
 const (
-	defaultLimit  = 50
-	maxLimit      = 100
-	maxSlugLength = 100
+	defaultLimit                         = 50
+	maxLimit                             = 100
+	maxSlugLength                        = 100
+	maxMultiValueFilterItems             = 100
+	maxMultiValueFilterRawLength         = 8192
+	maxMultiValueFilterStringItemLength  = 255
+	maxMultiValueFilterIntegerItemLength = 20
 )
 
 const invalidSlugUserMessage = "slug must be at most 100 characters and contain only letters, digits, and hyphens"
@@ -103,6 +107,111 @@ func appendKeywordSearch(whereClause string, args []any, keyword string, fields 
 		args = append(args, likeKeyword)
 	}
 	return whereClause + " AND (" + strings.Join(conditions, " OR ") + ")", args
+}
+
+func parsePositiveInt64List(raw string, fieldName string) ([]int64, error) {
+	items, err := splitBoundedMultiValueItems([]string{raw}, fieldName, maxMultiValueFilterIntegerItemLength)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[int64]struct{})
+	values := []int64{}
+	for _, item := range items {
+		parsed, err := strconv.ParseInt(item, 10, 64)
+		if err != nil || parsed <= 0 {
+			return nil, fmt.Errorf("invalid %s format", fieldName)
+		}
+		if _, ok := seen[parsed]; ok {
+			continue
+		}
+		seen[parsed] = struct{}{}
+		values = append(values, parsed)
+	}
+	return values, nil
+}
+
+func parseNonEmptyStringList(raw string, fieldName string) ([]string, error) {
+	return parseNonEmptyStringListValues([]string{raw}, fieldName)
+}
+
+func parseNonEmptyStringListValues(rawValues []string, fieldName string) ([]string, error) {
+	items, err := splitBoundedMultiValueItems(rawValues, fieldName, maxMultiValueFilterStringItemLength)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{})
+	values := []string{}
+	for _, item := range items {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		values = append(values, item)
+	}
+	return values, nil
+}
+
+func splitBoundedMultiValueItems(rawValues []string, fieldName string, maxItemLength int) ([]string, error) {
+	totalRawLength := 0
+	items := []string{}
+	for _, raw := range rawValues {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		totalRawLength += len(raw)
+		if totalRawLength > maxMultiValueFilterRawLength {
+			return nil, fmt.Errorf("%s query is too long", fieldName)
+		}
+		for _, item := range strings.Split(raw, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if len(item) > maxItemLength {
+				return nil, fmt.Errorf("%s contains a value longer than %d characters", fieldName, maxItemLength)
+			}
+			items = append(items, item)
+			if len(items) > maxMultiValueFilterItems {
+				return nil, fmt.Errorf("%s contains too many values; maximum is %d", fieldName, maxMultiValueFilterItems)
+			}
+		}
+	}
+	return items, nil
+}
+
+func appendInt64InFilter(whereClause string, args []any, column string, values []int64) (string, []any) {
+	if len(values) == 0 {
+		return whereClause, args
+	}
+
+	placeholders := make([]string, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	return whereClause + " AND " + column + " IN (" + strings.Join(placeholders, ",") + ")", args
+}
+
+func appendStringInFilter(whereClause string, args []any, column string, values []string) (string, []any) {
+	if len(values) == 0 {
+		return whereClause, args
+	}
+
+	placeholders := make([]string, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	return whereClause + " AND " + column + " IN (" + strings.Join(placeholders, ",") + ")", args
 }
 
 func keywordOrderBy(keyword string, fallback string, fields ...string) (string, []any) {

@@ -18,7 +18,7 @@ import (
 func TestParseDataProductionStatsQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&source_id=12&scene_id=34&qa_status=approved&cloud_synced=false&data_type=episode&task_id=task_1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&source_id=12&scene_id=34,35&robot_type_id=7,8&sop_id=9,10&qa_status=approved,rejected&cloud_synced=false&data_type=episode&task_id=task_1", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -26,8 +26,17 @@ func TestParseDataProductionStatsQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseDataProductionStatsQuery returned error: %v", err)
 	}
-	if got.Granularity != "hour" || got.SourceID != "12" || got.SceneID != 34 || got.QAStatus != "approved" || got.CloudSynced == nil || *got.CloudSynced || got.DataType != "episode" || got.TaskID != "task_1" {
+	if got.Granularity != "hour" || got.SourceID != "12" || got.DataType != "episode" || got.TaskID != "task_1" {
 		t.Fatalf("unexpected query: %+v", got)
+	}
+	if len(got.SceneIDs) != 2 || got.SceneIDs[0] != 34 || got.SceneIDs[1] != 35 {
+		t.Fatalf("unexpected scene ids: %#v", got.SceneIDs)
+	}
+	if strings.Join(got.RobotTypeIDs, ",") != "7,8" || strings.Join(got.SOPIDs, ",") != "9,10" || strings.Join(got.QAStatuses, ",") != "approved,rejected" {
+		t.Fatalf("unexpected list filters: %+v", got)
+	}
+	if len(got.CloudSyncedValues) != 1 || got.CloudSyncedValues[0] {
+		t.Fatalf("unexpected cloud synced values: %#v", got.CloudSyncedValues)
 	}
 }
 
@@ -96,13 +105,13 @@ func TestFilteredProductionRecordsSQLIncludesEpisodeFilters(t *testing.T) {
 	cloudSynced := true
 	handler := &DataProductionStatisticsHandler{}
 	query, args := handler.filteredProductionRecordsSQL(dataProductionStatsQuery{
-		StartTime:   mustParseStatsTimeForTest(t, "2026-05-01T00:00:00Z"),
-		EndTime:     mustParseStatsTimeForTest(t, "2026-05-02T00:00:00Z"),
-		SceneID:     34,
-		QAStatus:    "rejected",
-		CloudSynced: &cloudSynced,
+		StartTime:         mustParseStatsTimeForTest(t, "2026-05-01T00:00:00Z"),
+		EndTime:           mustParseStatsTimeForTest(t, "2026-05-02T00:00:00Z"),
+		SceneIDs:          []int64{34},
+		QAStatuses:        []string{"rejected"},
+		CloudSyncedValues: []bool{cloudSynced},
 	})
-	for _, want := range []string{"scene_id = ?", "qa_status = ?", "cloud_synced = ?"} {
+	for _, want := range []string{"scene_id IN (?)", "qa_status IN (?)", "cloud_synced = ?"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("filtered SQL should include %q: %s", want, query)
 		}
@@ -200,6 +209,19 @@ func TestParseDataProductionStatsQueryRejectsInvalidInputs(t *testing.T) {
 				t.Fatalf("expected validation error")
 			}
 		})
+	}
+}
+
+func TestParseDataProductionStatsQueryRejectsOversizedListFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	target := "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&robot_device_id=" +
+		joinedStringList("robot", maxMultiValueFilterItems+1)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, target, nil)
+
+	if _, err := parseDataProductionStatsQuery(c, true); err == nil {
+		t.Fatalf("expected oversized list validation error")
 	}
 }
 

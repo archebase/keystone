@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,17 +40,21 @@ func NewRobotHandler(db *sqlx.DB, recorderHub *services.RecorderHub, transferHub
 
 // RobotResponse represents a robot in the response.
 type RobotResponse struct {
-	ID          string      `json:"id"`
-	RobotTypeID string      `json:"robot_type_id"`
-	DeviceID    string      `json:"device_id"`
-	FactoryID   string      `json:"factory_id"`
-	AssetID     string      `json:"asset_id,omitempty"`
-	Status      string      `json:"status"`
-	Metadata    interface{} `json:"metadata,omitempty"`
-	CreatedAt   string      `json:"created_at,omitempty"`
-	UpdatedAt   string      `json:"updated_at,omitempty"`
-	Connected   bool        `json:"connected"`
-	ConnectedAt string      `json:"connected_at,omitempty"`
+	ID             string      `json:"id"`
+	RobotTypeID    string      `json:"robot_type_id"`
+	RobotTypeName  string      `json:"robot_type_name,omitempty"`
+	RobotTypeModel string      `json:"robot_type_model,omitempty"`
+	DeviceID       string      `json:"device_id"`
+	FactoryID      string      `json:"factory_id"`
+	FactoryName    string      `json:"factory_name,omitempty"`
+	FactorySlug    string      `json:"factory_slug,omitempty"`
+	AssetID        string      `json:"asset_id,omitempty"`
+	Status         string      `json:"status"`
+	Metadata       interface{} `json:"metadata,omitempty"`
+	CreatedAt      string      `json:"created_at,omitempty"`
+	UpdatedAt      string      `json:"updated_at,omitempty"`
+	Connected      bool        `json:"connected"`
+	ConnectedAt    string      `json:"connected_at,omitempty"`
 }
 
 // RobotListResponse represents the response for listing robots.
@@ -70,6 +75,8 @@ type DeviceConnectionResponse struct {
 	RecorderConnected bool   `json:"recorder_connected"`
 	TransferConnected bool   `json:"transfer_connected"`
 }
+
+type robotConnectionSnapshot map[string]string
 
 // CreateRobotRequest represents the request body for creating a robot.
 type CreateRobotRequest struct {
@@ -105,15 +112,19 @@ func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // robotRow represents a robot in the database
 type robotRow struct {
-	ID          int64          `db:"id"`
-	RobotTypeID int64          `db:"robot_type_id"`
-	DeviceID    string         `db:"device_id"`
-	FactoryID   int64          `db:"factory_id"`
-	AssetID     sql.NullString `db:"asset_id"`
-	Status      string         `db:"status"`
-	Metadata    sql.NullString `db:"metadata"`
-	CreatedAt   sql.NullTime   `db:"created_at"`
-	UpdatedAt   sql.NullTime   `db:"updated_at"`
+	ID             int64          `db:"id"`
+	RobotTypeID    int64          `db:"robot_type_id"`
+	RobotTypeName  sql.NullString `db:"robot_type_name"`
+	RobotTypeModel sql.NullString `db:"robot_type_model"`
+	DeviceID       string         `db:"device_id"`
+	FactoryID      int64          `db:"factory_id"`
+	FactoryName    sql.NullString `db:"factory_name"`
+	FactorySlug    sql.NullString `db:"factory_slug"`
+	AssetID        sql.NullString `db:"asset_id"`
+	Status         string         `db:"status"`
+	Metadata       sql.NullString `db:"metadata"`
+	CreatedAt      sql.NullTime   `db:"created_at"`
+	UpdatedAt      sql.NullTime   `db:"updated_at"`
 }
 
 func robotMetadataFromDB(ns sql.NullString) interface{} {
@@ -152,7 +163,70 @@ func (h *RobotHandler) connectionStateDetailed(deviceID string) (connected bool,
 	return true, t.UTC().Format(time.RFC3339), recorderConnected, transferConnected
 }
 
-func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
+func (h *RobotHandler) connectionSnapshot() robotConnectionSnapshot {
+	snapshot := robotConnectionSnapshot{}
+	if h.recorderHub == nil || h.transferHub == nil {
+		return snapshot
+	}
+
+	transferByDeviceID := make(map[string]time.Time)
+	for _, device := range h.transferHub.ListDevices() {
+		deviceID := strings.TrimSpace(device.DeviceID)
+		if deviceID == "" {
+			continue
+		}
+		transferByDeviceID[deviceID] = device.ConnectedAt
+	}
+	if len(transferByDeviceID) == 0 {
+		return snapshot
+	}
+
+	for _, recorder := range h.recorderHub.ListDevices() {
+		deviceID := strings.TrimSpace(recorder.DeviceID)
+		if deviceID == "" {
+			continue
+		}
+		transferConnectedAt, ok := transferByDeviceID[deviceID]
+		if !ok {
+			continue
+		}
+		connectedAt := recorder.ConnectedAt
+		if transferConnectedAt.After(connectedAt) {
+			connectedAt = transferConnectedAt
+		}
+		snapshot[deviceID] = connectedAt.UTC().Format(time.RFC3339)
+	}
+	return snapshot
+}
+
+func (s robotConnectionSnapshot) deviceIDs() []string {
+	ids := make([]string, 0, len(s))
+	for deviceID := range s {
+		ids = append(ids, deviceID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func appendRobotDeviceConnectionFilter(whereClause string, args []interface{}, connected bool, connectedDeviceIDs []string) (string, []interface{}) {
+	if len(connectedDeviceIDs) == 0 {
+		return whereClause, args
+	}
+
+	placeholders := make([]string, 0, len(connectedDeviceIDs))
+	for _, deviceID := range connectedDeviceIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, deviceID)
+	}
+
+	operator := "NOT IN"
+	if connected {
+		operator = "IN"
+	}
+	return whereClause + " AND r.device_id " + operator + " (" + strings.Join(placeholders, ",") + ")", args
+}
+
+func robotResponseFromRow(r robotRow, connected bool, connectedAt string) RobotResponse {
 	createdAt := ""
 	if r.CreatedAt.Valid {
 		createdAt = r.CreatedAt.Time.UTC().Format(time.RFC3339)
@@ -165,20 +239,61 @@ func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
 	if r.AssetID.Valid {
 		assetID = r.AssetID.String
 	}
-	connected, connectedAt := h.connectionState(r.DeviceID)
 	return RobotResponse{
-		ID:          fmt.Sprintf("%d", r.ID),
-		RobotTypeID: fmt.Sprintf("%d", r.RobotTypeID),
-		DeviceID:    r.DeviceID,
-		FactoryID:   fmt.Sprintf("%d", r.FactoryID),
-		AssetID:     assetID,
-		Status:      r.Status,
-		Metadata:    robotMetadataFromDB(r.Metadata),
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
-		Connected:   connected,
-		ConnectedAt: connectedAt,
+		ID:             fmt.Sprintf("%d", r.ID),
+		RobotTypeID:    fmt.Sprintf("%d", r.RobotTypeID),
+		RobotTypeName:  nullString(r.RobotTypeName),
+		RobotTypeModel: nullString(r.RobotTypeModel),
+		DeviceID:       r.DeviceID,
+		FactoryID:      fmt.Sprintf("%d", r.FactoryID),
+		FactoryName:    nullString(r.FactoryName),
+		FactorySlug:    nullString(r.FactorySlug),
+		AssetID:        assetID,
+		Status:         r.Status,
+		Metadata:       robotMetadataFromDB(r.Metadata),
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+		Connected:      connected,
+		ConnectedAt:    connectedAt,
 	}
+}
+
+func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
+	connected, connectedAt := h.connectionState(r.DeviceID)
+	return robotResponseFromRow(r, connected, connectedAt)
+}
+
+func responseFromRowWithConnectionSnapshot(r robotRow, snapshot robotConnectionSnapshot) RobotResponse {
+	connectedAt, connected := snapshot[strings.TrimSpace(r.DeviceID)]
+	return robotResponseFromRow(r, connected, connectedAt)
+}
+
+func parseConnectedFilter(raw string) (*bool, error) {
+	values, err := parseNonEmptyStringList(raw, "connected")
+	if err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[bool]struct{})
+	for _, value := range values {
+		connected, err := strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid connected format")
+		}
+		seen[connected] = struct{}{}
+	}
+	if len(seen) != 1 {
+		return nil, nil
+	}
+
+	result := false
+	for connected := range seen {
+		result = connected
+	}
+	return &result, nil
 }
 
 // ListRobots handles robot listing requests with filtering.
@@ -188,14 +303,14 @@ func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
 // @Tags         robots
 // @Accept       json
 // @Produce      json
-// @Param        factory_id    query     string  false  "Filter by factory id"
-// @Param        status        query     string  false  "Filter by status (active, maintenance, retired)"
-// @Param        robot_type_id query     string  false  "Filter by robot type id"
-// @Param        connected     query     string  false  "Filter by connection status (true/false)"
+// @Param        factory_id    query     string  false  "Filter by factory ID(s), comma-separated"
+// @Param        status        query     string  false  "Filter by status(es), comma-separated (active, maintenance, retired)"
+// @Param        robot_type_id query     string  false  "Filter by robot type ID(s), comma-separated"
+// @Param        connected     query     string  false  "Filter by connection status(es), comma-separated (true/false)"
+// @Param        device_id     query     string  false  "Filter by device ID(s), comma-separated"
 // @Param        keyword       query     string  false  "Search by device ID or asset ID"
 // @Param        q             query     string  false  "Alias of keyword"
 // @Param        search        query     string  false  "Alias of keyword"
-// @Param        device_id     query     string  false  "Alias of keyword for device ID search"
 // @Param        limit         query     int     false  "Max results (default 50, max 100)"
 // @Param        offset        query     int     false  "Pagination offset (default 0)"
 // @Success      200           {object}  RobotListResponse
@@ -209,49 +324,39 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		return
 	}
 
-	factoryID := c.Query("factory_id")
-	status := c.Query("status")
-	robotTypeID := c.Query("robot_type_id")
-	connectedParam := c.Query("connected")
-	keyword := firstNonEmptyQuery(c, "keyword", "q", "search", "device_id")
-
-	var connectedFilter *bool
-	if connectedParam != "" {
-		connected, err := strconv.ParseBool(connectedParam)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid connected format"})
-			return
-		}
-		connectedFilter = &connected
+	factoryIDs, err := parsePositiveInt64List(c.Query("factory_id"), "factory_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
+	robotTypeIDs, err := parsePositiveInt64List(c.Query("robot_type_id"), "robot_type_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	connectedFilter, err := parseConnectedFilter(c.Query("connected"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	deviceIDs, err := parseNonEmptyStringList(c.Query("device_id"), "device_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	statuses, err := parseNonEmptyStringList(c.Query("status"), "status")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 
 	whereClause := "WHERE r.deleted_at IS NULL"
 	args := []interface{}{}
-
-	if factoryID != "" {
-		parsedFactoryID, err := strconv.ParseInt(factoryID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
-			return
-		}
-		whereClause += " AND r.factory_id = ?"
-		args = append(args, parsedFactoryID)
-	}
-
-	if status != "" {
-		whereClause += " AND r.status = ?"
-		args = append(args, status)
-	}
-
-	if robotTypeID != "" {
-		parsedRobotTypeID, err := strconv.ParseInt(robotTypeID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
-			return
-		}
-		whereClause += " AND r.robot_type_id = ?"
-		args = append(args, parsedRobotTypeID)
-	}
+	whereClause, args = appendInt64InFilter(whereClause, args, "r.factory_id", factoryIDs)
+	whereClause, args = appendStringInFilter(whereClause, args, "r.device_id", deviceIDs)
+	whereClause, args = appendStringInFilter(whereClause, args, "r.status", statuses)
+	whereClause, args = appendInt64InFilter(whereClause, args, "r.robot_type_id", robotTypeIDs)
 
 	if keyword != "" {
 		likeKeyword := "%" + keyword + "%"
@@ -259,8 +364,25 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		args = append(args, likeKeyword, likeKeyword)
 	}
 
-	countQuery := "SELECT COUNT(*) FROM robots r " + whereClause
+	connectionSnapshot := h.connectionSnapshot()
+	if connectedFilter != nil {
+		connectedDeviceIDs := connectionSnapshot.deviceIDs()
+		if *connectedFilter && len(connectedDeviceIDs) == 0 {
+			c.JSON(http.StatusOK, RobotListResponse{
+				Items:   []RobotResponse{},
+				Total:   0,
+				Limit:   pagination.Limit,
+				Offset:  pagination.Offset,
+				HasNext: false,
+				HasPrev: pagination.Offset > 0,
+			})
+			return
+		}
+		whereClause, args = appendRobotDeviceConnectionFilter(whereClause, args, *connectedFilter, connectedDeviceIDs)
+	}
+
 	var total int
+	countQuery := "SELECT COUNT(*) FROM robots r " + whereClause
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[ROBOT] Failed to count robots: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robots"})
@@ -270,21 +392,26 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	orderClause, orderArgs := keywordOrderBy(keyword, "r.id DESC", "r.device_id", "r.asset_id")
 	query := `
 		SELECT 
-			r.id,
-			r.robot_type_id,
-			r.device_id,
-			r.factory_id,
-			r.asset_id,
-			r.status,
-			r.metadata,
-			r.created_at,
-			r.updated_at
-		FROM robots r
-		` + whereClause + `
-		` + orderClause + `
-		LIMIT ? OFFSET ?
+				r.id,
+				r.robot_type_id,
+				rt.name AS robot_type_name,
+				rt.model AS robot_type_model,
+				r.device_id,
+				r.factory_id,
+				f.name AS factory_name,
+				f.slug AS factory_slug,
+				r.asset_id,
+				r.status,
+				r.metadata,
+				r.created_at,
+				r.updated_at
+			FROM robots r
+			LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
+			LEFT JOIN factories f ON f.id = r.factory_id AND f.deleted_at IS NULL
+				` + whereClause + `
+				` + orderClause + `
+				LIMIT ? OFFSET ?
 	`
-
 	queryArgs := append(args, orderArgs...)
 	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
@@ -295,13 +422,9 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		return
 	}
 
-	robots := []RobotResponse{}
+	robots := make([]RobotResponse, 0, len(dbRows))
 	for _, r := range dbRows {
-		resp := h.responseFromRow(r)
-		if connectedFilter != nil && resp.Connected != *connectedFilter {
-			continue
-		}
-		robots = append(robots, resp)
+		robots = append(robots, responseFromRowWithConnectionSnapshot(r, connectionSnapshot))
 	}
 
 	hasNext := (pagination.Offset + pagination.Limit) < total

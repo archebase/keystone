@@ -323,7 +323,7 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 	countQuery := fmt.Sprintf(`
 		SELECT COUNT(*)
 		FROM batches b
-		LEFT JOIN workstations ws ON ws.id = b.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = b.workstation_id
 		LEFT JOIN orders o ON o.id = b.order_id AND o.deleted_at IS NULL
 		WHERE %s
 	`, whereClause)
@@ -355,7 +355,7 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 			b.created_at,
 			b.updated_at
 		FROM batches b
-		LEFT JOIN workstations ws ON ws.id = b.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = b.workstation_id
 		LEFT JOIN organizations org ON org.id = b.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN orders o ON o.id = b.order_id AND o.deleted_at IS NULL
 		LEFT JOIN (

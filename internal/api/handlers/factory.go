@@ -143,6 +143,8 @@ func (h *FactoryHandler) allocateFactorySlug() (string, error) {
 // @Tags         factories
 // @Accept       json
 // @Produce      json
+// @Param        factory_id query     string  false  "Filter by factory ID(s), comma-separated"
+// @Param        id      query     string  false  "Alias of factory_id"
 // @Param        keyword query     string  false  "Search by name, slug, or location"
 // @Param        q       query     string  false  "Alias of keyword"
 // @Param        search  query     string  false  "Alias of keyword"
@@ -159,9 +161,16 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 		return
 	}
 
+	factoryIDs, err := parsePositiveInt64List(firstNonEmptyQuery(c, "factory_id", "id"), "factory_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 	whereClause := "WHERE deleted_at IS NULL"
 	args := []any{}
+	whereClause, args = appendInt64InFilter(whereClause, args, "id", factoryIDs)
 	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "name", "slug", "location")
 
 	countQuery := "SELECT COUNT(*) FROM factories " + whereClause
