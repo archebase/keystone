@@ -1640,13 +1640,15 @@ func (h *BatchHandler) RecallBatch(c *gin.Context) {
 	})
 }
 
-// ListBatchTasks lists all tasks belonging to a batch.
+// ListBatchTasks lists tasks belonging to a batch.
 //
 // @Summary      List batch tasks
-// @Description  Returns all tasks belonging to the specified batch
+// @Description  Returns tasks belonging to the specified batch. Passing limit/offset enables pagination; omitting both keeps the legacy full response.
 // @Tags         batches
 // @Produce      json
-// @Param        id path int true "Batch ID"
+// @Param        id     path  int true  "Batch ID"
+// @Param        limit  query int false "Max results"
+// @Param        offset query int false "Pagination offset"
 // @Success      200 {object} ListTasksResponse
 // @Failure      400 {object} map[string]string
 // @Failure      404 {object} map[string]string
@@ -1658,6 +1660,31 @@ func (h *BatchHandler) ListBatchTasks(c *gin.Context) {
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
 		return
+	}
+
+	const defaultLimit = 50
+	rawLimit := strings.TrimSpace(c.Query("limit"))
+	rawOffset := strings.TrimSpace(c.Query("offset"))
+	paginated := rawLimit != "" || rawOffset != ""
+
+	limit := defaultLimit
+	if rawLimit != "" {
+		parsedLimit, err := strconv.Atoi(rawLimit)
+		if err != nil || parsedLimit <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
+			return
+		}
+		limit = parsedLimit
+	}
+
+	offset := 0
+	if rawOffset != "" {
+		parsedOffset, err := strconv.Atoi(rawOffset)
+		if err != nil || parsedOffset < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "offset must be a non-negative integer"})
+			return
+		}
+		offset = parsedOffset
 	}
 
 	// Verify batch exists
@@ -1672,8 +1699,21 @@ func (h *BatchHandler) ListBatchTasks(c *gin.Context) {
 		return
 	}
 
-	items := make([]TaskListItem, 0)
-	if err := h.db.Select(&items, `
+	total := 0
+	if paginated {
+		if err := h.db.Get(&total, "SELECT COUNT(*) FROM tasks WHERE batch_id = ? AND deleted_at IS NULL", id); err != nil {
+			logger.Printf("[BATCH] Failed to count batch tasks: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list batch tasks"})
+			return
+		}
+	}
+
+	assignedAtExpr := "CASE WHEN assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(assigned_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS assigned_at"
+	if h.db.DriverName() == "sqlite" {
+		assignedAtExpr = "CASE WHEN assigned_at IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%SZ', assigned_at) END AS assigned_at"
+	}
+
+	query := `
 		SELECT
 			CAST(id AS CHAR) AS id,
 			task_id AS task_id,
@@ -1686,20 +1726,36 @@ func (h *BatchHandler) ListBatchTasks(c *gin.Context) {
 			CAST(subscene_id AS CHAR) AS subscene_id,
 			COALESCE(subscene_name, '') AS subscene_name,
 			status,
-			CASE WHEN assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(assigned_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS assigned_at
+			` + assignedAtExpr + `
 		FROM tasks
 		WHERE batch_id = ? AND deleted_at IS NULL
-		ORDER BY created_at ASC, id ASC`, id); err != nil {
+		ORDER BY created_at ASC, id ASC`
+	args := []interface{}{id}
+	if paginated {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, limit, offset)
+	}
+
+	items := make([]TaskListItem, 0)
+	if err := h.db.Select(&items, query, args...); err != nil {
 		logger.Printf("[BATCH] Failed to query batch tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list batch tasks"})
 		return
 	}
 
+	if !paginated {
+		limit = len(items)
+		offset = 0
+		total = len(items)
+	}
+
 	c.JSON(http.StatusOK, ListTasksResponse{
-		Items:  items,
-		Total:  len(items),
-		Limit:  len(items),
-		Offset: 0,
+		Items:   items,
+		Total:   total,
+		Limit:   limit,
+		Offset:  offset,
+		HasNext: paginated && offset+limit < total,
+		HasPrev: paginated && offset > 0,
 	})
 }
 
