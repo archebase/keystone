@@ -186,6 +186,11 @@ func (w *SyncWorker) IsRunning() bool {
 	return w.running.Load()
 }
 
+// MaxRetries returns the configured automatic retry limit.
+func (w *SyncWorker) MaxRetries() int {
+	return w.cfg.MaxRetries
+}
+
 // EnqueueEpisode adds a specific episode ID for immediate sync processing.
 func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error {
 	return w.enqueueEpisode(ctx, episodeID, false)
@@ -250,7 +255,7 @@ func (w *SyncWorker) validateEpisodeForManualEnqueue(ctx context.Context, episod
 	if err != nil {
 		return fmt.Errorf("query latest sync_log: %w", err)
 	}
-	if latest.Status == "in_progress" {
+	if latest.Status == "pending" || latest.Status == "in_progress" {
 		return fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
 	}
 	return nil
@@ -334,10 +339,18 @@ func (w *SyncWorker) worker(ctx context.Context, jobCh <-chan syncEnqueueRequest
 		case <-ctx.Done():
 			return
 		case req := <-jobCh:
-			w.unmarkEnqueued(req.episodeID)
-			w.processEpisodeWithMode(ctx, req.episodeID, req.manual)
+			w.processEnqueuedEpisode(ctx, req)
 		}
 	}
+}
+
+func (w *SyncWorker) processEnqueuedEpisode(ctx context.Context, req syncEnqueueRequest) {
+	w.processEnqueuedEpisodeWith(ctx, req, w.processEpisodeWithMode)
+}
+
+func (w *SyncWorker) processEnqueuedEpisodeWith(ctx context.Context, req syncEnqueueRequest, process func(context.Context, int64, bool)) {
+	defer w.unmarkEnqueued(req.episodeID)
+	process(ctx, req.episodeID, req.manual)
 }
 
 func (w *SyncWorker) dispatchJob(ctx context.Context, req syncEnqueueRequest) {
@@ -451,7 +464,7 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFa
 		  AND NOT EXISTS (
 		    SELECT 1 FROM sync_logs sl
 		    WHERE sl.episode_id = e.id
-		      AND sl.status = 'in_progress'
+		      AND sl.status IN ('pending', 'in_progress')
 		  )
 		  %s
 		ORDER BY e.created_at ASC
@@ -497,7 +510,7 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 		  AND NOT EXISTS (
 		    SELECT 1 FROM sync_logs sl2
 		    WHERE sl2.episode_id = sl.episode_id
-		      AND sl2.status = 'in_progress'
+		      AND sl2.status IN ('pending', 'in_progress')
 		  )
 		ORDER BY sl.started_at ASC
 		LIMIT ?
@@ -637,6 +650,38 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 	if err == nil {
 		now := time.Now().UTC()
 		switch latest.Status {
+		case "pending":
+			claimedAttemptCount := latest.AttemptCount
+			if claimedAttemptCount < 1 {
+				claimedAttemptCount = 1
+			}
+			res, updErr := tx.ExecContext(ctx, `
+				UPDATE sync_logs
+				SET status = 'in_progress',
+				    source_path = ?,
+				    started_at = ?,
+				    error_message = NULL,
+				    duration_sec = NULL,
+				    completed_at = NULL,
+				    next_retry_at = NULL,
+				    attempt_count = ?
+				WHERE id = ?
+				  AND status = 'pending'
+			`, sourcePath, now, claimedAttemptCount, latest.ID)
+			if updErr != nil {
+				return 0, 0, fmt.Errorf("claim pending sync_log: %w", updErr)
+			}
+			n, raErr := res.RowsAffected()
+			if raErr != nil {
+				return 0, 0, fmt.Errorf("claim pending sync_log rows affected: %w", raErr)
+			}
+			if n != 1 {
+				return 0, 0, fmt.Errorf("pending claim lost for sync_log %d (state changed)", latest.ID)
+			}
+			if err := tx.Commit(); err != nil {
+				return 0, 0, fmt.Errorf("commit pending sync_log claim: %w", err)
+			}
+			return latest.ID, claimedAttemptCount, nil
 		case "in_progress":
 			return 0, 0, fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
 		case "completed":

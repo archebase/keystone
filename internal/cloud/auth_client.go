@@ -9,9 +9,8 @@ package cloud
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/binary"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,10 +30,8 @@ type AuthClientConfig struct {
 	TLSCAFile string
 	// TLSServerName is an optional TLS server name override (SNI / verification).
 	TLSServerName string
-	// SiteID is the numeric site identifier assigned to this edge deployment.
-	SiteID int64
-	// APISecret is the raw API key secret for credential exchange.
-	APISecret string // #nosec G117 -- in-process auth config only; not JSON-marshaled to clients
+	// APIKey is an opaque cloud-issued credential forwarded to AuthService.
+	APIKey string // #nosec G117 -- in-process auth config only; not JSON-marshaled to clients
 	// RefreshBefore is how long before expiry to proactively refresh the token.
 	RefreshBefore time.Duration
 }
@@ -92,7 +89,7 @@ func (c *AuthClient) shouldRefresh(token *AuthToken) bool {
 }
 
 func (c *AuthClient) refreshToken(ctx context.Context) (*AuthToken, error) {
-	credentialBase64 := c.buildCredentialBase64()
+	credentialBase64 := c.credentialBase64()
 	if credentialBase64 == "" {
 		return nil, fmt.Errorf("credential_base64 must not be empty")
 	}
@@ -178,21 +175,8 @@ func (c *AuthClient) Close() error {
 	return err
 }
 
-// buildCredentialBase64 encodes the credential as base64url(int64_be(site_id) + "." + api_secret).
-// This mirrors the Rust SDK encoding in auth-client tests.
-func (c *AuthClient) buildCredentialBase64() string {
-	if c.cfg.APISecret == "" {
-		return ""
-	}
-	var raw []byte
-	buf := make([]byte, 8)
-	// SiteID is specified as an int64 and encoded as its big-endian byte representation.
-	// We allow negative values (two's complement), matching typical i64-to-bytes behavior.
-	//
-	//nolint:gosec // G115: intentional bit-preserving cast for wire encoding
-	binary.BigEndian.PutUint64(buf, uint64(c.cfg.SiteID))
-	raw = append(raw, buf...)
-	raw = append(raw, '.')
-	raw = append(raw, []byte(c.cfg.APISecret)...)
-	return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(raw)
+// credentialBase64 returns the cloud-issued API key unchanged. Keystone treats
+// it as an opaque credential; the cloud AuthService owns parsing and validation.
+func (c *AuthClient) credentialBase64() string {
+	return strings.TrimSpace(c.cfg.APIKey)
 }

@@ -110,9 +110,11 @@ func TestFindPendingEpisodes_ExcludesExhaustedFailuresFromPollingOnly(t *testing
 	insertEpisodeForSyncWorkerTest(t, db, 1, "approved", false)
 	insertEpisodeForSyncWorkerTest(t, db, 2, "approved", false)
 	insertEpisodeForSyncWorkerTest(t, db, 3, "approved", false)
+	insertEpisodeForSyncWorkerTest(t, db, 4, "approved", false)
 
 	insertSyncLogForSyncWorkerTest(t, db, 2, "failed", 3)
 	insertSyncLogForSyncWorkerTest(t, db, 3, "failed", 2)
+	insertSyncLogForSyncWorkerTest(t, db, 4, "pending", 1)
 
 	apiIDs, err := w.findPendingEpisodes(context.Background(), true)
 	if err != nil {
@@ -172,6 +174,67 @@ func TestEnqueueEpisode_RejectsInProgressEpisode(t *testing.T) {
 
 	if err := w.EnqueueEpisodeManual(context.Background(), 11); !errors.Is(err, ErrSyncAlreadyInProgress) {
 		t.Fatalf("manual enqueue error = %v, want ErrSyncAlreadyInProgress", err)
+	}
+}
+
+func TestEnqueueEpisodeManual_RejectsPendingEpisode(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		enqueueCh:       make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+	w.running.Store(true)
+
+	insertEpisodeForSyncWorkerTest(t, db, 12, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 12, "pending", 1)
+
+	if err := w.EnqueueEpisodeManual(context.Background(), 12); !errors.Is(err, ErrSyncAlreadyInProgress) {
+		t.Fatalf("manual enqueue error = %v, want ErrSyncAlreadyInProgress", err)
+	}
+}
+
+func TestProcessEnqueuedEpisode_HoldsMarkerUntilProcessingReturns(t *testing.T) {
+	w := &SyncWorker{
+		enqueuedEpisode: map[int64]struct{}{77: {}},
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		w.processEnqueuedEpisodeWith(
+			context.Background(),
+			syncEnqueueRequest{episodeID: 77, manual: true},
+			func(context.Context, int64, bool) {
+				close(started)
+				<-release
+			},
+		)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("processing did not start")
+	}
+
+	if w.tryMarkEnqueued(77) {
+		t.Fatal("episode marker was released while processing was still active")
+	}
+
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("processing did not finish")
+	}
+
+	if !w.tryMarkEnqueued(77) {
+		t.Fatal("episode marker was not released after processing finished")
 	}
 }
 

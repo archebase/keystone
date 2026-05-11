@@ -120,8 +120,7 @@ func main() {
 			UseTLS:        cfg.Sync.CloudUseTLS,
 			TLSCAFile:     cfg.Sync.CloudTLSCAFile,
 			TLSServerName: cfg.Sync.CloudTLSServerName,
-			SiteID:        cfg.Sync.SiteID,
-			APISecret:     cfg.Sync.APISecret,
+			APIKey:        cfg.Sync.APIKey,
 			RefreshBefore: 60 * time.Second,
 		})
 
