@@ -6,7 +6,6 @@
 package config
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -77,9 +76,7 @@ type SyncConfig struct {
 	CloudUseTLS        bool   // enable TLS for cloud gRPC connections
 	CloudTLSCAFile     string // optional CA bundle path for TLS verification
 	CloudTLSServerName string // optional TLS server name override (SNI / verification)
-	APIKey             string `json:"-"` // base64url-encoded API key (decoded into SiteID + APISecret at load time; never JSON-marshaled)
-	SiteID             int64  // site identifier decoded from APIKey
-	APISecret          string `json:"-"` // site secret decoded from APIKey (never JSON-marshaled)
+	APIKey             string `json:"-"` // opaque cloud-issued credential; never JSON-marshaled
 	MaxConcurrent      int    // max concurrent uploads
 	WorkerIntervalSec  int    // sync worker poll interval in seconds
 	RequestTimeoutSec  int    // per-RPC timeout in seconds
@@ -267,15 +264,11 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Sync.GatewayEndpoint) == "" {
 			return fmt.Errorf("sync gateway endpoint is required when sync is enabled")
 		}
-		if strings.TrimSpace(c.Sync.APIKey) == "" {
+		apiKey := strings.TrimSpace(c.Sync.APIKey)
+		if apiKey == "" {
 			return fmt.Errorf("KEYSTONE_CLOUD_API_KEY is required when sync is enabled")
 		}
-		siteID, apiSecret, err := decodeAPIKey(c.Sync.APIKey)
-		if err != nil {
-			return fmt.Errorf("KEYSTONE_CLOUD_API_KEY is invalid: %w", err)
-		}
-		c.Sync.SiteID = siteID
-		c.Sync.APISecret = apiSecret
+		c.Sync.APIKey = apiKey
 		if c.Sync.BatchSize <= 0 {
 			return fmt.Errorf("sync batch size must be greater than 0 when sync is enabled")
 		}
@@ -345,53 +338,4 @@ func getEnvBool(key string, fallback bool) bool {
 		}
 	}
 	return fallback
-}
-
-// decodeAPIKey decodes a base64url-no-pad API key into its component parts.
-//
-// The wire format (produced by the data-platform credential issuer) is:
-//
-//	base64url_no_pad( i64_big_endian(site_id) + "." + site_secret_utf8 )
-//
-// Returns the site_id (signed int64) and site_secret string, or an error if
-// the key is malformed.
-func decodeAPIKey(apiKey string) (siteID int64, apiSecret string, err error) {
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return 0, "", fmt.Errorf("api key must not be empty")
-	}
-
-	// Restore standard base64 padding (URL-safe, no-pad variant).
-	padLen := (-len(apiKey)) % 4
-	if padLen < 0 {
-		padLen += 4
-	}
-	padded := apiKey + strings.Repeat("=", padLen)
-
-	decoded, err := base64.URLEncoding.DecodeString(padded)
-	if err != nil {
-		return 0, "", fmt.Errorf("base64 decode failed: %w", err)
-	}
-
-	// Minimum: 8 bytes site_id + 1 byte '.' + at least 1 byte secret.
-	if len(decoded) <= 9 || decoded[8] != '.' {
-		return 0, "", fmt.Errorf("invalid format: expected i64_be + '.' + secret")
-	}
-
-	// First 8 bytes: signed int64 big-endian.
-	siteID = int64(decoded[0])<<56 | int64(decoded[1])<<48 | int64(decoded[2])<<40 |
-		int64(decoded[3])<<32 | int64(decoded[4])<<24 | int64(decoded[5])<<16 |
-		int64(decoded[6])<<8 | int64(decoded[7])
-	if siteID <= 0 {
-		return 0, "", fmt.Errorf("site_id decoded from api key must be greater than 0, got %d", siteID)
-	}
-
-	// Remaining bytes after the '.' separator: UTF-8 secret.
-	secretBytes := decoded[9:]
-	apiSecret = string(secretBytes)
-	if strings.TrimSpace(apiSecret) == "" {
-		return 0, "", fmt.Errorf("site_secret decoded from api key must not be empty")
-	}
-
-	return siteID, apiSecret, nil
 }
