@@ -741,6 +741,12 @@ TODO: decide later whether any config should become editable from Synapse. If
 that is added, keep secret values masked and require admin permissions, audit
 logs, validation, and clear restart/reload semantics.
 
+Credential handling: `KEYSTONE_CLOUD_API_KEY` is a cloud-issued opaque
+credential. Keystone should only check that it is present when sync is enabled,
+then forward it to cloud auth as `credential_base64`. Keystone must not decode
+the key, derive `site_id`, extract a secret, or enforce the key's internal
+encoding format; the cloud AuthService owns credential validation.
+
 ### 7.6 Require Admin Permission
 
 Cloud sync trigger APIs should require an authenticated admin role. Batch sync can

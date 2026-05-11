@@ -77,6 +77,14 @@ Configuration is loaded from environment variables. See [`docker/.env.example`](
 | `KEYSTONE_MYSQL_HOST` | `localhost` | MySQL host |
 | `KEYSTONE_MYSQL_PASSWORD` | *required* | MySQL password |
 
+### Cloud Sync Credentials
+
+When cloud sync is enabled, `KEYSTONE_CLOUD_API_KEY` is required. Keystone treats
+this value as an opaque credential issued by the cloud platform and forwards it
+to `AuthService.ExchangeCredential` as `credential_base64`. Keystone does not
+decode, split, validate, or derive `site_id` / secret values from this key; the
+cloud AuthService owns credential interpretation and validation.
+
 ## Project Structure
 
 ```
