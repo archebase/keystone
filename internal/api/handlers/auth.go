@@ -257,17 +257,30 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	}
 
 	var wsRow struct {
-		ID      int64 `db:"id"`
-		RobotID int64 `db:"robot_id"`
+		ID                    int64          `db:"id"`
+		RobotID               int64          `db:"robot_id"`
+		RobotTypeID           sql.NullInt64  `db:"robot_type_id"`
+		RobotTypeName         sql.NullString `db:"robot_type_name"`
+		RobotTypeModel        sql.NullString `db:"robot_type_model"`
+		RobotTypeCapabilities sql.NullString `db:"robot_type_capabilities"`
 	}
 	err := h.db.Get(&wsRow, `
-		SELECT id, robot_id
-		FROM workstations
-		WHERE data_collector_id = ? AND deleted_at IS NULL
+		SELECT
+			ws.id,
+			ws.robot_id,
+			r.robot_type_id,
+			rt.name AS robot_type_name,
+			rt.model AS robot_type_model,
+			rt.capabilities AS robot_type_capabilities
+		FROM workstations ws
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
+		WHERE ws.data_collector_id = ? AND ws.deleted_at IS NULL
 		LIMIT 1
 	`, claims.CollectorID)
 	var workstationID *string
 	var robotID *string
+	var robotType gin.H
 	if err != nil {
 		if err != sql.ErrNoRows {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
@@ -278,6 +291,18 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		rb := strconv.FormatInt(wsRow.RobotID, 10)
 		workstationID = &ws
 		robotID = &rb
+		if wsRow.RobotTypeID.Valid {
+			capabilities := interface{}(nil)
+			if wsRow.RobotTypeCapabilities.Valid && strings.TrimSpace(wsRow.RobotTypeCapabilities.String) != "" {
+				capabilities = parseJSONRaw(wsRow.RobotTypeCapabilities.String)
+			}
+			robotType = gin.H{
+				"id":           strconv.FormatInt(wsRow.RobotTypeID.Int64, 10),
+				"name":         nullString(wsRow.RobotTypeName),
+				"model":        nullString(wsRow.RobotTypeModel),
+				"capabilities": capabilities,
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -287,6 +312,7 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		"role":           claims.Role,
 		"workstation_id": workstationID,
 		"robot_id":       robotID,
+		"robot_type":     robotType,
 	})
 }
 

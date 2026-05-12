@@ -550,13 +550,13 @@ func TestBatchHandlerAdjustBatchTasks_DuplicateTaskGroups(t *testing.T) {
 	}
 }
 
-func TestBatchHandlerCompleteTasks_CompletesAvailablePendingTasks(t *testing.T) {
+func TestBatchHandlerCompleteTasks_CompletesSelectedGroupAndCreatesOverflow(t *testing.T) {
 	db := newTestBatchHandlerDB(t)
 	defer db.Close()
 	seedBatchCompleteNextFixtures(t, db)
 
 	r := newTestCollectorBatchRouter(t, db, auth.NewCollectorClaims(100, "op-100"))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":50}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":3,"sop_id":40,"subscene_id":50}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -569,29 +569,39 @@ func TestBatchHandlerCompleteTasks_CompletesAvailablePendingTasks(t *testing.T) 
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
 	}
-	if resp.BatchID != "BATCH-COMPLETE" || resp.RequestedCount != 50 || resp.CompletedCount != 2 || resp.Batch.Status != "completed" {
+	if resp.BatchID != "BATCH-COMPLETE" || resp.RequestedCount != 3 || resp.CompletedCount != 3 || resp.CreatedCount != 1 || resp.Batch.Status != "active" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
-	if len(resp.Tasks) != 2 || resp.Tasks[0].TaskID != "TASK-1" || resp.Tasks[1].TaskID != "TASK-2" {
+	if resp.Group.SOPID != 40 || resp.Group.SubsceneID != 50 || resp.Group.SceneName != "scene-a" || resp.Group.SubsceneName != "sub-a" {
+		t.Fatalf("unexpected group: %#v", resp.Group)
+	}
+	if len(resp.Tasks) != 3 || resp.Tasks[0].TaskID != "TASK-1" || resp.Tasks[1].TaskID != "TASK-2" {
 		t.Fatalf("unexpected completed tasks: %#v", resp.Tasks)
 	}
-	if resp.Batch.CompletedCount != 2 || resp.Batch.TaskCount != 2 {
+	if resp.Batch.CompletedCount != 3 || resp.Batch.TaskCount != 4 {
 		t.Fatalf("unexpected progress: %#v", resp.Batch)
 	}
 
 	var completedTaskCount int
-	if err := db.Get(&completedTaskCount, "SELECT COUNT(*) FROM tasks WHERE batch_id = 1 AND status = 'completed'"); err != nil {
+	if err := db.Get(&completedTaskCount, "SELECT COUNT(*) FROM tasks WHERE batch_id = 1 AND sop_id = 40 AND subscene_id = 50 AND status = 'completed'"); err != nil {
 		t.Fatalf("query completed task count: %v", err)
 	}
-	if completedTaskCount != 2 {
-		t.Fatalf("completed task count=%d want 2", completedTaskCount)
+	if completedTaskCount != 3 {
+		t.Fatalf("completed selected-group task count=%d want 3", completedTaskCount)
+	}
+	var otherGroupPending int
+	if err := db.Get(&otherGroupPending, "SELECT COUNT(*) FROM tasks WHERE batch_id = 1 AND sop_id = 41 AND subscene_id = 51 AND status = 'pending'"); err != nil {
+		t.Fatalf("query other-group pending task count: %v", err)
+	}
+	if otherGroupPending != 1 {
+		t.Fatalf("other-group pending task count=%d want 1", otherGroupPending)
 	}
 	var batchStatus string
 	if err := db.Get(&batchStatus, "SELECT status FROM batches WHERE id = 1"); err != nil {
 		t.Fatalf("query batch status: %v", err)
 	}
-	if batchStatus != "completed" {
-		t.Fatalf("batch status=%q want completed", batchStatus)
+	if batchStatus != "active" {
+		t.Fatalf("batch status=%q want active", batchStatus)
 	}
 	var orderStatus string
 	if err := db.Get(&orderStatus, "SELECT status FROM orders WHERE id = 10"); err != nil {
@@ -608,7 +618,7 @@ func TestBatchHandlerCompleteTasks_RejectsOtherCollectorWorkstation(t *testing.T
 	seedBatchCompleteNextFixtures(t, db)
 
 	r := newTestCollectorBatchRouter(t, db, auth.NewCollectorClaims(101, "op-101"))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":1}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":1,"sop_id":40,"subscene_id":50}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -621,25 +631,29 @@ func TestBatchHandlerCompleteTasks_RejectsOtherCollectorWorkstation(t *testing.T
 	}
 }
 
-func TestBatchHandlerCompleteTasks_NoPendingTask(t *testing.T) {
+func TestBatchHandlerCompleteTasks_CreatesTasksWhenSelectedGroupHasNoPending(t *testing.T) {
 	db := newTestBatchHandlerDB(t)
 	defer db.Close()
 	seedBatchCompleteNextFixtures(t, db)
-	if _, err := db.Exec("UPDATE tasks SET status = 'completed' WHERE batch_id = 1"); err != nil {
+	if _, err := db.Exec("UPDATE tasks SET status = 'completed' WHERE batch_id = 1 AND sop_id = 40 AND subscene_id = 50"); err != nil {
 		t.Fatalf("mark tasks completed: %v", err)
 	}
 
 	r := newTestCollectorBatchRouter(t, db, auth.NewCollectorClaims(100, "op-100"))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":1}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":2,"sop_id":40,"subscene_id":50}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "no pending task") {
-		t.Fatalf("unexpected error response: %s", w.Body.String())
+	var resp CompleteTasksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+	}
+	if resp.RequestedCount != 2 || resp.CompletedCount != 2 || resp.CreatedCount != 2 {
+		t.Fatalf("unexpected response: %#v", resp)
 	}
 }
 
@@ -649,7 +663,7 @@ func TestBatchHandlerCompleteTasks_RejectsInvalidQuantity(t *testing.T) {
 	seedBatchCompleteNextFixtures(t, db)
 
 	r := newTestCollectorBatchRouter(t, db, auth.NewCollectorClaims(100, "op-100"))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":0}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":0,"sop_id":40,"subscene_id":50}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -663,6 +677,25 @@ func TestBatchHandlerCompleteTasks_RejectsInvalidQuantity(t *testing.T) {
 	}
 	if errResp["error"] != "quantity must be >= 1" {
 		t.Fatalf("unexpected error response: %#v", errResp)
+	}
+}
+
+func TestBatchHandlerCompleteTasks_RejectsUnknownTaskGroup(t *testing.T) {
+	db := newTestBatchHandlerDB(t)
+	defer db.Close()
+	seedBatchCompleteNextFixtures(t, db)
+
+	r := newTestCollectorBatchRouter(t, db, auth.NewCollectorClaims(100, "op-100"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":1,"sop_id":99,"subscene_id":50}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "task group not found") {
+		t.Fatalf("unexpected error response: %s", w.Body.String())
 	}
 }
 
@@ -894,10 +927,13 @@ func seedBatchCompleteNextFixtures(t *testing.T, db *sqlx.DB) {
 		{`INSERT INTO workstations (id, robot_id, robot_serial, data_collector_id, collector_name, collector_operator_id, factory_id, organization_id, name, status, updated_at) VALUES (20, 30, 'external-device-001', 100, 'Collector A', 'op-100', 30, 60, 'ws-a', 'inactive', ?)`, []any{now}},
 		{`INSERT INTO workstations (id, robot_id, robot_serial, data_collector_id, collector_name, collector_operator_id, factory_id, organization_id, name, status, updated_at) VALUES (21, 30, 'external-device-002', 101, 'Collector B', 'op-101', 30, 60, 'ws-b', 'inactive', ?)`, []any{now}},
 		{`INSERT INTO sops (id, slug, version) VALUES (40, 'sop-a', '1.0.0')`, nil},
+		{`INSERT INTO sops (id, slug, version) VALUES (41, 'sop-b', '1.0.0')`, nil},
 		{`INSERT INTO subscenes (id, scene_id, name, initial_scene_layout) VALUES (50, 70, 'sub-a', '{}')`, nil},
+		{`INSERT INTO subscenes (id, scene_id, name, initial_scene_layout) VALUES (51, 70, 'sub-b', '{}')`, nil},
 		{`INSERT INTO batches (id, batch_id, order_id, workstation_id, organization_id, name, status, episode_count, created_at, updated_at) VALUES (1, 'BATCH-COMPLETE', 10, 20, 60, 'batch-a', 'pending', 0, ?, ?)`, []any{now, now}},
 		{`INSERT INTO tasks (id, task_id, batch_id, order_id, sop_id, workstation_id, scene_id, subscene_id, scene_name, subscene_name, factory_id, organization_id, status, assigned_at, created_at, updated_at) VALUES (1, 'TASK-1', 1, 10, 40, 20, 70, 50, 'scene-a', 'sub-a', 30, 60, 'pending', ?, ?, ?)`, []any{now, now, now}},
 		{`INSERT INTO tasks (id, task_id, batch_id, order_id, sop_id, workstation_id, scene_id, subscene_id, scene_name, subscene_name, factory_id, organization_id, status, assigned_at, created_at, updated_at) VALUES (2, 'TASK-2', 1, 10, 40, 20, 70, 50, 'scene-a', 'sub-a', 30, 60, 'pending', ?, ?, ?)`, []any{now.Add(time.Minute), now, now}},
+		{`INSERT INTO tasks (id, task_id, batch_id, order_id, sop_id, workstation_id, scene_id, subscene_id, scene_name, subscene_name, factory_id, organization_id, status, assigned_at, created_at, updated_at) VALUES (3, 'TASK-3', 1, 10, 41, 20, 70, 51, 'scene-a', 'sub-b', 30, 60, 'pending', ?, ?, ?)`, []any{now.Add(2 * time.Minute), now, now}},
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt.query, stmt.args...); err != nil {

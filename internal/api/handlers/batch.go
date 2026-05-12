@@ -628,7 +628,9 @@ type batchProgressCounts struct {
 }
 
 type CompleteTasksRequest struct {
-	Quantity *int `json:"quantity,omitempty"`
+	Quantity   *int   `json:"quantity,omitempty"`
+	SOPID      *int64 `json:"sop_id,omitempty"`
+	SubsceneID *int64 `json:"subscene_id,omitempty"`
 }
 
 type CompleteTasksTask struct {
@@ -638,10 +640,19 @@ type CompleteTasksTask struct {
 	CompletedAt string `json:"completed_at"`
 }
 
+type CompleteTasksGroup struct {
+	SOPID        int64  `json:"sop_id"`
+	SubsceneID   int64  `json:"subscene_id"`
+	SceneName    string `json:"scene_name,omitempty"`
+	SubsceneName string `json:"subscene_name,omitempty"`
+}
+
 type CompleteTasksResponse struct {
 	BatchID        string              `json:"batch_id"`
 	RequestedCount int                 `json:"requested_count"`
 	CompletedCount int                 `json:"completed_count"`
+	CreatedCount   int                 `json:"created_count"`
+	Group          CompleteTasksGroup  `json:"group"`
 	Tasks          []CompleteTasksTask `json:"tasks"`
 	Batch          struct {
 		ID             string `json:"id"`
@@ -886,6 +897,12 @@ func (h *BatchHandler) CompleteTasks(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be >= 1"})
 		return
 	}
+	if req.SOPID == nil || req.SubsceneID == nil || *req.SOPID <= 0 || *req.SubsceneID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task group"})
+		return
+	}
+	sopID := *req.SOPID
+	subsceneID := *req.SubsceneID
 
 	now := time.Now().UTC()
 	tx, err := h.db.Beginx()
@@ -953,6 +970,39 @@ func (h *BatchHandler) CompleteTasks(c *gin.Context) {
 		return
 	}
 
+	type taskGroupTemplateRow struct {
+		ID                 int64          `db:"id"`
+		OrderID            int64          `db:"order_id"`
+		SOPID              int64          `db:"sop_id"`
+		WorkstationID      sql.NullInt64  `db:"workstation_id"`
+		SceneID            sql.NullInt64  `db:"scene_id"`
+		SubsceneID         int64          `db:"subscene_id"`
+		BatchName          sql.NullString `db:"batch_name"`
+		SceneName          sql.NullString `db:"scene_name"`
+		SubsceneName       sql.NullString `db:"subscene_name"`
+		FactoryID          sql.NullInt64  `db:"factory_id"`
+		OrganizationID     sql.NullInt64  `db:"organization_id"`
+		InitialSceneLayout sql.NullString `db:"initial_scene_layout"`
+	}
+	var groupTemplate taskGroupTemplateRow
+	if err := tx.Get(&groupTemplate, `
+		SELECT
+			id, order_id, sop_id, workstation_id, scene_id, subscene_id,
+			batch_name, scene_name, subscene_name, factory_id, organization_id,
+			initial_scene_layout
+		FROM tasks
+		WHERE batch_id = ? AND deleted_at IS NULL AND sop_id = ? AND subscene_id = ?
+		ORDER BY assigned_at ASC, id ASC
+		LIMIT 1`+lockClause, batch.ID, sopID, subsceneID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task group not found in batch"})
+			return
+		}
+		logger.Printf("[BATCH] CompleteTasks: failed to lock task group for batch %d: %v", batch.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+
 	type pendingTaskRow struct {
 		ID     int64  `db:"id"`
 		TaskID string `db:"task_id"`
@@ -961,31 +1011,15 @@ func (h *BatchHandler) CompleteTasks(c *gin.Context) {
 	if err := tx.Select(&tasks, `
 		SELECT id, task_id
 		FROM tasks
-		WHERE batch_id = ? AND deleted_at IS NULL AND status = 'pending'
+		WHERE batch_id = ? AND deleted_at IS NULL AND status = 'pending' AND sop_id = ? AND subscene_id = ?
 		ORDER BY assigned_at ASC, id ASC
-		LIMIT ?`+lockClause, batch.ID, quantity); err != nil {
-		logger.Printf("[BATCH] CompleteTasks: failed to lock pending tasks for batch %d: %v", batch.ID, err)
+		LIMIT ?`+lockClause, batch.ID, sopID, subsceneID, quantity); err != nil {
+		logger.Printf("[BATCH] CompleteTasks: failed to lock pending tasks for batch %d group %d/%d: %v", batch.ID, sopID, subsceneID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
 		return
 	}
 
-	if len(tasks) == 0 {
-		progress, progressErr := getBatchProgress(tx, batch.ID)
-		if progressErr != nil {
-			logger.Printf("[BATCH] CompleteTasks: failed to read progress for batch %d: %v", batch.ID, progressErr)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
-			return
-		}
-		c.JSON(http.StatusConflict, gin.H{
-			"error":           "no pending task in batch",
-			"current_status":  batch.Status,
-			"completed_count": progress.CompletedCount,
-			"task_count":      progress.TaskCount,
-		})
-		return
-	}
-
-	completedTasks := make([]CompleteTasksTask, 0, len(tasks))
+	completedTasks := make([]CompleteTasksTask, 0, quantity)
 	completedAt := now.Format(time.RFC3339)
 	for _, task := range tasks {
 		res, err := tx.Exec(`
@@ -1014,6 +1048,46 @@ func (h *BatchHandler) CompleteTasks(c *gin.Context) {
 		completedTasks = append(completedTasks, CompleteTasksTask{
 			ID:          fmt.Sprintf("%d", task.ID),
 			TaskID:      task.TaskID,
+			Status:      "completed",
+			CompletedAt: completedAt,
+		})
+	}
+
+	createdCount := quantity - len(tasks)
+	for i := 0; i < createdCount; i++ {
+		taskID, err := newPublicTaskID(now, i)
+		if err != nil {
+			logger.Printf("[BATCH] CompleteTasks: failed to generate overflow task_id: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+			return
+		}
+
+		res, err := tx.Exec(`
+			INSERT INTO tasks (
+				task_id, batch_id, order_id, sop_id, workstation_id,
+				scene_id, subscene_id, batch_name, scene_name, subscene_name,
+				factory_id, organization_id, initial_scene_layout,
+				status, assigned_at, started_at, completed_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)`,
+			taskID, batch.ID, groupTemplate.OrderID, groupTemplate.SOPID, groupTemplate.WorkstationID,
+			groupTemplate.SceneID, groupTemplate.SubsceneID, groupTemplate.BatchName, groupTemplate.SceneName, groupTemplate.SubsceneName,
+			groupTemplate.FactoryID, groupTemplate.OrganizationID, groupTemplate.InitialSceneLayout,
+			now, now, now, now, now,
+		)
+		if err != nil {
+			logger.Printf("[BATCH] CompleteTasks: failed to insert overflow task for batch %d group %d/%d: %v", batch.ID, sopID, subsceneID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+			return
+		}
+		newTaskID, err := res.LastInsertId()
+		if err != nil {
+			logger.Printf("[BATCH] CompleteTasks: failed to read overflow task insert id: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+			return
+		}
+		completedTasks = append(completedTasks, CompleteTasksTask{
+			ID:          fmt.Sprintf("%d", newTaskID),
+			TaskID:      taskID,
 			Status:      "completed",
 			CompletedAt: completedAt,
 		})
@@ -1049,6 +1123,13 @@ func (h *BatchHandler) CompleteTasks(c *gin.Context) {
 	resp.BatchID = batch.BatchID
 	resp.RequestedCount = quantity
 	resp.CompletedCount = len(completedTasks)
+	resp.CreatedCount = createdCount
+	resp.Group = CompleteTasksGroup{
+		SOPID:        groupTemplate.SOPID,
+		SubsceneID:   groupTemplate.SubsceneID,
+		SceneName:    nullString(groupTemplate.SceneName),
+		SubsceneName: nullString(groupTemplate.SubsceneName),
+	}
 	resp.Tasks = completedTasks
 	resp.Batch.ID = fmt.Sprintf("%d", batch.ID)
 	resp.Batch.Status = refreshed.Status
