@@ -80,6 +80,10 @@ var (
 	ErrSyncAlreadyInProgress = errors.New("sync already in progress")
 	// ErrSyncWorkerNotRunning is returned when Start has not been called or after Stop.
 	ErrSyncWorkerNotRunning = errors.New("sync worker is not running")
+
+	errSyncRetryBackoffActive = errors.New("sync retry backoff active")
+	errSyncRetryExhausted     = errors.New("sync retry max retries exceeded")
+	errSyncAlreadyCompleted   = errors.New("sync already completed")
 )
 
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
@@ -199,18 +203,19 @@ func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error 
 // EnqueueEpisodeManual adds a specific episode ID for immediate sync processing,
 // allowing explicit API-triggered retries even after automatic retries are exhausted.
 func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) error {
-	return w.enqueueEpisode(ctx, episodeID, true)
+	if !w.running.Load() {
+		return ErrSyncWorkerNotRunning
+	}
+	if err := w.persistPendingSyncLog(ctx, episodeID, true); err != nil {
+		return err
+	}
+	w.enqueuePersistedEpisode(ctx, syncEnqueueRequest{episodeID: episodeID, manual: true})
+	return nil
 }
 
 func (w *SyncWorker) enqueueEpisode(ctx context.Context, episodeID int64, manual bool) error {
 	if !w.running.Load() {
 		return ErrSyncWorkerNotRunning
-	}
-
-	if manual {
-		if err := w.validateEpisodeForManualEnqueue(ctx, episodeID); err != nil {
-			return err
-		}
 	}
 
 	if !w.tryMarkEnqueued(episodeID) {
@@ -229,36 +234,163 @@ func (w *SyncWorker) enqueueEpisode(ctx context.Context, episodeID int64, manual
 	}
 }
 
-func (w *SyncWorker) validateEpisodeForManualEnqueue(ctx context.Context, episodeID int64) error {
+func (w *SyncWorker) enqueuePersistedEpisode(ctx context.Context, req syncEnqueueRequest) {
+	if !w.tryMarkEnqueued(req.episodeID) {
+		return
+	}
+
+	select {
+	case w.enqueueCh <- req:
+	case <-ctx.Done():
+		w.unmarkEnqueued(req.episodeID)
+	default:
+		w.unmarkEnqueued(req.episodeID)
+		logger.Printf("[SYNC-WORKER] Persistent enqueue for episode %d will be recovered by polling", req.episodeID)
+	}
+}
+
+func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64, manual bool) error {
 	if w.db == nil {
 		return nil
 	}
 
+	tx, err := w.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin pending sync_log transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	lockClause := txLockClause(tx)
+	var episode struct {
+		ID          int64 `db:"id"`
+		CloudSynced bool  `db:"cloud_synced"`
+	}
+	if err := tx.GetContext(ctx, &episode, `
+		SELECT id, cloud_synced
+		FROM episodes
+		WHERE id = ? AND deleted_at IS NULL
+	`+lockClause, episodeID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("episode %d not found", episodeID)
+		}
+		return fmt.Errorf("lock episode %d: %w", episodeID, err)
+	}
+	if episode.CloudSynced {
+		return fmt.Errorf("episode %d already synced", episodeID)
+	}
+
+	var activeCount int
+	if err := tx.GetContext(ctx, &activeCount, `
+		SELECT COUNT(*)
+		FROM sync_logs
+		WHERE episode_id = ?
+		  AND status IN ('pending', 'in_progress')
+	`, episodeID); err != nil {
+		return fmt.Errorf("query active sync_log count: %w", err)
+	}
+	if activeCount > 0 {
+		return fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
+	}
+
 	var latest struct {
+		ID           int64        `db:"id"`
 		Status       string       `db:"status"`
 		NextRetry    sql.NullTime `db:"next_retry_at"`
 		AttemptCount int          `db:"attempt_count"`
 	}
-	err := w.db.GetContext(ctx, &latest, `
-		SELECT sl.status, sl.next_retry_at, sl.attempt_count
-		FROM sync_logs sl
-		INNER JOIN (
-		  SELECT episode_id, MAX(id) AS latest_id
-		  FROM sync_logs
-		  GROUP BY episode_id
-		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
-		WHERE sl.episode_id = ?
-	`, episodeID)
+	err = tx.GetContext(ctx, &latest, `
+		SELECT id, status, next_retry_at, attempt_count
+		FROM sync_logs
+		WHERE episode_id = ?
+		ORDER BY id DESC
+		LIMIT 1
+	`+lockClause, episodeID)
 	if err == sql.ErrNoRows {
-		return nil
+		if err := insertPendingSyncLog(ctx, tx, episodeID, time.Now().UTC(), 0); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	if err != nil {
-		return fmt.Errorf("query latest sync_log: %w", err)
+		return fmt.Errorf("lock latest sync_log: %w", err)
 	}
-	if latest.Status == "pending" || latest.Status == "in_progress" {
+
+	now := time.Now().UTC()
+	switch latest.Status {
+	case "pending", "in_progress":
 		return fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
+	case "completed":
+		return fmt.Errorf("%w for episode %d", errSyncAlreadyCompleted, episodeID)
+	case "failed":
+		retryDue := !latest.NextRetry.Valid || !latest.NextRetry.Time.After(now)
+		if latest.AttemptCount < w.cfg.MaxRetries && retryDue {
+			if err := promoteFailedSyncLogToPending(ctx, tx, latest.ID, now); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}
+		if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
+			return fmt.Errorf("%w for episode %d", errSyncRetryExhausted, episodeID)
+		}
+		if !manual && !retryDue {
+			return fmt.Errorf("%w for episode %d", errSyncRetryBackoffActive, episodeID)
+		}
+		if err := insertPendingSyncLog(ctx, tx, episodeID, now, 0); err != nil {
+			return err
+		}
+		return tx.Commit()
+	default:
+		return fmt.Errorf("unknown sync status %q for episode %d", latest.Status, episodeID)
+	}
+}
+
+func insertPendingSyncLog(ctx context.Context, tx *sqlx.Tx, episodeID int64, queuedAt time.Time, attemptCount int) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO sync_logs (episode_id, status, attempt_count, started_at)
+		VALUES (?, 'pending', ?, ?)
+	`, episodeID, attemptCount, queuedAt); err != nil {
+		return fmt.Errorf("insert pending sync_log: %w", err)
 	}
 	return nil
+}
+
+func promoteFailedSyncLogToPending(ctx context.Context, tx *sqlx.Tx, syncLogID int64, queuedAt time.Time) error {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE sync_logs
+		SET status = 'pending',
+		    started_at = ?,
+		    error_message = NULL,
+		    duration_sec = NULL,
+		    completed_at = NULL,
+		    next_retry_at = NULL
+		WHERE id = ?
+		  AND status = 'failed'
+	`, queuedAt, syncLogID)
+	if err != nil {
+		return fmt.Errorf("promote failed sync_log to pending: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("promote failed sync_log rows affected: %w", err)
+	}
+	if n != 1 {
+		return fmt.Errorf("promote failed sync_log %d lost state", syncLogID)
+	}
+	return nil
+}
+
+func txLockClause(tx *sqlx.Tx) string {
+	if tx.DriverName() == "sqlite" {
+		return ""
+	}
+	return " FOR UPDATE"
+}
+
+func isSkippablePendingError(err error) bool {
+	return errors.Is(err, ErrSyncAlreadyInProgress) ||
+		errors.Is(err, errSyncRetryBackoffActive) ||
+		errors.Is(err, errSyncRetryExhausted) ||
+		errors.Is(err, errSyncAlreadyCompleted)
 }
 
 // EnqueuePendingEpisodes scans for all approved but un-synced episodes and enqueues them.
@@ -268,22 +400,21 @@ func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
 		return 0, ErrSyncWorkerNotRunning
 	}
 
-	ids, err := w.findPendingEpisodes(ctx, true)
+	ids, err := w.findPendingEpisodes(ctx, false)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
 	for _, id := range ids {
-		if !w.tryMarkEnqueued(id) {
+		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
+			if isSkippablePendingError(err) {
+				continue
+			}
+			logger.Printf("[SYNC-WORKER] Failed to persist pending sync for episode %d: %v", id, err)
 			continue
 		}
-		select {
-		case w.enqueueCh <- syncEnqueueRequest{episodeID: id, manual: false}:
-			count++
-		default:
-			w.unmarkEnqueued(id)
-			logger.Printf("[SYNC-WORKER] Enqueue channel full, skipping episode %d", id)
-		}
+		count++
+		w.enqueuePersistedEpisode(ctx, syncEnqueueRequest{episodeID: id, manual: false})
 	}
 	return count, nil
 }
@@ -417,10 +548,13 @@ func (w *SyncWorker) finalizeRun() {
 }
 
 func (w *SyncWorker) pollAndProcess(ctx context.Context) {
-	// First, retry any failed episodes that are due
+	// Recover persisted queued rows first; enqueueCh is only an acceleration path.
+	w.dispatchPendingSyncLogs(ctx)
+
+	// Then, retry any failed episodes that are due.
 	w.retryFailedEpisodes(ctx)
 
-	// Then, find new pending episodes
+	// Finally, find newly eligible episodes and persist them as queued work.
 	ids, err := w.findPendingEpisodes(ctx, false)
 	if err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to find pending episodes: %v", err)
@@ -434,11 +568,55 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 	logger.Printf("[SYNC-WORKER] Found %d episodes to sync", len(ids))
 
 	for _, id := range ids {
-		if !w.tryMarkEnqueued(id) {
+		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
+			if isSkippablePendingError(err) {
+				continue
+			}
+			logger.Printf("[SYNC-WORKER] Failed to persist pending sync for episode %d: %v", id, err)
 			continue
 		}
-		w.dispatchJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
+		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
 	}
+}
+
+func (w *SyncWorker) dispatchPendingSyncLogs(ctx context.Context) {
+	ids, err := w.findPendingSyncLogEpisodes(ctx)
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to find queued sync logs: %v", err)
+		return
+	}
+	for _, id := range ids {
+		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
+	}
+}
+
+func (w *SyncWorker) dispatchPersistedJob(ctx context.Context, req syncEnqueueRequest) {
+	if !w.tryMarkEnqueued(req.episodeID) {
+		return
+	}
+	w.dispatchJob(ctx, req)
+}
+
+func (w *SyncWorker) findPendingSyncLogEpisodes(ctx context.Context) ([]int64, error) {
+	var ids []int64
+	if err := w.db.SelectContext(ctx, &ids, `
+		SELECT latest_log.episode_id
+		FROM sync_logs latest_log
+		INNER JOIN (
+		  SELECT episode_id, MAX(id) AS latest_id
+		  FROM sync_logs
+		  GROUP BY episode_id
+		) latest ON latest_log.episode_id = latest.episode_id AND latest_log.id = latest.latest_id
+		INNER JOIN episodes e ON e.id = latest_log.episode_id
+		WHERE latest_log.status = 'pending'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		ORDER BY latest_log.started_at ASC, latest_log.id ASC
+		LIMIT ?
+	`, w.cfg.BatchSize); err != nil {
+		return nil, fmt.Errorf("query pending sync logs: %w", err)
+	}
+	return ids, nil
 }
 
 func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFailures bool) ([]int64, error) {
@@ -496,6 +674,7 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFa
 
 func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 	var ids []int64
+	now := time.Now().UTC()
 	err := w.db.SelectContext(ctx, &ids, `
 		SELECT sl.episode_id
 		FROM sync_logs sl
@@ -506,15 +685,15 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
 		WHERE sl.status = 'failed'
 		  AND sl.attempt_count < ?
-		  AND (sl.next_retry_at IS NULL OR sl.next_retry_at <= NOW())
+		  AND (sl.next_retry_at IS NULL OR sl.next_retry_at <= ?)
 		  AND NOT EXISTS (
 		    SELECT 1 FROM sync_logs sl2
 		    WHERE sl2.episode_id = sl.episode_id
 		      AND sl2.status IN ('pending', 'in_progress')
-		  )
+		)
 		ORDER BY sl.started_at ASC
 		LIMIT ?
-	`, w.cfg.MaxRetries, w.cfg.BatchSize)
+	`, w.cfg.MaxRetries, now, w.cfg.BatchSize)
 	if err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to query retryable episodes: %v", err)
 		return
@@ -525,10 +704,14 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 	}
 
 	for _, id := range ids {
-		if !w.tryMarkEnqueued(id) {
+		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
+			if isSkippablePendingError(err) {
+				continue
+			}
+			logger.Printf("[SYNC-WORKER] Failed to queue retry for episode %d: %v", id, err)
 			continue
 		}
-		w.dispatchJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
+		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
 	}
 }
 
@@ -616,14 +799,15 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	lockClause := txLockClause(tx)
+
 	// Serialize per episode even when sync_logs is empty for this episode.
 	var lockedEpisodeID int64
 	if err := tx.GetContext(ctx, &lockedEpisodeID, `
 		SELECT id
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
-		FOR UPDATE
-	`, episodeID); err != nil {
+	`+lockClause, episodeID); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, 0, fmt.Errorf("episode %d not found", episodeID)
 		}
@@ -636,23 +820,23 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 		NextRetry    sql.NullTime `db:"next_retry_at"`
 		AttemptCount int          `db:"attempt_count"`
 	}
-	err = tx.GetContext(ctx, &latest, `
-		SELECT sl.id, sl.status, sl.next_retry_at, sl.attempt_count
-		FROM sync_logs sl
-		INNER JOIN (
-		  SELECT episode_id, MAX(id) AS latest_id
-		  FROM sync_logs
-		  GROUP BY episode_id
-		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
-		WHERE sl.episode_id = ?
-		FOR UPDATE
-	`, episodeID)
+	latestQuery := `
+			SELECT sl.id, sl.status, sl.next_retry_at, sl.attempt_count
+			FROM sync_logs sl
+			INNER JOIN (
+			  SELECT episode_id, MAX(id) AS latest_id
+			  FROM sync_logs
+			  GROUP BY episode_id
+			) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+			WHERE sl.episode_id = ?
+		` + lockClause
+	err = tx.GetContext(ctx, &latest, latestQuery, episodeID)
 	if err == nil {
 		now := time.Now().UTC()
 		switch latest.Status {
 		case "pending":
-			claimedAttemptCount := latest.AttemptCount
-			if claimedAttemptCount < 1 {
+			claimedAttemptCount := latest.AttemptCount + 1
+			if latest.AttemptCount < 1 {
 				claimedAttemptCount = 1
 			}
 			res, updErr := tx.ExecContext(ctx, `
