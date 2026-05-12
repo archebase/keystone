@@ -250,7 +250,11 @@ func (s *Server) buildRoutes() http.Handler {
 	taskStats.GET("/breakdown", s.task.GetTaskBreakdown)
 	s.task.RegisterRoutes(v1Tasks)
 	if s.batch != nil {
+		publicBatches := v1Routes.Group("/public")
+		s.batch.RegisterPublicRoutes(publicBatches)
 		s.batch.RegisterRoutes(v1Tasks)
+		collectorBatches := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("data_collector"))
+		s.batch.RegisterCollectorRoutes(collectorBatches)
 	}
 	if s.robotType != nil {
 		s.robotType.RegisterRoutes(v1Tasks)

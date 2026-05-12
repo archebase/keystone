@@ -976,7 +976,7 @@ func tryAdvanceOrderStatus(db *sqlx.DB, orderID int64, recorderHub *services.Rec
 		TargetCount int    `db:"target_count"`
 	}
 	var info orderInfo
-	if err := tx.Get(&info, "SELECT status, target_count FROM orders WHERE id = ? AND deleted_at IS NULL FOR UPDATE", orderID); err != nil {
+	if err := tx.Get(&info, "SELECT status, target_count FROM orders WHERE id = ? AND deleted_at IS NULL"+forUpdateClause(tx), orderID); err != nil {
 		if err != sql.ErrNoRows {
 			logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to lock order %d: %v", orderID, err)
 		}
