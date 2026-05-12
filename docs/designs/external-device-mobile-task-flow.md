@@ -21,7 +21,6 @@ prioritizes small, direct changes over a generalized adapter framework.
 Confirmed decisions:
 
 - Keystone does not store external upload IDs, file URLs, or upload artifacts.
-- Batch lookup by `batch_id` must be available without login.
 - The original Axon data collector control page can be replaced in worktree2.
 - The data collector page must provide one-tap copy for `batch_id`; the operator
   will paste this value into the external device program.
@@ -35,7 +34,6 @@ Confirmed decisions:
 - Let admins continue creating and assigning batches/tasks in Keystone.
 - Let data collectors see assigned batches on a phone, copy `batch_id`, and mark
   tasks as completed after the external device workflow is done.
-- Let operators query batch details publicly by `batch_id`.
 - Keep Axon recorder/transfer APIs untouched unless an existing route must be
   bypassed by the new mobile page.
 
@@ -63,27 +61,19 @@ Confirmed decisions:
 5. Data collector taps "copy batch ID".
 6. Data collector pastes the copied `batch_id` into the external device program.
 7. After the external device finishes its own record/upload workflow, data
-   collector taps "complete one task" in Synapse.
-8. Keystone completes the next pending task in that batch and advances batch and
-   order status when applicable.
-
-### 5.2 Public Operator Lookup Flow
-
-1. Operator receives a `batch_id`.
-2. Operator opens a public lookup page or direct URL.
-3. Synapse calls a public Keystone API without JWT.
-4. Page shows batch status, SOP/subscene summary, collector/workstation/device
-   context, and task completion details.
+   collector enters the completed quantity and taps "complete tasks" in Synapse.
+8. Keystone completes up to that many pending tasks in the batch and advances
+   batch and order status when applicable.
 
 ## 6. Backend Design
 
-### 6.1 Complete Next Task API
+### 6.1 Complete Tasks API
 
 Add a batch-scoped endpoint for the data collector page:
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `POST` | `/api/v1/batches/:id/complete-next-task` | data collector JWT | Complete the next pending task in a batch |
+| `POST` | `/api/v1/batches/:id/complete-tasks` | data collector JWT | Complete pending tasks in a batch |
 
 Recommended handler location:
 
@@ -93,7 +83,9 @@ Recommended handler location:
 Request body:
 
 ```json
-{}
+{
+  "quantity": 50
+}
 ```
 
 Response body:
@@ -101,17 +93,21 @@ Response body:
 ```json
 {
   "batch_id": "batch_20260511_103000_123_01_abcd1234",
-  "task": {
-    "id": "123",
-    "task_id": "task_20260511_103010_000_00_abcd1234",
-    "status": "completed",
-    "completed_at": "2026-05-11T10:31:00Z"
-  },
+  "requested_count": 50,
+  "completed_count": 12,
+  "tasks": [
+    {
+      "id": "123",
+      "task_id": "task_20260511_103010_000_00_abcd1234",
+      "status": "completed",
+      "completed_at": "2026-05-11T10:31:00Z"
+    }
+  ],
   "batch": {
     "id": "12",
-    "status": "active",
-    "completed_count": 3,
-    "task_count": 10
+    "status": "completed",
+    "completed_count": 12,
+    "task_count": 12
   }
 }
 ```
@@ -123,12 +119,17 @@ Behavior:
 - Lock target batch with `FOR UPDATE`.
 - Reject if the batch does not belong to the collector's workstation.
 - Reject if batch status is not `pending` or `active`.
-- Lock the earliest pending task in the batch:
+- Validate `quantity >= 1`.
+- Do not use a fixed numeric upper bound. The effective maximum is the number
+  of currently pending tasks in the batch.
+- Lock the earliest pending tasks in the batch:
   - `status = 'pending'`
   - `deleted_at IS NULL`
   - stable order by `assigned_at ASC, id ASC`
+- If fewer pending tasks exist than requested, complete all remaining pending
+  tasks and return both `requested_count` and actual `completed_count`.
 - If no pending task exists, return `409` with current batch progress.
-- Update the task directly to `completed`.
+- Update selected tasks directly to `completed`.
 - Set timestamps:
   - `started_at = COALESCE(started_at, now)`
   - `completed_at = now`
@@ -151,102 +152,8 @@ Status and error rules:
 | Batch not found | `404` | `{"error": "batch not found"}` |
 | Batch belongs to another workstation | `403` | `{"error": "batch is not assigned to current workstation"}` |
 | Batch cancelled/recalled/completed | `409` | include `current_status` |
+| Invalid quantity | `400` | `{"error": "quantity must be >= 1"}` |
 | No pending task | `409` | include `completed_count` and `task_count` |
-
-### 6.2 Public Batch Lookup API
-
-Add a public read-only endpoint:
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| `GET` | `/api/v1/public/batches/:batch_id` | none | Lookup batch details by public batch code |
-
-Recommended implementation:
-
-- Add a small public handler, or add a public method to `BatchHandler`.
-- Register under `/api/v1/public` before JWT-only route groups.
-- Query by `batches.batch_id`, not numeric `batches.id`.
-
-Response body:
-
-```json
-{
-  "batch_id": "batch_20260511_103000_123_01_abcd1234",
-  "status": "active",
-  "order": {
-    "name": "Order A",
-    "scene_name": "Warehouse"
-  },
-  "workstation": {
-    "name": "ws-abc12345"
-  },
-  "device": {
-    "device_id": "external-device-001",
-    "asset_id": "robot-a"
-  },
-  "collector": {
-    "operator_id": "op001",
-    "name": "Collector A"
-  },
-  "progress": {
-    "task_count": 10,
-    "completed_count": 3,
-    "failed_count": 0,
-    "cancelled_count": 0
-  },
-  "groups": [
-    {
-      "sop_id": "8",
-      "sop_slug": "pick-place",
-      "sop_version": 1,
-      "scene_name": "Warehouse",
-      "subscene_id": "3",
-      "subscene_name": "Shelf A",
-      "task_count": 10,
-      "completed_count": 3,
-      "failed_count": 0,
-      "cancelled_count": 0
-    }
-  ],
-  "tasks": [
-    {
-      "task_id": "task_20260511_103010_000_00_abcd1234",
-      "status": "completed",
-      "sop_slug": "pick-place",
-      "subscene_name": "Shelf A",
-      "assigned_at": "2026-05-11T10:30:10Z",
-      "completed_at": "2026-05-11T10:31:00Z"
-    }
-  ],
-  "created_at": "2026-05-11T10:30:00Z",
-  "started_at": "2026-05-11T10:31:00Z",
-  "ended_at": null
-}
-```
-
-Public response constraints:
-
-- Do not expose internal numeric IDs unless required for display.
-- Do not expose raw `metadata`.
-- Do not expose auth claims or password-related fields.
-- Do not expose upload paths because this customized workflow does not store
-  external upload artifacts.
-
-### 6.3 Batch ID Security
-
-`batch_id` becomes a public lookup token. The current format is readable and
-unique. For public unauthenticated lookup, future new `batch_id` generation
-should consider a longer random suffix.
-
-Recommended format:
-
-```text
-batch_YYYYMMDD_HHMMSS_mmm_<seq>_<rand16>
-```
-
-This keeps the value readable for operators while making guessing impractical.
-Changing generation only affects newly created batches. Existing batches remain
-queryable.
 
 ## 7. Synapse Design
 
@@ -277,7 +184,7 @@ Add to the customized page:
 - copyable `batch_id`;
 - progress for each batch;
 - task group summary by SOP/subscene;
-- "complete one task" action;
+- "complete tasks" action with quantity input;
 - refresh action;
 - empty, loading, error, and conflict states.
 
@@ -314,7 +221,7 @@ Batch card
   status + progress
   order / scene
   SOP + subscene summary
-  Complete one task button
+  Complete tasks button
 ```
 
 ### 7.3 Copy Interaction
@@ -332,28 +239,29 @@ Implementation requirements:
   - no blocking `alert`.
 - The copied value must be the raw `batch_id`, without spaces or labels.
 
-### 7.4 Complete Task Interaction
+### 7.4 Complete Tasks Interaction
 
 Recommended UI wording:
 
-- Button: `完成一条任务`
+- Button: `完成任务`
 - Confirm dialog/sheet title: `确认完成任务`
 - Confirm copy: `确认外部设备已完成录制和上传后，再标记 Keystone 任务完成。`
 
 Mobile behavior:
 
 - Use a bottom sheet or compact modal, not a large desktop modal.
+- Quantity input must not allow submission above the batch's pending task count.
 - Disable the confirm button while the request is in flight.
 - After success:
   - update local progress immediately;
   - refresh batch details;
   - keep the same batch card in view;
-  - show `已完成 1 条任务`.
+  - show `已完成 N 条任务`.
 - If no pending tasks remain:
   - show `该批次暂无待完成任务`;
   - refresh status, likely `completed`.
 
-## 8. Admin/Public UI Design
+## 8. Admin UI Design
 
 ### 8.1 Admin Batch List and Detail
 
@@ -365,60 +273,31 @@ Add copy affordance for `batch_id`:
 
 The copy behavior should reuse the same helper as the operator mobile page.
 
-### 8.2 Public Batch Lookup Page
-
-Add a route such as:
-
-```text
-/public/batches/:batch_id
-```
-
-Page requirements:
-
-- No login required.
-- Mobile-friendly by default.
-- Show a clear not-found state for invalid `batch_id`.
-- Show batch status and progress first.
-- Show SOP/subscene summary before task details.
-- Task details can be collapsed on mobile when task count is large.
-- Include copy button for the batch code.
-
 ## 9. Implementation Plan
 
 ### Phase 1: Backend APIs
 
-- Add `POST /api/v1/batches/:id/complete-next-task`.
-- Add `GET /api/v1/public/batches/:batch_id`.
+- Add `POST /api/v1/batches/:id/complete-tasks`.
 - Add focused Go tests for:
-  - completing the next pending task;
+  - completing pending tasks by requested quantity;
   - rejecting another collector's batch;
   - rejecting terminal batches;
-  - no pending task conflict;
-  - public lookup by `batch_id`;
-  - public lookup does not require JWT.
+  - rejecting invalid quantity;
+  - no pending task conflict.
 
 ### Phase 2: Synapse Operator Mobile Page
 
 - Replace `RobotControl.vue` with the external device task execution workflow.
 - Add/extend API client functions:
-  - `completeNextTask(batchNumericId)`;
-  - `getPublicBatchByCode(batchId)`.
+  - `completeTasks(batchNumericId, quantity)`.
 - Remove recorder API calls from this page.
 - Add mobile copy helper and feedback states.
 - Verify mobile viewport behavior manually and with browser screenshots if
   available.
 
-### Phase 3: Public Lookup UI
-
-- Add public route.
-- Add public page component.
-- Render batch summary, grouped progress, and task details.
-- Ensure no authenticated layout is required.
-
-### Phase 4: Admin Copy Polish
+### Phase 3: Admin Copy Polish
 
 - Add copy button for `batch_id` on admin batch list/detail.
-- Optionally show public lookup URL copy beside raw `batch_id`.
 
 ## 10. Acceptance Criteria
 
@@ -429,29 +308,19 @@ Backend:
 - Completing tasks advances batch status and order status consistently with
   existing Keystone rules.
 - A data collector cannot complete tasks from another workstation's batch.
-- Public batch lookup works without JWT.
-- Public batch lookup does not return upload URLs or external upload IDs.
 
 Operator mobile page:
 
 - On a phone viewport, the collector can find a batch, copy `batch_id`, and
-  complete one task without horizontal scrolling.
+  complete tasks without horizontal scrolling.
 - `batch_id` copy feedback is visible and non-blocking.
 - Main buttons are easy to tap on `360px` wide screens.
 - Page still works when the external device is offline from Keystone's point of
   view, because the external workflow is independent.
 - No recorder/transfer state is shown.
 
-Public page:
-
-- A user with only `batch_id` can view batch details without login.
-- The page is readable on mobile.
-- Invalid `batch_id` shows a clear not-found state.
-
 ## 11. Open Questions
 
-- Should newly created `batch_id` values use a longer random suffix immediately
-  in this customization branch?
 - Should the admin batch creation UI also be simplified for this external-device
   workflow, or should this first version only change the data collector and
-  public lookup surfaces?
+  task execution surface?
