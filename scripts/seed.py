@@ -85,37 +85,31 @@ SOPS = [
         "slug": "厨房取物",
         "description": "从冰箱取出物品并放到备菜台上。",
         "version": "1.0.0",
-        "skill_sequence": ["move-base", "open-fridge", "pick-item", "place-item"],
     },
     {
         "slug": "快递分拣",
         "description": "在快递站扫描并分拣到达的包裹。",
         "version": "1.0.0",
-        "skill_sequence": ["move-base", "scan-qr", "sort-package"],
     },
     {
         "slug": "卫浴快清",
         "description": "卫生间洗手池的快速清洁流程。",
         "version": "1.0.0",
-        "skill_sequence": ["move-base", "clean-sink"],
     },
     {
         "slug": "卧室整理",
         "description": "通过整理床铺来完成卧室收纳。",
         "version": "1.0.0",
-        "skill_sequence": ["move-base", "make-bed"],
     },
     {
         "slug": "折叠毛巾",
         "description": "在卫生间折叠毛巾并整齐摆放。",
         "version": "1.0.0",
-        "skill_sequence": ["move-base", "fold-towel", "place-item"],
     },
     {
         "slug": "移动水瓶",
         "description": "将水瓶移动到厨房指定位置。",
         "version": "1.0.0",
-        "skill_sequence": ["move-base", "pick-item", "place-item"],
     },
 ]
 
@@ -390,7 +384,6 @@ def _ensure_sop(sop):
     payload = {
         "slug": slug,
         "version": version,
-        "skill_sequence": list(sop.get("skill_sequence") or []),
     }
     if sop.get("description"):
         payload["description"] = sop["description"]
