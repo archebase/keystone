@@ -163,7 +163,12 @@ type organizationRow struct {
 // @Tags         organizations
 // @Accept       json
 // @Produce      json
-// @Param        factory_id query     string false "Filter by factory ID"
+// @Param        factory_id query     string false "Filter by factory ID(s), comma-separated"
+// @Param        organization_id query string false "Filter by organization ID(s), comma-separated"
+// @Param        id         query     string false "Alias of organization_id"
+// @Param        keyword    query     string false "Search by name, slug, or description"
+// @Param        q          query     string false "Alias of keyword"
+// @Param        search     query     string false "Alias of keyword"
 // @Param        limit  query     int  false  "Max results (default 50, max 100)"
 // @Param        offset query     int  false  "Pagination offset (default 0)"
 // @Success      200 {object} OrganizationListResponse
@@ -177,32 +182,34 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 		return
 	}
 
-	factoryIDStr := strings.TrimSpace(c.Query("factory_id"))
-	var factoryID int64
-	hasFactoryFilter := factoryIDStr != ""
-	if hasFactoryFilter {
-		var err error
-		factoryID, err = strconv.ParseInt(factoryIDStr, 10, 64)
-		if err != nil || factoryID <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
-			return
-		}
+	factoryIDs, err := parsePositiveInt64List(c.Query("factory_id"), "factory_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
-	countQuery := "SELECT COUNT(*) FROM organizations WHERE deleted_at IS NULL"
-	countArgs := []any{}
-	if hasFactoryFilter {
-		countQuery += " AND factory_id = ?"
-		countArgs = append(countArgs, factoryID)
+	organizationIDs, err := parsePositiveInt64List(firstNonEmptyQuery(c, "organization_id", "id"), "organization_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
+	whereClause := "WHERE o.deleted_at IS NULL"
+	args := []any{}
+	whereClause, args = appendInt64InFilter(whereClause, args, "o.factory_id", factoryIDs)
+	whereClause, args = appendInt64InFilter(whereClause, args, "o.id", organizationIDs)
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "o.name", "o.slug", "o.description")
+
+	countQuery := "SELECT COUNT(*) FROM organizations o " + whereClause
 	var total int
-	if err := h.db.Get(&total, countQuery, countArgs...); err != nil {
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to count organizations: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list organizations"})
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "o.id DESC", "o.name", "o.slug", "o.description")
 	query := `
 		SELECT 
 			o.id,
@@ -214,17 +221,11 @@ func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 			o.created_at,
 			o.updated_at
 		FROM organizations o
-		WHERE o.deleted_at IS NULL
-	`
-	args := []any{}
-	if hasFactoryFilter {
-		query += " AND o.factory_id = ?\n"
-		args = append(args, factoryID)
-	}
-	query += `
-		ORDER BY o.id DESC
+		` + whereClause + `
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
+	args = append(args, orderArgs...)
 	args = append(args, pagination.Limit, pagination.Offset)
 
 	var dbRows []organizationRow

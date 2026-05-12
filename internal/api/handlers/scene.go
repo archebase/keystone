@@ -101,7 +101,12 @@ type sceneRow struct {
 // @Tags         scenes
 // @Accept       json
 // @Produce      json
-// @Param        factory_id query string false "Filter by factory ID"
+// @Param        factory_id query string false "Filter by factory ID(s), comma-separated"
+// @Param        scene_id   query string false "Filter by scene ID(s), comma-separated"
+// @Param        id         query string false "Alias of scene_id"
+// @Param        keyword    query string false "Search by name or description"
+// @Param        q          query string false "Alias of keyword"
+// @Param        search     query string false "Alias of keyword"
 // @Param        limit      query int    false "Max results (default 50, max 100)"
 // @Param        offset     query int    false "Pagination offset (default 0)"
 // @Success      200 {object} SceneListResponse
@@ -115,20 +120,24 @@ func (h *SceneHandler) ListScenes(c *gin.Context) {
 		return
 	}
 
-	factoryID := c.Query("factory_id")
+	factoryIDs, err := parsePositiveInt64List(c.Query("factory_id"), "factory_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	sceneIDs, err := parsePositiveInt64List(firstNonEmptyQuery(c, "scene_id", "id"), "scene_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 
 	whereClause := "WHERE s.deleted_at IS NULL"
-	args := []interface{}{}
+	args := []any{}
 
-	if factoryID != "" {
-		parsedFactoryID, err := strconv.ParseInt(factoryID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
-			return
-		}
-		whereClause += " AND factory_id = ?"
-		args = append(args, parsedFactoryID)
-	}
+	whereClause, args = appendInt64InFilter(whereClause, args, "s.factory_id", factoryIDs)
+	whereClause, args = appendInt64InFilter(whereClause, args, "s.id", sceneIDs)
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "s.name", "s.description")
 
 	countQuery := "SELECT COUNT(*) FROM scenes s " + whereClause
 	var total int
@@ -138,6 +147,7 @@ func (h *SceneHandler) ListScenes(c *gin.Context) {
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "s.id DESC", "s.name", "s.description")
 	query := `
 		SELECT 
 			s.id,
@@ -150,11 +160,12 @@ func (h *SceneHandler) ListScenes(c *gin.Context) {
 			(SELECT COUNT(*) FROM subscenes sub WHERE sub.scene_id = s.id AND sub.deleted_at IS NULL) as subscene_count
 		FROM scenes s
 		` + whereClause + `
-		ORDER BY id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
 
-	queryArgs := append(args, pagination.Limit, pagination.Offset)
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []sceneRow
 	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {

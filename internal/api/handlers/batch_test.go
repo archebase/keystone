@@ -241,6 +241,45 @@ func TestBatchHandlerListBatches_DefaultPaginationAndFilter(t *testing.T) {
 	}
 }
 
+func TestBatchHandlerListBatches_DeviceIDMatchesSoftDeletedWorkstationSerial(t *testing.T) {
+	db := newTestBatchHandlerDB(t)
+	defer db.Close()
+	seedBatchListFixtures(t, db)
+
+	deletedAt := time.Now().UTC()
+	if _, err := db.Exec(
+		`INSERT INTO workstations (id, factory_id, organization_id, robot_serial, status, deleted_at) VALUES (20, 30, 60, 'wt1_robot_060', 'inactive', ?)`,
+		deletedAt,
+	); err != nil {
+		t.Fatalf("seed soft-deleted workstation failed: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO workstations (id, factory_id, organization_id, robot_serial, status) VALUES (21, 30, 60, 'wt1_robot_120', 'active')`,
+	); err != nil {
+		t.Fatalf("seed active workstation failed: %v", err)
+	}
+
+	r := newTestBatchRouter(t, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/batches?device_id=wt1_robot_060", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp ListBatchesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+	}
+	if resp.Total != 1 || len(resp.Items) != 1 {
+		t.Fatalf("unexpected filtered response: %#v", resp)
+	}
+	if resp.Items[0].BatchID != "B1" {
+		t.Fatalf("unexpected item: %#v", resp.Items[0])
+	}
+}
+
 func TestBatchHandlerCreateBatch_DuplicateTaskGroups(t *testing.T) {
 	db := newTestBatchHandlerDB(t)
 	defer db.Close()
@@ -296,6 +335,83 @@ func TestBatchHandlerListBatches_PaginationFlags(t *testing.T) {
 	}
 	if len(resp.Items) != 2 {
 		t.Fatalf("items length=%d want=2", len(resp.Items))
+	}
+}
+
+func TestBatchHandlerListBatchTasks_LegacyFullResponse(t *testing.T) {
+	db := newTestBatchHandlerDB(t)
+	defer db.Close()
+	seedBatchListFixtures(t, db)
+
+	r := newTestBatchRouter(t, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/batches/1/tasks", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp ListTasksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+	}
+
+	if resp.Total != 2 || resp.Limit != 2 || resp.Offset != 0 {
+		t.Fatalf("unexpected legacy paging fields: %#v", resp)
+	}
+	if resp.HasNext || resp.HasPrev {
+		t.Fatalf("legacy response should not set pagination flags: %#v", resp)
+	}
+	if len(resp.Items) != 2 || resp.Items[0].TaskID != "T1" || resp.Items[1].TaskID != "T2" {
+		t.Fatalf("unexpected tasks: %#v", resp.Items)
+	}
+}
+
+func TestBatchHandlerListBatchTasks_PaginationFlags(t *testing.T) {
+	db := newTestBatchHandlerDB(t)
+	defer db.Close()
+	seedBatchListFixtures(t, db)
+
+	r := newTestBatchRouter(t, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/batches/1/tasks?limit=1&offset=1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp ListTasksResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+	}
+
+	if resp.Total != 2 || resp.Limit != 1 || resp.Offset != 1 {
+		t.Fatalf("unexpected paging fields: %#v", resp)
+	}
+	if resp.HasNext || !resp.HasPrev {
+		t.Fatalf("expected hasNext=false and hasPrev=true, got hasNext=%v hasPrev=%v", resp.HasNext, resp.HasPrev)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].TaskID != "T2" {
+		t.Fatalf("unexpected page items: %#v", resp.Items)
+	}
+}
+
+func TestBatchHandlerListBatchTasks_InvalidPagination(t *testing.T) {
+	db := newTestBatchHandlerDB(t)
+	defer db.Close()
+
+	r := newTestBatchRouter(t, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/batches/1/tasks?limit=0", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "limit must be a positive integer") {
+		t.Fatalf("unexpected error response: %s", w.Body.String())
 	}
 }
 
@@ -507,6 +623,8 @@ func newTestBatchHandlerDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			factory_id INTEGER NOT NULL,
 			organization_id INTEGER NOT NULL DEFAULT 0,
+			robot_serial TEXT,
+			collector_operator_id TEXT,
 			status TEXT,
 			deleted_at TIMESTAMP NULL
 		)`,
@@ -551,8 +669,8 @@ func seedBatchListFixtures(t *testing.T, db *sqlx.DB) {
 	stmts := []string{
 		`INSERT INTO batches (id, batch_id, order_id, workstation_id, organization_id, name, status, episode_count, created_at, updated_at) VALUES (1, 'B1', 10, 20, 60, 'A', 'active', 0, ?, ?)`,
 		`INSERT INTO batches (id, batch_id, order_id, workstation_id, organization_id, name, status, episode_count, created_at, updated_at) VALUES (2, 'B2', 11, 21, 60, 'B', 'pending', 0, ?, ?)`,
-		`INSERT INTO tasks (task_id, batch_id, order_id, sop_id, workstation_id, status, created_at, updated_at) VALUES ('T1', 1, 10, 40, 20, 'completed', ?, ?)`,
-		`INSERT INTO tasks (task_id, batch_id, order_id, sop_id, workstation_id, status, created_at, updated_at) VALUES ('T2', 1, 10, 41, 20, 'failed', ?, ?)`,
+		`INSERT INTO tasks (task_id, batch_id, order_id, sop_id, workstation_id, scene_id, subscene_id, scene_name, subscene_name, status, created_at, updated_at) VALUES ('T1', 1, 10, 40, 20, 70, 50, 'scene-a', 'sub-a', 'completed', ?, ?)`,
+		`INSERT INTO tasks (task_id, batch_id, order_id, sop_id, workstation_id, scene_id, subscene_id, scene_name, subscene_name, status, created_at, updated_at) VALUES ('T2', 1, 10, 41, 20, 70, 51, 'scene-a', 'sub-b', 'failed', ?, ?)`,
 	}
 	for i, stmt := range stmts {
 		if i < 2 {

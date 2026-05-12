@@ -180,79 +180,66 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		return
 	}
 
-	orgIDStr := strings.TrimSpace(c.Query("organization_id"))
-	sceneIDStr := strings.TrimSpace(c.Query("scene_id"))
-	priority := strings.TrimSpace(c.Query("priority"))
-	status := strings.TrimSpace(c.Query("status"))
-	idsStr := strings.TrimSpace(c.Query("ids")) // comma-separated numeric IDs for batch lookup
-	if status != "" {
-		if _, ok := validOrderStatuses[status]; !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
-			return
-		}
+	orgIDs, err := parsePositiveInt64List(c.Query("organization_id"), "organization_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-	if priority != "" {
+	sceneIDs, err := parsePositiveInt64List(c.Query("scene_id"), "scene_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	priorities, err := parseNonEmptyStringList(c.Query("priority"), "priority")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	for _, priority := range priorities {
 		if _, ok := validOrderPriorities[priority]; !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid priority"})
 			return
 		}
 	}
-
-	// Parse and validate the ids filter (comma-separated numeric IDs).
-	var filterIDs []int64
-	if idsStr != "" {
-		for _, raw := range strings.Split(idsStr, ",") {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				continue
-			}
-			parsed, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ids format: each id must be a number"})
-				return
-			}
-			filterIDs = append(filterIDs, parsed)
+	statuses, err := parseNonEmptyStringList(c.Query("status"), "status")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	for _, status := range statuses {
+		if _, ok := validOrderStatuses[status]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+			return
 		}
 	}
+	orderNames, err := parseNonEmptyStringList(firstNonEmptyQuery(c, "order_name", "name"), "order_name")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
+	filterIDs, err := parsePositiveInt64List(c.Query("ids"), "ids") // comma-separated numeric IDs for batch lookup
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-	countQuery := "SELECT COUNT(*) FROM orders WHERE deleted_at IS NULL"
+	countQuery := `
+		SELECT COUNT(*)
+		FROM orders o
+		LEFT JOIN organizations org ON org.id = o.organization_id AND org.deleted_at IS NULL
+		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
+		WHERE o.deleted_at IS NULL
+	`
 	countArgs := []any{}
-	if orgIDStr != "" {
-		parsedOrgID, err := strconv.ParseInt(orgIDStr, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-			return
-		}
-		countQuery += " AND organization_id = ?"
-		countArgs = append(countArgs, parsedOrgID)
-	}
-	if sceneIDStr != "" {
-		parsedSceneID, err := strconv.ParseInt(sceneIDStr, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scene_id format"})
-			return
-		}
-		countQuery += " AND scene_id = ?"
-		countArgs = append(countArgs, parsedSceneID)
-	}
-	if status != "" {
-		countQuery += " AND status = ?"
-		countArgs = append(countArgs, status)
-	}
-	if priority != "" {
-		countQuery += " AND priority = ?"
-		countArgs = append(countArgs, priority)
-	}
-	if len(filterIDs) > 0 {
-		inQ, inArgs, err := sqlx.In("AND id IN (?)", filterIDs)
-		if err != nil {
-			logger.Printf("[ORDER] Failed to build ids IN clause for count: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
-			return
-		}
-		countQuery += " " + inQ
-		countArgs = append(countArgs, inArgs...)
-	}
+	orderSearchFields := []string{"o.name", "s.name", "org.name"}
+	countQuery, countArgs = appendInt64InFilter(countQuery, countArgs, "o.organization_id", orgIDs)
+	countQuery, countArgs = appendInt64InFilter(countQuery, countArgs, "o.scene_id", sceneIDs)
+	countQuery, countArgs = appendStringInFilter(countQuery, countArgs, "o.status", statuses)
+	countQuery, countArgs = appendStringInFilter(countQuery, countArgs, "o.priority", priorities)
+	countQuery, countArgs = appendStringInFilter(countQuery, countArgs, "o.name", orderNames)
+	countQuery, countArgs = appendInt64InFilter(countQuery, countArgs, "o.id", filterIDs)
+	countQuery, countArgs = appendKeywordSearch(countQuery, countArgs, keyword, orderSearchFields...)
 	var total int
 	if err := h.db.Get(&total, h.db.Rebind(countQuery), countArgs...); err != nil {
 		logger.Printf("[ORDER] Failed to count orders: %v", err)
@@ -282,38 +269,19 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		WHERE o.deleted_at IS NULL
 	`
 	args := []any{}
-	if orgIDStr != "" {
-		parsedOrgID, _ := strconv.ParseInt(orgIDStr, 10, 64)
-		query += " AND o.organization_id = ?\n"
-		args = append(args, parsedOrgID)
-	}
-	if sceneIDStr != "" {
-		parsedSceneID, _ := strconv.ParseInt(sceneIDStr, 10, 64)
-		query += " AND o.scene_id = ?\n"
-		args = append(args, parsedSceneID)
-	}
-	if status != "" {
-		query += " AND o.status = ?\n"
-		args = append(args, status)
-	}
-	if priority != "" {
-		query += " AND o.priority = ?\n"
-		args = append(args, priority)
-	}
-	if len(filterIDs) > 0 {
-		inQ, inArgs, err := sqlx.In("AND o.id IN (?)", filterIDs)
-		if err != nil {
-			logger.Printf("[ORDER] Failed to build ids IN clause: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
-			return
-		}
-		query += " " + inQ + "\n"
-		args = append(args, inArgs...)
-	}
+	query, args = appendInt64InFilter(query, args, "o.organization_id", orgIDs)
+	query, args = appendInt64InFilter(query, args, "o.scene_id", sceneIDs)
+	query, args = appendStringInFilter(query, args, "o.status", statuses)
+	query, args = appendStringInFilter(query, args, "o.priority", priorities)
+	query, args = appendStringInFilter(query, args, "o.name", orderNames)
+	query, args = appendInt64InFilter(query, args, "o.id", filterIDs)
+	query, args = appendKeywordSearch(query, args, keyword, orderSearchFields...)
+	orderClause, orderArgs := keywordOrderBy(keyword, "o.id DESC", orderSearchFields...)
 	query += `
-		ORDER BY o.id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
+	args = append(args, orderArgs...)
 	args = append(args, pagination.Limit, pagination.Offset)
 	query = h.db.Rebind(query)
 

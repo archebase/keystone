@@ -249,6 +249,11 @@ func (h *RobotTypeHandler) CreateRobotType(c *gin.Context) {
 // @Tags         robot_types
 // @Accept       json
 // @Produce      json
+// @Param        robot_type_id query string false "Filter by robot type ID(s), comma-separated"
+// @Param        id      query     string false "Alias of robot_type_id"
+// @Param        keyword query     string false "Search by name, model, manufacturer, or end effector"
+// @Param        q       query     string false "Alias of keyword"
+// @Param        search  query     string false "Alias of keyword"
 // @Param        limit  query     int  false  "Max results (default 50, max 100)"
 // @Param        offset query     int  false  "Pagination offset (default 0)"
 // @Success      200 {object} RobotTypeListResponse
@@ -262,24 +267,39 @@ func (h *RobotTypeHandler) ListRobotTypes(c *gin.Context) {
 		return
 	}
 
-	countQuery := "SELECT COUNT(*) FROM robot_types WHERE deleted_at IS NULL"
+	robotTypeIDs, err := parsePositiveInt64List(firstNonEmptyQuery(c, "robot_type_id", "id"), "robot_type_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
+	whereClause := "WHERE deleted_at IS NULL"
+	args := []any{}
+	whereClause, args = appendInt64InFilter(whereClause, args, "id", robotTypeIDs)
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "name", "model", "manufacturer", "end_effector")
+
+	countQuery := "SELECT COUNT(*) FROM robot_types " + whereClause
 	var total int
-	if err := h.db.Get(&total, countQuery); err != nil {
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[ROBOT] Failed to count robot types: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robot types"})
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "id DESC", "name", "model", "manufacturer", "end_effector")
 	query := `
 		SELECT ` + robotTypeSelectColumns + `
 		FROM robot_types
-		WHERE deleted_at IS NULL
-		ORDER BY id DESC
+		` + whereClause + `
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []robotTypeRow
-	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[ROBOT] Failed to query robot types: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list robot types"})
 		return

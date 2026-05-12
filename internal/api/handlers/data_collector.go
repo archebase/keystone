@@ -157,8 +157,11 @@ func dataCollectorResponseFromRow(dc dataCollectorRow) DataCollectorResponse {
 // @Tags         data_collectors
 // @Accept       json
 // @Produce      json
-// @Param        organization_id query     string  false  "Filter by organization ID"
-// @Param        status          query     string  false  "Filter by status (active, inactive, on_leave)"
+// @Param        organization_id       query     string  false  "Filter by organization ID(s), comma-separated"
+// @Param        status                query     string  false  "Filter by status(es), comma-separated (active, inactive, on_leave)"
+// @Param        collector_operator_id query     string  false  "Filter by collector operator ID(s), comma-separated"
+// @Param        collector_name        query     string  false  "Filter by collector name(s), comma-separated"
+// @Param        name                  query     string  false  "Alias of collector_name"
 // @Param        keyword         query     string  false  "Search by name, operator ID, or email"
 // @Param        q               query     string  false  "Alias of keyword"
 // @Param        search          query     string  false  "Alias of keyword"
@@ -176,27 +179,34 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 		return
 	}
 
-	orgID := c.Query("organization_id")
-	status := c.Query("status")
+	orgIDs, err := parsePositiveInt64List(c.Query("organization_id"), "organization_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	statuses, err := parseNonEmptyStringList(c.Query("status"), "status")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	operatorIDs, err := parseNonEmptyStringList(c.Query("collector_operator_id"), "collector_operator_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	names, err := parseNonEmptyStringList(firstNonEmptyQuery(c, "collector_name", "name"), "collector_name")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search", "operator_id")
 
 	whereClause := "WHERE dc.deleted_at IS NULL"
 	args := []interface{}{}
-
-	if orgID != "" {
-		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-			return
-		}
-		whereClause += " AND dc.organization_id = ?"
-		args = append(args, parsedOrgID)
-	}
-
-	if status != "" {
-		whereClause += " AND dc.status = ?"
-		args = append(args, status)
-	}
+	whereClause, args = appendInt64InFilter(whereClause, args, "dc.organization_id", orgIDs)
+	whereClause, args = appendStringInFilter(whereClause, args, "dc.status", statuses)
+	whereClause, args = appendStringInFilter(whereClause, args, "dc.operator_id", operatorIDs)
+	whereClause, args = appendStringInFilter(whereClause, args, "dc.name", names)
 
 	if keyword != "" {
 		likeKeyword := "%" + keyword + "%"
@@ -212,6 +222,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "dc.id DESC", "dc.operator_id", "dc.name", "dc.email")
 	query := `
 		SELECT 
 			dc.id,
@@ -228,11 +239,12 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 		FROM data_collectors dc
 		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		` + whereClause + `
-		ORDER BY dc.id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
 
-	queryArgs := append(args, pagination.Limit, pagination.Offset)
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []dataCollectorRow
 	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {

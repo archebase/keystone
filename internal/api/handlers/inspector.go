@@ -117,11 +117,17 @@ type inspectorRow struct {
 // @Tags         inspectors
 // @Accept       json
 // @Produce      json
-// @Param        organization_id query string false "Filter by organization ID"
-// @Param        certification_level query string false "Filter by certification level (level_1, level_2, senior)"
-// @Param        status          query string false "Filter by status (active, inactive)"
-// @Param        limit           query int    false "Max results (default 50, max 100)"
-// @Param        offset          query int    false "Pagination offset (default 0)"
+// @Param        organization_id     query string false "Filter by organization ID(s), comma-separated"
+// @Param        certification_level query string false "Filter by certification level(s), comma-separated (level_1, level_2, senior)"
+// @Param        status              query string false "Filter by status(es), comma-separated (active, inactive)"
+// @Param        inspector_id        query string false "Filter by inspector ID(s), comma-separated"
+// @Param        inspector_name      query string false "Filter by inspector name(s), comma-separated"
+// @Param        name                query string false "Alias of inspector_name"
+// @Param        keyword             query string false "Search by name, inspector ID, or email"
+// @Param        q                   query string false "Alias of keyword"
+// @Param        search              query string false "Alias of keyword"
+// @Param        limit               query int    false "Max results (default 50, max 100)"
+// @Param        offset              query int    false "Pagination offset (default 0)"
 // @Success      200 {object} InspectorListResponse
 // @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
@@ -133,37 +139,49 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		return
 	}
 
-	orgID := c.Query("organization_id")
-	certLevel := strings.TrimSpace(c.Query("certification_level"))
-	status := c.Query("status")
-
-	whereClause := "WHERE deleted_at IS NULL"
-	args := []interface{}{}
-
-	if orgID != "" {
-		parsedOrgID, err := strconv.ParseInt(orgID, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id format"})
-			return
-		}
-		whereClause += " AND organization_id = ?"
-		args = append(args, parsedOrgID)
+	orgIDs, err := parsePositiveInt64List(c.Query("organization_id"), "organization_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-
-	if certLevel != "" {
+	certLevels, err := parseNonEmptyStringList(c.Query("certification_level"), "certification_level")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	for i, certLevel := range certLevels {
 		certLevel = strings.ToLower(certLevel)
 		if certLevel != "level_1" && certLevel != "level_2" && certLevel != "senior" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid certification_level, must be one of: level_1, level_2, senior"})
 			return
 		}
-		whereClause += " AND certification_level = ?"
-		args = append(args, certLevel)
+		certLevels[i] = certLevel
 	}
+	statuses, err := parseNonEmptyStringList(c.Query("status"), "status")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	inspectorIDs, err := parseNonEmptyStringList(c.Query("inspector_id"), "inspector_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	names, err := parseNonEmptyStringList(firstNonEmptyQuery(c, "inspector_name", "name"), "inspector_name")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 
-	if status != "" {
-		whereClause += " AND status = ?"
-		args = append(args, status)
-	}
+	whereClause := "WHERE deleted_at IS NULL"
+	args := []any{}
+	whereClause, args = appendInt64InFilter(whereClause, args, "organization_id", orgIDs)
+	whereClause, args = appendStringInFilter(whereClause, args, "certification_level", certLevels)
+	whereClause, args = appendStringInFilter(whereClause, args, "status", statuses)
+	whereClause, args = appendStringInFilter(whereClause, args, "inspector_id", inspectorIDs)
+	whereClause, args = appendStringInFilter(whereClause, args, "name", names)
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "name", "inspector_id", "email")
 
 	countQuery := "SELECT COUNT(*) FROM inspectors " + whereClause
 	var total int
@@ -173,6 +191,7 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "id DESC", "name", "inspector_id", "email")
 	query := `
 		SELECT 
 			id,
@@ -187,11 +206,12 @@ func (h *InspectorHandler) ListInspectors(c *gin.Context) {
 			updated_at
 		FROM inspectors
 		` + whereClause + `
-		ORDER BY id DESC
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
 
-	queryArgs := append(args, pagination.Limit, pagination.Offset)
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []inspectorRow
 	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {

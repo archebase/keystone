@@ -102,6 +102,11 @@ type sopRow struct {
 // @Tags         sops
 // @Accept       json
 // @Produce      json
+// @Param        slug    query string false "Filter by SOP slug(s), comma-separated"
+// @Param        sop_slug query string false "Alias of slug"
+// @Param        keyword query string false "Search by slug, description, or version"
+// @Param        q       query string false "Alias of keyword"
+// @Param        search  query string false "Alias of keyword"
 // @Param        limit  query int false "Max results (default 50, max 100)"
 // @Param        offset query int false "Pagination offset (default 0)"
 // @Success      200 {object} SOPListResponse
@@ -115,14 +120,26 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		return
 	}
 
-	countQuery := "SELECT COUNT(*) FROM sops WHERE deleted_at IS NULL"
+	slugs, err := parseNonEmptyStringList(firstNonEmptyQuery(c, "slug", "sop_slug"), "slug")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
+	whereClause := "WHERE deleted_at IS NULL"
+	args := []any{}
+	whereClause, args = appendStringInFilter(whereClause, args, "slug", slugs)
+	whereClause, args = appendKeywordSearch(whereClause, args, keyword, "slug", "description", "version")
+
+	countQuery := "SELECT COUNT(*) FROM sops " + whereClause
 	var total int
-	if err := h.db.Get(&total, countQuery); err != nil {
+	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[SOP] Failed to count SOPs: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list SOPs"})
 		return
 	}
 
+	orderClause, orderArgs := keywordOrderBy(keyword, "updated_at DESC, id DESC", "slug", "description", "version")
 	query := `
 		SELECT 
 			id,
@@ -133,13 +150,15 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 			created_at,
 			updated_at
 		FROM sops
-		WHERE deleted_at IS NULL
-		ORDER BY id DESC
+		` + whereClause + `
+		` + orderClause + `
 		LIMIT ? OFFSET ?
 	`
+	queryArgs := append(args, orderArgs...)
+	queryArgs = append(queryArgs, pagination.Limit, pagination.Offset)
 
 	var dbRows []sopRow
-	if err := h.db.Select(&dbRows, query, pagination.Limit, pagination.Offset); err != nil {
+	if err := h.db.Select(&dbRows, query, queryArgs...); err != nil {
 		logger.Printf("[SOP] Failed to query SOPs: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list SOPs"})
 		return
@@ -307,14 +326,13 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 		return
 	}
 
-	// Validate skill_sequence
-	if len(req.SkillSequence) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "skill_sequence is required and must not be empty"})
-		return
+	skillSequence := req.SkillSequence
+	if skillSequence == nil {
+		skillSequence = []string{}
 	}
 
 	// Convert skill_sequence to JSON string
-	skillSeqJSON, err := json.Marshal(req.SkillSequence)
+	skillSeqJSON, err := json.Marshal(skillSequence)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process skill_sequence"})
 		return
@@ -359,7 +377,7 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 	c.JSON(http.StatusCreated, CreateSOPResponse{
 		ID:            fmt.Sprintf("%d", id),
 		Slug:          req.Slug,
-		SkillSequence: req.SkillSequence,
+		SkillSequence: skillSequence,
 		Version:       version,
 		CreatedAt:     now.Format(time.RFC3339),
 	})
