@@ -146,6 +146,17 @@ func TestEnqueueEpisodeManual_AllowsExhaustedRetryEpisode(t *testing.T) {
 		t.Fatalf("manual enqueue failed: %v", err)
 	}
 
+	latest := latestSyncLogForSyncWorkerTest(t, db, 10)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+	if latest.AttemptCount != 0 {
+		t.Fatalf("latest attempt_count = %d, want 0 for fresh manual chain", latest.AttemptCount)
+	}
+	if count := countSyncLogsForSyncWorkerTest(t, db, 10); count != 2 {
+		t.Fatalf("sync log count = %d, want failed history plus fresh pending", count)
+	}
+
 	select {
 	case got := <-w.enqueueCh:
 		if got.episodeID != 10 {
@@ -156,6 +167,35 @@ func TestEnqueueEpisodeManual_AllowsExhaustedRetryEpisode(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected episode to be enqueued")
+	}
+}
+
+func TestEnqueueEpisodeManual_PromotesDueFailureToPending(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		enqueueCh:       make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+	w.running.Store(true)
+
+	insertEpisodeForSyncWorkerTest(t, db, 13, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 13, "failed", 1)
+
+	if err := w.EnqueueEpisodeManual(context.Background(), 13); err != nil {
+		t.Fatalf("manual enqueue failed: %v", err)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 13)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+	if latest.AttemptCount != 1 {
+		t.Fatalf("latest attempt_count = %d, want completed attempt count 1", latest.AttemptCount)
+	}
+	if count := countSyncLogsForSyncWorkerTest(t, db, 13); count != 1 {
+		t.Fatalf("sync log count = %d, want reused failed row", count)
 	}
 }
 
@@ -177,6 +217,33 @@ func TestEnqueueEpisode_RejectsInProgressEpisode(t *testing.T) {
 	}
 }
 
+func TestEnqueueEpisodeManual_PersistsPendingWhenMemoryQueueFull(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		enqueueCh:       make(chan syncEnqueueRequest),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+	w.running.Store(true)
+
+	insertEpisodeForSyncWorkerTest(t, db, 14, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 14, "failed", 3)
+
+	if err := w.EnqueueEpisodeManual(context.Background(), 14); err != nil {
+		t.Fatalf("manual enqueue failed despite durable pending: %v", err)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 14)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+	if !w.tryMarkEnqueued(14) {
+		t.Fatal("episode marker remained set after enqueue channel was full")
+	}
+	w.unmarkEnqueued(14)
+}
+
 func TestEnqueueEpisodeManual_RejectsPendingEpisode(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
@@ -192,6 +259,147 @@ func TestEnqueueEpisodeManual_RejectsPendingEpisode(t *testing.T) {
 
 	if err := w.EnqueueEpisodeManual(context.Background(), 12); !errors.Is(err, ErrSyncAlreadyInProgress) {
 		t.Fatalf("manual enqueue error = %v, want ErrSyncAlreadyInProgress", err)
+	}
+}
+
+func TestEnqueuePendingEpisodes_PersistsPendingWhenMemoryQueueFull(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		enqueueCh:       make(chan syncEnqueueRequest),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+	w.running.Store(true)
+
+	insertEpisodeForSyncWorkerTest(t, db, 15, "approved", false)
+
+	count, err := w.EnqueuePendingEpisodes(context.Background())
+	if err != nil {
+		t.Fatalf("enqueue pending episodes failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("enqueued count = %d, want 1", count)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 15)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+}
+
+func TestDispatchPendingSyncLogs_DispatchesPersistedRows(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		jobCh:           make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+
+	insertEpisodeForSyncWorkerTest(t, db, 16, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 16, "pending", 0)
+
+	w.dispatchPendingSyncLogs(context.Background())
+
+	select {
+	case got := <-w.jobCh:
+		if got.episodeID != 16 {
+			t.Fatalf("unexpected episode id: got %d want 16", got.episodeID)
+		}
+		if got.manual {
+			t.Fatal("unexpected manual mode for recovered pending row")
+		}
+	default:
+		t.Fatal("expected persisted pending row to be dispatched")
+	}
+}
+
+func TestRetryFailedEpisodes_PromotesDueFailureToPendingBeforeDispatch(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		jobCh:           make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+
+	insertEpisodeForSyncWorkerTest(t, db, 17, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 17, "failed", 1)
+
+	w.retryFailedEpisodes(context.Background())
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 17)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+	if latest.AttemptCount != 1 {
+		t.Fatalf("latest attempt_count = %d, want completed attempt count 1", latest.AttemptCount)
+	}
+	select {
+	case got := <-w.jobCh:
+		if got.episodeID != 17 {
+			t.Fatalf("unexpected episode id: got %d want 17", got.episodeID)
+		}
+	default:
+		t.Fatal("expected retryable failure to be dispatched")
+	}
+}
+
+func TestAcquireSyncLogWithMode_ClaimsFreshPendingRow(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:  db,
+		cfg: SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+	}
+
+	insertEpisodeForSyncWorkerTest(t, db, 18, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 18, "pending", 0)
+
+	syncLogID, attemptCount, err := w.acquireSyncLogWithMode(context.Background(), 18, "local/episode.mcap", false)
+	if err != nil {
+		t.Fatalf("claim pending sync log failed: %v", err)
+	}
+	if syncLogID <= 0 {
+		t.Fatalf("syncLogID = %d, want positive id", syncLogID)
+	}
+	if attemptCount != 1 {
+		t.Fatalf("attemptCount = %d, want 1", attemptCount)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 18)
+	if latest.Status != "in_progress" {
+		t.Fatalf("latest status = %q, want in_progress", latest.Status)
+	}
+	if latest.AttemptCount != 1 {
+		t.Fatalf("latest attempt_count = %d, want 1", latest.AttemptCount)
+	}
+}
+
+func TestAcquireSyncLogWithMode_ClaimsRetryPendingRow(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:  db,
+		cfg: SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+	}
+
+	insertEpisodeForSyncWorkerTest(t, db, 19, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 19, "pending", 1)
+
+	_, attemptCount, err := w.acquireSyncLogWithMode(context.Background(), 19, "local/episode.mcap", false)
+	if err != nil {
+		t.Fatalf("claim retry pending sync log failed: %v", err)
+	}
+	if attemptCount != 2 {
+		t.Fatalf("attemptCount = %d, want retry attempt 2", attemptCount)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 19)
+	if latest.Status != "in_progress" {
+		t.Fatalf("latest status = %q, want in_progress", latest.Status)
+	}
+	if latest.AttemptCount != 2 {
+		t.Fatalf("latest attempt_count = %d, want 2", latest.AttemptCount)
 	}
 }
 
@@ -323,12 +531,15 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 			created_at TIMESTAMP NOT NULL
 		)`,
 		`CREATE TABLE sync_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			episode_id INTEGER NOT NULL,
-			status TEXT NOT NULL,
-			attempt_count INTEGER NOT NULL DEFAULT 0,
-			next_retry_at TIMESTAMP NULL,
-			started_at TIMESTAMP NULL,
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				episode_id INTEGER NOT NULL,
+				source_path TEXT,
+				status TEXT NOT NULL,
+				duration_sec INTEGER,
+				error_message TEXT,
+				attempt_count INTEGER NOT NULL DEFAULT 0,
+				next_retry_at TIMESTAMP NULL,
+				started_at TIMESTAMP NULL,
 			completed_at TIMESTAMP NULL
 		)`,
 	}
@@ -369,6 +580,37 @@ func insertSyncLogForSyncWorkerTest(t *testing.T, db *sqlx.DB, episodeID int64, 
 	`, episodeID, status, attemptCount, startedAt); err != nil {
 		t.Fatalf("insert sync log for episode %d: %v", episodeID, err)
 	}
+}
+
+type syncLogForSyncWorkerTest struct {
+	Status       string `db:"status"`
+	AttemptCount int    `db:"attempt_count"`
+}
+
+func latestSyncLogForSyncWorkerTest(t *testing.T, db *sqlx.DB, episodeID int64) syncLogForSyncWorkerTest {
+	t.Helper()
+
+	var row syncLogForSyncWorkerTest
+	if err := db.Get(&row, `
+		SELECT status, attempt_count
+		FROM sync_logs
+		WHERE episode_id = ?
+		ORDER BY id DESC
+		LIMIT 1
+	`, episodeID); err != nil {
+		t.Fatalf("query latest sync log for episode %d: %v", episodeID, err)
+	}
+	return row
+}
+
+func countSyncLogsForSyncWorkerTest(t *testing.T, db *sqlx.DB, episodeID int64) int {
+	t.Helper()
+
+	var count int
+	if err := db.Get(&count, "SELECT COUNT(*) FROM sync_logs WHERE episode_id = ?", episodeID); err != nil {
+		t.Fatalf("count sync logs for episode %d: %v", episodeID, err)
+	}
+	return count
 }
 
 func assertEpisodeIDs(t *testing.T, got, want []int64) {
