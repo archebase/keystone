@@ -4,11 +4,17 @@ SPDX-FileCopyrightText: 2026 ArcheBase
 SPDX-License-Identifier: MulanPSL-2.0
 -->
 
-# Task Management Design Document
+# Task Management Design Document (Legacy Task Lifecycle Notes)
 
 ## 1. Overview
 
 Task is the core entity in the Keystone system, representing a single unit of data collection work. Task connects four key components: production management (Order), edge device (Axon), operator interface (Synapse), and data quality assurance (Dagster QA).
+
+> Status: this document preserves older Axon-oriented task lifecycle notes. The
+> current source of truth for order/batch/task dispatch, fulfillment, and
+> completion semantics is [`production-units.md`](production-units.md). The
+> external-device mobile completion customization is documented in
+> [`external-device-mobile-task-flow.md`](external-device-mobile-task-flow.md).
 
 ### 1.1 Design Goals
 
@@ -20,20 +26,19 @@ Task is the core entity in the Keystone system, representing a single unit of da
 ### 1.2 Core Entity Relationships
 
 ```
-┌─────────────┐     1:N     ┌─────────────┐     0:1     ┌─────────────┐
-│    Order    │─────────────│    Task     │─────────────│   Episode   │
-│             │  generates  │             │  produces   │             │
-│ target_count│             │ status      │             │ qa_status   │
-│ scene_id    │             │ scene_id    │             │ qa_score    │
-│ sop_id      │             │ workstation │             │ checksum    │
-└─────────────┘             └─────────────┘             └─────────────┘
-        │               assigned to │
-        │                    ┌──────┴───────┐
-        │                    │  Workstation │
-        │                    │              │
-        │                    │ robot_id     │
-        └────────────────────│ collector_id │
-                             └──────────────┘
+┌─────────────┐     1:N     ┌─────────────┐     1:N     ┌─────────────┐     0:1     ┌─────────────┐
+│    Order    │─────────────│    Batch    │─────────────│    Task     │─────────────│   Episode   │
+│             │             │             │             │             │  produces   │             │
+│ target_count│             │ workstation │             │ status      │             │ qa_status   │
+│ scene_id    │             │ status      │             │ scene_id    │             │ qa_score    │
+└─────────────┘             └─────────────┘             └─────────────┘             └─────────────┘
+                              assigned to │
+                                   ┌──────┴───────┐
+                                   │  Workstation │
+                                   │              │
+                                   │ robot_id     │
+                                   │ collector_id │
+                                   └──────────────┘
 ```
 
 ## 2. Task State Machine
@@ -119,15 +124,25 @@ Production Manager → POST /orders → Keystone
                       ↓
                   Order Created
                       ↓
-            Keystone auto-generates N Tasks
+Admin dispatches work through POST /batches or POST /batches/:id/tasks
                       ↓
-            Tasks assigned to Workstations (status: pending)
+Batch-scoped Tasks are created for selected Workstations (status: pending)
 ```
 
 - **Task Generation Rules**:
-  - Task count = Order's `target_count`
-  - Each Task assigned to a Workstation
-  - Task inherits Order's `scene_id`, `subscene_id`, `sop_id`
+  - Orders do not automatically generate tasks solely from `target_count`.
+  - Batch APIs create and adjust task rows per workstation and task group.
+  - `target_count` is both the order completion target and the supported batch
+    dispatch cap for non-deleted task rows under the order.
+  - New batch creation and bulk batch creation must not exceed
+    `remaining_assignable = target_count - current non-deleted task_count`.
+  - Batch editing must validate the post-edit order total:
+    `order_task_count - current_batch_task_count + edited_batch_target_count <= target_count`.
+    This prevents repeated small edits from bypassing the order target.
+  - When an order reaches its completion target, Keystone marks it completed and
+    finalizes still-open batches for that order using the existing cancellation
+    and batch-completion behavior.
+  - Each Task belongs to a Batch and inherits group fields such as `scene_id`, `subscene_id`, and `sop_id`.
 
 ### Phase 1: Task Preparation and TaskConfig Distribution
 

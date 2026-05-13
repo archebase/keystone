@@ -61,6 +61,7 @@ type OrderListItemResponse struct {
 	OrganizationName string `json:"organization_name,omitempty"`
 	Name             string `json:"name"`
 	TargetCount      int    `json:"target_count"`
+	TaskCount        int    `json:"task_count"`
 	CompletedCount   int    `json:"completed_count"`
 	Status           string `json:"status"`
 	Priority         string `json:"priority"`
@@ -143,6 +144,7 @@ type orderListRow struct {
 	OrganizationName sql.NullString `db:"organization_name"`
 	Name             string         `db:"name"`
 	TargetCount      int            `db:"target_count"`
+	TaskCount        int            `db:"task_count"`
 	CompletedCount   int            `db:"completed_count"`
 	Status           string         `db:"status"`
 	Priority         string         `db:"priority"`
@@ -152,8 +154,9 @@ type orderListRow struct {
 	UpdatedAt        sql.NullTime   `db:"updated_at"`
 }
 
-type orderCompletedAggRow struct {
+type orderTaskAggRow struct {
 	OrderID        int64 `db:"order_id"`
+	TaskCount      int   `db:"task_count"`
 	CompletedCount int   `db:"completed_count"`
 }
 
@@ -256,6 +259,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			org.name AS organization_name,
 			o.name,
 			o.target_count,
+			0 AS task_count,
 			0 AS completed_count,
 			o.status,
 			o.priority,
@@ -292,7 +296,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 		return
 	}
 
-	// Fetch completed task counts in a separate scoped query rather than a
+	// Fetch task counts in a separate scoped query rather than a
 	// LEFT JOIN subquery.  The JOIN approach aggregates across ALL orders in
 	// the database before pagination is applied; when the tasks table is large
 	// this causes a full-table scan even though we only need counts for the
@@ -306,9 +310,12 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			orderIDs[i] = rows[i].ID
 		}
 		aggQ, aggArgs, err := sqlx.In(`
-			SELECT order_id, COUNT(*) AS completed_count
+			SELECT
+				order_id,
+				COUNT(*) AS task_count,
+				COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_count
 			FROM tasks
-			WHERE deleted_at IS NULL AND status = 'completed' AND order_id IN (?)
+			WHERE deleted_at IS NULL AND order_id IN (?)
 			GROUP BY order_id`,
 			orderIDs,
 		)
@@ -318,19 +325,20 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			return
 		}
 		aggQ = h.db.Rebind(aggQ)
-		var agg []orderCompletedAggRow
+		var agg []orderTaskAggRow
 		if err := h.db.Select(&agg, aggQ, aggArgs...); err != nil {
-			logger.Printf("[ORDER] Failed to query completed task counts: %v", err)
+			logger.Printf("[ORDER] Failed to query task counts: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
 			return
 		}
-		completedByOrder := make(map[int64]int, len(agg))
+		countsByOrder := make(map[int64]orderTaskAggRow, len(agg))
 		for _, a := range agg {
-			completedByOrder[a.OrderID] = a.CompletedCount
+			countsByOrder[a.OrderID] = a
 		}
 		for i := range rows {
-			if n, ok := completedByOrder[rows[i].ID]; ok {
-				rows[i].CompletedCount = n
+			if counts, ok := countsByOrder[rows[i].ID]; ok {
+				rows[i].TaskCount = counts.TaskCount
+				rows[i].CompletedCount = counts.CompletedCount
 			}
 		}
 	}
@@ -372,6 +380,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			OrganizationName: orgName,
 			Name:             r.Name,
 			TargetCount:      r.TargetCount,
+			TaskCount:        r.TaskCount,
 			CompletedCount:   r.CompletedCount,
 			Status:           r.Status,
 			Priority:         r.Priority,
@@ -957,7 +966,7 @@ func (h *OrderHandler) DeleteOrder(c *gin.Context) {
 //
 // Rules (completed-only):
 // - created -> in_progress when there is at least one completed task
-// - in_progress -> completed when completed_count == target_count
+// - in_progress -> completed when completed_count >= target_count
 //
 // This helper uses its own transaction and is safe to call after task updates commit.
 // recorderHub may be nil (skips Axon clear/cancel RPCs after finalizing open batches).
@@ -1013,7 +1022,7 @@ func tryAdvanceOrderStatus(db *sqlx.DB, orderID int64, recorderHub *services.Rec
 		info.Status = "in_progress"
 	}
 
-	if info.Status == "in_progress" && completedCount == info.TargetCount {
+	if info.Status == "in_progress" && completedCount >= info.TargetCount {
 		if _, err := tx.Exec(
 			"UPDATE orders SET status = 'completed', updated_at = ? WHERE id = ? AND status = 'in_progress' AND deleted_at IS NULL",
 			now, orderID,
@@ -1021,7 +1030,6 @@ func tryAdvanceOrderStatus(db *sqlx.DB, orderID int64, recorderHub *services.Rec
 			logger.Printf("[ORDER] tryAdvanceOrderStatus: failed to advance order %d in_progress->completed: %v", orderID, err)
 			return
 		}
-		// Close any still-open batches for this order: cancel non-terminal tasks, then mark batches completed.
 		var finErr error
 		orderFinalizeRecorderNotifies, finErr = finalizeOpenBatchesAfterOrderCompletedTx(tx, orderID, now)
 		if finErr != nil {
@@ -1035,7 +1043,6 @@ func tryAdvanceOrderStatus(db *sqlx.DB, orderID int64, recorderHub *services.Rec
 		return
 	}
 
-	// Best-effort: after commit, notify Axon recorder for ready/in_progress tasks we cancelled (same as PATCH batch cancel).
 	if len(orderFinalizeRecorderNotifies) > 0 && recorderHub != nil {
 		notifies := orderFinalizeRecorderNotifies
 		go func() {

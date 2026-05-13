@@ -32,7 +32,7 @@ Production units turn a “production request” into “executable tasks”, an
 ### 2.3 Non-goals
 
 - This document does not define cloud sync (Capstone), detailed QA rules, or UI interaction details.
-- This document does not pin down “order completion policy” (e.g., backfilling failures, completion thresholds). It only constrains data and state validity.
+- This document does not define richer order fulfillment policies such as reservation, reclaim, split/merge, or SLA handling. It documents the current Edge policy for dispatch and completion.
 
 ---
 
@@ -65,10 +65,12 @@ Organization ── owns ──► Order ── has many ──► Batch ── 
 This document does not restate full table schemas; it only defines key field semantics (see the migration file for details).
 
 - **Order**
-  - `target_count`: the desired number of **completed** Tasks for the order (see §6.1).
+  - `target_count`: the desired number of **completed** Tasks for the order (see §6.1). For supported batch dispatch APIs, it is also the hard cap for non-deleted task rows under the order.
   - `task_count`: a derived statistic: `COUNT(tasks)` under the order (non-deleted; includes all statuses).
   - `completed_count`: a derived statistic: number of Tasks with `status='completed'` (non-deleted).
   - `cancelled_count` / `failed_count`: derived statistics from Tasks (non-deleted).
+  - `remaining_assignable`: derived dispatch capacity, defined as `target_count - task_count` for non-deleted tasks. It must never be treated as `target_count - completed_count` for dispatch.
+  - Fulfillment is derived from completed task rows: an order is considered fulfilled when `target_count > 0 && completed_count >= target_count`, or when `orders.status = 'completed'`.
 - **Batch**
   - `batch_id`: a human-readable ID (for display/traceability).
   - `episode_count`: the number of persisted Episodes (see 3.2).
@@ -97,6 +99,7 @@ This document does not restate full table schemas; it only defines key field sem
 **Design constraints:**
 
 - **Deletion guard**: an Order referenced by the production lineage must not be deletable.
+- **Target count update guard**: `target_count` must stay greater than or equal to current `completed_count`.
 - **State transitions**: should converge to controlled transitions (current implementation allows any valid enum; the transition graph will be enforced later).
 
 ---
@@ -116,6 +119,14 @@ This document does not restate full table schemas; it only defines key field sem
 
 **Design constraints:**
 
+- **Dispatch / fulfillment guard**:
+  - `POST /batches` creates a batch and its initial task rows only when the requested total quantity is less than or equal to the order's current `remaining_assignable`.
+  - `POST /batches/:id/tasks` is a declarative per-group target quantity adjustment. It may insert new task rows, soft-delete pending task rows, or leave a group unchanged.
+  - `POST /batches/:id/tasks` must validate the post-edit order total:
+    `order_task_count - current_batch_task_count + edited_batch_target_count <= target_count`.
+    This prevents repeated small edits from bypassing the order target.
+  - Reductions and no-op updates are allowed when they respect locked-task rules; task insertion is rejected once there is no remaining assignable quantity.
+  - Admin bulk creation is a UI/client workflow over `POST /batches`, but it must validate the aggregate requested quantity against the same remaining assignable value before sending requests.
 - **Cancellation semantics (PATCH)**: `PATCH /batches/:id` only supports transitioning to `cancelled`. It cascades cancellation to tasks in `pending/ready/in_progress` under the batch, and best-effort notifies Axon recorder:
   - `ready` tasks → recorder `clear`
   - `in_progress` tasks → recorder `cancel {task_id}`
@@ -139,10 +150,11 @@ This document does not restate full table schemas; it only defines key field sem
 
 **Quantity constraint (current implementation):**
 
-- `POST /tasks`: caps by **existing task rows** (non-deleted) under the order: `existing_tasks + quantity <= target_count`.
-- `POST /batches`: caps by **completed tasks only** under the order: `completed_count + requested_total_quantity <= target_count`.
-
-This difference is a known inconsistency (see §8).
+- `POST /tasks`: legacy behavior caps by **existing task rows** (non-deleted) under the order: `existing_tasks + quantity <= target_count`.
+- `POST /batches`: caps by **existing task rows** (non-deleted) under the order: `existing_tasks + requested_total_quantity <= target_count`.
+- `POST /batches/:id/tasks`: caps by the post-edit order task total:
+  `order_task_count - current_batch_task_count + edited_batch_target_count <= target_count`.
+- All production dispatch APIs should converge on this task-row quota definition.
 
 #### 5.3.2 Query and config
 
@@ -162,12 +174,13 @@ This difference is a known inconsistency (see §8).
 - **State set**: `created` | `in_progress` | `paused` | `completed` | `cancelled`
 - **Auto-advance rules (completed-only)**:
   - `created -> in_progress`: when the order has **at least one** `completed` task.
-  - `in_progress -> completed`: when `completed_count == target_count`.
+  - `in_progress -> completed`: when `target_count > 0 && completed_count >= target_count`.
 - **Order completion side-effects (current implementation)**:
-  - When auto-advancing to `completed`, Keystone finalizes any still-open batches for this order:
-    - Cancels runnable tasks (`pending/ready/in_progress`) under batches in `pending/active`.
-    - Marks those batches `completed`.
-    - Best-effort notifies Axon recorder (clear/cancel) for affected `ready/in_progress` tasks.
+  - Keystone finalizes still-open batches for the completed order:
+    - cancels runnable tasks (`pending/ready/in_progress`) under batches in `pending/active`;
+    - marks those batches `completed`;
+    - best-effort notifies Axon recorder (`ready` tasks -> `clear`, `in_progress` tasks -> `cancel {task_id}`) when a recorder connection exists.
+  - New task dispatch through batch creation or batch task insertion is blocked because `remaining_assignable <= 0`.
 
 ### 6.2 Task states
 
@@ -224,9 +237,11 @@ When the device reports `upload_complete`, Keystone runs the Verified ACK flow:
 - **In-recording state**: `callbacks/start` does not persist state today; `ready -> in_progress` validation/persistence is not implemented yet.
 - **Failure path**: an end-to-end `failed` terminal state and error attribution are not fully implemented (callbacks/transfer need to be extended).
 - **Quota consistency**:
-  - `POST /tasks` caps by **task row count** under an order.
-  - `POST /batches` caps by **completed task count** under an order.
-  These should converge to a single definition (either “planned tasks” or “completed target”) to avoid surprising client behavior.
+  - Dispatch quota is based on non-deleted task rows, not completed rows.
+  - New/bulk batch creation uses `remaining_assignable = target_count - order_task_count`.
+  - Batch editing validates the post-edit order task total so repeated edits cannot bypass the target.
+  - Any older endpoint or client that still uses a different quota definition should be aligned before it is treated as a supported production dispatch API.
+- **No reservation model yet**: Keystone does not reserve order target capacity per workstation ahead of task-row creation. Capacity is consumed when task rows are created and released only when pending task rows are soft-deleted by allowed edit/cancel flows.
 - **Controlled order transitions**: `PUT /orders/:id` validates enum values, but auto-advance also exists (see §6.1). These should converge to a single, explicit policy aligned with Primer.
 
 ---
@@ -235,6 +250,8 @@ When the device reports `upload_complete`, Keystone runs the Verified ACK flow:
 
 | Area | Path |
 |------|------|
+| Order HTTP + auto-advance | `internal/api/handlers/order.go` |
+| Batch HTTP + batch task adjustment | `internal/api/handlers/batch.go` |
 | Task HTTP + callbacks | `internal/api/handlers/task.go` |
 | Transfer + Episode writes | `internal/api/handlers/transfer.go` |
 | Route mounting | `internal/server/server.go` |

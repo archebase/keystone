@@ -30,6 +30,15 @@ Confirmed decisions:
   will paste this value into the external device program.
 - The data collector page is operated mainly on mobile phones and must be
   designed and tested as a mobile-first workflow.
+- Admin dispatch remains quota-limited by the order's remaining assignable
+  quantity. Batch creation, bulk batch creation, and batch task editing must not
+  make the order's non-deleted task count exceed `target_count`.
+- External-device completion lets the data collector enter a completed quantity,
+  but the quantity is bounded by the selected batch's current total task count.
+  This endpoint is not an admin dispatch path and must not be used to create
+  work beyond the batch's planned task count.
+- Order fulfillment keeps the existing Keystone completion behavior: when an
+  order reaches its target, Keystone finalizes open batches for the order.
 
 ## 3. Goals
 
@@ -71,9 +80,11 @@ Confirmed decisions:
 9. After the external device finishes its own record/upload workflow, data
    collector selects a task group, enters the completed quantity, and taps
    "complete tasks" in Synapse.
-10. Keystone completes existing pending tasks in that group first, creates extra
-    completed tasks in the same group when the requested quantity exceeds the
-    group's pending count, and advances batch/order status when applicable.
+10. Keystone validates that the completed quantity is within the selected
+    batch's current total task count, completes matching planned work, and
+    advances batch/order status when applicable.
+11. If the order reaches its completion target, Keystone marks the order
+    completed and runs the normal open-batch finalization logic for that order.
 
 ## 6. Backend Design
 
@@ -146,7 +157,7 @@ Response body:
   "batch_id": "batch_20260511_103000_123_01_abcd1234",
   "requested_count": 50,
   "completed_count": 50,
-  "created_count": 38,
+  "created_count": 0,
   "group": {
     "sop_id": 8,
     "subscene_id": 3,
@@ -178,30 +189,22 @@ Behavior:
 - Reject if the batch does not belong to the collector's workstation.
 - Reject if batch status is not `pending` or `active`.
 - Validate `quantity >= 1`.
+- Validate `quantity <= current batch task_count`.
 - Validate `sop_id` and `subscene_id` as the selected task group.
 - Reject if the selected task group does not exist in the target batch.
-- Do not use a fixed numeric upper bound and do not cap by current pending
-  count.
+- Do not use a fixed numeric upper bound. The upper bound is the selected
+  batch's current non-deleted task count.
 - Lock the earliest pending tasks in the selected task group:
   - `status = 'pending'`
   - `deleted_at IS NULL`
   - matching `batch_id`, `sop_id`, and `subscene_id`
   - stable order by `assigned_at ASC, id ASC`
-- If fewer pending tasks exist than requested, complete all selected pending
-  tasks and create the remaining quantity as new `completed` tasks in the same
-  group.
-- If the selected group has no pending tasks but exists in the batch, create all
-  requested tasks as new `completed` tasks in that group.
+- If the selected group has fewer pending rows than the requested quantity,
+  reject the request instead of creating extra task rows. The external-device
+  completion endpoint completes planned work; it is not a task-dispatch path.
 - Update selected tasks directly to `completed`.
-- Create overflow tasks from a representative non-deleted task row in the
-  selected group:
-  - inherit group fields such as `sop_id`, `scene_name`, `subscene_id`, and
-    `subscene_name`;
-  - generate new `task_id` values using the existing task ID generation pattern;
-  - set `status = 'completed'`;
-  - set `assigned_at`, `started_at`, `completed_at`, and `updated_at` to `now`;
-  - preserve any required foreign keys and task metadata needed for downstream
-    list/detail views.
+- Do not treat this endpoint as a quota bypass. It must not create unbounded
+  extra task rows beyond the selected batch's planned total.
 - Set timestamps:
   - `started_at = COALESCE(started_at, now)`
   - `completed_at = now`
@@ -210,7 +213,18 @@ Behavior:
 - Reuse existing batch/order advancement logic after commit:
   - `tryAdvanceBatchStatus`
   - `tryAdvanceOrderStatus`
-- Do not call recorder RPC.
+- Order status advances to `completed` when the order reaches its completion
+  target.
+- When order completion is triggered, keep Keystone's existing open-batch
+  finalization behavior:
+  - cancel runnable tasks (`pending`, `ready`, `in_progress`) under open
+    batches for the order;
+  - mark those open batches `completed`;
+  - best-effort notify Axon recorder for affected `ready` / `in_progress`
+    tasks when a recorder connection exists.
+- Do not call recorder RPC for the external-device completion itself.
+  Order-completion finalization may still use Keystone's existing best-effort
+  Axon recorder notifications for other affected `ready` / `in_progress` tasks.
 - Do not call transfer upload.
 - Do not require device online state.
 
@@ -225,6 +239,7 @@ Status and error rules:
 | Batch belongs to another workstation | `403` | `{"error": "batch is not assigned to current workstation"}` |
 | Batch cancelled/recalled/completed | `409` | include `current_status` |
 | Invalid quantity | `400` | `{"error": "quantity must be >= 1"}` |
+| Quantity exceeds batch task count | `400` | include `task_count` and requested quantity |
 | Invalid task group | `400` | `{"error": "invalid task group"}` |
 | Task group not found in batch | `404` | `{"error": "task group not found in batch"}` |
 
@@ -336,10 +351,10 @@ Mobile behavior:
 - If the batch has one task group, select it by default.
 - If the batch has multiple task groups, require the data collector to choose one
   group before submitting.
-- Quantity input only needs to enforce `quantity >= 1`; it must allow values
-  above the selected group's current pending count.
-- Do not show a special warning when the quantity exceeds pending count. The
-  overflow is treated as naturally completed work in the selected group.
+- Quantity input must enforce `1 <= quantity <= batch.task_count`.
+- The UI may show the selected group's pending count for context, but the hard
+  upper bound for the submitted quantity is the selected batch's current total
+  task count.
 - Disable the confirm button while the request is in flight.
 - After success:
   - update local progress immediately;
@@ -361,6 +376,23 @@ Add copy affordance for `batch_id`:
 
 The copy behavior should reuse the same helper as the operator mobile page.
 
+### 8.2 Admin Dispatch Guard
+
+Admin batch creation and editing follow the current order fulfillment policy:
+
+- Remaining assignable quantity is derived from task rows, not completed rows:
+  `remaining_assignable = target_count - current non-deleted task_count`.
+- New batch creation must reject requests where the requested task quantity is
+  greater than `remaining_assignable`.
+- Bulk batch creation must show one aggregate remaining assignable value and
+  reject submissions where the sum of all block quantities is greater than that
+  value.
+- Batch task editing must validate the post-edit order total:
+  `order_task_count - current_batch_task_count + edited_batch_target_count <= target_count`.
+  This prevents repeated small edits from bypassing the order target.
+- The UI must display remaining assignable quantity in new, bulk new, and edit
+  flows, and must block submission when the user exceeds it.
+
 ## 9. Implementation Plan
 
 ### Phase 1: Backend APIs
@@ -370,9 +402,8 @@ The copy behavior should reuse the same helper as the operator mobile page.
 - Add `POST /api/v1/batches/:id/complete-tasks`.
 - Add focused Go tests for:
   - completing tasks in the selected `sop_id` + `subscene_id` group;
-  - creating overflow completed tasks when requested quantity exceeds group
-    pending count;
-  - allowing completion when the selected group exists but has no pending tasks;
+  - rejecting completion quantities greater than the batch task count;
+  - preserving order completion open-batch finalization;
   - rejecting missing or invalid task group identifiers;
   - rejecting a group that does not exist in the batch;
   - rejecting another collector's batch;
@@ -403,11 +434,14 @@ Backend:
 - A data collector can complete tasks in a selected task group from a batch
   assigned to their workstation without Axon recorder or transfer online when
   the workstation robot type has `requires_axon === false`.
-- Completing tasks with a quantity greater than the selected group's pending
-  count creates extra completed tasks in that same group.
-- Completing tasks advances batch status and order status consistently with
-  existing Keystone rules.
+- Completion quantity is user-entered but cannot exceed the selected batch's
+  current task count.
+- Completing tasks advances batch status and order status consistently with the
+  current Keystone rules, including open-batch finalization when the order
+  reaches its target.
 - A data collector cannot complete tasks from another workstation's batch.
+- Admin batch creation, bulk creation, and editing enforce remaining assignable
+  quantity from the order's non-deleted task count.
 - Existing robot types without `requires_axon` continue to use the Axon workflow.
 
 Operator mobile page:
@@ -415,7 +449,7 @@ Operator mobile page:
 - On a phone viewport, the collector can find a batch, copy `batch_id`, and
   complete tasks for a selected group without horizontal scrolling.
 - Multi-group batches require group selection before task completion.
-- Completion quantity can exceed pending count without blocking submission.
+- Completion quantity cannot exceed the selected batch's task count.
 - `batch_id` copy feedback is visible and non-blocking.
 - Main buttons are easy to tap on `360px` wide screens.
 - Page still works when the external device is offline from Keystone's point of
