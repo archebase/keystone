@@ -26,8 +26,13 @@ Confirmed decisions:
   types.
 - The original Axon data collector control page remains the default for robot
   types that require Axon.
-- The data collector page must provide one-tap copy for `batch_id`; the operator
-  will paste this value into the external device program.
+- The data collector page must provide one-tap copy for the selected task
+  group's external-device payload. The operator will paste this one-line JSON
+  string into the external device program as a normal text field value.
+- The copied task group payload contains only `sop_slug`, `sop_version`,
+  `scene_name`, `subscene_name`, `collector_name`, `collector_operator_id`,
+  `device_id`, and `device_type`. It does not include `batch_id`, task IDs,
+  schema/version metadata, counts, labels, or base64 encoding.
 - The data collector page is operated mainly on mobile phones and must be
   designed and tested as a mobile-first workflow.
 - Admin dispatch remains quota-limited by the order's remaining assignable
@@ -45,9 +50,10 @@ Confirmed decisions:
 - Reuse existing Keystone `orders`, `batches`, `tasks`, `sops`, `workstations`,
   `robots`, and `data_collectors` data models.
 - Let admins continue creating and assigning batches/tasks in Keystone.
-- Let data collectors see assigned batches on a phone, copy `batch_id`, and mark
-  tasks as completed after the external device workflow is done when the current
-  robot type has `capabilities.requires_axon === false`.
+- Let data collectors see assigned batches on a phone, copy a selected task
+  group's execution payload, and mark tasks as completed after the external
+  device workflow is done when the current robot type has
+  `capabilities.requires_axon === false`.
 - Keep Axon recorder/transfer APIs untouched unless an existing route must be
   bypassed by the new mobile page.
 
@@ -74,9 +80,11 @@ Confirmed decisions:
 6. Page lists active work:
    - batches in `pending` or `active` status;
    - task progress for each batch;
-   - `batch_id` as the primary copyable value.
-7. Data collector taps "copy batch ID".
-8. Data collector pastes the copied `batch_id` into the external device program.
+   - task group summaries by SOP and subscene;
+   - one-tap copy for each visible task group's external-device payload.
+7. Data collector taps "copy task group info" on the target task group.
+8. Data collector pastes the copied one-line JSON string into the external
+   device program's text field.
 9. After the external device finishes its own record/upload workflow, data
    collector selects a task group, enters the completed quantity, and taps
    "complete tasks" in Synapse.
@@ -279,9 +287,9 @@ Add to the customized page:
 - current collector summary;
 - workstation summary;
 - assigned active batch list;
-- copyable `batch_id`;
 - progress for each batch;
 - task group summary by SOP/subscene;
+- task-group-level copy action for the external-device payload;
 - "complete tasks" action with task group selection and quantity input;
 - refresh action;
 - empty, loading, error, and conflict states.
@@ -302,40 +310,59 @@ Layout requirements:
 - Use a single-column layout by default.
 - Avoid dense tables in the data collector page.
 - Use full-width batch cards.
-- Keep the current batch code visible near the top of each card.
+- Keep the current batch progress visible near the top of each card.
 - Use sticky bottom actions only when they do not cover card content.
 - Use `env(safe-area-inset-bottom)` for bottom action padding.
 - Keep primary touch targets at least `44px` high.
 - Avoid hover-only affordances.
 - Avoid tiny icon-only controls unless there is a visible label.
 - Do not rely on desktop sidebars for primary navigation.
-- Keep text wrapping predictable for long `batch_id` values.
+- Keep text wrapping predictable for SOP, scene, and subscene names.
 
 Recommended mobile card structure:
 
 ```text
 Batch card
-  batch_id + Copy button
   status + progress
   order / scene
-  SOP + subscene summary
+  SOP + subscene task group summary + Copy info button
   Complete tasks button
 ```
 
 ### 7.3 Copy Interaction
 
-The data collector page must make copying `batch_id` obvious.
+The data collector page must make copying task group information obvious. The
+external device program stores the pasted value as a normal text field value
+and can later parse that field with JSON parsing when it needs structured task
+group information.
 
 Implementation requirements:
 
-- Copy button appears next to every visible `batch_id`.
+- Copy button appears on every visible task group row.
 - Use `navigator.clipboard.writeText` when available.
 - Provide a fallback using a temporary text selection for older mobile browsers.
 - Show immediate feedback:
   - copied state on the button for about 1.5 seconds;
   - short toast or inline message;
   - no blocking `alert`.
-- The copied value must be the raw `batch_id`, without spaces or labels.
+- The copied value must be a single-line compact JSON string, without labels,
+  markdown, line breaks, base64 encoding, or explanatory text.
+- The JSON object must contain exactly these keys in stable order:
+  `sop_slug`, `sop_version`, `scene_name`, `subscene_name`, `collector_name`,
+  `collector_operator_id`, `device_id`, and `device_type`.
+- Missing values are serialized as empty strings so the external parser can
+  depend on a stable shape.
+- `device_type` is the robot type name, not the robot type ID.
+- The external device program should serialize its final output JSON with a
+  JSON library. If this copied value is assigned to a field such as
+  `task_description`, that final JSON field will be a string containing this
+  compact JSON text.
+
+Example copied value:
+
+```json
+{"sop_slug":"move_bottle","sop_version":"v1","scene_name":"厨房","subscene_name":"台面","collector_name":"张三","collector_operator_id":"DC001","device_id":"robot_dc86","device_type":"SynGloves"}
+```
 
 ### 7.4 Complete Tasks Interaction
 
@@ -368,13 +395,9 @@ Mobile behavior:
 
 ### 8.1 Admin Batch List and Detail
 
-Add copy affordance for `batch_id`:
-
-- batch list row/card;
-- batch detail header;
-- any modal that shows newly created batch result.
-
-The copy behavior should reuse the same helper as the operator mobile page.
+No admin batch copy change is required for the external-device task handoff.
+The operator-facing handoff string is task-group-level JSON text, not
+`batch_id`.
 
 ### 8.2 Admin Dispatch Guard
 
@@ -419,13 +442,15 @@ Admin batch creation and editing follow the current order fulfillment policy:
 - For the external-device workflow, remove recorder API calls from the active
   page path.
 - Add task group selection to the complete-task bottom sheet.
-- Add mobile copy helper and feedback states.
+- Add task-group-level copy helper and feedback states.
 - Verify mobile viewport behavior manually and with browser screenshots if
   available.
 
-### Phase 3: Admin Copy Polish
+### Phase 3: External Payload Polish
 
-- Add copy button for `batch_id` on admin batch list/detail.
+- Keep the copied task group JSON shape stable for the external parser.
+- Add new payload fields only after coordinating with the external device
+  parser.
 
 ## 10. Acceptance Criteria
 
@@ -446,11 +471,12 @@ Backend:
 
 Operator mobile page:
 
-- On a phone viewport, the collector can find a batch, copy `batch_id`, and
-  complete tasks for a selected group without horizontal scrolling.
+- On a phone viewport, the collector can find a batch, copy task group
+  information as one-line JSON text, and complete tasks for a selected group
+  without horizontal scrolling.
 - Multi-group batches require group selection before task completion.
 - Completion quantity cannot exceed the selected batch's task count.
-- `batch_id` copy feedback is visible and non-blocking.
+- Task group copy feedback is visible and non-blocking.
 - Main buttons are easy to tap on `360px` wide screens.
 - Page still works when the external device is offline from Keystone's point of
   view, because the external workflow is independent.
