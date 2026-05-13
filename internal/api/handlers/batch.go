@@ -9,12 +9,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -33,6 +36,13 @@ func validateTaskGroupUniqueness(taskGroups []TaskGroupItem) (dupA int, dupB int
 		seen[key] = i
 	}
 	return 0, 0, false
+}
+
+func forUpdateClause(tx *sqlx.Tx) string {
+	if tx != nil && tx.DriverName() == "sqlite" {
+		return ""
+	}
+	return " FOR UPDATE"
 }
 
 // BatchHandler handles batch-related HTTP requests.
@@ -79,6 +89,11 @@ func (h *BatchHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/batches/:id/tasks", h.AdjustBatchTasks)
 	apiV1.POST("/batches/:id/recall", h.RecallBatch)
 	apiV1.GET("/batches/:id/tasks", h.ListBatchTasks)
+}
+
+// RegisterCollectorRoutes registers data-collector-only batch actions.
+func (h *BatchHandler) RegisterCollectorRoutes(apiV1 gin.IRoutes) {
+	apiV1.POST("/batches/:id/complete-tasks", h.CompleteTasks)
 }
 
 // recalledEpisodeLabel is appended to episodes.labels (JSON string array) when a batch is recalled (see RecallBatch).
@@ -605,6 +620,74 @@ type PatchBatchResponse struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
+type batchProgressCounts struct {
+	TaskCount      int `db:"task_count"`
+	CompletedCount int `db:"completed_count"`
+	FailedCount    int `db:"failed_count"`
+	CancelledCount int `db:"cancelled_count"`
+}
+
+// CompleteTasksRequest is the request body for completing planned batch tasks.
+type CompleteTasksRequest struct {
+	Quantity   *int   `json:"quantity,omitempty"`
+	SOPID      *int64 `json:"sop_id,omitempty"`
+	SubsceneID *int64 `json:"subscene_id,omitempty"`
+}
+
+// CompleteTasksTask describes a task completed by the external-device workflow.
+type CompleteTasksTask struct {
+	ID          string `json:"id"`
+	TaskID      string `json:"task_id"`
+	Status      string `json:"status"`
+	CompletedAt string `json:"completed_at"`
+}
+
+// CompleteTasksGroup identifies the selected SOP and subscene task group.
+type CompleteTasksGroup struct {
+	SOPID        int64  `json:"sop_id"`
+	SubsceneID   int64  `json:"subscene_id"`
+	SceneName    string `json:"scene_name,omitempty"`
+	SubsceneName string `json:"subscene_name,omitempty"`
+}
+
+// CompleteTasksResponse is the response body after completing batch tasks.
+type CompleteTasksResponse struct {
+	BatchID        string              `json:"batch_id"`
+	RequestedCount int                 `json:"requested_count"`
+	CompletedCount int                 `json:"completed_count"`
+	CreatedCount   int                 `json:"created_count"`
+	Group          CompleteTasksGroup  `json:"group"`
+	Tasks          []CompleteTasksTask `json:"tasks"`
+	Batch          struct {
+		ID             string `json:"id"`
+		Status         string `json:"status"`
+		CompletedCount int    `json:"completed_count"`
+		TaskCount      int    `json:"task_count"`
+	} `json:"batch"`
+}
+
+func getBatchProgress(q sqlx.Queryer, batchID int64) (batchProgressCounts, error) {
+	var progress batchProgressCounts
+	err := sqlx.Get(q, &progress, `
+		SELECT
+			COUNT(*) AS task_count,
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_count,
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_count,
+			COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled_count
+		FROM tasks
+		WHERE batch_id = ? AND deleted_at IS NULL
+	`, batchID)
+	return progress, err
+}
+
+func collectorClaims(c *gin.Context) *auth.Claims {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" {
+		return nil
+	}
+	return claims
+}
+
 // PatchBatch handles batch status updates.
 // Only supports cancellation transitions:
 // - pending -> cancelled
@@ -770,6 +853,278 @@ func (h *BatchHandler) PatchBatch(c *gin.Context) {
 	})
 }
 
+// CompleteTasks marks pending tasks in a collector-owned batch as completed.
+//
+// @Summary      Complete batch tasks
+// @Description  Completes the next pending tasks in a batch assigned to the current data collector's workstation. Intended for external-device mobile workflows.
+// @Tags         batches
+// @Accept       json
+// @Produce      json
+// @Param        id   path int                  true "Batch ID"
+// @Param        body body CompleteTasksRequest true "Completion quantity"
+// @Success      200 {object} CompleteTasksResponse
+// @Failure      400 {object} map[string]string
+// @Failure      401 {object} map[string]string
+// @Failure      403 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]interface{}
+// @Failure      500 {object} map[string]string
+// @Router       /batches/{id}/complete-tasks [post]
+func (h *BatchHandler) CompleteTasks(c *gin.Context) {
+	claims := collectorClaims(c)
+	if claims == nil {
+		if middleware.GetClaims(c) == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": "data collector role required"})
+		return
+	}
+
+	idStr := strings.TrimSpace(c.Param("id"))
+	batchID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || batchID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+		return
+	}
+
+	var req CompleteTasksRequest
+	if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	quantity := 1
+	if req.Quantity != nil {
+		quantity = *req.Quantity
+	}
+	if quantity < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be >= 1"})
+		return
+	}
+	if req.SOPID == nil || req.SubsceneID == nil || *req.SOPID <= 0 || *req.SubsceneID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task group"})
+		return
+	}
+	sopID := *req.SOPID
+	subsceneID := *req.SubsceneID
+
+	now := time.Now().UTC()
+	tx, err := h.db.Beginx()
+	if err != nil {
+		logger.Printf("[BATCH] CompleteTasks: failed to begin transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var workstationID int64
+	if err := tx.Get(&workstationID, `
+		SELECT id
+		FROM workstations
+		WHERE data_collector_id = ? AND deleted_at IS NULL
+		LIMIT 1
+	`, claims.CollectorID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "workstation not assigned"})
+			return
+		}
+		logger.Printf("[BATCH] CompleteTasks: failed to resolve workstation (collector=%d): %v", claims.CollectorID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+
+	type completeBatchRow struct {
+		ID            int64  `db:"id"`
+		BatchID       string `db:"batch_id"`
+		OrderID       int64  `db:"order_id"`
+		WorkstationID int64  `db:"workstation_id"`
+		Status        string `db:"status"`
+	}
+	var batch completeBatchRow
+	lockClause := forUpdateClause(tx)
+	if err := tx.Get(&batch, `
+		SELECT id, batch_id, order_id, workstation_id, status
+		FROM batches
+		WHERE id = ? AND deleted_at IS NULL`+lockClause, batchID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+			return
+		}
+		logger.Printf("[BATCH] CompleteTasks: failed to lock batch %d: %v", batchID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+
+	if batch.WorkstationID != workstationID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "batch is not assigned to current workstation"})
+		return
+	}
+
+	if batch.Status != "pending" && batch.Status != "active" {
+		progress, progressErr := getBatchProgress(tx, batch.ID)
+		if progressErr != nil {
+			logger.Printf("[BATCH] CompleteTasks: failed to read progress for terminal batch %d: %v", batch.ID, progressErr)
+		}
+		c.JSON(http.StatusConflict, gin.H{
+			"error":           fmt.Sprintf("cannot complete tasks while batch status is '%s'", batch.Status),
+			"current_status":  batch.Status,
+			"completed_count": progress.CompletedCount,
+			"task_count":      progress.TaskCount,
+		})
+		return
+	}
+
+	progress, err := getBatchProgress(tx, batch.ID)
+	if err != nil {
+		logger.Printf("[BATCH] CompleteTasks: failed to read progress for batch %d: %v", batch.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	if quantity > progress.TaskCount {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      fmt.Sprintf("quantity exceeds batch task_count: task_count=%d, requested=%d", progress.TaskCount, quantity),
+			"task_count": progress.TaskCount,
+			"requested":  quantity,
+		})
+		return
+	}
+
+	type taskGroupTemplateRow struct {
+		ID                 int64          `db:"id"`
+		OrderID            int64          `db:"order_id"`
+		SOPID              int64          `db:"sop_id"`
+		WorkstationID      sql.NullInt64  `db:"workstation_id"`
+		SceneID            sql.NullInt64  `db:"scene_id"`
+		SubsceneID         int64          `db:"subscene_id"`
+		BatchName          sql.NullString `db:"batch_name"`
+		SceneName          sql.NullString `db:"scene_name"`
+		SubsceneName       sql.NullString `db:"subscene_name"`
+		FactoryID          sql.NullInt64  `db:"factory_id"`
+		OrganizationID     sql.NullInt64  `db:"organization_id"`
+		InitialSceneLayout sql.NullString `db:"initial_scene_layout"`
+	}
+	var groupTemplate taskGroupTemplateRow
+	if err := tx.Get(&groupTemplate, `
+		SELECT
+			id, order_id, sop_id, workstation_id, scene_id, subscene_id,
+			batch_name, scene_name, subscene_name, factory_id, organization_id,
+			initial_scene_layout
+		FROM tasks
+		WHERE batch_id = ? AND deleted_at IS NULL AND sop_id = ? AND subscene_id = ?
+		ORDER BY assigned_at ASC, id ASC
+		LIMIT 1`+lockClause, batch.ID, sopID, subsceneID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task group not found in batch"})
+			return
+		}
+		logger.Printf("[BATCH] CompleteTasks: failed to lock task group for batch %d: %v", batch.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+
+	type pendingTaskRow struct {
+		ID     int64  `db:"id"`
+		TaskID string `db:"task_id"`
+	}
+	tasks := make([]pendingTaskRow, 0)
+	if err := tx.Select(&tasks, `
+		SELECT id, task_id
+		FROM tasks
+		WHERE batch_id = ? AND deleted_at IS NULL AND status = 'pending' AND sop_id = ? AND subscene_id = ?
+		ORDER BY assigned_at ASC, id ASC
+		LIMIT ?`+lockClause, batch.ID, sopID, subsceneID, quantity); err != nil {
+		logger.Printf("[BATCH] CompleteTasks: failed to lock pending tasks for batch %d group %d/%d: %v", batch.ID, sopID, subsceneID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	if len(tasks) < quantity {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":         fmt.Sprintf("quantity exceeds pending task count for selected group: pending_count=%d, requested=%d", len(tasks), quantity),
+			"pending_count": len(tasks),
+			"requested":     quantity,
+		})
+		return
+	}
+
+	completedTasks := make([]CompleteTasksTask, 0, quantity)
+	completedAt := now.Format(time.RFC3339)
+	for _, task := range tasks {
+		res, err := tx.Exec(`
+			UPDATE tasks
+			SET status = 'completed',
+			    started_at = COALESCE(started_at, ?),
+			    completed_at = ?,
+			    updated_at = ?
+			WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
+		`, now, now, now, task.ID)
+		if err != nil {
+			logger.Printf("[BATCH] CompleteTasks: failed to update task %d: %v", task.ID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+			return
+		}
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			logger.Printf("[BATCH] CompleteTasks: failed to read rows affected for task %d: %v", task.ID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+			return
+		}
+		if rowsAffected == 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "task was updated by another request"})
+			return
+		}
+		completedTasks = append(completedTasks, CompleteTasksTask{
+			ID:          fmt.Sprintf("%d", task.ID),
+			TaskID:      task.TaskID,
+			Status:      "completed",
+			CompletedAt: completedAt,
+		})
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[BATCH] CompleteTasks: failed to commit batch %d tasks: %v", batch.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+
+	tryAdvanceBatchStatus(h.db, batch.ID)
+	if batch.OrderID > 0 {
+		tryAdvanceOrderStatus(h.db, batch.OrderID, h.recorderHub, h.recorderRPCTimeout)
+	}
+
+	var refreshed struct {
+		Status string `db:"status"`
+	}
+	if err := h.db.Get(&refreshed, "SELECT status FROM batches WHERE id = ? AND deleted_at IS NULL", batch.ID); err != nil {
+		logger.Printf("[BATCH] CompleteTasks: failed to read refreshed batch %d: %v", batch.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	refreshedProgress, err := getBatchProgress(h.db, batch.ID)
+	if err != nil {
+		logger.Printf("[BATCH] CompleteTasks: failed to read refreshed progress for batch %d: %v", batch.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+
+	var resp CompleteTasksResponse
+	resp.BatchID = batch.BatchID
+	resp.RequestedCount = quantity
+	resp.CompletedCount = len(completedTasks)
+	resp.CreatedCount = 0
+	resp.Group = CompleteTasksGroup{
+		SOPID:        groupTemplate.SOPID,
+		SubsceneID:   groupTemplate.SubsceneID,
+		SceneName:    nullString(groupTemplate.SceneName),
+		SubsceneName: nullString(groupTemplate.SubsceneName),
+	}
+	resp.Tasks = completedTasks
+	resp.Batch.ID = fmt.Sprintf("%d", batch.ID)
+	resp.Batch.Status = refreshed.Status
+	resp.Batch.CompletedCount = refreshedProgress.CompletedCount
+	resp.Batch.TaskCount = refreshedProgress.TaskCount
+	c.JSON(http.StatusOK, resp)
+}
+
 func (h *BatchHandler) notifyRecorderCancelTasks(ctx context.Context, batchID int64, rows []taskDeviceRow) {
 	notifyRecorderCancelTasksWithHub(ctx, h.recorderHub, h.recorderRPCTimeout, batchID, rows)
 }
@@ -910,13 +1265,23 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Lock order and validate quota
+	// Lock order and validate task-row quota.
 	type orderQuotaRow struct {
-		TargetCount    int   `db:"target_count"`
-		OrganizationID int64 `db:"organization_id"`
+		OrganizationID int64  `db:"organization_id"`
+		Status         string `db:"status"`
+		TargetCount    int    `db:"target_count"`
+		TaskCount      int    `db:"task_count"`
 	}
 	var orderQuota orderQuotaRow
-	if err := tx.Get(&orderQuota, "SELECT target_count, organization_id FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", req.OrderID); err != nil {
+	if err := tx.Get(&orderQuota, `
+		SELECT
+			o.organization_id,
+			o.status,
+			o.target_count,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL) AS task_count
+		FROM orders o
+		WHERE o.id = ? AND o.deleted_at IS NULL
+		LIMIT 1`+forUpdateClause(tx), req.OrderID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("order not found: %d", req.OrderID)})
 			return
@@ -925,23 +1290,18 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
 		return
 	}
-
-	// Count existing tasks for this order
-	var existingCompletedCount int
-	if err := tx.Get(&existingCompletedCount, "SELECT COUNT(*) FROM tasks WHERE order_id = ? AND deleted_at IS NULL AND status = 'completed'", req.OrderID); err != nil {
-		logger.Printf("[BATCH] Failed to count completed tasks: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create batch"})
+	if orderQuota.Status == "completed" {
+		c.JSON(http.StatusConflict, gin.H{"error": "order is completed; cannot create new batch tasks"})
 		return
 	}
-
-	remaining := orderQuota.TargetCount - existingCompletedCount
+	remaining := orderQuota.TargetCount - orderQuota.TaskCount
 	if totalQuantity > remaining {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":           fmt.Sprintf("quota exceeded: target_count=%d, completed_count=%d, remaining=%d, requested=%d", orderQuota.TargetCount, existingCompletedCount, remaining, totalQuantity),
-			"target_count":    orderQuota.TargetCount,
-			"completed_count": existingCompletedCount,
-			"remaining":       remaining,
-			"requested":       totalQuantity,
+			"error":        fmt.Sprintf("quota exceeded: target_count=%d, task_count=%d, remaining=%d, requested=%d", orderQuota.TargetCount, orderQuota.TaskCount, remaining, totalQuantity),
+			"target_count": orderQuota.TargetCount,
+			"task_count":   orderQuota.TaskCount,
+			"remaining":    remaining,
+			"requested":    totalQuantity,
 		})
 		return
 	}
@@ -953,7 +1313,7 @@ func (h *BatchHandler) CreateBatch(c *gin.Context) {
 		OrganizationID int64 `db:"organization_id"`
 	}
 	var ws wsRow
-	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", req.WorkstationID); err != nil {
+	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1"+forUpdateClause(tx), req.WorkstationID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("workstation not found: %d", req.WorkstationID)})
 			return
@@ -1189,7 +1549,47 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Lock and validate batch
+	var batchOrderID int64
+	if err := tx.Get(
+		&batchOrderID,
+		"SELECT order_id FROM batches WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+		batchNumID,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+			return
+		}
+		logger.Printf("[BATCH] Failed to read batch order: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+
+	// Lock order before locking the batch. Order-completion finalization also
+	// uses order -> batch ordering, so keeping this consistent avoids deadlocks.
+	type orderQuotaRow struct {
+		OrganizationID int64  `db:"organization_id"`
+		Status         string `db:"status"`
+		TargetCount    int    `db:"target_count"`
+		TaskCount      int    `db:"task_count"`
+	}
+	var orderQuota orderQuotaRow
+	if err := tx.Get(&orderQuota, `
+		SELECT
+			o.organization_id,
+			o.status,
+			o.target_count,
+			(SELECT COUNT(*) FROM tasks t WHERE t.order_id = o.id AND t.deleted_at IS NULL) AS task_count
+		FROM orders o
+		WHERE o.id = ? AND o.deleted_at IS NULL
+		LIMIT 1`+forUpdateClause(tx), batchOrderID); err != nil {
+		logger.Printf("[BATCH] Failed to lock order: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+	// organization_id is derived from the order (same as CreateBatch).
+	organizationID := orderQuota.OrganizationID
+
+	// Lock and validate batch after the order lock.
 	type batchStatusRow struct {
 		ID            int64  `db:"id"`
 		OrderID       int64  `db:"order_id"`
@@ -1198,7 +1598,7 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 	}
 	var batch batchStatusRow
 	if err := tx.Get(&batch,
-		"SELECT id, order_id, workstation_id, status FROM batches WHERE id = ? AND deleted_at IS NULL FOR UPDATE",
+		"SELECT id, order_id, workstation_id, status FROM batches WHERE id = ? AND deleted_at IS NULL"+forUpdateClause(tx),
 		batchNumID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
@@ -1208,7 +1608,10 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
 	}
-
+	if batch.OrderID != batchOrderID {
+		c.JSON(http.StatusConflict, gin.H{"error": "batch order changed during adjustment; retry request"})
+		return
+	}
 	if batch.Status != "pending" && batch.Status != "active" {
 		c.JSON(http.StatusConflict, gin.H{
 			"error":          fmt.Sprintf("batch status is '%s'; only pending or active batches can be adjusted", batch.Status),
@@ -1217,25 +1620,9 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 		return
 	}
 
-	// Lock order for quota check and read organization_id (consistent with CreateBatch).
-	type orderQuotaRow struct {
-		TargetCount    int   `db:"target_count"`
-		OrganizationID int64 `db:"organization_id"`
-	}
-	var orderQuota orderQuotaRow
-	if err := tx.Get(&orderQuota, "SELECT target_count, organization_id FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", batch.OrderID); err != nil {
-		logger.Printf("[BATCH] Failed to lock order: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
-		return
-	}
-	targetCount := orderQuota.TargetCount
-	// organization_id is derived from the order (same as CreateBatch).
-	organizationID := orderQuota.OrganizationID
-
-	// Count current order-level completed count for quota check (completed-only).
-	var orderCompletedCount int
-	if err := tx.Get(&orderCompletedCount, "SELECT COUNT(*) FROM tasks WHERE order_id = ? AND deleted_at IS NULL AND status = 'completed'", batch.OrderID); err != nil {
-		logger.Printf("[BATCH] Failed to count order completed tasks: %v", err)
+	var currentBatchTaskCount int
+	if err := tx.Get(&currentBatchTaskCount, "SELECT COUNT(*) FROM tasks WHERE batch_id = ? AND deleted_at IS NULL", batchNumID); err != nil {
+		logger.Printf("[BATCH] Failed to count current batch tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
 	}
@@ -1247,7 +1634,7 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 		OrganizationID int64 `db:"organization_id"`
 	}
 	var ws wsRow
-	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", batch.WorkstationID); err != nil {
+	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1"+forUpdateClause(tx), batch.WorkstationID); err != nil {
 		logger.Printf("[BATCH] Failed to get workstation: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
 		return
@@ -1293,7 +1680,8 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 	}
 
 	plans := make([]groupPlan, 0, len(req.TaskGroups))
-	batchDelta := 0
+	requestedKeys := make(map[string]struct{}, len(req.TaskGroups))
+	requestedBatchTargetTotal := 0
 
 	for _, tg := range req.TaskGroups {
 		if tg.SOPID <= 0 {
@@ -1308,6 +1696,8 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be >= 0"})
 			return
 		}
+		requestedKeys[fmt.Sprintf("%d_%d", tg.SOPID, tg.SubsceneID)] = struct{}{}
+		requestedBatchTargetTotal += tg.Quantity
 
 		// Count current, locked, pending-only for this (sop_id, subscene_id) in this batch
 		var counts struct {
@@ -1399,19 +1789,48 @@ func (h *BatchHandler) AdjustBatchTasks(c *gin.Context) {
 			}
 		}
 
-		batchDelta += plan.toInsert - plan.toDelete
 		plans = append(plans, plan)
 	}
 
-	// Quota check (completed-only): batch_delta (new tasks) must not exceed remaining = target_count - completed_count.
-	remaining := targetCount - orderCompletedCount
-	if batchDelta > remaining {
+	type currentGroupCountRow struct {
+		SOPID      int64 `db:"sop_id"`
+		SubsceneID int64 `db:"subscene_id"`
+		Count      int   `db:"task_count"`
+	}
+	var currentGroups []currentGroupCountRow
+	if err := tx.Select(&currentGroups, `
+		SELECT sop_id, subscene_id, COUNT(*) AS task_count
+		FROM tasks
+		WHERE batch_id = ? AND deleted_at IS NULL
+		GROUP BY sop_id, subscene_id
+	`, batchNumID); err != nil {
+		logger.Printf("[BATCH] Failed to count current batch task groups: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust batch tasks"})
+		return
+	}
+	for _, group := range currentGroups {
+		key := fmt.Sprintf("%d_%d", group.SOPID, group.SubsceneID)
+		if _, ok := requestedKeys[key]; ok {
+			continue
+		}
+		requestedBatchTargetTotal += group.Count
+	}
+
+	if orderQuota.Status == "completed" && requestedBatchTargetTotal > currentBatchTaskCount {
+		c.JSON(http.StatusConflict, gin.H{"error": "order is completed; cannot add tasks to batch"})
+		return
+	}
+
+	maxBatchTarget := orderQuota.TargetCount - orderQuota.TaskCount + currentBatchTaskCount
+	if requestedBatchTargetTotal > maxBatchTarget {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":           fmt.Sprintf("quota exceeded: target_count=%d, completed_count=%d, remaining=%d, batch_delta=%d", targetCount, orderCompletedCount, remaining, batchDelta),
-			"target_count":    targetCount,
-			"completed_count": orderCompletedCount,
-			"remaining":       remaining,
-			"batch_delta":     batchDelta,
+			"error":                      fmt.Sprintf("quota exceeded: target_count=%d, order_task_count=%d, current_batch_task_count=%d, max_batch_target=%d, requested_batch_task_count=%d", orderQuota.TargetCount, orderQuota.TaskCount, currentBatchTaskCount, maxBatchTarget, requestedBatchTargetTotal),
+			"target_count":               orderQuota.TargetCount,
+			"order_task_count":           orderQuota.TaskCount,
+			"current_batch_task_count":   currentBatchTaskCount,
+			"max_batch_target":           maxBatchTarget,
+			"requested_batch_task_count": requestedBatchTargetTotal,
+			"remaining_assignable":       orderQuota.TargetCount - orderQuota.TaskCount,
 		})
 		return
 	}
@@ -1531,7 +1950,7 @@ func (h *BatchHandler) RecallBatch(c *gin.Context) {
 		StartedAt sql.NullTime `db:"started_at"`
 	}
 	var cur statusRow
-	if err := tx.Get(&cur, "SELECT status, started_at FROM batches WHERE id = ? AND deleted_at IS NULL FOR UPDATE", id); err != nil {
+	if err := tx.Get(&cur, "SELECT status, started_at FROM batches WHERE id = ? AND deleted_at IS NULL"+forUpdateClause(tx), id); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
 			return
@@ -1771,8 +2190,7 @@ func syncWorkstationStatusFromBatchesTx(tx *sqlx.Tx, workstationID int64) error 
 	if err := tx.Get(&curStatus, `
 		SELECT status FROM workstations
 		WHERE id = ? AND deleted_at IS NULL
-		FOR UPDATE
-	`, workstationID); err != nil {
+	`+forUpdateClause(tx), workstationID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
@@ -1807,9 +2225,7 @@ func syncWorkstationStatusFromBatchesTx(tx *sqlx.Tx, workstationID int64) error 
 }
 
 // finalizeOpenBatchesAfterOrderCompletedTx runs inside the same transaction as the order -> completed transition.
-// It cancels non-terminal tasks (pending, ready, in_progress) on batches that are still pending or active for
-// this order, then sets those batches to completed so batch state matches a finished order.
-// Workstation status is re-synced for each affected workstation.
+// It cancels runnable tasks on open batches, marks those batches completed, and re-syncs affected workstations.
 // Before mutating tasks, it returns rows for notifyRecorderCancelTasksWithHub (ready -> clear, in_progress -> cancel).
 func finalizeOpenBatchesAfterOrderCompletedTx(tx *sqlx.Tx, orderID int64, now time.Time) ([]orderCompletionRecorderNotify, error) {
 	var wsIDs []int64
@@ -1824,7 +2240,6 @@ func finalizeOpenBatchesAfterOrderCompletedTx(tx *sqlx.Tx, orderID int64, now ti
 		return nil, nil
 	}
 
-	// Collect ready/in_progress tasks for Axon RPC (same join as PATCH batch cancel).
 	var notifyRaw []taskDeviceBatchRow
 	if err := tx.Select(&notifyRaw, `
 		SELECT
@@ -1857,14 +2272,16 @@ func finalizeOpenBatchesAfterOrderCompletedTx(tx *sqlx.Tx, orderID int64, now ti
 	}
 
 	if _, err := tx.Exec(`
-		UPDATE tasks t
-		INNER JOIN batches b ON b.id = t.batch_id AND b.deleted_at IS NULL
-		SET t.status = 'cancelled', t.updated_at = ?
-		WHERE t.order_id = ?
-		  AND t.deleted_at IS NULL
-		  AND b.status IN ('pending', 'active')
-		  AND t.status IN ('pending', 'ready', 'in_progress')
-	`, now, orderID); err != nil {
+		UPDATE tasks
+		SET status = 'cancelled', updated_at = ?
+		WHERE order_id = ?
+		  AND deleted_at IS NULL
+		  AND status IN ('pending', 'ready', 'in_progress')
+		  AND batch_id IN (
+		    SELECT id FROM batches
+		    WHERE order_id = ? AND deleted_at IS NULL AND status IN ('pending', 'active')
+		  )
+	`, now, orderID, orderID); err != nil {
 		return nil, err
 	}
 
@@ -1906,7 +2323,7 @@ func tryAdvanceBatchStatus(db *sqlx.DB, batchID int64) {
 		Status string `db:"status"`
 	}
 	var info batchInfo
-	if err := tx.Get(&info, "SELECT status FROM batches WHERE id = ? AND deleted_at IS NULL FOR UPDATE", batchID); err != nil {
+	if err := tx.Get(&info, "SELECT status FROM batches WHERE id = ? AND deleted_at IS NULL"+forUpdateClause(tx), batchID); err != nil {
 		if err != sql.ErrNoRows {
 			logger.Printf("[BATCH] tryAdvanceBatchStatus: failed to lock batch %d: %v", batchID, err)
 		}
