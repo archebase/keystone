@@ -303,6 +303,7 @@ npm run build
 - 大屏主体采用三行布局：顶部状态栏、KPI 条、主驾驶舱 grid。主驾驶舱再分为设备状态、中央 Video Flight Stage + 趋势、最近任务流三列，所有列都使用 `minmax(0, 1fr)` 和 `min-height: 0` 允许内部压缩。
 - `1366x768` 与 `1600x900` 下优先保留顶部状态、8 个 KPI、Video Flight Stage、趋势、设备状态和最近任务流；设备/任务列表可减少条目，质量指标压缩为任务流内的窄条，不再占用独立面板。
 - 70 寸电视或浏览器页面缩放放大时，按 125% 到 165% 页面缩放后的等效视口兜底验证，例如 `1536x864`、`1280x720`、`1152x648`；这些尺寸仍应保持三列驾驶舱，不应触发普通后台或移动端纵向堆叠。
+- 顶部状态栏在紧凑和缩放等效视口下仍保留完整日期时间 `YYYY/MM/DD HH:mm:ss` 与全屏按钮；不得改成短时间、隐藏时间、隐藏按钮，或把按钮缩小到远距离不可用。
 - 趋势区域使用紧凑的语义色堆叠条表达 completed / in_progress / pending / failed，不在本轮引入 ECharts，避免为一屏高度和 resize 生命周期增加复杂度。
 - 空数据、API 失败和 fallback 数据仍复用 `useProductionBigScreenData.js` 的稳定结构；布局高度不因错误提示、空状态或刷新按钮出现而变化。
 
@@ -315,6 +316,7 @@ npm run build
 - 任务流和设备列表数量受限，不造成小屏溢出。
 - API 失败时有可见降级提示。
 - `3840x2160`、`2560x1440`、`1920x1080`、`1600x900`、`1366x768` 横屏视口下，document/body 不出现纵向滚动，dashboard 根容器高度不超过 viewport，核心区域不重叠。
+- `1366x768`、`1280x720`、`1152x648` 下顶部完整日期时间和全屏按钮均可见，且不触发横向滚动。
 
 **验证命令:**
 
@@ -343,6 +345,7 @@ npm run build
 **实现要点:**
 
 - 检查目标视口：`3840x2160`、`2560x1440`、`1920x1080`、`1600x900`、`1366x768`。
+- 额外检查页面缩放后的等效视口：`1280x720`、`1152x648`；完整日期时间和全屏按钮必须可见。
 - 检查横向滚动、文字重叠、视频舞台被挤压、图表空白。
 - 检查 timer、resize listener、fullscreen listener、chart instance、current/next video listeners、hidden next video、MCAP reader 和 object URL 的释放。
 - 检查轮播资源上限：连续运行时只保留 current + next，hidden video / MCAP reader / object URL 数量不随轮播无限增长。
