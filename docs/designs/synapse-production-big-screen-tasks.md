@@ -59,8 +59,8 @@ SPDX-License-Identifier: MulanPSL-2.0
 - 复用现有 `resolveProductionDashboardScope()`、查询参数解析、只读事务和 scope 过滤。
 - 新增 overview response structs。
 - 第一版返回完整结构，即使部分数组为空。
-- `summary`、`trend`、`task_status_distribution`、`devices`、`recent_tasks` 优先实现。
-- 第一版不返回独立 `alerts` 字段，不建设告警栏；设备离线、任务失败、接口降级等异常内联展示在顶部状态、设备状态和任务流中。
+- `summary`、`trend`、`task_status_distribution`、`devices`、`stations`、`recent_tasks` 优先实现。
+- 第一版不返回独立 `alerts` 字段，不建设告警栏；设备不在线、工位离线、任务失败、接口降级等异常内联展示在顶部状态、设备/工位状态和任务流中。
 - `previews.video_url` 可以为空，但如果非空必须是真实可播放视频 URL；为空时返回 episode/task 元信息和可解析的 `preview_url`，保证前端可复用数据预览页播放 MCAP 图像帧。
 
 **验收标准:**
@@ -69,7 +69,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 - `data_collector` 自动限定到绑定工位。
 - 空数据返回 200，数值为 0，数组为空。
 - 参数错误返回 400，未认证返回 401。
-- 响应包含 `generated_at`、`scope`、`summary`、`trend`、`task_status_distribution`、`quality`、`devices`、`recent_tasks`、`previews`。
+- 响应包含 `generated_at`、`scope`、`summary`、`trend`、`task_status_distribution`、`quality`、`devices`、`stations`、`recent_tasks`、`previews`。
 - `previews.video_url` 为空时仍有 `title`、`task_name`、`robot_name`、`station_name`、`status`、`created_at`；有 MCAP 时返回 `preview_url`；`video_url` 非空时必须是真实可播放视频。
 
 **验证命令:**
@@ -99,14 +99,15 @@ gofmt -w internal/api/handlers/production_dashboard.go internal/api/handlers/pro
 
 **实现要点:**
 
-- `trend` 增加 `failed`。
-- `devices.items` 增加 `current_task`、`station_name`、`last_seen_at`，字段缺失时返回空字符串。
+- overview `trend` 改为数据生产数量趋势，按 `episodes` 数据生产记录聚合，不再使用任务状态桶作为趋势口径。
+- `devices` 只返回在线/不在线汇总，不返回 `items`；设备在线以 recorder hub 与 transfer hub 均联通为准。
+- `stations.summary` 返回工位管理状态汇总：`active` 执行中、`inactive` 待命中、`break` 休息中、`offline` 离线。
 - `recent_tasks` 覆盖最近完成、失败、进行中的任务。
 - `quality.recent_failures` 如果查询成本可控则实现，否则保留空数组。
 
 **验收标准:**
 
-- overview 中 `trend` 每个点包含 `completed`、`in_progress`、`pending`、`failed`。
+- overview 中 `trend` 每个点包含 `date`、`total`，`total` 表示当天数据生产记录数量。
 - `recent_tasks` 按最近更新时间倒序，受 `recent_limit` 限制。
 - 所有 limit 参数有上限，避免大屏接口返回过大。
 
@@ -290,11 +291,14 @@ npm run build
 
 **实现要点:**
 
-- 趋势图复用 ECharts，更新时复用实例。
-- 设备状态清楚区分 online、idle、busy、offline、abnormal。
-- 设备状态区不再渲染具体设备、工位、机器人、操作员或当前任务明细；改为设备整体与工位整体的状态摘要、在线率、状态分布条和抽象状态矩阵。
-- 第一版可继续使用现有 `devices.summary` / `devices.items` 计算摘要和矩阵数量，但 UI 只表达状态，不显示具体名称；后续如需严格拆分，可再扩展 overview API 的 `robots.summary` 与 `stations.summary`。
-- 可以为设备/工位状态加入克制 CSS 动效：忙碌状态灯低幅度呼吸、状态分布条宽度过渡、6 到 8 秒一次的淡巡检扫描、刷新成功短脉冲；必须支持 `prefers-reduced-motion`。
+- 趋势区域对齐后台“数据生产统计”页面的趋势分析：使用 ECharts，固定近 7 天，时间粒度为天，默认展示每日数据生产“总数量”柱状图。
+- 趋势数据需要补齐 7 个日期桶；API 缺失某一天时显示 0，避免布局和横轴随数据稀疏程度变化。
+- 设备状态只清楚区分在线、不在线；不再表达 busy、idle、abnormal 等生产状态。
+- 工位状态按后台工位管理状态表达：`active` 执行中、`inactive` 待命中、`break` 休息中、`offline` 离线。
+- 设备不在线和工位离线使用灰色，不使用红色；红色只保留给任务失败、质检失败等生产异常。
+- 设备状态区不再渲染具体设备、工位、机器人、操作员或当前任务明细；改为设备状态与工位状态摘要、在线率、状态分布条和抽象状态矩阵。
+- overview 不再返回 `devices.items` 或 `stations.items`；UI 使用 `devices.summary` 与 `stations.summary` 计算摘要和矩阵数量。
+- 可以为设备/工位状态加入克制 CSS 动效：执行中状态灯低幅度呼吸、状态分布条宽度过渡、6 到 8 秒一次的淡巡检扫描、刷新成功短脉冲；必须支持 `prefers-reduced-motion`。
 - 禁止大面积霓虹、持续快速闪烁、跑马灯、雷达式强动效，以及任何会改变 grid track、面板高度或造成滚动的动画。
 - 任务流显示最近任务，不做后台表格。
 - 异常状态内联展示在顶部状态、设备状态和任务流中，不新增告警栏。
@@ -304,13 +308,13 @@ npm run build
 - `1366x768` 与 `1600x900` 下优先保留顶部状态、8 个 KPI、Video Flight Stage、趋势、设备状态和最近任务流；设备/任务列表可减少条目，质量指标压缩为任务流内的窄条，不再占用独立面板。
 - 70 寸电视或浏览器页面缩放放大时，按 125% 到 165% 页面缩放后的等效视口兜底验证，例如 `1536x864`、`1280x720`、`1152x648`；这些尺寸仍应保持三列驾驶舱，不应触发普通后台或移动端纵向堆叠。
 - 顶部状态栏在紧凑和缩放等效视口下仍保留完整日期时间 `YYYY/MM/DD HH:mm:ss` 与全屏按钮；不得改成短时间、隐藏时间、隐藏按钮，或把按钮缩小到远距离不可用。
-- 趋势区域使用紧凑的语义色堆叠条表达 completed / in_progress / pending / failed，不在本轮引入 ECharts，避免为一屏高度和 resize 生命周期增加复杂度。
+- 趋势区域不再使用 completed / in_progress / pending / failed 堆叠条；本轮改为与数据生产统计一致的近七天按天 ECharts 数量趋势，但不带统计页的 tab、筛选器或 dataZoom。
 - 空数据、API 失败和 fallback 数据仍复用 `useProductionBigScreenData.js` 的稳定结构；布局高度不因错误提示、空状态或刷新按钮出现而变化。
 
 **验收标准:**
 
-- `trend`、`devices`、`recent_tasks` 和质量/异常状态均能正常展示。
-- 设备状态区只展示设备/工位聚合健康态，不出现具体设备名、工位名、机器人名、操作员或当前任务明细。
+- `trend`、`devices`、`stations`、`recent_tasks` 和质量/异常状态均能正常展示。
+- 设备/工位状态区只展示设备和工位聚合状态，不出现具体设备名、工位名、机器人名、操作员或当前任务明细。
 - 设备/工位状态动画在默认模式下克制可见，在 `prefers-reduced-motion` 下静态或近似静态。
 - 图表 resize 正常，组件卸载时 dispose。
 - 任务流和设备列表数量受限，不造成小屏溢出。
@@ -426,7 +430,7 @@ docs/designs/synapse-production-big-screen-tasks.md，先实现 T1。
 这些问题不阻塞 T1/T3/T4，但会影响后续打磨：
 
 - `video_url` 真实来源是否存在；若不存在，第一版必须使用 `preview_url` 的 MCAP 图像帧播放，不得伪造 `<video>` 播放。
-- 设备在线率以 workstation status、robot status、连接 hub，还是最后心跳为准。
+- 如果后续要细分“部分联通”，需确认 recorder-only、transfer-only 是否单独展示；当前大屏只展示两个 hub 均在线的设备在线率。
 - 大屏是否允许 data_collector 访问，还是只给 admin/只读展示账号。
 - 生产现场默认刷新频率。
 - 异常状态在顶部状态、设备状态和任务流中的展示阈值。

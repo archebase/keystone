@@ -151,7 +151,6 @@ func TestProductionDashboardOverviewEmptyScopeKeepsContract(t *testing.T) {
 	}
 	if len(got.Trend) != 0 ||
 		len(got.TaskStatusDistribution) != 0 ||
-		len(got.Devices.Items) != 0 ||
 		len(got.RecentTasks) != 0 ||
 		len(got.Previews) != 0 {
 		t.Fatalf("empty overview arrays should be empty: %+v", got)
@@ -171,16 +170,33 @@ func TestProductionDashboardOverviewDistributionAndDevices(t *testing.T) {
 		t.Fatalf("distribution len = %d, want 3: %+v", len(distribution), distribution)
 	}
 
-	devices := buildOverviewDevices([]dashboardStationItem{
-		{ID: "1", Name: "A", Status: "active"},
-		{ID: "2", Name: "B", Status: "inactive"},
-		{ID: "3", Name: "C", Status: "offline"},
+	devices := buildOverviewDevices([]dashboardDeviceConnectionRow{
+		{DeviceID: "robot-a"},
+		{DeviceID: "robot-b"},
+		{DeviceID: "robot-c"},
+	}, func(deviceID string) bool {
+		return deviceID == "robot-a" || deviceID == "robot-b"
 	})
 	if devices.Summary.Total != 3 || devices.Summary.Online != 2 || devices.Summary.Offline != 1 {
 		t.Fatalf("unexpected device summary: %+v", devices.Summary)
 	}
 	if devices.Summary.OnlineRate != 66.7 {
 		t.Fatalf("online rate = %.1f, want 66.7", devices.Summary.OnlineRate)
+	}
+
+	stations := buildOverviewStations([]dashboardStationItem{
+		{ID: "1", Name: "A", Status: "active"},
+		{ID: "2", Name: "B", Status: "inactive"},
+		{ID: "3", Name: "C", Status: "break"},
+		{ID: "4", Name: "D", Status: "offline"},
+	})
+	if stations.Summary.Total != 4 || stations.Summary.Active != 1 ||
+		stations.Summary.Inactive != 1 || stations.Summary.Break != 1 ||
+		stations.Summary.Online != 3 || stations.Summary.Offline != 1 {
+		t.Fatalf("unexpected station summary: %+v", stations.Summary)
+	}
+	if stations.Summary.OnlineRate != 75 {
+		t.Fatalf("station online rate = %.1f, want 75", stations.Summary.OnlineRate)
 	}
 }
 

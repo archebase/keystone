@@ -59,7 +59,7 @@ Synapse 生产大屏用于机器人数据生产现场的常驻展示，也用于
 | 管理者 | 今日产能、完成率、失败率、设备利用情况 | KPI、趋势、异常设备 |
 | 客户 | 生产过程是否专业可信，机器人数据生产是否可视化 | 中央视频舞台、生产流、整体视觉品质 |
 | 现场操作人员 | 当前任务、工位状态、设备异常 | 任务流、设备状态 |
-| 运维或生产负责人 | 系统是否稳定，失败是否需要处理 | 同步状态、失败任务、设备离线、刷新时间 |
+| 运维或生产负责人 | 系统是否稳定，失败是否需要处理 | 同步状态、失败任务、设备不在线、刷新时间 |
 
 ### 2.2 设备与观看距离
 
@@ -124,16 +124,16 @@ KPI 文案应短，数字应使用 tabular numbers。数字刷新可以轻微计
 
 ### 3.4 生产趋势
 
-职责：展示产能或任务状态变化。
+职责：展示数据生产产能变化。
 
-可选图表：
+大屏第一版趋势区域应对齐后台“数据生产统计”页面中的“趋势分析”视觉和口径：
 
-- 最近 7 天任务完成趋势
-- 最近 N 个时间窗口的 completed / in_progress / pending / failed
-- 质检通过率趋势
-- 生产数据量趋势
-
-当前项目已有 ECharts 使用方式，后续实现应复用现有 ECharts 初始化、更新、resize、dispose 模式。
+- 固定展示近 7 天数据。
+- 时间粒度固定为天。
+- 默认展示数量趋势，使用 `trend` 每日数据生产记录合计作为“总数量”；口径与后台数据生产统计一致，基于 `episodes`，不是任务数。
+- 每天的数据桶必须补齐；缺失日期显示 0，避免图表长度随 API 数据稀疏程度变化。
+- 使用 ECharts 柱状趋势图，复用后台统计页的初始化、`setOption`、resize 和 dispose 模式。
+- 大屏趋势区域空间有限，不显示趋势 tab、筛选器或 dataZoom；只保留清晰的日期横轴、数量纵轴、总数量柱状图和简短标题。
 
 ### 3.5 设备状态
 
@@ -143,15 +143,15 @@ KPI 文案应短，数字应使用 tabular numbers。数字刷新可以轻微计
 
 内容：
 
-- 设备整体：在线 / 生产中 / 待命 / 离线 / 异常汇总。
-- 工位整体：在线 / 占用 / 空闲 / 离线 / 异常汇总。
-- 设备在线率、工位在线率、生产中数量、可用数量和异常数量。
-- 设备状态分布条与工位状态分布条，使用语义色表达 busy / idle / offline / abnormal。
-- 抽象状态矩阵或状态灯阵：每个格子只表达一个设备或工位的状态，不显示名称、ID、机器人名、操作员或当前任务。
+- 设备整体只表达在线状态：在线 / 不在线，以及设备在线率。
+- 工位整体按后台工位管理状态表达：执行中 / 待命中 / 休息中 / 离线。
+- 设备在线率、工位在线率、执行中工位数量、待命/休息/离线工位数量。
+- 设备状态分布条只使用在线 / 不在线两段；工位状态分布条使用 active / inactive / break / offline 语义色。
+- 抽象状态矩阵或状态灯阵：每个格子只表达一个设备或工位状态，不显示名称、ID、机器人名、操作员或当前任务。
 
-状态颜色应明确但不刺眼。异常要醒目，健康状态要稳定。异常、离线或心跳超时信息仍在设备状态区内联表达，但不新增独立告警栏。
+状态颜色应明确但不刺眼。任务失败、质检失败等生产异常要醒目，健康状态要稳定。设备不在线与工位离线用灰色表达资源不可用，相关信息仍在设备/工位状态区内联表达，但不新增独立告警栏。
 
-第一版如果 overview 仍只返回 `devices.summary` 和 `devices.items`，前端可以用 `summary` 直接构建设备/工位摘要，并将 `items` 仅作为计算状态矩阵数量的来源，不在 UI 中渲染具体名称。后续如需更严谨地区分机器人与工位，可在 overview 中补充 `robots.summary` 与 `stations.summary`，但这不是当前一屏布局优化的前置条件。
+overview 不再返回设备或工位明细 `items`。前端只能使用 `devices.summary` 与 `stations.summary` 构建设备状态、工位状态摘要、分布条和抽象矩阵，避免大屏泄露或挤占空间展示具体设备、工位、机器人、操作员或当前任务明细。
 
 ### 3.6 最近任务流
 
@@ -170,7 +170,7 @@ KPI 文案应短，数字应使用 tabular numbers。数字刷新可以轻微计
 第一版不设置独立告警栏，也不新增告警表。异常状态应内联展示在已有区域中，避免额外占用大屏主布局：
 
 - 顶部状态栏：展示 API 正常、降级展示、数据同步失败等全局状态。
-- 设备状态区：直接标记离线、异常或长时间无心跳的工位/设备。
+- 设备/工位状态区：直接标记设备不在线、工位离线或其他资源不可用状态。
 - 最近任务流：直接突出失败、取消、质检不通过等任务状态。
 - 质量区域：展示合格率、待检和失败数量。
 
@@ -218,7 +218,8 @@ KPI 文案应短，数字应使用 tabular numbers。数字刷新可以轻微计
 | 成功 / 在线 / 已完成 | 低饱和绿色 | 只用于正向状态 |
 | 进行中 / 主品牌 / 当前焦点 | 品牌蓝 | 用于主舞台边框、当前任务、重要数字 |
 | 待处理 / 等待 / 警告 | 琥珀色 | 不要大面积铺满 |
-| 失败 / 离线 / 异常 | 红色 | 只用于失败、离线和异常 |
+| 失败 / 质量异常 | 红色 | 只用于任务失败、质检失败等生产异常 |
+| 设备不在线 / 工位离线 | 灰色 | 表达资源不可用，不使用红色抢占失败告警语义 |
 | 中性 / 无数据 | 灰蓝 | 用于背景和非重点信息 |
 
 图表避免默认彩虹色，使用 3 到 5 个语义色即可。
@@ -521,7 +522,6 @@ GET /api/v1/production/dashboard/overview
 | `timezone_offset` | 当前前端时区 | 趋势聚合使用 |
 | `trend_days` | 7 | 趋势窗口，最大 31 |
 | `recent_limit` | 12 | 最近任务条数 |
-| `device_limit` | 16 | 设备状态条数 |
 | `preview_limit` | 8 | 轮播预览条数 |
 | `factory_id` | 空 | 管理端筛选 |
 | `organization_id` | 空 | 管理端筛选 |
@@ -554,11 +554,8 @@ GET /api/v1/production/dashboard/overview
   },
   "trend": [
     {
-      "time": "05-17",
-      "completed": 92,
-      "in_progress": 8,
-      "pending": 24,
-      "failed": 4
+      "date": "05-17",
+      "total": 92
     }
   ],
   "task_status_distribution": {
@@ -577,12 +574,23 @@ GET /api/v1/production/dashboard/overview
     "recent_failures": []
   },
   "devices": {
-    "online_count": 14,
-    "offline_count": 2,
-    "idle_count": 4,
-    "busy_count": 10,
-    "abnormal_count": 1,
-    "items": []
+    "summary": {
+      "total": 16,
+      "online": 14,
+      "offline": 2,
+      "online_rate": 87.5
+    }
+  },
+  "stations": {
+    "summary": {
+      "total": 16,
+      "online": 14,
+      "active": 8,
+      "inactive": 4,
+      "break": 2,
+      "offline": 2,
+      "online_rate": 87.5
+    }
   },
   "recent_tasks": [],
   "previews": []
@@ -596,18 +604,19 @@ GET /api/v1/production/dashboard/overview
 | `summary.today_task_count` | `tasks` 按今日时间窗口聚合 | 现有 `snapshot.tasks` 是全量 scope 计数，需要增加今日窗口 |
 | `summary.completed/in_progress/pending/failed` | `tasks.status` | 现有已支持基础状态 |
 | `summary.pass_rate` | `episodes.qa_status` 或现有 `dashboardQuality` | 现有 quality 可复用 |
-| `summary.robot_online_rate` | `workstations.status`、`robots.status`、连接快照 | 现有 stations 仅返回基础状态；在线率需要明确规则 |
-| `trend` | `tasks` 时间桶 | 现有 trend 缺少 failed |
+| `summary.robot_online_rate` | `robots.device_id` 与 recorder/transfer hub 连接快照 | 设备在线率只表达联通状态：两个 hub 均在线才算在线 |
+| `trend` | `episodes` 数据生产记录时间桶 | 与数据生产统计页数量趋势一致，按天返回每日总数量 |
 | `task_status_distribution` | `tasks.status` | 现有 tasks counts 可复用并扩展 |
 | `quality.recent_failures` | `episodes` + `tasks` + `inspectors` | 当前需新增查询 |
-| `devices.items` | `workstations` + `robots` + `data_collectors` + active task | 现有 stations 可扩展 current_task / last_seen_at |
+| `devices.summary` | `robots` + recorder/transfer hub 连接快照 | 不返回 `items`，仅返回 total / online / offline / online_rate |
+| `stations.summary` | `workstations.status` | 使用后台工位管理状态 active / inactive / break / offline |
 | `recent_tasks` | `tasks` + `batches` + `workstations` + `robots` | 现有 active_tasks 只覆盖进行中任务，需要最近完成/失败 |
 | `previews` | `episodes` + task/workstation metadata + presign/poster | 当前 episode API 可 presign MCAP，但没有视频 URL |
 
 第一版字段取舍：
 
-- `summary`、`trend`、`task_status_distribution`、`devices`、`recent_tasks` 是核心字段，应优先完成。
-- 第一版不返回独立 `alerts` 字段；任务失败、设备离线、同步降级等异常内联体现在顶部状态、设备状态和任务流中。
+- `summary`、`trend`、`task_status_distribution`、`devices`、`stations`、`recent_tasks` 是核心字段，应优先完成。
+- 第一版不返回独立 `alerts` 字段；任务失败、设备不在线、工位离线、同步降级等异常内联体现在顶部状态、设备/工位状态和任务流中。
 - `previews.video_url` 可以为空；但如果非空，必须是真实可播放视频 URL。前端不能把 `preview_url` 当作 `<video>` 源，但应把它作为 MCAP 数据预览源读取图像帧。
 - `quality.recent_failures` 如果查询成本高，可以第一期返回空数组，但保留字段。
 
@@ -616,7 +625,7 @@ GET /api/v1/production/dashboard/overview
 第一期不需要建立新告警表，也不需要独立告警栏。异常应进入已有信息区域：
 
 - 最近任务流：直接展示失败、取消、质检未通过等任务状态。
-- 设备状态区：直接展示 offline、abnormal、心跳超时等设备状态。
+- 设备/工位状态区：直接展示设备不在线、工位离线和工位状态异常口径。
 - 顶部状态栏：展示 overview 请求失败、保留旧数据、使用 fallback 等全局降级状态。
 - 质量区域：通过失败数、待检数和合格率表达质量异常。
 
@@ -731,6 +740,7 @@ page mounted
  * @property {Object<string, number>} task_status_distribution
  * @property {QualitySummary} quality
  * @property {DeviceSummary} devices
+ * @property {StationSummary} stations
  * @property {RecentTask[]} recent_tasks
  * @property {PreviewItem[]} previews
  */
@@ -751,22 +761,29 @@ page mounted
 
 /**
  * @typedef {Object} TrendPoint
- * @property {string} time
- * @property {number} completed
- * @property {number} in_progress
- * @property {number} pending
- * @property {number} failed
+ * @property {string} date
+ * @property {number} total
  */
 
 /**
- * @typedef {Object} DeviceStatus
- * @property {string} id
- * @property {string} name
- * @property {'robot'|'station'} type
- * @property {'online'|'offline'|'idle'|'busy'|'abnormal'} status
- * @property {string} station_name
- * @property {string} current_task
- * @property {string} last_seen_at
+ * @typedef {Object} DeviceSummary
+ * @property {Object} summary
+ * @property {number} summary.total
+ * @property {number} summary.online
+ * @property {number} summary.offline
+ * @property {number} summary.online_rate
+ */
+
+/**
+ * @typedef {Object} StationSummary
+ * @property {Object} summary
+ * @property {number} summary.total
+ * @property {number} summary.online
+ * @property {number} summary.active
+ * @property {number} summary.inactive
+ * @property {number} summary.break
+ * @property {number} summary.offline
+ * @property {number} summary.online_rate
  */
 
 /**
@@ -1054,7 +1071,7 @@ page mounted
 - 大屏是否必须登录，是否需要专用只读展示 token。
 - 大屏刷新频率是 15s、30s 还是可配置。
 - 异常展示规则：哪些任务/同步/设备状态需要在顶部状态、设备状态或任务流中突出。
-- 设备在线/离线判定规则：使用 workstation status、robot status、recorder/transfer hub 连接状态，还是最后心跳。
+- 后续如需展示部分联通，应定义 recorder-only、transfer-only 与完全不在线的展示规则；当前设备在线只按 recorder/transfer hub 均联通计算。
 - 质检通过率来源：`episodes.qa_status` 的哪些值算通过、失败、处理中。
 - 是否需要多组织、多工厂筛选；如果大屏部署在单工厂电视，是否应固定 scope。
 - 是否需要自动进入浏览器全屏，或者只保留手动全屏按钮。

@@ -136,7 +136,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		subsceneHandler = handlers.NewSubsceneHandler(db)
 		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
 		dataStatsHandler = handlers.NewDataProductionStatisticsHandler(db)
-		productionDashboardHandler = handlers.NewProductionDashboardHandler(db)
+		productionDashboardHandler = handlers.NewProductionDashboardHandler(db, recorderHub, transferHub)
 	}
 
 	// Create SyncHandler for cloud sync API
