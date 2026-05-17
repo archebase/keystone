@@ -200,18 +200,17 @@ func TestProductionDashboardOverviewDistributionAndDevices(t *testing.T) {
 	}
 }
 
-func TestDashboardRecentTaskPrioritySQL(t *testing.T) {
-	expr := dashboardRecentTaskPrioritySQL("t.status")
+func TestDashboardRecentTaskUpdatedAtSQL(t *testing.T) {
+	expr := dashboardRecentTaskUpdatedAtSQL("t")
 	for _, want := range []string{
-		"WHEN t.status = 'in_progress' THEN 1",
-		"WHEN t.status IN ('failed', 'cancelled') THEN 2",
-		"WHEN t.status = 'completed' THEN 3",
-		"WHEN t.status = 'ready' THEN 4",
-		"WHEN t.status = 'pending' THEN 5",
-		"ELSE 6",
+		"t.updated_at",
+		"t.completed_at",
+		"t.started_at",
+		"t.assigned_at",
+		"t.created_at",
 	} {
 		if !strings.Contains(expr, want) {
-			t.Fatalf("priority SQL should contain %q: %s", want, expr)
+			t.Fatalf("recent task updated_at SQL should contain %q: %s", want, expr)
 		}
 	}
 }

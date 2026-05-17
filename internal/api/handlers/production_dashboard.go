@@ -1210,6 +1210,7 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 	args := []interface{}{}
 	conditions, args = appendDashboardTaskScope(conditions, args, scope)
 	taskNameExpr := dashboardTaskNameSQL("t.scene_name", "t.subscene_name", "t.sop_id", "s.slug", "s.version")
+	updatedAtExpr := dashboardRecentTaskUpdatedAtSQL("t")
 	query := `
 		SELECT
 			CAST(t.id AS CHAR) AS id,
@@ -1223,7 +1224,7 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 			` + dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version") + ` AS sop_label,
 			COALESCE(e.episode_id, '') AS episode_id,
 			t.created_at AS created_at,
-			COALESCE(t.updated_at, t.completed_at, t.started_at, t.assigned_at, t.created_at) AS updated_at
+			` + updatedAtExpr + ` AS updated_at
 		FROM tasks t
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		LEFT JOIN batches b ON b.id = t.batch_id AND b.deleted_at IS NULL
@@ -1237,8 +1238,7 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 		LEFT JOIN episodes e ON e.id = latest_episode.latest_id AND e.deleted_at IS NULL
 		WHERE ` + strings.Join(conditions, " AND ") + `
 		ORDER BY
-			` + dashboardRecentTaskPrioritySQL("t.status") + ` ASC,
-			COALESCE(t.updated_at, t.completed_at, t.started_at, t.assigned_at, t.created_at) DESC,
+			` + updatedAtExpr + ` DESC,
 			t.id DESC
 		LIMIT ?
 	`
@@ -1269,15 +1269,12 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 	return items, nil
 }
 
-func dashboardRecentTaskPrioritySQL(statusExpr string) string {
-	return `CASE
-		WHEN ` + statusExpr + ` = 'in_progress' THEN 1
-		WHEN ` + statusExpr + ` IN ('failed', 'cancelled') THEN 2
-		WHEN ` + statusExpr + ` = 'completed' THEN 3
-		WHEN ` + statusExpr + ` = 'ready' THEN 4
-		WHEN ` + statusExpr + ` = 'pending' THEN 5
-		ELSE 6
-	END`
+func dashboardRecentTaskUpdatedAtSQL(taskAlias string) string {
+	prefix := strings.TrimSpace(taskAlias)
+	if prefix != "" {
+		prefix += "."
+	}
+	return `COALESCE(` + prefix + `updated_at, ` + prefix + `completed_at, ` + prefix + `started_at, ` + prefix + `assigned_at, ` + prefix + `created_at)`
 }
 
 func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope productionDashboardScope, limit int) ([]dashboardPreviewItem, error) {
