@@ -275,6 +275,7 @@ loading -> entering -> playing -> leaving -> loading(next)
 - current 正常切到 next 后，旧 current slot 才进入 idle；若它仍在轮播队列中且是 MCAP 资源，可先进入有上限的 warm handoff cache，否则释放资源。
 - 数据刷新只更新队列和元信息，不控制 current 的媒体时间轴。
 - MCAP 帧预览必须按有限帧序列播放；next armed 后可在后台继续补齐剩余有限帧。播放到当前已准备序列末尾但补齐仍在进行时停在最后一帧等待补齐，补齐失败或等待超时后再进入 next 检查；不允许用取模循环反复播放开头帧。
+- MCAP 播放速度应优先使用图像 message 的录制时间戳驱动。前端以相邻帧 `logTime` / timestamp 差值调度下一帧，不使用 `duration_seconds / frame_count` 推导平均帧率作为主路径；时间戳缺失、重复、倒退或异常时才退回保守 fallback 间隔。
 
 ### 5.1.2 不间断轮播边界
 
@@ -333,8 +334,16 @@ loading -> entering -> playing -> leaving -> loading(next)
 当前系统的真实预览更接近 MCAP 数据预览，而不是现成 MP4 视频。第一版必须明确区分“真实视频播放”和“数据预览帧播放”：
 
 - `video_url`：真实可直接播放的视频 URL，第一优先；非空时必须能被 `<video>` 播放，不能返回 MCAP presigned URL、poster URL、内部对象路径或 mock URL。
-- `preview_url`：可预览的数据 URL，例如 episode presign API 或 MCAP storage proxy URL；不是 `<video>` 的 `src`，而是前端复用 `DataPreview.vue` / `useMcapReader.js` 读取图像或压缩图像 topic 后按帧渲染。
+- `preview_url`：可预览的数据 URL，例如 episode presign API 或 MCAP storage proxy URL；不是 `<video>` 的 `src`，而是前端复用 `DataPreview.vue` / `useMcapReader.js` 读取图像或压缩图像 topic 后按帧渲染，并按 MCAP message 时间戳恢复录制节奏。
 - `poster_url`：静态封面或后端生成缩略图。
+
+MCAP 图像帧播放规则：
+
+- 优先读取每条 image message 的 `logTime` 作为录制时间轴；如果后续确认传感器 `publishTime` 更能代表业务时间线，可以改为优先 `publishTime`、缺失时退回 `logTime`。
+- 下一帧延迟等于 `next.timestamp - current.timestamp`，单位从纳秒转换为毫秒；timestamp 必须保持字符串或 `BigInt`，不能用 JavaScript `Number` 存储纳秒级大整数。
+- `duration_seconds` 只作为缺失时间戳时的 fallback 信息，不应作为正常播放速度来源。
+- 对异常 timestamp 做保护：缺失、重复、倒退时退回 fallback 帧间隔；超长 gap 可以设上限，避免大屏看起来卡死。
+- 预载窗口仍有帧数/资源上限；播放到已加载尾部但后续帧仍在补齐时，停在最后一帧等待补齐，不取模回放开头。
 
 fallback 策略：
 
@@ -779,6 +788,7 @@ page mounted
 - `previews` 队列最多保留 8 到 12 条，避免大量视频资源占用。
 - 不做 2 到 3 条前瞻预载；任意时刻只允许一个 current 播放资源和一个 next 准备资源，避免无上限创建 hidden video、MCAP reader 或 object URL。
 - 下一条未 ready 时不得清空当前舞台；current 停在最后一帧并最多等待 10 秒，超时后从头重播 current，同时继续准备同一个 next。
+- MCAP 播放 timer 应按录制 timestamp 计算下一帧延迟；如果 timestamp 不可信，fallback 到固定保守帧间隔，并对最小/最大延迟做 clamp。
 - 动画元素数量固定，避免每次轮播创建大量 DOM。
 - timers、ResizeObserver、fullscreen listener、current/next video listener、hidden next video、MCAP reader 和 object URL 必须在 unmount 清理。
 - 长列表只展示有限条目，大屏不是审计表格。

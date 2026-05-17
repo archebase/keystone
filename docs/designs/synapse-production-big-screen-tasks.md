@@ -241,6 +241,8 @@ npm run build
 - `replay current` 是唯一允许 seek 到 0 的路径，只能用于 next 等待 10 秒仍未 armed 后的当前条重播。
 - MCAP next 准备阶段只读取 metadata 和有上限的起播帧窗口，armed 后可后台补齐剩余有限帧；warm handoff cache 也必须有数量上限，不得无上限缓存大量帧。
 - MCAP 播放不得用取模循环反复播放开头帧；到达当前已准备帧序列末尾时，如果补齐仍在进行则停最后一帧等待，补齐失败或等待超时后进入 next 检查。
+- MCAP 播放速度按 image message 的录制 timestamp 驱动，优先使用 `logTime` 计算相邻帧延迟；`duration_seconds / frame_count` 只能作为 timestamp 不可用时的 fallback。
+- MCAP timestamp 在前端必须以字符串或 `BigInt` 保存，避免 JavaScript `Number` 丢失纳秒级精度；timestamp 缺失、重复、倒退或异常 gap 需要有保守 fallback 和最小/最大延迟 clamp。
 - `video_url` 缺失且 MCAP 不可用时才使用 `poster_url` 或轻量等待状态，主舞台不显示大段任务文字。
 - `video_url` 非空时必须是真实可播放视频 URL，不能使用 MCAP presigned URL、poster、内部对象路径或 mock URL 冒充。
 - 动画使用 `transform`、`opacity`、低强度 `filter` 和 `perspective`。
@@ -251,6 +253,7 @@ npm run build
 
 - 有真实 `video_url` 时可以飞入、播放、结束后飞出并切换下一条。
 - 无 `video_url` 但有 `preview_url` 时可以自动播放 MCAP 图像帧；不渲染 `<video>`，但舞台必须有真实视觉内容。
+- MCAP 图像帧播放速度应接近录制速度；不能因为 episode `duration_seconds` 或固定 fps 让正常数据明显加速/减速。
 - 从第二条开始，当前条播放期间应已经开始准备 next media slot；网络正常时不应出现明显黑屏、长时间加载或大段文字占位。
 - 下一条未 ready 时不应强切空白舞台，应保留当前最后画面最多 10 秒；仍未 ready 时重播当前条。
 - 已 armed 的真实视频 next 激活时不应重复播放开头帧；激活过程不得重建播放器、重设 `src` 或主动 seek 到 0。
