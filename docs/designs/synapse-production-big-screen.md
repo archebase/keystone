@@ -412,6 +412,8 @@ fallback 策略：
 | `previews` 为空 | 显示健康空状态：暂无可轮播预览，保留 KPI 和趋势 |
 | 自动播放被浏览器限制 | 对真实视频静音重试；若仍失败，优先降级到 MCAP 图像帧，再退回 poster / 轻量等待状态 |
 
+舞台播放卡片的元信息应以任务名、SOP 名、机器人、设备 ID 和必要的播放进度为主；不要在卡片上展示 episode ID、工位名、MCAP topic 名或“数据预览”字样。
+
 ## 6. 响应式布局方案
 
 ### 6.1 总原则
@@ -665,6 +667,8 @@ GET /api/v1/production/dashboard/overview
   "id": "episode:42",
   "title": "片段 EP-20260517-00042",
   "task_name": "抓取-放置标准动作采集",
+  "sop_label": "pick-place@v3",
+  "device_id": "AB-F0001-T0003-000001",
   "robot_name": "RB-07",
   "station_name": "A-03 工位",
   "status": "approved",
@@ -830,6 +834,8 @@ page mounted
  * @property {string} id
  * @property {string} title
  * @property {string} task_name
+ * @property {string} sop_label
+ * @property {string} device_id
  * @property {string} robot_name
  * @property {string} station_name
  * @property {string} status

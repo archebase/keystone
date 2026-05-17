@@ -302,6 +302,8 @@ type dashboardPreviewItem struct {
 	ID              string  `json:"id"`
 	Title           string  `json:"title"`
 	TaskName        string  `json:"task_name"`
+	SOPLabel        string  `json:"sop_label"`
+	DeviceID        string  `json:"device_id"`
 	RobotName       string  `json:"robot_name"`
 	StationName     string  `json:"station_name"`
 	Status          string  `json:"status"`
@@ -318,6 +320,8 @@ type dashboardPreviewRow struct {
 	ID              string          `db:"id"`
 	Title           string          `db:"title"`
 	TaskName        string          `db:"task_name"`
+	SOPLabel        string          `db:"sop_label"`
+	DeviceID        string          `db:"device_id"`
 	RobotName       string          `db:"robot_name"`
 	StationName     string          `db:"station_name"`
 	Status          string          `db:"status"`
@@ -1286,6 +1290,8 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 			CAST(e.id AS CHAR) AS id,
 			CONCAT('Episode ', COALESCE(NULLIF(e.episode_id, ''), CAST(e.id AS CHAR))) AS title,
 			` + taskNameExpr + ` AS task_name,
+			` + dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version") + ` AS sop_label,
+			COALESCE(ws.robot_serial, '') AS device_id,
 			COALESCE(ws.robot_name, ws.robot_serial, '') AS robot_name,
 			COALESCE(ws.name, CAST(ws.id AS CHAR), '') AS station_name,
 			COALESCE(NULLIF(t.status, ''), e.qa_status, '') AS status,
@@ -1314,6 +1320,8 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 			ID:              row.ID,
 			Title:           row.Title,
 			TaskName:        row.TaskName,
+			SOPLabel:        row.SOPLabel,
+			DeviceID:        row.DeviceID,
 			RobotName:       row.RobotName,
 			StationName:     row.StationName,
 			Status:          row.Status,
