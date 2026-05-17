@@ -102,13 +102,13 @@ gofmt -w internal/api/handlers/production_dashboard.go internal/api/handlers/pro
 - overview `trend` 改为数据生产数量趋势，按 `episodes` 数据生产记录聚合，不再使用任务状态桶作为趋势口径。
 - `devices` 只返回在线/不在线汇总，不返回 `items`；设备在线以 recorder hub 与 transfer hub 均联通为准。
 - `stations.summary` 返回工位管理状态汇总：`active` 执行中、`inactive` 待命中、`break` 休息中、`offline` 离线。
-- `recent_tasks` 覆盖最近完成、失败、进行中的任务。
+- `recent_tasks` 覆盖最近完成、失败、进行中的任务，并由后端按大屏展示优先级排序后再截取：`in_progress`，`failed`/`cancelled`，`completed`，`ready`，`pending`，最后其他状态；同优先级按 `updated_at`、任务主键倒序。
 - `quality.recent_failures` 如果查询成本可控则实现，否则保留空数组。
 
 **验收标准:**
 
 - overview 中 `trend` 每个点包含 `date`、`total`，`total` 表示当天数据生产记录数量。
-- `recent_tasks` 按最近更新时间倒序，受 `recent_limit` 限制。
+- `recent_tasks` 按展示优先级和最近更新时间排序，受 `recent_limit` 限制；前端不得在已截断的小集合上重新定义业务排序。
 - 所有 limit 参数有上限，避免大屏接口返回过大。
 
 **验证命令:**
@@ -301,6 +301,11 @@ npm run build
 - 可以为设备/工位状态加入克制 CSS 动效：执行中状态灯低幅度呼吸、状态分布条宽度过渡、6 到 8 秒一次的淡巡检扫描、刷新成功短脉冲；必须支持 `prefers-reduced-motion`。
 - 禁止大面积霓虹、持续快速闪烁、跑马灯、雷达式强动效，以及任何会改变 grid track、面板高度或造成滚动的动画。
 - 任务流显示最近任务，不做后台表格。
+- 任务流动画与数据刷新绑定：新入列任务短暂滑入和扫描高光，状态变化任务短暂状态脉冲，`in_progress` 任务低频呼吸，失败/取消任务不持续闪烁。
+- 任务流使用 `TransitionGroup` 或等价 CSS transform/opacity 方案处理重排移动；动画不得改变卡片高度、grid track 或产生滚动，并支持 `prefers-reduced-motion`。
+- 任务流不使用贯穿列表的装饰性竖线或时间轴线；通过卡片边框、状态色和短时动画表达状态即可。
+- 前端应请求略大的 `recent_tasks` 候选集，例如 `recent_limit=10`，再基于 `.task-feed` 实际高度、单条任务卡高度和间距动态计算可见条数；计算结果建议限制在 3 到 10 条。
+- 前端只按可用高度裁剪 API 已排序结果，不在已截断的小集合上重新排序；不得通过任务流内部滚动、页面滚动或缩小到不可读来容纳更多任务。
 - 异常状态内联展示在顶部状态、设备状态和任务流中，不新增告警栏。
 - 图表和列表不抢中央舞台视觉中心。
 - 本轮一屏化改造将 `/admin/dashboard` 作为沉浸式大屏路由处理，隐藏常规后台侧栏，页面根容器使用 `100dvh` 锁高，并让外层内容区 `overflow: hidden`；不能通过页面纵向滚动或 `overflow-y: auto` 兜底。
@@ -318,6 +323,7 @@ npm run build
 - 设备/工位状态动画在默认模式下克制可见，在 `prefers-reduced-motion` 下静态或近似静态。
 - 图表 resize 正常，组件卸载时 dispose。
 - 任务流和设备列表数量受限，不造成小屏溢出。
+- 最近任务流没有装饰性竖线；可见任务条数会随 `1920x1080`、`1600x900`、`1366x768`、`1280x720`、`1152x648` 的真实可用高度自动增减，且不产生任务流内部滚动或页面滚动。
 - API 失败时有可见降级提示。
 - `3840x2160`、`2560x1440`、`1920x1080`、`1600x900`、`1366x768` 横屏视口下，document/body 不出现纵向滚动，dashboard 根容器高度不超过 viewport，核心区域不重叠。
 - `1366x768`、`1280x720`、`1152x648` 下顶部完整日期时间和全屏按钮均可见，且不触发横向滚动。

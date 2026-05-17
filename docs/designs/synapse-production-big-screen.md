@@ -163,7 +163,32 @@ overview 不再返回设备或工位明细 `items`。前端只能使用 `devices
 - 当前批次任务
 - 任务状态、机器人、工位、批次、耗时
 
-任务流应避免普通后台表格感，建议使用紧凑事件流或生产流水线样式。
+任务流应避免普通后台表格感，建议使用紧凑事件流或生产流水线样式，但不要使用贯穿列表的装饰性竖线或时间轴线。大屏可展示条数很少，筛选和排序必须由后端在完整任务集合上完成，前端只按 API 返回顺序展示和裁剪。
+
+候选集与裁剪策略：
+
+- 后端按展示优先级完成排序后，再按 `recent_limit` 返回候选任务；默认值可以保守，但大屏前端应主动请求略大的候选集，例如 `recent_limit=10`，上限仍受 API 保护。
+- 前端不得把接口返回的候选任务全部强行塞进卡片，也不得给任务流开启内部滚动；应根据 `.task-feed` 实际高度、单条任务卡高度和间距计算可见条数。
+- 可见条数建议在 3 到 10 条之间夹取；`1920x1080`、`1600x900`、`1366x768`、`1280x720`、`1152x648` 下都应按真实空间自动增减。
+- 任务流区域变化时使用 `ResizeObserver` 或等价机制重新计算可见条数，避免 70 寸电视、浏览器缩放或系统缩放后出现空白过大、溢出或遮挡。
+- 前端只做容量裁剪，不重新定义业务排序；如果空间只能显示 5 条，就展示 API 顺序中的前 5 条。
+
+展示优先级：
+
+- 正在执行：`in_progress` 优先，表示现场当前生产节拍。
+- 刚失败或取消：`failed`、`cancelled` 次之，表示需要关注的近期中断。
+- 刚完成：`completed` 再次，表示产线吞吐。
+- 等待执行：`ready`、`pending` 最后，小屏裁剪时优先被移出。
+- 同一优先级内按 `updated_at` 倒序，再按任务主键倒序，保证刷新前后顺序稳定。
+
+任务流动画应与数据刷新绑定，而不是持续装饰：
+
+- 新进入列表的任务可以有一次短暂入列动画和横向扫描高光。
+- 同一任务状态或更新时间变化时可以有一次状态色脉冲。
+- `in_progress` 卡片可以低频呼吸，表达正在执行。
+- `failed`、`cancelled` 只做一次短脉冲，不持续闪烁。
+- 列表重排使用 transform/opacity 平滑移动，不改变卡片高度，不造成页面滚动。
+- 必须支持 `prefers-reduced-motion`，减少或关闭入列、脉冲和移动动画。
 
 ### 3.7 异常与降级状态
 
@@ -521,7 +546,7 @@ GET /api/v1/production/dashboard/overview
 |---|---:|---|
 | `timezone_offset` | 当前前端时区 | 趋势聚合使用 |
 | `trend_days` | 7 | 趋势窗口，最大 31 |
-| `recent_limit` | 12 | 最近任务条数 |
+| `recent_limit` | 10 | 最近任务候选条数；大屏前端按可用高度裁剪 |
 | `preview_limit` | 8 | 轮播预览条数 |
 | `factory_id` | 空 | 管理端筛选 |
 | `organization_id` | 空 | 管理端筛选 |
@@ -679,7 +704,7 @@ GET /api/v1/production/dashboard/overview
 | `VideoFlightStage.vue` | 视频轮播状态机、current/next 媒体槽位、fallback | current/next video slot、current/next MCAP reader、stage timer、video event listeners |
 | `BigScreenKpiStrip.vue` | KPI 展示、数字格式化、轻量刷新动效 | 可选数字动画 timer |
 | `BigScreenStatusRail.vue` | 设备与工位状态摘要、分布条、抽象状态矩阵，不展示具体设备列表 | 可选刷新脉冲 / 巡检扫描 CSS 动画 |
-| `BigScreenTaskFeed.vue` | 最近任务流 | 无，纯展示 |
+| `BigScreenTaskFeed.vue` | 最近任务流、入列/更新/进行中动画 | 短时动画标记 timer |
 | `BigScreenTrendPanel.vue` | ECharts 趋势图 | chart instance、ResizeObserver |
 | `useProductionBigScreenData.js` | overview 请求、adapter、mock fallback、刷新调度 | polling timer |
 

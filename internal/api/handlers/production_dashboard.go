@@ -30,7 +30,7 @@ const (
 	maxDashboardDistributionLimit     = 100
 	defaultDashboardActiveLimit       = 20
 	maxDashboardActiveLimit           = 100
-	defaultDashboardRecentLimit       = 12
+	defaultDashboardRecentLimit       = 10
 	maxDashboardRecentLimit           = 50
 	defaultDashboardPreviewLimit      = 8
 	maxDashboardPreviewLimit          = 20
@@ -481,7 +481,7 @@ func (h *ProductionDashboardHandler) GetSnapshot(c *gin.Context) {
 // @Param        timezone_offset query string false "Timezone offset such as +08:00"
 // @Param        trend_days query int false "Trend day count (default 7, max 31)"
 // @Param        active_limit query int false "Active batch limit (default 20, max 100)"
-// @Param        recent_limit query int false "Recent task limit (default 12, max 50)"
+// @Param        recent_limit query int false "Recent task limit (default 10, max 50)"
 // @Param        preview_limit query int false "Preview limit (default 8, max 20)"
 // @Success      200 {object} map[string]interface{} "generated_at, scope, summary, trend, task_status_distribution, quality, devices, stations, recent_tasks, previews"
 // @Failure      400 {object} map[string]string
@@ -1232,7 +1232,10 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 		) latest_episode ON latest_episode.task_id = t.id
 		LEFT JOIN episodes e ON e.id = latest_episode.latest_id AND e.deleted_at IS NULL
 		WHERE ` + strings.Join(conditions, " AND ") + `
-		ORDER BY COALESCE(t.updated_at, t.completed_at, t.started_at, t.assigned_at, t.created_at) DESC, t.id DESC
+		ORDER BY
+			` + dashboardRecentTaskPrioritySQL("t.status") + ` ASC,
+			COALESCE(t.updated_at, t.completed_at, t.started_at, t.assigned_at, t.created_at) DESC,
+			t.id DESC
 		LIMIT ?
 	`
 	args = append(args, limit)
@@ -1260,6 +1263,17 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 		})
 	}
 	return items, nil
+}
+
+func dashboardRecentTaskPrioritySQL(statusExpr string) string {
+	return `CASE
+		WHEN ` + statusExpr + ` = 'in_progress' THEN 1
+		WHEN ` + statusExpr + ` IN ('failed', 'cancelled') THEN 2
+		WHEN ` + statusExpr + ` = 'completed' THEN 3
+		WHEN ` + statusExpr + ` = 'ready' THEN 4
+		WHEN ` + statusExpr + ` = 'pending' THEN 5
+		ELSE 6
+	END`
 }
 
 func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope productionDashboardScope, limit int) ([]dashboardPreviewItem, error) {
