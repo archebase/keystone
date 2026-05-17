@@ -135,15 +135,21 @@ KPI 文案应短，数字应使用 tabular numbers。数字刷新可以轻微计
 
 ### 3.5 设备状态
 
-职责：快速发现设备在线、空闲、忙碌、离线、异常。
+职责：快速发现设备与工位整体是否健康、是否有可用产能、是否存在异常。
+
+大屏上不展示具体设备、工位、机器人或操作员条目。电视观看距离下，逐条列表的信息价值低，且会挤占中央舞台和趋势区域。设备状态区应从“明细列表”改为“设备与工位健康态摘要”。
 
 内容：
 
-- 在线 / 空闲 / 忙碌 / 离线 / 异常汇总
-- 若干关键机器人或工位条目
-- 当前任务、绑定工位、最近心跳或最后活跃时间
+- 设备整体：在线 / 生产中 / 待命 / 离线 / 异常汇总。
+- 工位整体：在线 / 占用 / 空闲 / 离线 / 异常汇总。
+- 设备在线率、工位在线率、生产中数量、可用数量和异常数量。
+- 设备状态分布条与工位状态分布条，使用语义色表达 busy / idle / offline / abnormal。
+- 抽象状态矩阵或状态灯阵：每个格子只表达一个设备或工位的状态，不显示名称、ID、机器人名、操作员或当前任务。
 
-状态颜色应明确但不刺眼。异常要醒目，健康状态要稳定。
+状态颜色应明确但不刺眼。异常要醒目，健康状态要稳定。异常、离线或心跳超时信息仍在设备状态区内联表达，但不新增独立告警栏。
+
+第一版如果 overview 仍只返回 `devices.summary` 和 `devices.items`，前端可以用 `summary` 直接构建设备/工位摘要，并将 `items` 仅作为计算状态矩阵数量的来源，不在 UI 中渲染具体名称。后续如需更严谨地区分机器人与工位，可在 overview 中补充 `robots.summary` 与 `stations.summary`，但这不是当前一屏布局优化的前置条件。
 
 ### 3.6 最近任务流
 
@@ -222,6 +228,27 @@ KPI 文案应短，数字应使用 tabular numbers。数字刷新可以轻微计
 - 辅助信息：短句，避免长段落。
 - 任务 ID、设备 ID：等宽字体，支持中间截断或换行。
 - 小屏下用 `clamp()` 限制字号范围，不用 `vw` 线性缩放所有文字。
+
+### 4.5 非视频区域动效
+
+除 Video Flight Stage 外，其他区域可以使用克制、低频、生产语义明确的动效。动效必须帮助观看者理解系统状态，不能成为装饰噪音。
+
+设备与工位状态区允许：
+
+- 忙碌 / 生产中状态灯使用低幅度呼吸动画，表达资源正在工作。
+- 状态分布条在数据刷新时使用宽度过渡，表达状态占比变化。
+- 状态矩阵上使用很淡的巡检扫描线，周期建议 6 到 8 秒，不持续高亮。
+- overview 成功刷新时，在标题状态点或面板边缘做一次短促脉冲。
+- 异常数量从 0 变为大于 0 时做一次轻微强调；异常状态不持续快速闪烁。
+
+禁止：
+
+- 大面积霓虹发光、持续闪烁、跑马灯、雷达式强动效。
+- 每个状态格持续跳动或独立随机动画。
+- 动画改变 grid track、面板高度、列表高度或导致页面滚动。
+- 无数据或 API 失败时仍播放“生产中”动效。
+
+所有非视频动效必须支持 `prefers-reduced-motion`，降级为静态状态或一次性淡入。
 
 ## 5. Video Flight Stage 动画方案
 
@@ -638,7 +665,7 @@ GET /api/v1/production/dashboard/overview
 | `ProductionBigScreen.vue` 或 `FullscreenDashboard.vue` | 页面总装、布局、刷新状态、路由入口 | 刷新 timer、全局 resize |
 | `VideoFlightStage.vue` | 视频轮播状态机、current/next 媒体槽位、fallback | current/next video slot、current/next MCAP reader、stage timer、video event listeners |
 | `BigScreenKpiStrip.vue` | KPI 展示、数字格式化、轻量刷新动效 | 可选数字动画 timer |
-| `BigScreenStatusRail.vue` | 设备状态汇总和关键设备列表 | 无，纯展示 |
+| `BigScreenStatusRail.vue` | 设备与工位状态摘要、分布条、抽象状态矩阵，不展示具体设备列表 | 可选刷新脉冲 / 巡检扫描 CSS 动画 |
 | `BigScreenTaskFeed.vue` | 最近任务流 | 无，纯展示 |
 | `BigScreenTrendPanel.vue` | ECharts 趋势图 | chart instance、ResizeObserver |
 | `useProductionBigScreenData.js` | overview 请求、adapter、mock fallback、刷新调度 | polling timer |
