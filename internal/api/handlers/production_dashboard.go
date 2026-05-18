@@ -300,11 +300,10 @@ type dashboardRecentTaskRow struct {
 
 type dashboardPreviewItem struct {
 	ID              string  `json:"id"`
-	Title           string  `json:"title"`
-	TaskName        string  `json:"task_name"`
+	SceneName       string  `json:"scene_name"`
 	SOPLabel        string  `json:"sop_label"`
+	DeviceType      string  `json:"device_type"`
 	DeviceID        string  `json:"device_id"`
-	RobotName       string  `json:"robot_name"`
 	StationName     string  `json:"station_name"`
 	Status          string  `json:"status"`
 	VideoURL        string  `json:"video_url"`
@@ -318,11 +317,10 @@ type dashboardPreviewItem struct {
 
 type dashboardPreviewRow struct {
 	ID              string          `db:"id"`
-	Title           string          `db:"title"`
-	TaskName        string          `db:"task_name"`
+	SceneName       string          `db:"scene_name"`
 	SOPLabel        string          `db:"sop_label"`
+	DeviceType      string          `db:"device_type"`
 	DeviceID        string          `db:"device_id"`
-	RobotName       string          `db:"robot_name"`
 	StationName     string          `db:"station_name"`
 	Status          string          `db:"status"`
 	McapPath        string          `db:"mcap_path"`
@@ -1281,15 +1279,14 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 	conditions := []string{"e.deleted_at IS NULL"}
 	args := []interface{}{}
 	conditions, args = appendDashboardEpisodeScope(conditions, args, scope)
-	taskNameExpr := dashboardTaskNameSQL("t.scene_name", "t.subscene_name", "t.sop_id", "s.slug", "s.version")
+	sceneNameExpr := dashboardTaskNameSQL("t.scene_name", "t.subscene_name", "t.sop_id", "s.slug", "s.version")
 	query := `
 		SELECT
 			CAST(e.id AS CHAR) AS id,
-			CONCAT('Episode ', COALESCE(NULLIF(e.episode_id, ''), CAST(e.id AS CHAR))) AS title,
-			` + taskNameExpr + ` AS task_name,
+			` + sceneNameExpr + ` AS scene_name,
 			` + dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version") + ` AS sop_label,
-			COALESCE(ws.robot_serial, '') AS device_id,
-			COALESCE(ws.robot_name, ws.robot_serial, '') AS robot_name,
+			COALESCE(NULLIF(rt.name, ''), NULLIF(rt.model, ''), NULLIF(ws.robot_name, ''), '') AS device_type,
+			COALESCE(ws.robot_serial, r.device_id, '') AS device_id,
 			COALESCE(ws.name, CAST(ws.id AS CHAR), '') AS station_name,
 			COALESCE(NULLIF(t.status, ''), e.qa_status, '') AS status,
 			COALESCE(e.mcap_path, '') AS mcap_path,
@@ -1301,6 +1298,8 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		WHERE ` + strings.Join(conditions, " AND ") + `
 		ORDER BY e.created_at DESC, e.id DESC
 		LIMIT ?
@@ -1315,11 +1314,10 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 	for _, row := range rows {
 		items = append(items, dashboardPreviewItem{
 			ID:              row.ID,
-			Title:           row.Title,
-			TaskName:        row.TaskName,
+			SceneName:       row.SceneName,
 			SOPLabel:        row.SOPLabel,
+			DeviceType:      row.DeviceType,
 			DeviceID:        row.DeviceID,
-			RobotName:       row.RobotName,
 			StationName:     row.StationName,
 			Status:          row.Status,
 			VideoURL:        "",

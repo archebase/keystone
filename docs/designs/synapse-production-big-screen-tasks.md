@@ -61,7 +61,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 - 第一版返回完整结构，即使部分数组为空。
 - `summary`、`trend`、`task_status_distribution`、`devices`、`stations`、`recent_tasks` 优先实现。
 - 第一版不返回独立 `alerts` 字段，不建设告警栏；设备不在线、工位离线、任务失败、接口降级等异常内联展示在顶部状态、设备/工位状态和任务流中。
-- `previews.video_url` 可以为空，但如果非空必须是真实可播放视频 URL；为空时返回 episode/task 元信息和可解析的 `preview_url`，保证前端可复用数据预览页播放 MCAP 图像帧。
+- `previews.video_url` 可以为空，但如果非空必须是真实可播放视频 URL；为空时返回 episode/task 元信息（SOP、场景、设备类型、设备 ID 等）和可解析的 `preview_url`，保证前端可复用数据预览页播放 MCAP 图像帧。原 `task_name` 字段改为 `scene_name`，大屏不再需要独立标题字段；原舞台上的“机器人”元信息改为 `device_type`。
 
 **验收标准:**
 
@@ -70,7 +70,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 - 空数据返回 200，数值为 0，数组为空。
 - 参数错误返回 400，未认证返回 401。
 - 响应包含 `generated_at`、`scope`、`summary`、`trend`、`task_status_distribution`、`quality`、`devices`、`stations`、`recent_tasks`、`previews`。
-- `previews.video_url` 为空时仍有 `title`、`task_name`、`robot_name`、`station_name`、`status`、`created_at`；有 MCAP 时返回 `preview_url`；`video_url` 非空时必须是真实可播放视频。
+- `previews.video_url` 为空时仍有 `scene_name`、`sop_label`、`device_type`、`device_id`、`status`、`created_at`；有 MCAP 时返回 `preview_url`；`video_url` 非空时必须是真实可播放视频。
 
 **验证命令:**
 
@@ -298,6 +298,9 @@ npm run build
 - 工位状态按后台工位管理状态表达：`active` 执行中、`inactive` 待命中、`break` 休息中、`offline` 离线。
 - 设备不在线和工位离线使用灰色，不使用红色；红色只保留给任务失败、质检失败等生产异常。
 - 设备状态区不再渲染具体设备、工位、机器人、操作员或当前任务明细；改为设备状态与工位状态摘要、在线率、状态分布条和抽象状态矩阵。
+- 设备与工位面板标题不显示“需关注”聚合文案；设备“不在线”和工位“离线”已经在各自卡片内表达不可用资源。
+- 设备卡主数值不显示百分比，改为与工位状态卡一致的 `在线数 / 总数`；设备在线率只保留在 KPI 等摘要位置。
+- 设备卡和工位状态卡的状态计数只能显示一次，不能同时以卡片摘要和分布条图例两种形式重复显示同一组状态。
 - overview 不再返回 `devices.items` 或 `stations.items`；UI 使用 `devices.summary` 与 `stations.summary` 计算摘要和矩阵数量。
 - 可以为设备/工位状态加入克制 CSS 动效：执行中状态灯低幅度呼吸、状态分布条宽度过渡、6 到 8 秒一次的淡巡检扫描、刷新成功短脉冲；必须支持 `prefers-reduced-motion`。
 - 禁止大面积霓虹、持续快速闪烁、跑马灯、雷达式强动效，以及任何会改变 grid track、面板高度或造成滚动的动画。
@@ -314,7 +317,7 @@ npm run build
 - 品牌强调色只用于品牌标识、当前焦点、关键数字、Video Flight Stage 边框、趋势主系列和任务生命周期当前节点；不能大面积铺满背景、整卡发光或让非重点信息抢占视觉中心。
 - 生产状态色保持独立语义：在线/完成使用绿色，警告使用琥珀色，失败/质检异常使用红色，设备不在线和工位离线使用灰色；品牌色不能替代失败、离线或警告语义。
 - 顶部品牌区显示真实 ArcheBase logo，并与 `SYNAPSE` 小标识、`生产指挥中心` 标题组合；logo 尺寸必须响应式压缩，不得影响完整日期时间和全屏按钮。
-- Video Flight Stage 的播放元信息以任务名称、SOP、机器人、设备 ID 和进度为主；MCAP 播放态不显示泛化的“播放中”文案，避免无效状态标签占用主舞台信息层。
+- Video Flight Stage 不再显示独立标题或任务名称，播放元信息以 SOP、场景、设备类型、设备 ID 和进度为主；SOP/场景放在左侧，设备类型/设备 ID/进度放在右侧，但两侧都使用同一套“标签 + 值”小块样式、字号和信息层级；MCAP 播放态不显示泛化的“播放中”文案，避免无效状态标签占用主舞台信息层。
 - 本轮一屏化改造将 `/admin/dashboard` 作为沉浸式大屏路由处理，隐藏常规后台侧栏，页面根容器使用 `100dvh` 锁高，并让外层内容区 `overflow: hidden`；不能通过页面纵向滚动或 `overflow-y: auto` 兜底。
 - 大屏主体采用三行布局：顶部状态栏、KPI 条、主驾驶舱 grid。主驾驶舱再分为设备状态、中央 Video Flight Stage + 趋势、最近任务流三列，所有列都使用 `minmax(0, 1fr)` 和 `min-height: 0` 允许内部压缩。
 - `1366x768` 与 `1600x900` 下优先保留顶部状态、8 个 KPI、Video Flight Stage、趋势、设备状态和最近任务流；设备/任务列表可减少条目，质量指标压缩为任务流内的窄条，不再占用独立面板。
@@ -327,6 +330,7 @@ npm run build
 
 - `trend`、`devices`、`stations`、`recent_tasks` 和质量/异常状态均能正常展示。
 - 设备/工位状态区只展示设备和工位聚合状态，不出现具体设备名、工位名、机器人名、操作员或当前任务明细。
+- 设备与工位面板不出现“需关注”文案；设备卡主数值显示 `在线数 / 总数` 而不是百分比；设备在线/不在线和工位状态计数不重复展示。
 - 设备/工位状态动画在默认模式下克制可见，在 `prefers-reduced-motion` 下静态或近似静态。
 - 图表 resize 正常，组件卸载时 dispose。
 - 最近任务流按 `updated_at` 最近变化排序，不因 `failed` 或 `cancelled` 状态置顶而挤出正常生产任务。
@@ -336,7 +340,7 @@ npm run build
 - ArcheBase 品牌色在主焦点和关键数字中可见，但不会主导整屏色相；页面整体仍保持克制、工业、远距离可读。
 - 失败、警告、离线、在线等状态不会被品牌色覆盖；设备不在线和工位离线仍为灰色。
 - 顶部 ArcheBase logo、`SYNAPSE`、`生产指挥中心`、完整日期时间和全屏按钮在 `1366x768`、`1280x720`、`1152x648` 下均可见。
-- Video Flight Stage 播放 MCAP 预览时不展示“播放中”文本，且任务名称、SOP、机器人、设备 ID 和进度仍可读。
+- Video Flight Stage 播放 MCAP 预览时不展示“播放中”文本，且 SOP、场景、设备类型、设备 ID 和进度仍可读；左侧 SOP/场景与右侧设备类型/设备 ID/进度字号和样式一致。
 - `1152x648` 和 `1280x720` 下品牌色、状态色、文字对比度仍可读，不出现紫色霓虹、满屏发光卡片或营销页色彩漂移。
 - API 失败时有可见降级提示。
 - `3840x2160`、`2560x1440`、`1920x1080`、`1600x900`、`1366x768` 横屏视口下，document/body 不出现纵向滚动，dashboard 根容器高度不超过 viewport，核心区域不重叠。

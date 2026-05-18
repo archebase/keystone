@@ -118,12 +118,12 @@ KPI 文案应短，数字应使用 tabular numbers。数字刷新可以轻微计
 内容：
 
 - 视频/预览轮播舞台
-- 当前预览的任务名称、SOP、机器人、设备 ID 和进度
+- 当前预览的 SOP、场景、设备类型、设备 ID 和进度
 - 加载、真实视频播放、MCAP 图像帧预览、错误、空数据 fallback
 
 舞台不应只是普通视频播放器。它需要用克制的空间动效表达“生产数据流正在进入系统”。当没有真实 `video_url` 时，舞台优先读取 `preview_url` 对应的 MCAP 图像/压缩图像 topic，按帧自动播放；只有 MCAP 不可用时才退回 poster 或轻量空状态，避免在主舞台显示大段 episode/task 文本。
 
-舞台元信息应避免无效标签堆叠。播放态下不显示泛化的“播放中”文案；MCAP 预览是否正在播放由画面、任务名称、SOP、机器人、设备 ID 和进度表达即可。真实视频可保留必要的播放类型提示，但不得压过业务元信息。
+舞台元信息应避免无效标签堆叠。播放态下不显示泛化的“播放中”文案；MCAP 预览是否正在播放由画面、SOP、场景、设备类型、设备 ID 和进度表达即可。SOP、场景、设备类型、设备 ID 和进度应使用统一的“标签 + 值”小块样式；SOP 与场景放在左侧并左对齐，设备类型、设备 ID 和进度放在右侧并右对齐。真实视频可保留必要的播放类型提示，但不得压过业务元信息。
 
 ### 3.4 生产趋势
 
@@ -146,11 +146,13 @@ KPI 文案应短，数字应使用 tabular numbers。数字刷新可以轻微计
 
 内容：
 
-- 设备整体只表达在线状态：在线 / 不在线，以及设备在线率。
+- 设备整体只表达在线状态：在线 / 不在线，以及在线设备数 / 设备总数。
 - 工位整体按后台工位管理状态表达：执行中 / 待命中 / 休息中 / 离线。
-- 设备在线率、工位在线率、执行中工位数量、待命/休息/离线工位数量。
+- 设备在线/不在线数量、执行中工位数量、待命/休息/离线工位数量。
 - 设备状态分布条只使用在线 / 不在线两段；工位状态分布条使用 active / inactive / break / offline 语义色。
 - 抽象状态矩阵或状态灯阵：每个格子只表达一个设备或工位状态，不显示名称、ID、机器人名、操作员或当前任务。
+
+设备与工位面板标题只承担分区命名，不显示“需关注”这类额外聚合文案。不可用资源已经由设备“不在线”和工位“离线”计数内联表达，避免把同一含义重复包装成第二个状态。设备卡和工位状态卡的主数值都使用“在线数 / 总数”风格，设备卡不在主数值位置显示百分比；设备在线率如需展示，应保留在 KPI 等更高层摘要中。每张资源卡的状态计数只出现一次，不能同时用摘要行和图例行重复显示“在线/不在线”或“执行中/待命中/休息中/离线”。
 
 状态颜色应明确但不刺眼。任务失败、质检失败等生产异常要醒目，健康状态要稳定。设备不在线与工位离线用灰色表达资源不可用，相关信息仍在设备/工位状态区内联表达，但不新增独立告警栏。
 
@@ -434,7 +436,7 @@ fallback 策略：
 | `previews` 为空 | 显示健康空状态：暂无可轮播预览，保留 KPI 和趋势 |
 | 自动播放被浏览器限制 | 对真实视频静音重试；若仍失败，优先降级到 MCAP 图像帧，再退回 poster / 轻量等待状态 |
 
-舞台播放卡片的元信息应以任务名、SOP 名、机器人、设备 ID 和必要的播放进度为主；不要在卡片上展示 episode ID、工位名、MCAP topic 名或“数据预览”字样。
+舞台播放卡片不再显示独立标题或任务名，元信息应以 SOP 名、场景名、设备类型、设备 ID 和必要的播放进度为主；左侧 SOP/场景与右侧设备类型/设备 ID/进度使用同一字号和信息层级。不要在卡片上展示 episode ID、工位名、MCAP topic 名或“数据预览”字样。
 
 ## 6. 响应式布局方案
 
@@ -687,11 +689,10 @@ GET /api/v1/production/dashboard/overview
 ```json
 {
   "id": "episode:42",
-  "title": "片段 EP-20260517-00042",
-  "task_name": "抓取-放置标准动作采集",
+  "scene_name": "厨房 / 备菜台",
   "sop_label": "pick-place@v3",
+  "device_type": "多指灵巧手",
   "device_id": "AB-F0001-T0003-000001",
-  "robot_name": "RB-07",
   "station_name": "A-03 工位",
   "status": "approved",
   "video_url": "",
@@ -854,11 +855,10 @@ page mounted
 /**
  * @typedef {Object} PreviewItem
  * @property {string} id
- * @property {string} title
- * @property {string} task_name
+ * @property {string} scene_name
  * @property {string} sop_label
+ * @property {string} device_type
  * @property {string} device_id
- * @property {string} robot_name
  * @property {string} station_name
  * @property {string} status
  * @property {string} video_url
@@ -970,7 +970,7 @@ page mounted
 
 - `go test ./internal/api/handlers/...` 通过。
 - 空数据和 data_collector scope 正常。
-- `previews.video_url` 为空时仍返回可展示的 episode/task 元信息；`video_url` 非空时必须是真实可播放视频。
+- `previews.video_url` 为空时仍返回可展示的 episode/task 元信息，包括 SOP、场景、设备类型和设备 ID；`video_url` 非空时必须是真实可播放视频。
 
 风险：
 
