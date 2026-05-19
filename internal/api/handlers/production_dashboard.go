@@ -785,7 +785,7 @@ func (h *ProductionDashboardHandler) resolveProductionDashboardScope(c *gin.Cont
 	}
 
 	switch claims.Role {
-	case "admin":
+	case "admin", "display":
 		return scope, nil
 	case "data_collector":
 		var workstationID string

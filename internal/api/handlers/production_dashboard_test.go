@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"archebase.com/keystone-edge/internal/auth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -104,6 +105,22 @@ func TestDashboardTaskScopeUsesCollectorAssignment(t *testing.T) {
 	}
 	if len(args) != 1 || args[0] != int64(42) {
 		t.Fatalf("args = %#v, want collector id 42", args)
+	}
+}
+
+func TestResolveProductionDashboardScopeAllowsDisplayRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/dashboard/overview?factory_id=12", nil)
+	h := &ProductionDashboardHandler{}
+
+	scope, err := h.resolveProductionDashboardScope(c, &auth.Claims{Role: "display"}, productionDashboardQuery{FactoryID: "12"})
+	if err != nil {
+		t.Fatalf("resolveProductionDashboardScope returned error: %v", err)
+	}
+	if scope.Role != "display" || scope.FactoryID != "12" {
+		t.Fatalf("unexpected display scope: %+v", scope)
 	}
 }
 

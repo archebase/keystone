@@ -721,11 +721,54 @@ GET /api/v1/production/dashboard/overview
 - 未认证返回 401。
 - 无权限返回 403，由现有 middleware 控制。
 
+### 7.8 常驻电视展示 token
+
+生产大屏需要支持在电视上连续播放多天，不能因为普通登录 JWT 默认 24 小时过期而停止刷新。第一版采用简单的部署级 display token，不引入数据库、管理 UI 或 refresh token 流程。
+
+后端通过可选环境变量启用：
+
+```bash
+KEYSTONE_DASHBOARD_DISPLAY_TOKEN=<long-random-token>
+```
+
+当该变量为空时，display token 功能关闭，现有 JWT 行为保持不变。启用后，大屏相关只读接口接受：
+
+```http
+Authorization: Display <long-random-token>
+```
+
+Display token 的边界：
+
+- 只用于 `/admin/dashboard` 生产大屏常驻展示，不是普通后台登录态。
+- 只允许访问生产大屏聚合接口：`GET /api/v1/production/dashboard/overview`，以及保留兼容的 `snapshot`、`batches/:id/task-summary`。
+- 只允许为 Video Flight Stage 获取 MCAP 预览签名：`GET /api/v1/episodes/:id/presign?kind=mcap`。
+- 不允许访问普通后台 CRUD、任务修改、统计导出、组织/工厂/设备管理等接口。
+- 不直接生成永久 storage URL；episode presign 仍返回绑定对象的短期 `dl_token` storage proxy URL。
+- token 校验必须使用 constant-time compare；生产部署应使用足够长的随机字符串，例如 `openssl rand -hex 48`。如果使用 base64，需要在 URL 中正确转义 `+`、`/` 等字符。
+- 轮换或撤销 display token 时，修改环境变量并重启 Keystone 即可。
+
+前端入口：
+
+```text
+/admin/dashboard?display_token=<long-random-token>
+```
+
+页面首次读取 `display_token` 后保存到本地浏览器存储，并立即清除 URL 查询参数，避免 token 长时间暴露在地址栏、截图或浏览器历史中。普通后台路由仍只接受 admin JWT；display token 只能放行 `/admin/dashboard`。
+
+前端请求策略：
+
+- 如果存在普通 `access_token`，大屏 API 继续使用 `Authorization: Bearer <jwt>`。
+- 如果没有普通登录态但存在 display token，大屏 API 和 MCAP presign 使用 `Authorization: Display <token>`。
+- 全局后台 API client 不应自动携带 display token，避免 display token 被误用于普通后台接口。
+- Display token 失效、缺失或后端未配置时，大屏不白屏；已有成功数据则保留旧数据并显示接口异常，首次加载失败则进入降级展示并提示展示凭证不可用。
+
 ## 8. 前端数据流与组件拆分方案
 
 ### 8.1 建议页面入口
 
 建议优先改造 `src/views/FullscreenDashboard.vue` 作为管理端大屏入口，因为当前 `/admin/dashboard` 已指向该页面，且它已经包含全屏按钮、ECharts 和大屏样式。
+
+电视常驻模式通过 `/admin/dashboard?display_token=...` 进入。该入口只影响生产大屏页面，不改变 `/admin` 默认跳转、不影响普通后台侧边栏或其他管理页面的登录要求。
 
 `src/views/ProductionDashboard.vue` 可以继续作为普通运营 dashboard，或在后续统一为共享组件。
 
@@ -1086,6 +1129,8 @@ page mounted
 
 - 聚合 API 可返回生产大屏所需数据。
 - 前端优先使用聚合 API。
+- `/admin/dashboard` 支持 display token 常驻模式；普通后台页面不接受 display token。
+- Display token 可让 overview 和 MCAP presign 在普通 JWT 过期后继续刷新，但不能访问普通后台 CRUD 或写接口。
 - 视频舞台可自动轮播。
 - 当前条进入播放后，后台开始准备下一条；网络正常时，从第二条开始切换不应出现明显黑屏、空白或长时间加载。
 - 下一条未 ready 时，舞台保留当前最后画面最多 10 秒；仍未 ready 时从头重播当前条，不做空白离场。
@@ -1127,7 +1172,6 @@ page mounted
 - 真实 `video_url` 从哪里来：直接上传视频、MCAP 转码，还是前端实时渲染后产出可播放视频流。未确认前不得伪造视频 URL。
 - `preview_url` 应来自 episode、task 还是 MinIO 对象。
 - 视频/预览 URL 是否需要鉴权，presigned URL 有效期多久。
-- 大屏是否必须登录，是否需要专用只读展示 token。
 - 大屏刷新频率是 15s、30s 还是可配置。
 - 异常展示规则：哪些任务/同步/设备状态需要在顶部状态、设备状态或任务流中突出。
 - 后续如需展示部分联通，应定义 recorder-only、transfer-only 与完全不在线的展示规则；当前设备在线只按 recorder/transfer hub 均联通计算。

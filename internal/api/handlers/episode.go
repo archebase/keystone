@@ -21,6 +21,7 @@ import (
 	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
@@ -54,6 +55,24 @@ func (h *EpisodeHandler) requireBearerJWT(c *gin.Context) bool {
 		return false
 	}
 	return true
+}
+
+func (h *EpisodeHandler) requireEpisodePresignAuth(c *gin.Context, kind string) bool {
+	if h.authCfg == nil {
+		return true
+	}
+	if middleware.IsDashboardDisplayRequest(c) {
+		if kind != "mcap" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "display token can only presign mcap previews"})
+			return false
+		}
+		if !middleware.IsDashboardDisplayToken(c, h.authCfg) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid display token"})
+			return false
+		}
+		return true
+	}
+	return h.requireBearerJWT(c)
 }
 
 // episodeRow represents an episode row from the database.
@@ -503,12 +522,6 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
 		return
 	}
-	if h.authCfg != nil {
-		if !h.requireBearerJWT(c) {
-			return
-		}
-	}
-
 	episodeID, ok := parseEpisodeIDParam(c)
 	if !ok {
 		return
@@ -517,6 +530,9 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 	kind := strings.TrimSpace(strings.ToLower(c.DefaultQuery("kind", "mcap")))
 	if kind != "mcap" && kind != "sidecar" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be mcap or sidecar"})
+		return
+	}
+	if !h.requireEpisodePresignAuth(c, kind) {
 		return
 	}
 

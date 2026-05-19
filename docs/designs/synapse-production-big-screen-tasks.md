@@ -65,7 +65,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 **验收标准:**
 
-- `GET /api/v1/production/dashboard/overview` 需要 JWT，允许 `admin` 和 `data_collector`。
+- `GET /api/v1/production/dashboard/overview` 默认需要 JWT，允许 `admin` 和 `data_collector`；常驻电视模式按 T8 支持专用 display token。
 - `data_collector` 自动限定到绑定工位。
 - 空数据返回 200，数值为 0，数组为空。
 - 参数错误返回 400，未认证返回 401。
@@ -398,12 +398,69 @@ npm run build
 
 - 不同电视浏览器对 CSS filter、autoplay、fullscreen 支持不同；需要保留降级路径。
 
+### T8. 生产大屏 display token 常驻模式
+
+**仓库:** `keystone-worktree2`、`synapse-worktree2`
+
+**目标:** 让 `/admin/dashboard` 可以在电视上连续播放多天，不因普通登录 JWT 默认 24 小时过期而停止刷新，同时不把 admin token 改成长效凭证。
+
+**依赖:** T1、T3、T5。
+
+**建议修改范围:**
+
+- `keystone-worktree2/internal/config/config.go`
+- `keystone-worktree2/internal/middleware/`
+- `keystone-worktree2/internal/server/server.go`
+- `keystone-worktree2/internal/api/handlers/episode.go`
+- `synapse-worktree2/src/router/index.js`
+- `synapse-worktree2/src/api/productionDashboard.js`
+- `synapse-worktree2/src/components/production/VideoFlightStage.vue`
+- `synapse-worktree2/src/views/FullscreenDashboard.vue`
+- `synapse-worktree2/src/auth/`
+
+**实现要点:**
+
+- 后端新增可选环境变量 `KEYSTONE_DASHBOARD_DISPLAY_TOKEN`；为空时 display token 功能关闭，现有 JWT 行为不变。
+- Display token 请求头使用 `Authorization: Display <token>`；校验时使用 constant-time compare。
+- `/api/v1/production/dashboard/overview`、`snapshot`、`batches/:id/task-summary` 支持普通 JWT 或 display token。
+- `GET /api/v1/episodes/:id/presign?kind=mcap` 支持普通 JWT 或 display token，但 display token 只允许 `kind=mcap`。
+- Display token 不允许访问普通后台 CRUD、写接口、统计导出、组织/工厂/设备管理或其他 episode 详情接口。
+- Episode presign 仍返回短期 `/api/v1/storage/object?...&dl_token=...`；不生成永久 storage URL，不把 display token 透传给 MinIO。
+- 前端 `/admin/dashboard?display_token=...` 首次进入时保存 token 到本地浏览器存储，并立即清除 URL 参数。
+- `/admin/dashboard` route guard 在没有普通 admin JWT 时，可以用已保存的 display token 放行；其他 `/admin/*` 页面仍必须登录。
+- 生产大屏 API 优先使用普通 `Bearer` JWT；没有普通登录态时才使用 `Authorization: Display ...`。
+- 全局 `api/client.js` 不自动携带 display token，避免普通后台接口误用大屏展示凭证。
+- Video Flight Stage 调 episode presign 时使用同一套生产大屏鉴权头，保证普通 JWT 过期后 MCAP 预览仍可持续轮播。
+- Display token 失效或后端未配置时，大屏不白屏；已有数据保留旧数据并显示异常，首次加载失败则进入降级展示。
+
+**验收标准:**
+
+- 未设置 `KEYSTONE_DASHBOARD_DISPLAY_TOKEN` 时，现有 JWT 登录与 `/admin/dashboard` 行为保持不变。
+- 设置 display token 后，未登录浏览器访问 `/admin/dashboard?display_token=...` 可以进入生产大屏。
+- 进入后地址栏不再包含 `display_token`。
+- Display token 可以成功刷新 overview，并能获取 MCAP presign。
+- Display token 不能访问普通后台页面或普通 CRUD API。
+- 错误 display token 返回 401，页面保持稳定降级。
+
+**验证命令:**
+
+```bash
+go test ./internal/middleware ./internal/api/handlers/... -run 'Dashboard|Episode|Display' -v
+npm run build
+```
+
+**风险:**
+
+- Display token 是部署级长期密钥，必须使用足够长的随机字符串并通过环境变量配置，不得写入前端构建产物或代码仓库；推荐 `openssl rand -hex 48`，避免 URL 中的 base64 `+`、`/` 转义问题。
+- 如果电视浏览器 profile 被复制，display token 也会被复制；撤销方式是更换环境变量并重启 Keystone。
+
 ## 5. 跨任务依赖
 
 ```text
 T1 -> T3 -> T4 -> T5 -> T7
 T1 -> T2 -> T3
 T4 -> T6 -> T7
+T1 -> T8 -> T7
 ```
 
 说明：

@@ -131,11 +131,12 @@ type RecorderConfig struct {
 
 // AuthConfig JWT authentication configuration (collector login).
 type AuthConfig struct {
-	JWTSecret      string // #nosec G117 -- signing secret loaded from env; must exist in config struct
-	Issuer         string
-	JWTExpiryHours int
-	AdminUsername  string // #nosec G101 -- admin account name loaded from env
-	AdminPassword  string // #nosec G101 -- admin password loaded from env; never logged
+	JWTSecret             string // #nosec G117 -- signing secret loaded from env; must exist in config struct
+	Issuer                string
+	JWTExpiryHours        int
+	AdminUsername         string // #nosec G101 -- admin account name loaded from env
+	AdminPassword         string // #nosec G101 -- admin password loaded from env; never logged
+	DashboardDisplayToken string // #nosec G101 -- optional long-lived dashboard display token loaded from env
 }
 
 // Load loads configuration from environment variables and defaults
@@ -196,11 +197,12 @@ func Load() (*Config, error) {
 			MaxRestartCount:    getEnvInt("KEYSTONE_SYNC_MAX_RESTART_COUNT", 3),
 		},
 		Auth: AuthConfig{
-			JWTSecret:      getEnv("KEYSTONE_JWT_SECRET", ""),
-			Issuer:         getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
-			JWTExpiryHours: getEnvInt("KEYSTONE_JWT_EXPIRY_HOURS", 24),
-			AdminUsername:  getEnv("KEYSTONE_ADMIN_USERNAME", ""),
-			AdminPassword:  getEnv("KEYSTONE_ADMIN_PASSWORD", ""),
+			JWTSecret:             getEnv("KEYSTONE_JWT_SECRET", ""),
+			Issuer:                getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
+			JWTExpiryHours:        getEnvInt("KEYSTONE_JWT_EXPIRY_HOURS", 24),
+			AdminUsername:         getEnv("KEYSTONE_ADMIN_USERNAME", ""),
+			AdminPassword:         getEnv("KEYSTONE_ADMIN_PASSWORD", ""),
+			DashboardDisplayToken: getEnv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", ""),
 		},
 		Features: FeaturesConfig{
 			StrataEnabled:  false,

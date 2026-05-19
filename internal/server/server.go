@@ -299,8 +299,7 @@ func (s *Server) buildRoutes() http.Handler {
 		s.dataStats.RegisterRoutes(adminStats)
 	}
 	if s.productionDashboard != nil {
-		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
-		dashboard := v1Routes.Group("/production/dashboard", jwtMw, middleware.RequireAnyRole("admin", "data_collector"))
+		dashboard := v1Routes.Group("/production/dashboard", middleware.DashboardAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector", "display"))
 		s.productionDashboard.RegisterRoutes(dashboard)
 	}
 

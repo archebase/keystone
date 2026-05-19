@@ -90,13 +90,14 @@ func TestLoad(t *testing.T) {
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":             os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_BIND_ADDR":        os.Getenv("KEYSTONE_BIND_ADDR"),
-		"KEYSTONE_MYSQL_PASSWORD":   os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY": os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY": os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_QA_MAX_WORKERS":   os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
-		"KEYSTONE_MAX_MEMORY_MB":    os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
+		"KEYSTONE_MODE":                    os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_BIND_ADDR":               os.Getenv("KEYSTONE_BIND_ADDR"),
+		"KEYSTONE_MYSQL_PASSWORD":          os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":        os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":        os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_QA_MAX_WORKERS":          os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
+		"KEYSTONE_MAX_MEMORY_MB":           os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
+		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN": os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
 	}
 	defer func() {
 		for k, v := range originalEnv {
@@ -116,6 +117,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Setenv("KEYSTONE_MINIO_SECRET_KEY", "custom-secret")
 	os.Setenv("KEYSTONE_QA_MAX_WORKERS", "8")
 	os.Setenv("KEYSTONE_MAX_MEMORY_MB", "8192")
+	os.Setenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", "display-secret")
 
 	cfg, err := Load()
 	if err != nil {
@@ -132,6 +134,10 @@ func TestLoadWithCustomEnv(t *testing.T) {
 
 	if cfg.Resources.MaxMemoryMB != 8192 {
 		t.Errorf("Load().Resources.MaxMemoryMB = %v, want 8192", cfg.Resources.MaxMemoryMB)
+	}
+
+	if cfg.Auth.DashboardDisplayToken != "display-secret" {
+		t.Errorf("Load().Auth.DashboardDisplayToken = %q, want display-secret", cfg.Auth.DashboardDisplayToken)
 	}
 }
 
