@@ -541,9 +541,9 @@ func (h *ProductionDashboardHandler) GetOverview(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard overview"})
 		return
 	}
-	todayTasks, err := h.dashboardTodayTaskCount(tx, scope, q)
+	overviewTaskMetrics, err := h.dashboardOverviewTaskMetrics(tx, scope, q)
 	if err != nil {
-		logger.Printf("[DASHBOARD] overview today task query failed: %v", err)
+		logger.Printf("[DASHBOARD] overview task metric query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard overview"})
 		return
 	}
@@ -609,7 +609,7 @@ func (h *ProductionDashboardHandler) GetOverview(c *gin.Context) {
 	c.JSON(http.StatusOK, productionDashboardOverviewResponse{
 		GeneratedAt:            time.Now().UTC().Format(time.RFC3339),
 		Scope:                  scope,
-		Summary:                buildOverviewSummary(tasks, todayTasks, todayProductionTotals, quality, productionTotals, devices, stationsOverview, len(activeBatches)),
+		Summary:                buildOverviewSummary(tasks, overviewTaskMetrics, todayProductionTotals, quality, productionTotals, devices, stationsOverview, len(activeBatches)),
 		Trend:                  trend,
 		TaskStatusDistribution: buildTaskStatusDistribution(tasks),
 		Quality: dashboardOverviewQuality{
@@ -883,25 +883,31 @@ func (h *ProductionDashboardHandler) dashboardTaskCounts(db dashboardDB, scope p
 	return row, db.Get(&row, query, args...)
 }
 
-func (h *ProductionDashboardHandler) dashboardTodayTaskCount(db dashboardDB, scope productionDashboardScope, q productionDashboardQuery) (int64, error) {
+func (h *ProductionDashboardHandler) dashboardOverviewTaskMetrics(db dashboardDB, scope productionDashboardScope, q productionDashboardQuery) (dashboardTaskCounts, error) {
 	location := fixedZoneFromOffset(q.TimezoneOffset)
 	nowLocal := time.Now().In(location)
 	startLocal := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, location)
 	endLocal := startLocal.AddDate(0, 0, 1)
+	startUTC := startLocal.UTC()
+	endUTC := endLocal.UTC()
 
-	conditions := []string{"t.deleted_at IS NULL", "t.created_at >= ?", "t.created_at < ?"}
-	args := []interface{}{startLocal.UTC(), endLocal.UTC()}
+	conditions := []string{"t.deleted_at IS NULL"}
+	args := []interface{}{startUTC, endUTC, startUTC, endUTC, startUTC, endUTC}
 	conditions, args = appendDashboardTaskScope(conditions, args, scope)
 	query := `
-		SELECT COUNT(1)
+		SELECT
+			COALESCE(SUM(CASE WHEN t.assigned_at >= ? AND t.assigned_at < ? THEN 1 ELSE 0 END), 0) AS total,
+			COALESCE(SUM(CASE WHEN t.status = 'completed' AND t.completed_at >= ? AND t.completed_at < ? THEN 1 ELSE 0 END), 0) AS completed,
+			COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
+			COALESCE(SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+			0 AS ready,
+			COALESCE(SUM(CASE WHEN t.status = 'failed' AND t.completed_at >= ? AND t.completed_at < ? THEN 1 ELSE 0 END), 0) AS failed,
+			COALESCE(SUM(CASE WHEN t.status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled
 		FROM tasks t
 		WHERE ` + strings.Join(conditions, " AND ")
 
-	var count sql.NullInt64
-	if err := db.Get(&count, query, args...); err != nil {
-		return 0, err
-	}
-	return nullInt64(count), nil
+	var row dashboardTaskCounts
+	return row, db.Get(&row, query, args...)
 }
 
 func (h *ProductionDashboardHandler) dashboardTodayProductionTotals(db dashboardDB, scope productionDashboardScope, q productionDashboardQuery) (dashboardProductionTotals, error) {
@@ -1402,7 +1408,7 @@ func dashboardEpisodePreviewURL(id string, mcapPath string) string {
 
 func buildOverviewSummary(
 	tasks dashboardTaskCounts,
-	todayTasks int64,
+	overviewTaskMetrics dashboardTaskCounts,
 	todayProductionTotals dashboardProductionTotals,
 	quality dashboardQuality,
 	productionTotals dashboardProductionTotals,
@@ -1413,12 +1419,12 @@ func buildOverviewSummary(
 	return dashboardOverviewSummary{
 		TotalTasks:           tasks.Total,
 		TotalEpisodes:        productionTotals.TotalEpisodes,
-		TodayTasks:           todayTasks,
+		TodayTasks:           overviewTaskMetrics.Total,
 		TodayEpisodes:        todayProductionTotals.TotalEpisodes,
-		CompletedTasks:       tasks.Completed,
-		InProgressTasks:      tasks.InProgress,
-		PendingTasks:         tasks.Pending + tasks.Ready,
-		FailedTasks:          tasks.Failed,
+		CompletedTasks:       overviewTaskMetrics.Completed,
+		InProgressTasks:      overviewTaskMetrics.InProgress,
+		PendingTasks:         overviewTaskMetrics.Pending,
+		FailedTasks:          overviewTaskMetrics.Failed,
 		CancelledTasks:       tasks.Cancelled,
 		ActiveBatches:        int64(activeBatchCount),
 		ActiveStations:       stations.Summary.Active,
