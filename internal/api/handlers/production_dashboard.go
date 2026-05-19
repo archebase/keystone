@@ -109,7 +109,9 @@ type productionDashboardOverviewResponse struct {
 
 type dashboardOverviewSummary struct {
 	TotalTasks           int64   `json:"total_tasks"`
+	TotalEpisodes        int64   `json:"total_episodes"`
 	TodayTasks           int64   `json:"today_tasks"`
+	TodayEpisodes        int64   `json:"today_episodes"`
 	CompletedTasks       int64   `json:"completed_tasks"`
 	InProgressTasks      int64   `json:"in_progress_tasks"`
 	PendingTasks         int64   `json:"pending_tasks"`
@@ -121,6 +123,9 @@ type dashboardOverviewSummary struct {
 	RobotOnlineRate      float64 `json:"robot_online_rate"`
 	QualityPassRate      float64 `json:"quality_pass_rate"`
 	TotalDataDurationSec float64 `json:"total_data_duration_sec"`
+	TotalDataSizeBytes   int64   `json:"total_data_size_bytes"`
+	TodayDataDurationSec float64 `json:"today_data_duration_sec"`
+	TodayDataSizeBytes   int64   `json:"today_data_size_bytes"`
 }
 
 type dashboardTaskCounts struct {
@@ -191,7 +196,15 @@ type dashboardQualityRow struct {
 	Failed           sql.NullInt64   `db:"failed"`
 	Inspecting       sql.NullInt64   `db:"inspecting"`
 	PendingQA        sql.NullInt64   `db:"pending_qa"`
+	TotalEpisodes    sql.NullInt64   `db:"total_episodes"`
 	TotalDurationSec sql.NullFloat64 `db:"total_duration_sec"`
+	TotalDataSize    sql.NullInt64   `db:"total_data_size_bytes"`
+}
+
+type dashboardProductionTotals struct {
+	TotalEpisodes        int64
+	TotalDataDurationSec float64
+	TotalDataSizeBytes   int64
 }
 
 type dashboardSystemStatus struct {
@@ -412,7 +425,7 @@ func (h *ProductionDashboardHandler) GetSnapshot(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
 		return
 	}
-	quality, totalDurationSec, err := h.dashboardQuality(tx, scope)
+	quality, productionTotals, err := h.dashboardQuality(tx, scope)
 	if err != nil {
 		logger.Printf("[DASHBOARD] quality query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
@@ -461,7 +474,7 @@ func (h *ProductionDashboardHandler) GetSnapshot(c *gin.Context) {
 		Quality: quality,
 		System: dashboardSystemStatus{
 			OperatingDays:        operatingDays,
-			TotalDataDurationSec: totalDurationSec,
+			TotalDataDurationSec: productionTotals.TotalDataDurationSec,
 			OnlineStations:       countOnlineDashboardStations(stations),
 		},
 		Stations:      stations,
@@ -534,13 +547,19 @@ func (h *ProductionDashboardHandler) GetOverview(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard overview"})
 		return
 	}
+	todayProductionTotals, err := h.dashboardTodayProductionTotals(tx, scope, q)
+	if err != nil {
+		logger.Printf("[DASHBOARD] overview today production query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard overview"})
+		return
+	}
 	trend, err := h.dashboardDataProductionTrend(tx, scope, q)
 	if err != nil {
 		logger.Printf("[DASHBOARD] overview data production trend query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard overview"})
 		return
 	}
-	quality, totalDurationSec, err := h.dashboardQuality(tx, scope)
+	quality, productionTotals, err := h.dashboardQuality(tx, scope)
 	if err != nil {
 		logger.Printf("[DASHBOARD] overview quality query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard overview"})
@@ -590,7 +609,7 @@ func (h *ProductionDashboardHandler) GetOverview(c *gin.Context) {
 	c.JSON(http.StatusOK, productionDashboardOverviewResponse{
 		GeneratedAt:            time.Now().UTC().Format(time.RFC3339),
 		Scope:                  scope,
-		Summary:                buildOverviewSummary(tasks, todayTasks, quality, totalDurationSec, devices, stationsOverview, len(activeBatches)),
+		Summary:                buildOverviewSummary(tasks, todayTasks, todayProductionTotals, quality, productionTotals, devices, stationsOverview, len(activeBatches)),
 		Trend:                  trend,
 		TaskStatusDistribution: buildTaskStatusDistribution(tasks),
 		Quality: dashboardOverviewQuality{
@@ -885,6 +904,39 @@ func (h *ProductionDashboardHandler) dashboardTodayTaskCount(db dashboardDB, sco
 	return nullInt64(count), nil
 }
 
+func (h *ProductionDashboardHandler) dashboardTodayProductionTotals(db dashboardDB, scope productionDashboardScope, q productionDashboardQuery) (dashboardProductionTotals, error) {
+	location := fixedZoneFromOffset(q.TimezoneOffset)
+	nowLocal := time.Now().In(location)
+	startLocal := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, location)
+	endLocal := startLocal.AddDate(0, 0, 1)
+	startUTC := startLocal.UTC()
+	endUTC := endLocal.UTC()
+
+	eventTimeExpr := "COALESCE(t.completed_at, e.created_at)"
+	conditions := []string{"e.deleted_at IS NULL", eventTimeExpr + " >= ?", eventTimeExpr + " < ?"}
+	args := []interface{}{startUTC, endUTC}
+	conditions, args = appendDashboardEpisodeScope(conditions, args, scope)
+
+	query := `
+		SELECT
+			COUNT(e.id) AS total_episodes,
+			COALESCE(SUM(COALESCE(e.duration_sec, 0)), 0) AS total_duration_sec,
+			COALESCE(SUM(COALESCE(e.file_size_bytes, 0)), 0) AS total_data_size_bytes
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		WHERE ` + strings.Join(conditions, " AND ")
+
+	var row dashboardQualityRow
+	if err := db.Get(&row, query, args...); err != nil {
+		return dashboardProductionTotals{}, err
+	}
+	return dashboardProductionTotals{
+		TotalEpisodes:        nullInt64(row.TotalEpisodes),
+		TotalDataDurationSec: nullFloat64(row.TotalDurationSec),
+		TotalDataSizeBytes:   nullInt64(row.TotalDataSize),
+	}, nil
+}
+
 func (h *ProductionDashboardHandler) dashboardTaskTrend(db dashboardDB, scope productionDashboardScope, q productionDashboardQuery) ([]dashboardTrendItem, error) {
 	location := fixedZoneFromOffset(q.TimezoneOffset)
 	endLocal := time.Now().In(location).AddDate(0, 0, 1)
@@ -1008,7 +1060,7 @@ func (h *ProductionDashboardHandler) dashboardTaskDistribution(db dashboardDB, s
 	return items, db.Select(&items, query, args...)
 }
 
-func (h *ProductionDashboardHandler) dashboardQuality(db dashboardDB, scope productionDashboardScope) (dashboardQuality, float64, error) {
+func (h *ProductionDashboardHandler) dashboardQuality(db dashboardDB, scope productionDashboardScope) (dashboardQuality, dashboardProductionTotals, error) {
 	conditions := []string{"e.deleted_at IS NULL"}
 	args := []interface{}{}
 	conditions, args = appendDashboardEpisodeScope(conditions, args, scope)
@@ -1019,13 +1071,15 @@ func (h *ProductionDashboardHandler) dashboardQuality(db dashboardDB, scope prod
 			COALESCE(SUM(CASE WHEN e.qa_status = 'rejected' THEN 1 ELSE 0 END), 0) AS failed,
 			COALESCE(SUM(CASE WHEN e.qa_status = 'needs_inspection' THEN 1 ELSE 0 END), 0) AS inspecting,
 			COALESCE(SUM(CASE WHEN e.qa_status = 'pending_qa' THEN 1 ELSE 0 END), 0) AS pending_qa,
-			COALESCE(SUM(COALESCE(e.duration_sec, 0)), 0) AS total_duration_sec
+			COUNT(1) AS total_episodes,
+			COALESCE(SUM(COALESCE(e.duration_sec, 0)), 0) AS total_duration_sec,
+			COALESCE(SUM(COALESCE(e.file_size_bytes, 0)), 0) AS total_data_size_bytes
 		FROM episodes e
 		WHERE ` + strings.Join(conditions, " AND ")
 
 	var row dashboardQualityRow
 	if err := db.Get(&row, query, args...); err != nil {
-		return dashboardQuality{}, 0, err
+		return dashboardQuality{}, dashboardProductionTotals{}, err
 	}
 	inspected := nullInt64(row.TotalInspected)
 	passed := nullInt64(row.Passed)
@@ -1033,14 +1087,20 @@ func (h *ProductionDashboardHandler) dashboardQuality(db dashboardDB, scope prod
 	if inspected > 0 {
 		passRate = math.Round((float64(passed)/float64(inspected))*1000) / 10
 	}
-	return dashboardQuality{
+	quality := dashboardQuality{
 		PassRate:       passRate,
 		TotalInspected: inspected,
 		Passed:         passed,
 		Failed:         nullInt64(row.Failed),
 		Inspecting:     nullInt64(row.Inspecting),
 		PendingQA:      nullInt64(row.PendingQA),
-	}, nullFloat64(row.TotalDurationSec), nil
+	}
+	productionTotals := dashboardProductionTotals{
+		TotalEpisodes:        nullInt64(row.TotalEpisodes),
+		TotalDataDurationSec: nullFloat64(row.TotalDurationSec),
+		TotalDataSizeBytes:   nullInt64(row.TotalDataSize),
+	}
+	return quality, productionTotals, nil
 }
 
 func (h *ProductionDashboardHandler) dashboardStations(db dashboardDB, scope productionDashboardScope) ([]dashboardStationItem, error) {
@@ -1343,15 +1403,18 @@ func dashboardEpisodePreviewURL(id string, mcapPath string) string {
 func buildOverviewSummary(
 	tasks dashboardTaskCounts,
 	todayTasks int64,
+	todayProductionTotals dashboardProductionTotals,
 	quality dashboardQuality,
-	totalDurationSec float64,
+	productionTotals dashboardProductionTotals,
 	devices dashboardOverviewDevices,
 	stations dashboardOverviewStations,
 	activeBatchCount int,
 ) dashboardOverviewSummary {
 	return dashboardOverviewSummary{
 		TotalTasks:           tasks.Total,
+		TotalEpisodes:        productionTotals.TotalEpisodes,
 		TodayTasks:           todayTasks,
+		TodayEpisodes:        todayProductionTotals.TotalEpisodes,
 		CompletedTasks:       tasks.Completed,
 		InProgressTasks:      tasks.InProgress,
 		PendingTasks:         tasks.Pending + tasks.Ready,
@@ -1362,7 +1425,10 @@ func buildOverviewSummary(
 		TotalStations:        stations.Summary.Total,
 		RobotOnlineRate:      devices.Summary.OnlineRate,
 		QualityPassRate:      quality.PassRate,
-		TotalDataDurationSec: totalDurationSec,
+		TotalDataDurationSec: productionTotals.TotalDataDurationSec,
+		TotalDataSizeBytes:   productionTotals.TotalDataSizeBytes,
+		TodayDataDurationSec: todayProductionTotals.TotalDataDurationSec,
+		TodayDataSizeBytes:   todayProductionTotals.TotalDataSizeBytes,
 	}
 }
 
