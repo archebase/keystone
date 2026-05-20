@@ -136,7 +136,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		subsceneHandler = handlers.NewSubsceneHandler(db)
 		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
 		dataStatsHandler = handlers.NewDataProductionStatisticsHandler(db)
-		productionDashboardHandler = handlers.NewProductionDashboardHandler(db)
+		productionDashboardHandler = handlers.NewProductionDashboardHandler(db, recorderHub, transferHub)
 	}
 
 	// Create SyncHandler for cloud sync API
@@ -299,8 +299,7 @@ func (s *Server) buildRoutes() http.Handler {
 		s.dataStats.RegisterRoutes(adminStats)
 	}
 	if s.productionDashboard != nil {
-		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
-		dashboard := v1Routes.Group("/production/dashboard", jwtMw, middleware.RequireAnyRole("admin", "data_collector"))
+		dashboard := v1Routes.Group("/production/dashboard", middleware.DashboardAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector", "display"))
 		s.productionDashboard.RegisterRoutes(dashboard)
 	}
 

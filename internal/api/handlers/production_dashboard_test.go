@@ -10,13 +10,14 @@ import (
 	"strings"
 	"testing"
 
+	"archebase.com/keystone-edge/internal/auth"
 	"github.com/gin-gonic/gin"
 )
 
 func TestParseProductionDashboardQueryDefaultsAndBounds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/dashboard/snapshot?workstation_id=12&factory_id=34&organization_id=56&trend_days=99&distribution_limit=999&active_limit=999&timezone_offset=%2B08:00", nil)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/snapshot?workstation_id=12&factory_id=34&organization_id=56&trend_days=99&distribution_limit=999&active_limit=999&recent_limit=999&preview_limit=999&timezone_offset=%2B08:00", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -36,6 +37,12 @@ func TestParseProductionDashboardQueryDefaultsAndBounds(t *testing.T) {
 	if got.ActiveLimit != maxDashboardActiveLimit {
 		t.Fatalf("active limit = %d, want %d", got.ActiveLimit, maxDashboardActiveLimit)
 	}
+	if got.RecentLimit != maxDashboardRecentLimit {
+		t.Fatalf("recent limit = %d, want %d", got.RecentLimit, maxDashboardRecentLimit)
+	}
+	if got.PreviewLimit != maxDashboardPreviewLimit {
+		t.Fatalf("preview limit = %d, want %d", got.PreviewLimit, maxDashboardPreviewLimit)
+	}
 	if got.TimezoneOffset != "+08:00" {
 		t.Fatalf("timezone offset = %q, want +08:00", got.TimezoneOffset)
 	}
@@ -47,6 +54,8 @@ func TestParseProductionDashboardQueryValidation(t *testing.T) {
 	tests := []string{
 		"/dashboard/snapshot?workstation_id=0",
 		"/dashboard/snapshot?trend_days=0",
+		"/dashboard/snapshot?recent_limit=0",
+		"/dashboard/snapshot?preview_limit=0",
 		"/dashboard/snapshot?timezone_offset=08:00",
 	}
 
@@ -99,6 +108,22 @@ func TestDashboardTaskScopeUsesCollectorAssignment(t *testing.T) {
 	}
 }
 
+func TestResolveProductionDashboardScopeAllowsDisplayRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/dashboard/overview?factory_id=12", nil)
+	h := &ProductionDashboardHandler{}
+
+	scope, err := h.resolveProductionDashboardScope(c, &auth.Claims{Role: "display"}, productionDashboardQuery{FactoryID: "12"})
+	if err != nil {
+		t.Fatalf("resolveProductionDashboardScope returned error: %v", err)
+	}
+	if scope.Role != "display" || scope.FactoryID != "12" {
+		t.Fatalf("unexpected display scope: %+v", scope)
+	}
+}
+
 func TestDashboardActiveBatchesQueryLimitsBeforeTaskAggregation(t *testing.T) {
 	query, args := buildDashboardActiveBatchesQuery(
 		productionDashboardScope{
@@ -124,6 +149,97 @@ func TestDashboardActiveBatchesQueryLimitsBeforeTaskAggregation(t *testing.T) {
 	}
 	if len(args) != 2 || args[0] != int64(42) || args[1] != 20 {
 		t.Fatalf("args = %#v, want collector id then limit", args)
+	}
+}
+
+func TestProductionDashboardOverviewEmptyScopeKeepsContract(t *testing.T) {
+	scope := productionDashboardScope{
+		Role:    "data_collector",
+		Warning: "workstation not assigned",
+		empty:   true,
+	}
+
+	got := emptyProductionDashboardOverview(scope)
+	if got.Scope.Warning != "workstation not assigned" {
+		t.Fatalf("scope warning = %q", got.Scope.Warning)
+	}
+	if got.Summary.TotalTasks != 0 || got.Summary.TodayTasks != 0 {
+		t.Fatalf("summary should stay zero: %+v", got.Summary)
+	}
+	if len(got.Trend) != 0 ||
+		len(got.TaskStatusDistribution) != 0 ||
+		len(got.RecentTasks) != 0 ||
+		len(got.Previews) != 0 {
+		t.Fatalf("empty overview arrays should be empty: %+v", got)
+	}
+	if got.Quality.RecentFailures == nil {
+		t.Fatalf("quality recent_failures should be an empty array, not nil")
+	}
+}
+
+func TestProductionDashboardOverviewDistributionAndDevices(t *testing.T) {
+	distribution := buildTaskStatusDistribution(dashboardTaskCounts{
+		Completed:  3,
+		InProgress: 2,
+		Pending:    1,
+	})
+	if len(distribution) != 3 {
+		t.Fatalf("distribution len = %d, want 3: %+v", len(distribution), distribution)
+	}
+
+	devices := buildOverviewDevices([]dashboardDeviceConnectionRow{
+		{DeviceID: "robot-a"},
+		{DeviceID: "robot-b"},
+		{DeviceID: "robot-c"},
+	}, func(deviceID string) bool {
+		return deviceID == "robot-a" || deviceID == "robot-b"
+	})
+	if devices.Summary.Total != 3 || devices.Summary.Online != 2 || devices.Summary.Offline != 1 {
+		t.Fatalf("unexpected device summary: %+v", devices.Summary)
+	}
+	if devices.Summary.OnlineRate != 66.7 {
+		t.Fatalf("online rate = %.1f, want 66.7", devices.Summary.OnlineRate)
+	}
+
+	stations := buildOverviewStations([]dashboardStationItem{
+		{ID: "1", Name: "A", Status: "active"},
+		{ID: "2", Name: "B", Status: "inactive"},
+		{ID: "3", Name: "C", Status: "break"},
+		{ID: "4", Name: "D", Status: "offline"},
+	})
+	if stations.Summary.Total != 4 || stations.Summary.Active != 1 ||
+		stations.Summary.Inactive != 1 || stations.Summary.Break != 1 ||
+		stations.Summary.Online != 3 || stations.Summary.Offline != 1 {
+		t.Fatalf("unexpected station summary: %+v", stations.Summary)
+	}
+	if stations.Summary.OnlineRate != 75 {
+		t.Fatalf("station online rate = %.1f, want 75", stations.Summary.OnlineRate)
+	}
+}
+
+func TestDashboardRecentTaskUpdatedAtSQL(t *testing.T) {
+	expr := dashboardRecentTaskUpdatedAtSQL("t")
+	for _, want := range []string{
+		"t.updated_at",
+		"t.completed_at",
+		"t.started_at",
+		"t.assigned_at",
+		"t.created_at",
+	} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("recent task updated_at SQL should contain %q: %s", want, expr)
+		}
+	}
+}
+
+func TestProductionDashboardEpisodePreviewURL(t *testing.T) {
+	got := dashboardEpisodePreviewURL("42", "mcap/episode-42.mcap")
+	if got != "/api/v1/episodes/42/presign?kind=mcap" {
+		t.Fatalf("preview url = %q", got)
+	}
+
+	if got := dashboardEpisodePreviewURL("42", ""); got != "" {
+		t.Fatalf("preview url without mcap path = %q, want empty", got)
 	}
 }
 
