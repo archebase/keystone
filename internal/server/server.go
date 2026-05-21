@@ -256,6 +256,9 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.robotType != nil {
 		s.robotType.RegisterRoutes(v1Tasks)
+		s.robotType.RegisterConfigTemplatePublicRoutes(v1Tasks)
+		adminRobotTypes := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
+		s.robotType.RegisterConfigTemplateAdminRoutes(adminRobotTypes)
 	}
 	if s.robot != nil {
 		s.robot.RegisterRoutes(v1Tasks)
