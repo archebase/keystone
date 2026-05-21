@@ -1,0 +1,416 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robot Type Config Templates API Design</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17211b;
+      --muted: #59655d;
+      --line: #d9e0da;
+      --surface: #f8faf7;
+      --accent: #0f766e;
+      --accent-soft: #d9f4ef;
+      --danger: #a33a2a;
+      --code-bg: #10201d;
+      --code-ink: #edf7f4;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: linear-gradient(180deg, #f6f9f5 0%, #ffffff 34%);
+      font: 16px/1.65 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 48px 24px 72px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 34px;
+      line-height: 1.2;
+    }
+
+    h2 {
+      margin: 36px 0 12px;
+      font-size: 24px;
+      border-left: 4px solid var(--accent);
+      padding-left: 12px;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 19px;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul {
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      background: var(--accent-soft);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    pre {
+      overflow-x: auto;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      padding: 16px;
+      border-radius: 8px;
+      line-height: 1.5;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      border-radius: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      background: white;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface);
+      font-weight: 700;
+    }
+
+    .summary {
+      color: var(--muted);
+      max-width: 820px;
+    }
+
+    .decision {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 18px 0;
+    }
+
+    .warning {
+      border-left: 4px solid var(--danger);
+      background: #fff7f5;
+      padding: 12px 16px;
+      margin: 18px 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Robot Type Config Templates API Design</h1>
+      <p class="summary">
+        本文定义 Keystone 中按机器人类型管理 Axon 运行配置模板的第一版方案。模板由 Synapse 管理，
+        Keystone 提供公开读取接口给未来 Axon 注册/刷新流程使用，Axon 在本地使用注册结果渲染最终配置文件。
+      </p>
+    </header>
+
+    <section>
+      <h2>目标</h2>
+      <ul>
+        <li>为每个 <code>robot_type_id</code> 保存当前生效的 <code>recorder.yaml</code> 和 <code>transfer.yaml</code> 模板。</li>
+        <li>提供公开 API 返回原始 YAML 模板文本，不要求 JWT。</li>
+        <li>提供 admin API 给 Synapse 上传和管理模板。</li>
+        <li>Synapse 第一版只支持上传模板文件和查看存在状态，不展示模板正文。</li>
+        <li>Axon 本地负责模板渲染，Keystone 不替换 <code>{{ robot_id }}</code> 等占位符。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>非目标</h2>
+      <ul>
+        <li>不实现模板版本历史、发布审批或回滚。</li>
+        <li>不实现工厂级或机器人级模板覆盖。</li>
+        <li>不校验 YAML 语法或模板 placeholder 是否被 Axon 支持。</li>
+        <li>不实现旧接口 <code>/configs/&lt;factory&gt;/&lt;robot_type&gt;/...</code>。</li>
+        <li>本阶段不改 Axon 现有代码。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>核心边界</h2>
+      <div class="decision">
+        <p>
+          Keystone 只返回原始模板内容。模板中的占位符原样保留，由 Axon 使用本地
+          <code>device.json</code> 中的注册结果渲染最终配置。
+        </p>
+      </div>
+      <pre><code>device_id: "{{ device_id }}"
+factory_id: "{{ factory_id }}"
+robot_type_id: "{{ robot_type_id }}"
+robot_id: "{{ robot_id }}"
+transfer_ws_url: "{{ transfer_ws_url }}"</code></pre>
+    </section>
+
+    <section>
+      <h2>数据模型</h2>
+      <p>第一版只保存当前 active 模板。删除采用软删除，同一 <code>robot_type_id + filename</code> 只能有一条 active 记录。</p>
+      <pre><code>CREATE TABLE IF NOT EXISTS robot_type_config_templates (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    robot_type_id BIGINT NOT NULL,
+    filename VARCHAR(128) NOT NULL,
+    content MEDIUMTEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP NULL,
+
+    _active_unique VARCHAR(300) GENERATED ALWAYS AS (
+        IF(deleted_at IS NULL, CONCAT(robot_type_id, '|', filename), NULL)
+    ) STORED,
+
+    UNIQUE INDEX idx_robot_type_config_templates_active (_active_unique),
+    INDEX idx_robot_type_config_templates_robot_type (robot_type_id),
+    INDEX idx_robot_type_config_templates_filename (filename),
+    INDEX idx_robot_type_config_templates_deleted (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;</code></pre>
+      <h3>字段说明</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>robot_type_id</code></td>
+            <td>关联 <code>robot_types.id</code>。接口层必须确认 robot type 存在且未软删除。</td>
+          </tr>
+          <tr>
+            <td><code>filename</code></td>
+            <td>模板文件名。第一版只允许 <code>recorder.yaml</code> 和 <code>transfer.yaml</code>。</td>
+          </tr>
+          <tr>
+            <td><code>content</code></td>
+            <td>原始模板文本，最大 256 KiB，不能为空或全空白。</td>
+          </tr>
+          <tr>
+            <td><code>_active_unique</code></td>
+            <td>MySQL generated column，用于保证 active 模板唯一，同时允许保留多条软删除历史记录。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>公开读取接口</h2>
+      <p>该接口供未来 Axon 注册或刷新配置时读取模板。它不要求 JWT。</p>
+      <pre><code>GET /api/v1/robot_types/{robot_type_id}/configs/{filename}</code></pre>
+      <h3>成功响应</h3>
+      <pre><code>HTTP/1.1 200 OK
+Content-Type: text/yaml; charset=utf-8
+
+rpc:
+  mode: ws_client
+  ws_client:
+    url: "{{ recorder_rpc_url }}"</code></pre>
+      <h3>错误响应</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>条件</th>
+            <th>状态码</th>
+            <th>响应</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>robot_type_id</code> 不是正整数</td>
+            <td>400</td>
+            <td><code>{"error":"invalid robot_type_id"}</code></td>
+          </tr>
+          <tr>
+            <td><code>filename</code> 不在白名单</td>
+            <td>400</td>
+            <td><code>{"error":"invalid config filename"}</code></td>
+          </tr>
+          <tr>
+            <td>robot type 不存在或已软删除</td>
+            <td>404</td>
+            <td><code>{"error":"robot_type not found"}</code></td>
+          </tr>
+          <tr>
+            <td>模板不存在</td>
+            <td>404</td>
+            <td><code>{"error":"config template not found"}</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Admin 管理接口</h2>
+      <p>以下接口供 Synapse 管理模板，必须要求 admin JWT。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>方法</th>
+            <th>路径</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>GET</td>
+            <td><code>/api/v1/robot_types/{robot_type_id}/config_templates</code></td>
+            <td>列出固定两个模板槽位和上传状态。</td>
+          </tr>
+          <tr>
+            <td>GET</td>
+            <td><code>/api/v1/robot_types/{robot_type_id}/config_templates/{filename}</code></td>
+            <td>获取单个模板正文和元数据，第一版前端可不用。</td>
+          </tr>
+          <tr>
+            <td>PUT</td>
+            <td><code>/api/v1/robot_types/{robot_type_id}/config_templates/{filename}</code></td>
+            <td>上传或更新模板。</td>
+          </tr>
+          <tr>
+            <td>DELETE</td>
+            <td><code>/api/v1/robot_types/{robot_type_id}/config_templates/{filename}</code></td>
+            <td>软删除模板。前端第一版可不暴露删除按钮。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>列表响应</h3>
+      <pre><code>{
+  "templates": [
+    {
+      "filename": "recorder.yaml",
+      "exists": true,
+      "updated_at": "2026-05-21T10:00:00Z"
+    },
+    {
+      "filename": "transfer.yaml",
+      "exists": false,
+      "updated_at": null
+    }
+  ]
+}</code></pre>
+
+      <h3>上传请求</h3>
+      <pre><code>PUT /api/v1/robot_types/3/config_templates/recorder.yaml
+Content-Type: application/json
+
+{
+  "content": "rpc:\n  mode: ws_client\n"
+}</code></pre>
+
+      <h3>上传响应</h3>
+      <pre><code>{
+  "filename": "recorder.yaml",
+  "exists": true,
+  "created_at": "2026-05-21T10:00:00Z",
+  "updated_at": "2026-05-21T10:00:00Z"
+}</code></pre>
+    </section>
+
+    <section>
+      <h2>校验规则</h2>
+      <ul>
+        <li><code>robot_type_id</code> 必须是正整数。</li>
+        <li>robot type 必须存在且 <code>deleted_at IS NULL</code>。</li>
+        <li><code>filename</code> 只允许 <code>recorder.yaml</code> 和 <code>transfer.yaml</code>。</li>
+        <li><code>PUT content</code> 不能为空或全空白。</li>
+        <li><code>PUT content</code> 大小不能超过 256 KiB。</li>
+        <li>第一版不做 YAML 语法校验，也不校验 placeholder 白名单。</li>
+        <li><code>DELETE</code> 幂等。模板不存在时也返回 <code>204 No Content</code>。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Synapse 第一版范围</h2>
+      <p>前端放在 robot type 页面中，不做独立复杂模板管理模块。</p>
+      <ul>
+        <li>页面加载时调用列表接口，展示 <code>recorder.yaml</code> 和 <code>transfer.yaml</code> 两个槽位。</li>
+        <li>每个槽位显示是否已上传和最后更新时间。</li>
+        <li>每个槽位提供文件选择和上传按钮。</li>
+        <li>浏览器读取本地 YAML 文件为文本，然后通过 JSON <code>PUT</code> 提交 <code>content</code>。</li>
+        <li>第一版不展示模板正文，不提供在线编辑器，不提供预览渲染。</li>
+        <li>上传成功后重新拉列表或本地更新该槽位状态。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Axon 集成说明</h2>
+      <div class="warning">
+        <p>
+          本阶段不改 Axon。Keystone 只实现新的 canonical API。当前 Axon 分支仍使用旧
+          <code>/configs/&lt;factory&gt;/&lt;robot_type&gt;/...</code> URL 时，不会自动命中新接口。
+        </p>
+      </div>
+      <p>未来 Axon 切换时应使用注册响应中的 <code>robot_type_id</code> 调用：</p>
+      <pre><code>GET /api/v1/robot_types/{robot_type_id}/configs/recorder.yaml
+GET /api/v1/robot_types/{robot_type_id}/configs/transfer.yaml</code></pre>
+    </section>
+
+    <section>
+      <h2>测试范围</h2>
+      <ul>
+        <li>Public GET 成功返回 raw YAML，Content-Type 为 <code>text/yaml; charset=utf-8</code>。</li>
+        <li>Public GET 非法 id、非法 filename、robot type 不存在、模板不存在。</li>
+        <li>Admin list 固定返回两个槽位。</li>
+        <li>Admin PUT 新建模板、更新模板、拒绝空内容、拒绝超大内容。</li>
+        <li>Admin DELETE 软删除模板，并保持幂等。</li>
+        <li>Admin 接口需要 admin JWT。</li>
+        <li>Swagger/OpenAPI 文档需要重新生成。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>实现清单</h2>
+      <ol>
+        <li>新增数据库 migration：<code>robot_type_config_templates</code>。</li>
+        <li>新增或扩展 Keystone handler：public raw template GET。</li>
+        <li>新增 admin template CRUD handler。</li>
+        <li>在 server route 中区分 public route 和 admin JWT route。</li>
+        <li>补 handler 单元测试。</li>
+        <li>更新 Synapse robot type 页面，增加两个上传槽位。</li>
+        <li>重新生成 Swagger 文档。</li>
+      </ol>
+    </section>
+  </main>
+</body>
+</html>
