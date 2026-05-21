@@ -434,6 +434,8 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 	// Build update query dynamically
 	updates := []string{}
 	args := []interface{}{}
+	sceneNameForTasks := existing.Name
+	syncTaskSceneName := false
 
 	if req.FactoryID != nil {
 		factoryIDStr := strings.TrimSpace(*req.FactoryID)
@@ -462,6 +464,8 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 		if name != "" {
 			updates = append(updates, "name = ?")
 			args = append(args, name)
+			sceneNameForTasks = name
+			syncTaskSceneName = name != existing.Name
 		}
 	}
 
@@ -502,6 +506,13 @@ func (h *SceneHandler) UpdateScene(c *gin.Context) {
 		logger.Printf("[SCENE] Failed to update scene: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update scene"})
 		return
+	}
+	if syncTaskSceneName {
+		if err := syncTaskSceneNameBySceneID(h.db, id, sceneNameForTasks); err != nil {
+			logger.Printf("[SCENE] Failed to sync task scene snapshot: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update scene"})
+			return
+		}
 	}
 
 	// Fetch the updated scene
