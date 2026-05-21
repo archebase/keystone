@@ -545,6 +545,19 @@ func (h *SubsceneHandler) UpdateSubscene(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update subscene"})
 		return
 	}
+	if effectiveSceneID != existing.SceneID || finalName != existing.Name {
+		var sceneName string
+		if err := h.db.Get(&sceneName, "SELECT name FROM scenes WHERE id = ? AND deleted_at IS NULL", effectiveSceneID); err != nil {
+			logger.Printf("[SUBSCENE] Failed to query scene name for task sync: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update subscene"})
+			return
+		}
+		if err := syncTaskSubsceneSnapshotBySubsceneID(h.db, id, effectiveSceneID, sceneName, finalName); err != nil {
+			logger.Printf("[SUBSCENE] Failed to sync task subscene snapshot: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update subscene"})
+			return
+		}
+	}
 
 	// Fetch the updated subscene
 	var s subsceneRow
