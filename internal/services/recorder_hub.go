@@ -89,6 +89,9 @@ func (r *RecorderConn) GetWSConn() *websocket.Conn { return r.Conn }
 // GetConnectedAt implements Connection.
 func (r *RecorderConn) GetConnectedAt() time.Time { return r.ConnectedAt }
 
+// GetLastSeenAt implements Connection.
+func (r *RecorderConn) GetLastSeenAt() time.Time { return r.LastSeenAt }
+
 // GetState returns a copy of the recorder state.
 func (r *RecorderConn) GetState() RecorderState {
 	r.StateMu.RLock()
@@ -140,10 +143,16 @@ func (h *RecorderHub) Connect(deviceID string, rc *RecorderConn) bool {
 	return h.connect(deviceID, rc)
 }
 
+// ConnectWithStaleThreshold registers a recorder connection, replacing and
+// returning the old connection when it has not been seen within staleThreshold.
+func (h *RecorderHub) ConnectWithStaleThreshold(deviceID string, rc *RecorderConn, staleThreshold time.Duration) (*RecorderConn, bool) {
+	return h.connectWithStaleThreshold(deviceID, rc, staleThreshold)
+}
+
 // Disconnect removes a recorder connection and drains any pending RPC waiters.
-func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) {
+func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) bool {
 	if !h.disconnect(deviceID, rc) {
-		return
+		return false
 	}
 
 	// Unblock any goroutines waiting for an RPC response from this device.
@@ -161,6 +170,7 @@ func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) {
 		}
 	}
 	rc.PendingMu.Unlock()
+	return true
 }
 
 // Get returns the recorder connection for a device, or nil if not connected.

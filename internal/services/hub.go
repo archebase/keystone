@@ -23,6 +23,8 @@ type Connection interface {
 	GetWSConn() *websocket.Conn
 	// GetConnectedAt returns the time the connection was established.
 	GetConnectedAt() time.Time
+	// GetLastSeenAt returns when the connection last proved it was alive.
+	GetLastSeenAt() time.Time
 }
 
 // Hub is a generic, concurrency-safe registry of WebSocket connections keyed
@@ -49,18 +51,44 @@ func newHub[T Connection](label string) *Hub[T] {
 // registered for the same device, the new connection is rejected (caller must
 // close it) and false is returned. Callers must pass a non-nil conn.
 func (h *Hub[T]) connect(deviceID string, conn T) bool {
+	_, ok := h.connectWithStaleThreshold(deviceID, conn, 0)
+	return ok
+}
+
+// connectWithStaleThreshold registers conn under deviceID. If another
+// connection exists and has not exceeded staleThreshold, the new connection is
+// rejected. If the old connection is stale, it is replaced and returned so the
+// caller can close it outside the hub lock.
+func (h *Hub[T]) connectWithStaleThreshold(deviceID string, conn T, staleThreshold time.Duration) (T, bool) {
+	var zero T
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if old, exists := h.connections[deviceID]; exists {
 		if old.GetWSConn() != nil && old.GetWSConn() != conn.GetWSConn() {
+			lastSeenAt := old.GetLastSeenAt()
+			isStale := staleThreshold > 0 && !lastSeenAt.IsZero() && time.Since(lastSeenAt) > staleThreshold
+			if isStale {
+				h.connections[deviceID] = conn
+				logger.Printf(
+					"[%s] Hub: replacing stale connection for device %s (last_seen_at=%s, stale_threshold=%s)",
+					h.label,
+					deviceID,
+					lastSeenAt.Format(time.RFC3339),
+					staleThreshold,
+				)
+				logger.Printf("[%s] Hub: device %s registered, total connections=%d", h.label, deviceID, len(h.connections))
+				return old, true
+			}
+
 			logger.Printf("[%s] Hub: rejecting new connection for device %s (already connected)", h.label, deviceID)
-			return false
+			return zero, false
 		}
 	}
 	h.connections[deviceID] = conn
 	logger.Printf("[%s] Hub: device %s registered, total connections=%d", h.label, deviceID, len(h.connections))
-	return true
+	return zero, true
 }
 
 // disconnect removes the connection for deviceID only if it matches conn.

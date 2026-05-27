@@ -149,42 +149,36 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 	remoteIP := extractIP(r.RemoteAddr)
 	dc := h.hub.NewTransferConn(conn, deviceID, remoteIP)
-	if !h.hub.Connect(deviceID, dc) {
+	staleConn, ok := h.hub.ConnectWithStaleThreshold(deviceID, dc, transferStaleThreshold(h.cfg))
+	if !ok {
 		logger.Printf("[TRANSFER] Device %s: connection rejected (already connected)", deviceID)
 		if err := conn.Close(websocket.StatusPolicyViolation, "device already connected"); err != nil {
-			logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
+			if !isExpectedWebSocketCloseError(err) {
+				logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
+			}
 		}
 		return
 	}
+	closeStaleTransferConn(deviceID, staleConn)
 
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
-			logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
+			if !isExpectedWebSocketCloseError(err) {
+				logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
+			}
 		}
 	}()
 	defer h.clearUploadNotFoundAttemptsByDevice(deviceID)
-	defer h.hub.Disconnect(deviceID, dc)
-	defer revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, h.recorderHub, h.recorderRPCTimeout, true)
+	defer func() {
+		if h.hub.Disconnect(deviceID, dc) {
+			revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, h.recorderHub, h.recorderRPCTimeout, true)
+		}
+	}()
 
 	// Create context for this connection
 	ctx := r.Context()
 
-	// Start ping handler to automatically respond to client pings
-	// This prevents connection timeout due to idle connections
-	go func() {
-		ticker := time.NewTicker(25 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := conn.Ping(ctx); err != nil {
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	go h.pingLoop(ctx, dc)
 
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Transfer %s connected from %s", deviceID, remoteIP)
@@ -196,7 +190,9 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	for {
 		_, raw, err := conn.Read(ctx)
 		if err != nil {
-			logger.Printf("[TRANSFER] Device %s disconnected: %v", deviceID, err)
+			if !isExpectedWebSocketCloseError(err) {
+				logger.Printf("[TRANSFER] Device %s disconnected: %v", deviceID, err)
+			}
 			break
 		}
 
@@ -211,6 +207,75 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 		// Route message by type
 		h.handleMessage(ctx, dc, msg)
+	}
+}
+
+func (h *TransferHandler) pingLoop(ctx context.Context, dc *services.TransferConn) {
+	interval := transferPingInterval(h.cfg)
+	if interval <= 0 || dc == nil || dc.Conn == nil {
+		return
+	}
+	timeout := transferPingTimeout(h.cfg)
+	if timeout <= 0 {
+		timeout = interval
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, timeout)
+			err := dc.Conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				if ctx.Err() == nil {
+					logger.Printf("[TRANSFER] Device %s ping failed: %v", dc.DeviceID, err)
+					if closeErr := dc.Conn.CloseNow(); closeErr != nil {
+						if !isExpectedWebSocketCloseError(closeErr) {
+							logger.Printf("[TRANSFER] Device %s close after ping failure: %v", dc.DeviceID, closeErr)
+						}
+					}
+				}
+				return
+			}
+			dc.LastSeenAt = time.Now()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func transferPingInterval(cfg *config.TransferConfig) time.Duration {
+	if cfg == nil || cfg.PingInterval <= 0 {
+		return 0
+	}
+	return time.Duration(cfg.PingInterval) * time.Second
+}
+
+func transferPingTimeout(cfg *config.TransferConfig) time.Duration {
+	if cfg == nil || cfg.PingTimeout <= 0 {
+		return 0
+	}
+	return time.Duration(cfg.PingTimeout) * time.Second
+}
+
+func transferStaleThreshold(cfg *config.TransferConfig) time.Duration {
+	if cfg == nil || cfg.StaleThreshold <= 0 {
+		return 0
+	}
+	return time.Duration(cfg.StaleThreshold) * time.Second
+}
+
+func closeStaleTransferConn(deviceID string, dc *services.TransferConn) {
+	if dc == nil || dc.Conn == nil {
+		return
+	}
+	logger.Printf("[TRANSFER] Device %s: closing stale WebSocket connection", deviceID)
+	if err := dc.Conn.CloseNow(); err != nil {
+		if !isExpectedWebSocketCloseError(err) {
+			logger.Printf("[TRANSFER] Device %s: stale WebSocket close error: %v", deviceID, err)
+		}
 	}
 }
 
@@ -626,8 +691,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
 
-	// After upload_ack is sent, mark task as completed (ready or in_progress -> completed).
-	// ready is allowed when begin RPC timed out on edge but recording+upload succeeded (episode row committed above).
+	// After upload_ack is sent, mark task as completed (pending, ready, or in_progress -> completed).
+	// pending is allowed when Keystone rolled the task back during a transient recorder disconnect,
+	// while the device kept recording and successfully uploaded the episode.
 	// Best-effort: do not affect the already-sent acknowledgement.
 	now := time.Now().UTC()
 	if _, err := h.db.ExecContext(ctx, `
@@ -636,10 +702,10 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			status = 'completed',
 			completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
 			updated_at = ?
-		WHERE id = ? AND status IN ('in_progress', 'ready') AND deleted_at IS NULL
+		WHERE id = ? AND status IN ('pending', 'in_progress', 'ready') AND deleted_at IS NULL
 	`, now, now, taskPK); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to mark task ready/in_progress->completed after upload_ack: task=%s err=%v", dc.DeviceID, taskID, err)
+		logger.Printf("[TRANSFER] Device %s: failed to mark task pending/ready/in_progress->completed after upload_ack: task=%s err=%v", dc.DeviceID, taskID, err)
 	} else {
 		if batchIDForAdvance > 0 {
 			// Must run after the task row is terminal: tryAdvanceBatchStatus counts tasks in DB.
