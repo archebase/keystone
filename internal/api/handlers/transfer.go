@@ -319,6 +319,17 @@ func readSidecarFromS3(ctx context.Context, s3Client *s3.Client, bucket, jsonKey
 	return &sc
 }
 
+func uploadCompleteS3Key(data map[string]interface{}) string {
+	return strings.TrimSpace(stringVal(data, "s3_key"))
+}
+
+func uploadCompleteSidecarS3Key(mcapKey string) (string, bool) {
+	if !strings.HasSuffix(mcapKey, ".mcap") {
+		return "", false
+	}
+	return strings.TrimSuffix(mcapKey, ".mcap") + ".json", true
+}
+
 // onUploadComplete handles "upload_complete" and runs the Verified ACK flow:
 //  1. Verify S3 files exist
 //  2. Update episodes table
@@ -352,9 +363,19 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	}
 
 	// Step 1: Verify S3 files exist (parallel execution)
-	today := time.Now().Format("2006-01-02")
-	mcapKey := fmt.Sprintf("%s/%s/%s/%s.mcap", h.factoryID, dc.DeviceID, today, taskID)
-	jsonKey := fmt.Sprintf("%s/%s/%s/%s.json", h.factoryID, dc.DeviceID, today, taskID)
+	mcapKey := uploadCompleteS3Key(data)
+	if mcapKey == "" {
+		// #nosec G706 -- Set aside for now
+		logger.Printf("[TRANSFER] Device %s: upload_complete for task=%s missing s3_key, skipping ACK", dc.DeviceID, taskID)
+		return
+	}
+
+	jsonKey, ok := uploadCompleteSidecarS3Key(mcapKey)
+	if !ok {
+		// #nosec G706 -- Set aside for now
+		logger.Printf("[TRANSFER] Device %s: upload_complete for task=%s has invalid MCAP s3_key=%q, cannot derive sidecar key, skipping ACK", dc.DeviceID, taskID, mcapKey)
+		return
+	}
 
 	// Persist full path including bucket for clarity and easier downstream consumption.
 	mcapPath := fmt.Sprintf("%s/%s", h.bucket, mcapKey)
