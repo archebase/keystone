@@ -199,10 +199,7 @@ func (h *TransferHub) ConnectWithStaleThreshold(deviceID string, dc *TransferCon
 
 // Disconnect removes a device connection
 func (h *TransferHub) Disconnect(deviceID string, dc *TransferConn) bool {
-	if !h.disconnect(deviceID, dc) {
-		return false
-	}
-	return true
+	return h.disconnect(deviceID, dc)
 }
 
 // Get returns the TransferConn for a device, or nil if not connected
