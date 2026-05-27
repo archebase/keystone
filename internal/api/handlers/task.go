@@ -964,11 +964,22 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 		return
 	}
 
+	taskStatus := "unknown"
+	if h.db != nil {
+		res, err := advanceTaskPendingOrReadyToInProgress(h.db, callback.TaskID)
+		if err != nil {
+			logger.Printf("[RECORDER] Device %s: failed to advance task pending/ready->in_progress after start callback: task=%s err=%v", callback.DeviceID, callback.TaskID, err)
+		} else if n, _ := res.RowsAffected(); n > 0 {
+			taskStatus = "in_progress"
+			logger.Printf("[RECORDER] Device %s: task status reconciled: task=%s source=start_callback status=in_progress", callback.DeviceID, callback.TaskID)
+		}
+	}
+
 	now := time.Now()
 	nowStr := now.Format(time.RFC3339)
 	c.JSON(http.StatusOK, gin.H{
 		"status":          "acknowledged",
-		"task_status":     "unknown",
+		"task_status":     taskStatus,
 		"acknowledged_at": nowStr,
 	})
 }

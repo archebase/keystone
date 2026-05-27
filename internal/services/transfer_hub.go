@@ -116,6 +116,9 @@ func (d *TransferConn) GetWSConn() *websocket.Conn { return d.Conn }
 // GetConnectedAt implements Connection.
 func (d *TransferConn) GetConnectedAt() time.Time { return d.ConnectedAt }
 
+// GetLastSeenAt implements Connection.
+func (d *TransferConn) GetLastSeenAt() time.Time { return d.LastSeenAt }
+
 // RecordEvent appends an event to the device's ring buffer
 func (d *TransferConn) RecordEvent(direction string, payload map[string]interface{}) {
 	d.events.Push(DeviceEvent{
@@ -188,11 +191,15 @@ func (h *TransferHub) Connect(deviceID string, dc *TransferConn) bool {
 	return h.connect(deviceID, dc)
 }
 
+// ConnectWithStaleThreshold registers a transfer connection, replacing and
+// returning the old connection when it has not been seen within staleThreshold.
+func (h *TransferHub) ConnectWithStaleThreshold(deviceID string, dc *TransferConn, staleThreshold time.Duration) (*TransferConn, bool) {
+	return h.connectWithStaleThreshold(deviceID, dc, staleThreshold)
+}
+
 // Disconnect removes a device connection
-func (h *TransferHub) Disconnect(deviceID string, dc *TransferConn) {
-	if !h.disconnect(deviceID, dc) {
-		return
-	}
+func (h *TransferHub) Disconnect(deviceID string, dc *TransferConn) bool {
+	return h.disconnect(deviceID, dc)
 }
 
 // Get returns the TransferConn for a device, or nil if not connected

@@ -116,16 +116,21 @@ type ResourceLimitsConfig struct {
 
 // TransferConfig Transfer service configuration
 type TransferConfig struct {
-	WSPort      int
-	MaxEvents   int
-	ReadTimeout int // seconds
-	FactoryID   string
+	WSPort         int
+	MaxEvents      int
+	ReadTimeout    int // seconds
+	PingInterval   int // seconds
+	PingTimeout    int // seconds
+	StaleThreshold int // seconds
+	FactoryID      string
 }
 
 // RecorderConfig Axon Recorder RPC gateway configuration
 type RecorderConfig struct {
 	WSPort          int
 	PingInterval    int // seconds
+	PingTimeout     int // seconds
+	StaleThreshold  int // seconds
 	ResponseTimeout int // seconds
 }
 
@@ -225,14 +230,19 @@ func Load() (*Config, error) {
 			DiskWatermarkHigh: getEnvInt("KEYSTONE_DISK_WATERMARK_HIGH", 10),
 		},
 		AxonTransfer: TransferConfig{
-			WSPort:      getEnvInt("KEYSTONE_AXON_TRANSFER_WS_PORT", 8090),
-			MaxEvents:   getEnvInt("KEYSTONE_AXON_TRANSFER_MAX_EVENTS", 10000),
-			ReadTimeout: getEnvInt("KEYSTONE_AXON_TRANSFER_READ_TIMEOUT", 30),
-			FactoryID:   getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
+			WSPort:         getEnvInt("KEYSTONE_AXON_TRANSFER_WS_PORT", 8090),
+			MaxEvents:      getEnvInt("KEYSTONE_AXON_TRANSFER_MAX_EVENTS", 10000),
+			ReadTimeout:    getEnvInt("KEYSTONE_AXON_TRANSFER_READ_TIMEOUT", 30),
+			PingInterval:   getEnvInt("KEYSTONE_AXON_TRANSFER_PING_INTERVAL", 25),
+			PingTimeout:    getEnvInt("KEYSTONE_AXON_TRANSFER_PING_TIMEOUT", 10),
+			StaleThreshold: getEnvInt("KEYSTONE_AXON_TRANSFER_STALE_THRESHOLD", 60),
+			FactoryID:      getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
 		},
 		AxonRecorder: RecorderConfig{
 			WSPort:          getEnvInt("KEYSTONE_AXON_RECORDER_WS_PORT", 8091),
 			PingInterval:    getEnvInt("KEYSTONE_AXON_RECORDER_PING_INTERVAL", 30),
+			PingTimeout:     getEnvInt("KEYSTONE_AXON_RECORDER_PING_TIMEOUT", 10),
+			StaleThreshold:  getEnvInt("KEYSTONE_AXON_RECORDER_STALE_THRESHOLD", 60),
 			ResponseTimeout: getEnvInt("KEYSTONE_AXON_RECORDER_RESPONSE_TIMEOUT", 15),
 		},
 	}
