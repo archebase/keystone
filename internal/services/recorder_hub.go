@@ -56,6 +56,7 @@ type RPCResponse struct {
 	Success   bool                   `json:"success"`
 	Message   string                 `json:"message,omitempty"`
 	Data      map[string]interface{} `json:"data,omitempty"`
+	LocalErr  error                  `json:"-"`
 }
 
 // PendingRPC tracks an in-flight RPC waiting for a response.
@@ -154,7 +155,7 @@ func (h *RecorderHub) ConnectWithStaleThreshold(deviceID string, rc *RecorderCon
 func (h *RecorderHub) ConnectReplacingExisting(deviceID string, rc *RecorderConn) *RecorderConn {
 	replaced := h.connectReplacingExisting(deviceID, rc)
 	if replaced != nil {
-		h.failPendingRPCs(replaced, ErrRecorderNotConnected.Error())
+		h.failPendingRPCs(replaced, ErrRecorderNotConnected)
 	}
 	return replaced
 }
@@ -164,13 +165,17 @@ func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) bool {
 	if !h.disconnect(deviceID, rc) {
 		return false
 	}
-	h.failPendingRPCs(rc, ErrRecorderNotConnected.Error())
+	h.failPendingRPCs(rc, ErrRecorderNotConnected)
 	return true
 }
 
-func (h *RecorderHub) failPendingRPCs(rc *RecorderConn, message string) {
+func (h *RecorderHub) failPendingRPCs(rc *RecorderConn, err error) {
 	if rc == nil {
 		return
+	}
+	message := ""
+	if err != nil {
+		message = err.Error()
 	}
 
 	rc.PendingMu.Lock()
@@ -183,6 +188,7 @@ func (h *RecorderHub) failPendingRPCs(rc *RecorderConn, message string) {
 			RequestID: requestID,
 			Success:   false,
 			Message:   message,
+			LocalErr:  err,
 		}:
 		default:
 		}
@@ -273,6 +279,9 @@ func (h *RecorderHub) SendRPC(ctx context.Context, deviceID, action string, para
 
 	select {
 	case response := <-pending.ResponseC:
+		if response != nil && response.LocalErr != nil {
+			return nil, response.LocalErr
+		}
 		return response, nil
 	case <-waitCtx.Done():
 		rc.PendingMu.Lock()

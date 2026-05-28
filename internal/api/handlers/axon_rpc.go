@@ -536,7 +536,7 @@ func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[stri
 	}
 
 	c.JSON(http.StatusOK, response)
-	return true
+	return response != nil && response.Success
 }
 
 func (h *RecorderHandler) bindOptionalParams(c *gin.Context) (map[string]interface{}, bool) {
@@ -608,6 +608,11 @@ func recorderPreviousStateFromRaw(raw map[string]interface{}) string {
 }
 
 func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderConn, msg map[string]interface{}) {
+	if h.hub.Get(deviceID) != rc {
+		logger.Printf("[RECORDER] Recorder %s ignored message from replaced connection", deviceID)
+		return
+	}
+
 	msgType, _ := msg["type"].(string)
 	switch msgType {
 	case "rpc_response":
