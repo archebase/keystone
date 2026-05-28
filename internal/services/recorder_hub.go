@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,7 @@ type RecorderInfo struct {
 	ConnectedAt time.Time     `json:"connected_at"`
 	LastSeenAt  time.Time     `json:"last_seen_at"`
 	State       RecorderState `json:"state"`
+	StateSynced bool          `json:"state_synced"`
 }
 
 // RPCRequest represents a command sent from Keystone to Axon Recorder.
@@ -74,6 +76,7 @@ type RecorderConn struct {
 	ConnectedAt time.Time
 	LastSeenAt  time.Time
 	State       RecorderState
+	StateSynced bool
 	WriteMu     sync.Mutex
 
 	PendingMu sync.Mutex
@@ -100,12 +103,20 @@ func (r *RecorderConn) GetState() RecorderState {
 	return r.State
 }
 
+// IsStateSynced reports whether this connection has received an initial state snapshot.
+func (r *RecorderConn) IsStateSynced() bool {
+	r.StateMu.RLock()
+	defer r.StateMu.RUnlock()
+	return r.StateSynced
+}
+
 // UpdateState updates the recorder state snapshot.
 func (r *RecorderConn) UpdateState(state RecorderState) {
 	r.StateMu.Lock()
 	defer r.StateMu.Unlock()
 	state.UpdatedAt = time.Now()
 	r.State = state
+	r.StateSynced = strings.TrimSpace(state.CurrentState) != ""
 }
 
 // RecorderHub manages all active Axon Recorder WebSocket connections.
@@ -211,6 +222,7 @@ func (h *RecorderHub) ListDevices() []RecorderInfo {
 			ConnectedAt: rc.ConnectedAt,
 			LastSeenAt:  rc.LastSeenAt,
 			State:       rc.GetState(),
+			StateSynced: rc.IsStateSynced(),
 		})
 	}
 	return result

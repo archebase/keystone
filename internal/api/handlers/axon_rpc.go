@@ -228,6 +228,10 @@ func (h *RecorderHandler) Config(c *gin.Context) {
 		}
 	}
 
+	if !h.requireRecorderReadyForConfig(c) {
+		return
+	}
+
 	if !h.callRPC(c, "config", params) {
 		return
 	}
@@ -515,6 +519,44 @@ func disconnectedRecorderStatsResponse() gin.H {
 	}
 }
 
+func (h *RecorderHandler) requireRecorderReadyForConfig(c *gin.Context) bool {
+	deviceID := strings.TrimSpace(c.Param("device_id"))
+	if deviceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "device_id is required"})
+		return false
+	}
+	if h == nil || h.hub == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "recorder hub is not configured"})
+		return false
+	}
+
+	rc := h.hub.Get(deviceID)
+	if rc == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": services.ErrRecorderNotConnected.Error()})
+		return false
+	}
+	if !rc.IsStateSynced() {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":  "recorder_state_syncing",
+			"error": "recorder state is syncing; retry after initial state snapshot",
+		})
+		return false
+	}
+
+	state := rc.GetState()
+	current := strings.ToLower(strings.TrimSpace(state.CurrentState))
+	if current != "idle" {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":          "recorder_busy",
+			"error":         "recorder is not idle; config is rejected",
+			"current_state": state.CurrentState,
+			"task_id":       state.TaskID,
+		})
+		return false
+	}
+	return true
+}
+
 func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[string]interface{}) bool {
 	deviceID := c.Param("device_id")
 	if deviceID == "" {
@@ -585,10 +627,13 @@ func (h *RecorderHandler) GetState(c *gin.Context) {
 			"previous_state": "",
 			"task_id":        "",
 			"updated_at":     time.Now().UTC(),
+			"state_synced":   false,
+			"syncing":        false,
 		})
 		return
 	}
 	st := rc.GetState()
+	synced := rc.IsStateSynced()
 	prev := recorderPreviousStateFromRaw(st.Raw)
 	c.JSON(http.StatusOK, gin.H{
 		"connected":      true,
@@ -596,6 +641,8 @@ func (h *RecorderHandler) GetState(c *gin.Context) {
 		"previous_state": prev,
 		"task_id":        st.TaskID,
 		"updated_at":     st.UpdatedAt,
+		"state_synced":   synced,
+		"syncing":        !synced,
 	})
 }
 

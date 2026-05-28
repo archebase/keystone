@@ -104,16 +104,190 @@ func TestRecorderGetStateSnapshotReadyRestoresPendingTask(t *testing.T) {
 	assertTaskStateRecoveryTimestampSet(t, db, "task-rpc-ready", "ready_at")
 }
 
+func TestRecorderGetStateReportsSyncingBeforeInitialStateSnapshot(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+
+	hub := services.NewRecorderHub()
+	attachRecorderRPCResponder(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+		return services.RPCResponse{Success: true}
+	})
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, db)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/recorder/:device_id/state", handler.GetState)
+	req := httptest.NewRequest(http.MethodGet, "/recorder/robot-001/state", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode state response: %v", err)
+	}
+	if body["connected"] != true {
+		t.Fatalf("connected=%v want=true body=%v", body["connected"], body)
+	}
+	if body["state_synced"] != false {
+		t.Fatalf("state_synced=%v want=false body=%v", body["state_synced"], body)
+	}
+	if body["syncing"] != true {
+		t.Fatalf("syncing=%v want=true body=%v", body["syncing"], body)
+	}
+}
+
+func TestRecorderGetStateReportsSyncedAfterInitialStateSnapshot(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, db)
+	rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
+	if !hub.Connect("robot-001", rc) {
+		t.Fatalf("connect recorder: initial connect failed")
+	}
+	handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/recorder/:device_id/state", handler.GetState)
+	req := httptest.NewRequest(http.MethodGet, "/recorder/robot-001/state", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode state response: %v", err)
+	}
+	if body["state_synced"] != true {
+		t.Fatalf("state_synced=%v want=true body=%v", body["state_synced"], body)
+	}
+	if body["syncing"] != false {
+		t.Fatalf("syncing=%v want=false body=%v", body["syncing"], body)
+	}
+}
+
+func TestRecorderConfigRejectsBeforeInitialStateSnapshot(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-config-syncing", "pending")
+
+	hub := services.NewRecorderHub()
+	rpcCalled := make(chan struct{}, 1)
+	attachRecorderRPCResponder(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+		rpcCalled <- struct{}{}
+		return services.RPCResponse{Success: true}
+	})
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/recorder/:device_id/config", handler.Config)
+	body := []byte(`{"task_config":{"task_id":"task-config-syncing"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/recorder/robot-001/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
+	}
+	select {
+	case <-rpcCalled:
+		t.Fatalf("config RPC was sent before recorder state sync completed")
+	default:
+	}
+	assertTaskStateRecoveryStatus(t, db, "task-config-syncing", "pending")
+}
+
+func TestRecorderConfigRejectsWhenSyncedRecorderBusy(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-config-busy", "pending")
+
+	hub := services.NewRecorderHub()
+	rpcCalled := make(chan struct{}, 1)
+	rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+		rpcCalled <- struct{}{}
+		return services.RPCResponse{Success: true}
+	})
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler.applyRecorderStateSnapshot(rc, services.RecorderState{
+		CurrentState: "ready",
+		TaskID:       "existing-task",
+	}, "state_update")
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/recorder/:device_id/config", handler.Config)
+	body := []byte(`{"task_config":{"task_id":"task-config-busy"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/recorder/robot-001/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
+	}
+	select {
+	case <-rpcCalled:
+		t.Fatalf("config RPC was sent while recorder was already busy")
+	default:
+	}
+	assertTaskStateRecoveryStatus(t, db, "task-config-busy", "pending")
+}
+
+func TestRecorderConfigAdvancesTaskAfterInitialStateSnapshot(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-config-synced", "pending")
+
+	hub := services.NewRecorderHub()
+	rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+		return services.RPCResponse{Success: true}
+	})
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/recorder/:device_id/config", handler.Config)
+	body := []byte(`{"task_config":{"task_id":"task-config-synced"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/recorder/robot-001/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	assertTaskStateRecoveryStatus(t, db, "task-config-synced", "ready")
+}
+
 func TestRecorderConfigDoesNotAdvanceTaskWhenRPCResponseUnsuccessful(t *testing.T) {
 	db := newTaskStateRecoveryDB(t)
 	defer db.Close()
 	seedTaskStateRecoveryTask(t, db, "task-config-false", "pending")
 
 	hub := services.NewRecorderHub()
-	attachRecorderRPCResponder(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+	rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
 		return services.RPCResponse{Success: false, Message: "device rejected config"}
 	})
 	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -300,6 +474,11 @@ func assertTaskStateRecoveryTimestampSet(t *testing.T, db *sqlx.DB, taskID strin
 
 func attachRecorderRPCResponder(t *testing.T, hub *services.RecorderHub, deviceID string, respond func(services.RPCRequest) services.RPCResponse) {
 	t.Helper()
+	attachRecorderRPCResponderWithConn(t, hub, deviceID, respond)
+}
+
+func attachRecorderRPCResponderWithConn(t *testing.T, hub *services.RecorderHub, deviceID string, respond func(services.RPCRequest) services.RPCResponse) *services.RecorderConn {
+	t.Helper()
 	serverConn, clientConn := newRecorderHandlerTestWebSocketPair(t)
 	rc := hub.NewRecorderConn(serverConn, deviceID, "127.0.0.1")
 	if !hub.Connect(deviceID, rc) {
@@ -324,6 +503,7 @@ func attachRecorderRPCResponder(t *testing.T, hub *services.RecorderHub, deviceI
 			hub.HandleRPCResponse(deviceID, &resp)
 		}
 	}()
+	return rc
 }
 
 func newRecorderHandlerTestWebSocketPair(t *testing.T) (*websocket.Conn, *websocket.Conn) {
