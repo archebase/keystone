@@ -238,6 +238,11 @@ func closeReplacedTransferConn(deviceID string, dc *services.TransferConn) {
 
 // handleMessage dispatches an inbound WebSocket message to the appropriate handler
 func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.TransferConn, msg map[string]interface{}) {
+	if h.hub.Get(dc.DeviceID) != dc {
+		logger.Printf("[TRANSFER] Device %s ignored message from replaced connection", dc.DeviceID)
+		return
+	}
+
 	msgType, _ := msg["type"].(string)
 
 	switch msgType {
