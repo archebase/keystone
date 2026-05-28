@@ -149,17 +149,8 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 	remoteIP := extractIP(r.RemoteAddr)
 	dc := h.hub.NewTransferConn(conn, deviceID, remoteIP)
-	staleConn, ok := h.hub.ConnectWithStaleThreshold(deviceID, dc, transferStaleThreshold(h.cfg))
-	if !ok {
-		logger.Printf("[TRANSFER] Device %s: connection rejected (already connected)", deviceID)
-		if err := conn.Close(websocket.StatusPolicyViolation, "device already connected"); err != nil {
-			if !isExpectedWebSocketCloseError(err) {
-				logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
-			}
-		}
-		return
-	}
-	closeStaleTransferConn(deviceID, staleConn)
+	replacedConn := h.hub.ConnectReplacingExisting(deviceID, dc)
+	closeReplacedTransferConn(deviceID, replacedConn)
 
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
@@ -267,14 +258,14 @@ func transferStaleThreshold(cfg *config.TransferConfig) time.Duration {
 	return time.Duration(cfg.StaleThreshold) * time.Second
 }
 
-func closeStaleTransferConn(deviceID string, dc *services.TransferConn) {
+func closeReplacedTransferConn(deviceID string, dc *services.TransferConn) {
 	if dc == nil || dc.Conn == nil {
 		return
 	}
-	logger.Printf("[TRANSFER] Device %s: closing stale WebSocket connection", deviceID)
+	logger.Printf("[TRANSFER] Device %s: closing replaced WebSocket connection", deviceID)
 	if err := dc.Conn.CloseNow(); err != nil {
 		if !isExpectedWebSocketCloseError(err) {
-			logger.Printf("[TRANSFER] Device %s: stale WebSocket close error: %v", deviceID, err)
+			logger.Printf("[TRANSFER] Device %s: replaced WebSocket close error: %v", deviceID, err)
 		}
 	}
 }

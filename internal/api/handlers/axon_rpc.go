@@ -156,17 +156,8 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 	remoteIP := extractIP(r.RemoteAddr)
 	rc := h.hub.NewRecorderConn(conn, deviceID, remoteIP)
-	staleConn, ok := h.hub.ConnectWithStaleThreshold(deviceID, rc, recorderStaleThreshold(h.cfg))
-	if !ok {
-		logger.Printf("[RECORDER] Device %s: connection rejected (already connected)", deviceID)
-		if err := conn.Close(websocket.StatusPolicyViolation, "device already connected"); err != nil {
-			if !isExpectedWebSocketCloseError(err) {
-				logger.Printf("[RECORDER] Device %s: WebSocket close error: %v", deviceID, err)
-			}
-		}
-		return
-	}
-	closeStaleRecorderConn(deviceID, staleConn)
+	replacedConn := h.hub.ConnectReplacingExisting(deviceID, rc)
+	closeReplacedRecorderConn(deviceID, replacedConn)
 
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
@@ -815,14 +806,14 @@ func recorderStaleThreshold(cfg *config.RecorderConfig) time.Duration {
 	return time.Duration(cfg.StaleThreshold) * time.Second
 }
 
-func closeStaleRecorderConn(deviceID string, rc *services.RecorderConn) {
+func closeReplacedRecorderConn(deviceID string, rc *services.RecorderConn) {
 	if rc == nil || rc.Conn == nil {
 		return
 	}
-	logger.Printf("[RECORDER] Device %s: closing stale WebSocket connection", deviceID)
+	logger.Printf("[RECORDER] Device %s: closing replaced WebSocket connection", deviceID)
 	if err := rc.Conn.CloseNow(); err != nil {
 		if !isExpectedWebSocketCloseError(err) {
-			logger.Printf("[RECORDER] Device %s: stale WebSocket close error: %v", deviceID, err)
+			logger.Printf("[RECORDER] Device %s: replaced WebSocket close error: %v", deviceID, err)
 		}
 	}
 }

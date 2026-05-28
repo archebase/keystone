@@ -197,6 +197,12 @@ func (h *TransferHub) ConnectWithStaleThreshold(deviceID string, dc *TransferCon
 	return h.connectWithStaleThreshold(deviceID, dc, staleThreshold)
 }
 
+// ConnectReplacingExisting registers a transfer connection, replacing any
+// existing connection for the same device and returning it to the caller.
+func (h *TransferHub) ConnectReplacingExisting(deviceID string, dc *TransferConn) *TransferConn {
+	return h.connectReplacingExisting(deviceID, dc)
+}
+
 // Disconnect removes a device connection
 func (h *TransferHub) Disconnect(deviceID string, dc *TransferConn) bool {
 	return h.disconnect(deviceID, dc)

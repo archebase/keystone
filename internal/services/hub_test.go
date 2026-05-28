@@ -69,3 +69,32 @@ func TestRecorderHubConnectWithStaleThresholdReplacesStaleConnection(t *testing.
 		t.Fatalf("hub connection=%p want nil", got)
 	}
 }
+
+func TestRecorderHubConnectReplacingExistingTakesOverFreshConnection(t *testing.T) {
+	hub := NewRecorderHub()
+	deviceID := "robot-001"
+
+	oldConn := hub.NewRecorderConn(&websocket.Conn{}, deviceID, "127.0.0.1")
+	oldConn.LastSeenAt = time.Now()
+	if !hub.Connect(deviceID, oldConn) {
+		t.Fatalf("initial connect failed")
+	}
+
+	newConn := hub.NewRecorderConn(&websocket.Conn{}, deviceID, "127.0.0.1")
+	replaced := hub.ConnectReplacingExisting(deviceID, newConn)
+	if replaced != oldConn {
+		t.Fatalf("replaced=%p want oldConn=%p", replaced, oldConn)
+	}
+	if got := hub.Get(deviceID); got != newConn {
+		t.Fatalf("hub connection=%p want newConn=%p", got, newConn)
+	}
+	if hub.Disconnect(deviceID, oldConn) {
+		t.Fatalf("old connection disconnected the current hub entry")
+	}
+	if got := hub.Get(deviceID); got != newConn {
+		t.Fatalf("old disconnect changed current hub connection")
+	}
+	if !hub.Disconnect(deviceID, newConn) {
+		t.Fatalf("new connection did not disconnect")
+	}
+}

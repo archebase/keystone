@@ -149,14 +149,32 @@ func (h *RecorderHub) ConnectWithStaleThreshold(deviceID string, rc *RecorderCon
 	return h.connectWithStaleThreshold(deviceID, rc, staleThreshold)
 }
 
+// ConnectReplacingExisting registers a recorder connection, replacing any
+// existing connection for the same device and returning it to the caller.
+func (h *RecorderHub) ConnectReplacingExisting(deviceID string, rc *RecorderConn) *RecorderConn {
+	replaced := h.connectReplacingExisting(deviceID, rc)
+	if replaced != nil {
+		h.failPendingRPCs(replaced, ErrRecorderNotConnected.Error())
+	}
+	return replaced
+}
+
 // Disconnect removes a recorder connection and drains any pending RPC waiters.
 func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) bool {
 	if !h.disconnect(deviceID, rc) {
 		return false
 	}
+	h.failPendingRPCs(rc, ErrRecorderNotConnected.Error())
+	return true
+}
 
-	// Unblock any goroutines waiting for an RPC response from this device.
+func (h *RecorderHub) failPendingRPCs(rc *RecorderConn, message string) {
+	if rc == nil {
+		return
+	}
+
 	rc.PendingMu.Lock()
+	defer rc.PendingMu.Unlock()
 	for requestID, pending := range rc.Pending {
 		delete(rc.Pending, requestID)
 		// Non-blocking send: the waiter may have already timed out.
@@ -164,13 +182,11 @@ func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) bool {
 		case pending.ResponseC <- &RPCResponse{
 			RequestID: requestID,
 			Success:   false,
-			Message:   ErrRecorderNotConnected.Error(),
+			Message:   message,
 		}:
 		default:
 		}
 	}
-	rc.PendingMu.Unlock()
-	return true
 }
 
 // Get returns the recorder connection for a device, or nil if not connected.
