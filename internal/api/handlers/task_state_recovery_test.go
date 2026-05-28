@@ -59,6 +59,47 @@ func TestRecorderStateUpdateRecordingAdvancesPendingTask(t *testing.T) {
 	assertTaskStateRecoveryTimestampSet(t, db, "task-recording", "started_at")
 }
 
+func TestRecorderStateUpdatePausedAdvancesPendingTask(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-paused", "pending")
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, db)
+	rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
+
+	handler.handleStateUpdate(rc, map[string]interface{}{
+		"data": map[string]interface{}{
+			"current": "paused",
+			"task_id": "task-paused",
+		},
+	})
+
+	assertTaskStateRecoveryStatus(t, db, "task-paused", "in_progress")
+	assertTaskStateRecoveryTimestampSet(t, db, "task-paused", "started_at")
+}
+
+func TestRecorderGetStateSnapshotReadyRestoresPendingTask(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-rpc-ready", "pending")
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, db)
+	rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
+	state := recorderStateFromRPCData(map[string]interface{}{
+		"state": "ready",
+		"task_config": map[string]interface{}{
+			"task_id": "task-rpc-ready",
+		},
+	})
+
+	handler.applyRecorderStateSnapshot(rc, state, "get_state")
+
+	assertTaskStateRecoveryStatus(t, db, "task-rpc-ready", "ready")
+	assertTaskStateRecoveryTimestampSet(t, db, "task-rpc-ready", "ready_at")
+}
+
 func TestRecordingStartCallbackAdvancesPendingTask(t *testing.T) {
 	db := newTaskStateRecoveryDB(t)
 	defer db.Close()
