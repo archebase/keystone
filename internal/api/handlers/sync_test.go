@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/services"
+
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
@@ -24,6 +26,44 @@ func TestSyncHandlerRegisterRoutes(t *testing.T) {
 	handler := NewSyncHandler(nil, nil)
 
 	handler.RegisterRoutes(api)
+}
+
+func TestGetSyncConfigIncludesAutoScanEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	worker := services.NewSyncWorker(nil, nil, nil, "", services.SyncWorkerConfig{
+		MaxRetries:      5,
+		AutoScanEnabled: true,
+	}, nil)
+	router := gin.New()
+	handler := NewSyncHandler(nil, worker)
+	handler.RegisterRoutes(router.Group("/api/v1"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sync/config", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		WorkerRunning   bool `json:"worker_running"`
+		AutoScanEnabled bool `json:"auto_scan_enabled"`
+		MaxRetries      int  `json:"max_retries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.WorkerRunning {
+		t.Fatal("worker_running = true, want false for not-started test worker")
+	}
+	if !got.AutoScanEnabled {
+		t.Fatal("auto_scan_enabled = false, want true")
+	}
+	if got.MaxRetries != 5 {
+		t.Fatalf("max_retries = %d, want 5", got.MaxRetries)
+	}
 }
 
 func TestListEpisodeSyncSummariesGroupsByEpisode(t *testing.T) {

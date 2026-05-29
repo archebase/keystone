@@ -66,9 +66,10 @@ type QAConfig struct {
 
 // SyncConfig synchronization configuration
 type SyncConfig struct {
-	Enabled    bool
-	BatchSize  int
-	MaxRetries int
+	Enabled         bool
+	AutoScanEnabled bool
+	BatchSize       int
+	MaxRetries      int
 
 	// Cloud upload settings (data-platform integration)
 	AuthEndpoint       string // gRPC endpoint for AuthService
@@ -184,6 +185,7 @@ func Load() (*Config, error) {
 		},
 		Sync: SyncConfig{
 			Enabled:            getEnvBool("KEYSTONE_SYNC_ENABLED", true),
+			AutoScanEnabled:    getEnvBool("KEYSTONE_SYNC_AUTO_SCAN_ENABLED", false),
 			BatchSize:          getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 10),
 			MaxRetries:         getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
 			AuthEndpoint:       getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),

@@ -76,6 +76,8 @@ Configuration is loaded from environment variables. See [`docker/.env.example`](
 | `KEYSTONE_MINIO_ENDPOINT` | `http://localhost:9000` | MinIO endpoint |
 | `KEYSTONE_MYSQL_HOST` | `localhost` | MySQL host |
 | `KEYSTONE_MYSQL_PASSWORD` | *required* | MySQL password |
+| `KEYSTONE_SYNC_ENABLED` | `true` | Enable cloud sync capability, worker, and manual sync APIs when cloud endpoints and credentials are configured |
+| `KEYSTONE_SYNC_AUTO_SCAN_ENABLED` | `false` | Enable periodic automatic discovery of newly eligible approved unsynced episodes |
 
 ### Cloud Sync Credentials
 
@@ -84,6 +86,14 @@ this value as an opaque credential issued by the cloud platform and forwards it
 to `AuthService.ExchangeCredential` as `credential_base64`. Keystone does not
 decode, split, validate, or derive `site_id` / secret values from this key; the
 cloud AuthService owns credential interpretation and validation.
+
+Cloud sync capability and automatic scheduling are separate. Keep
+`KEYSTONE_SYNC_ENABLED=true` when admins should be able to manually sync data to
+cloud. Leave `KEYSTONE_SYNC_AUTO_SCAN_ENABLED=false` for the default manual-only
+mode, where newly recorded or newly approved episodes remain local until an
+admin triggers single-episode sync or an explicit batch scan. Set
+`KEYSTONE_SYNC_AUTO_SCAN_ENABLED=true` only when the site should automatically
+queue every newly eligible approved unsynced episode.
 
 ## Project Structure
 

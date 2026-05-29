@@ -155,17 +155,18 @@ func main() {
 		}
 
 		syncWorker = services.NewSyncWorker(db.DB, uploader, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
-			BatchSize:      cfg.Sync.BatchSize,
-			MaxConcurrent:  cfg.Sync.MaxConcurrent,
-			MaxRetries:     cfg.Sync.MaxRetries,
-			IntervalSec:    cfg.Sync.WorkerIntervalSec,
-			RetryBaseSec:   cfg.Sync.RetryBaseSec,
-			RetryMaxSec:    cfg.Sync.RetryMaxSec,
-			RetryJitterSec: cfg.Sync.RetryJitterSec,
+			BatchSize:       cfg.Sync.BatchSize,
+			MaxConcurrent:   cfg.Sync.MaxConcurrent,
+			MaxRetries:      cfg.Sync.MaxRetries,
+			AutoScanEnabled: cfg.Sync.AutoScanEnabled,
+			IntervalSec:     cfg.Sync.WorkerIntervalSec,
+			RetryBaseSec:    cfg.Sync.RetryBaseSec,
+			RetryMaxSec:     cfg.Sync.RetryMaxSec,
+			RetryJitterSec:  cfg.Sync.RetryJitterSec,
 		}, &cfg.Sync)
 
 		syncWorker.Start()
-		logger.Printf("[SYNC] Cloud sync worker started: auth=%s gateway=%s", cfg.Sync.AuthEndpoint, cfg.Sync.GatewayEndpoint)
+		logger.Printf("[SYNC] Cloud sync worker started: auth=%s gateway=%s auto_scan=%t", cfg.Sync.AuthEndpoint, cfg.Sync.GatewayEndpoint, cfg.Sync.AutoScanEnabled)
 	} else {
 		logger.Println("[SYNC] Cloud sync disabled (KEYSTONE_SYNC_ENABLED=false or missing endpoints)")
 	}
