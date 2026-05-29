@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,10 +27,13 @@ var (
 
 // RecorderState stores the latest state snapshot reported by a recorder.
 type RecorderState struct {
-	CurrentState string                 `json:"current_state"`
-	TaskID       string                 `json:"task_id,omitempty"`
-	UpdatedAt    time.Time              `json:"updated_at"`
-	Raw          map[string]interface{} `json:"raw,omitempty"`
+	CurrentState      string                 `json:"current_state"`
+	TaskID            string                 `json:"task_id,omitempty"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+	Source            string                 `json:"source,omitempty"`
+	LastSyncAttemptAt time.Time              `json:"last_sync_attempt_at,omitempty"`
+	LastSyncError     string                 `json:"last_sync_error,omitempty"`
+	Raw               map[string]interface{} `json:"raw,omitempty"`
 }
 
 // RecorderInfo is a read-only snapshot of a connected recorder.
@@ -39,6 +43,7 @@ type RecorderInfo struct {
 	ConnectedAt time.Time     `json:"connected_at"`
 	LastSeenAt  time.Time     `json:"last_seen_at"`
 	State       RecorderState `json:"state"`
+	StateSynced bool          `json:"state_synced"`
 }
 
 // RPCRequest represents a command sent from Keystone to Axon Recorder.
@@ -56,6 +61,7 @@ type RPCResponse struct {
 	Success   bool                   `json:"success"`
 	Message   string                 `json:"message,omitempty"`
 	Data      map[string]interface{} `json:"data,omitempty"`
+	LocalErr  error                  `json:"-"`
 }
 
 // PendingRPC tracks an in-flight RPC waiting for a response.
@@ -73,6 +79,7 @@ type RecorderConn struct {
 	ConnectedAt time.Time
 	LastSeenAt  time.Time
 	State       RecorderState
+	StateSynced bool
 	WriteMu     sync.Mutex
 
 	PendingMu sync.Mutex
@@ -99,12 +106,41 @@ func (r *RecorderConn) GetState() RecorderState {
 	return r.State
 }
 
+// IsStateSynced reports whether this connection has received an initial state snapshot.
+func (r *RecorderConn) IsStateSynced() bool {
+	r.StateMu.RLock()
+	defer r.StateMu.RUnlock()
+	return r.StateSynced
+}
+
 // UpdateState updates the recorder state snapshot.
 func (r *RecorderConn) UpdateState(state RecorderState) {
 	r.StateMu.Lock()
 	defer r.StateMu.Unlock()
-	state.UpdatedAt = time.Now()
+	state.UpdatedAt = time.Now().UTC()
+	state.LastSyncError = ""
 	r.State = state
+	r.StateSynced = strings.TrimSpace(state.CurrentState) != ""
+}
+
+// MarkStateSyncing keeps the last snapshot for display but marks it unsafe for writes.
+func (r *RecorderConn) MarkStateSyncing(source string, syncErr error) {
+	r.StateMu.Lock()
+	defer r.StateMu.Unlock()
+	state := r.State
+	now := time.Now().UTC()
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = now
+	}
+	state.Source = strings.TrimSpace(source)
+	state.LastSyncAttemptAt = now
+	if syncErr != nil {
+		state.LastSyncError = syncErr.Error()
+	} else {
+		state.LastSyncError = ""
+	}
+	r.State = state
+	r.StateSynced = false
 }
 
 // RecorderHub manages all active Axon Recorder WebSocket connections.
@@ -149,14 +185,36 @@ func (h *RecorderHub) ConnectWithStaleThreshold(deviceID string, rc *RecorderCon
 	return h.connectWithStaleThreshold(deviceID, rc, staleThreshold)
 }
 
+// ConnectReplacingExisting registers a recorder connection, replacing any
+// existing connection for the same device and returning it to the caller.
+func (h *RecorderHub) ConnectReplacingExisting(deviceID string, rc *RecorderConn) *RecorderConn {
+	replaced := h.connectReplacingExisting(deviceID, rc)
+	if replaced != nil {
+		h.failPendingRPCs(replaced, ErrRecorderNotConnected)
+	}
+	return replaced
+}
+
 // Disconnect removes a recorder connection and drains any pending RPC waiters.
 func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) bool {
 	if !h.disconnect(deviceID, rc) {
 		return false
 	}
+	h.failPendingRPCs(rc, ErrRecorderNotConnected)
+	return true
+}
 
-	// Unblock any goroutines waiting for an RPC response from this device.
+func (h *RecorderHub) failPendingRPCs(rc *RecorderConn, err error) {
+	if rc == nil {
+		return
+	}
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+
 	rc.PendingMu.Lock()
+	defer rc.PendingMu.Unlock()
 	for requestID, pending := range rc.Pending {
 		delete(rc.Pending, requestID)
 		// Non-blocking send: the waiter may have already timed out.
@@ -164,13 +222,12 @@ func (h *RecorderHub) Disconnect(deviceID string, rc *RecorderConn) bool {
 		case pending.ResponseC <- &RPCResponse{
 			RequestID: requestID,
 			Success:   false,
-			Message:   ErrRecorderNotConnected.Error(),
+			Message:   message,
+			LocalErr:  err,
 		}:
 		default:
 		}
 	}
-	rc.PendingMu.Unlock()
-	return true
 }
 
 // Get returns the recorder connection for a device, or nil if not connected.
@@ -189,6 +246,7 @@ func (h *RecorderHub) ListDevices() []RecorderInfo {
 			ConnectedAt: rc.ConnectedAt,
 			LastSeenAt:  rc.LastSeenAt,
 			State:       rc.GetState(),
+			StateSynced: rc.IsStateSynced(),
 		})
 	}
 	return result
@@ -242,13 +300,24 @@ func (h *RecorderHub) SendRPC(ctx context.Context, deviceID, action string, para
 		Params:    params,
 	}
 
+	writeCtx := ctx
+	var writeCancel context.CancelFunc
+	if timeout > 0 {
+		writeCtx, writeCancel = context.WithTimeout(ctx, timeout)
+	}
 	rc.WriteMu.Lock()
-	writeErr := wsjson.Write(ctx, rc.Conn, req)
+	writeErr := wsjson.Write(writeCtx, rc.Conn, req)
 	rc.WriteMu.Unlock()
+	if writeCancel != nil {
+		writeCancel()
+	}
 	if writeErr != nil {
 		rc.PendingMu.Lock()
 		delete(rc.Pending, requestID)
 		rc.PendingMu.Unlock()
+		if errors.Is(writeErr, context.DeadlineExceeded) {
+			return nil, ErrRecorderRPCTimeout
+		}
 		return nil, fmt.Errorf("write rpc request: %w", writeErr)
 	}
 
@@ -257,6 +326,9 @@ func (h *RecorderHub) SendRPC(ctx context.Context, deviceID, action string, para
 
 	select {
 	case response := <-pending.ResponseC:
+		if response != nil && response.LocalErr != nil {
+			return nil, response.LocalErr
+		}
 		return response, nil
 	case <-waitCtx.Done():
 		rc.PendingMu.Lock()

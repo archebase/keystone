@@ -27,13 +27,14 @@ import (
 
 // SyncWorkerConfig provides the runtime configuration for the sync worker.
 type SyncWorkerConfig struct {
-	BatchSize      int
-	MaxConcurrent  int
-	MaxRetries     int
-	IntervalSec    int
-	RetryBaseSec   int
-	RetryMaxSec    int
-	RetryJitterSec int
+	BatchSize       int
+	MaxConcurrent   int
+	MaxRetries      int
+	AutoScanEnabled bool
+	IntervalSec     int
+	RetryBaseSec    int
+	RetryMaxSec     int
+	RetryJitterSec  int
 }
 
 type syncEnqueueRequest struct {
@@ -41,8 +42,8 @@ type syncEnqueueRequest struct {
 	manual    bool
 }
 
-// SyncWorker is a background goroutine that periodically scans for approved
-// episodes and uploads them to cloud via the data-platform gateway.
+// SyncWorker is a background goroutine that processes queued cloud sync work
+// and optionally discovers approved episodes for automatic cloud upload.
 type SyncWorker struct {
 	db          *sqlx.DB
 	uploader    *cloud.Uploader
@@ -134,6 +135,7 @@ func (w *SyncWorker) Start() {
 
 // Stop gracefully stops the sync worker within the provided context deadline.
 func (w *SyncWorker) Stop(ctx context.Context) error {
+	startedAt := time.Now()
 	w.mu.Lock()
 	if !w.running.Load() {
 		done := w.stopDone
@@ -145,7 +147,7 @@ func (w *SyncWorker) Stop(ctx context.Context) error {
 		case <-done:
 			return nil
 		case <-ctx.Done():
-			return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+			return syncWorkerStopTimeoutError(ctx, startedAt)
 		}
 	}
 
@@ -159,7 +161,7 @@ func (w *SyncWorker) Stop(ctx context.Context) error {
 		case <-done:
 			return nil
 		case <-ctx.Done():
-			return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+			return syncWorkerStopTimeoutError(ctx, startedAt)
 		}
 	}
 
@@ -181,8 +183,19 @@ func (w *SyncWorker) Stop(ctx context.Context) error {
 		logger.Println("[SYNC-WORKER] Stopped")
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+		return syncWorkerStopTimeoutError(ctx, startedAt)
 	}
+}
+
+func syncWorkerStopTimeoutError(ctx context.Context, startedAt time.Time) error {
+	timeout := time.Since(startedAt).Round(time.Millisecond)
+	if deadline, ok := ctx.Deadline(); ok {
+		if d := deadline.Sub(startedAt); d > 0 {
+			timeout = d.Round(time.Millisecond)
+		}
+	}
+	logger.Printf("[SYNC-WORKER] Stop timeout after %s (timeout_ms=%d): %v", timeout, timeout.Milliseconds(), ctx.Err())
+	return fmt.Errorf("sync worker stop timeout after %s: %w", timeout, ctx.Err())
 }
 
 // IsRunning returns whether the worker is currently running.
@@ -193,6 +206,11 @@ func (w *SyncWorker) IsRunning() bool {
 // MaxRetries returns the configured automatic retry limit.
 func (w *SyncWorker) MaxRetries() int {
 	return w.cfg.MaxRetries
+}
+
+// AutoScanEnabled returns whether the worker periodically discovers newly eligible episodes.
+func (w *SyncWorker) AutoScanEnabled() bool {
+	return w.cfg.AutoScanEnabled
 }
 
 // EnqueueEpisode adds a specific episode ID for immediate sync processing.
@@ -553,6 +571,10 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 
 	// Then, retry any failed episodes that are due.
 	w.retryFailedEpisodes(ctx)
+
+	if !w.cfg.AutoScanEnabled {
+		return
+	}
 
 	// Finally, find newly eligible episodes and persist them as queued work.
 	ids, err := w.findPendingEpisodes(ctx, false)

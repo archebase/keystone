@@ -76,7 +76,25 @@ The polling worker periodically:
 
 Automatic retry also does not create an observable queued period.
 
-### 2.3 Frontend Listing
+### 2.3 Automatic Discovery
+
+The worker also has a discovery path that finds approved, unsynced episodes and
+enqueues them without an operator action. That behavior should be controlled by
+`KEYSTONE_SYNC_AUTO_SCAN_ENABLED` and should default to `false`.
+
+With the default disabled setting:
+
+- newly recorded or newly approved episodes remain local after upload/QA;
+- single-episode manual sync still works through `POST /api/v1/sync/episodes/:id`;
+- explicit batch scan still works through `POST /api/v1/sync/episodes`;
+- persisted `pending` rows and due retries from already attempted sync jobs are
+  still processed by the worker.
+
+This separates automatic discovery from retry/backoff recovery. A failed manual
+sync can continue retrying according to sync retry policy without re-enabling
+automatic discovery for unrelated new episodes.
+
+### 2.4 Frontend Listing
 
 Cloud Sync Center lists one row per episode using the latest `sync_logs` row.
 Its queued count is the number of latest rows whose status is `pending`.
@@ -90,6 +108,8 @@ Therefore, a job that only exists in memory cannot be counted as queued.
 - Preserve manual retry semantics: operators can retry exhausted or backoff
   failures explicitly.
 - Preserve automatic retry limits and backoff behavior.
+- Disable automatic discovery of newly eligible episodes by default while keeping
+  manual enqueue and retry recovery available.
 - Allow queued work to recover after Keystone restarts.
 - Keep the change scoped to the existing `sync_logs` model unless stronger
   queue semantics become necessary later.
@@ -164,10 +184,12 @@ The worker loop should process DB-backed queued work before discovering new work
 
 1. Dispatch latest `pending` sync logs.
 2. Promote due failed rows to `pending`, then dispatch them.
-3. Discover approved, unsynced episodes with no active/latest completed log.
+3. Discover approved, unsynced episodes with no active/latest completed log only
+   when automatic discovery is enabled.
 
 This makes the queue restart-safe. If Keystone crashes after writing `pending`
 but before placing the job into memory, the next polling cycle will pick it up.
+Disabling automatic discovery must not disable this pending-row recovery path.
 
 ### 5.4 Claiming Pending Rows
 
@@ -228,6 +250,24 @@ After a successful manual retry:
 
 The frontend should continue treating the backend summary endpoint as the source
 of truth.
+
+### 5.7 Automatic Discovery Switch
+
+Add a worker configuration field backed by an environment variable:
+
+| Field | Environment Variable | Default | Meaning |
+|-------|----------------------|---------|---------|
+| `AutoScanEnabled` | `KEYSTONE_SYNC_AUTO_SCAN_ENABLED` | `false` | Permit periodic discovery of newly eligible approved unsynced episodes |
+
+`KEYSTONE_SYNC_ENABLED` remains the cloud sync capability switch. Setting it to
+`false` disables the worker and therefore disables manual sync APIs. To support
+manual-only production mode, keep `KEYSTONE_SYNC_ENABLED=true` and leave
+`KEYSTONE_SYNC_AUTO_SCAN_ENABLED=false`.
+
+The worker polling loop should be structured so that this switch only gates the
+new-episode discovery step. It should not gate dispatch of existing `pending`
+rows, manual enqueue acceleration, or retry/backoff handling for already
+attempted sync work.
 
 ## 6. Risks and Mitigations
 
@@ -308,6 +348,16 @@ Mitigation:
 
 ## 7. Implementation Plan
 
+### Phase 0: Automatic Discovery Control
+
+- Add `KEYSTONE_SYNC_AUTO_SCAN_ENABLED` with default `false`.
+- Add matching `SyncConfig.AutoScanEnabled` and worker config fields.
+- Return `auto_scan_enabled` from `GET /api/v1/sync/config` as read-only
+  runtime state.
+- Gate only the worker's newly eligible episode discovery path.
+- Keep manual single-episode sync, explicit batch scan, pending-row recovery,
+  and retry/backoff processing available while the worker is running.
+
 ### Phase 1: Durable Manual Queue
 
 - Add a worker method to create or reuse a pending sync log transactionally.
@@ -347,6 +397,12 @@ Retry 4 failed episodes with MaxConcurrent=2
 
 ### Backend Unit Tests
 
+- Worker polling does not auto-discover approved unsynced episodes when
+  `AutoScanEnabled=false`.
+- Worker polling still dispatches persisted pending rows when
+  `AutoScanEnabled=false`.
+- Worker polling auto-discovers approved unsynced episodes when
+  `AutoScanEnabled=true`.
 - Manual retry creates a pending row for a failed exhausted episode.
 - Manual retry rejects an episode whose latest row is pending.
 - Manual retry rejects an episode whose latest row is in_progress.
@@ -374,8 +430,10 @@ Retry 4 failed episodes with MaxConcurrent=2
 
 ## 9. Recommendation
 
-Implement Phase 1 first. It fixes the operator-visible problem with a small,
-contained backend change and does not require a new database table.
+Implement Phase 0 and Phase 1 first. Phase 0 prevents newly recorded data from
+automatically leaving the edge by default, while Phase 1 preserves clear manual
+queue visibility. Both changes are small, contained backend changes and do not
+require a new database table.
 
 Do not ship durable pending without DB-backed duplicate protection and polling
 recovery. Those two pieces are required for correctness; otherwise the system

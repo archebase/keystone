@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -37,6 +38,7 @@ type Server struct {
 	storage             *handlers.StorageHandler
 	transfer            *handlers.TransferHandler
 	recorder            *handlers.RecorderHandler
+	deviceState         *handlers.DeviceStateHandler
 	episode             *handlers.EpisodeHandler
 	task                *handlers.TaskHandler
 	batch               *handlers.BatchHandler
@@ -65,6 +67,13 @@ type Server struct {
 	engine              *gin.Engine
 }
 
+func axonTransferWriteTimeout(cfg *config.TransferConfig) time.Duration {
+	if cfg == nil || cfg.WriteTimeout <= 0 {
+		return services.DefaultTransferWriteTimeout
+	}
+	return time.Duration(cfg.WriteTimeout) * time.Second
+}
+
 // New creates a new server instance.
 // db and s3Client are optional; pass nil to disable Verified ACK.
 // syncWorker is optional; pass nil to disable cloud sync API.
@@ -87,6 +96,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	}
 
 	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
+	stateBroker := services.NewDeviceStateBroker()
 	recorderHub := services.NewRecorderHub()
 	recorderHandler := handlers.NewRecorderHandler(recorderHub, &cfg.AxonRecorder, db)
 	recorderRPCTimeout := time.Duration(cfg.AxonRecorder.ResponseTimeout) * time.Second
@@ -94,12 +104,17 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	// Create TransferHub and TransferHandler for Transfer Service
 	transferHub := services.NewTransferHub(cfg.AxonTransfer.MaxEvents)
 	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.AxonTransfer, db, s3Client, cfg.Storage.Bucket, cfg.AxonTransfer.FactoryID, recorderHub, recorderRPCTimeout)
+	recorderHandler.SetDeviceStateDeps(transferHub, stateBroker)
+	transferHandler.SetDeviceStateBroker(stateBroker)
+	deviceStateHandler := handlers.NewDeviceStateHandler(stateBroker, recorderHub, transferHub)
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
 
+	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)
+
 	// Create TaskHandler for task configuration
-	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout)
+	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout, transferWriteTimeout)
 
 	// Create database-dependent handlers only when DB is available
 	var (
@@ -152,6 +167,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		storage:             storageHandler,
 		transfer:            transferHandler,
 		recorder:            recorderHandler,
+		deviceState:         deviceStateHandler,
 		episode:             episodeHandler,
 		task:                taskHandler,
 		batch:               batchHandler,
@@ -319,6 +335,9 @@ func (s *Server) buildRoutes() http.Handler {
 
 	v1Recorder := v1Routes.Group("/recorder")
 	s.recorder.RegisterRoutes(v1Recorder)
+	if s.deviceState != nil {
+		s.deviceState.RegisterRoutes(v1Routes)
+	}
 
 	// Swagger documentation - serve at both root and api/v1 path
 	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -414,29 +433,45 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.isRunning = false
 	s.shutdownMu.Unlock()
 
-	logger.Printf("[SERVER] Shutting down HTTP server")
+	startedAt := time.Now()
+	shutdownTimeout := time.Duration(s.cfg.Server.ShutdownTimeout) * time.Second
+	effectiveShutdownTimeout := shutdownTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if d := deadline.Sub(startedAt); d > 0 && (effectiveShutdownTimeout <= 0 || d < effectiveShutdownTimeout) {
+			effectiveShutdownTimeout = d.Round(time.Millisecond)
+		}
+	}
+	logger.Printf("[SERVER] Shutting down HTTP server (timeout=%s timeout_ms=%d)", effectiveShutdownTimeout, effectiveShutdownTimeout.Milliseconds())
 
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.Server.ShutdownTimeout)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 	defer cancel()
+
+	logShutdownError := func(component string, err error) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			logger.Printf("[SERVER] %s shutdown timeout after %s (timeout_ms=%d): %v", component, effectiveShutdownTimeout, effectiveShutdownTimeout.Milliseconds(), err)
+			return
+		}
+		logger.Printf("[SERVER] %s shutdown error: %v", component, err)
+	}
 
 	var shutdownErr error
 
 	// Shutdown both servers
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		logger.Printf("[SERVER] HTTP server shutdown error: %v", err)
+		logShutdownError("HTTP server", err)
 		if shutdownErr == nil {
 			shutdownErr = fmt.Errorf("http server shutdown: %w", err)
 		}
 	}
 	if err := s.transferWSServer.Shutdown(ctx); err != nil {
-		logger.Printf("[SERVER] Transfer WebSocket server shutdown error: %v", err)
+		logShutdownError("Transfer WebSocket server", err)
 		if shutdownErr == nil {
 			shutdownErr = fmt.Errorf("transfer websocket shutdown: %w", err)
 		}
 	}
 	if s.recorderWSServer != nil {
 		if err := s.recorderWSServer.Shutdown(ctx); err != nil {
-			logger.Printf("[SERVER] Recorder WebSocket server shutdown error: %v", err)
+			logShutdownError("Recorder WebSocket server", err)
 			if shutdownErr == nil {
 				shutdownErr = fmt.Errorf("recorder websocket shutdown: %w", err)
 			}
@@ -446,7 +481,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Stop sync worker
 	if s.syncWorker != nil {
 		if err := s.syncWorker.Stop(ctx); err != nil {
-			logger.Printf("[SERVER] Sync worker shutdown error: %v", err)
+			logShutdownError("Sync worker", err)
 			if shutdownErr == nil {
 				shutdownErr = fmt.Errorf("sync worker shutdown: %w", err)
 			}

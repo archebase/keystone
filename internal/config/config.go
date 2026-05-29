@@ -66,9 +66,10 @@ type QAConfig struct {
 
 // SyncConfig synchronization configuration
 type SyncConfig struct {
-	Enabled    bool
-	BatchSize  int
-	MaxRetries int
+	Enabled         bool
+	AutoScanEnabled bool
+	BatchSize       int
+	MaxRetries      int
 
 	// Cloud upload settings (data-platform integration)
 	AuthEndpoint       string // gRPC endpoint for AuthService
@@ -119,6 +120,7 @@ type TransferConfig struct {
 	WSPort         int
 	MaxEvents      int
 	ReadTimeout    int // seconds
+	WriteTimeout   int // seconds
 	PingInterval   int // seconds
 	PingTimeout    int // seconds
 	StaleThreshold int // seconds
@@ -183,6 +185,7 @@ func Load() (*Config, error) {
 		},
 		Sync: SyncConfig{
 			Enabled:            getEnvBool("KEYSTONE_SYNC_ENABLED", true),
+			AutoScanEnabled:    getEnvBool("KEYSTONE_SYNC_AUTO_SCAN_ENABLED", false),
 			BatchSize:          getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 10),
 			MaxRetries:         getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
 			AuthEndpoint:       getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),
@@ -233,6 +236,7 @@ func Load() (*Config, error) {
 			WSPort:         getEnvInt("KEYSTONE_AXON_TRANSFER_WS_PORT", 8090),
 			MaxEvents:      getEnvInt("KEYSTONE_AXON_TRANSFER_MAX_EVENTS", 10000),
 			ReadTimeout:    getEnvInt("KEYSTONE_AXON_TRANSFER_READ_TIMEOUT", 30),
+			WriteTimeout:   getEnvInt("KEYSTONE_AXON_TRANSFER_WRITE_TIMEOUT", 10),
 			PingInterval:   getEnvInt("KEYSTONE_AXON_TRANSFER_PING_INTERVAL", 25),
 			PingTimeout:    getEnvInt("KEYSTONE_AXON_TRANSFER_PING_TIMEOUT", 10),
 			StaleThreshold: getEnvInt("KEYSTONE_AXON_TRANSFER_STALE_THRESHOLD", 60),

@@ -222,9 +222,14 @@ func (u *OSSUploader) sendRequest(ctx context.Context, session *UploadSession, m
 		req.Header.Set(k, v)
 	}
 
-	// #nosec G704 -- URL is OSS endpoint from authenticated DataGateway gRPC upload session
-	resp, err := u.httpClient.Do(req)
+	startedAt := time.Now()
+	resp, err := u.httpClient.Do(req) //nolint:gosec // G704: URL is OSS endpoint from authenticated DataGateway gRPC upload session
 	if err != nil {
+		if isTimeoutError(err) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			timeout := timeoutDuration(ctx, startedAt, u.httpClient.Timeout)
+			logger.Printf("[OSS] %s %s timeout after %s (timeout_ms=%d): %v", method, objectKey, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), err)
+			return nil, fmt.Errorf("http request timeout after %s: %w", timeoutLogValue(timeout), err)
+		}
 		return nil, fmt.Errorf("http request: %w", err)
 	}
 

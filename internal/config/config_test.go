@@ -14,12 +14,13 @@ import (
 func TestLoad(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":             os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_MYSQL_HOST":       os.Getenv("KEYSTONE_MYSQL_HOST"),
-		"KEYSTONE_MYSQL_PASSWORD":   os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY": os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY": os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_FACTORY_ID":       os.Getenv("KEYSTONE_FACTORY_ID"),
+		"KEYSTONE_MODE":                   os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_MYSQL_HOST":             os.Getenv("KEYSTONE_MYSQL_HOST"),
+		"KEYSTONE_MYSQL_PASSWORD":         os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":       os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":       os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_FACTORY_ID":             os.Getenv("KEYSTONE_FACTORY_ID"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED": os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
 	}
 	defer func() {
 		// Restore original environment variables
@@ -33,6 +34,7 @@ func TestLoad(t *testing.T) {
 	}()
 
 	// Set test environment variables
+	os.Unsetenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED")
 	os.Setenv("KEYSTONE_MYSQL_PASSWORD", "test-password")
 	os.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "test-access-key")
 	os.Setenv("KEYSTONE_MINIO_SECRET_KEY", "test-secret-key")
@@ -62,6 +64,10 @@ func TestLoad(t *testing.T) {
 
 	if cfg.Storage.Bucket != "edge-factory-test" {
 		t.Errorf("Load().Storage.Bucket = %v, want edge-factory-test", cfg.Storage.Bucket)
+	}
+
+	if cfg.Sync.AutoScanEnabled {
+		t.Error("Load().Sync.AutoScanEnabled should default to false")
 	}
 
 	// Verify QA configuration
@@ -98,6 +104,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 		"KEYSTONE_QA_MAX_WORKERS":          os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
 		"KEYSTONE_MAX_MEMORY_MB":           os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
 		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN": os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":  os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
 	}
 	defer func() {
 		for k, v := range originalEnv {
@@ -118,6 +125,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Setenv("KEYSTONE_QA_MAX_WORKERS", "8")
 	os.Setenv("KEYSTONE_MAX_MEMORY_MB", "8192")
 	os.Setenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", "display-secret")
+	os.Setenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -138,6 +146,10 @@ func TestLoadWithCustomEnv(t *testing.T) {
 
 	if cfg.Auth.DashboardDisplayToken != "display-secret" {
 		t.Errorf("Load().Auth.DashboardDisplayToken = %q, want display-secret", cfg.Auth.DashboardDisplayToken)
+	}
+
+	if !cfg.Sync.AutoScanEnabled {
+		t.Error("Load().Sync.AutoScanEnabled = false, want true")
 	}
 }
 

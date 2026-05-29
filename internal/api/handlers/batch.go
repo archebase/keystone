@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1157,7 +1158,15 @@ func notifyRecorderCancelTasksWithHub(ctx context.Context, hub *services.Recorde
 			continue
 		}
 		if err != nil {
-			logger.Printf("[BATCH] Batch %d: failed to notify recorder (status=%s): device=%s task=%s err=%v", batchID, st, deviceID, taskID, err)
+			action := "cancel"
+			if st == "ready" {
+				action = "clear"
+			}
+			if errors.Is(err, services.ErrRecorderRPCTimeout) {
+				logRecorderRPCTimeout(deviceID, action, taskID, "batch_cancel", timeout, err)
+			} else {
+				logger.Printf("[BATCH] Batch %d: failed to notify recorder (status=%s): device=%s task=%s err=%v", batchID, st, deviceID, taskID, err)
+			}
 		}
 	}
 }

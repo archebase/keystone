@@ -254,14 +254,23 @@ Auto-Approve  Route to Inspector
 
 ### Sync to Cloud
 
-Only **approved episodes** (QA score ≥ 90% or inspector-approved) are synced to cloud:
+Only **approved episodes** (QA score >= 90% or inspector-approved) are eligible for cloud sync:
 
 ```
 Edge MinIO ══(push)══► Cloud S3
 ```
 
-Sync is handled via `POST /api/v1/sync/episode` with:
-- Sidecar JSON (metadata)
+Keystone should default to manual cloud sync scheduling. `KEYSTONE_SYNC_ENABLED`
+controls whether cloud sync capability and the worker are available.
+`KEYSTONE_SYNC_AUTO_SCAN_ENABLED` controls whether the worker periodically
+discovers newly eligible approved unsynced episodes, and its default is
+`false`. With the default setting, recorded data remains in edge MinIO until an
+admin manually syncs one episode or explicitly scans and queues eligible
+episodes.
+
+Sync upload is executed by the edge `SyncWorker` through the cloud data gateway
+with:
+- Sidecar JSON metadata converted to raw tags
 - MCAP file (raw sensor data)
 - SHA-256 checksums for integrity validation
 
@@ -376,10 +385,14 @@ EDGE (Source of Truth)          CLOUD (Eventually Consistent Replica)
 
 **After network restored**:
 
-1. Edge sync worker resumes
-2. Queued episodes uploaded (`POST /api/v1/sync/episode`)
-3. Cloud processes each asynchronously (returns `202 Accepted`)
-4. Cloud DB becomes eventually consistent with edge
+1. Edge sync worker resumes and drains persisted `pending` sync rows.
+2. Already queued or retryable sync jobs continue according to retry policy.
+3. If `KEYSTONE_SYNC_AUTO_SCAN_ENABLED=true`, newly eligible approved unsynced
+   episodes are discovered and queued automatically.
+4. If automatic discovery is disabled, new local episodes remain unsynced until
+   an admin manually syncs one episode or explicitly scans eligible episodes.
+5. Cloud processes each upload asynchronously and cloud DB becomes eventually
+   consistent with edge.
 
 ### Sync Guarantees
 

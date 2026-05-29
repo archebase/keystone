@@ -9,6 +9,7 @@ package cloud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -119,11 +120,17 @@ func (c *AuthClient) exchangeCredential(ctx context.Context, credentialBase64 st
 	}
 
 	client := pb.NewAuthServiceClient(conn)
+	startedAt := time.Now()
 	resp, err := client.ExchangeCredential(ctx, &pb.ExchangeCredentialRequest{
 		CredentialBase64: credentialBase64,
 	})
 	if err != nil {
-		logger.Printf("[CLOUD-AUTH] ExchangeCredential RPC failed, resetting gRPC connection: %v", err)
+		timeout := timeoutDuration(ctx, startedAt, 0)
+		if isTimeoutError(err) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			logger.Printf("[CLOUD-AUTH] ExchangeCredential RPC timeout after %s (timeout_ms=%d), resetting gRPC connection: %v", timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), err)
+		} else {
+			logger.Printf("[CLOUD-AUTH] ExchangeCredential RPC failed, resetting gRPC connection: %v", err)
+		}
 		if closeErr := c.Close(); closeErr != nil {
 			logger.Printf("[CLOUD-AUTH] failed to reset gRPC connection after RPC error: %v", closeErr)
 		} else {

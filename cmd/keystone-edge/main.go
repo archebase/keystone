@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -154,17 +155,18 @@ func main() {
 		}
 
 		syncWorker = services.NewSyncWorker(db.DB, uploader, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
-			BatchSize:      cfg.Sync.BatchSize,
-			MaxConcurrent:  cfg.Sync.MaxConcurrent,
-			MaxRetries:     cfg.Sync.MaxRetries,
-			IntervalSec:    cfg.Sync.WorkerIntervalSec,
-			RetryBaseSec:   cfg.Sync.RetryBaseSec,
-			RetryMaxSec:    cfg.Sync.RetryMaxSec,
-			RetryJitterSec: cfg.Sync.RetryJitterSec,
+			BatchSize:       cfg.Sync.BatchSize,
+			MaxConcurrent:   cfg.Sync.MaxConcurrent,
+			MaxRetries:      cfg.Sync.MaxRetries,
+			AutoScanEnabled: cfg.Sync.AutoScanEnabled,
+			IntervalSec:     cfg.Sync.WorkerIntervalSec,
+			RetryBaseSec:    cfg.Sync.RetryBaseSec,
+			RetryMaxSec:     cfg.Sync.RetryMaxSec,
+			RetryJitterSec:  cfg.Sync.RetryJitterSec,
 		}, &cfg.Sync)
 
 		syncWorker.Start()
-		logger.Printf("[SYNC] Cloud sync worker started: auth=%s gateway=%s", cfg.Sync.AuthEndpoint, cfg.Sync.GatewayEndpoint)
+		logger.Printf("[SYNC] Cloud sync worker started: auth=%s gateway=%s auto_scan=%t", cfg.Sync.AuthEndpoint, cfg.Sync.GatewayEndpoint, cfg.Sync.AutoScanEnabled)
 	} else {
 		logger.Println("[SYNC] Cloud sync disabled (KEYSTONE_SYNC_ENABLED=false or missing endpoints)")
 	}
@@ -184,11 +186,16 @@ func main() {
 
 	logger.Println("[SERVER] Shutting down...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownTimeout := 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		logger.Printf("[SERVER] Error during shutdown: %v", err)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			logger.Printf("[SERVER] Error during shutdown after %s (timeout_ms=%d): %v", shutdownTimeout, shutdownTimeout.Milliseconds(), err)
+		} else {
+			logger.Printf("[SERVER] Error during shutdown: %v", err)
+		}
 	}
 
 	logger.Println("[SERVER] Keystone Edge stopped")

@@ -34,6 +34,11 @@ Synapse. Data production statistics should keep cloud sync as a metric only, but
 should not be the primary place for queue control, retry diagnosis, navigation,
 or future sync operations.
 
+Cloud sync scheduling should be explicit by default. Keystone should keep cloud
+sync capability available when configured, but automatic discovery of newly
+approved unsynced episodes should default to off. Operators or admins can still
+manually enqueue one episode or explicitly scan and enqueue eligible episodes.
+
 ## 2. Current Backend Capability
 
 ### 2.1 Existing Cloud Sync APIs
@@ -43,7 +48,7 @@ endpoints recommended for the episode-centered Cloud Sync Center redesign:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/v1/sync/episodes` | Enqueue pending approved, unsynced episodes for cloud sync |
+| `POST` | `/api/v1/sync/episodes` | Manually scan and enqueue approved, unsynced episodes for cloud sync |
 | `POST` | `/api/v1/sync/episodes/:id` | Enqueue one episode for cloud sync by numeric episode ID |
 | `GET` | `/api/v1/sync/episodes` | Existing: list raw sync log entries for history/diagnosis |
 | `GET` | `/api/v1/sync/episodes/summary` | Recommended new endpoint: list latest sync state grouped by episode |
@@ -77,7 +82,33 @@ from local MinIO, uploads it through the cloud DataGateway/OSS flow, and updates
 - `episodes.cloud_mcap_path`
 - `episodes.cloud_processed`
 
-### 2.3 Manual Trigger Semantics
+### 2.3 Scheduling Modes
+
+Keystone should separate two concerns:
+
+| Concern | Configuration | Default | Behavior |
+|---------|---------------|---------|----------|
+| Cloud sync capability | `KEYSTONE_SYNC_ENABLED` | `true` | Creates the cloud clients, `SyncWorker`, sync APIs, and manual enqueue path when cloud endpoints and credentials are present |
+| Automatic episode discovery | `KEYSTONE_SYNC_AUTO_SCAN_ENABLED` | `false` | When enabled, the worker periodically finds newly eligible approved unsynced episodes and enqueues them without an operator action |
+
+When `KEYSTONE_SYNC_AUTO_SCAN_ENABLED=false`, Keystone must not automatically
+enqueue newly completed or newly approved episodes just because they match the
+eligibility rules. This is the recommended default for controlled production
+sites where data should remain local until an admin explicitly syncs it.
+
+Manual sync remains available while `KEYSTONE_SYNC_ENABLED=true` and the worker
+is running:
+
+- `POST /api/v1/sync/episodes/:id` enqueues one approved unsynced episode.
+- `POST /api/v1/sync/episodes` explicitly scans and enqueues all currently
+  eligible approved unsynced episodes.
+
+Automatic retry is separate from automatic discovery. Once an episode has been
+manually enqueued and a `sync_logs` row exists, retry/backoff may continue using
+the existing retry rules. Disabling automatic discovery should not strand
+already queued or already attempted sync work.
+
+### 2.4 Manual Trigger Semantics
 
 The existing manual APIs have different retry behavior.
 
@@ -110,7 +141,7 @@ Behavior:
 For product clarity, the current batch API should be presented as "scan and
 enqueue eligible pending episodes", not as "force retry all failures".
 
-### 2.4 Listing Model
+### 2.5 Listing Model
 
 `sync_logs` is an audit-style attempt-chain table. One episode may have multiple
 rows because manual retry can create a fresh `sync_logs` row when the latest
@@ -138,6 +169,7 @@ as an expandable row, drawer, or "View history" action.
 | Admin | Retry failed cloud sync jobs safely |
 | Admin | Understand why a sync failed |
 | Admin | Trigger sync for all eligible unsynced episodes |
+| Admin | Keep newly recorded local data from syncing automatically by default |
 | Operator | See whether collected data is available, without managing retries |
 
 ### 3.2 Design Goals
@@ -147,6 +179,7 @@ as an expandable row, drawer, or "View history" action.
 - Avoid fake progress bars because Keystone does not expose upload percentage.
 - Make failure recovery explicit and auditable.
 - Keep destructive or expensive bulk actions deliberate.
+- Make automatic discovery opt-in; default operation is manual enqueue.
 - Preserve current backend behavior while identifying API gaps for follow-up.
 - Keep the data production statistics page focused on analysis, not operations.
 
@@ -243,7 +276,7 @@ Primary actions:
 | Scan and queue eligible unsynced episodes | `POST /api/v1/sync/episodes` | Confirm before enqueue, then refresh counts/table |
 | Retry one failed episode | `POST /api/v1/sync/episodes/:id` | Row-level action, then refresh the row/list |
 | Retry failed episodes in bulk | Not explicit yet | TODO; requires backend API semantics |
-| Pause/resume automatic sync | Not supported yet | TODO; do not show as active control |
+| Enable/disable automatic discovery | Config only | Default off; show read-only state, do not expose as a live UI toggle |
 | Edit sync configuration | Not supported yet | TODO; read-only summary for now |
 
 The page should make queue state explicit:
@@ -730,6 +763,7 @@ TODO: extend `GET /sync/config` with non-sensitive runtime values:
 ```json
 {
   "worker_running": true,
+  "auto_scan_enabled": false,
   "batch_size": 10,
   "max_concurrent": 2,
   "max_retries": 5,
@@ -822,6 +856,7 @@ Acceptance criteria:
 - Add latest sync summary to episode list/detail responses.
 - Add batch trigger body with `force` and filters.
 - Extend sync config response with read-only non-sensitive values.
+- Add `auto_scan_enabled` to sync config response.
 - Add admin auth guard for sync APIs.
 
 Acceptance criteria:
@@ -841,3 +876,4 @@ Acceptance criteria:
 | Should batch sync use current statistics filters? | Only after backend supports filter parameters |
 | Should long-running uploads show percentage? | No; backend does not expose progress |
 | Should `.env` sync config be editable in Synapse? | Not now; keep as TODO after read-only config visibility |
+| Should automatic discovery run by default? | No; default `KEYSTONE_SYNC_AUTO_SCAN_ENABLED=false` |

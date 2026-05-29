@@ -91,9 +91,31 @@ func (h *Hub[T]) connectWithStaleThreshold(deviceID string, conn T, staleThresho
 	return zero, true
 }
 
+// connectReplacingExisting registers conn under deviceID. If another connection
+// is already registered for the same device, the new connection takes over and
+// the previous connection is returned so the caller can close it outside the hub
+// lock.
+func (h *Hub[T]) connectReplacingExisting(deviceID string, conn T) T {
+	var replaced T
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if old, exists := h.connections[deviceID]; exists {
+		if old.GetWSConn() != conn.GetWSConn() {
+			replaced = old
+			logger.Printf("[%s] Hub: replacing existing connection for device %s", h.label, deviceID)
+		}
+	}
+
+	h.connections[deviceID] = conn
+	logger.Printf("[%s] Hub: device %s registered, total connections=%d", h.label, deviceID, len(h.connections))
+	return replaced
+}
+
 // disconnect removes the connection for deviceID only if it matches conn.
-// This avoids a stale handler goroutine deleting a newer connection after
-// rejecting takeover. Returns true if an entry was removed.
+// This avoids an old handler goroutine deleting a newer connection after
+// replacement. Returns true if an entry was removed.
 func (h *Hub[T]) disconnect(deviceID string, conn T) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -6,9 +6,11 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -56,22 +58,40 @@ func newPublicBatchID(now time.Time, seq int) (string, error) {
 	), nil
 }
 
-// TaskHandler handles task-related HTTP requests
-type TaskHandler struct {
-	db                 *sqlx.DB
-	hub                *services.TransferHub
-	recorderHub        *services.RecorderHub
-	recorderRPCTimeout time.Duration
+type transferUploadHub interface {
+	Get(deviceID string) *services.TransferConn
+	SendToDeviceWithTimeout(ctx context.Context, deviceID string, msg map[string]interface{}, timeout time.Duration) error
 }
 
-// NewTaskHandler creates a new TaskHandler
-func NewTaskHandler(db *sqlx.DB, hub *services.TransferHub, recorderHub *services.RecorderHub, recorderRPCTimeout time.Duration) *TaskHandler {
-	return &TaskHandler{
-		db:                 db,
-		hub:                hub,
-		recorderHub:        recorderHub,
-		recorderRPCTimeout: recorderRPCTimeout,
+// TaskHandler handles task-related HTTP requests
+type TaskHandler struct {
+	db                   *sqlx.DB
+	hub                  transferUploadHub
+	recorderHub          *services.RecorderHub
+	recorderRPCTimeout   time.Duration
+	transferWriteTimeout time.Duration
+}
+
+// NewTaskHandler creates a new TaskHandler.
+func NewTaskHandler(db *sqlx.DB, hub *services.TransferHub, recorderHub *services.RecorderHub, recorderRPCTimeout time.Duration, transferWriteTimeout ...time.Duration) *TaskHandler {
+	writeTimeout := services.DefaultTransferWriteTimeout
+	if len(transferWriteTimeout) > 0 && transferWriteTimeout[0] > 0 {
+		writeTimeout = transferWriteTimeout[0]
 	}
+	return &TaskHandler{
+		db:                   db,
+		hub:                  hub,
+		recorderHub:          recorderHub,
+		recorderRPCTimeout:   recorderRPCTimeout,
+		transferWriteTimeout: writeTimeout,
+	}
+}
+
+func (h *TaskHandler) axonTransferWriteTimeout() time.Duration {
+	if h == nil || h.transferWriteTimeout <= 0 {
+		return services.DefaultTransferWriteTimeout
+	}
+	return h.transferWriteTimeout
 }
 
 // TaskConfig represents the task configuration response
@@ -1050,9 +1070,16 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 		"priority": 1,
 	}
 
-	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, uploadRequest); err != nil {
-		logger.Printf("[RECORDER] Failed to send upload_request to device %s: %v", deviceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{
+	writeTimeout := h.axonTransferWriteTimeout()
+	if err := h.hub.SendToDeviceWithTimeout(c.Request.Context(), deviceID, uploadRequest, writeTimeout); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, services.ErrTransferWriteTimeout) {
+			status = http.StatusGatewayTimeout
+			logger.Printf("[TRANSFER] Device %s: auto upload_request timed out after %s for task=%s: %v", deviceID, timeoutLogValue(writeTimeout), callback.TaskID, err)
+		} else {
+			logger.Printf("[RECORDER] Failed to send upload_request to device %s: %v", deviceID, err)
+		}
+		c.JSON(status, gin.H{
 			"error_msg": "Failed to trigger upload: " + err.Error(),
 		})
 		return
