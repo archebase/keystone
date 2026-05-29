@@ -7,12 +7,23 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+)
+
+var (
+	// ErrTransferWriteTimeout indicates that a transfer WebSocket write exceeded its deadline.
+	ErrTransferWriteTimeout = errors.New("transfer write timeout")
+)
+
+const (
+	// DefaultTransferWriteTimeout caps device writes when no handler-specific timeout is configured.
+	DefaultTransferWriteTimeout = 10 * time.Second
 )
 
 // DeviceEvent represents a single event recorded for a device
@@ -229,18 +240,43 @@ func (h *TransferHub) ListDevices() []DeviceInfo {
 	return result
 }
 
-// SendToDevice sends a JSON message to a connected device via WebSocket
+// SendToDevice sends a JSON message to a connected device via WebSocket.
 func (h *TransferHub) SendToDevice(ctx context.Context, deviceID string, msg map[string]interface{}) error {
+	return h.SendToDeviceWithTimeout(ctx, deviceID, msg, DefaultTransferWriteTimeout)
+}
+
+// SendToDeviceWithTimeout sends a JSON message to a connected device with a bounded write deadline.
+func (h *TransferHub) SendToDeviceWithTimeout(ctx context.Context, deviceID string, msg map[string]interface{}, timeout time.Duration) error {
 	dc := h.Get(deviceID)
 	if dc == nil {
 		return fmt.Errorf("device %s not connected", deviceID)
 	}
+	return h.SendToConnWithTimeout(ctx, dc, msg, timeout)
+}
+
+// SendToConnWithTimeout sends a JSON message to an existing transfer connection.
+func (h *TransferHub) SendToConnWithTimeout(ctx context.Context, dc *TransferConn, msg map[string]interface{}, timeout time.Duration) error {
+	if dc == nil || dc.Conn == nil {
+		return fmt.Errorf("device not connected")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = DefaultTransferWriteTimeout
+	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	dc.WriteMu.Lock()
 	defer dc.WriteMu.Unlock()
 
-	if err := wsjson.Write(ctx, dc.Conn, msg); err != nil {
-		return fmt.Errorf("failed to send message to device %s: %w", deviceID, err)
+	if err := wsjson.Write(writeCtx, dc.Conn, msg); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(writeCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%w after %s: failed to send message to device %s", ErrTransferWriteTimeout, timeout, dc.DeviceID)
+		}
+		return fmt.Errorf("failed to send message to device %s: %w", dc.DeviceID, err)
 	}
 
 	dc.RecordEvent("outbound", msg)

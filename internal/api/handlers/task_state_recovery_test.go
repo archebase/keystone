@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -98,7 +99,7 @@ func TestRecorderGetStateSnapshotReadyRestoresPendingTask(t *testing.T) {
 		},
 	})
 
-	handler.applyRecorderStateSnapshot(rc, state, "get_state")
+	_ = handler.applyRecorderStateSnapshot(rc, state, "get_state")
 
 	assertTaskStateRecoveryStatus(t, db, "task-rpc-ready", "ready")
 	assertTaskStateRecoveryTimestampSet(t, db, "task-rpc-ready", "ready_at")
@@ -151,7 +152,7 @@ func TestRecorderGetStateReportsSyncedAfterInitialStateSnapshot(t *testing.T) {
 	if !hub.Connect("robot-001", rc) {
 		t.Fatalf("connect recorder: initial connect failed")
 	}
-	handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -223,7 +224,7 @@ func TestRecorderConfigRejectsWhenSyncedRecorderBusy(t *testing.T) {
 		return services.RPCResponse{Success: true}
 	})
 	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
-	handler.applyRecorderStateSnapshot(rc, services.RecorderState{
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{
 		CurrentState: "ready",
 		TaskID:       "existing-task",
 	}, "state_update")
@@ -259,7 +260,7 @@ func TestRecorderConfigAdvancesTaskAfterInitialStateSnapshot(t *testing.T) {
 		return services.RPCResponse{Success: true}
 	})
 	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
-	handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -287,7 +288,7 @@ func TestRecorderConfigDoesNotAdvanceTaskWhenRPCResponseUnsuccessful(t *testing.
 		return services.RPCResponse{Success: false, Message: "device rejected config"}
 	})
 	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
-	handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -409,6 +410,89 @@ func TestRecordingStartCallbackAdvancesPendingTask(t *testing.T) {
 	}
 	assertTaskStateRecoveryStatus(t, db, "task-start", "in_progress")
 	assertTaskStateRecoveryTimestampSet(t, db, "task-start", "started_at")
+}
+
+func TestTaskHandlerAxonTransferWriteTimeout(t *testing.T) {
+	custom := 250 * time.Millisecond
+	handler := NewTaskHandler(nil, nil, nil, 0, custom)
+	if got := handler.axonTransferWriteTimeout(); got != custom {
+		t.Fatalf("axonTransferWriteTimeout()=%s want=%s", got, custom)
+	}
+
+	handler = NewTaskHandler(nil, nil, nil, 0, 0)
+	if got := handler.axonTransferWriteTimeout(); got != services.DefaultTransferWriteTimeout {
+		t.Fatalf("default axonTransferWriteTimeout()=%s want=%s", got, services.DefaultTransferWriteTimeout)
+	}
+}
+
+func TestRecordingFinishAutoUploadUsesConfiguredTransferWriteTimeout(t *testing.T) {
+	custom := 250 * time.Millisecond
+	hub := &recordingFinishTransferHub{
+		conn: &services.TransferConn{DeviceID: "robot-001"},
+	}
+	handler := &TaskHandler{hub: hub, transferWriteTimeout: custom}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler.RegisterCallbackRoutes(router.Group("/callbacks"))
+
+	body, err := json.Marshal(RecordingFinishCallback{
+		TaskID:     "task-finish",
+		DeviceID:   "robot-001",
+		Status:     "finished",
+		FinishedAt: time.Now().UTC().Format(time.RFC3339),
+		OutputPath: "/data/task-finish.mcap",
+	})
+	if err != nil {
+		t.Fatalf("marshal callback: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/callbacks/finish", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusGatewayTimeout, w.Body.String())
+	}
+	if hub.getDeviceID != "robot-001" {
+		t.Fatalf("Get device=%q want=%q", hub.getDeviceID, "robot-001")
+	}
+	if hub.sendDeviceID != "robot-001" {
+		t.Fatalf("Send device=%q want=%q", hub.sendDeviceID, "robot-001")
+	}
+	if hub.timeout != custom {
+		t.Fatalf("Send timeout=%s want=%s", hub.timeout, custom)
+	}
+	if got := fmt.Sprint(hub.msg["type"]); got != "upload_request" {
+		t.Fatalf("message type=%q want=%q", got, "upload_request")
+	}
+	if got := fmt.Sprint(hub.msg["task_id"]); got != "task-finish" {
+		t.Fatalf("message task_id=%q want=%q", got, "task-finish")
+	}
+	if !strings.Contains(w.Body.String(), custom.String()) {
+		t.Fatalf("response body %q does not mention custom timeout %s", w.Body.String(), custom)
+	}
+}
+
+type recordingFinishTransferHub struct {
+	conn         *services.TransferConn
+	getDeviceID  string
+	sendDeviceID string
+	msg          map[string]interface{}
+	timeout      time.Duration
+}
+
+func (h *recordingFinishTransferHub) Get(deviceID string) *services.TransferConn {
+	h.getDeviceID = deviceID
+	return h.conn
+}
+
+func (h *recordingFinishTransferHub) SendToDeviceWithTimeout(ctx context.Context, deviceID string, msg map[string]interface{}, timeout time.Duration) error {
+	h.sendDeviceID = deviceID
+	h.msg = msg
+	h.timeout = timeout
+	return fmt.Errorf("%w after %s: fake blocked transfer write", services.ErrTransferWriteTimeout, timeout)
 }
 
 func newTaskStateRecoveryDB(t *testing.T) *sqlx.DB {

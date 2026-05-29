@@ -69,7 +69,7 @@ func TestRecorderStateSnapshotReconcilesAdditionalStates(t *testing.T) {
 			handler := NewRecorderHandler(hub, &config.RecorderConfig{}, db)
 			rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
 
-			handler.applyRecorderStateSnapshot(rc, tt.state, "get_state")
+			_ = handler.applyRecorderStateSnapshot(rc, tt.state, "get_state")
 
 			assertTaskStateRecoveryStatus(t, db, "task-state", tt.wantStatus)
 			if tt.wantColumn != "" {
@@ -79,7 +79,7 @@ func TestRecorderStateSnapshotReconcilesAdditionalStates(t *testing.T) {
 	}
 }
 
-func TestRecorderNonIdleWithoutTaskIDMarksSyncedWithoutDBChange(t *testing.T) {
+func TestRecorderAuthoritativeNonIdleWithoutTaskIDKeepsUnsyncedWithoutDBChange(t *testing.T) {
 	db := newTaskStateRecoveryDB(t)
 	defer db.Close()
 	seedTaskStateRecoveryTask(t, db, "task-no-id", "pending")
@@ -87,11 +87,16 @@ func TestRecorderNonIdleWithoutTaskIDMarksSyncedWithoutDBChange(t *testing.T) {
 	hub := services.NewRecorderHub()
 	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, db)
 	rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
+	if !hub.Connect("robot-001", rc) {
+		t.Fatalf("connect recorder: initial connect failed")
+	}
 
-	handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "ready"}, "state_update")
+	if err := handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "ready"}, "state_update"); err == nil {
+		t.Fatalf("expected missing task_id error for authoritative state_update")
+	}
 
-	if !rc.IsStateSynced() {
-		t.Fatalf("non-empty state without task_id did not mark connection synced")
+	if rc.IsStateSynced() {
+		t.Fatalf("authoritative non-idle state without task_id marked connection synced")
 	}
 	assertTaskStateRecoveryStatus(t, db, "task-no-id", "pending")
 }
@@ -101,7 +106,7 @@ func TestRecorderEmptyStateSnapshotKeepsConnectionUnsynced(t *testing.T) {
 	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, nil)
 	rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
 
-	handler.applyRecorderStateSnapshot(rc, services.RecorderState{}, "state_update")
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{}, "state_update")
 
 	if rc.IsStateSynced() {
 		t.Fatalf("empty state snapshot marked connection as synced")
@@ -165,7 +170,7 @@ func TestRecorderConfigRejectsAdditionalBusyStates(t *testing.T) {
 				return services.RPCResponse{Success: true}
 			})
 			handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
-			handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: state, TaskID: "current-task"}, "state_update")
+			_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: state, TaskID: "current-task"}, "state_update")
 
 			router := newRecorderInteractionRouter(handler)
 			w := recorderInteractionPost(t, router, "/recorder/robot-001/config", `{"task_config":{"task_id":"task-config-busy"}}`)
@@ -192,7 +197,7 @@ func TestRecorderConfigTimeoutAndDisconnectedKeepTaskPending(t *testing.T) {
 		hub := services.NewRecorderHub()
 		rc, requests := attachRecorderRPCObserverWithConn(t, hub, "robot-001")
 		handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
-		handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
+		_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
 
 		router := newRecorderInteractionRouter(handler)
 		w := recorderInteractionPost(t, router, "/recorder/robot-001/config", `{"task_config":{"task_id":"task-config-timeout"}}`)
@@ -348,6 +353,88 @@ func TestRecorderForwardOnlyActionsDoNotMutateTaskState(t *testing.T) {
 			}
 			assertTaskStateRecoveryStatus(t, db, "task-forward-only", tt.initial)
 		})
+	}
+}
+
+func TestRecorderRPCPauseResumeWithoutTaskIDPreservesBoundTask(t *testing.T) {
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, nil)
+	rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
+	if !hub.Connect("robot-001", rc) {
+		t.Fatalf("connect recorder: initial connect failed")
+	}
+
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "recording", TaskID: "task-live"}, "state_update")
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "paused"}, "rpc_response:pause")
+
+	st := rc.GetState()
+	if st.CurrentState != "paused" || st.TaskID != "task-live" {
+		t.Fatalf("state=(%q,%q), want paused/task-live", st.CurrentState, st.TaskID)
+	}
+
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "recording"}, "rpc_response:resume")
+	st = rc.GetState()
+	if st.CurrentState != "recording" || st.TaskID != "task-live" {
+		t.Fatalf("state=(%q,%q), want recording/task-live", st.CurrentState, st.TaskID)
+	}
+
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle", TaskID: "task-live"}, "rpc_response:finish")
+	st = rc.GetState()
+	if st.CurrentState != "idle" || st.TaskID != "" {
+		t.Fatalf("idle state=(%q,%q), want idle with empty task", st.CurrentState, st.TaskID)
+	}
+}
+
+func TestRecorderAuthoritativeStateWithoutTaskIDMarksUnsynced(t *testing.T) {
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, nil)
+	rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
+	if !hub.Connect("robot-001", rc) {
+		t.Fatalf("connect recorder: initial connect failed")
+	}
+
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "recording", TaskID: "task-live"}, "state_update")
+	if err := handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "paused"}, "state_update"); err == nil {
+		t.Fatalf("expected missing task_id error for authoritative state_update")
+	}
+
+	st := rc.GetState()
+	if st.CurrentState != "recording" || st.TaskID != "task-live" {
+		t.Fatalf("state=(%q,%q), want previous recording/task-live", st.CurrentState, st.TaskID)
+	}
+	if rc.IsStateSynced() {
+		t.Fatalf("state should be marked unsynced after authoritative snapshot without task_id")
+	}
+}
+
+func TestRecorderFinishUsesCachedTaskIDWhenBodyEmpty(t *testing.T) {
+	hub := services.NewRecorderHub()
+	reqC := make(chan services.RPCRequest, 1)
+	rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+		reqC <- req
+		return services.RPCResponse{Success: true, Data: map[string]interface{}{"state": "idle"}}
+	})
+	rc.UpdateState(services.RecorderState{CurrentState: "paused", TaskID: "task-live"})
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, nil)
+	router := newRecorderInteractionRouter(handler)
+
+	w := recorderInteractionPost(t, router, "/recorder/robot-001/finish", `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	select {
+	case req := <-reqC:
+		if got := strings.TrimSpace(stringValue(req.Params, "task_id")); got != "task-live" {
+			t.Fatalf("finish params task_id=%q want task-live; params=%#v", got, req.Params)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for finish RPC")
+	}
+
+	st := rc.GetState()
+	if st.CurrentState != "idle" || st.TaskID != "" {
+		t.Fatalf("finish response state=(%q,%q), want idle with empty task", st.CurrentState, st.TaskID)
 	}
 }
 

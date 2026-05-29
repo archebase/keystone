@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -227,6 +226,43 @@ func transferPingTimeout(cfg *config.TransferConfig) time.Duration {
 		return 0
 	}
 	return time.Duration(cfg.PingTimeout) * time.Second
+}
+
+func transferWriteTimeout(cfg *config.TransferConfig) time.Duration {
+	if cfg == nil || cfg.WriteTimeout <= 0 {
+		return services.DefaultTransferWriteTimeout
+	}
+	return time.Duration(cfg.WriteTimeout) * time.Second
+}
+
+func transferMessageType(msg map[string]interface{}) string {
+	msgType := strings.TrimSpace(stringVal(msg, "type"))
+	if msgType == "" {
+		return "message"
+	}
+	return msgType
+}
+
+func logTransferSendFailure(deviceID string, msgType string, timeout time.Duration, err error) {
+	if errors.Is(err, services.ErrTransferWriteTimeout) {
+		logger.Printf("[TRANSFER] Device %s: send %s timed out after %s: %v", deviceID, msgType, timeoutLogValue(timeout), err)
+		return
+	}
+	logger.Printf("[TRANSFER] Device %s: failed to send %s: %v", deviceID, msgType, err)
+}
+
+func (h *TransferHandler) sendToDevice(c *gin.Context, deviceID string, msg map[string]interface{}) bool {
+	timeout := transferWriteTimeout(h.cfg)
+	if err := h.hub.SendToDeviceWithTimeout(c.Request.Context(), deviceID, msg, timeout); err != nil {
+		logTransferSendFailure(deviceID, transferMessageType(msg), timeout, err)
+		status := http.StatusNotFound
+		if errors.Is(err, services.ErrTransferWriteTimeout) {
+			status = http.StatusGatewayTimeout
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return false
+	}
+	return true
 }
 
 func closeReplacedTransferConn(deviceID string, dc *services.TransferConn) {
@@ -644,15 +680,11 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		"type":    "upload_ack",
 		"task_id": taskID,
 	}
-	dc.WriteMu.Lock()
-	if err := wsjson.Write(ctx, dc.Conn, ackMsg); err != nil {
-		dc.WriteMu.Unlock()
-		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to send upload_ack for task=%s: %v", dc.DeviceID, taskID, err)
+	writeTimeout := transferWriteTimeout(h.cfg)
+	if err := h.hub.SendToConnWithTimeout(ctx, dc, ackMsg, writeTimeout); err != nil {
+		logTransferSendFailure(dc.DeviceID, "upload_ack", writeTimeout, err)
 		return
 	}
-	dc.WriteMu.Unlock()
-	dc.RecordEvent("outbound", ackMsg)
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
 
@@ -953,8 +985,7 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 		"task_id":  body.TaskID,
 		"priority": body.Priority,
 	}
-	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	if !h.sendToDevice(c, deviceID, msg) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
@@ -990,9 +1021,7 @@ func (h *TransferHandler) UploadAll(c *gin.Context) {
 	msg := map[string]interface{}{"type": "upload_all"}
 	logger.Printf("[TRANSFER] Sending message to device %s: %+v", deviceID, msg)
 
-	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
-		logger.Printf("[TRANSFER] Failed to send message to device %s: %v", deviceID, err)
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	if !h.sendToDevice(c, deviceID, msg) {
 		return
 	}
 
@@ -1026,8 +1055,7 @@ func (h *TransferHandler) CancelUpload(c *gin.Context) {
 		"type":    "cancel",
 		"task_id": body.TaskID,
 	}
-	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	if !h.sendToDevice(c, deviceID, msg) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
@@ -1053,8 +1081,7 @@ func (h *TransferHandler) StatusQuery(c *gin.Context) {
 	}
 
 	msg := map[string]interface{}{"type": "status_query"}
-	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	if !h.sendToDevice(c, deviceID, msg) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
@@ -1086,8 +1113,7 @@ func (h *TransferHandler) ManualACK(c *gin.Context) {
 		"type":    "upload_ack",
 		"task_id": body.TaskID,
 	}
-	if err := h.hub.SendToDevice(c.Request.Context(), deviceID, msg); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	if !h.sendToDevice(c, deviceID, msg) {
 		return
 	}
 

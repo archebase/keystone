@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -318,6 +319,7 @@ func (h *RecorderHandler) Finish(c *gin.Context) {
 	if !ok {
 		return
 	}
+	params = h.fillRecorderTaskIDFromCache(c.Param("device_id"), params)
 	h.callRPC(c, "finish", params)
 }
 
@@ -655,7 +657,9 @@ func (h *RecorderHandler) refreshRecorderState(ctx context.Context, deviceID str
 		h.markRecorderSyncing(rc, "get_state", err)
 		return rc.GetState(), false, err
 	}
-	h.applyRecorderStateSnapshot(rc, state, "get_state")
+	if err := h.applyRecorderStateSnapshot(rc, state, "get_state"); err != nil {
+		return rc.GetState(), false, err
+	}
 	return rc.GetState(), true, nil
 }
 
@@ -703,7 +707,15 @@ func (h *RecorderHandler) handleRecorderRPCTimeout(ctx context.Context, deviceID
 	logRecorderRPCTimeout(deviceID, action, taskID, "api_rpc", timeout, timeoutErr)
 	if rc := h.hub.Get(deviceID); rc != nil {
 		h.markRecorderSyncing(rc, "rpc_timeout:"+action, timeoutErr)
-		go h.syncRecorderStateFromDevice(ctx, rc)
+		syncTimeout := timeout
+		if syncTimeout <= 0 {
+			syncTimeout = recorderRPCResponseTimeout(h.cfg)
+		}
+		syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), syncTimeout)
+		go func() {
+			defer cancel()
+			h.syncRecorderStateFromDevice(syncCtx, rc)
+		}()
 	}
 	if h.stateBroker == nil {
 		return
@@ -810,9 +822,12 @@ func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[stri
 
 	if response != nil && response.Success {
 		state := recorderStateFromRPCData(response.Data)
+		if strings.TrimSpace(state.TaskID) == "" && recorderStateKeepsTaskID(state.CurrentState) {
+			state.TaskID = recorderTaskIDFromRPCParams(params)
+		}
 		if strings.TrimSpace(state.CurrentState) != "" {
 			if rc := h.hub.Get(deviceID); rc != nil {
-				h.applyRecorderStateSnapshot(rc, state, "rpc_response:"+action)
+				_ = h.applyRecorderStateSnapshot(rc, state, "rpc_response:"+action)
 			}
 		}
 	}
@@ -832,6 +847,33 @@ func (h *RecorderHandler) bindOptionalParams(c *gin.Context) (map[string]interfa
 		return nil, false
 	}
 	return params, true
+}
+
+func recorderTaskIDFromRPCParams(params map[string]interface{}) string {
+	taskID := firstNonEmptyString(params, "task_id")
+	if taskID != "" {
+		return taskID
+	}
+	return stringValue(mapValue(params, "task_config"), "task_id")
+}
+
+func (h *RecorderHandler) fillRecorderTaskIDFromCache(deviceID string, params map[string]interface{}) map[string]interface{} {
+	if recorderTaskIDFromRPCParams(params) != "" || h == nil || h.hub == nil {
+		return params
+	}
+	rc := h.hub.Get(strings.TrimSpace(deviceID))
+	if rc == nil {
+		return params
+	}
+	taskID := strings.TrimSpace(rc.GetState().TaskID)
+	if taskID == "" {
+		return params
+	}
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+	params["task_id"] = taskID
+	return params
 }
 
 // ListDevices returns all currently connected recorder devices.
@@ -955,7 +997,7 @@ func (h *RecorderHandler) handleStateUpdate(rc *services.RecorderConn, msg map[s
 		TaskID:       stringValue(data, "task_id"),
 		Raw:          data,
 	}
-	h.applyRecorderStateSnapshot(rc, state, "state_update")
+	_ = h.applyRecorderStateSnapshot(rc, state, "state_update")
 }
 
 func (h *RecorderHandler) syncRecorderStateFromDevice(ctx context.Context, rc *services.RecorderConn) {
@@ -973,11 +1015,24 @@ func (h *RecorderHandler) syncRecorderStateFromDevice(ctx context.Context, rc *s
 	}
 }
 
-func (h *RecorderHandler) applyRecorderStateSnapshot(rc *services.RecorderConn, state services.RecorderState, source string) {
+func (h *RecorderHandler) applyRecorderStateSnapshot(rc *services.RecorderConn, state services.RecorderState, source string) error {
 	if rc == nil {
-		return
+		return nil
 	}
 	state.Source = strings.TrimSpace(source)
+	state.TaskID = strings.TrimSpace(state.TaskID)
+	if !recorderStateKeepsTaskID(state.CurrentState) {
+		state.TaskID = ""
+	}
+	if state.TaskID == "" && recorderStateCanInheritTaskID(state.CurrentState, state.Source) {
+		state.TaskID = strings.TrimSpace(rc.GetState().TaskID)
+	}
+	if state.TaskID == "" && recorderStateRequiresTaskID(state.CurrentState, state.Source) {
+		err := fmt.Errorf("recorder %s snapshot missing task_id for state=%s", state.Source, strings.TrimSpace(state.CurrentState))
+		h.markRecorderSyncing(rc, state.Source, err)
+		logger.Printf("[RECORDER] Recorder %s ignored %s state=%s without task_id", rc.DeviceID, state.Source, state.CurrentState)
+		return err
+	}
 	rc.UpdateState(state)
 	st := rc.GetState()
 	h.reconcileRecorderTaskState(rc.DeviceID, st, source)
@@ -985,9 +1040,10 @@ func (h *RecorderHandler) applyRecorderStateSnapshot(rc *services.RecorderConn, 
 	if source == "state_update" {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("[RECORDER] Recorder %s state=%s task=%s", rc.DeviceID, st.CurrentState, st.TaskID)
-		return
+		return nil
 	}
 	logger.Printf("[RECORDER] Recorder %s state=%s task=%s source=%s", rc.DeviceID, st.CurrentState, st.TaskID, source)
+	return nil
 }
 
 func recorderStateFromRPCData(data map[string]interface{}) services.RecorderState {
@@ -1000,6 +1056,35 @@ func recorderStateFromRPCData(data map[string]interface{}) services.RecorderStat
 		state.TaskID = stringValue(mapValue(data, "task_config"), "task_id")
 	}
 	return state
+}
+
+func recorderStateKeepsTaskID(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "ready", "recording", "paused":
+		return true
+	default:
+		return false
+	}
+}
+
+func recorderStateCanInheritTaskID(state string, source string) bool {
+	switch strings.TrimSpace(source) {
+	case "rpc_response:pause":
+		return strings.EqualFold(strings.TrimSpace(state), "paused")
+	case "rpc_response:resume":
+		return strings.EqualFold(strings.TrimSpace(state), "recording")
+	default:
+		return false
+	}
+}
+
+func recorderStateRequiresTaskID(state string, source string) bool {
+	switch strings.TrimSpace(source) {
+	case "get_state", "state_update":
+		return recorderStateKeepsTaskID(state)
+	default:
+		return false
+	}
 }
 
 func firstNonEmptyString(m map[string]interface{}, keys ...string) string {

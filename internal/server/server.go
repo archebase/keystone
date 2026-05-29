@@ -66,6 +66,13 @@ type Server struct {
 	engine              *gin.Engine
 }
 
+func axonTransferWriteTimeout(cfg *config.TransferConfig) time.Duration {
+	if cfg == nil || cfg.WriteTimeout <= 0 {
+		return services.DefaultTransferWriteTimeout
+	}
+	return time.Duration(cfg.WriteTimeout) * time.Second
+}
+
 // New creates a new server instance.
 // db and s3Client are optional; pass nil to disable Verified ACK.
 // syncWorker is optional; pass nil to disable cloud sync API.
@@ -103,8 +110,10 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
 
+	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)
+
 	// Create TaskHandler for task configuration
-	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout)
+	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout, transferWriteTimeout)
 
 	// Create database-dependent handlers only when DB is available
 	var (

@@ -119,6 +119,7 @@ type TransferConfig struct {
 	WSPort         int
 	MaxEvents      int
 	ReadTimeout    int // seconds
+	WriteTimeout   int // seconds
 	PingInterval   int // seconds
 	PingTimeout    int // seconds
 	StaleThreshold int // seconds
@@ -233,6 +234,7 @@ func Load() (*Config, error) {
 			WSPort:         getEnvInt("KEYSTONE_AXON_TRANSFER_WS_PORT", 8090),
 			MaxEvents:      getEnvInt("KEYSTONE_AXON_TRANSFER_MAX_EVENTS", 10000),
 			ReadTimeout:    getEnvInt("KEYSTONE_AXON_TRANSFER_READ_TIMEOUT", 30),
+			WriteTimeout:   getEnvInt("KEYSTONE_AXON_TRANSFER_WRITE_TIMEOUT", 10),
 			PingInterval:   getEnvInt("KEYSTONE_AXON_TRANSFER_PING_INTERVAL", 25),
 			PingTimeout:    getEnvInt("KEYSTONE_AXON_TRANSFER_PING_TIMEOUT", 10),
 			StaleThreshold: getEnvInt("KEYSTONE_AXON_TRANSFER_STALE_THRESHOLD", 60),
