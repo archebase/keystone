@@ -198,7 +198,11 @@ func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string,
 	if err != nil {
 		// AbortUpload is best-effort: do not reset the shared gRPC connection on failure,
 		// as that would disrupt subsequent normal uploads. Only log the error.
-		logger.Printf("[CLOUD-GATEWAY] AbortUpload RPC failed: %v", err)
+		if isTimeoutError(err) || errors.Is(rpcCtx.Err(), context.DeadlineExceeded) {
+			logger.Printf("[CLOUD-GATEWAY] AbortUpload RPC timeout after %s (timeout_ms=%d): %v", timeoutLogValue(c.cfg.RequestTimeout), timeoutLogMilliseconds(c.cfg.RequestTimeout), err)
+		} else {
+			logger.Printf("[CLOUD-GATEWAY] AbortUpload RPC failed: %v", err)
+		}
 		return fmt.Errorf("AbortUpload RPC: %w", err)
 	}
 	return nil
@@ -254,7 +258,11 @@ func (c *GatewayClient) doRPC(ctx context.Context, rpcName string, fn func(*grpc
 	}
 
 	// First attempt failed. Reset the stale connection and retry once with a fresh one.
-	logger.Printf("[CLOUD-GATEWAY] %s RPC failed, resetting connection and retrying: %v", rpcName, err)
+	if isTimeoutError(err) {
+		logger.Printf("[CLOUD-GATEWAY] %s RPC timeout after %s (timeout_ms=%d), resetting connection and retrying: %v", rpcName, timeoutLogValue(c.cfg.RequestTimeout), timeoutLogMilliseconds(c.cfg.RequestTimeout), err)
+	} else {
+		logger.Printf("[CLOUD-GATEWAY] %s RPC failed, resetting connection and retrying: %v", rpcName, err)
+	}
 	if closeErr := c.Close(); closeErr != nil {
 		logger.Printf("[CLOUD-GATEWAY] failed to close stale connection: %v", closeErr)
 	}
@@ -269,7 +277,11 @@ func (c *GatewayClient) doRPC(ctx context.Context, rpcName string, fn func(*grpc
 
 	if err = fn(conn); err != nil {
 		// Retry also failed — this is a genuine server-side error, not a stale connection.
-		logger.Printf("[CLOUD-GATEWAY] %s RPC failed after reconnect: %v", rpcName, err)
+		if isTimeoutError(err) {
+			logger.Printf("[CLOUD-GATEWAY] %s RPC timeout after %s (timeout_ms=%d) after reconnect: %v", rpcName, timeoutLogValue(c.cfg.RequestTimeout), timeoutLogMilliseconds(c.cfg.RequestTimeout), err)
+		} else {
+			logger.Printf("[CLOUD-GATEWAY] %s RPC failed after reconnect: %v", rpcName, err)
+		}
 		if closeErr := c.Close(); closeErr != nil {
 			logger.Printf("[CLOUD-GATEWAY] failed to close connection after retry failure: %v", closeErr)
 		}
@@ -287,6 +299,9 @@ func (c *GatewayClient) getAuthHeader(ctx context.Context) (string, error) {
 	defer authCancel()
 	header, err := c.authClient.GetAuthHeader(authCtx)
 	if err != nil {
+		if isTimeoutError(err) || errors.Is(authCtx.Err(), context.DeadlineExceeded) {
+			logger.Printf("[CLOUD-GATEWAY] Auth header acquisition timeout after %s (timeout_ms=%d): %v", timeoutLogValue(c.cfg.RequestTimeout), timeoutLogMilliseconds(c.cfg.RequestTimeout), err)
+		}
 		return "", fmt.Errorf("get auth header: %w", err)
 	}
 	return header, nil

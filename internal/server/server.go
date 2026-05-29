@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -432,29 +433,45 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.isRunning = false
 	s.shutdownMu.Unlock()
 
-	logger.Printf("[SERVER] Shutting down HTTP server")
+	startedAt := time.Now()
+	shutdownTimeout := time.Duration(s.cfg.Server.ShutdownTimeout) * time.Second
+	effectiveShutdownTimeout := shutdownTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if d := deadline.Sub(startedAt); d > 0 && (effectiveShutdownTimeout <= 0 || d < effectiveShutdownTimeout) {
+			effectiveShutdownTimeout = d.Round(time.Millisecond)
+		}
+	}
+	logger.Printf("[SERVER] Shutting down HTTP server (timeout=%s timeout_ms=%d)", effectiveShutdownTimeout, effectiveShutdownTimeout.Milliseconds())
 
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.Server.ShutdownTimeout)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 	defer cancel()
+
+	logShutdownError := func(component string, err error) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			logger.Printf("[SERVER] %s shutdown timeout after %s (timeout_ms=%d): %v", component, effectiveShutdownTimeout, effectiveShutdownTimeout.Milliseconds(), err)
+			return
+		}
+		logger.Printf("[SERVER] %s shutdown error: %v", component, err)
+	}
 
 	var shutdownErr error
 
 	// Shutdown both servers
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		logger.Printf("[SERVER] HTTP server shutdown error: %v", err)
+		logShutdownError("HTTP server", err)
 		if shutdownErr == nil {
 			shutdownErr = fmt.Errorf("http server shutdown: %w", err)
 		}
 	}
 	if err := s.transferWSServer.Shutdown(ctx); err != nil {
-		logger.Printf("[SERVER] Transfer WebSocket server shutdown error: %v", err)
+		logShutdownError("Transfer WebSocket server", err)
 		if shutdownErr == nil {
 			shutdownErr = fmt.Errorf("transfer websocket shutdown: %w", err)
 		}
 	}
 	if s.recorderWSServer != nil {
 		if err := s.recorderWSServer.Shutdown(ctx); err != nil {
-			logger.Printf("[SERVER] Recorder WebSocket server shutdown error: %v", err)
+			logShutdownError("Recorder WebSocket server", err)
 			if shutdownErr == nil {
 				shutdownErr = fmt.Errorf("recorder websocket shutdown: %w", err)
 			}
@@ -464,7 +481,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Stop sync worker
 	if s.syncWorker != nil {
 		if err := s.syncWorker.Stop(ctx); err != nil {
-			logger.Printf("[SERVER] Sync worker shutdown error: %v", err)
+			logShutdownError("Sync worker", err)
 			if shutdownErr == nil {
 				shutdownErr = fmt.Errorf("sync worker shutdown: %w", err)
 			}

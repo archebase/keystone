@@ -96,7 +96,8 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	// Validate device exists in robots table (if DB is configured)
 	if h.db != nil {
 		// Add independent 5s timeout to avoid blocking on slow DB queries
-		queryCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		queryTimeout := 5 * time.Second
+		queryCtx, cancel := context.WithTimeout(r.Context(), queryTimeout)
 		defer cancel()
 
 		var count int
@@ -104,7 +105,11 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		if err := h.db.GetContext(queryCtx, &count,
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		); err != nil {
-			logger.Printf("[TRANSFER] Device %s: DB query error: %v", deviceID, err)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
+				logger.Printf("[TRANSFER] Device %s: DB query timeout after %s (timeout_ms=%d): %v", deviceID, timeoutLogValue(queryTimeout), timeoutLogMilliseconds(queryTimeout), err)
+			} else {
+				logger.Printf("[TRANSFER] Device %s: DB query error: %v", deviceID, err)
+			}
 		}
 		// Check count regardless of DB error (count defaults to 0 on error)
 		if count == 0 {

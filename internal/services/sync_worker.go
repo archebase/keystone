@@ -134,6 +134,7 @@ func (w *SyncWorker) Start() {
 
 // Stop gracefully stops the sync worker within the provided context deadline.
 func (w *SyncWorker) Stop(ctx context.Context) error {
+	startedAt := time.Now()
 	w.mu.Lock()
 	if !w.running.Load() {
 		done := w.stopDone
@@ -145,7 +146,7 @@ func (w *SyncWorker) Stop(ctx context.Context) error {
 		case <-done:
 			return nil
 		case <-ctx.Done():
-			return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+			return syncWorkerStopTimeoutError(ctx, startedAt)
 		}
 	}
 
@@ -159,7 +160,7 @@ func (w *SyncWorker) Stop(ctx context.Context) error {
 		case <-done:
 			return nil
 		case <-ctx.Done():
-			return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+			return syncWorkerStopTimeoutError(ctx, startedAt)
 		}
 	}
 
@@ -181,8 +182,19 @@ func (w *SyncWorker) Stop(ctx context.Context) error {
 		logger.Println("[SYNC-WORKER] Stopped")
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("sync worker stop timeout: %w", ctx.Err())
+		return syncWorkerStopTimeoutError(ctx, startedAt)
 	}
+}
+
+func syncWorkerStopTimeoutError(ctx context.Context, startedAt time.Time) error {
+	timeout := time.Since(startedAt).Round(time.Millisecond)
+	if deadline, ok := ctx.Deadline(); ok {
+		if d := deadline.Sub(startedAt); d > 0 {
+			timeout = d.Round(time.Millisecond)
+		}
+	}
+	logger.Printf("[SYNC-WORKER] Stop timeout after %s (timeout_ms=%d): %v", timeout, timeout.Milliseconds(), ctx.Err())
+	return fmt.Errorf("sync worker stop timeout after %s: %w", timeout, ctx.Err())
 }
 
 // IsRunning returns whether the worker is currently running.

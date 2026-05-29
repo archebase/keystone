@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -184,11 +185,16 @@ func main() {
 
 	logger.Println("[SERVER] Shutting down...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownTimeout := 30 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		logger.Printf("[SERVER] Error during shutdown: %v", err)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			logger.Printf("[SERVER] Error during shutdown after %s (timeout_ms=%d): %v", shutdownTimeout, shutdownTimeout.Milliseconds(), err)
+		} else {
+			logger.Printf("[SERVER] Error during shutdown: %v", err)
+		}
 	}
 
 	logger.Println("[SERVER] Keystone Edge stopped")
