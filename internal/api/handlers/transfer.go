@@ -45,6 +45,7 @@ type TransferHandler struct {
 	// recorderHub is used on transfer disconnect to notify recorder (clear/cancel) before reverting tasks.
 	recorderHub        *services.RecorderHub
 	recorderRPCTimeout time.Duration
+	stateBroker        *services.DeviceStateBroker
 }
 
 // NewTransferHandler creates a new TransferHandler.
@@ -64,6 +65,14 @@ func NewTransferHandler(hub *services.TransferHub, cfg *config.TransferConfig, d
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// SetDeviceStateBroker enables device connection event publishing.
+func (h *TransferHandler) SetDeviceStateBroker(broker *services.DeviceStateBroker) {
+	if h == nil {
+		return
+	}
+	h.stateBroker = broker
 }
 
 // RegisterRoutes registers all transfer-related REST routes
@@ -118,6 +127,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	dc := h.hub.NewTransferConn(conn, deviceID, remoteIP)
 	replacedConn := h.hub.ConnectReplacingExisting(deviceID, dc)
 	closeReplacedTransferConn(deviceID, replacedConn)
+	publishDeviceConnectionEvent(h.stateBroker, h.recorderHub, h.hub, deviceID, "transfer_connected")
 
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
@@ -128,6 +138,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	}()
 	defer func() {
 		if h.hub.Disconnect(deviceID, dc) {
+			publishDeviceConnectionEvent(h.stateBroker, h.recorderHub, h.hub, deviceID, "transfer_disconnected")
 			revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, h.recorderHub, h.recorderRPCTimeout, true)
 		}
 	}()

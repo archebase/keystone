@@ -27,10 +27,13 @@ var (
 
 // RecorderState stores the latest state snapshot reported by a recorder.
 type RecorderState struct {
-	CurrentState string                 `json:"current_state"`
-	TaskID       string                 `json:"task_id,omitempty"`
-	UpdatedAt    time.Time              `json:"updated_at"`
-	Raw          map[string]interface{} `json:"raw,omitempty"`
+	CurrentState      string                 `json:"current_state"`
+	TaskID            string                 `json:"task_id,omitempty"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+	Source            string                 `json:"source,omitempty"`
+	LastSyncAttemptAt time.Time              `json:"last_sync_attempt_at,omitempty"`
+	LastSyncError     string                 `json:"last_sync_error,omitempty"`
+	Raw               map[string]interface{} `json:"raw,omitempty"`
 }
 
 // RecorderInfo is a read-only snapshot of a connected recorder.
@@ -114,9 +117,30 @@ func (r *RecorderConn) IsStateSynced() bool {
 func (r *RecorderConn) UpdateState(state RecorderState) {
 	r.StateMu.Lock()
 	defer r.StateMu.Unlock()
-	state.UpdatedAt = time.Now()
+	state.UpdatedAt = time.Now().UTC()
+	state.LastSyncError = ""
 	r.State = state
 	r.StateSynced = strings.TrimSpace(state.CurrentState) != ""
+}
+
+// MarkStateSyncing keeps the last snapshot for display but marks it unsafe for writes.
+func (r *RecorderConn) MarkStateSyncing(source string, syncErr error) {
+	r.StateMu.Lock()
+	defer r.StateMu.Unlock()
+	state := r.State
+	now := time.Now().UTC()
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = now
+	}
+	state.Source = strings.TrimSpace(source)
+	state.LastSyncAttemptAt = now
+	if syncErr != nil {
+		state.LastSyncError = syncErr.Error()
+	} else {
+		state.LastSyncError = ""
+	}
+	r.State = state
+	r.StateSynced = false
 }
 
 // RecorderHub manages all active Axon Recorder WebSocket connections.

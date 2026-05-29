@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,14 +26,25 @@ import (
 
 // RecorderHandler handles REST and WebSocket traffic for Axon Recorder RPC.
 type RecorderHandler struct {
-	hub *services.RecorderHub
-	cfg *config.RecorderConfig
-	db  *sqlx.DB
+	hub         *services.RecorderHub
+	transferHub *services.TransferHub
+	stateBroker *services.DeviceStateBroker
+	cfg         *config.RecorderConfig
+	db          *sqlx.DB
 }
 
 // NewRecorderHandler creates a new RecorderHandler.
 func NewRecorderHandler(hub *services.RecorderHub, cfg *config.RecorderConfig, db *sqlx.DB) *RecorderHandler {
 	return &RecorderHandler{hub: hub, cfg: cfg, db: db}
+}
+
+// SetDeviceStateDeps enables device connection/state event publishing.
+func (h *RecorderHandler) SetDeviceStateDeps(transferHub *services.TransferHub, broker *services.DeviceStateBroker) {
+	if h == nil {
+		return
+	}
+	h.transferHub = transferHub
+	h.stateBroker = broker
 }
 
 // ConfigRequest represents the request body for config RPC.
@@ -158,6 +170,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	rc := h.hub.NewRecorderConn(conn, deviceID, remoteIP)
 	replacedConn := h.hub.ConnectReplacingExisting(deviceID, rc)
 	closeReplacedRecorderConn(deviceID, replacedConn)
+	publishDeviceConnectionEvent(h.stateBroker, h.hub, h.transferHub, deviceID, "recorder_connected")
 
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
@@ -168,6 +181,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	}()
 	defer func() {
 		if h.hub.Disconnect(deviceID, rc) {
+			publishDeviceConnectionEvent(h.stateBroker, h.hub, h.transferHub, deviceID, "recorder_disconnected")
 			revertRunnableTasksOnDeviceDisconnect(h.db, deviceID, nil, 0, false)
 		}
 	}()
@@ -519,6 +533,184 @@ func disconnectedRecorderStatsResponse() gin.H {
 	}
 }
 
+const defaultRecorderFreshMaxAge = time.Second
+
+func isTruthyQuery(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func recorderRefreshMaxAge(c *gin.Context) time.Duration {
+	value := strings.TrimSpace(c.Query("max_age_ms"))
+	if value == "" {
+		return defaultRecorderFreshMaxAge
+	}
+	ms, err := strconv.Atoi(value)
+	if err != nil || ms < 0 {
+		return defaultRecorderFreshMaxAge
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func recorderStateAge(state services.RecorderState) time.Duration {
+	if state.UpdatedAt.IsZero() {
+		return time.Duration(1<<63 - 1)
+	}
+	age := time.Since(state.UpdatedAt)
+	if age < 0 {
+		return 0
+	}
+	return age
+}
+
+func recorderStateAgeMS(state services.RecorderState) int64 {
+	age := recorderStateAge(state)
+	if age == time.Duration(1<<63-1) {
+		return 0
+	}
+	return age.Milliseconds()
+}
+
+func (h *RecorderHandler) disconnectedRecorderStateResponse(deviceID string) gin.H {
+	return gin.H{
+		"connected":      false,
+		"current_state":  "unknown",
+		"previous_state": "",
+		"task_id":        "",
+		"updated_at":     time.Now().UTC(),
+		"state_synced":   false,
+		"syncing":        false,
+		"fresh":          false,
+		"age_ms":         0,
+		"source":         "disconnected",
+		"state_version":  h.recorderStateVersion(deviceID),
+	}
+}
+
+func (h *RecorderHandler) recorderStateResponse(deviceID string, rc *services.RecorderConn, fresh bool) gin.H {
+	st := rc.GetState()
+	synced := rc.IsStateSynced()
+	return gin.H{
+		"connected":      true,
+		"current_state":  st.CurrentState,
+		"previous_state": recorderPreviousStateFromRaw(st.Raw),
+		"task_id":        st.TaskID,
+		"updated_at":     st.UpdatedAt,
+		"state_synced":   synced,
+		"syncing":        !synced,
+		"fresh":          fresh,
+		"age_ms":         recorderStateAgeMS(st),
+		"source":         strings.TrimSpace(st.Source),
+		"state_version":  h.recorderStateVersion(deviceID),
+	}
+}
+
+func (h *RecorderHandler) recorderStateVersion(deviceID string) uint64 {
+	if h == nil || h.stateBroker == nil {
+		return 0
+	}
+	return h.stateBroker.CurrentVersion(strings.TrimSpace(deviceID))
+}
+
+func (h *RecorderHandler) refreshRecorderState(ctx context.Context, deviceID string, rc *services.RecorderConn, maxAge time.Duration) (services.RecorderState, bool, error) {
+	if h == nil || h.hub == nil || rc == nil || strings.TrimSpace(deviceID) == "" {
+		return services.RecorderState{}, false, services.ErrRecorderNotConnected
+	}
+	if h.hub.Get(deviceID) != rc {
+		return services.RecorderState{}, false, services.ErrRecorderNotConnected
+	}
+
+	state := rc.GetState()
+	if maxAge >= 0 && rc.IsStateSynced() && recorderStateAge(state) <= maxAge {
+		return state, true, nil
+	}
+
+	timeout := recorderRPCResponseTimeout(h.cfg)
+	response, err := h.hub.SendRPC(ctx, deviceID, "get_state", nil, timeout)
+	if err != nil {
+		h.markRecorderSyncing(rc, "get_state", err)
+		return rc.GetState(), false, err
+	}
+	if response == nil || !response.Success {
+		message := "recorder get_state returned unsuccessful response"
+		if response != nil && strings.TrimSpace(response.Message) != "" {
+			message = strings.TrimSpace(response.Message)
+		}
+		err := errors.New(message)
+		h.markRecorderSyncing(rc, "get_state", err)
+		return rc.GetState(), false, err
+	}
+	if h.hub.Get(deviceID) != rc {
+		return services.RecorderState{}, false, services.ErrRecorderNotConnected
+	}
+
+	state = recorderStateFromRPCData(response.Data)
+	if strings.TrimSpace(state.CurrentState) == "" {
+		err := errors.New("recorder get_state returned empty state")
+		h.markRecorderSyncing(rc, "get_state", err)
+		return rc.GetState(), false, err
+	}
+	h.applyRecorderStateSnapshot(rc, state, "get_state")
+	return rc.GetState(), true, nil
+}
+
+func (h *RecorderHandler) markRecorderSyncing(rc *services.RecorderConn, source string, syncErr error) {
+	if h == nil || h.hub == nil || rc == nil || h.hub.Get(rc.DeviceID) != rc {
+		return
+	}
+	rc.MarkStateSyncing(source, syncErr)
+	st := rc.GetState()
+	if h.stateBroker != nil {
+		ev := recorderStateEvent(st, "recorder_syncing", source, false)
+		ev["state_synced"] = false
+		ev["syncing"] = true
+		if syncErr != nil {
+			ev["error"] = syncErr.Error()
+		}
+		h.stateBroker.Publish(rc.DeviceID, ev)
+	}
+}
+
+func (h *RecorderHandler) publishRecorderStateSnapshot(rc *services.RecorderConn, state services.RecorderState, source string, fresh bool) {
+	if h == nil || h.stateBroker == nil || rc == nil {
+		return
+	}
+	h.stateBroker.Publish(rc.DeviceID, recorderStateEvent(state, "recorder_state", source, fresh))
+}
+
+func recorderStateEvent(state services.RecorderState, eventType string, source string, fresh bool) services.DeviceStateEvent {
+	synced := strings.TrimSpace(state.CurrentState) != ""
+	return services.DeviceStateEvent{
+		"type":           eventType,
+		"current_state":  state.CurrentState,
+		"previous_state": recorderPreviousStateFromRaw(state.Raw),
+		"task_id":        state.TaskID,
+		"state_synced":   synced,
+		"syncing":        !synced,
+		"fresh":          fresh,
+		"age_ms":         recorderStateAgeMS(state),
+		"source":         strings.TrimSpace(source),
+	}
+}
+
+func (h *RecorderHandler) handleRecorderRPCTimeout(deviceID string, action string, params map[string]interface{}, timeoutErr error) {
+	if rc := h.hub.Get(deviceID); rc != nil {
+		h.markRecorderSyncing(rc, "rpc_timeout:"+action, timeoutErr)
+		go h.syncRecorderStateFromDevice(rc)
+	}
+	if h.stateBroker == nil {
+		return
+	}
+	h.stateBroker.Publish(deviceID, services.DeviceStateEvent{
+		"type":           "recorder_operation_unknown",
+		"action":         strings.TrimSpace(action),
+		"task_id":        firstNonEmptyString(params, "task_id"),
+		"result_unknown": true,
+		"source":         "rpc_timeout:" + strings.TrimSpace(action),
+		"error":          timeoutErr.Error(),
+	})
+}
+
 func (h *RecorderHandler) requireRecorderReadyForConfig(c *gin.Context) bool {
 	deviceID := strings.TrimSpace(c.Param("device_id"))
 	if deviceID == "" {
@@ -527,6 +719,14 @@ func (h *RecorderHandler) requireRecorderReadyForConfig(c *gin.Context) bool {
 	}
 	if h == nil || h.hub == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "recorder hub is not configured"})
+		return false
+	}
+
+	if h.transferHub != nil && h.transferHub.Get(deviceID) == nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":  "transfer_not_connected",
+			"error": "transfer is not connected; config is rejected",
+		})
 		return false
 	}
 
@@ -544,6 +744,22 @@ func (h *RecorderHandler) requireRecorderReadyForConfig(c *gin.Context) bool {
 	}
 
 	state := rc.GetState()
+	if recorderStateAge(state) > defaultRecorderFreshMaxAge {
+		refreshed, _, err := h.refreshRecorderState(c.Request.Context(), deviceID, rc, -1)
+		if err != nil {
+			status := http.StatusConflict
+			if errors.Is(err, services.ErrRecorderRPCTimeout) {
+				status = http.StatusGatewayTimeout
+			}
+			out := h.recorderStateResponse(deviceID, rc, false)
+			out["code"] = "recorder_state_refresh_failed"
+			out["error"] = err.Error()
+			c.JSON(status, out)
+			return false
+		}
+		state = refreshed
+	}
+
 	current := strings.ToLower(strings.TrimSpace(state.CurrentState))
 	if current != "idle" {
 		c.JSON(http.StatusConflict, gin.H{
@@ -558,7 +774,7 @@ func (h *RecorderHandler) requireRecorderReadyForConfig(c *gin.Context) bool {
 }
 
 func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[string]interface{}) bool {
-	deviceID := c.Param("device_id")
+	deviceID := strings.TrimSpace(c.Param("device_id"))
 	if deviceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "device_id is required"})
 		return false
@@ -570,11 +786,25 @@ func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[stri
 		case errors.Is(err, services.ErrRecorderNotConnected):
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		case errors.Is(err, services.ErrRecorderRPCTimeout):
-			c.JSON(http.StatusGatewayTimeout, gin.H{"error": err.Error()})
+			h.handleRecorderRPCTimeout(deviceID, action, params, err)
+			c.JSON(http.StatusGatewayTimeout, gin.H{
+				"error":          err.Error(),
+				"action":         action,
+				"result_unknown": true,
+			})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
 		return false
+	}
+
+	if response != nil && response.Success {
+		state := recorderStateFromRPCData(response.Data)
+		if strings.TrimSpace(state.CurrentState) != "" {
+			if rc := h.hub.Get(deviceID); rc != nil {
+				h.applyRecorderStateSnapshot(rc, state, "rpc_response:"+action)
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -618,32 +848,46 @@ func (h *RecorderHandler) ListDevices(c *gin.Context) {
 // @Success      200  {object}  map[string]interface{}  "connected=false when recorder WS is not active"
 // @Router       /recorder/{device_id}/state [get]
 func (h *RecorderHandler) GetState(c *gin.Context) {
-	deviceID := c.Param("device_id")
-	rc := h.hub.Get(deviceID)
-	if rc == nil {
-		c.JSON(http.StatusOK, gin.H{
-			"connected":      false,
-			"current_state":  "unknown",
-			"previous_state": "",
-			"task_id":        "",
-			"updated_at":     time.Now().UTC(),
-			"state_synced":   false,
-			"syncing":        false,
-		})
+	deviceID := strings.TrimSpace(c.Param("device_id"))
+	if deviceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "device_id is required"})
 		return
 	}
-	st := rc.GetState()
-	synced := rc.IsStateSynced()
-	prev := recorderPreviousStateFromRaw(st.Raw)
-	c.JSON(http.StatusOK, gin.H{
-		"connected":      true,
-		"current_state":  st.CurrentState,
-		"previous_state": prev,
-		"task_id":        st.TaskID,
-		"updated_at":     st.UpdatedAt,
-		"state_synced":   synced,
-		"syncing":        !synced,
-	})
+	if h == nil || h.hub == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "recorder hub is not configured"})
+		return
+	}
+
+	rc := h.hub.Get(deviceID)
+	if rc == nil {
+		c.JSON(http.StatusOK, h.disconnectedRecorderStateResponse(deviceID))
+		return
+	}
+
+	fresh := false
+	if isTruthyQuery(c.Query("refresh")) {
+		var err error
+		_, fresh, err = h.refreshRecorderState(c.Request.Context(), deviceID, rc, recorderRefreshMaxAge(c))
+		if err != nil {
+			if errors.Is(err, services.ErrRecorderNotConnected) {
+				c.JSON(http.StatusOK, h.disconnectedRecorderStateResponse(deviceID))
+				return
+			}
+			status := http.StatusConflict
+			if errors.Is(err, services.ErrRecorderRPCTimeout) {
+				status = http.StatusGatewayTimeout
+			}
+			out := h.recorderStateResponse(deviceID, rc, false)
+			out["error"] = err.Error()
+			if errors.Is(err, services.ErrRecorderRPCTimeout) {
+				out["result_unknown"] = true
+			}
+			c.JSON(status, out)
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, h.recorderStateResponse(deviceID, rc, fresh))
 }
 
 func recorderPreviousStateFromRaw(raw map[string]interface{}) string {
@@ -712,49 +956,28 @@ func (h *RecorderHandler) syncRecorderStateFromDevice(rc *services.RecorderConn)
 		return
 	}
 
-	timeout := recorderRPCResponseTimeout(h.cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	response, err := h.hub.SendRPC(ctx, rc.DeviceID, "get_state", nil, timeout)
-	if err != nil {
+	if _, _, err := h.refreshRecorderState(context.Background(), rc.DeviceID, rc, -1); err != nil {
 		if !errors.Is(err, services.ErrRecorderNotConnected) {
 			logger.Printf("[RECORDER] Recorder %s get_state after connect failed: %v", rc.DeviceID, err)
 		}
-		return
 	}
-	if response == nil || !response.Success {
-		message := "unsuccessful response"
-		if response != nil && strings.TrimSpace(response.Message) != "" {
-			message = response.Message
-		}
-		logger.Printf("[RECORDER] Recorder %s get_state after connect skipped: %s", rc.DeviceID, message)
-		return
-	}
-	if h.hub.Get(rc.DeviceID) != rc {
-		return
-	}
-
-	state := recorderStateFromRPCData(response.Data)
-	if strings.TrimSpace(state.CurrentState) == "" {
-		logger.Printf("[RECORDER] Recorder %s get_state after connect returned empty state", rc.DeviceID)
-		return
-	}
-	h.applyRecorderStateSnapshot(rc, state, "get_state")
 }
 
 func (h *RecorderHandler) applyRecorderStateSnapshot(rc *services.RecorderConn, state services.RecorderState, source string) {
 	if rc == nil {
 		return
 	}
+	state.Source = strings.TrimSpace(source)
 	rc.UpdateState(state)
-	h.reconcileRecorderTaskState(rc.DeviceID, state, source)
+	st := rc.GetState()
+	h.reconcileRecorderTaskState(rc.DeviceID, st, source)
+	h.publishRecorderStateSnapshot(rc, st, source, true)
 	if source == "state_update" {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s state=%s task=%s", rc.DeviceID, state.CurrentState, state.TaskID)
+		logger.Printf("[RECORDER] Recorder %s state=%s task=%s", rc.DeviceID, st.CurrentState, st.TaskID)
 		return
 	}
-	logger.Printf("[RECORDER] Recorder %s state=%s task=%s source=%s", rc.DeviceID, state.CurrentState, state.TaskID, source)
+	logger.Printf("[RECORDER] Recorder %s state=%s task=%s source=%s", rc.DeviceID, st.CurrentState, st.TaskID, source)
 }
 
 func recorderStateFromRPCData(data map[string]interface{}) services.RecorderState {

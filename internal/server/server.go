@@ -37,6 +37,7 @@ type Server struct {
 	storage             *handlers.StorageHandler
 	transfer            *handlers.TransferHandler
 	recorder            *handlers.RecorderHandler
+	deviceState         *handlers.DeviceStateHandler
 	episode             *handlers.EpisodeHandler
 	task                *handlers.TaskHandler
 	batch               *handlers.BatchHandler
@@ -87,6 +88,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	}
 
 	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
+	stateBroker := services.NewDeviceStateBroker()
 	recorderHub := services.NewRecorderHub()
 	recorderHandler := handlers.NewRecorderHandler(recorderHub, &cfg.AxonRecorder, db)
 	recorderRPCTimeout := time.Duration(cfg.AxonRecorder.ResponseTimeout) * time.Second
@@ -94,6 +96,9 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	// Create TransferHub and TransferHandler for Transfer Service
 	transferHub := services.NewTransferHub(cfg.AxonTransfer.MaxEvents)
 	transferHandler := handlers.NewTransferHandler(transferHub, &cfg.AxonTransfer, db, s3Client, cfg.Storage.Bucket, cfg.AxonTransfer.FactoryID, recorderHub, recorderRPCTimeout)
+	recorderHandler.SetDeviceStateDeps(transferHub, stateBroker)
+	transferHandler.SetDeviceStateBroker(stateBroker)
+	deviceStateHandler := handlers.NewDeviceStateHandler(stateBroker, recorderHub, transferHub)
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
@@ -152,6 +157,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		storage:             storageHandler,
 		transfer:            transferHandler,
 		recorder:            recorderHandler,
+		deviceState:         deviceStateHandler,
 		episode:             episodeHandler,
 		task:                taskHandler,
 		batch:               batchHandler,
@@ -319,6 +325,9 @@ func (s *Server) buildRoutes() http.Handler {
 
 	v1Recorder := v1Routes.Group("/recorder")
 	s.recorder.RegisterRoutes(v1Recorder)
+	if s.deviceState != nil {
+		s.deviceState.RegisterRoutes(v1Routes)
+	}
 
 	// Swagger documentation - serve at both root and api/v1 path
 	s.engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
