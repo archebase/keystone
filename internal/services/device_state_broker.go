@@ -90,10 +90,7 @@ func (b *DeviceStateBroker) Subscribe(buffer int) (<-chan DeviceStateEvent, func
 
 	return ch, func() {
 		b.mu.Lock()
-		if existing, ok := b.subscribers[id]; ok {
-			delete(b.subscribers, id)
-			close(existing)
-		}
+		delete(b.subscribers, id)
 		b.mu.Unlock()
 	}
 }

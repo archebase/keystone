@@ -191,7 +191,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[RECORDER] Recorder %s connected from %s", deviceID, remoteIP)
-	go h.syncRecorderStateFromDevice(rc)
+	go h.syncRecorderStateFromDevice(ctx, rc)
 
 	for {
 		_, raw, err := conn.Read(ctx)
@@ -503,12 +503,14 @@ func (h *RecorderHandler) GetStats(c *gin.Context) {
 		return
 	}
 
-	response, err := h.hub.SendRPC(c.Request.Context(), deviceID, "get_stats", nil, recorderRPCResponseTimeout(h.cfg))
+	timeout := recorderRPCResponseTimeout(h.cfg)
+	response, err := h.hub.SendRPC(c.Request.Context(), deviceID, "get_stats", nil, timeout)
 	if err != nil {
 		switch {
 		case errors.Is(err, services.ErrRecorderNotConnected):
 			c.JSON(http.StatusOK, disconnectedRecorderStatsResponse())
 		case errors.Is(err, services.ErrRecorderRPCTimeout):
+			logRecorderRPCTimeout(deviceID, "get_stats", "", "stats", timeout, err)
 			c.JSON(http.StatusGatewayTimeout, gin.H{"error": err.Error()})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -628,6 +630,9 @@ func (h *RecorderHandler) refreshRecorderState(ctx context.Context, deviceID str
 	timeout := recorderRPCResponseTimeout(h.cfg)
 	response, err := h.hub.SendRPC(ctx, deviceID, "get_state", nil, timeout)
 	if err != nil {
+		if errors.Is(err, services.ErrRecorderRPCTimeout) {
+			logRecorderRPCTimeout(deviceID, "get_state", "", "state_refresh", timeout, err)
+		}
 		h.markRecorderSyncing(rc, "get_state", err)
 		return rc.GetState(), false, err
 	}
@@ -693,10 +698,12 @@ func recorderStateEvent(state services.RecorderState, eventType string, source s
 	}
 }
 
-func (h *RecorderHandler) handleRecorderRPCTimeout(deviceID string, action string, params map[string]interface{}, timeoutErr error) {
+func (h *RecorderHandler) handleRecorderRPCTimeout(ctx context.Context, deviceID string, action string, params map[string]interface{}, timeout time.Duration, timeoutErr error) {
+	taskID := firstNonEmptyString(params, "task_id")
+	logRecorderRPCTimeout(deviceID, action, taskID, "api_rpc", timeout, timeoutErr)
 	if rc := h.hub.Get(deviceID); rc != nil {
 		h.markRecorderSyncing(rc, "rpc_timeout:"+action, timeoutErr)
-		go h.syncRecorderStateFromDevice(rc)
+		go h.syncRecorderStateFromDevice(ctx, rc)
 	}
 	if h.stateBroker == nil {
 		return
@@ -704,10 +711,12 @@ func (h *RecorderHandler) handleRecorderRPCTimeout(deviceID string, action strin
 	h.stateBroker.Publish(deviceID, services.DeviceStateEvent{
 		"type":           "recorder_operation_unknown",
 		"action":         strings.TrimSpace(action),
-		"task_id":        firstNonEmptyString(params, "task_id"),
+		"task_id":        taskID,
 		"result_unknown": true,
 		"source":         "rpc_timeout:" + strings.TrimSpace(action),
 		"error":          timeoutErr.Error(),
+		"timeout":        timeoutLogValue(timeout),
+		"timeout_ms":     timeoutLogMilliseconds(timeout),
 	})
 }
 
@@ -780,13 +789,14 @@ func (h *RecorderHandler) callRPC(c *gin.Context, action string, params map[stri
 		return false
 	}
 
-	response, err := h.hub.SendRPC(c.Request.Context(), deviceID, action, params, recorderRPCResponseTimeout(h.cfg))
+	timeout := recorderRPCResponseTimeout(h.cfg)
+	response, err := h.hub.SendRPC(c.Request.Context(), deviceID, action, params, timeout)
 	if err != nil {
 		switch {
 		case errors.Is(err, services.ErrRecorderNotConnected):
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		case errors.Is(err, services.ErrRecorderRPCTimeout):
-			h.handleRecorderRPCTimeout(deviceID, action, params, err)
+			h.handleRecorderRPCTimeout(c.Request.Context(), deviceID, action, params, timeout, err)
 			c.JSON(http.StatusGatewayTimeout, gin.H{
 				"error":          err.Error(),
 				"action":         action,
@@ -948,7 +958,7 @@ func (h *RecorderHandler) handleStateUpdate(rc *services.RecorderConn, msg map[s
 	h.applyRecorderStateSnapshot(rc, state, "state_update")
 }
 
-func (h *RecorderHandler) syncRecorderStateFromDevice(rc *services.RecorderConn) {
+func (h *RecorderHandler) syncRecorderStateFromDevice(ctx context.Context, rc *services.RecorderConn) {
 	if h == nil || h.hub == nil || rc == nil || strings.TrimSpace(rc.DeviceID) == "" {
 		return
 	}
@@ -956,8 +966,8 @@ func (h *RecorderHandler) syncRecorderStateFromDevice(rc *services.RecorderConn)
 		return
 	}
 
-	if _, _, err := h.refreshRecorderState(context.Background(), rc.DeviceID, rc, -1); err != nil {
-		if !errors.Is(err, services.ErrRecorderNotConnected) {
+	if _, _, err := h.refreshRecorderState(ctx, rc.DeviceID, rc, -1); err != nil {
+		if !errors.Is(err, services.ErrRecorderNotConnected) && !errors.Is(err, context.Canceled) {
 			logger.Printf("[RECORDER] Recorder %s get_state after connect failed: %v", rc.DeviceID, err)
 		}
 	}
@@ -1117,10 +1127,11 @@ func (h *RecorderHandler) pingLoop(ctx context.Context, rc *services.RecorderCon
 		case <-ticker.C:
 			pingCtx, cancel := context.WithTimeout(ctx, timeout)
 			err := rc.Conn.Ping(pingCtx)
+			timedOut := errors.Is(err, context.DeadlineExceeded) || errors.Is(pingCtx.Err(), context.DeadlineExceeded)
 			cancel()
 			if err != nil {
 				if ctx.Err() == nil {
-					logger.Printf("[RECORDER] Recorder %s ping failed: %v", rc.DeviceID, err)
+					logWebSocketPingFailure("RECORDER", "Recorder", rc.DeviceID, timeout, timedOut, err)
 					if closeErr := rc.Conn.CloseNow(); closeErr != nil {
 						if !isExpectedWebSocketCloseError(closeErr) {
 							logger.Printf("[RECORDER] Recorder %s close after ping failure: %v", rc.DeviceID, closeErr)
@@ -1143,6 +1154,49 @@ func recorderRPCResponseTimeout(cfg *config.RecorderConfig) time.Duration {
 	return time.Duration(cfg.ResponseTimeout) * time.Second
 }
 
+func timeoutLogValue(timeout time.Duration) string {
+	if timeout <= 0 {
+		return "unknown"
+	}
+	return timeout.String()
+}
+
+func timeoutLogMilliseconds(timeout time.Duration) int64 {
+	if timeout <= 0 {
+		return 0
+	}
+	return timeout.Milliseconds()
+}
+
+func logRecorderRPCTimeout(deviceID, action, taskID, source string, timeout time.Duration, err error) {
+	deviceID = strings.TrimSpace(deviceID)
+	action = strings.TrimSpace(action)
+	if action == "" {
+		action = "unknown"
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "unknown"
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID != "" {
+		logger.Printf("[RECORDER] Recorder %s RPC timeout after %s (timeout_ms=%d): action=%s task=%s source=%s err=%v", deviceID, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), action, taskID, source, err)
+		return
+	}
+	logger.Printf("[RECORDER] Recorder %s RPC timeout after %s (timeout_ms=%d): action=%s source=%s err=%v", deviceID, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), action, source, err)
+}
+
+func logWebSocketPingFailure(component, label, deviceID string, timeout time.Duration, timedOut bool, err error) {
+	component = strings.TrimSpace(component)
+	label = strings.TrimSpace(label)
+	deviceID = strings.TrimSpace(deviceID)
+	if timedOut {
+		logger.Printf("[%s] %s %s ping timeout after %s (timeout_ms=%d): %v", component, label, deviceID, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), err)
+		return
+	}
+	logger.Printf("[%s] %s %s ping failed (timeout=%s timeout_ms=%d): %v", component, label, deviceID, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), err)
+}
+
 func recorderPingInterval(cfg *config.RecorderConfig) time.Duration {
 	if cfg == nil || cfg.PingInterval <= 0 {
 		return 0
@@ -1155,13 +1209,6 @@ func recorderPingTimeout(cfg *config.RecorderConfig) time.Duration {
 		return 0
 	}
 	return time.Duration(cfg.PingTimeout) * time.Second
-}
-
-func recorderStaleThreshold(cfg *config.RecorderConfig) time.Duration {
-	if cfg == nil || cfg.StaleThreshold <= 0 {
-		return 0
-	}
-	return time.Duration(cfg.StaleThreshold) * time.Second
 }
 
 func closeReplacedRecorderConn(deviceID string, rc *services.RecorderConn) {

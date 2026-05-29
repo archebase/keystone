@@ -300,13 +300,24 @@ func (h *RecorderHub) SendRPC(ctx context.Context, deviceID, action string, para
 		Params:    params,
 	}
 
+	writeCtx := ctx
+	var writeCancel context.CancelFunc
+	if timeout > 0 {
+		writeCtx, writeCancel = context.WithTimeout(ctx, timeout)
+	}
 	rc.WriteMu.Lock()
-	writeErr := wsjson.Write(ctx, rc.Conn, req)
+	writeErr := wsjson.Write(writeCtx, rc.Conn, req)
 	rc.WriteMu.Unlock()
+	if writeCancel != nil {
+		writeCancel()
+	}
 	if writeErr != nil {
 		rc.PendingMu.Lock()
 		delete(rc.Pending, requestID)
 		rc.PendingMu.Unlock()
+		if errors.Is(writeErr, context.DeadlineExceeded) {
+			return nil, ErrRecorderRPCTimeout
+		}
 		return nil, fmt.Errorf("write rpc request: %w", writeErr)
 	}
 

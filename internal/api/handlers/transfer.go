@@ -195,10 +195,11 @@ func (h *TransferHandler) pingLoop(ctx context.Context, dc *services.TransferCon
 		case <-ticker.C:
 			pingCtx, cancel := context.WithTimeout(ctx, timeout)
 			err := dc.Conn.Ping(pingCtx)
+			timedOut := errors.Is(err, context.DeadlineExceeded) || errors.Is(pingCtx.Err(), context.DeadlineExceeded)
 			cancel()
 			if err != nil {
 				if ctx.Err() == nil {
-					logger.Printf("[TRANSFER] Device %s ping failed: %v", dc.DeviceID, err)
+					logWebSocketPingFailure("TRANSFER", "Device", dc.DeviceID, timeout, timedOut, err)
 					if closeErr := dc.Conn.CloseNow(); closeErr != nil {
 						if !isExpectedWebSocketCloseError(closeErr) {
 							logger.Printf("[TRANSFER] Device %s close after ping failure: %v", dc.DeviceID, closeErr)
@@ -226,13 +227,6 @@ func transferPingTimeout(cfg *config.TransferConfig) time.Duration {
 		return 0
 	}
 	return time.Duration(cfg.PingTimeout) * time.Second
-}
-
-func transferStaleThreshold(cfg *config.TransferConfig) time.Duration {
-	if cfg == nil || cfg.StaleThreshold <= 0 {
-		return 0
-	}
-	return time.Duration(cfg.StaleThreshold) * time.Second
 }
 
 func closeReplacedTransferConn(deviceID string, dc *services.TransferConn) {
@@ -826,11 +820,19 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 			switch st {
 			case "ready":
 				if _, err := recorderHub.SendRPC(rpcCtx, deviceID, "clear", nil, timeout); err != nil {
-					logger.Printf("[DEVICE] Device %s: recorder clear after transfer disconnect failed (task=%s): %v", deviceID, tid, err)
+					if errors.Is(err, services.ErrRecorderRPCTimeout) {
+						logRecorderRPCTimeout(deviceID, "clear", tid, "transfer_disconnect", timeout, err)
+					} else {
+						logger.Printf("[DEVICE] Device %s: recorder clear after transfer disconnect failed (task=%s): %v", deviceID, tid, err)
+					}
 				}
 			case "in_progress":
 				if _, err := recorderHub.SendRPC(rpcCtx, deviceID, "cancel", map[string]interface{}{"task_id": tid}, timeout); err != nil {
-					logger.Printf("[DEVICE] Device %s: recorder cancel after transfer disconnect failed (task=%s): %v", deviceID, tid, err)
+					if errors.Is(err, services.ErrRecorderRPCTimeout) {
+						logRecorderRPCTimeout(deviceID, "cancel", tid, "transfer_disconnect", timeout, err)
+					} else {
+						logger.Printf("[DEVICE] Device %s: recorder cancel after transfer disconnect failed (task=%s): %v", deviceID, tid, err)
+					}
 				}
 			}
 		}

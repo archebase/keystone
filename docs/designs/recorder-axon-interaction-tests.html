@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Keystone / Axon Recorder 交互测试说明</title>
+  <style>
+    :root {
+      --ink: #17211d;
+      --muted: #5f6d66;
+      --paper: #f6f2e9;
+      --panel: #fffaf0;
+      --line: #d8ceb8;
+      --green: #1f7a4d;
+      --blue: #1e5d7c;
+      --red: #a8442f;
+      --gold: #9a6b19;
+      --shadow: rgba(43, 35, 20, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(31, 122, 77, 0.09), transparent 28%),
+        radial-gradient(circle at 82% 10%, rgba(154, 107, 25, 0.14), transparent 30%),
+        repeating-linear-gradient(0deg, rgba(23, 33, 29, 0.025) 0, rgba(23, 33, 29, 0.025) 1px, transparent 1px, transparent 18px),
+        var(--paper);
+      font-family: "Iowan Old Style", "Songti SC", "Noto Serif CJK SC", Georgia, serif;
+      line-height: 1.68;
+    }
+
+    header {
+      padding: 48px 24px 28px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,250,240,0.94), rgba(255,250,240,0.64));
+    }
+
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(32px, 5vw, 62px);
+      line-height: 1.05;
+      letter-spacing: 0;
+      max-width: 900px;
+    }
+
+    .subtitle {
+      max-width: 860px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 5px 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,250,240,0.82);
+      color: var(--muted);
+      font-size: 14px;
+      border-radius: 999px;
+      font-family: "Avenir Next", "Noto Sans CJK SC", sans-serif;
+    }
+
+    main {
+      padding: 28px 24px 64px;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 22px 0 34px;
+    }
+
+    .summary-card {
+      min-height: 132px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255,250,240,0.84);
+      box-shadow: 0 18px 42px var(--shadow);
+    }
+
+    .summary-card strong {
+      display: block;
+      font-size: 30px;
+      line-height: 1;
+      margin-bottom: 10px;
+      color: var(--green);
+      font-family: "Avenir Next", "Noto Sans CJK SC", sans-serif;
+    }
+
+    .summary-card span {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    section {
+      margin: 34px 0;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.2;
+    }
+
+    .count {
+      color: var(--muted);
+      font-family: "Avenir Next", "Noto Sans CJK SC", sans-serif;
+      font-size: 14px;
+    }
+
+    .explain {
+      margin: 0 0 18px;
+      color: var(--muted);
+      max-width: 900px;
+    }
+
+    .test-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    article.test {
+      position: relative;
+      min-height: 220px;
+      padding: 18px 18px 16px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 0 16px 34px var(--shadow);
+      overflow: hidden;
+    }
+
+    article.test::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 6px;
+      background: var(--green);
+    }
+
+    article.test.risk::before { background: var(--red); }
+    article.test.protocol::before { background: var(--blue); }
+    article.test.recovery::before { background: var(--gold); }
+
+    .tagline {
+      display: inline-flex;
+      margin-bottom: 10px;
+      padding: 2px 8px;
+      color: #fff;
+      background: var(--green);
+      font-family: "Avenir Next", "Noto Sans CJK SC", sans-serif;
+      font-size: 12px;
+      letter-spacing: 0;
+      border-radius: 999px;
+    }
+    .risk .tagline { background: var(--red); }
+    .protocol .tagline { background: var(--blue); }
+    .recovery .tagline { background: var(--gold); }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 20px;
+      line-height: 1.32;
+    }
+
+    dl {
+      margin: 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 74px 1fr;
+      gap: 10px;
+      align-items: start;
+    }
+
+    dt {
+      color: var(--muted);
+      font-family: "Avenir Next", "Noto Sans CJK SC", sans-serif;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    dd {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    code {
+      padding: 1px 5px;
+      border: 1px solid rgba(23, 33, 29, 0.12);
+      background: rgba(23, 33, 29, 0.04);
+      border-radius: 4px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .functions {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px dashed var(--line);
+      color: var(--muted);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+
+    .note {
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      background: rgba(255,250,240,0.88);
+      color: var(--muted);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin: 18px 0 0;
+    }
+
+    .step {
+      padding: 14px;
+      min-height: 124px;
+      border: 1px solid var(--line);
+      background: rgba(255,250,240,0.9);
+    }
+
+    .step b {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--green);
+      font-family: "Avenir Next", "Noto Sans CJK SC", sans-serif;
+    }
+
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 22px 24px 42px;
+      color: var(--muted);
+      background: rgba(255,250,240,0.68);
+      font-family: "Avenir Next", "Noto Sans CJK SC", sans-serif;
+      font-size: 14px;
+    }
+
+    @media (max-width: 900px) {
+      .summary-grid, .test-grid, .flow { grid-template-columns: 1fr; }
+      header { padding-top: 34px; }
+      main { padding-inline: 16px; }
+      .row { grid-template-columns: 64px 1fr; }
+      article.test { min-height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Keystone / Axon Recorder 交互测试说明</h1>
+      <p class="subtitle">这份文档把 Keystone 和 Axon Recorder 之间的关键测试项讲清楚：每个测试模拟什么情况、系统应该怎么反应、以及它防止哪类线上事故。</p>
+      <div class="meta-row">
+        <span class="pill">覆盖范围：Keystone handler/unit + fake Axon WebSocket</span>
+        <span class="pill">重点风险：重复 config、断线恢复、旧连接污染、RPC 超时</span>
+        <span class="pill">对应文件：recorder_axon_interaction_test.go / task_state_recovery_test.go</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="summary-grid">
+      <div class="summary-card"><strong>8</strong><span>条核心不变量，定义系统必须守住的边界。</span></div>
+      <div class="summary-card"><strong>7</strong><span>个测试分组，从状态同步到重连恢复逐层覆盖。</span></div>
+      <div class="summary-card"><strong>40+</strong><span>个具体断言点，检查 HTTP 状态、RPC 是否发送、DB 是否变化。</span></div>
+      <div class="summary-card"><strong>0</strong><span>当前文档中没有未覆盖的测试项。</span></div>
+    </div>
+
+    <section>
+      <div class="section-title"><h2>先看结论</h2><span class="count">系统必须守住的事</span></div>
+      <p class="explain">Keystone 和 Axon 的交互最怕“状态还没同步就下发新任务”。所以测试围绕一个核心原则展开：只有确认 Axon 当前是可信的 <code>idle</code> 状态，Keystone 才能发 <code>config</code>。</p>
+      <div class="flow">
+        <div class="step"><b>1. 新连接</b>Recorder 连接上来时先视为状态未知，不能配置任务。</div>
+        <div class="step"><b>2. 拉状态</b>Keystone 发 <code>get_state</code>，或者等待 Axon 发 <code>state_update</code>。</div>
+        <div class="step"><b>3. 状态可信</b>只有拿到非空状态，才认为这条连接已经同步。</div>
+        <div class="step"><b>4. 忙碌拒绝</b>如果 Axon 是 <code>ready</code>、<code>recording</code>、<code>paused</code>，新 <code>config</code> 必须拒绝。</div>
+        <div class="step"><b>5. 断线恢复</b>DB 可以短暂回到 <code>pending</code>，但重连后要按 Axon 真实状态恢复。</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>状态同步与 DB 恢复</h2><span class="count">10 项</span></div>
+      <p class="explain">这些测试确认 Keystone 能正确理解 Axon 上报的状态，并把任务表恢复到正确状态；同时避免空状态、重复状态把 DB 搞乱。</p>
+      <div class="test-grid">
+        <article class="test recovery"><span class="tagline">状态恢复</span><h3>Axon 报 ready，要把 pending 任务恢复成 ready</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 发 <code>state_update ready + task_id</code>，或 <code>get_state ready</code>。</dd></div><div class="row"><dt>期望</dt><dd>DB 中对应任务从 <code>pending</code> 变成 <code>ready</code>，并写入 <code>ready_at</code>。</dd></div><div class="row"><dt>防止</dt><dd>Recorder 已经准备好，但 Keystone 还以为任务没配置。</dd></div></dl><div class="functions">TestRecorderStateUpdateReadyRestoresPendingTask<br>TestRecorderGetStateSnapshotReadyRestoresPendingTask<br>TestRecorderStateSnapshotReconcilesAdditionalStates</div></article>
+        <article class="test recovery"><span class="tagline">状态恢复</span><h3>Axon 报 recording 或 paused，要恢复成 in_progress</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 上报 <code>recording</code> 或 <code>paused</code>，并带当前 <code>task_id</code>。</dd></div><div class="row"><dt>期望</dt><dd>DB 中任务进入 <code>in_progress</code>，并设置 <code>started_at</code>。</dd></div><div class="row"><dt>防止</dt><dd>设备已经录制中，但 Keystone 仍显示任务待开始。</dd></div></dl><div class="functions">TestRecorderStateUpdateRecordingAdvancesPendingTask<br>TestRecorderStateUpdatePausedAdvancesPendingTask<br>TestRecorderStateSnapshotReconcilesAdditionalStates</div></article>
+        <article class="test"><span class="tagline">边界状态</span><h3>Axon 报 idle，即使带 task_id，也不能推进 DB</h3><dl><div class="row"><dt>模拟</dt><dd>收到 <code>idle + task_id</code> 这种容易误判的状态。</dd></div><div class="row"><dt>期望</dt><dd>任务状态不变，不自动变成 <code>ready</code> 或 <code>in_progress</code>。</dd></div><div class="row"><dt>防止</dt><dd>把空闲设备误认为已经配置好任务。</dd></div></dl><div class="functions">TestRecorderStateSnapshotReconcilesAdditionalStates</div></article>
+        <article class="test"><span class="tagline">无 task_id</span><h3>非 idle 但没有 task_id，只同步连接，不改任务</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 报 <code>ready</code> 但没带任务号。</dd></div><div class="row"><dt>期望</dt><dd>连接可以标记为已同步，但 DB 任务不能被推进。</dd></div><div class="row"><dt>防止</dt><dd>不知道是哪条任务时误改 DB。</dd></div></dl><div class="functions">TestRecorderNonIdleWithoutTaskIDMarksSyncedWithoutDBChange</div></article>
+        <article class="test risk"><span class="tagline">同步门闩</span><h3>空状态不能算同步完成</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 发空的 <code>state_update</code> 或空快照。</dd></div><div class="row"><dt>期望</dt><dd><code>state_synced</code> 仍是 false，前后端继续认为还在同步中。</dd></div><div class="row"><dt>防止</dt><dd>空状态被当成 idle，导致错误开放 config。</dd></div></dl><div class="functions">TestRecorderEmptyStateSnapshotKeepsConnectionUnsynced<br>TestRecorderWebSocketEmptyStateUpdateDoesNotMarkSynced</div></article>
+        <article class="test"><span class="tagline">幂等</span><h3>重复状态不能破坏时间戳</h3><dl><div class="row"><dt>模拟</dt><dd><code>state_update ready</code> 先到，随后 <code>get_state ready</code> 又到。</dd></div><div class="row"><dt>期望</dt><dd>任务仍是 <code>ready</code>，<code>ready_at</code> 不被重复刷新。</dd></div><div class="row"><dt>防止</dt><dd>重复消息导致时间线被篡改，影响追踪。</dd></div></dl><div class="functions">TestRecorderWebSocketStateUpdateBeforeGetStateResponseIsIdempotent</div></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>状态 API 契约</h2><span class="count">4 项</span></div>
+      <p class="explain">这些测试确认 Synapse 或其它调用方看到的状态字段是可靠的，尤其是 <code>state_synced</code> 和 <code>syncing</code>。</p>
+      <div class="test-grid">
+        <article class="test protocol"><span class="tagline">API</span><h3>断开时 /state 要明确说未连接</h3><dl><div class="row"><dt>模拟</dt><dd>Recorder WebSocket 不存在。</dd></div><div class="row"><dt>期望</dt><dd>返回 <code>connected=false</code>、<code>state_synced=false</code>、<code>syncing=false</code>。</dd></div><div class="row"><dt>防止</dt><dd>前端把离线误当同步中或可操作。</dd></div></dl><div class="functions">TestRecorderGetStateReportsSyncingBeforeInitialStateSnapshot<br>相关 disconnected /state 断言</div></article>
+        <article class="test protocol"><span class="tagline">API</span><h3>连接上但没同步时，要显示 syncing</h3><dl><div class="row"><dt>模拟</dt><dd>WebSocket 已连接，但还没收到有效状态。</dd></div><div class="row"><dt>期望</dt><dd><code>connected=true</code>、<code>syncing=true</code>。</dd></div><div class="row"><dt>防止</dt><dd>重连窗口里误开放配置表单。</dd></div></dl><div class="functions">TestRecorderGetStateReportsSyncingBeforeInitialStateSnapshot</div></article>
+        <article class="test protocol"><span class="tagline">API</span><h3>同步完成后，/state 要显示可信状态</h3><dl><div class="row"><dt>模拟</dt><dd>收到有效 <code>idle</code> 快照。</dd></div><div class="row"><dt>期望</dt><dd><code>state_synced=true</code>、<code>syncing=false</code>。</dd></div><div class="row"><dt>防止</dt><dd>设备已经可判断状态，但 UI 一直卡在同步中。</dd></div></dl><div class="functions">TestRecorderGetStateReportsSyncedAfterInitialStateSnapshot<br>TestRecorderWebSocketConnectGetStateIdleMarksStateSynced</div></article>
+        <article class="test protocol"><span class="tagline">API</span><h3>/devices 也要带 state_synced</h3><dl><div class="row"><dt>模拟</dt><dd>一个 Recorder 已同步，一个未同步。</dd></div><div class="row"><dt>期望</dt><dd>设备列表能区分每台设备是否完成状态同步。</dd></div><div class="row"><dt>防止</dt><dd>列表层只知道在线，不知道能不能安全下发任务。</dd></div></dl><div class="functions">TestRecorderListDevicesIncludesStateSynced</div></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>config 下发门闩</h2><span class="count">9 项</span></div>
+      <p class="explain">这些测试直接保护“不要重复下发任务”。只要 Keystone 还没确认 Axon 是可信 idle，就不能把 <code>config</code> 送到设备。</p>
+      <div class="test-grid">
+        <article class="test risk"><span class="tagline">禁止重复下发</span><h3>初始状态未同步时，config 必须 409</h3><dl><div class="row"><dt>模拟</dt><dd>Recorder 刚重连，还没有有效状态。</dd></div><div class="row"><dt>期望</dt><dd>HTTP 返回 409，且 fake Axon 收不到 <code>config</code>。</dd></div><div class="row"><dt>防止</dt><dd>重连窗口把 pending 任务重复配置给设备。</dd></div></dl><div class="functions">TestRecorderConfigRejectsBeforeInitialStateSnapshot<br>TestRecorderWebSocketUnsyncedConfigRejectedUntilValidStateUpdate</div></article>
+        <article class="test risk"><span class="tagline">忙碌保护</span><h3>Axon 已 ready / recording / paused 时，config 必须拒绝</h3><dl><div class="row"><dt>模拟</dt><dd>状态已同步，但 Axon 正持有任务或录制中。</dd></div><div class="row"><dt>期望</dt><dd>返回 409，且不发 RPC。</dd></div><div class="row"><dt>防止</dt><dd>给一个已经有任务的 Recorder 再塞一条任务。</dd></div></dl><div class="functions">TestRecorderConfigRejectsWhenSyncedRecorderBusy<br>TestRecorderConfigRejectsAdditionalBusyStates<br>TestRecorderWebSocketGetStateReadyRejectsConfigWithoutSendingRPC</div></article>
+        <article class="test"><span class="tagline">允许路径</span><h3>只有 synced idle 才能发 config</h3><dl><div class="row"><dt>模拟</dt><dd>Keystone 已确认 Axon 是 <code>idle</code>。</dd></div><div class="row"><dt>期望</dt><dd>发出一次 <code>config</code> RPC；成功后 DB 从 <code>pending</code> 变 <code>ready</code>。</dd></div><div class="row"><dt>防止</dt><dd>正常生产路径被安全门闩误伤。</dd></div></dl><div class="functions">TestRecorderConfigAdvancesTaskAfterInitialStateSnapshot<br>TestRecorderWebSocketIdleReconnectAllowsSingleConfig</div></article>
+        <article class="test"><span class="tagline">失败不改 DB</span><h3>config 返回 success:false，任务仍是 pending</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 拒绝配置。</dd></div><div class="row"><dt>期望</dt><dd>Keystone 不把任务推进到 <code>ready</code>。</dd></div><div class="row"><dt>防止</dt><dd>设备没接受任务，但后台显示已就绪。</dd></div></dl><div class="functions">TestRecorderConfigDoesNotAdvanceTaskWhenRPCResponseUnsuccessful</div></article>
+        <article class="test risk"><span class="tagline">超时保护</span><h3>config 超时，任务仍是 pending</h3><dl><div class="row"><dt>模拟</dt><dd>Keystone 发了 <code>config</code>，Axon 没回应。</dd></div><div class="row"><dt>期望</dt><dd>HTTP 504，DB 不变。</dd></div><div class="row"><dt>防止</dt><dd>不知道设备有没有收到时，后台抢先标 ready。</dd></div></dl><div class="functions">TestRecorderConfigTimeoutAndDisconnectedKeepTaskPending<br>Missing Axon response assertions</div></article>
+        <article class="test"><span class="tagline">离线保护</span><h3>Recorder 离线时 config 返回 404</h3><dl><div class="row"><dt>模拟</dt><dd>没有对应 WebSocket 连接。</dd></div><div class="row"><dt>期望</dt><dd>返回 404，任务保持 pending。</dd></div><div class="row"><dt>防止</dt><dd>给不存在的连接制造假成功。</dd></div></dl><div class="functions">TestRecorderConfigTimeoutAndDisconnectedKeepTaskPending</div></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>命令 RPC 的副作用</h2><span class="count">11 项</span></div>
+      <p class="explain">这些测试检查 begin、cancel、clear、pause、resume、finish、quit、get_stats 等命令：哪些命令应该改 DB，哪些只应该转发给 Axon。</p>
+      <div class="test-grid">
+        <article class="test"><span class="tagline">begin</span><h3>begin 成功才进入 in_progress</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 对 <code>begin</code> 返回成功。</dd></div><div class="row"><dt>期望</dt><dd>任务从 <code>pending/ready</code> 进入 <code>in_progress</code>；已在 <code>in_progress</code> 时保持幂等。</dd></div><div class="row"><dt>防止</dt><dd>重复 begin 或状态不一致造成任务错乱。</dd></div></dl><div class="functions">TestRecorderBeginSuccessTimeoutAndDisconnectedTaskState<br>TestRecorderBeginSuccessAdvancesReadyAndLeavesInProgress</div></article>
+        <article class="test risk"><span class="tagline">begin 失败</span><h3>begin 失败、超时或断连时不改任务</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 返回失败、不响应、或 Recorder 不在线。</dd></div><div class="row"><dt>期望</dt><dd>任务状态保持原样。</dd></div><div class="row"><dt>防止</dt><dd>设备没开始录制，后台却显示录制中。</dd></div></dl><div class="functions">TestRecorderBeginDoesNotAdvanceTaskWhenRPCResponseUnsuccessful<br>TestRecorderBeginSuccessTimeoutAndDisconnectedTaskState</div></article>
+        <article class="test"><span class="tagline">cancel</span><h3>cancel 成功才把 ready/in_progress 回退 pending</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 接受取消命令。</dd></div><div class="row"><dt>期望</dt><dd>只有提供的 <code>task_id</code> 从运行态回到 <code>pending</code>。</dd></div><div class="row"><dt>防止</dt><dd>取消一条任务时误伤其它任务。</dd></div></dl><div class="functions">TestRecorderCancelAndClearTaskStateSideEffects</div></article>
+        <article class="test risk"><span class="tagline">cancel 失败</span><h3>cancel 失败、超时或断连时不回退 DB</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 拒绝取消、无响应、或断线。</dd></div><div class="row"><dt>期望</dt><dd>DB 继续保持原状态。</dd></div><div class="row"><dt>防止</dt><dd>设备还在录制，后台却把任务放回 pending。</dd></div></dl><div class="functions">TestRecorderCancelAndClearTaskStateSideEffects<br>TestRecorderCancelTimeoutAndDisconnectedKeepTaskState</div></article>
+        <article class="test"><span class="tagline">clear</span><h3>clear 成功只清 ready，不清 in_progress</h3><dl><div class="row"><dt>模拟</dt><dd>对 ready 任务执行 clear，同时存在 in_progress 任务。</dd></div><div class="row"><dt>期望</dt><dd>ready 任务回 pending，in_progress 任务不变；发给 Axon 的 clear 不带 UI 的 task payload。</dd></div><div class="row"><dt>防止</dt><dd>清配置时误取消录制中任务，或协议 payload 不稳定。</dd></div></dl><div class="functions">TestRecorderCancelAndClearTaskStateSideEffects<br>TestRecorderWebSocketRPCActionProtocol</div></article>
+        <article class="test risk"><span class="tagline">clear 失败</span><h3>clear 失败、超时或断连时不改 DB</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 拒绝 clear、不响应、或离线。</dd></div><div class="row"><dt>期望</dt><dd>ready 任务仍保持 ready。</dd></div><div class="row"><dt>防止</dt><dd>设备没清掉配置，后台却显示可重新配置。</dd></div></dl><div class="functions">TestRecorderClearFailureTimeoutAndDisconnectedKeepTaskState</div></article>
+        <article class="test protocol"><span class="tagline">纯转发命令</span><h3>pause / resume / finish / quit 只发 RPC，不直接改 DB</h3><dl><div class="row"><dt>模拟</dt><dd>这些命令返回成功。</dd></div><div class="row"><dt>期望</dt><dd>Keystone 只转发命令，不擅自改变任务状态。</dd></div><div class="row"><dt>防止</dt><dd>设备实际状态还没上报，后台先行改状态。</dd></div></dl><div class="functions">TestRecorderForwardOnlyActionsDoNotMutateTaskState<br>TestRecorderWebSocketRPCActionProtocol</div></article>
+        <article class="test protocol"><span class="tagline">stats</span><h3>get_stats 的三种结果都要明确</h3><dl><div class="row"><dt>模拟</dt><dd>Recorder 离线、Axon 返回失败、Axon 不响应。</dd></div><div class="row"><dt>期望</dt><dd>离线返回 <code>connected=false</code>；设备失败返回 200 + error；超时返回 504。</dd></div><div class="row"><dt>防止</dt><dd>监控面板把离线、设备错误、网络超时混成一种情况。</dd></div></dl><div class="functions">TestRecorderGetStatsContracts</div></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>断线、重连和旧连接污染</h2><span class="count">10 项</span></div>
+      <p class="explain">这些测试专门覆盖 ping timeout / WebSocket close 后的危险窗口：DB 可能短暂回 pending，但不能因此重复下发，也不能让旧连接的迟到消息污染新连接。</p>
+      <div class="test-grid">
+        <article class="test recovery"><span class="tagline">断线回退</span><h3>断开时只回退本设备 runnable 任务</h3><dl><div class="row"><dt>模拟</dt><dd>同一设备下有 ready、in_progress、pending、completed、deleted 任务，另一个设备也有 ready。</dd></div><div class="row"><dt>期望</dt><dd>只把本设备 ready/in_progress 回 pending，并清理运行时字段。</dd></div><div class="row"><dt>防止</dt><dd>断线清理误伤别的设备或已完成任务。</dd></div></dl><div class="functions">TestRecorderDisconnectRevertsOnlyRunnableTasksForDevice</div></article>
+        <article class="test recovery"><span class="tagline">ready 重连</span><h3>ready 任务断线后，重连仍恢复同一条任务</h3><dl><div class="row"><dt>模拟</dt><dd>DB 中 ready 任务因断线回 pending；Axon 重连后报告 <code>ready + same task_id</code>。</dd></div><div class="row"><dt>期望</dt><dd>DB 恢复 ready；窗口内和恢复后都不重复发 config。</dd></div><div class="row"><dt>防止</dt><dd>你关心的“同一 task_id 被再次下发 config”。</dd></div></dl><div class="functions">TestRecorderWebSocketReadyReconnectRestoresSameTaskWithoutDuplicateConfig</div></article>
+        <article class="test recovery"><span class="tagline">recording 重连</span><h3>录制中断线后，重连恢复 in_progress</h3><dl><div class="row"><dt>模拟</dt><dd>DB 中 in_progress 任务断线回 pending；Axon 重连后报告 <code>recording + same task_id</code>。</dd></div><div class="row"><dt>期望</dt><dd>DB 恢复 in_progress；不会开放新 config。</dd></div><div class="row"><dt>防止</dt><dd>设备仍在录制，后台却允许配置下一条。</dd></div></dl><div class="functions">TestRecorderWebSocketRecordingReconnectRestoresSameTaskWithoutDuplicateConfig</div></article>
+        <article class="test"><span class="tagline">idle 重连</span><h3>如果 Axon 重连后确实 idle，才允许重新 config</h3><dl><div class="row"><dt>模拟</dt><dd>断线回 pending 后，Axon 重连报告 <code>idle</code>。</dd></div><div class="row"><dt>期望</dt><dd>Keystone 允许 config，并且只发送一次。</dd></div><div class="row"><dt>防止</dt><dd>安全门闩过严，导致设备确实空闲时无法恢复生产。</dd></div></dl><div class="functions">TestRecorderWebSocketIdleReconnectAllowsSingleConfig</div></article>
+        <article class="test risk"><span class="tagline">旧连接污染</span><h3>旧连接的 state_update / config_applied 必须忽略</h3><dl><div class="row"><dt>模拟</dt><dd>新连接已经替换旧连接，旧连接又迟到发状态变更消息。</dd></div><div class="row"><dt>期望</dt><dd>DB 不被旧连接推进。</dd></div><div class="row"><dt>防止</dt><dd>网络迟到消息把当前真实状态覆盖掉。</dd></div></dl><div class="functions">TestRecorderIgnoresStateChangingMessagesFromReplacedConnection<br>TestRecorderWebSocketReplacementIgnoresOldConnectionLateMessages</div></article>
+        <article class="test risk"><span class="tagline">旧响应污染</span><h3>旧连接的 rpc_response 不能完成新请求</h3><dl><div class="row"><dt>模拟</dt><dd>新连接上有 pending RPC；旧连接伪造同 request_id 的响应。</dd></div><div class="row"><dt>期望</dt><dd>旧响应被忽略，只有当前连接响应才能完成请求。</dd></div><div class="row"><dt>防止</dt><dd>旧连接的成功响应让新请求误成功。</dd></div></dl><div class="functions">TestRecorderIgnoresRPCResponseFromReplacedConnection<br>TestRecorderWebSocketReplacementIgnoresOldConnectionLateMessages</div></article>
+        <article class="test"><span class="tagline">替换断开</span><h3>旧连接被替换后断开，不应触发任务回退</h3><dl><div class="row"><dt>模拟</dt><dd>新连接已经接管，旧连接随后 disconnect。</dd></div><div class="row"><dt>期望</dt><dd>当前 ready 任务不被旧连接断开回退。</dd></div><div class="row"><dt>防止</dt><dd>连接接管后，被旧连接清理逻辑误伤。</dd></div></dl><div class="functions">TestOldRecorderDisconnectAfterReplacementDoesNotRevertTasks</div></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>connect-time get_state 与协议细节</h2><span class="count">8 项</span></div>
+      <p class="explain">这些测试使用真实 WebSocket 和 fake Axon，检查 Keystone 发出的 RPC action、payload、request_id 匹配和超时行为。</p>
+      <div class="test-grid">
+        <article class="test protocol"><span class="tagline">连接握手</span><h3>WebSocket 一连上，Keystone 会主动 get_state</h3><dl><div class="row"><dt>模拟</dt><dd>fake Axon 建立 WebSocket 连接。</dd></div><div class="row"><dt>期望</dt><dd>首先收到 <code>get_state</code>；回复 idle 后 Keystone 状态变 synced idle。</dd></div><div class="row"><dt>防止</dt><dd>重连后 Keystone 不主动校准设备状态。</dd></div></dl><div class="functions">TestRecorderWebSocketConnectGetStateIdleMarksStateSynced</div></article>
+        <article class="test risk"><span class="tagline">get_state 超时</span><h3>get_state 超时后仍保持 syncing，config 继续阻断</h3><dl><div class="row"><dt>模拟</dt><dd>fake Axon 收到 <code>get_state</code> 但不回应，等到 ResponseTimeout 之后再操作。</dd></div><div class="row"><dt>期望</dt><dd><code>/state</code> 仍是 <code>syncing=true</code>；config 返回 409 且不发 RPC；之后有效 state_update 才解锁。</dd></div><div class="row"><dt>防止</dt><dd>状态拉取超时后被误当成 idle。</dd></div></dl><div class="functions">TestRecorderWebSocketGetStateTimeoutLeavesUnsyncedAndBlocksConfig</div></article>
+        <article class="test risk"><span class="tagline">get_state 失败</span><h3>get_state 返回 success:false，也不能解锁 config</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 明确回复状态不可用。</dd></div><div class="row"><dt>期望</dt><dd>连接仍 unsynced，config 仍被阻断。</dd></div><div class="row"><dt>防止</dt><dd>把失败响应当成有效状态。</dd></div></dl><div class="functions">TestRecorderWebSocketGetStateFailureLeavesUnsyncedAndBlocksConfig</div></article>
+        <article class="test protocol"><span class="tagline">RPC payload</span><h3>每个命令发出的 action 和 payload 要稳定</h3><dl><div class="row"><dt>模拟</dt><dd>依次调用 config、begin、cancel、clear、finish、pause、resume、quit、get_stats。</dd></div><div class="row"><dt>期望</dt><dd>fake Axon 收到正确 action；config 带 task_config；clear 不带 UI task_id。</dd></div><div class="row"><dt>防止</dt><dd>协议字段改错，导致 Axon 端无法解析。</dd></div></dl><div class="functions">TestRecorderWebSocketRPCActionProtocol</div></article>
+        <article class="test risk"><span class="tagline">request_id</span><h3>不匹配的 rpc_response 不能解开 pending RPC</h3><dl><div class="row"><dt>模拟</dt><dd>Axon 返回一个不存在的 <code>request_id</code>。</dd></div><div class="row"><dt>期望</dt><dd>Keystone 继续等待真正响应。</dd></div><div class="row"><dt>防止</dt><dd>不同请求串线，HTTP 请求拿到别人的结果。</dd></div></dl><div class="functions">TestRecorderUnmatchedRPCResponseDoesNotUnblockPendingRequest</div></article>
+        <article class="test risk"><span class="tagline">无响应</span><h3>Axon 不响应时，Keystone HTTP 超时且不改 DB</h3><dl><div class="row"><dt>模拟</dt><dd>fake Axon 收到命令但不回 rpc_response。</dd></div><div class="row"><dt>期望</dt><dd>HTTP 504，DB 不做成功态变更。</dd></div><div class="row"><dt>防止</dt><dd>设备是否执行未知时，后台提前写成功。</dd></div></dl><div class="functions">TestRecorderConfigTimeoutAndDisconnectedKeepTaskPending<br>TestRecorderBeginSuccessTimeoutAndDisconnectedTaskState<br>TestRecorderGetStatsContracts</div></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><h2>怎么读这些测试</h2><span class="count">实用说明</span></div>
+      <div class="note">
+        <p>如果某个测试失败，不应该先改测试去“适配现状”。这些测试是用来暴露潜在问题的：例如任务被错误推进、断线后被重复 config、旧连接消息污染新连接、或者 Axon 超时后 Keystone 错误解锁。正确处理方式是先判断测试描述的业务预期是否成立；如果成立，就修实现。</p>
+        <p>这份 HTML 是给人看的说明；机器执行的测试仍以 Go 测试文件为准。详细测试清单也保留在 <code>recorder-axon-interaction-test-plan.md</code>。</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">Generated documentation for Keystone Recorder / Axon interaction tests. Open this file directly in a browser.</div>
+  </footer>
+</body>
+</html>
