@@ -1054,6 +1054,15 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 
 	logger.Printf("[RECORDER] Device %s: received finish callback for task=%s", callback.DeviceID, callback.TaskID)
 
+	if h.db != nil {
+		res, err := advanceTaskPendingOrReadyToInProgress(h.db, callback.TaskID)
+		if err != nil {
+			logger.Printf("[RECORDER] Device %s: failed to restore task pending/ready->in_progress after finish callback: task=%s err=%v", deviceID, callback.TaskID, err)
+		} else if n, _ := res.RowsAffected(); n > 0 {
+			logger.Printf("[RECORDER] Device %s: task status reconciled: task=%s source=finish_callback status=in_progress", deviceID, callback.TaskID)
+		}
+	}
+
 	dc := h.hub.Get(deviceID)
 	if dc == nil {
 		// TODO: add status pending_upload, when device reconnects, check for any pending_upload tasks and trigger upload then
