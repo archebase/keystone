@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -19,6 +20,7 @@ type Config struct {
 	Storage      StorageConfig
 	QA           QAConfig
 	Sync         SyncConfig
+	CLISync      CLISyncConfig
 	Auth         AuthConfig
 	Features     FeaturesConfig
 	Monitoring   MonitoringConfig
@@ -87,6 +89,20 @@ type SyncConfig struct {
 	RetryJitterSec     int    // max additive jitter in seconds
 	PersistRootDir     string // root directory for persisting upload state across restarts; empty disables persistence
 	MaxRestartCount    int    // max number of upload restarts before permanent failure; 0 uses uploader default (3)
+}
+
+// CLISyncConfig controls the emergency dp CLI cloud sync sidepath.
+type CLISyncConfig struct {
+	Enabled       bool
+	DPBin         string
+	DPConfigPath  string
+	TempDir       string
+	MaxConcurrent int
+	QueueSize     int
+	TimeoutSec    int
+	KeepTemp      bool
+	MaxTags       int
+	MaxTagBytes   int
 }
 
 // FeaturesConfig feature flags configuration
@@ -204,6 +220,18 @@ func Load() (*Config, error) {
 			PersistRootDir:     getEnv("KEYSTONE_SYNC_PERSIST_ROOT_DIR", ""),
 			MaxRestartCount:    getEnvInt("KEYSTONE_SYNC_MAX_RESTART_COUNT", 3),
 		},
+		CLISync: CLISyncConfig{
+			Enabled:       getEnvBool("KEYSTONE_CLI_SYNC_ENABLED", false),
+			DPBin:         getEnv("KEYSTONE_CLI_SYNC_DP_BIN", "dp"),
+			DPConfigPath:  getEnv("KEYSTONE_CLI_SYNC_DP_CONFIG", ""),
+			TempDir:       getEnv("KEYSTONE_CLI_SYNC_TEMP_DIR", "/var/lib/keystone/cli-sync"),
+			MaxConcurrent: getEnvInt("KEYSTONE_CLI_SYNC_MAX_CONCURRENT", 1),
+			QueueSize:     getEnvInt("KEYSTONE_CLI_SYNC_QUEUE_SIZE", 16),
+			TimeoutSec:    getEnvInt("KEYSTONE_CLI_SYNC_TIMEOUT_SEC", 7200),
+			KeepTemp:      getEnvBool("KEYSTONE_CLI_SYNC_KEEP_TEMP", false),
+			MaxTags:       getEnvInt("KEYSTONE_CLI_SYNC_MAX_TAGS", 128),
+			MaxTagBytes:   getEnvInt("KEYSTONE_CLI_SYNC_MAX_TAG_BYTES", 65536),
+		},
 		Auth: AuthConfig{
 			JWTSecret:             getEnv("KEYSTONE_JWT_SECRET", ""),
 			Issuer:                getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
@@ -317,6 +345,45 @@ func (c *Config) Validate() error {
 		}
 		if c.Sync.MaxRestartCount < 0 {
 			return fmt.Errorf("sync max restart count must be greater than or equal to 0 when sync is enabled")
+		}
+	}
+	if c.CLISync.Enabled {
+		c.CLISync.DPBin = strings.TrimSpace(c.CLISync.DPBin)
+		if c.CLISync.DPBin == "" {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_BIN is required when CLI sync is enabled")
+		}
+		if _, err := exec.LookPath(c.CLISync.DPBin); err != nil {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_BIN %q is not executable: %w", c.CLISync.DPBin, err)
+		}
+		c.CLISync.DPConfigPath = strings.TrimSpace(c.CLISync.DPConfigPath)
+		if c.CLISync.DPConfigPath == "" {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_CONFIG is required when CLI sync is enabled")
+		}
+		info, err := os.Stat(c.CLISync.DPConfigPath)
+		if err != nil {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_CONFIG %q is not readable: %w", c.CLISync.DPConfigPath, err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_CONFIG %q must be a file", c.CLISync.DPConfigPath)
+		}
+		c.CLISync.TempDir = strings.TrimSpace(c.CLISync.TempDir)
+		if c.CLISync.TempDir == "" {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_TEMP_DIR is required when CLI sync is enabled")
+		}
+		if c.CLISync.MaxConcurrent <= 0 {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_MAX_CONCURRENT must be greater than 0 when CLI sync is enabled")
+		}
+		if c.CLISync.QueueSize <= 0 {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_QUEUE_SIZE must be greater than 0 when CLI sync is enabled")
+		}
+		if c.CLISync.TimeoutSec <= 0 {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_TIMEOUT_SEC must be greater than 0 when CLI sync is enabled")
+		}
+		if c.CLISync.MaxTags <= 0 {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_MAX_TAGS must be greater than 0 when CLI sync is enabled")
+		}
+		if c.CLISync.MaxTagBytes <= 0 {
+			return fmt.Errorf("KEYSTONE_CLI_SYNC_MAX_TAG_BYTES must be greater than 0 when CLI sync is enabled")
 		}
 	}
 	return nil

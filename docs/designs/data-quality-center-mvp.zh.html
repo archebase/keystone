@@ -1,0 +1,892 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数据质检中心简化版设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18241f;
+      --muted: #5d6a63;
+      --line: #d8e1dc;
+      --paper: #ffffff;
+      --surface: #f7faf8;
+      --surface-strong: #edf5f1;
+      --accent: #126b5e;
+      --accent-strong: #0b4f47;
+      --warn: #9b5b16;
+      --danger: #9f352e;
+      --code-bg: #14231f;
+      --code-ink: #edf7f3;
+      --shadow: 0 18px 44px rgba(21, 42, 34, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(18, 107, 94, 0.12), transparent 34%),
+        linear-gradient(180deg, #f8fbf9 0%, #ffffff 44%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 28px;
+      align-items: end;
+      padding: 32px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.14;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 760px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .header-meta {
+      border-left: 4px solid var(--accent);
+      padding-left: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .header-meta strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 4px;
+    }
+
+    nav a {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      border: 1px solid #c9ded5;
+      border-radius: 999px;
+      padding: 8px 12px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    section {
+      margin-top: 38px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 26px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul,
+    ol {
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    .band {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      box-shadow: 0 12px 30px rgba(20, 43, 35, 0.05);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .three-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .panel {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    .panel h3 {
+      margin-top: 0;
+    }
+
+    .ok {
+      border-color: #b9dacd;
+      background: #f3faf6;
+    }
+
+    .no {
+      border-color: #ead1c0;
+      background: #fff8f1;
+    }
+
+    .note {
+      border-left: 4px solid var(--accent);
+      padding: 12px 16px;
+      background: #f2faf6;
+      color: var(--muted);
+    }
+
+    .warning {
+      border-left-color: var(--warn);
+      background: #fff8ee;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 22px;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-strong);
+      font-weight: 700;
+    }
+
+    code {
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      background: #e7f2ec;
+      color: #12382f;
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-size: 0.94em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 14px 0 20px;
+      padding: 16px;
+      color: var(--code-ink);
+      background: var(--code-bg);
+      border-radius: 12px;
+      line-height: 1.55;
+    }
+
+    pre code {
+      color: inherit;
+      background: transparent;
+      padding: 0;
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      margin: 14px 0 4px;
+    }
+
+    .flow-step {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper);
+    }
+
+    .flow-step span {
+      display: inline-flex;
+      width: 28px;
+      height: 28px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      color: white;
+      background: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0;
+      list-style: none;
+    }
+
+    .tag-list li {
+      margin: 0;
+      padding: 6px 10px;
+      border: 1px solid #c8ded4;
+      border-radius: 999px;
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    @media (max-width: 860px) {
+      main {
+        padding: 24px 16px 56px;
+      }
+
+      header,
+      .grid,
+      .three-grid {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Synapse / Keystone MVP</p>
+        <h1>数据质检中心简化版设计</h1>
+        <p class="lead">
+          简化版仍然使用 Python 脚本做质检，但首发只提供一个系统内置固定脚本，用来做 MCAP 预览可用性 smoke check。管理员在 Synapse 的数据运维模块进入“质检中心”，即可对全部 Episode 或筛选结果发起质检。
+        </p>
+      </div>
+      <aside class="header-meta">
+        <strong>上线目标</strong>
+        快速形成“内置脚本 -> 批量质检 -> 写回 QA 状态 -> 人工复核 -> 云同步按 QA 状态放行”的闭环，优先拦截预览时报 MCAP magic 不匹配的坏包。
+      </aside>
+    </header>
+
+    <nav aria-label="目录">
+      <a href="#decision">设计取舍</a>
+      <a href="#scope">MVP 范围</a>
+      <a href="#user-flow">用户流程</a>
+      <a href="#architecture">架构</a>
+      <a href="#data-model">数据模型</a>
+      <a href="#status">状态规则</a>
+      <a href="#default-script">内置脚本</a>
+      <a href="#script-contract">脚本契约</a>
+      <a href="#api">API</a>
+      <a href="#synapse">Synapse 页面</a>
+      <a href="#implementation">实施顺序</a>
+    </nav>
+
+    <section id="decision">
+      <h2>1. 设计取舍</h2>
+      <div class="band">
+        <p>
+          完整版的“脚本管理 + 版本 + run + job + override + 独立 Runner”能力适合长期演进，但首发上线成本偏高。简化版保留脚本执行能力，把管理面压缩成“一个内置固定脚本 + 多个质检任务”。
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>能力</th>
+              <th>完整版</th>
+              <th>简化版</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>脚本数量</td>
+              <td>多个脚本，支持 global / sop 范围</td>
+              <td>只提供一个内置脚本 <code>builtin_mcap_preview_smoke_check</code>，覆盖所有数据</td>
+            </tr>
+            <tr>
+              <td>版本管理</td>
+              <td>脚本定义和不可变版本分表</td>
+              <td>不做上传和版本管理；job 快照保存内置脚本 key、version、SHA</td>
+            </tr>
+            <tr>
+              <td>执行器</td>
+              <td>独立 <code>keystone-quality-runner</code> 进程</td>
+              <td>Keystone 内置轻量 worker，默认并发 1</td>
+            </tr>
+            <tr>
+              <td>触发方式</td>
+              <td>Episode 创建自动触发，支持重跑</td>
+              <td>支持新数据自动入队，也支持 Synapse 一键全量/筛选触发</td>
+            </tr>
+            <tr>
+              <td>人工覆盖</td>
+              <td>独立 <code>quality_overrides</code> 表</td>
+              <td>复用现有 <code>inspections</code> 表和 <code>episodes</code> QA 字段</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="note warning">
+          这个方案的关键约束是“首发只解决预览入口的可读性问题”，包括对象 size / range read 异常和 MCAP 边界 magic 异常。如果后续需要按 SOP、机器人类型或场景配置不同脚本，再升级到完整版的脚本版本模型。
+        </p>
+      </div>
+    </section>
+
+    <section id="scope">
+      <h2>2. MVP 范围</h2>
+      <div class="grid">
+        <article class="panel ok">
+          <h3>包含</h3>
+          <ul>
+            <li>Synapse 管理后台新增 <code>数据运维 / 质检中心</code>。</li>
+            <li>Keystone 内置固定 Python 脚本 <code>builtin_mcap_preview_smoke_check</code>，全局适用于所有 Episode。</li>
+            <li>内置脚本先检查对象 size / range read 是否可用，再检查 MCAP 边界 magic。</li>
+            <li>脚本元数据以代码常量形式提供，执行批次和执行任务存 MySQL。</li>
+            <li>支持对全部非删除 Episode 发起质检。</li>
+            <li>支持按 QA 状态、创建时间、设备 ID、采集员工号筛选后发起质检。</li>
+            <li>支持新创建 Episode 自动进入质检队列，开关可配置。</li>
+            <li>脚本结果回写 <code>episodes.qa_status</code>、<code>qa_score</code>、<code>quality_flag</code>。</li>
+            <li>执行异常、超时、非法输出统一进入 <code>needs_inspection</code>。</li>
+            <li>Episode 详情支持查看最近一次脚本结果、手动重跑、人工通过/驳回。</li>
+          </ul>
+        </article>
+        <article class="panel no">
+          <h3>不包含</h3>
+          <ul>
+            <li>不做多脚本并行规则。</li>
+            <li>不做 SOP / 场景 / 机器人类型范围匹配。</li>
+            <li>不做在线代码编辑器。</li>
+            <li>不做脚本上传、替换、ZIP、多文件包、Git 脚本源或动态安装依赖。</li>
+            <li>不做激活前 test run。</li>
+            <li>不做复杂版本列表、版本 diff 或回滚页面。</li>
+            <li>不做任务取消；误触发时让当前 job 完成，后续可重新触发质检。</li>
+            <li>不自动撤回已经云同步的数据。</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="user-flow">
+      <h2>3. 用户流程</h2>
+      <div class="flow">
+        <div class="flow-step">
+          <span>1</span>
+          <div>管理员进入 Synapse <code>数据运维 / 质检中心</code>，看到内置脚本、最近批次、任务列表和 QA 汇总。</div>
+        </div>
+        <div class="flow-step">
+          <span>2</span>
+          <div>管理员不需要上传脚本，直接点击“质检全部数据”或设置筛选条件后点击“质检筛选结果”。</div>
+        </div>
+        <div class="flow-step">
+          <span>3</span>
+          <div>Keystone 为匹配的 Episode 创建 <code>quality_jobs</code>，每个 job 都记录内置脚本 key、version 和 SHA。</div>
+        </div>
+        <div class="flow-step">
+          <span>4</span>
+          <div>Keystone 内置 worker 领取 pending job，读取 MCAP 前 8 字节和后 8 字节，执行内置 Python 脚本，并保存 stdout、stderr、result JSON 摘要。</div>
+        </div>
+        <div class="flow-step">
+          <span>5</span>
+          <div>job 完成后 Keystone 按脚本输出更新 Episode QA 状态。云同步仍只放行 <code>approved</code> 和 <code>inspector_approved</code>。</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>4. 架构</h2>
+      <div class="band">
+        <pre><code>Synapse Admin
+  -> /api/v1/admin/quality/batches      start all-data or filtered QA
+  -> /api/v1/admin/quality/jobs         inspect job status and result
+  -> /api/v1/episodes/:id/quality-*     rerun or manual decision
+
+Keystone API
+  -> MySQL: quality_batches, quality_jobs
+  -> MySQL: episodes.qa_status, qa_score, quality_flag
+  -> MinIO: episode MCAP
+
+Keystone built-in quality worker
+  -> claims pending quality_jobs
+  -> reads MCAP leading 8 bytes and trailing 8 bytes
+  -> runs builtin_mcap_preview_smoke_check.py
+  -> updates quality_jobs and episodes</code></pre>
+        <p>
+          简化版不新增独立部署进程，worker 随 Keystone 启动。默认并发为 <code>1</code>，避免首发时脚本执行挤占过多机器资源。
+        </p>
+      </div>
+    </section>
+
+    <section id="data-model">
+      <h2>5. 数据模型</h2>
+      <p>新增 2 张表即可支撑批量触发和执行记录。脚本不落库、不上传，脚本 key、version、SHA 由 Keystone 代码常量提供。人工复核继续复用已有 <code>inspections</code> 表。</p>
+
+      <h3>quality_batches</h3>
+      <pre><code>id
+script_key              builtin_mcap_preview_smoke_check
+script_version          e.g. 2026.06.01
+script_sha256           sha256 of embedded script content
+trigger_type            all | filtered | episode | auto_episode
+triggered_by            admin username or system
+filter_json             actual filters used to enqueue jobs
+status                  pending | running | completed
+total_count
+pending_count
+running_count
+succeeded_count
+failed_count
+created_at
+completed_at</code></pre>
+      <p>批次只用于 Synapse 展示进度。统计值可以由 <code>quality_jobs</code> 聚合后回写，首发也可以查询时实时计算。</p>
+
+      <h3>quality_jobs</h3>
+      <pre><code>id
+batch_id
+episode_id
+script_key
+script_version
+script_sha256
+status                  pending | running | succeeded | failed | timeout | invalid_result
+decision                passed | rejected | uncertain
+score
+summary
+result_json
+stdout_excerpt
+stderr_excerpt
+error_message
+duration_ms
+locked_at
+started_at
+finished_at
+created_at
+updated_at</code></pre>
+      <p>
+        <code>script_key</code>、<code>script_version</code> 和 <code>script_sha256</code> 是执行快照。即使后续升级内置脚本，历史 job 也能看出当时实际使用的检查逻辑。
+      </p>
+    </section>
+
+    <section id="status">
+      <h2>6. 状态规则</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>脚本/执行结果</th>
+            <th>Episode QA 状态</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>job 创建或运行中</td>
+            <td><code>qa_running</code></td>
+            <td>用于在列表和详情页提示正在质检。</td>
+          </tr>
+          <tr>
+            <td><code>decision = passed</code></td>
+            <td><code>approved</code></td>
+            <td>同时写 <code>auto_approved = true</code>，可进入云同步。</td>
+          </tr>
+          <tr>
+            <td><code>decision = rejected</code></td>
+            <td><code>rejected</code></td>
+            <td>数据不可用，云同步不放行。</td>
+          </tr>
+          <tr>
+            <td><code>decision = uncertain</code></td>
+            <td><code>needs_inspection</code></td>
+            <td>脚本无法可靠判断，交给人工复核。</td>
+          </tr>
+          <tr>
+            <td><code>failed</code> / <code>timeout</code> / <code>invalid_result</code></td>
+            <td><code>needs_inspection</code></td>
+            <td>执行失败不等于数据坏，只要求人工复核。</td>
+          </tr>
+          <tr>
+            <td>人工通过</td>
+            <td><code>inspector_approved</code></td>
+            <td>写入 <code>inspections</code>，可进入云同步。</td>
+          </tr>
+          <tr>
+            <td>人工驳回</td>
+            <td><code>rejected</code></td>
+            <td>写入 <code>inspections</code>，不进入云同步。</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note warning">
+        对已经云同步的 Episode 重新质检时，只更新 Keystone 本地 QA 状态和质检记录，不自动删除或撤回云端对象。Synapse 在“包含已同步数据”开关旁提示这个风险。
+      </p>
+    </section>
+
+    <section id="default-script">
+      <h2>7. 内置脚本</h2>
+      <div class="band">
+        <p>
+          首发固定脚本为 <code>builtin_mcap_preview_smoke_check</code>。它不是完整 MCAP 解析器，而是预览 smoke check：先检查对象是否能拿到有效 size 和必要字节范围，再用边界 magic 检查快速拦截数据预览中出现的这类错误：
+        </p>
+        <pre><code>Expected MCAP magic '89 4d 43 41 50 30 0d 0a',
+found '2f 06 84 5c 5b ea dc 8b' [library=libmcap 2.1.2]</code></pre>
+        <p>
+          MCAP magic 是 8 字节：<code>89 4d 43 41 50 30 0d 0a</code>。MCAP 文件开头有一次 magic，文件结尾也有一次 trailing magic。
+          Synapse 预览使用的 <code>@mcap/core</code> 会在初始化时先检查开头 magic，再读取 Header，随后检查结尾 trailing magic。
+        </p>
+        <p class="note warning">
+          因为错误里已经带了 <code>[library=libmcap 2.1.2]</code>，说明 Header 大概率已经读成功；这种情况下更可疑的是文件结尾 trailing magic 不匹配，而不是文件开头不匹配。所以默认脚本必须同时检查开头和结尾，不能只查开头。
+        </p>
+        <p>
+          实现时优先使用对象存储 range read：读取 offset <code>0..7</code> 和 <code>size-8..size-1</code> 即可发现这类 magic mismatch。只有当前 S3 client 不方便做 range read 时，才退回下载到临时文件后检查边界字节。
+          边界 magic 匹配只能说明这个 smoke check 通过，不代表 MCAP 内部索引、chunk、CRC 或压缩数据一定可读。
+        </p>
+        <p class="note warning">
+          <code>Failed to fetch size: 416 Requested Range Not Satisfiable</code> 也属于这个 smoke check 的覆盖范围。MinIO UI 里 size 显示 <code>-</code> 时，通常表示前端拿不到普通文件对象的有效大小，或者当前路径不是一个可按字节范围读取的 MCAP 对象。该问题发生在 magic 检查之前，应记录为对象读取/size 异常。
+        </p>
+
+        <h3>判定规则</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>检查项</th>
+              <th>结果</th>
+              <th>Episode QA 状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>无法获取对象 size，或 size 为空 / 未知 / 非数字</td>
+              <td><code>decision = rejected</code></td>
+              <td><code>rejected</code></td>
+            </tr>
+            <tr>
+              <td>文件大小小于 16 字节</td>
+              <td><code>decision = rejected</code></td>
+              <td><code>rejected</code></td>
+            </tr>
+            <tr>
+              <td>读取开头或结尾 range 返回 <code>416 Requested Range Not Satisfiable</code></td>
+              <td><code>decision = rejected</code></td>
+              <td><code>rejected</code></td>
+            </tr>
+            <tr>
+              <td>开头 8 字节不是 MCAP magic</td>
+              <td><code>decision = rejected</code></td>
+              <td><code>rejected</code></td>
+            </tr>
+            <tr>
+              <td>结尾 8 字节不是 MCAP magic</td>
+              <td><code>decision = rejected</code></td>
+              <td><code>rejected</code></td>
+            </tr>
+            <tr>
+              <td>开头和结尾 magic 都匹配</td>
+              <td><code>decision = passed</code></td>
+              <td><code>approved</code>，含义是通过当前内置 smoke check</td>
+            </tr>
+            <tr>
+              <td>对象网络超时、权限错误、MinIO 临时错误、脚本异常</td>
+              <td><code>status = failed</code></td>
+              <td><code>needs_inspection</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>默认输出示例</h3>
+        <pre><code>{
+  "decision": "rejected",
+  "score": 0.0,
+  "summary": "MCAP object range is not satisfiable",
+  "findings": [
+    {
+      "severity": "error",
+      "code": "mcap_range_not_satisfiable",
+      "message": "Failed to read MCAP boundary bytes: 416 Requested Range Not Satisfiable",
+      "http_status": 416,
+      "hint": "MinIO object size is unavailable or the path is not a readable MCAP object"
+    }
+  ]
+}</code></pre>
+        <pre><code>{
+  "decision": "rejected",
+  "score": 0.0,
+  "summary": "MCAP trailing magic mismatch",
+  "findings": [
+    {
+      "severity": "error",
+      "code": "mcap_trailing_magic_mismatch",
+      "message": "Expected trailing magic 89 4d 43 41 50 30 0d 0a, found 2f 06 84 5c 5b ea dc 8b",
+      "expected_hex": "89 4d 43 41 50 30 0d 0a",
+      "actual_hex": "2f 06 84 5c 5b ea dc 8b",
+      "offset": "file_end_minus_8"
+    }
+  ]
+}</code></pre>
+        <p class="note">
+          这个脚本只能证明 MCAP 边界 magic 没有命中已知预览错误，不能证明 MCAP 内部索引、chunk、CRC 或压缩数据一定可读。后续需要更强校验时，再升级为完整 MCAP reader smoke test。
+        </p>
+      </div>
+    </section>
+
+    <section id="script-contract">
+      <h2>8. 脚本契约</h2>
+      <div class="band">
+        <p>首发不做用户上传脚本，内置脚本使用轻量输入 JSON。Keystone worker 先尝试读取 MCAP 对象大小、开头 8 字节和结尾 8 字节，再执行 Python：</p>
+        <pre><code>python3 script.py --input input.json --output result.json</code></pre>
+        <p>脚本必须将业务结果写入 <code>--output</code> 指定的 JSON 文件。stdout / stderr 只作为诊断日志保存。</p>
+        <h3>输入文件</h3>
+        <pre><code>{
+  "episode_id": 42,
+  "mcap_path": "bucket/path/to/file.mcap",
+  "file_size_bytes": 123456789,
+  "object_status": "readable",
+  "object_error": null,
+  "expected_magic_hex": "89 4d 43 41 50 30 0d 0a",
+  "leading_magic_hex": "89 4d 43 41 50 30 0d 0a",
+  "trailing_magic_hex": "2f 06 84 5c 5b ea dc 8b"
+}</code></pre>
+        <p>如果 worker 在获取 size 或 range read 时已经失败，也仍然生成输入 JSON 交给内置脚本输出标准化结果：</p>
+        <pre><code>{
+  "episode_id": 42,
+  "mcap_path": "bucket/path/to/file.mcap",
+  "file_size_bytes": null,
+  "object_status": "range_not_satisfiable",
+  "object_error": "416 Requested Range Not Satisfiable",
+  "expected_magic_hex": "89 4d 43 41 50 30 0d 0a",
+  "leading_magic_hex": null,
+  "trailing_magic_hex": null
+}</code></pre>
+        <h3>最小输出</h3>
+        <pre><code>{
+  "decision": "passed",
+  "score": 1.0,
+  "summary": "ok",
+  "findings": []
+}</code></pre>
+        <h3>字段规则</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>字段</th>
+              <th>规则</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>decision</code></td>
+              <td>必填，只允许 <code>passed</code>、<code>rejected</code>、<code>uncertain</code>。</td>
+            </tr>
+            <tr>
+              <td><code>score</code></td>
+              <td>可选，0 到 1，写入 <code>episodes.qa_score</code>。</td>
+            </tr>
+            <tr>
+              <td><code>summary</code></td>
+              <td>可选字符串，写入 job 摘要；当 rejected / uncertain 时同步到 <code>episodes.quality_flag</code>。</td>
+            </tr>
+            <tr>
+              <td><code>findings</code></td>
+              <td>可选数组，完整保存在 <code>quality_jobs.result_json</code>。</td>
+            </tr>
+          </tbody>
+        </table>
+        <ul class="tag-list">
+          <li>内置脚本</li>
+          <li>默认超时 30 秒</li>
+          <li>默认并发 1</li>
+          <li>不安装依赖</li>
+          <li>不暴露数据库或 MinIO 凭证</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="api">
+      <h2>9. API 草案</h2>
+      <div class="grid">
+        <article class="panel">
+          <h3>质检中心</h3>
+          <pre><code>GET  /api/v1/admin/quality/overview
+GET  /api/v1/admin/quality/batches
+POST /api/v1/admin/quality/batches
+GET  /api/v1/admin/quality/jobs</code></pre>
+        </article>
+        <article class="panel">
+          <h3>Episode 质检操作</h3>
+          <pre><code>GET  /api/v1/episodes/:id/quality-jobs
+POST /api/v1/episodes/:id/quality-rerun
+POST /api/v1/episodes/:id/quality-decision</code></pre>
+        </article>
+      </div>
+
+      <h3>质检中心概览</h3>
+      <pre><code>GET /api/v1/admin/quality/overview
+
+{
+  "script": {
+    "key": "builtin_mcap_preview_smoke_check",
+    "version": "2026.06.01",
+    "expected_magic_hex": "89 4d 43 41 50 30 0d 0a",
+    "checks": ["object_size", "range_read", "leading_magic", "trailing_magic"]
+  },
+  "summary": {
+    "total": 1200,
+    "pending_qa": 20,
+    "qa_running": 4,
+    "approved": 1100,
+    "needs_inspection": 30,
+    "rejected": 46
+  }
+}</code></pre>
+
+      <h3>触发全量质检</h3>
+      <pre><code>POST /api/v1/admin/quality/batches
+Content-Type: application/json
+
+{
+  "scope": "all",
+  "include_cloud_synced": true
+}</code></pre>
+
+      <h3>触发筛选质检</h3>
+      <pre><code>POST /api/v1/admin/quality/batches
+Content-Type: application/json
+
+{
+  "scope": "filtered",
+  "filters": {
+    "qa_status": ["pending_qa", "needs_inspection"],
+    "created_at_from": "2026-06-01T00:00:00Z",
+    "created_at_to": "2026-06-02T00:00:00Z",
+    "robot_device_id": "robot-001",
+    "collector_operator_id": "collector-001"
+  }
+}</code></pre>
+
+      <h3>人工复核</h3>
+      <pre><code>POST /api/v1/episodes/:id/quality-decision
+Content-Type: application/json
+
+{
+  "decision": "approved",
+  "reason": "人工预览 MCAP 后确认可用"
+}</code></pre>
+      <p>所有 <code>/admin/quality/*</code> 和写操作首发只开放给 admin。</p>
+    </section>
+
+    <section id="synapse">
+      <h2>10. Synapse 页面</h2>
+      <div class="three-grid">
+        <article class="panel">
+          <h3>导航入口</h3>
+          <ul>
+            <li>在 <code>AdminSidebar.vue</code> 的“数据运维”分组新增 <code>质检中心</code>。</li>
+            <li>新增路由 <code>/admin/quality</code>，路由名 <code>AdminQualityCenter</code>。</li>
+            <li>页面文件建议为 <code>views/admin/quality/QualityCenter.vue</code>。</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>质检中心首屏</h3>
+          <ul>
+            <li>顶部汇总：总数据、待质检、质检中、已通过、需复核、已驳回。</li>
+            <li>脚本卡片：内置脚本 key、version、检查项、预期 magic、默认超时。</li>
+            <li>操作区：质检全部数据、质检筛选结果。</li>
+            <li>筛选项复用数据生产统计页面口径：QA 状态、时间范围、设备、采集员。</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>列表与详情</h3>
+          <ul>
+            <li>批次列表展示发起人、范围、总数、完成数、失败数、创建时间。</li>
+            <li>job 列表展示 Episode、状态、decision、score、summary、耗时。</li>
+            <li>点击 Episode 跳转现有 Episode 详情页。</li>
+            <li>Episode 详情页新增“脚本质检”卡片：最近 job、result JSON、重跑、人工通过/驳回。</li>
+          </ul>
+        </article>
+      </div>
+      <p class="note">
+        首发页面可以复用现有 <code>ListPageLayout</code>、<code>DataTable</code>、<code>Modal</code>、<code>BaseInput</code>、<code>BaseSelect</code> 和 <code>BaseTextarea</code>，不新建设计系统组件。
+      </p>
+    </section>
+
+    <section id="implementation">
+      <h2>11. 实施顺序</h2>
+      <ol>
+        <li>Keystone 新增迁移：<code>quality_batches</code>、<code>quality_jobs</code>。</li>
+        <li>Keystone 新增内置脚本文件或嵌入式脚本常量：<code>builtin_mcap_preview_smoke_check.py</code>。</li>
+        <li>Keystone 新增 <code>QualityHandler</code>：overview、batch enqueue、job 列表、Episode 重跑和人工决策。</li>
+        <li>Keystone 新增内置 quality worker：领取 pending job、执行内置脚本、落库结果、更新 Episode QA 状态。</li>
+        <li>上传完成路径增加自动入队：当 <code>QUALITY_AUTO_RUN_ON_UPLOAD=true</code> 时创建单 Episode job。</li>
+        <li>Synapse 新增 <code>api/quality.js</code>、<code>QualityCenter.vue</code>、路由和侧边栏入口。</li>
+        <li>Synapse Episode 详情页新增脚本质检卡片，接入重跑和人工通过/驳回。</li>
+        <li>验证：全量触发、筛选触发、size 不可用、range 416、开头 magic 异常、结尾 magic 异常、文件过小、执行异常、云同步资格。</li>
+      </ol>
+
+      <h3>首发验收标准</h3>
+      <div class="band">
+        <ul>
+          <li>管理员能在“质检中心”看到内置脚本 <code>builtin_mcap_preview_smoke_check</code> 的说明。</li>
+          <li>管理员能点击一次对全部 Episode 创建质检任务。</li>
+          <li>管理员能按筛选条件只质检一部分 Episode。</li>
+          <li>对象 size 不可用或 MinIO 显示 size 为 <code>-</code> 时 Episode 变为 <code>rejected</code>，finding 写明 size 异常。</li>
+          <li>读取边界字节返回 <code>416 Requested Range Not Satisfiable</code> 时 Episode 变为 <code>rejected</code>，finding 写明 range 异常。</li>
+          <li>开头和结尾 magic 都正确时 Episode 变为 <code>approved</code>，表示当前内置 smoke check 通过。</li>
+          <li>开头 magic 不匹配时 Episode 变为 <code>rejected</code>，finding 写明实际开头 8 字节。</li>
+          <li>结尾 magic 不匹配时 Episode 变为 <code>rejected</code>，finding 写明实际结尾 8 字节。</li>
+          <li>脚本超时、异常或对象读取失败后 Episode 变为 <code>needs_inspection</code>。</li>
+          <li>Episode 详情能看到最近一次脚本执行结果，并能人工通过或驳回。</li>
+          <li>云同步继续只允许 <code>approved</code> 和 <code>inspector_approved</code>。</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -59,6 +59,7 @@ type Server struct {
 	productionDashboard *handlers.ProductionDashboardHandler
 	syncHandler         *handlers.SyncHandler
 	syncWorker          *services.SyncWorker
+	cliSyncRunner       *services.CLISyncRunner
 	httpServer          *http.Server
 	transferWSServer    *http.Server
 	recorderWSServer    *http.Server
@@ -76,8 +77,8 @@ func axonTransferWriteTimeout(cfg *config.TransferConfig) time.Duration {
 
 // New creates a new server instance.
 // db and s3Client are optional; pass nil to disable Verified ACK.
-// syncWorker is optional; pass nil to disable cloud sync API.
-func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *services.SyncWorker) *Server {
+// syncWorker and cliSyncRunner are optional; pass nil to disable those sync APIs.
+func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *services.SyncWorker, cliSyncRunner ...*services.CLISyncRunner) *Server {
 	// Create Gin engine
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -156,8 +157,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create SyncHandler for cloud sync API
 	var syncHandler *handlers.SyncHandler
+	var cliRunner *services.CLISyncRunner
+	if len(cliSyncRunner) > 0 {
+		cliRunner = cliSyncRunner[0]
+	}
 	if db != nil {
-		syncHandler = handlers.NewSyncHandler(db, syncWorker)
+		syncHandler = handlers.NewSyncHandler(db, syncWorker, cliRunner)
 	}
 
 	s := &Server{
@@ -188,6 +193,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		productionDashboard: productionDashboardHandler,
 		syncHandler:         syncHandler,
 		syncWorker:          syncWorker,
+		cliSyncRunner:       cliRunner,
 		engine:              engine,
 	}
 
@@ -484,6 +490,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			logShutdownError("Sync worker", err)
 			if shutdownErr == nil {
 				shutdownErr = fmt.Errorf("sync worker shutdown: %w", err)
+			}
+		}
+	}
+	if s.cliSyncRunner != nil {
+		if err := s.cliSyncRunner.Stop(ctx); err != nil {
+			logShutdownError("CLI sync runner", err)
+			if shutdownErr == nil {
+				shutdownErr = fmt.Errorf("CLI sync runner shutdown: %w", err)
 			}
 		}
 	}

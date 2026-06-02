@@ -171,8 +171,32 @@ func main() {
 		logger.Println("[SYNC] Cloud sync disabled (KEYSTONE_SYNC_ENABLED=false or missing endpoints)")
 	}
 
+	var cliSyncRunner *services.CLISyncRunner
+	if cfg.CLISync.Enabled && s3Client != nil {
+		var err error
+		cliSyncRunner, err = services.NewCLISyncRunner(db.DB, s3Client, cfg.Storage.Bucket, services.CLISyncRunnerConfig{
+			Enabled:       cfg.CLISync.Enabled,
+			DPBin:         cfg.CLISync.DPBin,
+			DPConfigPath:  cfg.CLISync.DPConfigPath,
+			TempDir:       cfg.CLISync.TempDir,
+			MaxConcurrent: cfg.CLISync.MaxConcurrent,
+			QueueSize:     cfg.CLISync.QueueSize,
+			TimeoutSec:    cfg.CLISync.TimeoutSec,
+			KeepTemp:      cfg.CLISync.KeepTemp,
+			MaxTags:       cfg.CLISync.MaxTags,
+			MaxTagBytes:   cfg.CLISync.MaxTagBytes,
+		})
+		if err != nil {
+			logger.Fatalf("[CLI-SYNC] Failed to initialise CLI sync runner: %v", err)
+		}
+		cliSyncRunner.Start()
+		logger.Printf("[CLI-SYNC] CLI sync runner started: dp=%s config=%s", cfg.CLISync.DPBin, cfg.CLISync.DPConfigPath)
+	} else if cfg.CLISync.Enabled {
+		logger.Println("[CLI-SYNC] CLI sync disabled because S3/MinIO is unavailable")
+	}
+
 	// Initialize and start HTTP server
-	srv := server.New(cfg, db.DB, s3Client, syncWorker)
+	srv := server.New(cfg, db.DB, s3Client, syncWorker, cliSyncRunner)
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}

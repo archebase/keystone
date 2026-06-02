@@ -27,6 +27,19 @@ func flattenSidecar(data []byte) (map[string]string, error) {
 	return result, nil
 }
 
+// flattenSidecarScalars parses sidecar JSON for dp CLI upload tags.
+// It skips arrays because the current dp CLI parser treats commas as tag separators.
+func flattenSidecarScalars(data []byte) (map[string]string, error) {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse sidecar json: %w", err)
+	}
+
+	result := make(map[string]string)
+	flattenScalarValue(result, "", raw)
+	return result, nil
+}
+
 func flattenValue(out map[string]string, prefix string, v interface{}) {
 	switch val := v.(type) {
 	case map[string]interface{}:
@@ -43,6 +56,34 @@ func flattenValue(out map[string]string, prefix string, v interface{}) {
 			return
 		}
 		out[prefix] = string(b)
+	case nil:
+		out[prefix] = ""
+	case bool:
+		if val {
+			out[prefix] = "true"
+		} else {
+			out[prefix] = "false"
+		}
+	case float64:
+		out[prefix] = strconv.FormatFloat(val, 'f', -1, 64)
+	case string:
+		out[prefix] = val
+	default:
+		out[prefix] = fmt.Sprintf("%v", val)
+	}
+}
+
+func flattenScalarValue(out map[string]string, prefix string, v interface{}) {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		for k, child := range val {
+			if prefix == "" && k == "topics_summary" {
+				continue
+			}
+			flattenScalarValue(out, joinKey(prefix, k), child)
+		}
+	case []interface{}:
+		return
 	case nil:
 		out[prefix] = ""
 	case bool:
