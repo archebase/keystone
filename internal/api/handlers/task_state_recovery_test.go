@@ -426,11 +426,15 @@ func TestTaskHandlerAxonTransferWriteTimeout(t *testing.T) {
 }
 
 func TestRecordingFinishAutoUploadUsesConfiguredTransferWriteTimeout(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-finish", "pending")
+
 	custom := 250 * time.Millisecond
 	hub := &recordingFinishTransferHub{
 		conn: &services.TransferConn{DeviceID: "robot-001"},
 	}
-	handler := &TaskHandler{hub: hub, transferWriteTimeout: custom}
+	handler := &TaskHandler{db: db, hub: hub, transferWriteTimeout: custom}
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -470,6 +474,8 @@ func TestRecordingFinishAutoUploadUsesConfiguredTransferWriteTimeout(t *testing.
 	if got := fmt.Sprint(hub.msg["task_id"]); got != "task-finish" {
 		t.Fatalf("message task_id=%q want=%q", got, "task-finish")
 	}
+	assertTaskStateRecoveryStatus(t, db, "task-finish", "in_progress")
+	assertTaskStateRecoveryTimestampSet(t, db, "task-finish", "started_at")
 	if !strings.Contains(w.Body.String(), custom.String()) {
 		t.Fatalf("response body %q does not mention custom timeout %s", w.Body.String(), custom)
 	}
