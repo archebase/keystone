@@ -5,11 +5,17 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/cloud"
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
@@ -129,6 +135,27 @@ func TestFindPendingEpisodes_ExcludesExhaustedFailuresFromPollingOnly(t *testing
 	assertEpisodeIDs(t, pollIDs, []int64{1, 3})
 }
 
+func TestFindPendingEpisodes_SkipsNonRetryableFailuresFromPollingOnly(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{db: db, cfg: SyncWorkerConfig{BatchSize: 10, MaxRetries: 3}}
+
+	insertEpisodeForSyncWorkerTest(t, db, 5, "approved", false)
+	insertEpisodeForSyncWorkerTest(t, db, 6, "approved", false)
+	insertNonRetryableSyncLogForSyncWorkerTest(t, db, 6, "failed", 1)
+
+	apiIDs, err := w.findPendingEpisodes(context.Background(), true)
+	if err != nil {
+		t.Fatalf("api pending query failed: %v", err)
+	}
+	assertEpisodeIDs(t, apiIDs, []int64{5, 6})
+
+	pollIDs, err := w.findPendingEpisodes(context.Background(), false)
+	if err != nil {
+		t.Fatalf("poll pending query failed: %v", err)
+	}
+	assertEpisodeIDs(t, pollIDs, []int64{5})
+}
+
 func TestEnqueueEpisodeManual_AllowsExhaustedRetryEpisode(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
@@ -199,6 +226,68 @@ func TestEnqueueEpisodeManual_PromotesDueFailureToPending(t *testing.T) {
 	}
 }
 
+func TestEnqueueEpisodeResync_AllowsAlreadySyncedEpisode(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		enqueueCh:       make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+	w.running.Store(true)
+
+	insertEpisodeForSyncWorkerTest(t, db, 27, "approved", true)
+	insertSyncLogForSyncWorkerTest(t, db, 27, "completed", 1)
+
+	if err := w.EnqueueEpisodeResync(context.Background(), 27); err != nil {
+		t.Fatalf("resync enqueue failed: %v", err)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 27)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+	if count := countSyncLogsForSyncWorkerTest(t, db, 27); count != 2 {
+		t.Fatalf("sync log count = %d, want completed history plus resync pending", count)
+	}
+
+	select {
+	case got := <-w.enqueueCh:
+		if got.episodeID != 27 {
+			t.Fatalf("unexpected episode id: got %d want 27", got.episodeID)
+		}
+		if !got.manual || !got.resync {
+			t.Fatalf("enqueue flags = manual:%t resync:%t, want both true", got.manual, got.resync)
+		}
+	default:
+		t.Fatal("expected resync episode to be enqueued")
+	}
+}
+
+func TestDispatchPendingSyncLogs_TreatsSyncedPendingRowsAsResync(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		jobCh:           make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+
+	insertEpisodeForSyncWorkerTest(t, db, 28, "approved", true)
+	insertSyncLogForSyncWorkerTest(t, db, 28, "pending", 0)
+
+	w.dispatchPendingSyncLogs(context.Background())
+
+	select {
+	case got := <-w.jobCh:
+		if got.episodeID != 28 || !got.resync {
+			t.Fatalf("dispatched request = %+v, want episode 28 resync", got)
+		}
+	default:
+		t.Fatal("expected synced pending row to be dispatched as resync")
+	}
+}
+
 func TestEnqueueEpisode_RejectsInProgressEpisode(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
@@ -259,6 +348,35 @@ func TestEnqueueEpisodeManual_RejectsPendingEpisode(t *testing.T) {
 
 	if err := w.EnqueueEpisodeManual(context.Background(), 12); !errors.Is(err, ErrSyncAlreadyInProgress) {
 		t.Fatalf("manual enqueue error = %v, want ErrSyncAlreadyInProgress", err)
+	}
+}
+
+func TestEnqueueEpisodeManual_AllowsNonRetryableFailure(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		enqueueCh:       make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+	w.running.Store(true)
+
+	insertEpisodeForSyncWorkerTest(t, db, 24, "approved", false)
+	insertNonRetryableSyncLogForSyncWorkerTest(t, db, 24, "failed", 1)
+
+	if err := w.EnqueueEpisodeManual(context.Background(), 24); err != nil {
+		t.Fatalf("manual enqueue failed: %v", err)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 24)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+	if latest.AttemptCount != 0 {
+		t.Fatalf("latest attempt_count = %d, want fresh pending attempt count 0", latest.AttemptCount)
+	}
+	if count := countSyncLogsForSyncWorkerTest(t, db, 24); count != 2 {
+		t.Fatalf("sync log count = %d, want failed history plus fresh pending", count)
 	}
 }
 
@@ -448,6 +566,54 @@ func TestRetryFailedEpisodes_PromotesDueFailureToPendingBeforeDispatch(t *testin
 	}
 }
 
+func TestRetryFailedEpisodes_IgnoresMissingDeletedAndRetriesSyncedEpisodesAsResync(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		jobCh:           make(chan syncEnqueueRequest, 2),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+
+	insertSyncLogForSyncWorkerTest(t, db, 2, "failed", 1)
+	insertEpisodeForSyncWorkerTest(t, db, 3, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 3, "failed", 1)
+	if _, err := db.Exec(`UPDATE episodes SET deleted_at = ? WHERE id = 3`, time.Now().UTC()); err != nil {
+		t.Fatalf("mark episode deleted: %v", err)
+	}
+	insertEpisodeForSyncWorkerTest(t, db, 4, "approved", true)
+	insertSyncLogForSyncWorkerTest(t, db, 4, "failed", 1)
+	insertEpisodeForSyncWorkerTest(t, db, 5, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 5, "failed", 1)
+
+	var logs bytes.Buffer
+	previousLogger := logger.Get()
+	logger.Set(log.New(&logs, "", 0))
+	t.Cleanup(func() { logger.Set(previousLogger) })
+
+	w.retryFailedEpisodes(context.Background())
+
+	if strings.Contains(logs.String(), "Failed to queue retry") {
+		t.Fatalf("unexpected retry queue failure log: %s", logs.String())
+	}
+
+	for _, episodeID := range []int64{4, 5} {
+		latest := latestSyncLogForSyncWorkerTest(t, db, episodeID)
+		if latest.Status != "pending" {
+			t.Fatalf("episode %d latest status = %q, want pending", episodeID, latest.Status)
+		}
+	}
+
+	gotSynced := <-w.jobCh
+	if gotSynced.episodeID != 4 || !gotSynced.resync {
+		t.Fatalf("unexpected synced retry dispatch: got %+v want episode 4 resync", gotSynced)
+	}
+	gotUnsynced := <-w.jobCh
+	if gotUnsynced.episodeID != 5 || gotUnsynced.resync {
+		t.Fatalf("unexpected unsynced retry dispatch: got %+v want episode 5 non-resync", gotUnsynced)
+	}
+}
+
 func TestAcquireSyncLogWithMode_ClaimsFreshPendingRow(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
@@ -517,7 +683,7 @@ func TestProcessEnqueuedEpisode_HoldsMarkerUntilProcessingReturns(t *testing.T) 
 		w.processEnqueuedEpisodeWith(
 			context.Background(),
 			syncEnqueueRequest{episodeID: 77, manual: true},
-			func(context.Context, int64, bool) {
+			func(context.Context, int64, bool, bool) {
 				close(started)
 				<-release
 			},
@@ -616,6 +782,74 @@ func TestNextRetryDelay_IncludesBoundedJitter(t *testing.T) {
 	}
 }
 
+func TestMarkSyncFailed_NonRetryableClearsNextRetry(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:  db,
+		cfg: SyncWorkerConfig{RetryBaseSec: 30, RetryMaxSec: 1800},
+	}
+
+	insertEpisodeForSyncWorkerTest(t, db, 25, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 25, "in_progress", 1)
+	var syncLogID int64
+	if err := db.Get(&syncLogID, "SELECT id FROM sync_logs WHERE episode_id = ?", 25); err != nil {
+		t.Fatalf("query sync log id: %v", err)
+	}
+
+	w.markSyncFailed(context.Background(), syncLogID, 25, 0, newNonRetryableSyncError("asset_id missing"), 1)
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 25)
+	if latest.Status != "failed" {
+		t.Fatalf("latest status = %q, want failed", latest.Status)
+	}
+	if latest.NextRetry.Valid {
+		t.Fatalf("next_retry_at valid = true, want NULL")
+	}
+}
+
+func TestMarkSyncCompleted_WritesExistingCloudFields(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{db: db}
+
+	insertEpisodeForSyncWorkerTest(t, db, 26, "approved", false)
+	insertSyncLogForSyncWorkerTest(t, db, 26, "in_progress", 1)
+	var syncLogID int64
+	if err := db.Get(&syncLogID, "SELECT id FROM sync_logs WHERE episode_id = ?", 26); err != nil {
+		t.Fatalf("query sync log id: %v", err)
+	}
+
+	w.markSyncCompleted(context.Background(), syncLogID, 26, &cloud.UploadResult{
+		LogicalUploadID: "logical-26",
+		UploadID:        "upload-26",
+		ObjectKey:       "cloud/object.mcap",
+		FileSize:        12345,
+	}, 3)
+
+	var ep struct {
+		CloudSynced    bool   `db:"cloud_synced"`
+		CloudMcapPath  string `db:"cloud_mcap_path"`
+		CloudProcessed bool   `db:"cloud_processed"`
+	}
+	if err := db.Get(&ep, "SELECT cloud_synced, cloud_mcap_path, cloud_processed FROM episodes WHERE id = ?", 26); err != nil {
+		t.Fatalf("query episode cloud fields: %v", err)
+	}
+	if !ep.CloudSynced || ep.CloudMcapPath != "cloud/object.mcap" || ep.CloudProcessed {
+		t.Fatalf("episode cloud fields = %+v", ep)
+	}
+
+	var logRow struct {
+		Status           string `db:"status"`
+		DestinationPath  string `db:"destination_path"`
+		BytesTransferred int64  `db:"bytes_transferred"`
+	}
+	if err := db.Get(&logRow, "SELECT status, destination_path, bytes_transferred FROM sync_logs WHERE id = ?", syncLogID); err != nil {
+		t.Fatalf("query sync log completion fields: %v", err)
+	}
+	if logRow.Status != "completed" || logRow.DestinationPath != "cloud/object.mcap" || logRow.BytesTransferred != 12345 {
+		t.Fatalf("sync log completion fields = %+v", logRow)
+	}
+}
+
 func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 
@@ -629,6 +863,9 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			qa_status TEXT NOT NULL,
 			cloud_synced BOOLEAN NOT NULL DEFAULT 0,
+			cloud_synced_at TIMESTAMP NULL,
+			cloud_mcap_path TEXT,
+			cloud_processed BOOLEAN NOT NULL DEFAULT 0,
 			deleted_at TIMESTAMP NULL,
 			created_at TIMESTAMP NOT NULL
 		)`,
@@ -637,6 +874,8 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 				episode_id INTEGER NOT NULL,
 				source_path TEXT,
 				status TEXT NOT NULL,
+				destination_path TEXT,
+				bytes_transferred INTEGER,
 				duration_sec INTEGER,
 				error_message TEXT,
 				attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -676,17 +915,34 @@ func insertSyncLogForSyncWorkerTest(t *testing.T, db *sqlx.DB, episodeID int64, 
 	t.Helper()
 
 	startedAt := time.Date(2026, 2, int(episodeID), 0, 0, 0, 0, time.UTC)
+	nextRetry := sql.NullTime{}
+	if status == "failed" {
+		nextRetry = sql.NullTime{Time: startedAt.Add(time.Second), Valid: true}
+	}
 	if _, err := db.Exec(`
-		INSERT INTO sync_logs (episode_id, status, attempt_count, started_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO sync_logs (episode_id, status, attempt_count, started_at, next_retry_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, episodeID, status, attemptCount, startedAt, nextRetry); err != nil {
+		t.Fatalf("insert sync log for episode %d: %v", episodeID, err)
+	}
+}
+
+func insertNonRetryableSyncLogForSyncWorkerTest(t *testing.T, db *sqlx.DB, episodeID int64, status string, attemptCount int) {
+	t.Helper()
+
+	startedAt := time.Date(2026, 2, int(episodeID), 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, status, attempt_count, started_at, next_retry_at)
+		VALUES (?, ?, ?, ?, NULL)
 	`, episodeID, status, attemptCount, startedAt); err != nil {
 		t.Fatalf("insert sync log for episode %d: %v", episodeID, err)
 	}
 }
 
 type syncLogForSyncWorkerTest struct {
-	Status       string `db:"status"`
-	AttemptCount int    `db:"attempt_count"`
+	Status       string       `db:"status"`
+	AttemptCount int          `db:"attempt_count"`
+	NextRetry    sql.NullTime `db:"next_retry_at"`
 }
 
 func latestSyncLogForSyncWorkerTest(t *testing.T, db *sqlx.DB, episodeID int64) syncLogForSyncWorkerTest {
@@ -694,7 +950,7 @@ func latestSyncLogForSyncWorkerTest(t *testing.T, db *sqlx.DB, episodeID int64) 
 
 	var row syncLogForSyncWorkerTest
 	if err := db.Get(&row, `
-		SELECT status, attempt_count
+		SELECT status, attempt_count, next_retry_at
 		FROM sync_logs
 		WHERE episode_id = ?
 		ORDER BY id DESC

@@ -1,0 +1,825 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone 原生云同步直连 Data Platform 上传方案</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17211d;
+      --muted: #5a665f;
+      --line: #d7e1dc;
+      --paper: #ffffff;
+      --surface: #f5f9f7;
+      --surface-strong: #e7f3ee;
+      --accent: #0d6f61;
+      --accent-strong: #084d44;
+      --blue: #1f5f8f;
+      --warn: #8a5a12;
+      --danger: #9e3d32;
+      --success: #1e744d;
+      --code-bg: #10201c;
+      --code-ink: #edf8f3;
+      --shadow: 0 18px 46px rgba(23, 33, 29, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(13, 111, 97, 0.13), transparent 34%),
+        linear-gradient(180deg, #f8fbfa 0%, #ffffff 48%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 46px 24px 80px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 310px;
+      gap: 28px;
+      align-items: end;
+      padding: 32px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4.8vw, 46px);
+      line-height: 1.14;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 800px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta {
+      border-left: 4px solid var(--accent);
+      padding-left: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .meta strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 4px;
+    }
+
+    nav a {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      border: 1px solid #c6ddd3;
+      border-radius: 999px;
+      padding: 8px 12px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    section {
+      margin-top: 38px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 26px;
+      line-height: 1.26;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul,
+    ol {
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      border-radius: 5px;
+      background: #edf5f1;
+      padding: 2px 5px;
+      color: #123d35;
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      margin: 14px 0;
+      border-radius: 12px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      padding: 18px;
+      font: 14px/1.65 "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 22px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: var(--shadow);
+      padding: 22px;
+    }
+
+    .decision {
+      border-left: 4px solid var(--accent);
+      background: var(--surface);
+      padding: 14px 16px;
+      margin: 16px 0;
+    }
+
+    .warning {
+      border-left: 4px solid var(--warn);
+      background: #fff8ec;
+      padding: 14px 16px;
+      margin: 16px 0;
+    }
+
+    .danger {
+      border-left: 4px solid var(--danger);
+      background: #fff6f4;
+      padding: 14px 16px;
+      margin: 16px 0;
+    }
+
+    .success {
+      border-left: 4px solid var(--success);
+      background: #f1faf5;
+      padding: 14px 16px;
+      margin: 16px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .step {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper);
+      padding: 13px 15px;
+    }
+
+    .step strong {
+      color: var(--accent-strong);
+    }
+
+    @media (max-width: 840px) {
+      header,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        padding: 28px 16px 56px;
+      }
+
+      header {
+        padding: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Cloud Sync / Data Platform</p>
+        <h1>Keystone 原生云同步直连 Data Platform 上传方案</h1>
+        <p class="lead">
+          本方案采用方案 A：Keystone 读取 <code>KEYSTONE_SYNC_DP_CONFIG</code> 指向的 data-platform
+          config，按 episode 对应的 <code>asset_id</code> 选择 device profile，并复用现有 Go 上传器完成
+          MinIO 到 Data Platform OSS 的流式上传。第一版直接改造 Keystone 原有 cloud sync 上传逻辑，
+          不再依赖 <code>dp data upload</code> 或 Keystone 自有 cloud API key。
+        </p>
+      </div>
+      <div class="meta">
+        <strong>设计状态</strong>
+        草案，面向第一版实现<br>
+        目标路径：原生 cloud sync，不下载 MCAP 到本地，不依赖 <code>dp data upload</code><br>
+        兼容重点：<code>robots.asset_id</code>、device API key、device tags、raw tags 合成
+      </div>
+    </header>
+
+    <nav aria-label="目录">
+      <a href="#goals">目标</a>
+      <a href="#current">当前行为</a>
+      <a href="#architecture">目标架构</a>
+      <a href="#device-mapping">设备映射</a>
+      <a href="#config">配置读取</a>
+      <a href="#tags">Raw Tags</a>
+      <a href="#flow">上传流程</a>
+      <a href="#implementation">实施步骤</a>
+      <a href="#risks">风险</a>
+      <a href="#tests">测试</a>
+    </nav>
+
+    <section id="goals" class="panel">
+      <h2>目标与非目标</h2>
+      <div class="grid">
+        <div>
+          <h3>目标</h3>
+          <ul>
+            <li>更新 Keystone 原有 cloud sync worker 的上传身份和 raw tags 合成逻辑。</li>
+            <li>复用既有 <code>robots.asset_id</code> 作为“云资产编号”，即本地 robot 与 Data Platform device 的稳定映射。</li>
+            <li>episode 创建时将当时的 <code>asset_id</code> 快照写入 <code>episodes.metadata.asset_id</code>。</li>
+            <li>读取 <code>KEYSTONE_SYNC_DP_CONFIG</code> 指向的 data-platform config，按 <code>asset_id</code> 选择 device profile。</li>
+            <li>使用 device profile 的 <code>apiKey</code> 与 AuthService 交换 Bearer token。</li>
+            <li>复用 Keystone 现有 <code>cloud.Uploader</code>，从 MinIO 流式上传到 Data Platform OSS。</li>
+            <li>复刻 Rust SDK 的 raw tags 合并与冲突校验规则。</li>
+          </ul>
+        </div>
+        <div>
+          <h3>非目标</h3>
+          <ul>
+            <li>不在第一版集成 <code>dp device init</code>，device profile 由现场工程师提前初始化。</li>
+            <li>不生成或修改 Data Platform device id，只存储自动化流程写入的 <code>asset_id</code>。</li>
+            <li>不迁移 data-platform config 到 Keystone 配置中心。</li>
+            <li>删除 Keystone 后端 CLI 同步旁路，包括 <code>CLISyncRunner</code>、CLI sync API、CLI sync 配置和 <code>cli_sync_runs</code> 表迁移。</li>
+            <li>不在每个 episode 上传前执行 device init；init 是一次性准备或凭证轮换动作。</li>
+            <li>不做历史 episode 的自动 <code>asset_id</code> 回填工具；缺失时给出清晰错误并允许手动重试。</li>
+            <li>不新增 direct sync raw tag 数量或总字节数限制。</li>
+            <li>不把 MCAP 完整读入内存，只保持单分片缓冲。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="current" class="panel">
+      <h2>当前行为</h2>
+      <p>
+        Keystone 原有 cloud sync 已经是 Go 直连上传：从 MinIO 流式读取 MCAP，创建 data-gateway 上传会话，
+        再分片上传到 Data Platform OSS。当前差异在于它使用 Keystone 自己的 sync API key，并没有像
+        <code>dp data upload --device</code> 一样读取 device profile、注入 device tags 和 reserved raw tags。
+        当前 worker 也没有读取 episode 的云端 device 快照，sidecar raw tag 读取失败时会 best-effort 继续上传。
+      </p>
+      <pre><code>Keystone DB episode
+  -> build sidecar raw tags
+  -> AuthService ExchangeCredential with Keystone sync API key
+  -> data-gateway CreateLogicalUpload
+  -> MinIO GetObject stream
+  -> OSS multipart upload
+  -> data-gateway CompleteUpload
+  -> update sync_logs / episodes</code></pre>
+      <div class="warning">
+        <p>
+          所以第一版不需要新增上传链路，但必须把原有 worker 的上传身份切到 device profile，
+          补齐 asset_id 解析、strict sidecar、non-retryable 错误和与 data-platform Rust SDK 一致的 raw tags 合成规则。
+        </p>
+      </div>
+    </section>
+
+    <section id="architecture" class="panel">
+      <h2>目标架构</h2>
+      <p>
+        新路径保留原有 cloud sync worker 的触发、重试、状态更新和同步日志。每次处理 episode 时，
+        worker 先解析 episode 对应的 <code>asset_id</code>，再根据该值读取 data-platform device
+        profile，并用该 profile 的 API key 构造本次上传专用客户端。
+      </p>
+      <pre><code>Keystone DB episode
+  -> resolve asset_id from episodes.metadata
+     or fallback through episode.workstation_id -> workstations -> robots.asset_id
+  -> load DP config from KEYSTONE_SYNC_DP_CONFIG
+  -> select devices[].deviceId == asset_id
+  -> build effective raw tags
+  -> AuthService ExchangeCredential with device apiKey
+  -> data-gateway CreateLogicalUpload
+  -> MinIO GetObject stream
+  -> OSS multipart upload
+  -> data-gateway CompleteUpload
+  -> update sync_logs / episodes</code></pre>
+
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>职责</th>
+            <th>建议位置</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Robot asset mapping</td>
+            <td>保存本地 robot 到 Data Platform device 的不可变映射。</td>
+            <td><code>robots.asset_id</code>、robot API、数据库迁移</td>
+          </tr>
+          <tr>
+            <td>Asset resolver</td>
+            <td>优先读取 <code>episodes.metadata.asset_id</code>，缺失时按历史 workstation 反查 robot。</td>
+            <td><code>internal/services/dp_asset_resolver.go</code></td>
+          </tr>
+          <tr>
+            <td>DP config loader</td>
+            <td>解析 <code>endpoints</code> 与 <code>devices[]</code>，按 device id 返回上传所需配置。</td>
+            <td><code>internal/services/dp_config_loader.go</code></td>
+          </tr>
+          <tr>
+            <td>Raw tag builder</td>
+            <td>复刻 Rust SDK 的 tag 合并顺序与冲突规则。</td>
+            <td><code>internal/services/dp_raw_tags.go</code></td>
+          </tr>
+          <tr>
+            <td>Direct uploader factory</td>
+            <td>按 episode 创建本次专用 <code>AuthClient</code>、<code>GatewayClient</code> 和 <code>cloud.Uploader</code>。</td>
+            <td><code>internal/services/sync_worker.go</code></td>
+          </tr>
+          <tr>
+            <td>Cloud uploader</td>
+            <td>复用现有 data-gateway 与 OSS multipart 上传能力。</td>
+            <td><code>internal/cloud/uploader.go</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="device-mapping" class="panel">
+      <h2>云资产编号映射规则</h2>
+      <p>
+        Keystone 本地 <code>robots.device_id</code> 继续表示 Axon / Keystone 内部设备编号，不参与 Data Platform
+        device 身份选择。云交互只使用既有 <code>robots.asset_id</code>，前端文案统一显示为“云资产编号”。
+      </p>
+
+      <h3>Robot 字段规则</h3>
+      <ul>
+        <li><code>robots.asset_id</code> 初始允许为空，创建 robot 时可写可不写。</li>
+        <li>首次设置非空后不可修改、不可清空；同值更新视为幂等。</li>
+        <li>active robots 的非空 <code>asset_id</code> 必须唯一，软删除 robot 不占用唯一性。</li>
+        <li>保存前 trim；空字符串按 NULL；最大长度 100；不做 Data Platform device id 格式正则。</li>
+        <li>robot create / update / list / detail API 暴露 <code>asset_id</code>。</li>
+      </ul>
+
+      <h3>Episode 快照规则</h3>
+      <ul>
+        <li>episode 创建时，如果能从 task -> workstation -> robot 解析到非空 <code>asset_id</code>，写入 <code>episodes.metadata.asset_id</code>。</li>
+        <li>episode 创建不因 <code>asset_id</code> 缺失失败，本地采集、QA 和入库继续成功。</li>
+        <li>不修改 sidecar JSON，不把 <code>asset_id</code> 写回采集产物。</li>
+        <li>第一版不提供自动历史回填工具；缺失时通过错误信息提示配置 robot 或手动回填 metadata 后再手动同步。</li>
+      </ul>
+
+      <h3>上传时解析优先级</h3>
+      <pre><code>if episodes.metadata.asset_id is non-empty:
+    use metadata.asset_id
+else:
+    load workstation by episode.workstation_id, including soft-deleted workstation rows
+    load robots.asset_id by workstation.robot_id
+    use robots.asset_id if non-empty
+if still empty:
+    fail as non-retryable configuration error</code></pre>
+
+      <div class="decision">
+        <p>
+          cloud sync 不 fallback 到 <code>robots.device_id</code>。工位当前允许直接更新 <code>robot_id</code>；
+          后续如果换绑改为“旧工位软删 + 新工位记录”，fallback 查询也必须允许读取软删除 workstation，
+          因为 episode 的 <code>workstation_id</code> 是历史引用。
+        </p>
+      </div>
+    </section>
+
+    <section id="config" class="panel">
+      <h2>方案 A：读取 Data Platform Config</h2>
+      <p>
+        Keystone 使用 <code>KEYSTONE_SYNC_DP_CONFIG</code> 指向的 data-platform config。该文件由现场工程师提前通过
+        <code>dp config</code> 和 <code>dp device init</code> 生成和维护，Keystone 只解析直连上传需要的字段。
+        原生 direct sync 不再依赖 <code>KEYSTONE_CLOUD_API_KEY</code>、
+        <code>KEYSTONE_SYNC_AUTH_ENDPOINT</code> 或 <code>KEYSTONE_SYNC_GATEWAY_ENDPOINT</code>。
+      </p>
+
+      <h3>需要解析的 JSON 字段</h3>
+      <pre><code>{
+  "version": 3,
+  "endpoints": {
+    "auth": "https://auth.example.com:50051",
+    "gateway": "https://gateway.example.com:50052"
+  },
+  "devices": [
+    {
+      "deviceId": "AB-F0001-T0001-000006",
+      "apiKey": "ak_v1.device_secret",
+      "tags": {
+        "778a6d83c9ec49108537542a570966ee.device_id": "AB-F0001-T0001-000006",
+        "line": "a"
+      },
+      "initializedAtUnix": 1760000000
+    }
+  ]
+}</code></pre>
+
+      <h3>Go 结构建议</h3>
+      <pre><code>type DPConfigFile struct {
+    Version   *int              `json:"version,omitempty"`
+    Endpoints DPConfigEndpoints `json:"endpoints"`
+    Devices   []DPDeviceProfile `json:"devices"`
+}
+
+type DPConfigEndpoints struct {
+    Auth    string `json:"auth"`
+    Gateway string `json:"gateway"`
+}
+
+type DPDeviceProfile struct {
+    DeviceID string            `json:"deviceId"`
+    APIKey   string            `json:"apiKey"`
+    Tags     map[string]string `json:"tags"`
+}
+
+type DPResolvedEndpoint struct {
+    Target    string
+    UseTLS    bool
+    ServerName string
+}</code></pre>
+
+      <h3>解析规则</h3>
+      <ul>
+        <li><code>version</code> 缺失或等于 3 可接受；存在且不等于 3 时失败。</li>
+        <li><code>devices[].deviceId</code> trim 后比较，大小写敏感；重复 device id 直接失败。</li>
+        <li><code>deviceId</code> 必须与 Keystone 解析出的 <code>asset_id</code> 一致。</li>
+        <li><code>apiKey</code> 不能为空，且永不打印明文日志。</li>
+        <li><code>tags</code> 不能为空，保持与 Rust SDK <code>require_device_upload()</code> 一致；tag key/value 不 trim、不改写，但 key 必须非空。</li>
+        <li><code>endpoints.auth</code> 和 <code>endpoints.gateway</code> 必须来自 config 文件，不支持 <code>ARCHEBASE_*</code> 或 <code>KEYSTONE_SYNC_*</code> overlay。</li>
+        <li>每个 episode 上传前重新读取 config 文件，避免长期进程缓存旧 device profile。</li>
+      </ul>
+
+      <h3>Endpoint 与 TLS 规则</h3>
+      <ul>
+        <li><code>https://host[:port]</code> 使用 TLS gRPC；未写端口时补 <code>443</code>；TLS CA 使用系统 CA，server name 使用 URL host。</li>
+        <li><code>http://host[:port]</code> 使用 insecure gRPC；未写端口时补 <code>80</code>。</li>
+        <li><code>host[:port]</code> 兼容裸地址，按 insecure gRPC 处理，不自动补端口。</li>
+        <li>endpoint 禁止 path、query 和 fragment，例如 <code>https://host:50051/foo</code> 应视为配置错误。</li>
+        <li>Auth 和 Gateway 不强制使用同一种 scheme，分别按各自 endpoint 解析。</li>
+        <li>第一版不支持自定义 CA 文件或 TLS server name override。</li>
+      </ul>
+
+      <div class="decision">
+        <p>
+          第一版不把 device profile 写入 Keystone 数据库。Keystone 只消费 data-platform config，
+          这样可以最大限度贴近当前 <code>dp --config ... --device ...</code> 的上传身份语义，同时避免
+          Keystone 自有 sync API key 与 device API key 混用。
+        </p>
+      </div>
+
+      <h3>现场前置动作</h3>
+      <pre><code>dp --config /home/shark/.archebase/config.json config
+dp --config /home/shark/.archebase/config.json device init AB-F0001-T0001-000006</code></pre>
+      <p>
+        初始化成功后，config 中会出现对应的 <code>devices[]</code> profile。后续 Keystone 上传只读取该 profile，
+        不在上传前自动执行 init。凭证过期、设备迁移或平台侧 tags 变化时，由现场工程师执行
+        <code>dp device reinit ... --yes</code> 轮换。
+      </p>
+    </section>
+
+    <section id="tags" class="panel">
+      <h2>Raw Tags 合并规则</h2>
+      <p>
+        直连上传必须复刻 data-platform Rust SDK 的 <code>build_upload_tags()</code> 语义。合并过程使用非冲突插入：
+        如果 key 已存在且 value 不同，直接失败；如果 key 已存在且 value 相同，视为幂等。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>顺序</th>
+            <th>来源</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>device profile tags</td>
+            <td>来自 <code>devices[].tags</code>，由 data-platform device init 生成。</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>device id reserved tag</td>
+            <td><code>778a6d83c9ec49108537542a570966ee.device_id</code>，值为 profile 的 <code>deviceId</code>。</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>original file reserved tag</td>
+            <td><code>a206e337ecdf70a93bb611cf6a30c346.raw_file</code>，值固定使用 MinIO MCAP object key 的 basename。</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>Keystone sidecar tags</td>
+            <td>从 sidecar JSON 扁平化得到；数组字段 JSON encode，顶层 <code>topics_summary</code> 排除。</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>Keystone extra tags</td>
+            <td><code>episode_id</code>、<code>keystone_episode_id</code>、<code>sync_channel</code>、<code>task_id</code>、<code>factory_id</code>、<code>organization_id</code>。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="warning">
+        <p>
+          原有 cloud sync 没有本地临时文件，因此 reserved <code>raw_file</code> 不读取 sidecar 字段，
+          只使用 <code>basename(stripBucketPrefix(episodes.mcap_path))</code>。如果 basename 为空，本次上传失败。
+        </p>
+      </div>
+
+      <div class="decision">
+        <p>
+          Keystone 不新增普通 <code>device_id</code> raw tag。设备归属只通过
+          <code>778a6d83c9ec49108537542a570966ee.device_id</code> reserved tag 表达，并由 Keystone 本地注入、
+          data-gateway 服务端二次校验。
+        </p>
+      </div>
+
+      <h3>Sidecar 规则</h3>
+      <ul>
+        <li>direct device sync 改为 strict：<code>sidecar_path</code> 为空、对象不可读或 JSON 解析失败时，不创建 data-gateway upload session。</li>
+        <li>数组字段保留为 JSON 字符串；顶层 <code>topics_summary</code> 继续排除。</li>
+        <li>第一版不新增 raw tag 数量或总字节数限制。</li>
+      </ul>
+
+      <h3>合并伪代码</h3>
+      <pre><code>merged := map[string]string{}
+insertAllNonConflicting(merged, deviceProfile.Tags)
+insertNonConflicting(merged, deviceIDRawTagKey, deviceProfile.DeviceID)
+insertNonConflicting(merged, originalFileRawTagKey, mcapBaseName)
+insertAllNonConflicting(merged, sidecarTags)
+insertAllNonConflicting(merged, keystoneExtraTags)
+return merged</code></pre>
+    </section>
+
+    <section id="flow" class="panel">
+      <h2>直连上传流程</h2>
+      <div class="flow">
+        <div class="step"><strong>1. 领取 episode</strong>：沿用原有 cloud sync worker 的自动扫描、手动触发、重试和并发控制。</div>
+        <div class="step"><strong>2. 加载 episode</strong>：读取 MCAP MinIO key、sidecar path、metadata、workstation id 和任务上下文。</div>
+        <div class="step"><strong>3. 解析 asset_id</strong>：优先使用 <code>episodes.metadata.asset_id</code>，否则通过历史 workstation 反查 <code>robots.asset_id</code>。</div>
+        <div class="step"><strong>4. 加载 DP config</strong>：从 <code>KEYSTONE_SYNC_DP_CONFIG</code> 读取 device profile 和 endpoints。</div>
+        <div class="step"><strong>5. 构造 raw tags</strong>：合并 device tags、reserved tags、sidecar tags 和 Keystone extra tags，执行冲突校验。</div>
+        <div class="step"><strong>6. 构造 direct uploader</strong>：为本次 episode 创建专用 <code>AuthClient</code>、<code>GatewayClient</code> 和 <code>cloud.Uploader</code>。</div>
+        <div class="step"><strong>7. 执行上传</strong>：调用 <code>cloud.Uploader.Upload()</code>，从 MinIO 流式读取 MCAP 并上传 OSS。</div>
+        <div class="step"><strong>8. 写回结果</strong>：沿用原有成功路径，更新 <code>sync_logs</code>、<code>episodes.cloud_synced</code> 和 <code>cloud_mcap_path</code>。</div>
+      </div>
+
+      <h3>结果字段映射</h3>
+      <p>
+        第一版不新增 <code>episodes</code> 字段，也不扩展 <code>sync_logs</code> 表。Data Platform 审计 ID 先通过日志输出；
+        如后续 UI 或 API 需要直接按 episode 查询，再单独扩表。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>结果</th>
+            <th>Go direct 来源</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>file_id</code></td>
+            <td><code>cloud.UploadResult.UploadID</code></td>
+            <td>第一版不落库，只记录日志；如后续需要在 Keystone 记录 Data Platform 文件 ID，可直接使用该值。</td>
+          </tr>
+          <tr>
+            <td><code>logical_upload_id</code></td>
+            <td><code>cloud.UploadResult.LogicalUploadID</code></td>
+            <td>第一版不落库，只记录日志。</td>
+          </tr>
+          <tr>
+            <td><code>upload_id</code></td>
+            <td><code>cloud.UploadResult.UploadID</code></td>
+            <td>与 Data Platform SDK 返回的 <code>fileId</code> 当前等价，第一版不落库。</td>
+          </tr>
+          <tr>
+            <td><code>object_key</code></td>
+            <td><code>cloud.UploadResult.ObjectKey</code></td>
+            <td>写入 <code>sync_logs.destination_path</code> 和 <code>episodes.cloud_mcap_path</code>。</td>
+          </tr>
+          <tr>
+            <td><code>oss_object_etag</code></td>
+            <td><code>cloud.UploadResult.OSSObjectETag</code></td>
+            <td>客户端计算并回传给 data-gateway 的 multipart ETag，第一版不落库，只记录日志。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="implementation" class="panel">
+      <h2>实施步骤</h2>
+      <ol>
+        <li>
+          复用 <code>robots.asset_id</code> 字段，增加 active 非空唯一约束；
+          create / update 实现 trim、控制字符校验、“首次非空设置后不可修改、不可清空、同值幂等”。
+        </li>
+        <li>
+          episode 创建时解析 task -> workstation -> robot 的 <code>asset_id</code>，非空时写入
+          <code>episodes.metadata.asset_id</code>，但缺失不阻止 episode 创建。
+        </li>
+        <li>
+          新增 DP config loader，读取 <code>SyncConfig.DPConfigPath</code> / <code>KEYSTONE_SYNC_DP_CONFIG</code>，
+          校验 version、endpoint、重复 device id、空 apiKey 和空 tags，并按 <code>asset_id</code> 返回 profile。
+        </li>
+        <li>
+          给 <code>SyncWorker</code> 增加 asset_id resolver：优先读 <code>episodes.metadata.asset_id</code>，
+          缺失时允许读取软删除 workstation 并反查 <code>robots.asset_id</code>。
+        </li>
+        <li>
+          新增 raw tags builder，包含两个 reserved key 常量、非冲突插入、MinIO basename 选择、strict sidecar
+          和 Keystone extra tags；不添加普通 <code>device_id</code>。
+        </li>
+        <li>
+          调整 uploader 构造方式，每个 episode 创建本次专用 <code>AuthClient</code>/<code>GatewayClient</code>/<code>Uploader</code>；
+          endpoint scheme 决定 TLS，TLS 使用系统 CA。
+        </li>
+        <li>
+          在 <code>cloud.UploadRequest</code> 和 persisted upload state 中记录 <code>AssetID</code>；
+          恢复上传时只有 MCAP key 和 <code>asset_id</code> 同时匹配才允许复用旧 session。
+        </li>
+        <li>
+          更新 <code>GatewayClient.CompleteUpload()</code> 签名，complete 时回传 <code>session.PartSizeBytes</code> 到
+          <code>CompleteUploadRequest.part_size_bytes</code>。
+        </li>
+        <li>
+          引入 retryable / non-retryable 错误分类：non-retryable failed 写 <code>next_retry_at = NULL</code>；
+          auto scan 跳过 latest failed 且 <code>next_retry_at IS NULL</code> 的 episode，manual sync 仍可重试。
+        </li>
+        <li>
+          删除 CLI 同步旁路：Synapse 不展示 CLI sync UI，Keystone 不注册 CLI sync API，不初始化
+          <code>CLISyncRunner</code>，不读取 <code>KEYSTONE_CLI_SYNC_*</code> 配置，也不保留
+          <code>cli_sync_runs</code> 迁移。
+        </li>
+      </ol>
+    </section>
+
+    <section id="risks" class="panel">
+      <h2>风险与处理</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>风险</th>
+            <th>影响</th>
+            <th>处理策略</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>asset_id</code> 缺失</td>
+            <td>无法选择 device profile，episode 本次 sync 失败。</td>
+            <td>写入 non-retryable failed，<code>next_retry_at = NULL</code>；错误信息包含 episode、workstation、robot 和修复方向，手动修复后手动重试。</td>
+          </tr>
+          <tr>
+            <td><code>asset_id</code> 填错</td>
+            <td>本地 robot 会永久绑定错误的 Data Platform device。</td>
+            <td>字段首次非空设置后不可修改；未来由自动化流程写入，第一版不提供 break-glass 维护入口。</td>
+          </tr>
+          <tr>
+            <td>device profile 缺失或不完整</td>
+            <td>上传前失败，episode 本次 sync 失败。</td>
+            <td>错误信息包含 <code>asset_id</code> 和 config path，但不打印 api key；提示现场执行 <code>dp device init</code> 或 <code>dp device reinit</code>。</td>
+          </tr>
+          <tr>
+            <td>endpoint / TLS 配置错误</td>
+            <td>Auth 或 Gateway 连接失败。</td>
+            <td>endpoint 只来自 DP config；按 <code>http</code>/<code>https</code> scheme 自动解析 TLS；禁止 path/query/fragment，日志打印 target 和 TLS 标志。</td>
+          </tr>
+          <tr>
+            <td>secret 泄漏</td>
+            <td>日志或错误信息暴露 device api key。</td>
+            <td>loader 和上传日志只打印 <code>asset_id</code>、config path、endpoint，不打印 api key、token、STS secret。</td>
+          </tr>
+          <tr>
+            <td>sidecar 缺失或格式错误</td>
+            <td>云端对象缺少业务 raw tags，影响检索。</td>
+            <td>direct sync 对 sidecar strict；格式错误 non-retryable，MinIO 读对象失败可自动重试。</td>
+          </tr>
+          <tr>
+            <td>恢复状态身份混用</td>
+            <td>同一 MCAP 可能复用另一个 device 身份创建的 upload session。</td>
+            <td>persisted upload state 记录 <code>asset_id</code>，恢复时必须同时匹配 MCAP key 和 <code>asset_id</code>。</td>
+          </tr>
+          <tr>
+            <td>CLI sidepath 遗留</td>
+            <td>用户可能继续使用旧 CLI 同步入口，产生两条语义不同的同步路径。</td>
+            <td>删除后端 CLI sync runner、API、配置和表迁移；只保留原生 direct sync 入口。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="tests" class="panel">
+      <h2>测试计划</h2>
+      <ul>
+        <li>单元测试 robot API / 存储：<code>asset_id</code> 可首次设置、同值幂等、不可修改、不可清空、active 非空唯一。</li>
+        <li>单元测试 episode 创建：有 <code>asset_id</code> 时写入 <code>episodes.metadata.asset_id</code>，缺失时仍创建 episode。</li>
+        <li>单元测试 asset_id resolver：metadata 优先、fallback 读取软删除 workstation、缺失时报 non-retryable 错误、不 fallback 到 <code>robots.device_id</code>。</li>
+        <li>单元测试 DP config loader：version、endpoint scheme/TLS、禁止 path/query/fragment、成功选择 device、缺失 device、空 apiKey、空 tags、重复 deviceId。</li>
+        <li>单元测试 raw tags builder：合并顺序、reserved device tag 注入、raw_file 使用 MinIO basename、相同 key 相同 value 幂等、相同 key 不同 value 报错、空 value 保留。</li>
+        <li>单元测试 SyncWorker 错误分类：non-retryable failed 写 <code>next_retry_at=NULL</code>，auto scan 跳过，manual sync 可重新尝试。</li>
+        <li>单元测试 uploader 持久化恢复：同 MCAP key 但 <code>asset_id</code> 不同不复用旧 state。</li>
+        <li>集成测试 fake gateway/OSS：验证使用 device API key、raw tags 完整、<code>part_size_bytes</code> 回传、<code>object_key</code> 写回现有 DB 字段。</li>
+        <li>现场灰度：同一小 MCAP 分别跑当前原始上传和 device profile 上传，对比 raw tags、文件大小、ETag、Data Platform 可检索性。</li>
+      </ul>
+
+      <div class="success">
+        <p>
+          验收标准：原生 cloud sync 不产生本地 MCAP 临时文件，不依赖 <code>dp data upload</code>，
+          不依赖 <code>KEYSTONE_CLOUD_API_KEY</code>、<code>KEYSTONE_SYNC_AUTH_ENDPOINT</code> 或
+          <code>KEYSTONE_SYNC_GATEWAY_ENDPOINT</code>，
+          Data Platform 中的文件可通过 <code>fileId</code> 检索，Keystone episode 状态与现有 cloud sync 一致。
+        </p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

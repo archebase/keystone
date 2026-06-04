@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	pb "archebase.com/keystone-edge/internal/cloud/cloudpb"
@@ -42,6 +43,8 @@ type UploadRequest struct {
 	EpisodeID string
 	// McapKey is the MinIO object key for the MCAP file (without bucket prefix).
 	McapKey string
+	// AssetID is the Data Platform device id used for this upload.
+	AssetID string
 	// RawTags are arbitrary key-value tags passed to the data-gateway.
 	RawTags map[string]string
 	// ClientHints are passed to CreateLogicalUpload for server-side routing.
@@ -69,7 +72,9 @@ type persistedUploadState struct {
 	Endpoint          string    `json:"endpoint"`
 	ObjectKey         string    `json:"object_key"`
 	McapKey           string    `json:"mcap_key"`
+	AssetID           string    `json:"asset_id"`
 	FileSize          int64     `json:"file_size"`
+	PartSizeBytes     int64     `json:"part_size_bytes,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
@@ -99,7 +104,7 @@ type gatewayClient interface {
 	GetUploadRecovery(ctx context.Context, logicalUploadID string) (*UploadRecoveryInfo, error)
 	ReissueUploadCredentials(ctx context.Context, uploadID string) (*UploadSession, error)
 	AbortUpload(ctx context.Context, logicalUploadID string, reason string) error
-	CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, ossObjectEtag string) error
+	CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, ossObjectEtag string, partSizeBytes int64) error
 }
 
 // ossClient is the subset of OSSUploader methods used by Uploader.
@@ -171,8 +176,18 @@ func (u *Uploader) validatePersistDir() error {
 // It uses context.Background() as base to ensure the abort is independent of the
 // caller's context, but with a 30s timeout to prevent indefinite hanging.
 func (u *Uploader) abortMultipartUpload(session *UploadSession, multipartUploadID string) {
+	if session == nil {
+		logger.Printf("[CLOUD-UPLOAD] Warning: skip OSS abort for multipart_upload_id=%s: missing upload session", multipartUploadID)
+		return
+	}
 	abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	refreshed, err := u.ensureFreshUploadCredentials(abortCtx, session)
+	if err != nil {
+		logger.Printf("[CLOUD-UPLOAD] Warning: refresh credentials before abort failed (proceeding anyway): %v", err)
+	} else {
+		session = refreshed
+	}
 	u.oss.AbortMultipartUpload(abortCtx, session, multipartUploadID)
 }
 
@@ -205,7 +220,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 	logger.Printf("[CLOUD-UPLOAD] Starting upload: episode=%s mcap=%s size=%d", req.EpisodeID, req.McapKey, fileSize)
 
 	// Step 2: Prepare upload session (with recovery if persisted state exists)
-	prepared, err := u.prepareUploadSession(ctx, hints, req.McapKey, fileSize)
+	prepared, err := u.prepareUploadSession(ctx, hints, req.McapKey, req.AssetID, fileSize)
 	if err != nil {
 		return nil, fmt.Errorf("prepare upload session: %w", err)
 	}
@@ -219,7 +234,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 	if prepared.ossCompleteETag != "" {
 		logger.Printf("[CLOUD-UPLOAD] OSS object already verified (COMPLETE_ONLY): logical_upload_id=%s etag=%s parts=%d",
 			session.LogicalUploadID, prepared.ossCompleteETag, prepared.ossCompletePartCount)
-		if err := u.gateway.CompleteUpload(ctx, session.UploadID, fileSize, req.RawTags, prepared.ossCompletePartCount, prepared.ossCompleteETag); err != nil {
+		if err := u.gateway.CompleteUpload(ctx, session.UploadID, fileSize, req.RawTags, prepared.ossCompletePartCount, prepared.ossCompleteETag, session.PartSizeBytes); err != nil {
 			return nil, fmt.Errorf("complete upload on gateway (oss-already-complete): %w", err)
 		}
 		u.cleanupPersistedState(session.LogicalUploadID)
@@ -246,7 +261,9 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 			Endpoint:        session.Endpoint,
 			ObjectKey:       session.ObjectKey,
 			McapKey:         req.McapKey,
+			AssetID:         req.AssetID,
 			FileSize:        fileSize,
+			PartSizeBytes:   session.PartSizeBytes,
 			UpdatedAt:       time.Now(),
 		}); err != nil {
 			return nil, fmt.Errorf("persist initial upload state: %w", err)
@@ -269,7 +286,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 	// InitiateMultipartUpload succeeds, before streaming any parts. This requires splitting
 	// uploadParts into an initiate step (called here, result persisted) and a stream step.
 	// The Rust SDK has the same gap; defer fixing until the upstream SDK is updated.
-	multipartUploadID, parts, partMD5s, err := u.uploadParts(ctx, req, session, fileSize)
+	session, multipartUploadID, parts, partMD5s, err := u.uploadParts(ctx, req, session, fileSize)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +302,9 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 		Endpoint:          session.Endpoint,
 		ObjectKey:         session.ObjectKey,
 		McapKey:           req.McapKey,
+		AssetID:           req.AssetID,
 		FileSize:          fileSize,
+		PartSizeBytes:     session.PartSizeBytes,
 		UpdatedAt:         time.Now(),
 	}); err != nil {
 		logger.Printf("[CLOUD-UPLOAD] Warning: failed to update state with multipart_upload_id: %v", err)
@@ -296,7 +315,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 
 	// Step 4: Refresh STS credentials if about to expire before CompleteUpload RPC
 	if time.Until(session.STSExpireAt) <= u.cfg.RequestTimeout {
-		refreshed, err := u.gateway.ReissueUploadCredentials(ctx, session.UploadID)
+		refreshed, err := u.refreshUploadCredentials(ctx, session)
 		if err != nil {
 			logger.Printf("[CLOUD-UPLOAD] Warning: refresh credentials failed (proceeding anyway): %v", err)
 		} else {
@@ -309,7 +328,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 		return nil, fmt.Errorf("too many upload parts: %d", len(parts))
 	}
 	//nolint:gosec // G115: len(parts) validated to fit into int32 above
-	if err := u.gateway.CompleteUpload(ctx, session.UploadID, fileSize, req.RawTags, int32(len(parts)), localETag); err != nil {
+	if err := u.gateway.CompleteUpload(ctx, session.UploadID, fileSize, req.RawTags, int32(len(parts)), localETag, session.PartSizeBytes); err != nil {
 		return nil, fmt.Errorf("complete upload on gateway: %w", err)
 	}
 
@@ -341,8 +360,8 @@ type preparedSession struct {
 
 // prepareUploadSession checks for persisted state and either resumes or creates a new session.
 // It mirrors the Rust SDK's prepare_upload_session logic.
-func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[string]string, mcapKey string, fileSize int64) (preparedSession, error) {
-	state, err := u.findPersistedStateByKey(mcapKey)
+func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[string]string, mcapKey string, assetID string, fileSize int64) (preparedSession, error) {
+	state, err := u.findPersistedStateByKey(mcapKey, assetID)
 	if err != nil {
 		return preparedSession{}, fmt.Errorf("load persisted state: %w", err)
 	}
@@ -397,6 +416,7 @@ func (u *Uploader) prepareUploadSession(ctx context.Context, clientHints map[str
 				Endpoint:        newSession.Endpoint,
 				ObjectKey:       newSession.ObjectKey,
 				McapKey:         mcapKey,
+				AssetID:         assetID,
 				FileSize:        fileSize,
 				UpdatedAt:       time.Now(),
 			}); err != nil {
@@ -460,6 +480,9 @@ func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploa
 		if err != nil {
 			// Treat RPC failures as transient: preserve local state for next retry.
 			return resumeContinue, nil, "", 0, fmt.Errorf("ReissueUploadCredentials: %w", err)
+		}
+		if state.PartSizeBytes > 0 {
+			session.PartSizeBytes = state.PartSizeBytes
 		}
 
 		if state.MultipartUploadID != "" {
@@ -537,32 +560,80 @@ func (u *Uploader) reconcileCompletedObject(ctx context.Context, session *Upload
 	return reconcileRestart, nil
 }
 
+// partStreamFactory opens a stream for a specific byte range of the MCAP file.
+// Each call returns an independent io.ReadCloser so that connections are not
+// kept idle across part uploads.
+type partStreamFactory func(ctx context.Context, offset, length int64) (io.ReadCloser, error)
+
+// minioRangeReader returns a partStreamFactory that reads byte ranges from
+// MinIO using independent ranged GetObject requests.
+func (u *Uploader) minioRangeReader(key string) partStreamFactory {
+	return func(ctx context.Context, offset, length int64) (io.ReadCloser, error) {
+		opts := minio.GetObjectOptions{}
+		if err := opts.SetRange(offset, offset+length-1); err != nil {
+			return nil, fmt.Errorf("set range %d-%d: %w", offset, offset+length-1, err)
+		}
+		obj, err := u.minioClient.GetObject(ctx, u.minioBucket, key, opts)
+		if err != nil {
+			return nil, fmt.Errorf("get minio object range %d-%d: %w", offset, offset+length-1, err)
+		}
+		return obj, nil
+	}
+}
+
 // uploadParts streams the MCAP from MinIO and uploads it to OSS in parts.
 // Returns the OSS multipart upload ID, the list of uploaded parts, per-part MD5 digests, and any error.
-func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *UploadSession, fileSize int64) (string, []UploadedPart, [][16]byte, error) {
+func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *UploadSession, fileSize int64) (*UploadSession, string, []UploadedPart, [][16]byte, error) {
+	fixedPartSizeBytes := normalizedPartSizeBytes(session.PartSizeBytes)
+	session, err := u.ensureFreshUploadCredentials(ctx, session)
+	if err != nil {
+		return nil, "", nil, nil, fmt.Errorf("refresh credentials before initiate multipart upload: %w", err)
+	}
+	session.PartSizeBytes = fixedPartSizeBytes
+
 	// Initiate multipart upload on OSS
 	multipartUploadID, err := u.oss.InitiateMultipartUpload(ctx, session)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("initiate multipart upload: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("initiate multipart upload: %w", err)
 	}
 	logger.Printf("[CLOUD-UPLOAD] Multipart initiated: multipart_upload_id=%s", multipartUploadID)
 
-	// Stream from MinIO → OSS in parts
-	mcapStream, err := u.minioClient.GetObject(ctx, u.minioBucket, req.McapKey, minio.GetObjectOptions{})
+	// Stream from MinIO to OSS in parts.
+	// Each part uses an independent ranged GetObject so that the MinIO HTTP
+	// connection is not left idle during OSS part uploads. A single streaming
+	// response would risk idle connection timeout (~20-25s on MinIO or network
+	// intermediaries) when upload speed is slow.
+	session, parts, partMD5s, err := u.streamMultipartParts(ctx, req.EpisodeID, session, multipartUploadID, fileSize, fixedPartSizeBytes, u.minioRangeReader(req.McapKey))
 	if err != nil {
 		u.abortMultipartUpload(session, multipartUploadID)
-		return "", nil, nil, fmt.Errorf("get minio object %s: %w", req.McapKey, err)
-	}
-	defer func() {
-		_ = mcapStream.Close()
-	}()
-
-	partSizeBytes := session.PartSizeBytes
-	if partSizeBytes <= 0 {
-		partSizeBytes = 8 * 1024 * 1024 // 8MB default
+		return nil, "", nil, nil, err
 	}
 
-	buf := make([]byte, partSizeBytes)
+	session, err = u.ensureFreshUploadCredentials(ctx, session)
+	if err != nil {
+		u.abortMultipartUpload(session, multipartUploadID)
+		return nil, "", nil, nil, fmt.Errorf("refresh credentials before complete multipart upload: %w", err)
+	}
+	session.PartSizeBytes = fixedPartSizeBytes
+
+	// Complete multipart upload on OSS
+	if _, err := u.oss.CompleteMultipartUpload(ctx, session, multipartUploadID, parts); err != nil {
+		u.abortMultipartUpload(session, multipartUploadID)
+		return nil, "", nil, nil, fmt.Errorf("complete multipart upload on OSS: %w", err)
+	}
+
+	return session, multipartUploadID, parts, partMD5s, nil
+}
+
+func (u *Uploader) streamMultipartParts(ctx context.Context, episodeID string, session *UploadSession, multipartUploadID string, fileSize int64, partSizeBytes int64, newPartStream partStreamFactory) (*UploadSession, []UploadedPart, [][16]byte, error) {
+	partSizeBytes = normalizedPartSizeBytes(partSizeBytes)
+	session.PartSizeBytes = partSizeBytes
+	partSize := int(partSizeBytes)
+	if int64(partSize) != partSizeBytes {
+		return session, nil, nil, fmt.Errorf("invalid part_size_bytes %d", partSizeBytes)
+	}
+
+	buf := make([]byte, partSize)
 	var parts []UploadedPart
 	var partMD5s [][16]byte
 	var offset int64
@@ -570,8 +641,7 @@ func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *
 
 	for offset < fileSize {
 		if err := ctx.Err(); err != nil {
-			u.abortMultipartUpload(session, multipartUploadID)
-			return "", nil, nil, err
+			return session, nil, nil, err
 		}
 
 		remaining := fileSize - offset
@@ -580,19 +650,44 @@ func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *
 			readSize = remaining
 		}
 
-		n, readErr := io.ReadFull(mcapStream, buf[:readSize])
-		if readErr != nil && readErr != io.ErrUnexpectedEOF {
-			u.abortMultipartUpload(session, multipartUploadID)
-			return "", nil, nil, fmt.Errorf("read part %d from minio: %w", partNumber, readErr)
+		// Open a new connection for each part so that the MinIO stream is not
+		// left idle during OSS uploads. MinIO or intervening network equipment
+		// may drop idle streaming connections after ~20-25s, and the OSS upload
+		// between part reads can easily exceed this threshold on slow networks.
+		partStream, err := newPartStream(ctx, offset, readSize)
+		if err != nil {
+			return session, nil, nil, fmt.Errorf("open part %d stream at offset %d: %w", partNumber, offset, err)
+		}
+
+		n, readErr := io.ReadFull(partStream, buf[:int(readSize)])
+		_ = partStream.Close() // close ASAP, best-effort
+		if readErr != nil {
+			return session, nil, nil, fmt.Errorf("read part %d from minio: expected %d bytes, got %d: %w", partNumber, readSize, n, readErr)
+		}
+		if int64(n) != readSize {
+			return session, nil, nil, fmt.Errorf("read part %d from minio: expected %d bytes, got %d", partNumber, readSize, n)
 		}
 
 		partSlice := buf[:n]
 		partMD5s = append(partMD5s, MD5DigestBytes(partSlice))
 
-		etag, err := u.oss.UploadPart(ctx, session, multipartUploadID, partNumber, partSlice)
+		session, err = u.ensureFreshUploadCredentials(ctx, session)
 		if err != nil {
-			u.abortMultipartUpload(session, multipartUploadID)
-			return "", nil, nil, fmt.Errorf("upload part %d: %w", partNumber, err)
+			return session, nil, nil, fmt.Errorf("refresh credentials before upload part %d: %w", partNumber, err)
+		}
+
+		etag, err := u.oss.UploadPart(ctx, session, multipartUploadID, partNumber, partSlice)
+		if err != nil && isSecurityTokenExpiredError(err) {
+			refreshed, refreshErr := u.refreshUploadCredentials(ctx, session)
+			if refreshErr != nil {
+				return session, nil, nil, fmt.Errorf("refresh credentials after upload part %d token expiry: %w", partNumber, refreshErr)
+			}
+			session = refreshed
+			session.PartSizeBytes = partSizeBytes
+			etag, err = u.oss.UploadPart(ctx, session, multipartUploadID, partNumber, partSlice)
+		}
+		if err != nil {
+			return session, nil, nil, fmt.Errorf("upload part %d: %w", partNumber, err)
 		}
 
 		parts = append(parts, UploadedPart{
@@ -603,19 +698,55 @@ func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *
 		offset += int64(n)
 		partNumber++
 
-		if partNumber%10 == 0 {
-			logger.Printf("[CLOUD-UPLOAD] Progress: episode=%s parts=%d offset=%d/%d",
-				req.EpisodeID, len(parts), offset, fileSize)
-		}
+		logger.Printf("[CLOUD-UPLOAD] Progress: episode=%s parts=%d offset=%d/%d",
+			episodeID, len(parts), offset, fileSize)
 	}
 
-	// Complete multipart upload on OSS
-	if _, err := u.oss.CompleteMultipartUpload(ctx, session, multipartUploadID, parts); err != nil {
-		u.abortMultipartUpload(session, multipartUploadID)
-		return "", nil, nil, fmt.Errorf("complete multipart upload on OSS: %w", err)
-	}
+	return session, parts, partMD5s, nil
+}
 
-	return multipartUploadID, parts, partMD5s, nil
+func (u *Uploader) ensureFreshUploadCredentials(ctx context.Context, session *UploadSession) (*UploadSession, error) {
+	if session == nil {
+		return nil, fmt.Errorf("missing upload session")
+	}
+	if time.Until(session.STSExpireAt) > u.stsRefreshWindow() {
+		return session, nil
+	}
+	return u.refreshUploadCredentials(ctx, session)
+}
+
+func (u *Uploader) refreshUploadCredentials(ctx context.Context, session *UploadSession) (*UploadSession, error) {
+	if u.gateway == nil {
+		return nil, fmt.Errorf("gateway client is not configured")
+	}
+	refreshed, err := u.gateway.ReissueUploadCredentials(ctx, session.UploadID)
+	if err != nil {
+		return nil, err
+	}
+	refreshed.PartSizeBytes = normalizedPartSizeBytes(session.PartSizeBytes)
+	return refreshed, nil
+}
+
+func normalizedPartSizeBytes(partSizeBytes int64) int64 {
+	if partSizeBytes <= 0 {
+		return 8 * 1024 * 1024
+	}
+	return partSizeBytes
+}
+
+func (u *Uploader) stsRefreshWindow() time.Duration {
+	window := u.cfg.RequestTimeout
+	if u.cfg.OSSTimeout > window {
+		window = u.cfg.OSSTimeout
+	}
+	if window <= 0 {
+		window = 30 * time.Second
+	}
+	return window + 30*time.Second
+}
+
+func isSecurityTokenExpiredError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "SecurityTokenExpired")
 }
 
 // abortAndCleanupSession notifies the data-gateway to abort the logical upload session
@@ -680,8 +811,10 @@ func (u *Uploader) cleanupPersistedState(logicalUploadID string) {
 	}
 }
 
-// findPersistedStateByKey scans the active state directory for a state matching the given mcap key.
-func (u *Uploader) findPersistedStateByKey(mcapKey string) (*persistedUploadState, error) {
+// findPersistedStateByKey scans the active state directory for a state matching the given
+// MCAP key and asset id. Upload sessions are device-scoped and must not be reused
+// across different Data Platform devices even when the MCAP object key is identical.
+func (u *Uploader) findPersistedStateByKey(mcapKey string, assetID string) (*persistedUploadState, error) {
 	if u.cfg.PersistRootDir == "" {
 		return nil, nil
 	}
@@ -707,7 +840,7 @@ func (u *Uploader) findPersistedStateByKey(mcapKey string) (*persistedUploadStat
 			logger.Printf("[CLOUD-UPLOAD] Warning: failed to parse state file %s: %v", entry.Name(), err)
 			continue
 		}
-		if state.McapKey == mcapKey {
+		if state.McapKey == mcapKey && state.AssetID == assetID {
 			return &state, nil
 		}
 	}

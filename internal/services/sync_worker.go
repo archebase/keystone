@@ -40,6 +40,20 @@ type SyncWorkerConfig struct {
 type syncEnqueueRequest struct {
 	episodeID int64
 	manual    bool
+	resync    bool
+}
+
+type syncEpisodeUploadRow struct {
+	ID             int64          `db:"id"`
+	EpisodeUUID    string         `db:"episode_id"`
+	TaskID         int64          `db:"task_id"`
+	McapPath       string         `db:"mcap_path"`
+	SidecarPath    string         `db:"sidecar_path"`
+	CloudSynced    bool           `db:"cloud_synced"`
+	Metadata       sql.NullString `db:"metadata"`
+	WorkstationID  sql.NullInt64  `db:"workstation_id"`
+	FactoryID      sql.NullInt64  `db:"factory_id"`
+	OrganizationID sql.NullInt64  `db:"organization_id"`
 }
 
 // SyncWorker is a background goroutine that processes queued cloud sync work
@@ -85,6 +99,7 @@ var (
 	errSyncRetryBackoffActive = errors.New("sync retry backoff active")
 	errSyncRetryExhausted     = errors.New("sync retry max retries exceeded")
 	errSyncAlreadyCompleted   = errors.New("sync already completed")
+	errSyncNonRetryableFailed = errors.New("sync latest failure is non-retryable")
 )
 
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
@@ -224,10 +239,22 @@ func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) 
 	if !w.running.Load() {
 		return ErrSyncWorkerNotRunning
 	}
-	if err := w.persistPendingSyncLog(ctx, episodeID, true); err != nil {
+	if err := w.persistPendingSyncLog(ctx, episodeID, true, false); err != nil {
 		return err
 	}
 	w.enqueuePersistedEpisode(ctx, syncEnqueueRequest{episodeID: episodeID, manual: true})
+	return nil
+}
+
+// EnqueueEpisodeResync queues a new upload attempt for an episode that has already synced.
+func (w *SyncWorker) EnqueueEpisodeResync(ctx context.Context, episodeID int64) error {
+	if !w.running.Load() {
+		return ErrSyncWorkerNotRunning
+	}
+	if err := w.persistResyncSyncLog(ctx, episodeID); err != nil {
+		return err
+	}
+	w.enqueuePersistedEpisode(ctx, syncEnqueueRequest{episodeID: episodeID, manual: true, resync: true})
 	return nil
 }
 
@@ -267,7 +294,7 @@ func (w *SyncWorker) enqueuePersistedEpisode(ctx context.Context, req syncEnqueu
 	}
 }
 
-func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64, manual bool) error {
+func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64, manual bool, allowSynced bool) error {
 	if w.db == nil {
 		return nil
 	}
@@ -293,7 +320,7 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 		}
 		return fmt.Errorf("lock episode %d: %w", episodeID, err)
 	}
-	if episode.CloudSynced {
+	if episode.CloudSynced && !allowSynced {
 		return fmt.Errorf("episode %d already synced", episodeID)
 	}
 
@@ -340,12 +367,15 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	case "completed":
 		return fmt.Errorf("%w for episode %d", errSyncAlreadyCompleted, episodeID)
 	case "failed":
-		retryDue := !latest.NextRetry.Valid || !latest.NextRetry.Time.After(now)
+		retryDue := latest.NextRetry.Valid && !latest.NextRetry.Time.After(now)
 		if latest.AttemptCount < w.cfg.MaxRetries && retryDue {
 			if err := promoteFailedSyncLogToPending(ctx, tx, latest.ID, now); err != nil {
 				return err
 			}
 			return tx.Commit()
+		}
+		if !manual && !latest.NextRetry.Valid {
+			return fmt.Errorf("%w for episode %d", errSyncNonRetryableFailed, episodeID)
 		}
 		if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
 			return fmt.Errorf("%w for episode %d", errSyncRetryExhausted, episodeID)
@@ -360,6 +390,55 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	default:
 		return fmt.Errorf("unknown sync status %q for episode %d", latest.Status, episodeID)
 	}
+}
+
+func (w *SyncWorker) persistResyncSyncLog(ctx context.Context, episodeID int64) error {
+	if w.db == nil {
+		return nil
+	}
+
+	tx, err := w.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin resync sync_log transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	lockClause := txLockClause(tx)
+	var episode struct {
+		ID          int64 `db:"id"`
+		CloudSynced bool  `db:"cloud_synced"`
+	}
+	if err := tx.GetContext(ctx, &episode, `
+		SELECT id, cloud_synced
+		FROM episodes
+		WHERE id = ? AND deleted_at IS NULL
+	`+lockClause, episodeID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("episode %d not found", episodeID)
+		}
+		return fmt.Errorf("lock episode %d for resync: %w", episodeID, err)
+	}
+	if !episode.CloudSynced {
+		return fmt.Errorf("episode %d has not completed cloud sync", episodeID)
+	}
+
+	var activeCount int
+	if err := tx.GetContext(ctx, &activeCount, `
+		SELECT COUNT(*)
+		FROM sync_logs
+		WHERE episode_id = ?
+		  AND status IN ('pending', 'in_progress')
+	`, episodeID); err != nil {
+		return fmt.Errorf("query active resync sync_log count: %w", err)
+	}
+	if activeCount > 0 {
+		return fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
+	}
+
+	if err := insertPendingSyncLog(ctx, tx, episodeID, time.Now().UTC(), 0); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func insertPendingSyncLog(ctx context.Context, tx *sqlx.Tx, episodeID int64, queuedAt time.Time, attemptCount int) error {
@@ -408,7 +487,8 @@ func isSkippablePendingError(err error) bool {
 	return errors.Is(err, ErrSyncAlreadyInProgress) ||
 		errors.Is(err, errSyncRetryBackoffActive) ||
 		errors.Is(err, errSyncRetryExhausted) ||
-		errors.Is(err, errSyncAlreadyCompleted)
+		errors.Is(err, errSyncAlreadyCompleted) ||
+		errors.Is(err, errSyncNonRetryableFailed)
 }
 
 // EnqueuePendingEpisodes scans for all approved but un-synced episodes and enqueues them.
@@ -424,7 +504,7 @@ func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
 	}
 	count := 0
 	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
+		if err := w.persistPendingSyncLog(ctx, id, false, false); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
@@ -497,9 +577,9 @@ func (w *SyncWorker) processEnqueuedEpisode(ctx context.Context, req syncEnqueue
 	w.processEnqueuedEpisodeWith(ctx, req, w.processEpisodeWithMode)
 }
 
-func (w *SyncWorker) processEnqueuedEpisodeWith(ctx context.Context, req syncEnqueueRequest, process func(context.Context, int64, bool)) {
+func (w *SyncWorker) processEnqueuedEpisodeWith(ctx context.Context, req syncEnqueueRequest, process func(context.Context, int64, bool, bool)) {
 	defer w.unmarkEnqueued(req.episodeID)
-	process(ctx, req.episodeID, req.manual)
+	process(ctx, req.episodeID, req.manual, req.resync)
 }
 
 func (w *SyncWorker) dispatchJob(ctx context.Context, req syncEnqueueRequest) {
@@ -590,7 +670,7 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 	logger.Printf("[SYNC-WORKER] Found %d episodes to sync", len(ids))
 
 	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
+		if err := w.persistPendingSyncLog(ctx, id, false, false); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
@@ -602,13 +682,13 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 }
 
 func (w *SyncWorker) dispatchPendingSyncLogs(ctx context.Context) {
-	ids, err := w.findPendingSyncLogEpisodes(ctx)
+	reqs, err := w.findPendingSyncLogEpisodes(ctx)
 	if err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to find queued sync logs: %v", err)
 		return
 	}
-	for _, id := range ids {
-		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
+	for _, req := range reqs {
+		w.dispatchPersistedJob(ctx, req)
 	}
 }
 
@@ -619,10 +699,13 @@ func (w *SyncWorker) dispatchPersistedJob(ctx context.Context, req syncEnqueueRe
 	w.dispatchJob(ctx, req)
 }
 
-func (w *SyncWorker) findPendingSyncLogEpisodes(ctx context.Context) ([]int64, error) {
-	var ids []int64
-	if err := w.db.SelectContext(ctx, &ids, `
-		SELECT latest_log.episode_id
+func (w *SyncWorker) findPendingSyncLogEpisodes(ctx context.Context) ([]syncEnqueueRequest, error) {
+	var rows []struct {
+		EpisodeID   int64 `db:"episode_id"`
+		CloudSynced bool  `db:"cloud_synced"`
+	}
+	if err := w.db.SelectContext(ctx, &rows, `
+		SELECT latest_log.episode_id, e.cloud_synced
 		FROM sync_logs latest_log
 		INNER JOIN (
 		  SELECT episode_id, MAX(id) AS latest_id
@@ -631,14 +714,17 @@ func (w *SyncWorker) findPendingSyncLogEpisodes(ctx context.Context) ([]int64, e
 		) latest ON latest_log.episode_id = latest.episode_id AND latest_log.id = latest.latest_id
 		INNER JOIN episodes e ON e.id = latest_log.episode_id
 		WHERE latest_log.status = 'pending'
-		  AND e.cloud_synced = FALSE
 		  AND e.deleted_at IS NULL
 		ORDER BY latest_log.started_at ASC, latest_log.id ASC
 		LIMIT ?
 	`, w.cfg.BatchSize); err != nil {
 		return nil, fmt.Errorf("query pending sync logs: %w", err)
 	}
-	return ids, nil
+	reqs := make([]syncEnqueueRequest, len(rows))
+	for i, row := range rows {
+		reqs[i] = syncEnqueueRequest{episodeID: row.EpisodeID, resync: row.CloudSynced}
+	}
+	return reqs, nil
 }
 
 func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFailures bool) ([]int64, error) {
@@ -682,6 +768,17 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFa
 		    WHERE sl.episode_id = e.id
 		      AND sl.status = 'failed'
 		      AND sl.attempt_count >= ?
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM sync_logs sl
+		    INNER JOIN (
+		      SELECT episode_id, MAX(id) AS latest_id
+		      FROM sync_logs
+		      GROUP BY episode_id
+		    ) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		    WHERE sl.episode_id = e.id
+		      AND sl.status = 'failed'
+		      AND sl.next_retry_at IS NULL
 		  )`)
 		err = w.db.SelectContext(ctx, &ids, query, w.cfg.MaxRetries, w.cfg.BatchSize)
 	} else {
@@ -695,19 +792,25 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFa
 }
 
 func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
-	var ids []int64
+	var rows []struct {
+		EpisodeID   int64 `db:"episode_id"`
+		CloudSynced bool  `db:"cloud_synced"`
+	}
 	now := time.Now().UTC()
-	err := w.db.SelectContext(ctx, &ids, `
-		SELECT sl.episode_id
+	err := w.db.SelectContext(ctx, &rows, `
+		SELECT sl.episode_id, e.cloud_synced
 		FROM sync_logs sl
 		INNER JOIN (
 		  SELECT episode_id, MAX(id) AS latest_id
 		  FROM sync_logs
 		  GROUP BY episode_id
 		) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		INNER JOIN episodes e ON e.id = sl.episode_id
 		WHERE sl.status = 'failed'
+		  AND e.deleted_at IS NULL
 		  AND sl.attempt_count < ?
-		  AND (sl.next_retry_at IS NULL OR sl.next_retry_at <= ?)
+		  AND sl.next_retry_at IS NOT NULL
+		  AND sl.next_retry_at <= ?
 		  AND NOT EXISTS (
 		    SELECT 1 FROM sync_logs sl2
 		    WHERE sl2.episode_id = sl.episode_id
@@ -721,33 +824,36 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 		return
 	}
 
-	if len(ids) == 0 {
+	if len(rows) == 0 {
 		return
 	}
 
-	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
+	for _, row := range rows {
+		if err := w.persistPendingSyncLog(ctx, row.EpisodeID, false, row.CloudSynced); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
-			logger.Printf("[SYNC-WORKER] Failed to queue retry for episode %d: %v", id, err)
+			logger.Printf("[SYNC-WORKER] Failed to queue retry for episode %d: %v", row.EpisodeID, err)
 			continue
 		}
-		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
+		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: row.EpisodeID, manual: false, resync: row.CloudSynced})
 	}
 }
 
-func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64, manual bool) {
-	// Fetch episode details
-	var ep struct {
-		ID          int64  `db:"id"`
-		EpisodeUUID string `db:"episode_id"`
-		McapPath    string `db:"mcap_path"`
-		SidecarPath string `db:"sidecar_path"`
-		CloudSynced bool   `db:"cloud_synced"`
-	}
+func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64, manual bool, resync bool) {
+	var ep syncEpisodeUploadRow
 	err := w.db.GetContext(ctx, &ep, `
-		SELECT id, episode_id, mcap_path, sidecar_path, cloud_synced
+		SELECT
+			id,
+			episode_id,
+			task_id,
+			mcap_path,
+			sidecar_path,
+			cloud_synced,
+			metadata,
+			workstation_id,
+			factory_id,
+			organization_id
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`, episodeID)
@@ -760,32 +866,11 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 		return
 	}
 
-	if ep.CloudSynced {
+	if ep.CloudSynced && !resync {
 		//logger.Printf("[SYNC-WORKER] Episode %d already synced, skipping", episodeID)
 		return
 	}
 
-	// Extract the MinIO object key from the stored path (strip bucket prefix)
-	mcapKey := stripBucketPrefix(ep.McapPath)
-
-	if mcapKey == "" {
-		logger.Printf("[SYNC-WORKER] Episode %d has empty mcap_path, skipping", episodeID)
-		return
-	}
-
-	// Build raw tags from sidecar JSON (best-effort: log and continue on failure).
-	rawTags := map[string]string{
-		"episode_id": ep.EpisodeUUID,
-	}
-	if sidecarTags, err := w.tagsFromSidecar(ctx, ep.SidecarPath); err != nil {
-		logger.Printf("[SYNC-WORKER] Episode %d: failed to read sidecar tags, uploading without them: %v", episodeID, err)
-	} else {
-		for k, v := range sidecarTags {
-			rawTags[k] = v
-		}
-	}
-
-	// Reuse latest failed sync_log when retry is due, otherwise insert a new row.
 	syncLogID, attemptCount, err := w.acquireSyncLogWithMode(ctx, episodeID, ep.McapPath, manual)
 	if err != nil {
 		//logger.Printf("[SYNC-WORKER] Failed to acquire sync log for episode %d: %v", episodeID, err)
@@ -794,12 +879,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 
 	startTime := time.Now()
 
-	// Execute upload
-	result, err := w.uploader.Upload(ctx, cloud.UploadRequest{
-		EpisodeID: ep.EpisodeUUID,
-		McapKey:   mcapKey,
-		RawTags:   rawTags,
-	})
+	result, err := w.uploadEpisodeDirect(ctx, ep)
 	if err != nil {
 		duration := int64(time.Since(startTime).Seconds())
 		w.markSyncFailed(ctx, syncLogID, episodeID, duration, err, attemptCount)
@@ -809,6 +889,128 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 	// Success: update episode and sync_log
 	duration := int64(time.Since(startTime).Seconds())
 	w.markSyncCompleted(ctx, syncLogID, episodeID, result, duration)
+}
+
+func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUploadRow) (*cloud.UploadResult, error) {
+	mcapKey := stripBucketPrefix(ep.McapPath)
+	if mcapKey == "" {
+		return nil, newNonRetryableSyncError("episode %d has empty mcap_path", ep.ID)
+	}
+
+	assetID, err := resolveAssetIDForEpisode(ctx, w.db, ep.ID, ep.Metadata, ep.WorkstationID)
+	if err != nil {
+		return nil, wrapNonRetryableSyncError(err, "resolve asset_id for episode %d", ep.ID)
+	}
+
+	if w.syncCfg == nil || strings.TrimSpace(w.syncCfg.DPConfigPath) == "" {
+		return nil, newNonRetryableSyncError("KEYSTONE_SYNC_DP_CONFIG is required for direct sync")
+	}
+	dpConfig, err := loadDPDeviceUploadConfig(w.syncCfg.DPConfigPath, assetID)
+	if err != nil {
+		return nil, wrapNonRetryableSyncError(err, "load DP config for asset_id %s", assetID)
+	}
+
+	sidecarTags, err := w.directTagsFromSidecar(ctx, ep.SidecarPath)
+	if err != nil {
+		return nil, err
+	}
+
+	rawTags, err := buildDPDirectRawTags(dpRawTagsInput{
+		Profile:         dpConfig.Profile,
+		McapKey:         mcapKey,
+		SidecarTags:     sidecarTags,
+		EpisodeID:       ep.ID,
+		EpisodePublicID: ep.EpisodeUUID,
+		TaskID:          ep.TaskID,
+		FactoryID:       ep.FactoryID,
+		OrganizationID:  ep.OrganizationID,
+	})
+	if err != nil {
+		return nil, wrapNonRetryableSyncError(err, "build raw tags for episode %d", ep.ID)
+	}
+
+	uploader, cleanup, err := w.newDirectUploader(dpConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create direct uploader for asset_id %s: %w", assetID, err)
+	}
+	defer cleanup()
+
+	logger.Printf("[SYNC-WORKER] Episode %d direct sync config resolved: asset_id=%s auth=%s auth_tls=%t gateway=%s gateway_tls=%t",
+		ep.ID, assetID, dpConfig.Auth.Target, dpConfig.Auth.UseTLS, dpConfig.Gateway.Target, dpConfig.Gateway.UseTLS)
+
+	return uploader.Upload(ctx, cloud.UploadRequest{
+		EpisodeID: ep.EpisodeUUID,
+		McapKey:   mcapKey,
+		AssetID:   assetID,
+		RawTags:   rawTags,
+	})
+}
+
+func (w *SyncWorker) newDirectUploader(dpConfig *DPDeviceUploadConfig) (*cloud.Uploader, func(), error) {
+	if dpConfig == nil {
+		return nil, func() {}, fmt.Errorf("missing DP upload config")
+	}
+	authClient := cloud.NewAuthClient(cloud.AuthClientConfig{
+		Endpoint:      dpConfig.Auth.Target,
+		UseTLS:        dpConfig.Auth.UseTLS,
+		TLSServerName: dpConfig.Auth.ServerName,
+		APIKey:        dpConfig.Profile.APIKey,
+		RefreshBefore: 60 * time.Second,
+	})
+	gatewayClient := cloud.NewGatewayClient(cloud.GatewayClientConfig{
+		Endpoint:       dpConfig.Gateway.Target,
+		UseTLS:         dpConfig.Gateway.UseTLS,
+		TLSServerName:  dpConfig.Gateway.ServerName,
+		RequestTimeout: w.syncRequestTimeout(),
+	}, authClient)
+	cleanup := func() {
+		if err := gatewayClient.Close(); err != nil {
+			logger.Printf("[SYNC-WORKER] Failed to close direct gateway client: %v", err)
+		}
+		if err := authClient.Close(); err != nil {
+			logger.Printf("[SYNC-WORKER] Failed to close direct auth client: %v", err)
+		}
+	}
+
+	uploader, err := cloud.NewUploader(gatewayClient, w.minioClient, w.minioBucket, cloud.UploaderConfig{
+		RequestTimeout:  w.syncRequestTimeout(),
+		OSSTimeout:      w.syncOSSTimeout(),
+		PersistRootDir:  w.syncPersistRootDir(),
+		MaxRestartCount: uint32(w.syncMaxRestartCount()), //nolint:gosec // non-negative by helper
+	})
+	if err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	return uploader, cleanup, nil
+}
+
+func (w *SyncWorker) syncRequestTimeout() time.Duration {
+	if w.syncCfg != nil && w.syncCfg.RequestTimeoutSec > 0 {
+		return time.Duration(w.syncCfg.RequestTimeoutSec) * time.Second
+	}
+	return 30 * time.Second
+}
+
+func (w *SyncWorker) syncOSSTimeout() time.Duration {
+	if w.syncCfg != nil && w.syncCfg.OSSTimeoutSec > 0 {
+		return time.Duration(w.syncCfg.OSSTimeoutSec) * time.Second
+	}
+	return 300 * time.Second
+}
+
+func (w *SyncWorker) syncPersistRootDir() string {
+	if w.syncCfg == nil {
+		return ""
+	}
+	return w.syncCfg.PersistRootDir
+}
+
+func (w *SyncWorker) syncMaxRestartCount() int {
+	if w.syncCfg != nil && w.syncCfg.MaxRestartCount >= 0 {
+		return w.syncCfg.MaxRestartCount
+	}
+	return 3
 }
 
 func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64, sourcePath string, manual bool) (int64, int, error) {
@@ -893,7 +1095,7 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 		case "completed":
 			return 0, 0, fmt.Errorf("episode %d already has completed sync_log", episodeID)
 		case "failed":
-			retryDue := !latest.NextRetry.Valid || !latest.NextRetry.Time.After(now)
+			retryDue := latest.NextRetry.Valid && !latest.NextRetry.Time.After(now)
 			if latest.AttemptCount < w.cfg.MaxRetries && retryDue {
 				res, updErr := tx.ExecContext(ctx, `
 					UPDATE sync_logs
@@ -924,6 +1126,9 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 				return latest.ID, latest.AttemptCount + 1, nil
 			}
 
+			if !manual && !latest.NextRetry.Valid {
+				return 0, 0, fmt.Errorf("%w for episode %d", errSyncNonRetryableFailed, episodeID)
+			}
 			if !manual && latest.AttemptCount >= w.cfg.MaxRetries {
 				return 0, 0, fmt.Errorf("max retries exceeded for episode %d", episodeID)
 			}
@@ -1006,8 +1211,11 @@ func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, d
 	now := time.Now().UTC()
 	errMsg := uploadErr.Error()
 
-	backoff := w.nextRetryDelay(attemptCount)
-	nextRetry := now.Add(backoff)
+	var nextRetry sql.NullTime
+	if !isNonRetryableSyncError(uploadErr) {
+		backoff := w.nextRetryDelay(attemptCount)
+		nextRetry = sql.NullTime{Time: now.Add(backoff), Valid: true}
+	}
 
 	if _, err := w.db.ExecContext(ctx, `
 		UPDATE sync_logs
@@ -1021,8 +1229,13 @@ func (w *SyncWorker) markSyncFailed(ctx context.Context, syncLogID, episodeID, d
 		logger.Printf("[SYNC-WORKER] Failed to update sync log %d as failed: %v", syncLogID, err)
 	}
 
-	logger.Printf("[SYNC-WORKER] Episode %d sync failed: %v (attempt=%d, next_retry=%v)",
-		episodeID, uploadErr, attemptCount, nextRetry.Format(time.RFC3339))
+	if nextRetry.Valid {
+		logger.Printf("[SYNC-WORKER] Episode %d sync failed: %v (attempt=%d, next_retry=%v)",
+			episodeID, uploadErr, attemptCount, nextRetry.Time.Format(time.RFC3339))
+		return
+	}
+	logger.Printf("[SYNC-WORKER] Episode %d sync failed non-retryable: %v (attempt=%d)",
+		episodeID, uploadErr, attemptCount)
 }
 
 func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
@@ -1068,13 +1281,10 @@ func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
 	return time.Duration(totalSec * float64(time.Second))
 }
 
-// tagsFromSidecar reads the sidecar JSON from MinIO and returns it as a flat string map
-// for use as RawTags. topics_summary is excluded. Returns nil map and an error if the
-// sidecar path is empty, the object cannot be read, or the JSON is malformed.
-func (w *SyncWorker) tagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) {
+func (w *SyncWorker) directTagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) {
 	key := stripBucketPrefix(sidecarPath)
 	if key == "" {
-		return nil, fmt.Errorf("empty sidecar_path")
+		return nil, newNonRetryableSyncError("empty sidecar_path")
 	}
 	if w.minioClient == nil {
 		return nil, fmt.Errorf("minio client not available")
@@ -1095,7 +1305,7 @@ func (w *SyncWorker) tagsFromSidecar(ctx context.Context, sidecarPath string) (m
 
 	tags, err := flattenSidecar(data)
 	if err != nil {
-		return nil, fmt.Errorf("flatten sidecar %s: %w", key, err)
+		return nil, wrapNonRetryableSyncError(err, "flatten sidecar %s", key)
 	}
 	return tags, nil
 }

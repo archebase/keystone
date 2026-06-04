@@ -391,6 +391,30 @@ func readSidecarFromS3(ctx context.Context, s3Client *s3.Client, bucket, jsonKey
 	return &sc
 }
 
+func assetIDSnapshotMetadata(ctx context.Context, tx *sql.Tx, workstationID sql.NullInt64) sql.NullString {
+	if tx == nil || !workstationID.Valid || workstationID.Int64 <= 0 {
+		return sql.NullString{}
+	}
+	var assetID sql.NullString
+	err := tx.QueryRowContext(ctx, `
+		SELECT r.asset_id
+		FROM workstations ws
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE ws.id = ? AND ws.deleted_at IS NULL
+		LIMIT 1
+	`, workstationID.Int64).Scan(&assetID)
+	if err != nil || !assetID.Valid || strings.TrimSpace(assetID.String) == "" {
+		return sql.NullString{}
+	}
+	data, err := json.Marshal(map[string]string{
+		"asset_id": strings.TrimSpace(assetID.String),
+	})
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(data), Valid: true}
+}
+
 func uploadCompleteS3Key(data map[string]interface{}) string {
 	return strings.TrimSpace(stringVal(data, "s3_key"))
 }
@@ -617,6 +641,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					checksum = sql.NullString{String: sc.Recording.ChecksumSHA256, Valid: true}
 				}
 			}
+			episodeMetadata := assetIDSnapshotMetadata(ctx, tx, taskRow.WorkstationID)
 
 			_, dbErr := tx.ExecContext(ctx,
 				`INSERT INTO episodes (
@@ -635,8 +660,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					duration_sec,
 					file_size_bytes,
 					checksum,
-					qa_status
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					qa_status,
+					metadata
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				episodeID,
 				taskRow.ID,
 				taskRow.BatchID,
@@ -653,6 +679,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				fileSizeBytes,
 				checksum,
 				"approved",
+				episodeMetadata,
 			)
 			if dbErr != nil {
 				// #nosec G706 -- Set aside for now

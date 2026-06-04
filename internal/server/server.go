@@ -76,7 +76,7 @@ func axonTransferWriteTimeout(cfg *config.TransferConfig) time.Duration {
 
 // New creates a new server instance.
 // db and s3Client are optional; pass nil to disable Verified ACK.
-// syncWorker is optional; pass nil to disable cloud sync API.
+// syncWorker is optional; pass nil to disable cloud sync APIs.
 func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *services.SyncWorker) *Server {
 	// Create Gin engine
 	gin.SetMode(gin.ReleaseMode)

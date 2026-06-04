@@ -209,7 +209,7 @@ func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string,
 }
 
 // CompleteUpload notifies the data-gateway that all parts have been uploaded to OSS.
-func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, ossObjectEtag string) error {
+func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, ossObjectEtag string, partSizeBytes int64) error {
 	authHeader, err := c.getAuthHeader(ctx)
 	if err != nil {
 		return err
@@ -226,6 +226,7 @@ func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fil
 			RawTags:            rawTags,
 			CompletedPartCount: completedPartCount,
 			OssObjectEtag:      ossObjectEtag,
+			PartSizeBytes:      partSizeBytes,
 		})
 		return rpcErr
 	})

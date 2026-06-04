@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -87,6 +88,7 @@ type SyncConfig struct {
 	RetryJitterSec     int    // max additive jitter in seconds
 	PersistRootDir     string // root directory for persisting upload state across restarts; empty disables persistence
 	MaxRestartCount    int    // max number of upload restarts before permanent failure; 0 uses uploader default (3)
+	DPConfigPath       string // data-platform config path for direct device-profile uploads
 }
 
 // FeaturesConfig feature flags configuration
@@ -203,6 +205,7 @@ func Load() (*Config, error) {
 			RetryJitterSec:     getEnvInt("KEYSTONE_SYNC_RETRY_JITTER_SEC", 30),
 			PersistRootDir:     getEnv("KEYSTONE_SYNC_PERSIST_ROOT_DIR", ""),
 			MaxRestartCount:    getEnvInt("KEYSTONE_SYNC_MAX_RESTART_COUNT", 3),
+			DPConfigPath:       getEnv("KEYSTONE_SYNC_DP_CONFIG", defaultDPConfigPath()),
 		},
 		Auth: AuthConfig{
 			JWTSecret:             getEnv("KEYSTONE_JWT_SECRET", ""),
@@ -274,17 +277,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("KEYSTONE_ADMIN_USERNAME and KEYSTONE_ADMIN_PASSWORD must both be set or both be empty")
 	}
 	if c.Sync.Enabled {
-		if strings.TrimSpace(c.Sync.AuthEndpoint) == "" {
-			return fmt.Errorf("sync auth endpoint is required when sync is enabled")
+		c.Sync.DPConfigPath = strings.TrimSpace(c.Sync.DPConfigPath)
+		if c.Sync.DPConfigPath == "" {
+			return fmt.Errorf("KEYSTONE_SYNC_DP_CONFIG is required when sync is enabled")
 		}
-		if strings.TrimSpace(c.Sync.GatewayEndpoint) == "" {
-			return fmt.Errorf("sync gateway endpoint is required when sync is enabled")
+		expandedDPConfigPath, err := expandHomePath(c.Sync.DPConfigPath)
+		if err != nil {
+			return fmt.Errorf("KEYSTONE_SYNC_DP_CONFIG %q is invalid: %w", c.Sync.DPConfigPath, err)
 		}
-		apiKey := strings.TrimSpace(c.Sync.APIKey)
-		if apiKey == "" {
-			return fmt.Errorf("KEYSTONE_CLOUD_API_KEY is required when sync is enabled")
-		}
-		c.Sync.APIKey = apiKey
+		c.Sync.DPConfigPath = expandedDPConfigPath
+		c.Sync.AuthEndpoint = strings.TrimSpace(c.Sync.AuthEndpoint)
+		c.Sync.GatewayEndpoint = strings.TrimSpace(c.Sync.GatewayEndpoint)
+		c.Sync.APIKey = strings.TrimSpace(c.Sync.APIKey)
 		if c.Sync.BatchSize <= 0 {
 			return fmt.Errorf("sync batch size must be greater than 0 when sync is enabled")
 		}
@@ -327,6 +331,28 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func defaultDPConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "~/.archebase/config.json"
+	}
+	return filepath.Join(home, ".archebase", "config.json")
+}
+
+func expandHomePath(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("home directory is not available")
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
 }
 
 func getEnvInt(key string, fallback int) int {

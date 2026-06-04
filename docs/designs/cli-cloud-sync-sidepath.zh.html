@@ -1,0 +1,834 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI 同步到云旁路设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17231f;
+      --muted: #5c6b64;
+      --line: #d7e2dc;
+      --paper: #ffffff;
+      --surface: #f6faf8;
+      --surface-strong: #eaf4ef;
+      --accent: #126b5e;
+      --accent-strong: #0a4e46;
+      --blue: #205f8f;
+      --warn: #955914;
+      --danger: #a63a32;
+      --success: #1f7a4f;
+      --code-bg: #13221e;
+      --code-ink: #eef8f3;
+      --shadow: 0 20px 48px rgba(21, 42, 34, 0.09);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(18, 107, 94, 0.12), transparent 34%),
+        linear-gradient(180deg, #f8fbfa 0%, #ffffff 46%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 24px 84px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 30px;
+      align-items: end;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 48px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 820px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .header-meta {
+      border-left: 4px solid var(--accent);
+      padding-left: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .header-meta strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 4px;
+    }
+
+    nav a {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      border: 1px solid #c8ded4;
+      border-radius: 999px;
+      padding: 8px 12px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    section {
+      margin-top: 38px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 26px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul,
+    ol {
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      border-radius: 5px;
+      background: #edf4ef;
+      padding: 2px 5px;
+      color: #123c35;
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      margin: 14px 0;
+      border-radius: 12px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      padding: 18px;
+      font: 14px/1.65 "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 22px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+      padding: 24px;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      padding: 18px;
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 17px;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .callout {
+      margin: 16px 0;
+      border-left: 5px solid var(--accent);
+      border-radius: 12px;
+      background: var(--surface);
+      padding: 16px 18px;
+    }
+
+    .callout.warn {
+      border-left-color: var(--warn);
+      background: #fff8ed;
+    }
+
+    .callout.danger {
+      border-left-color: var(--danger);
+      background: #fff4f2;
+    }
+
+    .callout.success {
+      border-left-color: var(--success);
+      background: #f0faf4;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      border: 1px solid #c8ded4;
+      border-radius: 999px;
+      background: var(--surface-strong);
+      padding: 6px 12px;
+      color: var(--accent-strong);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .flow {
+      display: grid;
+      gap: 12px;
+      margin: 16px 0 4px;
+    }
+
+    .flow-step {
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      padding: 14px 16px;
+    }
+
+    .flow-step strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .flow-step span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .sequence {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .sequence .node {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      padding: 14px;
+      min-height: 92px;
+    }
+
+    .node b {
+      display: block;
+      color: var(--accent-strong);
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    .node span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .two-column-list {
+      columns: 2;
+      column-gap: 34px;
+    }
+
+    .subtle {
+      color: var(--muted);
+    }
+
+    .status {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .status.ok {
+      color: #0d5939;
+      background: #e6f5eb;
+    }
+
+    .status.warn {
+      color: #7a430d;
+      background: #fff2dc;
+    }
+
+    .status.stop {
+      color: #84251f;
+      background: #ffe7e4;
+    }
+
+    @media (max-width: 860px) {
+      main {
+        padding: 28px 16px 64px;
+      }
+
+      header,
+      .split,
+      .cards,
+      .sequence {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding: 24px;
+      }
+
+      .two-column-list {
+        columns: 1;
+      }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+      }
+
+      nav {
+        display: none;
+      }
+
+      .panel,
+      header {
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Keystone / Synapse Design</p>
+        <h1>CLI 同步到云旁路设计</h1>
+        <p class="lead">在不改动现有 Keystone 云同步主链路的前提下，新增一个由 Synapse 触发、Keystone 后台执行 <code>dp data upload</code> 的单片段应急同步入口。首版只上传 MCAP 文件本体，但必须读取 sidecar JSON，并把其中标量元数据作为 <code>--tag</code> 传给 data-platform；数组字段先跳过，<code>dp</code> 本身不需要改。CLI 上传成功后回写 Keystone 云同步状态，并保留 data-platform 返回的审计 ID。</p>
+        <div class="badge-row">
+          <span class="badge">方案 2：成功后回写 episode</span>
+          <span class="badge">现有 SyncWorker 不变</span>
+          <span class="badge">默认关闭，按环境启用</span>
+        </div>
+      </div>
+      <div class="header-meta">
+        <strong>文档状态</strong>
+        <div>状态：已废弃；当前实现改为 Keystone Go uploader 原生 direct sync，不再实现 CLI sync API、CLISyncRunner、KEYSTONE_CLI_SYNC_* 配置或 cli_sync_runs 迁移。</div>
+        <div>用途：实现设计 / 评审</div>
+        <div>范围：Keystone 后端、Synapse 前端；data-platform CLI 只作为外部命令调用</div>
+        <div>日期：2026-06-02</div>
+      </div>
+    </header>
+
+    <nav aria-label="目录">
+      <a href="#decision">结论</a>
+      <a href="#flow">流程</a>
+      <a href="#api">接口</a>
+      <a href="#data-model">数据模型</a>
+      <a href="#runner">CLI Runner</a>
+      <a href="#frontend">前端交互</a>
+      <a href="#security">安全与并发</a>
+      <a href="#rollout">落地计划</a>
+    </nav>
+
+    <section id="decision" class="panel">
+      <h2>1. 设计结论</h2>
+      <p>推荐新增独立的 CLI 同步旁路，而不是让前端直接调用 CLI，也不是把 CLI pending/failed 状态写入现有 <code>sync_logs</code>。核心原则是：正常同步继续归 <code>SyncWorker</code> 管，CLI 同步只作为手动应急通道。</p>
+
+      <div class="cards">
+        <div class="card">
+          <strong>主链路不动</strong>
+          <p><code>POST /sync/episodes/:id</code>、自动扫描、重试和 backoff 都保持现状。</p>
+        </div>
+        <div class="card">
+          <strong>旁路独立记账</strong>
+          <p>用新表 <code>cli_sync_runs</code> 记录 CLI 的 pending、running、failed 和 completed。</p>
+        </div>
+        <div class="card">
+          <strong>成功后闭环</strong>
+          <p>CLI 成功后写 <code>episodes.cloud_synced</code>，并追加一条 <code>sync_logs.completed</code>。</p>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <strong>关键约束：</strong>不要把 CLI 的 pending 或 failed 行写进 <code>sync_logs</code>。现有 worker 会扫描最新 pending 和可重试 failed 行，如果 CLI 行进入这张表，可能被正常同步 worker 误认领。
+      </div>
+    </section>
+
+    <section id="flow">
+      <h2>2. 目标流程</h2>
+      <div class="split">
+        <div class="panel">
+          <h3>新增 CLI 旁路</h3>
+          <div class="flow">
+            <div class="flow-step"><strong>Synapse 按钮</strong><span>管理员点击「CLI 同步到云」。</span></div>
+            <div class="flow-step"><strong>Keystone API</strong><span>创建 <code>cli_sync_runs.pending</code> 并返回 <code>202 Accepted</code>。</span></div>
+            <div class="flow-step"><strong>Keystone Runner</strong><span>从 MinIO 下载 MCAP 到临时文件，并读取 sidecar JSON。</span></div>
+            <div class="flow-step"><strong>dp CLI</strong><span>执行 <code>dp --json data upload</code>，将 sidecar 标量元数据作为重复 <code>--tag</code> 参数传入。</span></div>
+            <div class="flow-step"><strong>状态回写</strong><span>写入 CLI 审计数据、<code>sync_logs.completed</code> 和 episode 云同步字段。</span></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>现有正常同步</h3>
+          <div class="flow">
+            <div class="flow-step"><strong>Synapse 正常同步</strong><span>仍调用 <code>POST /api/v1/sync/episodes/:id</code>。</span></div>
+            <div class="flow-step"><strong>SyncWorker 队列</strong><span>负责 pending、in_progress、failed 和重试。</span></div>
+            <div class="flow-step"><strong>Go Uploader</strong><span>通过 data-platform DataGateway 和 OSS 上传。</span></div>
+            <div class="flow-step"><strong>完成态</strong><span>更新 <code>sync_logs</code> 和 <code>episodes</code>。</span></div>
+          </div>
+          <div class="callout success">
+            两条链路最后都可以把 episode 标记为已同步，但只有正常链路参与自动发现和自动重试。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="scope" class="panel">
+      <h2>3. 目标与非目标</h2>
+      <div class="split">
+        <div>
+          <h3>目标</h3>
+          <ul>
+            <li>增加单 episode 的「CLI 同步到云」动作。</li>
+            <li>上传 MCAP 文件到 data-platform 云端对象存储。</li>
+            <li>读取 sidecar JSON，并把标量字段作为 <code>dp data upload --tag</code> 传递；数组字段首版先跳过。</li>
+            <li>保存 <code>fileId</code>、<code>logicalUploadId</code>、<code>uploadId</code>、<code>objectKey</code> 等审计信息。</li>
+            <li>成功后更新 <code>episodes.cloud_synced</code>、<code>cloud_synced_at</code>、<code>cloud_mcap_path</code>、<code>cloud_processed</code>。</li>
+            <li>成功后插入一条 <code>sync_logs.completed</code>，让现有 Cloud Sync Center 能看到完成态。</li>
+          </ul>
+        </div>
+        <div>
+          <h3>非目标</h3>
+          <ul>
+            <li>不替换 <code>SyncWorker</code>。</li>
+            <li>不提供批量 CLI 同步。</li>
+            <li>不自动重试 CLI 失败任务。</li>
+            <li>不把 CLI 失败任务混入正常同步主表。</li>
+            <li>首版不上传 sidecar JSON 文件本体；但它的标量内容必须作为 MCAP 上传 tags。</li>
+            <li>不把包含敏感信息的 CLI 输出返回给浏览器。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="api" class="panel">
+      <h2>4. 后端接口</h2>
+      <h3>4.1 触发 CLI 同步</h3>
+      <pre><code>POST /api/v1/sync/episodes/:id/cli</code></pre>
+      <p>请求体为空对象即可：</p>
+      <pre><code>{
+  "status": "accepted",
+  "episode_id": 123,
+  "run_id": 456,
+  "message": "episode accepted for CLI cloud sync"
+}</code></pre>
+
+      <table>
+        <thead>
+          <tr><th>校验项</th><th>失败响应</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>CLI 同步功能未启用</td><td><code>503 Service Unavailable</code></td></tr>
+          <tr><td>episode id 非法</td><td><code>400 Bad Request</code></td></tr>
+          <tr><td>episode 不存在或已删除</td><td><code>404 Not Found</code></td></tr>
+          <tr><td><code>qa_status</code> 不是 <code>approved</code> 或 <code>inspector_approved</code></td><td><code>400 Bad Request</code></td></tr>
+          <tr><td><code>cloud_synced = TRUE</code></td><td><code>409 Conflict</code></td></tr>
+          <tr><td>正常同步最新状态为 <code>pending</code> 或 <code>in_progress</code></td><td><code>409 Conflict</code></td></tr>
+          <tr><td>已有 CLI run 为 <code>pending</code> 或 <code>in_progress</code></td><td><code>409 Conflict</code></td></tr>
+          <tr><td>CLI runner 队列已满</td><td><code>429 Too Many Requests</code></td></tr>
+        </tbody>
+      </table>
+
+      <h3>4.2 查询最新 CLI 状态</h3>
+      <pre><code>GET /api/v1/sync/episodes/:id/cli/status</code></pre>
+      <pre><code>{
+  "id": 456,
+  "episode_id": 123,
+  "status": "in_progress",
+  "file_id": null,
+  "logical_upload_id": null,
+  "upload_id": null,
+  "object_key": null,
+  "file_size": null,
+  "started_at": "2026-06-02T08:10:00Z",
+  "completed_at": null,
+  "error_message": null
+}</code></pre>
+    </section>
+
+    <section id="data-model" class="panel">
+      <h2>5. 数据模型</h2>
+      <p>新增 <code>cli_sync_runs</code>，专门承载 CLI 旁路生命周期。正常同步的 <code>sync_logs</code> 只在 CLI 成功后接收一条 completed 审计行。</p>
+
+      <h3>5.1 CLI run 表</h3>
+      <pre><code>CREATE TABLE IF NOT EXISTS cli_sync_runs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    episode_id BIGINT NOT NULL,
+    status ENUM('pending', 'in_progress', 'completed', 'failed') NOT NULL DEFAULT 'pending',
+    source_path VARCHAR(1024),
+    temp_path VARCHAR(1024),
+    dp_config_path VARCHAR(1024),
+    file_id VARCHAR(255),
+    logical_upload_id VARCHAR(255),
+    upload_id VARCHAR(255),
+    bucket VARCHAR(255),
+    object_key VARCHAR(1024),
+    file_size BIGINT,
+    oss_object_etag VARCHAR(255),
+    duration_sec INT,
+    error_message TEXT,
+    stdout_json JSON DEFAULT NULL,
+    started_at TIMESTAMP NULL,
+    completed_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_cli_sync_episode (episode_id),
+    INDEX idx_cli_sync_status (status),
+    INDEX idx_cli_sync_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;</code></pre>
+
+      <h3>5.2 成功后的 normal sync log</h3>
+      <pre><code>INSERT INTO sync_logs (
+    episode_id,
+    source_path,
+    destination_path,
+    status,
+    bytes_transferred,
+    duration_sec,
+    attempt_count,
+    started_at,
+    completed_at
+) VALUES (?, ?, ?, 'completed', ?, ?, 1, ?, ?);</code></pre>
+
+      <div class="sequence" aria-label="状态序列">
+        <div class="node"><b>1. pending</b><span>API 接受请求，写入 CLI 独立表。</span></div>
+        <div class="node"><b>2. in_progress</b><span>runner 已 claim，正在 staging 或上传。</span></div>
+        <div class="node"><b>3A. failed</b><span>只更新 CLI 表，episode 不变。</span></div>
+        <div class="node"><b>3B. completed</b><span>CLI 表记录 dp 返回 ID。</span></div>
+        <div class="node"><b>4. synced</b><span>写 <code>sync_logs.completed</code> 与 episode 云同步字段。</span></div>
+      </div>
+    </section>
+
+    <section id="runner" class="panel">
+      <h2>6. CLI Runner</h2>
+      <h3>6.1 命令构造</h3>
+      <p>必须使用 <code>exec.CommandContext</code> 参数数组调用，不能拼 shell 字符串。</p>
+      <pre><code>exec.CommandContext(ctx, dpBin,
+  "--config", dpConfigPath,
+  "--json",
+  "data", "upload", tempFile,
+  "--device", "&lt;robot device id&gt;",
+  "--tag", "episode_id=&lt;episode public id&gt;",
+  "--tag", "keystone_episode_id=&lt;numeric id&gt;",
+  "--tag", "device_id=&lt;robot device id&gt;",
+  "--tag", "sync_channel=keystone_cli",
+  "--tag", "&lt;flattened sidecar key=value&gt;",
+  "--hint", "source=keystone_cli_sync",
+)</code></pre>
+      <p>设备 ID 通过 episode 对应工位的机器人解析，优先使用 <code>robots.device_id</code>，回退到 <code>workstations.robot_serial</code>。所选 <code>dp</code> config 的 <code>devices[]</code> 中必须已有这个 device profile。</p>
+
+      <h3>6.2 标签</h3>
+      <table>
+        <thead>
+          <tr><th>标签</th><th>来源</th><th>要求</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>episode_id</code></td><td><code>episodes.episode_id</code></td><td>必填</td></tr>
+          <tr><td><code>keystone_episode_id</code></td><td><code>episodes.id</code></td><td>必填</td></tr>
+          <tr><td><code>device_id</code></td><td>episode 工位对应的 <code>robots.device_id</code></td><td>必填，同时作为 <code>--device</code> 参数</td></tr>
+          <tr><td><code>sync_channel</code></td><td>固定 <code>keystone_cli</code></td><td>必填</td></tr>
+          <tr><td>sidecar JSON 标量字段</td><td><code>episodes.sidecar_path</code> 指向的 JSON</td><td>必填，扁平化后作为重复 <code>--tag</code></td></tr>
+          <tr><td>sidecar JSON 数组字段</td><td>例如 topic 列表、skills</td><td>首版跳过，不传给 CLI</td></tr>
+          <tr><td><code>topics_summary</code></td><td>sidecar JSON</td><td>排除，避免 tag 过大</td></tr>
+          <tr><td><code>task_id</code></td><td><code>episodes.task_id</code></td><td>可选</td></tr>
+          <tr><td><code>factory_id</code></td><td><code>episodes.factory_id</code></td><td>可选</td></tr>
+          <tr><td><code>organization_id</code></td><td><code>episodes.organization_id</code></td><td>可选</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn">
+        CLI 首版只上传 MCAP 对象，不上传 sidecar JSON 对象。但 sidecar JSON 元数据不是可选项：标量字段必须作为 tag 传入，数组字段首版先跳过；如果 <code>sidecar_path</code> 缺失、对象读不到或 JSON 解析失败，本次 CLI run 应在调用 <code>dp</code> 前失败，避免云端产生缺少关键过滤标签的对象。
+      </div>
+      <p>sidecar 字段扁平化应复用现有同步 worker 的意图：普通字段转成字符串 key/value，嵌套对象用点号展开；数组字段首版跳过。同时必须受 <code>KEYSTONE_CLI_SYNC_MAX_TAGS</code> 和 <code>KEYSTONE_CLI_SYNC_MAX_TAG_BYTES</code> 限制。</p>
+
+      <h3>6.3 临时文件</h3>
+      <ul class="two-column-list">
+        <li>默认目录：<code>/var/lib/keystone/cli-sync</code>。</li>
+        <li>临时文件权限：<code>0600</code>。</li>
+        <li>成功或失败后删除临时文件。</li>
+        <li><code>KEYSTONE_CLI_SYNC_KEEP_TEMP=true</code> 时保留临时文件用于排障。</li>
+        <li>启动时校验目录可写。</li>
+        <li>可用时检查磁盘水位。</li>
+      </ul>
+
+      <h3>6.4 dp JSON 输出</h3>
+      <pre><code>{
+  "logicalUploadId": "logical-1",
+  "fileId": "file-1",
+  "bucket": "bucket-a",
+  "objectKey": "objects/file-1.mcap",
+  "fileSize": 123456789,
+  "ossObjectEtag": "etag",
+  "identity": "api-key",
+  "deviceId": null
+}</code></pre>
+      <p>标记成功前必须校验 <code>fileId</code>、<code>logicalUploadId</code>、<code>objectKey</code> 和 <code>fileSize</code> 非空且合法。</p>
+    </section>
+
+    <section id="config" class="panel">
+      <h2>7. 配置</h2>
+      <table>
+        <thead>
+          <tr><th>环境变量</th><th>默认值</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>KEYSTONE_CLI_SYNC_ENABLED</code></td><td><code>false</code></td><td>启用旁路 API 和 runner。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_DP_BIN</code></td><td><code>dp</code></td><td>data-platform CLI 二进制路径或名称。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_DP_CONFIG</code></td><td>空</td><td>传给 <code>dp --config</code> 的 SDK 配置文件。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_TEMP_DIR</code></td><td><code>/var/lib/keystone/cli-sync</code></td><td>MCAP staging 目录。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_MAX_CONCURRENT</code></td><td><code>1</code></td><td>最大并发 CLI 上传数。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_QUEUE_SIZE</code></td><td><code>16</code></td><td>最大排队 run 数。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_TIMEOUT_SEC</code></td><td><code>7200</code></td><td>单次 CLI run 超时时间。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_KEEP_TEMP</code></td><td><code>false</code></td><td>是否保留临时文件。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_MAX_TAGS</code></td><td><code>128</code></td><td>传给 CLI 的最大 tag 数。</td></tr>
+          <tr><td><code>KEYSTONE_CLI_SYNC_MAX_TAG_BYTES</code></td><td><code>65536</code></td><td>编码后 tag 总字节上限。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        启用时启动校验：<code>dp</code> 可执行、<code>dp</code> 配置文件可读、临时目录可创建且可写。
+      </div>
+    </section>
+
+    <section id="frontend" class="panel">
+      <h2>8. 前端交互</h2>
+      <h3>8.1 Cloud Sync Center</h3>
+      <p>在现有「重试」「历史」旁边增加一个行级动作：</p>
+      <pre><code>CLI 同步到云</code></pre>
+      <p>仅在后端配置显示 CLI sync enabled 时展示。以下情况禁用：</p>
+      <ul>
+        <li>正常同步状态是 <code>pending</code> 或 <code>in_progress</code>。</li>
+        <li>正常同步状态是 <code>completed</code>。</li>
+        <li>当前 episode 已有 active CLI run。</li>
+        <li>当前行已有操作在提交。</li>
+        <li>当前用户不是 admin。</li>
+      </ul>
+
+      <h3>8.2 Episode Detail</h3>
+      <p>Episode 详情页也需要同一个动作。原因是 approved 但还没有任何 <code>sync_logs</code> 的 episode 可能不会出现在 Cloud Sync Center 列表里。</p>
+
+      <h3>8.3 状态展示</h3>
+      <table>
+        <thead>
+          <tr><th>CLI 状态</th><th>按钮文案</th><th>页面行为</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="status warn">pending</span></td><td>CLI 已入队</td><td>轮询 CLI status。</td></tr>
+          <tr><td><span class="status warn">in_progress</span></td><td>CLI 同步中</td><td>禁用重复点击。</td></tr>
+          <tr><td><span class="status ok">completed</span></td><td>CLI 已完成</td><td>刷新正常同步 summary。</td></tr>
+          <tr><td><span class="status stop">failed</span></td><td>CLI 同步失败</td><td>显示脱敏错误，正常同步行不变。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="security" class="panel">
+      <h2>9. 安全、并发与竞态</h2>
+      <div class="split">
+        <div>
+          <h3>安全要求</h3>
+          <ul>
+            <li>触发 API 必须要求 admin 权限。</li>
+            <li>只能使用 <code>exec.CommandContext</code> 调用 CLI。</li>
+            <li>不要把 API key 放到命令行参数。</li>
+            <li><code>dp</code> 凭证只放在权限受控的 config 文件中。</li>
+            <li>返回前端的 stdout、stderr 和错误信息必须脱敏。</li>
+            <li>不要记录完整 <code>dp</code> config、临时凭证或 presigned URL。</li>
+          </ul>
+        </div>
+        <div>
+          <h3>并发策略</h3>
+          <ul>
+            <li>同一 episode 同时只允许一个 active CLI run。</li>
+            <li>创建 run 时在事务里检查 active normal sync 和 active CLI run。</li>
+            <li>完成前锁定 <code>episodes</code> 行并重新检查 <code>cloud_synced</code>。</li>
+            <li>默认并发为 1，避免占满 Keystone 磁盘、CPU 和网络。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        如果 CLI 上传成功后 Keystone 在落库前崩溃，后续人工重试可能产生重复云端对象。首版接受这个应急通道风险，后续可通过 data-platform 上传 idempotency key 或按 <code>episode_id</code> 查询已上传对象来降低风险。
+      </div>
+
+      <h3>正常 worker 与 CLI 同时完成</h3>
+      <p>如果正常 <code>SyncWorker</code> 在 CLI 上传期间已经把 episode 同步完成，CLI runner 完成落库时应：</p>
+      <ul>
+        <li>将 CLI run 标记为 completed，并保留 <code>dp</code> 返回的审计信息。</li>
+        <li>不覆盖 <code>episodes.cloud_mcap_path</code>。</li>
+        <li>默认不插入第二条 <code>sync_logs.completed</code>，除非产品明确需要重复完成历史。</li>
+      </ul>
+    </section>
+
+    <section id="rollout" class="panel">
+      <h2>10. 落地计划与验收</h2>
+      <h3>10.1 实施顺序</h3>
+      <ol>
+        <li>新增 <code>cli_sync_runs</code> migration 和 repository helper。</li>
+        <li>新增 CLI sync config，默认关闭。</li>
+        <li>实现 backend runner，并用 fake <code>dp</code> 可执行文件做测试。</li>
+        <li>新增 <code>POST /sync/episodes/:id/cli</code> 和 CLI status endpoint。</li>
+        <li>新增 Synapse API wrapper。</li>
+        <li>Episode Detail 增加按钮。</li>
+        <li>Cloud Sync Center 增加行按钮和 CLI 状态展示。</li>
+        <li>只在 staging 环境开启。</li>
+      </ol>
+
+      <h3>10.2 验收标准</h3>
+      <ul>
+        <li>一个 approved 小 MCAP 可以通过 CLI 同步到云。</li>
+        <li>data-platform 对象列表可见该文件。</li>
+        <li>预期 sidecar JSON 标量字段可在 data-platform raw tags 中看到。</li>
+        <li><code>cli_sync_runs</code> 记录 <code>fileId</code> 和 <code>logicalUploadId</code>。</li>
+        <li><code>sync_logs</code> 出现一条 completed 行。</li>
+        <li><code>episodes.cloud_synced = TRUE</code>。</li>
+        <li>正常 <code>SyncWorker</code> 不会再次处理该 episode。</li>
+      </ul>
+
+      <h3>10.3 必测用例</h3>
+      <ul class="two-column-list">
+        <li>功能关闭时拒绝请求。</li>
+        <li>非 approved episode 被拒绝。</li>
+        <li>已 cloud_synced episode 被拒绝。</li>
+        <li>active normal sync 行被拒绝。</li>
+        <li>active CLI run 被拒绝。</li>
+        <li>sidecar JSON 缺失、不可读或格式错误时 run 失败。</li>
+        <li>sidecar JSON 标量字段会作为重复 <code>--tag</code> 参数传给 <code>dp</code>，数组字段首版跳过。</li>
+        <li><code>dp</code> argv 不经过 shell。</li>
+        <li>解析合法 <code>dp --json</code> 输出。</li>
+        <li>缺少关键字段时标记 failed。</li>
+        <li>失败不写 <code>sync_logs</code>。</li>
+        <li>成功更新 episode 和 completed sync log。</li>
+        <li>临时文件成功和失败后都会清理。</li>
+        <li>前端失败提示只显示脱敏错误。</li>
+      </ul>
+    </section>
+
+    <section id="questions" class="panel">
+      <h2>11. 待确认问题</h2>
+      <ul>
+        <li>CLI 失败是否需要进入 Cloud Sync Center 主表，还是只在 episode 详情/CLI badge 展示？</li>
+        <li>正常 worker 已经完成时，CLI completed 是否需要单独追加到 <code>sync_logs</code> 历史？</li>
+        <li><code>dp data upload</code> 是否需要 data-platform 支持显式 idempotency key？</li>
+        <li><code>dp</code> config 应使用 site API key，还是为 Keystone edge site 建一个 device profile？</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

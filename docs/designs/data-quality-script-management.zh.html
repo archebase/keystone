@@ -1,0 +1,878 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数据质检脚本管理设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #15211c;
+      --muted: #5f6d66;
+      --line: #d7e0da;
+      --paper: #ffffff;
+      --surface: #f6f9f6;
+      --surface-strong: #edf4ef;
+      --accent: #146c5f;
+      --accent-strong: #0b4f47;
+      --warn: #9b4d16;
+      --danger: #a8322a;
+      --code-bg: #13211d;
+      --code-ink: #edf7f2;
+      --shadow: 0 18px 48px rgba(22, 41, 33, 0.09);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(20, 108, 95, 0.13), transparent 36%),
+        linear-gradient(180deg, #f8fbf8 0%, #ffffff 42%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 280px;
+      gap: 28px;
+      align-items: end;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.86);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 48px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 760px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .header-meta {
+      border-left: 4px solid var(--accent);
+      padding-left: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .header-meta strong {
+      display: block;
+      color: var(--ink);
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 6px;
+    }
+
+    nav a {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      border: 1px solid #c8ded4;
+      border-radius: 999px;
+      padding: 8px 12px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    section {
+      margin-top: 38px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 26px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 26px 0 10px;
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul,
+    ol {
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    .band {
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      box-shadow: 0 12px 30px rgba(20, 43, 35, 0.05);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .three-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .panel {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    .panel h3,
+    .panel h4 {
+      margin-top: 0;
+    }
+
+    .ok {
+      border-color: #b8d9cb;
+      background: #f2faf5;
+    }
+
+    .no {
+      border-color: #ead1c0;
+      background: #fff7f1;
+    }
+
+    .note {
+      border-left: 4px solid var(--accent);
+      padding: 12px 16px;
+      background: #f2faf6;
+      color: var(--muted);
+    }
+
+    .warning {
+      border-left-color: var(--warn);
+      background: #fff8ee;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 22px;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-strong);
+      font-weight: 700;
+    }
+
+    code {
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      background: #e7f2ec;
+      color: #12382f;
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-size: 0.94em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 14px 0 20px;
+      padding: 16px;
+      color: var(--code-ink);
+      background: var(--code-bg);
+      border-radius: 12px;
+      line-height: 1.55;
+    }
+
+    pre code {
+      color: inherit;
+      background: transparent;
+      padding: 0;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0;
+      list-style: none;
+    }
+
+    .tag-list li {
+      margin: 0;
+      padding: 6px 10px;
+      border: 1px solid #c8ded4;
+      border-radius: 999px;
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      margin: 14px 0 4px;
+    }
+
+    .flow-step {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper);
+    }
+
+    .flow-step span {
+      display: inline-flex;
+      width: 28px;
+      height: 28px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      color: white;
+      background: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    @media (max-width: 860px) {
+      main {
+        padding: 24px 16px 56px;
+      }
+
+      header,
+      .grid,
+      .three-grid {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Keystone / Synapse Phase 1</p>
+        <h1>数据质检脚本管理设计</h1>
+        <p class="lead">
+          第一版只做一个可落地的最小闭环：上传 Python 质检脚本，Episode 入库后自动触发独立 Runner 执行，结果写回 QA 状态，并由 QA 状态控制云同步资格。
+        </p>
+      </div>
+      <aside class="header-meta">
+        <strong>设计边界</strong>
+        不做补采，不回退任务，不改变订单、批次、任务的生产状态机。质检只影响 Episode 的数据可用性。
+      </aside>
+    </header>
+
+    <nav aria-label="目录">
+      <a href="#scope">一期范围</a>
+      <a href="#implemented">已实现基础</a>
+      <a href="#todo">待实现模块</a>
+      <a href="#architecture">架构</a>
+      <a href="#qa-status">QA 状态</a>
+      <a href="#versioning">脚本版本</a>
+      <a href="#data-model">数据模型</a>
+      <a href="#flow">触发与结算</a>
+      <a href="#contract">脚本契约</a>
+      <a href="#runner">Runner</a>
+      <a href="#override">人工覆盖</a>
+      <a href="#api">API</a>
+      <a href="#synapse">Synapse</a>
+      <a href="#runtime">Runtime</a>
+    </nav>
+
+    <section id="scope">
+      <h2>1. 一期范围</h2>
+      <div class="grid">
+        <article class="panel ok">
+          <h3>包含</h3>
+          <ul>
+            <li>只支持 Python 脚本。</li>
+            <li>上传单个 <code>.py</code> 文件，最大 1 MB。</li>
+            <li>脚本文件存 MinIO，元数据和执行记录存 MySQL。</li>
+            <li>脚本版本不可变，上传后默认不激活。</li>
+            <li>管理员显式激活版本；同一脚本只允许一个 active 版本。</li>
+            <li>触发范围支持 <code>global</code> 和 <code>sop</code>。</li>
+            <li>Episode 新建后自动触发质检。</li>
+            <li>支持单个 Episode 手动重跑。</li>
+            <li>支持从 <code>needs_inspection</code> 或 <code>rejected</code> 人工覆盖。</li>
+            <li>固定 Runner Runtime：<code>python3.11-mcap</code>。</li>
+          </ul>
+        </article>
+        <article class="panel no">
+          <h3>不包含</h3>
+          <ul>
+            <li>不做 UI 在线代码编辑器。</li>
+            <li>不支持 ZIP、多文件脚本包、Git 脚本源。</li>
+            <li>不支持脚本自带依赖安装。</li>
+            <li>不做激活前 test run。</li>
+            <li>不做上传时 Python 语法校验。</li>
+            <li>不做 job cancel、自动 retry、历史批量回扫。</li>
+            <li>不建批次 QA 汇总表。</li>
+            <li>不做补采批次，不做任务回退。</li>
+            <li>不改 <code>tasks.status</code>、<code>batches.status</code>、<code>orders.status</code>。</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="implemented">
+      <h2>2. 已实现基础</h2>
+      <p>以下能力已存在于当前 Keystone / Synapse 体系中，是质检脚本管理的一期实现基础，不需要从零建设。</p>
+      <div class="grid">
+        <article class="panel ok">
+          <h3>Keystone 已有基础</h3>
+          <ul>
+            <li>任务、批次、订单、Episode 等生产数据模型。</li>
+            <li>上传完成后创建 Episode，并保存 MCAP / sidecar 的对象路径。</li>
+            <li>Episode 已有 <code>qa_status</code>、<code>auto_approved</code>、<code>quality_flag</code> 等质检相关字段。</li>
+            <li>MinIO / S3 存储接入能力，可保存 MCAP、sidecar 和后续脚本 artifact。</li>
+            <li>云同步 worker 已按 <code>approved</code> / <code>inspector_approved</code> 过滤可同步 Episode。</li>
+            <li>JWT 鉴权和 admin / data_collector 角色基础。</li>
+          </ul>
+        </article>
+        <article class="panel ok">
+          <h3>Synapse 已有基础</h3>
+          <ul>
+            <li>Admin 管理后台布局、导航和 CRUD 页面模式。</li>
+            <li>通用 API client、分页列表、表单、弹窗和确认对话框组件。</li>
+            <li>Episode 详情页和数据预览能力。</li>
+            <li>任务、批次、统计、云同步等后台页面，可接入 QA 状态展示。</li>
+            <li>已有数据生产统计页面，可继续按 <code>episodes.qa_status</code> 聚合。</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="todo">
+      <h2>3. 待实现模块</h2>
+      <p>一期需要新增的是质检脚本管理和独立 Runner 执行闭环，生产主状态机不纳入本次改造。</p>
+      <div class="three-grid">
+        <article class="panel">
+          <h3>Keystone 后端</h3>
+          <ul>
+            <li>新增 <code>quality_scripts</code>、<code>quality_script_versions</code>、<code>quality_runs</code>、<code>quality_run_jobs</code>、<code>quality_overrides</code> 表。</li>
+            <li>新增脚本管理、版本上传、激活/停用、run/job 查询 API。</li>
+            <li>在 Episode 创建后匹配 active 脚本并创建质检 run/jobs。</li>
+            <li>新增手动重跑和人工覆盖 API。</li>
+            <li>调整上传完成路径：有脚本时进入 <code>qa_running</code>，无脚本时自动 <code>approved</code>。</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>Quality Runner</h3>
+          <ul>
+            <li>新增独立命令或服务 <code>keystone-quality-runner</code>。</li>
+            <li>从 MySQL 领取 <code>quality_run_jobs</code>。</li>
+            <li>从 MinIO 下载 MCAP、sidecar 和 Python 脚本。</li>
+            <li>按固定命令执行 Python 子进程并限制超时。</li>
+            <li>写回 job 结果，并在 run 完成后结算 Episode QA 状态。</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>Synapse 前端</h3>
+          <ul>
+            <li>新增“数据质检”后台入口。</li>
+            <li>脚本列表、脚本元数据表单、版本上传和激活/停用页面。</li>
+            <li>run/job 列表和结果详情。</li>
+            <li>Episode 详情页增加 QA 面板、手动重跑和人工覆盖入口。</li>
+            <li>批次、统计、云同步相关页面展示有效 QA 状态。</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>4. 架构</h2>
+      <div class="band">
+        <pre><code>Synapse Admin
+  -> Keystone REST API
+      -> MySQL: scripts, versions, runs, jobs, overrides
+      -> MinIO: uploaded script files
+
+Keystone upload_complete
+  -> creates episode
+  -> matches active quality script versions
+  -> creates quality run and jobs
+
+keystone-quality-runner
+  -> polls MySQL quality_run_jobs
+  -> downloads MCAP, sidecar, and script from MinIO
+  -> runs Python script in a child process
+  -> writes job result
+  -> settles the parent quality run
+  -> updates episode QA status</code></pre>
+        <p>
+          Runner 是独立进程，不放在 Keystone API 进程内执行 Python。推荐同仓库、同发布包，但运行成两个命令：
+          <code>keystone-edge</code> 和 <code>keystone-quality-runner</code>。
+        </p>
+      </div>
+    </section>
+
+    <section id="qa-status">
+      <h2>5. Episode QA 状态</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>状态</th>
+            <th>含义</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pending_qa</code></td>
+            <td>Episode 已创建，但质检还没有开始。</td>
+          </tr>
+          <tr>
+            <td><code>qa_running</code></td>
+            <td>当前质检轮次仍有 pending 或 running job。</td>
+          </tr>
+          <tr>
+            <td><code>approved</code></td>
+            <td>所有匹配脚本都通过，或没有任何匹配脚本。</td>
+          </tr>
+          <tr>
+            <td><code>needs_inspection</code></td>
+            <td>脚本异常、超时、输出非法，或脚本返回 <code>uncertain</code>。</td>
+          </tr>
+          <tr>
+            <td><code>inspector_approved</code></td>
+            <td>管理员人工确认通过。</td>
+          </tr>
+          <tr>
+            <td><code>rejected</code></td>
+            <td>脚本或管理员明确驳回该数据。</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note warning">
+        一期质检系统不写 <code>episodes.qa_status = failed</code>。执行失败不等于数据坏，统一进入 <code>needs_inspection</code>。
+      </p>
+      <p>云同步资格仍只认 <code>approved</code> 和 <code>inspector_approved</code>。</p>
+    </section>
+
+    <section id="versioning">
+      <h2>6. 脚本版本规则</h2>
+      <div class="band">
+        <ul>
+          <li>上传只接受一个 <code>.py</code> 文件，空文件拒绝，最大 1 MB。</li>
+          <li>版本号必须是 SemVer：<code>MAJOR.MINOR.PATCH</code>，不带 <code>v</code> 前缀。</li>
+          <li>Keystone 计算并保存 SHA256。</li>
+          <li>MinIO 路径使用 <code>slug/version/sha256.py</code>，不信任原始文件名。</li>
+          <li>上传版本默认 <code>inactive</code>，不会自动激活。</li>
+          <li>激活版本是单独的 admin 操作。</li>
+          <li>激活一个版本会停用同一脚本的旧 active 版本。</li>
+          <li>已经排队或运行中的 job 继续使用它引用的不可变版本。</li>
+          <li>一期不物理删除脚本版本或 MinIO artifact。</li>
+        </ul>
+        <p>
+          版本同时携带执行策略：<code>language</code>、<code>runtime</code>、<code>timeout_seconds</code>、
+          <code>scope_type</code>、<code>scope_ref_id</code> 和 <code>default_config</code>。修改代码、配置、超时或适用范围都需要上传新版本。
+        </p>
+      </div>
+    </section>
+
+    <section id="data-model">
+      <h2>7. 数据模型</h2>
+      <p>一期使用 5 张质检表，先不拆独立 findings 表；脚本输出里的 findings 存在 <code>quality_run_jobs.result_json</code>。</p>
+
+      <h3>quality_scripts</h3>
+      <pre><code>id
+slug
+name
+description
+status              active | inactive
+created_by
+created_at
+updated_at
+deleted_at</code></pre>
+
+      <h3>quality_script_versions</h3>
+      <pre><code>id
+script_id
+version
+language            python
+runtime             python3.11-mcap
+entrypoint          normalized uploaded filename
+artifact_uri
+artifact_sha256
+artifact_size_bytes
+timeout_seconds
+scope_type          global | sop
+scope_ref_id        null for global, sop id for sop
+default_config      JSON
+status              active | inactive
+created_by
+created_at
+deleted_at</code></pre>
+
+      <h3>quality_runs</h3>
+      <pre><code>id
+episode_id
+trigger_type        auto | manual
+triggered_by        system or admin user id/name
+status              pending | running | completed
+final_qa_status
+settlement_reason
+created_at
+started_at
+completed_at</code></pre>
+      <p>同一个 Episode 一期只允许一个 active 质检轮次；如果还有 pending/running job，手动重跑返回 <code>409 Conflict</code>。</p>
+
+      <h3>quality_run_jobs</h3>
+      <pre><code>id
+quality_run_id
+episode_id
+script_version_id
+status              pending | running | succeeded | failed | timeout | invalid_result
+decision            passed | rejected | uncertain
+runner_id
+locked_at
+started_at
+finished_at
+score
+summary
+result_json         full script output, including findings
+stdout_excerpt
+stderr_excerpt
+error_message
+duration_ms
+created_at
+updated_at</code></pre>
+      <p><code>status = failed</code> 表示 Runner 或 job 执行失败，不表示数据被驳回。</p>
+
+      <h3>quality_overrides</h3>
+      <pre><code>id
+episode_id
+previous_qa_status
+new_qa_status
+decision            approved | rejected
+reason
+operator_id
+operator_name
+created_at</code></pre>
+      <p>人工覆盖只更新 <code>episodes.qa_status</code>，不改历史 <code>quality_runs</code> 或 <code>quality_run_jobs</code>。</p>
+    </section>
+
+    <section id="flow">
+      <h2>8. 自动触发与结算</h2>
+      <div class="flow">
+        <div class="flow-step">
+          <span>1</span>
+          <div>上传完成后 Keystone 创建 Episode，初始写 <code>qa_status = pending_qa</code>。</div>
+        </div>
+        <div class="flow-step">
+          <span>2</span>
+          <div>匹配所有 active <code>global</code> 版本，以及 SOP 匹配的 active <code>sop</code> 版本。</div>
+        </div>
+        <div class="flow-step">
+          <span>3</span>
+          <div>如果没有匹配脚本，直接写 <code>approved</code> 和 <code>auto_approved = true</code>。</div>
+        </div>
+        <div class="flow-step">
+          <span>4</span>
+          <div>如果有匹配脚本，创建一个 <code>quality_runs</code> 和多条 <code>quality_run_jobs</code>，Episode 进入 <code>qa_running</code>。</div>
+        </div>
+        <div class="flow-step">
+          <span>5</span>
+          <div>所有 job 完成后统一结算；<code>rejected</code> 不短路其他脚本。</div>
+        </div>
+      </div>
+
+      <h3>结算规则</h3>
+      <pre><code>if any job timed out, failed to execute, produced invalid output, or returned uncertain:
+  episode.qa_status = needs_inspection
+else if any job returned rejected:
+  episode.qa_status = rejected
+else:
+  episode.qa_status = approved</code></pre>
+
+      <h3>手动重跑</h3>
+      <ul>
+        <li>仅 admin 可用。</li>
+        <li>使用当前 active 脚本版本。</li>
+        <li>不允许临时覆盖配置。</li>
+        <li>不使用历史轮次里的旧版本。</li>
+        <li>如果 Episode 已有 active QA job，返回 <code>409 Conflict</code>。</li>
+      </ul>
+    </section>
+
+    <section id="contract">
+      <h2>9. 脚本执行契约</h2>
+      <p>Runner 为每个 job 准备临时目录：</p>
+      <pre><code>input.mcap
+sidecar.json
+config.json
+result.json
+script.py</code></pre>
+      <p>执行命令固定为：</p>
+      <pre><code>python script.py --mcap input.mcap --sidecar sidecar.json --config config.json --output result.json</code></pre>
+      <p>业务结果必须写入 <code>--output</code> 指定的 JSON 文件；<code>stdout</code> 和 <code>stderr</code> 只作为日志保存。</p>
+
+      <h3>最小输出</h3>
+      <pre><code>{
+  "decision": "passed",
+  "score": 1.0,
+  "summary": "ok",
+  "findings": []
+}</code></pre>
+
+      <h3>结果字段</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>规则</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>decision</code></td>
+            <td>必填：<code>passed</code>、<code>rejected</code>、<code>uncertain</code></td>
+          </tr>
+          <tr>
+            <td><code>score</code></td>
+            <td>可选，0 到 1。</td>
+          </tr>
+          <tr>
+            <td><code>summary</code></td>
+            <td>可选字符串。</td>
+          </tr>
+          <tr>
+            <td><code>findings</code></td>
+            <td>可选数组，保存在 <code>result_json</code> 中。</td>
+          </tr>
+          <tr>
+            <td><code>findings[].severity</code></td>
+            <td><code>info</code>、<code>warning</code>、<code>error</code></td>
+          </tr>
+          <tr>
+            <td><code>findings[].message</code></td>
+            <td>必填字符串。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <ul class="tag-list">
+        <li>passed：脚本接受数据</li>
+        <li>rejected：脚本驳回数据</li>
+        <li>uncertain：脚本无法可靠判断</li>
+      </ul>
+      <p class="note">输出文件缺失、JSON 非法、缺少 <code>decision</code> 或未知 <code>decision</code>，job 状态写为 <code>invalid_result</code>。</p>
+    </section>
+
+    <section id="runner">
+      <h2>10. Runner 行为</h2>
+      <div class="band">
+        <ul>
+          <li>轮询 MySQL <code>quality_run_jobs</code>。</li>
+          <li>用事务和行锁领取 job。</li>
+          <li>用 <code>runner_id</code> 和 <code>locked_at</code> 标识所有权。</li>
+          <li>直接从 MinIO 下载 MCAP、sidecar 和脚本文件。</li>
+          <li>以子进程执行 Python。</li>
+          <li>执行 <code>timeout_seconds</code> 超时控制。</li>
+          <li>截断保存 stdout/stderr。</li>
+          <li>不把数据库或 MinIO 凭证传给脚本进程。</li>
+          <li>不自动 retry。</li>
+          <li>stale running job 超过超时加宽限期后视为执行失败。</li>
+        </ul>
+        <p>建议配置项：<code>QUALITY_RUNNER_CONCURRENCY</code>、<code>QUALITY_RUNNER_POLL_INTERVAL_SECONDS</code>。</p>
+      </div>
+    </section>
+
+    <section id="override">
+      <h2>11. 人工覆盖</h2>
+      <div class="grid">
+        <article class="panel">
+          <h3>允许来源状态</h3>
+          <ul>
+            <li><code>needs_inspection</code></li>
+            <li><code>rejected</code></li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>允许目标</h3>
+          <ul>
+            <li><code>approved</code> -> <code>inspector_approved</code></li>
+            <li><code>rejected</code> -> <code>rejected</code></li>
+          </ul>
+        </article>
+      </div>
+      <ul>
+        <li><code>reason</code> 必填。</li>
+        <li><code>pending_qa</code> 或 <code>qa_running</code> 时不允许覆盖。</li>
+        <li>覆盖只更新 Episode 的 effective QA 状态。</li>
+        <li>覆盖不改脚本执行历史。</li>
+        <li>覆盖写入 <code>quality_overrides</code>。</li>
+      </ul>
+      <pre><code>POST /api/v1/episodes/:id/quality-override
+Content-Type: application/json
+
+{
+  "decision": "approved",
+  "reason": "manual review confirmed the data is usable"
+}</code></pre>
+    </section>
+
+    <section id="api">
+      <h2>12. API 草案</h2>
+      <div class="grid">
+        <article class="panel">
+          <h3>脚本管理</h3>
+          <pre><code>GET   /api/v1/quality/scripts
+POST  /api/v1/quality/scripts
+GET   /api/v1/quality/scripts/:id
+PATCH /api/v1/quality/scripts/:id
+POST  /api/v1/quality/scripts/:id/versions
+GET   /api/v1/quality/scripts/:id/versions
+POST  /api/v1/quality/script-versions/:id/activate
+POST  /api/v1/quality/script-versions/:id/deactivate</code></pre>
+        </article>
+        <article class="panel">
+          <h3>执行与复核</h3>
+          <pre><code>GET  /api/v1/quality/runs
+GET  /api/v1/quality/jobs
+POST /api/v1/episodes/:id/quality-runs
+POST /api/v1/episodes/:id/quality-override</code></pre>
+        </article>
+      </div>
+      <p>所有脚本管理、手动重跑和人工覆盖 API 一期都只开放给 admin。</p>
+    </section>
+
+    <section id="synapse">
+      <h2>13. Synapse 页面范围</h2>
+      <div class="three-grid">
+        <article class="panel">
+          <h3>脚本管理</h3>
+          <ul>
+            <li>脚本列表。</li>
+            <li>创建和编辑元数据。</li>
+            <li>上传脚本版本。</li>
+            <li>激活和停用版本。</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>执行记录</h3>
+          <ul>
+            <li>run/job 列表。</li>
+            <li>按状态、脚本、Episode 筛选。</li>
+            <li>查看 stdout/stderr 摘要。</li>
+            <li>查看 <code>result_json</code> 中的 findings。</li>
+          </ul>
+        </article>
+        <article class="panel">
+          <h3>Episode 详情</h3>
+          <ul>
+            <li>显示 effective QA 状态。</li>
+            <li>显示最新 run 状态。</li>
+            <li>展示每个脚本 job 结果。</li>
+            <li>支持手动重跑和人工覆盖。</li>
+          </ul>
+        </article>
+      </div>
+      <p class="note">一期不需要在线代码编辑器。</p>
+    </section>
+
+    <section id="batch-stats">
+      <h2>14. 批次和统计查询</h2>
+      <p>一期不保存批次 QA 汇总表。批次详情和统计页面需要时直接聚合 <code>episodes.qa_status</code>。</p>
+      <pre><code>SELECT
+  COUNT(*) AS total,
+  SUM(qa_status = 'approved') AS approved_count,
+  SUM(qa_status = 'inspector_approved') AS inspector_approved_count,
+  SUM(qa_status = 'rejected') AS rejected_count,
+  SUM(qa_status = 'needs_inspection') AS needs_inspection_count,
+  SUM(qa_status = 'qa_running') AS qa_running_count,
+  SUM(qa_status = 'pending_qa') AS pending_qa_count
+FROM episodes
+WHERE batch_id = ? AND deleted_at IS NULL;</code></pre>
+    </section>
+
+    <section id="runtime">
+      <h2>15. 固定 Runtime</h2>
+      <div class="band">
+        <p>一期 Runtime 固定为 <code>python3.11-mcap</code>，脚本不能上传或安装自己的依赖。</p>
+        <h3>初始依赖集合</h3>
+        <ul class="tag-list">
+          <li>mcap</li>
+          <li>numpy</li>
+          <li>pandas</li>
+          <li>Pillow</li>
+          <li>opencv-python-headless</li>
+          <li>pyyaml</li>
+          <li>jsonschema</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <h2>16. 后续演进</h2>
+      <ul>
+        <li>第二阶段支持不可变 ZIP 包，包含 <code>main.py</code>、<code>requirements.lock</code> 和可选 <code>config.schema.json</code>。</li>
+        <li>第二阶段在执行前构建受控 Python 环境，不在 job 执行时动态安装依赖。</li>
+        <li>第三阶段支持脚本专属容器镜像，用于复杂依赖、模型文件、GPU Runtime 或更强隔离。</li>
+        <li>未来执行器继续复用同一套输入和输出契约。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
