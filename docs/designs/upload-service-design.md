@@ -311,10 +311,7 @@ POST /api/v1/transfer/{device_id}/status_query
 
 #### Manual ACK
 
-```
-POST /api/v1/transfer/{device_id}/upload_ack
-{"task_id": "task_abc123"}
-```
+Removed. Keystone now sends `upload_ack` only from the verified `upload_complete` path.
 
 ## Security Considerations
 

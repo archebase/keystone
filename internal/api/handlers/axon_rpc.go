@@ -152,14 +152,14 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
-				logger.Printf("[RECORDER] Device %s: DB query timeout after %s (timeout_ms=%d): %v", deviceID, timeoutLogValue(queryTimeout), timeoutLogMilliseconds(queryTimeout), err)
+				logger.Printf("%s DB query timeout after %s (timeout_ms=%d): %v", recorderLogPrefix(deviceID), timeoutLogValue(queryTimeout), timeoutLogMilliseconds(queryTimeout), err)
 			} else {
-				logger.Printf("[RECORDER] Device %s: DB query error: %v", deviceID, err)
+				logger.Printf("%s DB query error: %v", recorderLogPrefix(deviceID), err)
 			}
 		}
 		// Check count regardless of DB error (count defaults to 0 on error)
 		if count == 0 {
-			logger.Printf("[RECORDER] Device %s: robot not found in database", deviceID)
+			logger.Printf("%s robot not found in database", recorderLogPrefix(deviceID))
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -168,7 +168,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	// Allow any origin in dev; tighten in production
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
-		logger.Printf("[RECORDER] Device %s: WebSocket accept error: %v", deviceID, err)
+		logger.Printf("%s WebSocket accept error: %v", recorderLogPrefix(deviceID), err)
 		return
 	}
 
@@ -181,7 +181,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
 			if !isExpectedWebSocketCloseError(err) {
-				logger.Printf("[RECORDER] Device %s: WebSocket close error: %v", deviceID, err)
+				logger.Printf("%s WebSocket close error: %v", recorderLogPrefix(deviceID), err)
 			}
 		}
 	}()
@@ -196,14 +196,14 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	go h.pingLoop(ctx, rc)
 
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[RECORDER] Recorder %s connected from %s", deviceID, remoteIP)
+	logger.Printf("%s connected from %s", recorderLogPrefix(deviceID), remoteIP)
 	go h.syncRecorderStateFromDevice(ctx, rc)
 
 	for {
 		_, raw, err := conn.Read(ctx)
 		if err != nil {
 			if !isExpectedWebSocketCloseError(err) {
-				logger.Printf("[RECORDER] Recorder %s disconnected: %v", deviceID, err)
+				logger.Printf("%s disconnected: %v", recorderLogPrefix(deviceID), err)
 			}
 			return
 		}
@@ -212,7 +212,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 
 		var msg map[string]interface{}
 		if err := json.Unmarshal(raw, &msg); err != nil {
-			logger.Printf("[RECORDER] Recorder %s invalid JSON: %v", deviceID, err)
+			logger.Printf("%s invalid JSON: %v", recorderLogPrefix(deviceID), err)
 			continue
 		}
 
@@ -294,12 +294,12 @@ func (h *RecorderHandler) Begin(c *gin.Context) {
 	// pending is allowed because recorder may preserve ready state across a transient
 	// WebSocket disconnect while Keystone has already rolled the task back.
 	if taskID != "" && h.db != nil {
-		res, err := advanceTaskPendingOrReadyToInProgress(h.db, taskID)
+		rowsAffected, _, err := advanceTaskPendingOrReadyToInProgress(h.db, taskID)
 		if err != nil {
-			logger.Printf("[RECORDER] Device %s: failed to advance task pending/ready->in_progress after begin: task=%s err=%v", c.Param("device_id"), taskID, err)
+			logger.Printf("%s failed to advance task pending/ready->in_progress after begin: err=%v", recorderTaskLogPrefix(c.Param("device_id"), taskID), err)
 			return
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
+		if rowsAffected == 0 {
 			h.logBeginTransitionNoop(c.Param("device_id"), taskID)
 		}
 	}
@@ -406,12 +406,12 @@ func (h *RecorderHandler) Cancel(c *gin.Context) {
 			now, taskID,
 		)
 		if err != nil {
-			logger.Printf("[RECORDER] Device %s: failed to revert task after cancel RPC: task=%s err=%v", deviceID, taskID, err)
+			logger.Printf("%s failed to revert task after cancel RPC: err=%v", recorderTaskLogPrefix(deviceID, taskID), err)
 			return
 		}
 		n, _ := res.RowsAffected()
 		if n == 0 {
-			logger.Printf("[RECORDER] Device %s: task revert skipped after cancel RPC (not found or not ready/in_progress): task=%s", deviceID, taskID)
+			logger.Printf("%s task revert skipped after cancel RPC (not found or not ready/in_progress)", recorderTaskLogPrefix(deviceID, taskID))
 		}
 	}
 }
@@ -461,11 +461,11 @@ func (h *RecorderHandler) Clear(c *gin.Context) {
 			now, taskID,
 		)
 		if err != nil {
-			logger.Printf("[RECORDER] Device %s: failed to revert task ready->pending after clear: task=%s err=%v", c.Param("device_id"), taskID, err)
+			logger.Printf("%s failed to revert task ready->pending after clear: err=%v", recorderTaskLogPrefix(c.Param("device_id"), taskID), err)
 			return
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			logger.Printf("[RECORDER] Device %s: task ready->pending skipped after clear (not found or not ready): task=%s", c.Param("device_id"), taskID)
+			logger.Printf("%s task ready->pending skipped after clear (not found or not ready)", recorderTaskLogPrefix(c.Param("device_id"), taskID))
 		}
 	}
 }
@@ -957,7 +957,7 @@ func recorderPreviousStateFromRaw(raw map[string]interface{}) string {
 
 func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderConn, msg map[string]interface{}) {
 	if h.hub.Get(deviceID) != rc {
-		logger.Printf("[RECORDER] Recorder %s ignored message from replaced connection", deviceID)
+		logger.Printf("%s ignored message from replaced connection", recorderLogPrefix(deviceID))
 		return
 	}
 
@@ -969,16 +969,16 @@ func (h *RecorderHandler) handleMessage(deviceID string, rc *services.RecorderCo
 		h.handleStateUpdate(rc, msg)
 	case "connected":
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s sent connected event", deviceID)
+		logger.Printf("%s sent connected event", recorderLogPrefix(deviceID))
 	case "config_applied":
 		data := mapValue(msg, "data")
 		taskID := stringValue(data, "task_id")
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s config applied task=%s", deviceID, taskID)
+		logger.Printf("%s config applied", recorderTaskLogPrefix(deviceID, taskID))
 		advanceTaskPendingToReady(h.db, deviceID, taskID, "config_applied")
 	default:
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s unknown message type %q", deviceID, msgType)
+		logger.Printf("%s unknown message type %q", recorderLogPrefix(deviceID), msgType)
 	}
 }
 
@@ -991,7 +991,7 @@ func (h *RecorderHandler) handleRPCResponse(deviceID string, msg map[string]inte
 		Data:      mapValue(msg, "data"),
 	}
 	if !h.hub.HandleRPCResponse(deviceID, response) {
-		logger.Printf("[RECORDER] Recorder %s unmatched response request_id=%s", deviceID, response.RequestID)
+		logger.Printf("%s unmatched response request_id=%s", recorderLogPrefix(deviceID), response.RequestID)
 	}
 }
 
@@ -1015,7 +1015,7 @@ func (h *RecorderHandler) syncRecorderStateFromDevice(ctx context.Context, rc *s
 
 	if _, _, err := h.refreshRecorderState(ctx, rc.DeviceID, rc, -1); err != nil {
 		if !errors.Is(err, services.ErrRecorderNotConnected) && !errors.Is(err, context.Canceled) {
-			logger.Printf("[RECORDER] Recorder %s get_state after connect failed: %v", rc.DeviceID, err)
+			logger.Printf("%s get_state after connect failed: %v", recorderLogPrefix(rc.DeviceID), err)
 		}
 	}
 }
@@ -1024,6 +1024,7 @@ func (h *RecorderHandler) applyRecorderStateSnapshot(rc *services.RecorderConn, 
 	if rc == nil {
 		return nil
 	}
+	previous := rc.GetState()
 	state.Source = strings.TrimSpace(source)
 	state.TaskID = strings.TrimSpace(state.TaskID)
 	if !recorderStateKeepsTaskID(state.CurrentState) {
@@ -1035,20 +1036,113 @@ func (h *RecorderHandler) applyRecorderStateSnapshot(rc *services.RecorderConn, 
 	if state.TaskID == "" && recorderStateRequiresTaskID(state.CurrentState, state.Source) {
 		err := fmt.Errorf("recorder %s snapshot missing task_id for state=%s", state.Source, strings.TrimSpace(state.CurrentState))
 		h.markRecorderSyncing(rc, state.Source, err)
-		logger.Printf("[RECORDER] Recorder %s ignored %s state=%s without task_id", rc.DeviceID, state.Source, state.CurrentState)
+		logger.Printf("%s ignored %s state=%s without task_id", recorderLogPrefix(rc.DeviceID), state.Source, state.CurrentState)
 		return err
 	}
 	rc.UpdateState(state)
 	st := rc.GetState()
 	h.reconcileRecorderTaskState(rc.DeviceID, st, source)
 	h.publishRecorderStateSnapshot(rc, st, source, true)
-	if source == "state_update" {
-		// #nosec G706 -- Set aside for now
-		logger.Printf("[RECORDER] Recorder %s state=%s task=%s", rc.DeviceID, st.CurrentState, st.TaskID)
-		return nil
+	if recorderStateSnapshotChanged(previous, st) {
+		logRecorderStateChange(rc.DeviceID, previous, st, source)
 	}
-	logger.Printf("[RECORDER] Recorder %s state=%s task=%s source=%s", rc.DeviceID, st.CurrentState, st.TaskID, source)
 	return nil
+}
+
+func recorderStateSnapshotChanged(previous services.RecorderState, next services.RecorderState) bool {
+	return !strings.EqualFold(strings.TrimSpace(previous.CurrentState), strings.TrimSpace(next.CurrentState)) ||
+		strings.TrimSpace(previous.TaskID) != strings.TrimSpace(next.TaskID)
+}
+
+func logRecorderStateChange(deviceID string, previous services.RecorderState, next services.RecorderState, source string) {
+	prefix := recorderStateLogPrefix(deviceID, previous.TaskID, next.TaskID)
+	previousState := recorderLogState(previous.CurrentState)
+	nextState := recorderLogState(next.CurrentState)
+	logSource := recorderLogSource(source)
+	if !strings.EqualFold(strings.TrimSpace(previous.CurrentState), strings.TrimSpace(next.CurrentState)) {
+		logger.Printf("%s state changed: %s -> %s source=%s", prefix, previousState, nextState, logSource)
+		return
+	}
+	logger.Printf("%s task changed: %s -> %s state=%s source=%s",
+		prefix,
+		recorderLogTaskID(previous.TaskID),
+		recorderLogTaskID(next.TaskID),
+		nextState,
+		logSource,
+	)
+}
+
+func recorderLogState(state string) string {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return "-"
+	}
+	return state
+}
+
+func recorderLogTaskID(taskID string) string {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return "-"
+	}
+	return taskID
+}
+
+func recorderLogSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "state_update"
+	}
+	return source
+}
+
+func recorderLogPrefix(deviceID string) string {
+	return logPrefixWithTask("RECORDER", deviceID, "")
+}
+
+func recorderTaskLogPrefix(deviceID, taskID string) string {
+	return logPrefixWithTask("RECORDER", deviceID, taskID)
+}
+
+func recorderStateLogPrefix(deviceID, previousTaskID, nextTaskID string) string {
+	taskID := strings.TrimSpace(nextTaskID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(previousTaskID)
+	}
+	return recorderTaskLogPrefix(deviceID, taskID)
+}
+
+func transferLogPrefix(deviceID string) string {
+	return logPrefixWithTask("TRANSFER", deviceID, "")
+}
+
+func transferTaskLogPrefix(deviceID, taskID string) string {
+	return logPrefixWithTask("TRANSFER", deviceID, taskID)
+}
+
+func deviceLogPrefix(deviceID string) string {
+	return logPrefixWithTask("DEVICE", deviceID, "")
+}
+
+func deviceTaskLogPrefix(deviceID, taskID string) string {
+	return logPrefixWithTask("DEVICE", deviceID, taskID)
+}
+
+func logPrefixWithTask(component, deviceID, taskID string) string {
+	component = strings.TrimSpace(component)
+	if component == "" {
+		component = "DEVICE"
+	}
+	deviceID = strings.TrimSpace(deviceID)
+	taskID = strings.TrimSpace(taskID)
+	prefix := "[" + component + "]"
+	if deviceID != "" {
+		prefix += "[" + deviceID + "]"
+	}
+	if taskID != "" {
+		prefix += "[" + taskID + "]"
+	}
+	return prefix
 }
 
 func recorderStateFromRPCData(data map[string]interface{}) services.RecorderState {
@@ -1116,15 +1210,15 @@ func (h *RecorderHandler) reconcileRecorderTaskState(deviceID string, state serv
 	currentState := strings.ToLower(strings.TrimSpace(state.CurrentState))
 	switch currentState {
 	case "ready":
-		advanceTaskPendingToReady(h.db, deviceID, taskID, source+" ready")
+		advanceTaskPendingToReady(h.db, deviceID, taskID, source+"_ready")
 	case "recording", "paused":
-		res, err := advanceTaskPendingOrReadyToInProgress(h.db, taskID)
+		rowsAffected, previousStatus, err := advanceTaskPendingOrReadyToInProgress(h.db, taskID)
 		if err != nil {
-			logger.Printf("[RECORDER] Recorder %s: failed to advance task pending/ready->in_progress after %s %s: task=%s err=%v", deviceID, source, currentState, taskID, err)
+			logger.Printf("%s failed to advance task pending/ready->in_progress after %s %s: err=%v", recorderTaskLogPrefix(deviceID, taskID), source, currentState, err)
 			return
 		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			logger.Printf("[RECORDER] Device %s: task status reconciled: task=%s source=%s_%s status=in_progress", deviceID, taskID, source, currentState)
+		if rowsAffected > 0 {
+			logger.Printf("%s task status updated: %s -> in_progress reason=%s_%s", recorderTaskLogPrefix(deviceID, taskID), taskStatusLogValue(previousStatus, "unknown"), source, currentState)
 		}
 	}
 }
@@ -1134,6 +1228,7 @@ func advanceTaskPendingToReady(db *sqlx.DB, deviceID, taskID, source string) {
 	if db == nil || taskID == "" {
 		return
 	}
+	previousStatus, _, _ := currentTaskStatus(db, taskID)
 	now := time.Now().UTC()
 	res, err := db.Exec(
 		`UPDATE tasks
@@ -1145,44 +1240,51 @@ func advanceTaskPendingToReady(db *sqlx.DB, deviceID, taskID, source string) {
 		now, now, taskID,
 	)
 	if err != nil {
-		logger.Printf("[RECORDER] Device %s: failed to advance task pending->ready after %s: task=%s err=%v", deviceID, source, taskID, err)
+		logger.Printf("%s failed to advance task pending->ready after %s: err=%v", recorderTaskLogPrefix(deviceID, taskID), source, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		logger.Printf("[RECORDER] Device %s: task status reconciled: task=%s source=%s status=ready", deviceID, taskID, source)
+		logger.Printf("%s task status updated: %s -> ready reason=%s", recorderTaskLogPrefix(deviceID, taskID), taskStatusLogValue(previousStatus, "unknown"), source)
 	}
 }
 
-func advanceTaskPendingOrReadyToInProgress(db *sqlx.DB, taskID string) (sql.Result, error) {
+func advanceTaskPendingOrReadyToInProgress(db *sqlx.DB, taskID string) (int64, string, error) {
 	if db == nil {
-		return nil, nil
+		return 0, "", nil
 	}
+	taskID = strings.TrimSpace(taskID)
+	previousStatus, _, _ := currentTaskStatus(db, taskID)
 	now := time.Now().UTC()
-	return db.Exec(
+	res, err := db.Exec(
 		`UPDATE tasks
 		 SET
 		   status = 'in_progress',
 		   started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END,
 		   updated_at = ?
 		 WHERE task_id = ? AND status IN ('pending', 'ready') AND deleted_at IS NULL`,
-		now, now, strings.TrimSpace(taskID),
+		now, now, taskID,
 	)
+	if err != nil {
+		return 0, previousStatus, err
+	}
+	rowsAffected, _ := res.RowsAffected()
+	return rowsAffected, previousStatus, nil
 }
 
 func (h *RecorderHandler) logBeginTransitionNoop(deviceID, taskID string) {
 	status, ok, err := currentTaskStatus(h.db, taskID)
 	if err != nil {
-		logger.Printf("[RECORDER] Device %s: task status lookup failed after begin: task=%s err=%v", deviceID, taskID, err)
+		logger.Printf("%s task status lookup failed after begin: err=%v", recorderTaskLogPrefix(deviceID, taskID), err)
 		return
 	}
 	if ok && (status == "in_progress" || status == "completed") {
 		return
 	}
 	if !ok {
-		logger.Printf("[RECORDER] Device %s: task pending/ready->in_progress skipped after begin (task not found): task=%s", deviceID, taskID)
+		logger.Printf("%s task pending/ready->in_progress skipped after begin (task not found)", recorderTaskLogPrefix(deviceID, taskID))
 		return
 	}
-	logger.Printf("[RECORDER] Device %s: task pending/ready->in_progress skipped after begin (current_status=%s): task=%s", deviceID, status, taskID)
+	logger.Printf("%s task pending/ready->in_progress skipped after begin (current_status=%s)", recorderTaskLogPrefix(deviceID, taskID), status)
 }
 
 func currentTaskStatus(db *sqlx.DB, taskID string) (string, bool, error) {
@@ -1221,10 +1323,10 @@ func (h *RecorderHandler) pingLoop(ctx context.Context, rc *services.RecorderCon
 			cancel()
 			if err != nil {
 				if ctx.Err() == nil {
-					logWebSocketPingFailure("RECORDER", "Recorder", rc.DeviceID, timeout, timedOut, err)
+					logWebSocketPingFailure("RECORDER", rc.DeviceID, timeout, timedOut, err)
 					if closeErr := rc.Conn.CloseNow(); closeErr != nil {
 						if !isExpectedWebSocketCloseError(closeErr) {
-							logger.Printf("[RECORDER] Recorder %s close after ping failure: %v", rc.DeviceID, closeErr)
+							logger.Printf("%s close after ping failure: %v", recorderLogPrefix(rc.DeviceID), closeErr)
 						}
 					}
 				}
@@ -1270,21 +1372,21 @@ func logRecorderRPCTimeout(deviceID, action, taskID, source string, timeout time
 	}
 	taskID = strings.TrimSpace(taskID)
 	if taskID != "" {
-		logger.Printf("[RECORDER] Recorder %s RPC timeout after %s (timeout_ms=%d): action=%s task=%s source=%s err=%v", deviceID, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), action, taskID, source, err)
+		logger.Printf("%s RPC timeout after %s (timeout_ms=%d): action=%s source=%s err=%v", recorderTaskLogPrefix(deviceID, taskID), timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), action, source, err)
 		return
 	}
-	logger.Printf("[RECORDER] Recorder %s RPC timeout after %s (timeout_ms=%d): action=%s source=%s err=%v", deviceID, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), action, source, err)
+	logger.Printf("%s RPC timeout after %s (timeout_ms=%d): action=%s source=%s err=%v", recorderLogPrefix(deviceID), timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), action, source, err)
 }
 
-func logWebSocketPingFailure(component, label, deviceID string, timeout time.Duration, timedOut bool, err error) {
+func logWebSocketPingFailure(component, deviceID string, timeout time.Duration, timedOut bool, err error) {
 	component = strings.TrimSpace(component)
-	label = strings.TrimSpace(label)
 	deviceID = strings.TrimSpace(deviceID)
+	prefix := logPrefixWithTask(component, deviceID, "")
 	if timedOut {
-		logger.Printf("[%s] %s %s ping timeout after %s (timeout_ms=%d): %v", component, label, deviceID, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), err)
+		logger.Printf("%s ping timeout after %s (timeout_ms=%d): %v", prefix, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), err)
 		return
 	}
-	logger.Printf("[%s] %s %s ping failed (timeout=%s timeout_ms=%d): %v", component, label, deviceID, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), err)
+	logger.Printf("%s ping failed (timeout=%s timeout_ms=%d): %v", prefix, timeoutLogValue(timeout), timeoutLogMilliseconds(timeout), err)
 }
 
 func recorderPingInterval(cfg *config.RecorderConfig) time.Duration {
@@ -1305,10 +1407,10 @@ func closeReplacedRecorderConn(deviceID string, rc *services.RecorderConn) {
 	if rc == nil || rc.Conn == nil {
 		return
 	}
-	logger.Printf("[RECORDER] Device %s: closing replaced WebSocket connection", deviceID)
+	logger.Printf("%s closing replaced WebSocket connection", recorderLogPrefix(deviceID))
 	if err := rc.Conn.CloseNow(); err != nil {
 		if !isExpectedWebSocketCloseError(err) {
-			logger.Printf("[RECORDER] Device %s: replaced WebSocket close error: %v", deviceID, err)
+			logger.Printf("%s replaced WebSocket close error: %v", recorderLogPrefix(deviceID), err)
 		}
 	}
 }

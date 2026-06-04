@@ -290,7 +290,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     factory_id BIGINT COMMENT 'Denormalized: from workstation.factory_id for filtering',
     organization_id BIGINT COMMENT 'Denormalized: from factory.organization_id for filtering',
     initial_scene_layout TEXT,
-    status ENUM('pending', 'ready', 'in_progress', 'completed', 'failed', 'cancelled') DEFAULT 'pending',
+    status ENUM('pending', 'ready', 'in_progress', 'uploading', 'completed', 'failed', 'cancelled') DEFAULT 'pending',
     version INT DEFAULT 0 COMMENT 'Optimistic locking version',
     assigned_at TIMESTAMP NULL,
     ready_at TIMESTAMP NULL,

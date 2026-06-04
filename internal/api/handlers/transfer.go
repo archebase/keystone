@@ -86,7 +86,6 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 		transfer.POST("/upload_all", h.UploadAll)
 		transfer.POST("/status_query", h.StatusQuery)
 		transfer.POST("/cancel", h.CancelUpload)
-		transfer.POST("/upload_ack", h.ManualACK)
 	}
 }
 
@@ -106,14 +105,14 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
 		); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
-				logger.Printf("[TRANSFER] Device %s: DB query timeout after %s (timeout_ms=%d): %v", deviceID, timeoutLogValue(queryTimeout), timeoutLogMilliseconds(queryTimeout), err)
+				logger.Printf("%s DB query timeout after %s (timeout_ms=%d): %v", transferLogPrefix(deviceID), timeoutLogValue(queryTimeout), timeoutLogMilliseconds(queryTimeout), err)
 			} else {
-				logger.Printf("[TRANSFER] Device %s: DB query error: %v", deviceID, err)
+				logger.Printf("%s DB query error: %v", transferLogPrefix(deviceID), err)
 			}
 		}
 		// Check count regardless of DB error (count defaults to 0 on error)
 		if count == 0 {
-			logger.Printf("[TRANSFER] Device %s: robot not found in database", deviceID)
+			logger.Printf("%s robot not found in database", transferLogPrefix(deviceID))
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -123,7 +122,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		InsecureSkipVerify: true, // allow any origin in dev; tighten in production
 	})
 	if err != nil {
-		logger.Printf("[TRANSFER] Device %s: WebSocket accept error: %v", deviceID, err)
+		logger.Printf("%s WebSocket accept error: %v", transferLogPrefix(deviceID), err)
 		return
 	}
 
@@ -136,7 +135,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
 			if !isExpectedWebSocketCloseError(err) {
-				logger.Printf("[TRANSFER] WebSocket close error for device %s: %v", deviceID, err)
+				logger.Printf("%s WebSocket close error: %v", transferLogPrefix(deviceID), err)
 			}
 		}
 	}()
@@ -153,7 +152,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 	go h.pingLoop(ctx, dc)
 
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Transfer %s connected from %s", deviceID, remoteIP)
+	logger.Printf("%s connected from %s", transferLogPrefix(deviceID), remoteIP)
 
 	// Read loop: use ctx directly for infinite wait.
 	// context.WithTimeout(ctx, 0) would set deadline=now and cause immediate timeout,
@@ -163,14 +162,14 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		_, raw, err := conn.Read(ctx)
 		if err != nil {
 			if !isExpectedWebSocketCloseError(err) {
-				logger.Printf("[TRANSFER] Device %s disconnected: %v", deviceID, err)
+				logger.Printf("%s disconnected: %v", transferLogPrefix(deviceID), err)
 			}
 			break
 		}
 
 		var msg map[string]interface{}
 		if jsonErr := json.Unmarshal(raw, &msg); jsonErr != nil {
-			logger.Printf("[TRANSFER] Device %s: invalid JSON: %v", deviceID, jsonErr)
+			logger.Printf("%s invalid JSON: %v", transferLogPrefix(deviceID), jsonErr)
 			continue
 		}
 
@@ -203,10 +202,10 @@ func (h *TransferHandler) pingLoop(ctx context.Context, dc *services.TransferCon
 			cancel()
 			if err != nil {
 				if ctx.Err() == nil {
-					logWebSocketPingFailure("TRANSFER", "Device", dc.DeviceID, timeout, timedOut, err)
+					logWebSocketPingFailure("TRANSFER", dc.DeviceID, timeout, timedOut, err)
 					if closeErr := dc.Conn.CloseNow(); closeErr != nil {
 						if !isExpectedWebSocketCloseError(closeErr) {
-							logger.Printf("[TRANSFER] Device %s close after ping failure: %v", dc.DeviceID, closeErr)
+							logger.Printf("%s close after ping failure: %v", transferLogPrefix(dc.DeviceID), closeErr)
 						}
 					}
 				}
@@ -250,10 +249,10 @@ func transferMessageType(msg map[string]interface{}) string {
 
 func logTransferSendFailure(deviceID string, msgType string, timeout time.Duration, err error) {
 	if errors.Is(err, services.ErrTransferWriteTimeout) {
-		logger.Printf("[TRANSFER] Device %s: send %s timed out after %s: %v", deviceID, msgType, timeoutLogValue(timeout), err)
+		logger.Printf("%s send %s timed out after %s: %v", transferLogPrefix(deviceID), msgType, timeoutLogValue(timeout), err)
 		return
 	}
-	logger.Printf("[TRANSFER] Device %s: failed to send %s: %v", deviceID, msgType, err)
+	logger.Printf("%s failed to send %s: %v", transferLogPrefix(deviceID), msgType, err)
 }
 
 func (h *TransferHandler) sendToDevice(c *gin.Context, deviceID string, msg map[string]interface{}) bool {
@@ -274,10 +273,10 @@ func closeReplacedTransferConn(deviceID string, dc *services.TransferConn) {
 	if dc == nil || dc.Conn == nil {
 		return
 	}
-	logger.Printf("[TRANSFER] Device %s: closing replaced WebSocket connection", deviceID)
+	logger.Printf("%s closing replaced WebSocket connection", transferLogPrefix(deviceID))
 	if err := dc.Conn.CloseNow(); err != nil {
 		if !isExpectedWebSocketCloseError(err) {
-			logger.Printf("[TRANSFER] Device %s: replaced WebSocket close error: %v", deviceID, err)
+			logger.Printf("%s replaced WebSocket close error: %v", transferLogPrefix(deviceID), err)
 		}
 	}
 }
@@ -285,7 +284,7 @@ func closeReplacedTransferConn(deviceID string, dc *services.TransferConn) {
 // handleMessage dispatches an inbound WebSocket message to the appropriate handler
 func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.TransferConn, msg map[string]interface{}) {
 	if h.hub.Get(dc.DeviceID) != dc {
-		logger.Printf("[TRANSFER] Device %s ignored message from replaced connection", dc.DeviceID)
+		logger.Printf("%s ignored message from replaced connection", transferLogPrefix(dc.DeviceID))
 		return
 	}
 
@@ -295,7 +294,7 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Transf
 	case "connected":
 		h.onConnected(dc, msg)
 	case "upload_started":
-		h.onUploadStarted(dc, msg)
+		h.onUploadStarted(ctx, dc, msg)
 	case "upload_progress":
 		h.onUploadProgress(dc, msg)
 	case "upload_complete":
@@ -308,7 +307,7 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Transf
 		h.onStatus(dc, msg)
 	default:
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: unknown message type %q", dc.DeviceID, msgType)
+		logger.Printf("%s unknown message type %q", transferLogPrefix(dc.DeviceID), msgType)
 	}
 }
 
@@ -327,20 +326,29 @@ func (h *TransferHandler) onConnected(dc *services.TransferConn, msg map[string]
 	}
 	dc.UpdateStatus(s)
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Transfer %s connected: version=%s pending=%d uploading=%d failed=%d",
-		dc.DeviceID, s.Version, s.PendingCount, s.UploadingCount, s.FailedCount)
+	logger.Printf("%s connected: version=%s pending=%d uploading=%d failed=%d",
+		transferLogPrefix(dc.DeviceID), s.Version, s.PendingCount, s.UploadingCount, s.FailedCount)
 }
 
 // onUploadStarted handles "upload_started" message
-func (h *TransferHandler) onUploadStarted(dc *services.TransferConn, msg map[string]interface{}) {
+func (h *TransferHandler) onUploadStarted(ctx context.Context, dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
 	}
 	taskID := stringVal(data, "task_id")
+	if h.db != nil && taskID != "" {
+		previousStatus, _, _ := currentOwnedTaskStatus(ctx, h.db, dc.DeviceID, taskID)
+		res, err := markOwnedTaskUploading(ctx, h.db, dc.DeviceID, taskID)
+		if err != nil {
+			logger.Printf("%s failed to mark task uploading after upload_started: err=%v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
+		} else if n, _ := res.RowsAffected(); n > 0 {
+			logger.Printf("%s task status updated: %s -> uploading reason=upload_started", transferTaskLogPrefix(dc.DeviceID, taskID), taskStatusLogValue(previousStatus, "unknown"))
+		}
+	}
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Device %s: upload started task=%s total_bytes=%d",
-		dc.DeviceID, taskID, int64Val(data, "total_bytes"))
+	logger.Printf("%s upload started total_bytes=%d",
+		transferTaskLogPrefix(dc.DeviceID, taskID), int64Val(data, "total_bytes"))
 }
 
 // onUploadProgress handles "upload_progress" message
@@ -352,7 +360,7 @@ func (h *TransferHandler) onUploadProgress(dc *services.TransferConn, msg map[st
 	taskID := stringVal(data, "task_id")
 	percent := intVal(data, "percent")
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Device %s: upload progress task=%s %d%%", dc.DeviceID, taskID, percent)
+	logger.Printf("%s upload progress %d%%", transferTaskLogPrefix(dc.DeviceID, taskID), percent)
 }
 
 // sidecarRecording is the subset of the sidecar JSON "recording" block we care about.
@@ -434,26 +442,50 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: upload complete data is nil", dc.DeviceID)
+		logger.Printf("%s upload complete data is nil", transferLogPrefix(dc.DeviceID))
 		return
 	}
 	taskID := stringVal(data, "task_id")
 	if taskID == "" {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: upload complete taskID is empty", dc.DeviceID)
+		logger.Printf("%s upload complete taskID is empty", transferLogPrefix(dc.DeviceID))
 		return
 	}
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Device %s: upload complete for task=%s", dc.DeviceID, taskID)
+	logger.Printf("%s upload complete", transferTaskLogPrefix(dc.DeviceID, taskID))
 
 	if h.s3 == nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: S3 not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
+		logger.Printf("%s S3 not configured, skipping upload_complete", transferTaskLogPrefix(dc.DeviceID, taskID))
 		return
 	}
 	if h.db == nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: DB not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
+		logger.Printf("%s DB not configured, skipping upload_complete", transferTaskLogPrefix(dc.DeviceID, taskID))
+		return
+	}
+
+	var ownedTask struct {
+		ID     int64  `db:"id"`
+		Status string `db:"status"`
+	}
+	if err := h.db.GetContext(ctx, &ownedTask, `
+		SELECT t.id, t.status
+		FROM tasks t
+		JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
+		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE t.task_id = ? AND r.device_id = ? AND t.deleted_at IS NULL
+		LIMIT 1
+	`, taskID, dc.DeviceID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			logger.Printf("%s upload_complete ignored because task ownership check failed", transferTaskLogPrefix(dc.DeviceID, taskID))
+		} else {
+			logger.Printf("%s upload_complete ownership lookup failed: err=%v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
+		}
+		return
+	}
+	if ownedTask.Status == "failed" || ownedTask.Status == "cancelled" {
+		logger.Printf("%s upload_complete ignored for terminal status=%s", transferTaskLogPrefix(dc.DeviceID, taskID), ownedTask.Status)
 		return
 	}
 
@@ -461,14 +493,14 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	mcapKey := uploadCompleteS3Key(data)
 	if mcapKey == "" {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: upload_complete for task=%s missing s3_key, skipping ACK", dc.DeviceID, taskID)
+		logger.Printf("%s upload_complete missing s3_key, skipping ACK", transferTaskLogPrefix(dc.DeviceID, taskID))
 		return
 	}
 
 	jsonKey, ok := uploadCompleteSidecarS3Key(mcapKey)
 	if !ok {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: upload_complete for task=%s has invalid MCAP s3_key=%q, cannot derive sidecar key, skipping ACK", dc.DeviceID, taskID, mcapKey)
+		logger.Printf("%s upload_complete has invalid MCAP s3_key=%q, cannot derive sidecar key, skipping ACK", transferTaskLogPrefix(dc.DeviceID, taskID), mcapKey)
 		return
 	}
 
@@ -496,14 +528,14 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 
 	if mcapErr != nil || jsonErr != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: S3 HeadObject error", dc.DeviceID)
+		logger.Printf("%s S3 HeadObject error", transferTaskLogPrefix(dc.DeviceID, taskID))
 		return
 	}
 
 	if !mcapExists || !jsonExists {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: S3 files not found for task=%s, skipping ACK",
-			dc.DeviceID, taskID)
+		logger.Printf("%s S3 files not found, skipping ACK",
+			transferTaskLogPrefix(dc.DeviceID, taskID))
 		return
 	}
 
@@ -514,7 +546,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: DB begin transaction error for task=%s: %v", dc.DeviceID, taskID, err)
+		logger.Printf("%s DB begin transaction error: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
 	}
 	defer func() {
@@ -527,7 +559,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	var taskPK int64
 	if err := tx.QueryRowContext(ctx, "SELECT id FROM tasks WHERE task_id = ? AND deleted_at IS NULL", taskID).Scan(&taskPK); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to resolve task id for task=%s: %v", dc.DeviceID, taskID, err)
+		logger.Printf("%s failed to resolve task id: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
 	}
 
@@ -536,7 +568,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	var batchIDForAdvance int64
 	if err := tx.QueryRowContext(ctx, "SELECT batch_id FROM tasks WHERE id = ? AND deleted_at IS NULL", taskPK).Scan(&batchIDForAdvance); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to resolve batch id for task=%s (task_pk=%d): %v", dc.DeviceID, taskID, taskPK, err)
+		logger.Printf("%s failed to resolve batch id (task_pk=%d): %v", transferTaskLogPrefix(dc.DeviceID, taskID), taskPK, err)
 		batchIDForAdvance = 0
 	}
 
@@ -545,7 +577,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	var orderIDForAdvance int64
 	if err := tx.QueryRowContext(ctx, "SELECT order_id FROM tasks WHERE id = ? AND deleted_at IS NULL", taskPK).Scan(&orderIDForAdvance); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to resolve order id for task=%s (task_pk=%d): %v", dc.DeviceID, taskID, taskPK, err)
+		logger.Printf("%s failed to resolve order id (task_pk=%d): %v", transferTaskLogPrefix(dc.DeviceID, taskID), taskPK, err)
 		orderIDForAdvance = 0
 	}
 
@@ -557,12 +589,12 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	).Scan(&count)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: DB query error for task=%s: %v", dc.DeviceID, taskID, err)
+		logger.Printf("%s DB query error: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
 	}
 	if count > 0 {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: task=%s already exists in DB (by mcap_path or sidecar_path), skipping insert", dc.DeviceID, taskID)
+		logger.Printf("%s already exists in DB (by mcap_path or sidecar_path), skipping insert", transferTaskLogPrefix(dc.DeviceID, taskID))
 	} else {
 		var taskRow struct {
 			ID             int64         `db:"id"`
@@ -614,12 +646,12 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 
 		if err == nil && existingEpisodeID == "" {
 			// #nosec G706 -- Set aside for now
-			logger.Printf("[TRANSFER] Device %s: data corruption: empty episode_id found for task_pk=%d task=%s", dc.DeviceID, taskRow.ID, taskID)
+			logger.Printf("%s data corruption: empty episode_id found for task_pk=%d", transferTaskLogPrefix(dc.DeviceID, taskID), taskRow.ID)
 			return
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			// #nosec G706 -- Set aside for now
-			logger.Printf("[TRANSFER] Device %s: DB query failed for existing episode check task_pk=%d task=%s: %v", dc.DeviceID, taskRow.ID, taskID, err)
+			logger.Printf("%s DB query failed for existing episode check task_pk=%d: %v", transferTaskLogPrefix(dc.DeviceID, taskID), taskRow.ID, err)
 			return
 		}
 
@@ -683,7 +715,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			)
 			if dbErr != nil {
 				// #nosec G706 -- Set aside for now
-				logger.Printf("[TRANSFER] Device %s: DB insert failed for task=%s: %v", dc.DeviceID, taskID, dbErr)
+				logger.Printf("%s DB insert failed: %v", transferTaskLogPrefix(dc.DeviceID, taskID), dbErr)
 				return
 			}
 
@@ -694,7 +726,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				WHERE id = ? AND deleted_at IS NULL
 			`, taskRow.BatchID); dbErr != nil {
 				// #nosec G706 -- Set aside for now
-				logger.Printf("[TRANSFER] Device %s: DB update failed for batch=%d task=%s: %v", dc.DeviceID, taskRow.BatchID, taskID, dbErr)
+				logger.Printf("%s DB update failed for batch=%d: %v", transferTaskLogPrefix(dc.DeviceID, taskID), taskRow.BatchID, dbErr)
 				return
 			}
 		}
@@ -703,7 +735,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: DB commit error for task=%s: %v", dc.DeviceID, taskID, err)
+		logger.Printf("%s DB commit error: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
 	}
 
@@ -718,29 +750,35 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		return
 	}
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
+	logger.Printf("%s upload_ack sent", transferTaskLogPrefix(dc.DeviceID, taskID))
 
-	// After upload_ack is sent, mark task as completed (pending, ready, or in_progress -> completed).
-	// pending is allowed when Keystone rolled the task back during a transient recorder disconnect,
-	// while the device kept recording and successfully uploaded the episode.
+	// After upload_ack is sent, mark task as completed. pending/ready/in_progress remain accepted
+	// for legacy weak-network recovery; uploading is the normal post-recording path.
 	// Best-effort: do not affect the already-sent acknowledgement.
 	now := time.Now().UTC()
-	if _, err := h.db.ExecContext(ctx, `
+	res, err := h.db.ExecContext(ctx, `
 		UPDATE tasks
 		SET
 			status = 'completed',
 			completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
+			error_message = NULL,
 			updated_at = ?
-		WHERE id = ? AND status IN ('pending', 'in_progress', 'ready') AND deleted_at IS NULL
-	`, now, now, taskPK); err != nil {
+		WHERE id = ? AND status IN ('pending', 'ready', 'in_progress', 'uploading', 'completed') AND deleted_at IS NULL
+	`, now, now, taskPK)
+	if err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to mark task pending/ready/in_progress->completed after upload_ack: task=%s err=%v", dc.DeviceID, taskID, err)
+		logger.Printf("%s failed to mark task completed after upload_ack: err=%v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 	} else {
-		if batchIDForAdvance > 0 {
+		rowsAffected, _ := res.RowsAffected()
+		shouldAdvance := ownedTask.Status != "completed" && rowsAffected > 0
+		if shouldAdvance {
+			logger.Printf("%s task status updated: %s -> completed reason=upload_ack", transferTaskLogPrefix(dc.DeviceID, taskID), taskStatusLogValue(ownedTask.Status, "unknown"))
+		}
+		if shouldAdvance && batchIDForAdvance > 0 {
 			// Must run after the task row is terminal: tryAdvanceBatchStatus counts tasks in DB.
 			go tryAdvanceBatchStatus(h.db, batchIDForAdvance)
 		}
-		if orderIDForAdvance > 0 {
+		if shouldAdvance && orderIDForAdvance > 0 {
 			go tryAdvanceOrderStatus(h.db, orderIDForAdvance, h.recorderHub, h.recorderRPCTimeout)
 		}
 	}
@@ -758,17 +796,17 @@ func (h *TransferHandler) onUploadFailed(ctx context.Context, dc *services.Trans
 
 	// Log full message for debugging
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Received from device %s: full message=%+v", dc.DeviceID, msg)
+	logger.Printf("%s received upload_failed full message=%+v", transferTaskLogPrefix(dc.DeviceID, taskID), msg)
 
 	// Try to extract bucket info if present
 	if bucket, ok := data["bucket"].(string); ok {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: task=%s bucket=%s reason=%q retries=%d",
-			dc.DeviceID, taskID, bucket, reason, retryCount)
+		logger.Printf("%s upload_failed bucket=%s reason=%q retries=%d",
+			transferTaskLogPrefix(dc.DeviceID, taskID), bucket, reason, retryCount)
 	} else {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: task=%s reason=%q retries=%d",
-			dc.DeviceID, taskID, reason, retryCount)
+		logger.Printf("%s upload_failed reason=%q retries=%d",
+			transferTaskLogPrefix(dc.DeviceID, taskID), reason, retryCount)
 	}
 
 	// Log configured S3 bucket for comparison
@@ -776,27 +814,23 @@ func (h *TransferHandler) onUploadFailed(ctx context.Context, dc *services.Trans
 		logger.Printf("[TRANSFER] Keystone configured bucket: %s", h.s3.Bucket())
 	}
 
-	// Mark task as failed when upload_failed is received and task is in_progress.
+	// Mark task as failed when upload_failed is received and this transfer owns the task.
 	if h.db == nil || taskID == "" {
 		return
 	}
-	now := time.Now().UTC()
-	result, err := h.db.ExecContext(ctx, `
-		UPDATE tasks
-		SET
-			status = 'failed',
-			completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
-			updated_at = ?
-		WHERE task_id = ? AND status = 'in_progress' AND deleted_at IS NULL
-	`, now, now, taskID)
+	message := strings.TrimSpace(reason)
+	if message == "" {
+		message = "upload failed"
+	}
+	result, err := failOwnedUploadingTask(ctx, h.db, dc.DeviceID, taskID, message)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to mark task failed on upload_failed: task=%s err=%v", dc.DeviceID, taskID, err)
+		logger.Printf("%s failed to mark task failed on upload_failed: err=%v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
 	}
 	if rows, _ := result.RowsAffected(); rows > 0 {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: task=%s marked as failed due to upload_failed", dc.DeviceID, taskID)
+		logger.Printf("%s marked as failed due to upload_failed", transferTaskLogPrefix(dc.DeviceID, taskID))
 		// Trigger batch status advancement since the task reached a terminal state.
 		var batchID int64
 		if err := h.db.QueryRowContext(ctx,
@@ -845,12 +879,12 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 	`, deviceID)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[DEVICE] Device %s: failed to query runnable tasks on disconnect: %v", deviceID, err)
+		logger.Printf("%s failed to query runnable tasks on disconnect: %v", deviceLogPrefix(deviceID), err)
 		return
 	}
 	defer func() {
 		if cerr := rows.Close(); cerr != nil {
-			logger.Printf("[DEVICE] Device %s: close rows after disconnect task query: %v", deviceID, cerr)
+			logger.Printf("%s close rows after disconnect task query: %v", deviceLogPrefix(deviceID), cerr)
 		}
 	}()
 
@@ -864,13 +898,13 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 	for rows.Next() {
 		var ref taskRef
 		if err := rows.Scan(&ref.id, &ref.taskID, &ref.batchID, &ref.status); err != nil {
-			logger.Printf("[DEVICE] Device %s: scan error during disconnect task query: %v", deviceID, err)
+			logger.Printf("%s scan error during disconnect task query: %v", deviceLogPrefix(deviceID), err)
 			continue
 		}
 		toRevert = append(toRevert, ref)
 	}
 	if err := rows.Err(); err != nil {
-		logger.Printf("[DEVICE] Device %s: rows error during disconnect task query: %v", deviceID, err)
+		logger.Printf("%s rows error during disconnect task query: %v", deviceLogPrefix(deviceID), err)
 	}
 
 	if notifyRecorder && recorderHub != nil {
@@ -887,7 +921,7 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 					if errors.Is(err, services.ErrRecorderRPCTimeout) {
 						logRecorderRPCTimeout(deviceID, "clear", tid, "transfer_disconnect", timeout, err)
 					} else {
-						logger.Printf("[DEVICE] Device %s: recorder clear after transfer disconnect failed (task=%s): %v", deviceID, tid, err)
+						logger.Printf("%s recorder clear after transfer disconnect failed: %v", deviceTaskLogPrefix(deviceID, tid), err)
 					}
 				}
 			case "in_progress":
@@ -895,7 +929,7 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 					if errors.Is(err, services.ErrRecorderRPCTimeout) {
 						logRecorderRPCTimeout(deviceID, "cancel", tid, "transfer_disconnect", timeout, err)
 					} else {
-						logger.Printf("[DEVICE] Device %s: recorder cancel after transfer disconnect failed (task=%s): %v", deviceID, tid, err)
+						logger.Printf("%s recorder cancel after transfer disconnect failed: %v", deviceTaskLogPrefix(deviceID, tid), err)
 					}
 				}
 			}
@@ -916,12 +950,12 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 		`, now, ref.id)
 		if err != nil {
 			// #nosec G706 -- Set aside for now
-			logger.Printf("[DEVICE] Device %s: failed to revert task=%s to pending on disconnect: %v", deviceID, ref.taskID, err)
+			logger.Printf("%s failed to revert to pending on disconnect: %v", deviceTaskLogPrefix(deviceID, ref.taskID), err)
 			continue
 		}
 		if affected, _ := result.RowsAffected(); affected > 0 {
 			// #nosec G706 -- Set aside for now
-			logger.Printf("[DEVICE] Device %s: task=%s reverted to pending due to device disconnect", deviceID, ref.taskID)
+			logger.Printf("%s reverted to pending due to device disconnect", deviceTaskLogPrefix(deviceID, ref.taskID))
 		}
 	}
 }
@@ -932,22 +966,31 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 func (h *TransferHandler) onUploadNotFound(dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
-		logger.Printf("[TRANSFER] ERROR: Device %s reported upload_not_found with empty data", dc.DeviceID)
+		logger.Printf("%s ERROR: reported upload_not_found with empty data", transferLogPrefix(dc.DeviceID))
 		return
 	}
 	taskID := strings.TrimSpace(stringVal(data, "task_id"))
 	detail := strings.TrimSpace(stringVal(data, "detail"))
 	if taskID == "" {
-		logger.Printf("[TRANSFER] ERROR: Device %s reported upload_not_found without task_id detail=%q", dc.DeviceID, detail)
+		logger.Printf("%s ERROR: reported upload_not_found without task_id detail=%q", transferLogPrefix(dc.DeviceID), detail)
 		return
 	}
-	logger.Printf("[TRANSFER] ERROR: Device %s reported upload_not_found task=%s detail=%q", dc.DeviceID, taskID, detail)
+	message := "upload file not found"
+	if detail != "" {
+		message = detail
+	}
+	if h.db != nil {
+		if _, err := writeOwnedUploadingTaskError(context.Background(), h.db, dc.DeviceID, taskID, message); err != nil {
+			logger.Printf("%s ERROR: failed to write upload_not_found error: err=%v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
+		}
+	}
+	logger.Printf("%s ERROR: reported upload_not_found detail=%q", transferTaskLogPrefix(dc.DeviceID, taskID), detail)
 }
 
 // onStatus handles "status" message and updates the device status snapshot
 func (h *TransferHandler) onStatus(dc *services.TransferConn, msg map[string]interface{}) {
 	// #nosec G706 -- Set aside for now
-	logger.Printf("[TRANSFER] Device %s: received status update", dc.DeviceID)
+	logger.Printf("%s received status update", transferLogPrefix(dc.DeviceID))
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -1020,6 +1063,11 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 	if !h.sendToDevice(c, deviceID, msg) {
 		return
 	}
+	if h.db != nil {
+		if _, err := clearOwnedUploadingTaskError(c.Request.Context(), h.db, deviceID, body.TaskID); err != nil {
+			logger.Printf("%s failed to clear upload_request error: err=%v", transferTaskLogPrefix(deviceID, body.TaskID), err)
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
 }
 
@@ -1035,29 +1083,29 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 func (h *TransferHandler) UploadAll(c *gin.Context) {
 	deviceID := c.Param("device_id")
 
-	logger.Printf("[TRANSFER] Device %s: received upload_all request", deviceID)
+	logger.Printf("%s received upload_all request", transferLogPrefix(deviceID))
 
 	// Check if device is connected
 	dc := h.hub.Get(deviceID)
 	if dc == nil {
-		logger.Printf("[TRANSFER] Device %s: not connected", deviceID)
+		logger.Printf("%s not connected", transferLogPrefix(deviceID))
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("device %s not connected", deviceID)})
 		return
 	}
 
-	logger.Printf("[TRANSFER] Device %s: connected, remote_ip=%s", deviceID, dc.RemoteIP)
+	logger.Printf("%s connected, remote_ip=%s", transferLogPrefix(deviceID), dc.RemoteIP)
 	status := dc.GetStatus()
-	logger.Printf("[TRANSFER] Device %s: current status is pending=%d uploading=%d failed=%d waiting_ack=%d",
-		deviceID, status.PendingCount, status.UploadingCount, status.FailedCount, status.WaitingACKCount)
+	logger.Printf("%s current status is pending=%d uploading=%d failed=%d waiting_ack=%d",
+		transferLogPrefix(deviceID), status.PendingCount, status.UploadingCount, status.FailedCount, status.WaitingACKCount)
 
 	msg := map[string]interface{}{"type": "upload_all"}
-	logger.Printf("[TRANSFER] Sending message to device %s: %+v", deviceID, msg)
+	logger.Printf("%s sending message: %+v", transferLogPrefix(deviceID), msg)
 
 	if !h.sendToDevice(c, deviceID, msg) {
 		return
 	}
 
-	logger.Printf("[TRANSFER] Message sent successfully to device %s", deviceID)
+	logger.Printf("%s message sent successfully", transferLogPrefix(deviceID))
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
 }
 
@@ -1115,65 +1163,6 @@ func (h *TransferHandler) StatusQuery(c *gin.Context) {
 	msg := map[string]interface{}{"type": "status_query"}
 	if !h.sendToDevice(c, deviceID, msg) {
 		return
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "sent"})
-}
-
-// ManualACK sends an upload_ack message to the device.
-//
-// @Summary      Manually acknowledge an upload
-// @Tags         transfer
-// @Accept       json
-// @Produce      json
-// @Param        device_id  path  string  true  "Device ID"
-// @Param        body       body  object  true  "task_id to acknowledge"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      404  {object}  map[string]interface{}
-// @Router       /transfer/{device_id}/upload_ack [post]
-func (h *TransferHandler) ManualACK(c *gin.Context) {
-	deviceID := c.Param("device_id")
-
-	var body struct {
-		TaskID string `json:"task_id" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	msg := map[string]interface{}{
-		"type":    "upload_ack",
-		"task_id": body.TaskID,
-	}
-	if !h.sendToDevice(c, deviceID, msg) {
-		return
-	}
-
-	// After upload_ack is sent, mark task as completed (ready or in_progress -> completed).
-	// Best-effort: do not fail the acknowledgement response.
-	if h.db != nil {
-		now := time.Now().UTC()
-		if _, err := h.db.Exec(
-			`UPDATE tasks
-			 SET
-			   status = 'completed',
-			   completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
-			   updated_at = ?
-			 WHERE task_id = ? AND status IN ('in_progress', 'ready') AND deleted_at IS NULL`,
-			now, now, body.TaskID,
-		); err != nil {
-			// #nosec G706 -- Set aside for now
-			logger.Printf("[TRANSFER] Device %s: failed to mark task ready/in_progress->completed after manual upload_ack: task=%s err=%v", deviceID, body.TaskID, err)
-		} else {
-			var batchID int64
-			if err := h.db.Get(&batchID, "SELECT batch_id FROM tasks WHERE task_id = ? AND deleted_at IS NULL LIMIT 1", body.TaskID); err == nil && batchID > 0 {
-				go tryAdvanceBatchStatus(h.db, batchID)
-			}
-			var orderID int64
-			if err := h.db.Get(&orderID, "SELECT order_id FROM tasks WHERE task_id = ? AND deleted_at IS NULL LIMIT 1", body.TaskID); err == nil && orderID > 0 {
-				go tryAdvanceOrderStatus(h.db, orderID, h.recorderHub, h.recorderRPCTimeout)
-			}
-		}
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
 }

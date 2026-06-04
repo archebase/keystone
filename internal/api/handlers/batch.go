@@ -100,14 +100,6 @@ func (h *BatchHandler) RegisterCollectorRoutes(apiV1 gin.IRoutes) {
 // recalledEpisodeLabel is appended to episodes.labels (JSON string array) when a batch is recalled (see RecallBatch).
 const recalledEpisodeLabel = "recalled_batch"
 
-// batchAdvanceTriggerStatuses lists task statuses that trigger tryAdvanceBatchStatus after a task
-// update via PUT /tasks. Tasks become cancelled only via PATCH batch cancel, which does not invoke
-// that hook; transfer completion sets completed and also calls tryAdvanceBatchStatus.
-var batchAdvanceTriggerStatuses = map[string]struct{}{
-	"completed": {},
-	"failed":    {},
-}
-
 var validBatchStatuses = map[string]struct{}{
 	"pending":   {},
 	"active":    {},

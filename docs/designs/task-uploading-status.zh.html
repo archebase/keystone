@@ -1,0 +1,821 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Uploading 状态设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16211d;
+      --muted: #63736b;
+      --line: #d6e0da;
+      --paper: #fbfdfb;
+      --surface: #ffffff;
+      --surface-strong: #edf6f1;
+      --accent: #116a5a;
+      --accent-strong: #08483f;
+      --blue: #215f8f;
+      --amber: #9a6416;
+      --danger: #a33d35;
+      --success: #1f7a4f;
+      --code-bg: #13221e;
+      --code-ink: #eef7f2;
+      --shadow: 0 18px 48px rgba(25, 43, 35, 0.09);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(17, 106, 90, 0.12), transparent 34%),
+        linear-gradient(180deg, #f4faf7 0%, var(--paper) 42%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 44px 24px 88px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 28px;
+      align-items: end;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 50px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 820px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta-panel {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface-strong);
+    }
+
+    .meta-panel p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .meta-panel strong {
+      display: block;
+      color: var(--ink);
+      font-size: 22px;
+      line-height: 1.2;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 22px 0 0;
+    }
+
+    nav a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 6px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--accent-strong);
+      background: rgba(255, 255, 255, 0.82);
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    section {
+      margin-top: 34px;
+      padding: 30px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: var(--shadow);
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 26px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    code {
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: #edf4f1;
+      color: var(--accent-strong);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 16px 0 0;
+      padding: 18px;
+      border-radius: 14px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .fact {
+      min-height: 150px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+
+    .fact span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      margin-bottom: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      color: #ffffff;
+      background: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .fact strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 18px;
+    }
+
+    .fact p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .status-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .status-node {
+      position: relative;
+      min-height: 118px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+
+    .status-node::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -13px;
+      width: 13px;
+      height: 2px;
+      background: var(--line);
+    }
+
+    .status-node:last-child::after {
+      display: none;
+    }
+
+    .status-node b {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--accent-strong);
+      font-size: 15px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .status-node p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .callout {
+      margin-top: 16px;
+      padding: 16px 18px;
+      border-left: 5px solid var(--amber);
+      border-radius: 12px;
+      background: #fff8ea;
+      color: #4c3a1c;
+    }
+
+    .ok {
+      color: var(--success);
+      font-weight: 800;
+    }
+
+    .warn {
+      color: var(--amber);
+      font-weight: 800;
+    }
+
+    .danger {
+      color: var(--danger);
+      font-weight: 800;
+    }
+
+    .matrix td:first-child {
+      width: 210px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+
+    .compact td,
+    .compact th {
+      padding: 10px 12px;
+    }
+
+    @media (max-width: 920px) {
+      header,
+      .grid,
+      .status-flow {
+        grid-template-columns: 1fr;
+      }
+
+      .status-node::after {
+        top: auto;
+        right: 50%;
+        bottom: -13px;
+        width: 2px;
+        height: 13px;
+      }
+    }
+
+    @media (max-width: 620px) {
+      main {
+        padding: 22px 14px 58px;
+      }
+
+      header,
+      section {
+        padding: 22px;
+        border-radius: 14px;
+      }
+
+      th,
+      td {
+        display: block;
+        width: 100%;
+      }
+
+      th {
+        border-bottom: 0;
+      }
+
+      td {
+        padding-top: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Keystone task state design</p>
+        <h1>Task <code>uploading</code> 状态方案</h1>
+        <p class="lead">
+          本方案为 task 新增 <code>uploading</code> 状态，用于表达“录制已结束，任务进入上传后处理阶段”。核心目标是让 Recorder 断连、ping timeout 或重连状态同步不再把已完成录制的任务回退到 <code>pending</code>，同时允许订单和批次的生产侧先收敛。
+        </p>
+        <nav aria-label="文档导航">
+          <a href="#goal">目标</a>
+          <a href="#semantics">状态语义</a>
+          <a href="#ownership">归属校验</a>
+          <a href="#events">事件规则</a>
+          <a href="#apis">接口调整</a>
+          <a href="#screens">前端与大屏</a>
+          <a href="#tests">测试清单</a>
+        </nav>
+      </div>
+      <aside class="meta-panel">
+        <p>决策状态</p>
+        <strong>已敲定，可进入实现</strong>
+        <p>变更范围：Keystone 为主，Synapse 展示补齐，Axon 协议无需调整。</p>
+      </aside>
+    </header>
+
+    <section id="goal">
+      <h2>目标与边界</h2>
+      <div class="grid">
+        <article class="fact">
+          <span>目标</span>
+          <strong>保护已结束录制的任务</strong>
+          <p>收到合法 finish callback 后，task 立即进入 <code>uploading</code>，后续 Recorder 断连不再回退。</p>
+        </article>
+        <article class="fact">
+          <span>非目标</span>
+          <strong>不设计上传调度器</strong>
+          <p>第一版不做自动重试、不做上传超时、不持久化上传进度、不新增 <code>pending_upload</code> 或 <code>upload_stalled</code>。</p>
+        </article>
+        <article class="fact">
+          <span>约束</span>
+          <strong>区分生产与后处理</strong>
+          <p><code>completed_at</code> 仍只表示 task 到达终态；order/batch completed 可以早于部分 <code>uploading</code> 后处理完成。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="semantics">
+      <h2>状态语义</h2>
+      <div class="status-flow" aria-label="task lifecycle">
+        <div class="status-node">
+          <b>pending</b>
+          <p>未下发，等待配置或执行。</p>
+        </div>
+        <div class="status-node">
+          <b>ready</b>
+          <p>Recorder 已配置，等待开始录制。</p>
+        </div>
+        <div class="status-node">
+          <b>in_progress</b>
+          <p>Recorder 正在录制，仍属于 Recorder 阶段。</p>
+        </div>
+        <div class="status-node">
+          <b>uploading</b>
+          <p>录制已结束，上传后处理已接管或待接管。</p>
+        </div>
+        <div class="status-node">
+          <b>completed</b>
+          <p>S3 验证、episode 写入、upload_ack 已完成。</p>
+        </div>
+      </div>
+      <div class="callout">
+        <strong>关键定义：</strong><code>uploading</code> 不严格表示“字节已经开始上传”，而表示“Recorder 不再拥有该 task，任务进入上传后处理阶段”。它不计入 <code>in_progress</code>，也不占用工位生产状态。
+      </div>
+
+      <table class="compact">
+        <thead>
+          <tr>
+            <th>状态</th>
+            <th>是否终态</th>
+            <th>是否允许回退到 pending</th>
+            <th>主要拥有方</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pending</code></td>
+            <td>否</td>
+            <td>不适用</td>
+            <td>Keystone</td>
+          </tr>
+          <tr>
+            <td><code>ready</code></td>
+            <td>否</td>
+            <td>允许，来自 clear、cancel、断连恢复</td>
+            <td>Recorder</td>
+          </tr>
+          <tr>
+            <td><code>in_progress</code></td>
+            <td>否</td>
+            <td>允许，来自 cancel、断连恢复</td>
+            <td>Recorder</td>
+          </tr>
+          <tr>
+            <td><code>uploading</code></td>
+            <td>否</td>
+            <td><span class="danger">禁止</span></td>
+            <td>Transfer / Keystone</td>
+          </tr>
+          <tr>
+            <td><code>completed</code> / <code>failed</code> / <code>cancelled</code></td>
+            <td>是</td>
+            <td><span class="danger">禁止</span></td>
+            <td>Keystone</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="ownership">
+      <h2>设备归属校验</h2>
+      <p>所有来自 Recorder 或 Transfer 的设备事件，在修改 task 状态、写 <code>error_message</code>、写 episode 或发送 ACK 前，都必须确认事件来自拥有该 task 的设备。</p>
+      <pre><code>tasks.task_id = message.task_id
+tasks.workstation_id = workstations.id
+workstations.robot_id = robots.id
+robots.device_id = callback.device_id 或当前 Transfer WebSocket 的 device_id</code></pre>
+      <table>
+        <thead>
+          <tr>
+            <th>入口</th>
+            <th>校验失败时</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>finish callback / Recorder state reconcile</td>
+            <td>不改状态，只记录 warning/error；finish callback 返回可说明 task/device 不匹配。</td>
+          </tr>
+          <tr>
+            <td><code>upload_started</code> / <code>upload_failed</code> / <code>upload_not_found</code></td>
+            <td>不改状态，不写错误到该 task，只记录来源设备和 task_id。</td>
+          </tr>
+          <tr>
+            <td><code>upload_complete</code></td>
+            <td>不写 episode，不改 task，不发 <code>upload_ack</code>。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="events">
+      <h2>事件规则</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>事件</th>
+            <th>状态变更</th>
+            <th>字段与响应</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>合法 finish callback</td>
+            <td><code>pending/ready/in_progress/uploading -> uploading</code></td>
+            <td>归属校验通过后立即更新状态；不写 <code>completed_at</code>；之后尝试发送 <code>upload_request</code>。</td>
+          </tr>
+          <tr>
+            <td><code>upload_request</code> 发送成功</td>
+            <td>保持 <code>uploading</code></td>
+            <td>清空 upload 相关 <code>error_message</code>；finish callback 返回 <code>200</code>，并带 <code>upload_request_sent: true</code>。</td>
+          </tr>
+          <tr>
+            <td><code>upload_request</code> 发送失败</td>
+            <td>保持 <code>uploading</code></td>
+            <td>写入 <code>error_message</code>；合法 finish callback 仍返回 <code>200</code>，并带 <code>upload_request_sent: false</code>。</td>
+          </tr>
+          <tr>
+            <td><code>upload_started</code></td>
+            <td><code>pending/ready/in_progress/uploading -> uploading</code></td>
+            <td>归属校验通过后幂等确认上传阶段；清空 upload 相关 <code>error_message</code>；不碰终态。</td>
+          </tr>
+          <tr>
+            <td><code>upload_complete</code> 且 ACK 成功</td>
+            <td><code>pending/ready/in_progress/uploading -> completed</code></td>
+            <td>归属校验通过后写 episode；发送 <code>upload_ack</code>；写 <code>completed_at</code> 并清空 <code>error_message</code>。</td>
+          </tr>
+          <tr>
+            <td>重复 <code>upload_complete</code> 且 task 已 <code>completed</code></td>
+            <td>保持 <code>completed</code></td>
+            <td>允许幂等发送 <code>upload_ack</code>；不重复写 episode、不改 <code>completed_at</code>、不重复推进 batch/order。</td>
+          </tr>
+          <tr>
+            <td><code>upload_failed</code></td>
+            <td><code>in_progress/uploading -> failed</code></td>
+            <td>归属校验通过后写 <code>completed_at</code> 和 <code>error_message</code>；不回滚已 completed 的 order/batch。</td>
+          </tr>
+          <tr>
+            <td><code>upload_not_found</code></td>
+            <td>保持 <code>uploading</code></td>
+            <td>归属校验通过后只写 <code>error_message</code>；不自动失败；不触发 batch/order 推进。</td>
+          </tr>
+          <tr>
+            <td>重复 finish callback</td>
+            <td>保持 <code>uploading</code></td>
+            <td>幂等处理；不写 <code>completed_at</code>；重新尝试 <code>upload_request</code>；根据发送结果清空或更新错误。</td>
+          </tr>
+          <tr>
+            <td>终态收到迟到事件</td>
+            <td><code>failed/cancelled</code> 不恢复</td>
+            <td><code>failed/cancelled</code> 收到 <code>upload_complete</code> 时不改状态、不发 ACK；只记录日志。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>状态机约束</h3>
+      <pre><code>pending -> ready -> in_progress -> uploading -> completed
+                                  |             |
+                                  |             -> failed
+                                  -> failed
+
+ready/in_progress -> pending       仅限 Recorder 阶段回退
+uploading -> pending               禁止
+failed -> uploading/completed      第一版禁止自动恢复</code></pre>
+      <div class="callout">
+        第一版允许 task 长期停留在 <code>uploading</code>。该状态表示上传后处理残留，不阻塞 order/batch 的生产侧完成；后续如需收敛，由自动超时方案处理。
+      </div>
+    </section>
+
+    <section id="disconnects">
+      <h2>断连与回退规则</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>触发源</th>
+            <th>允许回退</th>
+            <th>禁止影响</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Recorder 普通 disconnect</td>
+            <td><code>ready/in_progress -> pending</code></td>
+            <td><code>uploading</code>、终态</td>
+          </tr>
+          <tr>
+            <td>Recorder ping timeout</td>
+            <td><code>ready/in_progress -> pending</code></td>
+            <td><code>uploading</code>、终态</td>
+          </tr>
+          <tr>
+            <td>Transfer disconnect</td>
+            <td><code>ready/in_progress -> pending</code>，并可通知 Recorder clear/cancel</td>
+            <td><code>uploading</code>、终态</td>
+          </tr>
+          <tr>
+            <td>Recorder state reconcile</td>
+            <td><code>pending -> ready</code> 或 <code>pending/ready -> in_progress</code></td>
+            <td>不能把 <code>uploading</code> 拉回 <code>ready</code> 或 <code>in_progress</code></td>
+          </tr>
+          <tr>
+            <td>Recorder clear/cancel RPC</td>
+            <td><code>ready/in_progress -> pending</code></td>
+            <td><code>uploading</code>、终态</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="manual">
+      <h2 id="apis">接口调整</h2>
+      <ul>
+        <li>移除普通任务状态更新接口 <code>PUT /tasks/:id</code>；task 状态由系统事件和 batch cancel/recall 驱动。</li>
+        <li>移除手动 ACK 接口 <code>POST /transfer/{device_id}/upload_ack</code>；ACK 只由 <code>upload_complete</code> 验证路径自动发送。</li>
+        <li>手动 <code>/transfer/{device_id}/upload_request</code> 不负责把非 <code>uploading</code> 的任务推进到 <code>uploading</code>。</li>
+        <li>如果 task 已是 <code>uploading</code>，手动 upload_request 发送成功后清空 <code>error_message</code>。</li>
+        <li>第一版不做 <code>uploading</code> 自动超时，不自动把卡住的上传改为 <code>failed</code>。</li>
+        <li>第一版不新增管理员手动失败接口；<code>uploading -> failed</code> 只来自 Transfer 的 <code>upload_failed</code>。</li>
+      </ul>
+    </section>
+
+    <section id="batch-order">
+      <h2>批次与订单</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>规则</th>
+            <th>结论</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>uploading</code> 是否终态</td>
+            <td><span class="danger">不是终态</span>，但不永久阻塞 order/batch 的生产侧收敛。</td>
+          </tr>
+          <tr>
+            <td>正常 batch <code>active -> completed</code></td>
+            <td>仍要求所有 task 进入 <code>completed/failed/cancelled</code>。</td>
+          </tr>
+          <tr>
+            <td>order 达标收尾</td>
+            <td>order 可以 <code>completed</code>；open batch 可 completed；保留 <code>uploading</code> task 继续后处理。</td>
+          </tr>
+          <tr>
+            <td>batch cancel / recall</td>
+            <td>只取消 <code>pending/ready/in_progress</code>；不取消 <code>uploading</code>。</td>
+          </tr>
+          <tr>
+            <td>completed order/batch 下的后处理</td>
+            <td><code>uploading -> completed/failed</code> 只更新 task、episode 和统计；不回滚 order/batch。</td>
+          </tr>
+          <tr>
+            <td>自动准备下一条任务</td>
+            <td><code>uploading</code> 不阻塞同工位准备下一条；但需要 Recorder fresh idle 且 Transfer 在线。</td>
+          </tr>
+          <tr>
+            <td>工位占用</td>
+            <td><code>uploading</code> 不改变工位生产占用语义，工位可用性仍看 Recorder 状态和设备连接。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="migration">
+      <h2>数据库与迁移</h2>
+      <ul>
+        <li><code>tasks.status</code> 增加枚举值 <code>uploading</code>。</li>
+        <li>只做 schema 迁移，不批量回填历史 <code>in_progress</code> 任务。</li>
+        <li>不新增 <code>upload_started_at</code> 字段。</li>
+        <li>finish callback 进入 <code>uploading</code> 时不写 <code>completed_at</code>。</li>
+        <li><code>upload_complete + upload_ack</code> 或 <code>upload_failed</code> 到达终态时写 <code>completed_at</code>。</li>
+        <li><code>GET /tasks</code> 和 <code>GET /tasks/:id</code> 返回 <code>error_message</code>，用于展示上传调度异常。</li>
+        <li><code>uploading</code> 和 <code>completed</code> task 禁止删除；长期 <code>uploading</code> 后续由自动超时方案收敛。</li>
+      </ul>
+    </section>
+
+    <section id="screens">
+      <h2>前端与大屏</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>位置</th>
+            <th>调整</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>任务列表 / 详情</td>
+            <td><code>uploading</code> 显示为“上传中”，颜色复用进行中或同步中的蓝色系；详情和列表可展示 <code>error_message</code>。</td>
+          </tr>
+          <tr>
+            <td>生产大屏生命周期轨</td>
+            <td>改为 5 节点：<code>pending -> ready -> in_progress -> uploading -> completed</code>。</td>
+          </tr>
+          <tr>
+            <td>大屏后端统计</td>
+            <td><code>dashboardTaskCounts</code>、summary、trend、batch task summary、status distribution 都单独处理 <code>uploading</code>。</td>
+          </tr>
+          <tr>
+            <td>趋势与统计卡</td>
+            <td><code>uploading</code> 不计入 <code>pending</code> 或 <code>in_progress</code>，避免双算或误读。</td>
+          </tr>
+          <tr>
+            <td>recent tasks</td>
+            <td><code>status_text</code> 对 <code>uploading</code> 返回“上传中”。</td>
+          </tr>
+          <tr>
+            <td>生产语义</td>
+            <td>order/batch completed 下仍可显示 <code>uploading</code> task；这是允许的上传后处理状态。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="tests">
+      <h2>测试清单</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>类别</th>
+            <th>必须覆盖的行为</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>finish callback</td>
+            <td>归属校验通过的合法 callback 立即把 <code>pending/ready/in_progress/uploading</code> 改为或保持 <code>uploading</code>，并返回 <code>200</code>。</td>
+          </tr>
+          <tr>
+            <td>上传请求失败</td>
+            <td>Transfer 不在线或写失败时保持 <code>uploading</code>，写 <code>error_message</code>，响应 <code>upload_request_sent: false</code>。</td>
+          </tr>
+          <tr>
+            <td>设备归属</td>
+            <td>callback、<code>upload_started</code>、<code>upload_complete</code>、<code>upload_failed</code>、<code>upload_not_found</code> 的 device mismatch 都不能改 task。</td>
+          </tr>
+          <tr>
+            <td>断连恢复</td>
+            <td>Recorder disconnect、Recorder ping timeout、Transfer disconnect 都不能把 <code>uploading</code> 回退到 <code>pending</code>。</td>
+          </tr>
+          <tr>
+            <td>上传完成</td>
+            <td><code>upload_complete + upload_ack</code> 把 <code>uploading</code> 改为 <code>completed</code>；已 <code>completed</code> 的重复 complete 可幂等 ACK。</td>
+          </tr>
+          <tr>
+            <td>上传失败</td>
+            <td><code>upload_failed</code> 把 <code>uploading</code> 改为 <code>failed</code>，并写终态时间和错误；迟到 complete 不恢复 failed。</td>
+          </tr>
+          <tr>
+            <td>未找到上传</td>
+            <td><code>upload_not_found</code> 保持 <code>uploading</code>，只更新 <code>error_message</code>。</td>
+          </tr>
+          <tr>
+            <td>接口移除</td>
+            <td><code>PUT /tasks/:id</code> 和 <code>POST /transfer/{device_id}/upload_ack</code> 不再可用。</td>
+          </tr>
+          <tr>
+            <td>删除与 API 展示</td>
+            <td><code>uploading</code> 禁止删除；任务 API 返回 <code>error_message</code>。</td>
+          </tr>
+          <tr>
+            <td>批次与订单</td>
+            <td>order 达标可 completed；open batch 可 completed；<code>uploading</code> 保留后处理且不影响工位占用。</td>
+          </tr>
+          <tr>
+            <td>大屏统计</td>
+            <td>状态分布、summary、trend、batch summary、recent tasks、5 节点生命周期轨都能正确展示 <code>uploading</code>。</td>
+          </tr>
+          <tr>
+            <td>长期上传中</td>
+            <td>第一版允许 task 长期停留 <code>uploading</code>，不阻塞 order/batch 生产侧完成。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
