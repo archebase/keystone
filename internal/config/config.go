@@ -8,7 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -20,7 +20,6 @@ type Config struct {
 	Storage      StorageConfig
 	QA           QAConfig
 	Sync         SyncConfig
-	CLISync      CLISyncConfig
 	Auth         AuthConfig
 	Features     FeaturesConfig
 	Monitoring   MonitoringConfig
@@ -89,20 +88,7 @@ type SyncConfig struct {
 	RetryJitterSec     int    // max additive jitter in seconds
 	PersistRootDir     string // root directory for persisting upload state across restarts; empty disables persistence
 	MaxRestartCount    int    // max number of upload restarts before permanent failure; 0 uses uploader default (3)
-}
-
-// CLISyncConfig controls the emergency dp CLI cloud sync sidepath.
-type CLISyncConfig struct {
-	Enabled       bool
-	DPBin         string
-	DPConfigPath  string
-	TempDir       string
-	MaxConcurrent int
-	QueueSize     int
-	TimeoutSec    int
-	KeepTemp      bool
-	MaxTags       int
-	MaxTagBytes   int
+	DPConfigPath       string // data-platform config path for direct device-profile uploads
 }
 
 // FeaturesConfig feature flags configuration
@@ -219,18 +205,7 @@ func Load() (*Config, error) {
 			RetryJitterSec:     getEnvInt("KEYSTONE_SYNC_RETRY_JITTER_SEC", 30),
 			PersistRootDir:     getEnv("KEYSTONE_SYNC_PERSIST_ROOT_DIR", ""),
 			MaxRestartCount:    getEnvInt("KEYSTONE_SYNC_MAX_RESTART_COUNT", 3),
-		},
-		CLISync: CLISyncConfig{
-			Enabled:       getEnvBool("KEYSTONE_CLI_SYNC_ENABLED", false),
-			DPBin:         getEnv("KEYSTONE_CLI_SYNC_DP_BIN", "dp"),
-			DPConfigPath:  getEnv("KEYSTONE_CLI_SYNC_DP_CONFIG", ""),
-			TempDir:       getEnv("KEYSTONE_CLI_SYNC_TEMP_DIR", "/var/lib/keystone/cli-sync"),
-			MaxConcurrent: getEnvInt("KEYSTONE_CLI_SYNC_MAX_CONCURRENT", 1),
-			QueueSize:     getEnvInt("KEYSTONE_CLI_SYNC_QUEUE_SIZE", 16),
-			TimeoutSec:    getEnvInt("KEYSTONE_CLI_SYNC_TIMEOUT_SEC", 7200),
-			KeepTemp:      getEnvBool("KEYSTONE_CLI_SYNC_KEEP_TEMP", false),
-			MaxTags:       getEnvInt("KEYSTONE_CLI_SYNC_MAX_TAGS", 128),
-			MaxTagBytes:   getEnvInt("KEYSTONE_CLI_SYNC_MAX_TAG_BYTES", 65536),
+			DPConfigPath:       getEnv("KEYSTONE_SYNC_DP_CONFIG", defaultDPConfigPath()),
 		},
 		Auth: AuthConfig{
 			JWTSecret:             getEnv("KEYSTONE_JWT_SECRET", ""),
@@ -302,17 +277,18 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("KEYSTONE_ADMIN_USERNAME and KEYSTONE_ADMIN_PASSWORD must both be set or both be empty")
 	}
 	if c.Sync.Enabled {
-		if strings.TrimSpace(c.Sync.AuthEndpoint) == "" {
-			return fmt.Errorf("sync auth endpoint is required when sync is enabled")
+		c.Sync.DPConfigPath = strings.TrimSpace(c.Sync.DPConfigPath)
+		if c.Sync.DPConfigPath == "" {
+			return fmt.Errorf("KEYSTONE_SYNC_DP_CONFIG is required when sync is enabled")
 		}
-		if strings.TrimSpace(c.Sync.GatewayEndpoint) == "" {
-			return fmt.Errorf("sync gateway endpoint is required when sync is enabled")
+		expandedDPConfigPath, err := expandHomePath(c.Sync.DPConfigPath)
+		if err != nil {
+			return fmt.Errorf("KEYSTONE_SYNC_DP_CONFIG %q is invalid: %w", c.Sync.DPConfigPath, err)
 		}
-		apiKey := strings.TrimSpace(c.Sync.APIKey)
-		if apiKey == "" {
-			return fmt.Errorf("KEYSTONE_CLOUD_API_KEY is required when sync is enabled")
-		}
-		c.Sync.APIKey = apiKey
+		c.Sync.DPConfigPath = expandedDPConfigPath
+		c.Sync.AuthEndpoint = strings.TrimSpace(c.Sync.AuthEndpoint)
+		c.Sync.GatewayEndpoint = strings.TrimSpace(c.Sync.GatewayEndpoint)
+		c.Sync.APIKey = strings.TrimSpace(c.Sync.APIKey)
 		if c.Sync.BatchSize <= 0 {
 			return fmt.Errorf("sync batch size must be greater than 0 when sync is enabled")
 		}
@@ -347,45 +323,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("sync max restart count must be greater than or equal to 0 when sync is enabled")
 		}
 	}
-	if c.CLISync.Enabled {
-		c.CLISync.DPBin = strings.TrimSpace(c.CLISync.DPBin)
-		if c.CLISync.DPBin == "" {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_BIN is required when CLI sync is enabled")
-		}
-		if _, err := exec.LookPath(c.CLISync.DPBin); err != nil {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_BIN %q is not executable: %w", c.CLISync.DPBin, err)
-		}
-		c.CLISync.DPConfigPath = strings.TrimSpace(c.CLISync.DPConfigPath)
-		if c.CLISync.DPConfigPath == "" {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_CONFIG is required when CLI sync is enabled")
-		}
-		info, err := os.Stat(c.CLISync.DPConfigPath)
-		if err != nil {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_CONFIG %q is not readable: %w", c.CLISync.DPConfigPath, err)
-		}
-		if info.IsDir() {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_DP_CONFIG %q must be a file", c.CLISync.DPConfigPath)
-		}
-		c.CLISync.TempDir = strings.TrimSpace(c.CLISync.TempDir)
-		if c.CLISync.TempDir == "" {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_TEMP_DIR is required when CLI sync is enabled")
-		}
-		if c.CLISync.MaxConcurrent <= 0 {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_MAX_CONCURRENT must be greater than 0 when CLI sync is enabled")
-		}
-		if c.CLISync.QueueSize <= 0 {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_QUEUE_SIZE must be greater than 0 when CLI sync is enabled")
-		}
-		if c.CLISync.TimeoutSec <= 0 {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_TIMEOUT_SEC must be greater than 0 when CLI sync is enabled")
-		}
-		if c.CLISync.MaxTags <= 0 {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_MAX_TAGS must be greater than 0 when CLI sync is enabled")
-		}
-		if c.CLISync.MaxTagBytes <= 0 {
-			return fmt.Errorf("KEYSTONE_CLI_SYNC_MAX_TAG_BYTES must be greater than 0 when CLI sync is enabled")
-		}
-	}
 	return nil
 }
 
@@ -394,6 +331,28 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func defaultDPConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "~/.archebase/config.json"
+	}
+	return filepath.Join(home, ".archebase", "config.json")
+}
+
+func expandHomePath(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("home directory is not available")
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
 }
 
 func getEnvInt(key string, fallback int) int {

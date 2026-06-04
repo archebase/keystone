@@ -7,6 +7,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,7 @@ func TestLoad(t *testing.T) {
 		"KEYSTONE_MINIO_SECRET_KEY":       os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
 		"KEYSTONE_FACTORY_ID":             os.Getenv("KEYSTONE_FACTORY_ID"),
 		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED": os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_SYNC_DP_CONFIG":         os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
 	}
 	defer func() {
 		// Restore original environment variables
@@ -35,6 +37,7 @@ func TestLoad(t *testing.T) {
 
 	// Set test environment variables
 	os.Unsetenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED")
+	os.Unsetenv("KEYSTONE_SYNC_DP_CONFIG")
 	os.Setenv("KEYSTONE_MYSQL_PASSWORD", "test-password")
 	os.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "test-access-key")
 	os.Setenv("KEYSTONE_MINIO_SECRET_KEY", "test-secret-key")
@@ -68,6 +71,13 @@ func TestLoad(t *testing.T) {
 
 	if cfg.Sync.AutoScanEnabled {
 		t.Error("Load().Sync.AutoScanEnabled should default to false")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir() error = %v", err)
+	}
+	if cfg.Sync.DPConfigPath != filepath.Join(home, ".archebase", "config.json") {
+		t.Errorf("Load().Sync.DPConfigPath = %q, want default ~/.archebase/config.json", cfg.Sync.DPConfigPath)
 	}
 
 	// Verify QA configuration
@@ -270,7 +280,7 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestValidateSyncAPIKey(t *testing.T) {
+func TestValidateSyncDPConfig(t *testing.T) {
 	validBase := Config{
 		Server:   ServerConfig{Mode: "edge"},
 		Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
@@ -278,7 +288,7 @@ func TestValidateSyncAPIKey(t *testing.T) {
 		Auth:     AuthConfig{JWTSecret: "jwt-secret"},
 	}
 
-	t.Run("sync disabled — no API key required", func(t *testing.T) {
+	t.Run("sync disabled — no DP config required", func(t *testing.T) {
 		cfg := validBase
 		cfg.Sync = SyncConfig{Enabled: false}
 		if err := cfg.Validate(); err != nil {
@@ -286,13 +296,11 @@ func TestValidateSyncAPIKey(t *testing.T) {
 		}
 	})
 
-	t.Run("sync enabled — missing API key", func(t *testing.T) {
+	t.Run("sync enabled — missing DP config", func(t *testing.T) {
 		cfg := validBase
 		cfg.Sync = SyncConfig{
 			Enabled:           true,
-			AuthEndpoint:      "auth:443",
-			GatewayEndpoint:   "gateway:443",
-			APIKey:            "",
+			DPConfigPath:      "",
 			BatchSize:         10,
 			MaxRetries:        5,
 			MaxConcurrent:     2,
@@ -302,18 +310,16 @@ func TestValidateSyncAPIKey(t *testing.T) {
 			RetryBaseSec:      30,
 			RetryMaxSec:       1800,
 		}
-		if err := cfg.Validate(); err == nil {
-			t.Error("Validate() expected error for missing API key, got nil")
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "KEYSTONE_SYNC_DP_CONFIG") {
+			t.Fatalf("Validate() error = %v, want KEYSTONE_SYNC_DP_CONFIG error", err)
 		}
 	})
 
-	t.Run("sync enabled — arbitrary opaque API key accepted", func(t *testing.T) {
+	t.Run("sync enabled — old cloud endpoint and API key are not required", func(t *testing.T) {
 		cfg := validBase
 		cfg.Sync = SyncConfig{
 			Enabled:           true,
-			AuthEndpoint:      "auth:443",
-			GatewayEndpoint:   "gateway:443",
-			APIKey:            "notvalidbase64!!!",
+			DPConfigPath:      "/etc/keystone/dp-config.json",
 			BatchSize:         10,
 			MaxRetries:        5,
 			MaxConcurrent:     2,
@@ -326,18 +332,16 @@ func TestValidateSyncAPIKey(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("Validate() unexpected error = %v", err)
 		}
-		if cfg.Sync.APIKey != "notvalidbase64!!!" {
-			t.Errorf("APIKey = %q, want %q", cfg.Sync.APIKey, "notvalidbase64!!!")
+		if cfg.Sync.AuthEndpoint != "" || cfg.Sync.GatewayEndpoint != "" || cfg.Sync.APIKey != "" {
+			t.Fatalf("legacy cloud config should remain optional and empty: %+v", cfg.Sync)
 		}
 	})
 
-	t.Run("sync enabled — trims API key whitespace", func(t *testing.T) {
+	t.Run("sync enabled — trims DP config whitespace", func(t *testing.T) {
 		cfg := validBase
 		cfg.Sync = SyncConfig{
 			Enabled:           true,
-			AuthEndpoint:      "auth:443",
-			GatewayEndpoint:   "gateway:443",
-			APIKey:            "  cloud-issued-key  ",
+			DPConfigPath:      "  /etc/keystone/dp-config.json  ",
 			BatchSize:         10,
 			MaxRetries:        5,
 			MaxConcurrent:     2,
@@ -350,8 +354,32 @@ func TestValidateSyncAPIKey(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("Validate() unexpected error = %v", err)
 		}
-		if cfg.Sync.APIKey != "cloud-issued-key" {
-			t.Errorf("APIKey = %q, want %q", cfg.Sync.APIKey, "cloud-issued-key")
+		if cfg.Sync.DPConfigPath != "/etc/keystone/dp-config.json" {
+			t.Errorf("DPConfigPath = %q, want trimmed path", cfg.Sync.DPConfigPath)
+		}
+	})
+
+	t.Run("sync enabled — expands DP config home path", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		cfg := validBase
+		cfg.Sync = SyncConfig{
+			Enabled:           true,
+			DPConfigPath:      "~/.archebase/config.json",
+			BatchSize:         10,
+			MaxRetries:        5,
+			MaxConcurrent:     2,
+			WorkerIntervalSec: 60,
+			RequestTimeoutSec: 30,
+			OSSTimeoutSec:     300,
+			RetryBaseSec:      30,
+			RetryMaxSec:       1800,
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error = %v", err)
+		}
+		if cfg.Sync.DPConfigPath != filepath.Join(home, ".archebase", "config.json") {
+			t.Errorf("DPConfigPath = %q, want expanded home path", cfg.Sync.DPConfigPath)
 		}
 	})
 }

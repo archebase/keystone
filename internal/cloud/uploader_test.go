@@ -5,11 +5,14 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,11 +125,12 @@ func TestFindPersistedStateByKey(t *testing.T) {
 		LogicalUploadID: "logical-find-test",
 		UploadID:        "upload-find-test",
 		McapKey:         "episodes/7/find.mcap",
+		AssetID:         "asset-a",
 		FileSize:        256,
 		UpdatedAt:       time.Now(),
 	})
 
-	got, err := u.findPersistedStateByKey("episodes/7/find.mcap")
+	got, err := u.findPersistedStateByKey("episodes/7/find.mcap", "asset-a")
 	if err != nil {
 		t.Fatalf("findPersistedStateByKey: %v", err)
 	}
@@ -138,12 +142,36 @@ func TestFindPersistedStateByKey(t *testing.T) {
 	}
 }
 
+func TestFindPersistedStateByKey_DoesNotReuseDifferentAssetID(t *testing.T) {
+	dir := t.TempDir()
+	u := newTestUploader(dir)
+
+	activeDir := filepath.Join(dir, "data-gateway-client", "uploads", "active")
+	writeTempState(t, activeDir, &persistedUploadState{
+		Version:         1,
+		LogicalUploadID: "logical-device-a",
+		UploadID:        "upload-device-a",
+		McapKey:         "episodes/7/find.mcap",
+		AssetID:         "asset-a",
+		FileSize:        256,
+		UpdatedAt:       time.Now(),
+	})
+
+	got, err := u.findPersistedStateByKey("episodes/7/find.mcap", "asset-b")
+	if err != nil {
+		t.Fatalf("findPersistedStateByKey: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil for different AssetID, got %+v", got)
+	}
+}
+
 // TestFindPersistedStateByKey_NotFound verifies nil is returned for unknown keys.
 func TestFindPersistedStateByKey_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	u := newTestUploader(dir)
 
-	got, err := u.findPersistedStateByKey("episodes/99/missing.mcap")
+	got, err := u.findPersistedStateByKey("episodes/99/missing.mcap", "asset-a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,7 +184,7 @@ func TestFindPersistedStateByKey_NotFound(t *testing.T) {
 func TestFindPersistedStateByKey_EmptyPersistRootDir(t *testing.T) {
 	u := newTestUploader("")
 
-	got, err := u.findPersistedStateByKey("episodes/1/file.mcap")
+	got, err := u.findPersistedStateByKey("episodes/1/file.mcap", "asset-a")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,6 +225,7 @@ func TestPersistedStateRoundTrip(t *testing.T) {
 		Endpoint:          "https://oss.example.com",
 		ObjectKey:         "uploads/1/test",
 		McapKey:           "episodes/1/test.mcap",
+		AssetID:           "asset-a",
 		FileSize:          4096,
 		UpdatedAt:         now,
 	}
@@ -225,6 +254,9 @@ func TestPersistedStateRoundTrip(t *testing.T) {
 	if decoded.McapKey != original.McapKey {
 		t.Errorf("McapKey = %q, want %q", decoded.McapKey, original.McapKey)
 	}
+	if decoded.AssetID != original.AssetID {
+		t.Errorf("AssetID = %q, want %q", decoded.AssetID, original.AssetID)
+	}
 }
 
 // TestPrepareUploadSession_PermanentFailure_FileSizeMismatch verifies that a persisted state
@@ -241,6 +273,7 @@ func TestPrepareUploadSession_PermanentFailure_FileSizeMismatch(t *testing.T) {
 		LogicalUploadID: "logical-size-mismatch",
 		UploadID:        "upload-size-mismatch",
 		McapKey:         "episodes/1/mismatch.mcap",
+		AssetID:         "asset-a",
 		FileSize:        1024, // persisted as 1024
 		UpdatedAt:       time.Now(),
 	})
@@ -250,6 +283,7 @@ func TestPrepareUploadSession_PermanentFailure_FileSizeMismatch(t *testing.T) {
 		context.Background(),
 		map[string]string{},
 		"episodes/1/mismatch.mcap",
+		"asset-a",
 		512, // actual size differs
 	)
 	if err == nil {
@@ -271,6 +305,7 @@ func TestPrepareUploadSession_PermanentFailure_CleanupOnSizeMismatch(t *testing.
 		LogicalUploadID: "logical-cleanup-mismatch",
 		UploadID:        "upload-cleanup-mismatch",
 		McapKey:         "episodes/2/cleanup.mcap",
+		AssetID:         "asset-a",
 		FileSize:        1024, // persisted size
 		RestartCount:    0,
 		UpdatedAt:       time.Now(),
@@ -280,6 +315,7 @@ func TestPrepareUploadSession_PermanentFailure_CleanupOnSizeMismatch(t *testing.
 		context.Background(),
 		map[string]string{},
 		"episodes/2/cleanup.mcap",
+		"asset-a",
 		512, // different from persisted
 	)
 	if err == nil {
@@ -326,13 +362,14 @@ func TestPrepareUploadSession_Restart_OldStatePreservedOnRPCFailure(t *testing.T
 		LogicalUploadID: "logical-old",
 		UploadID:        "upload-old",
 		McapKey:         "episodes/10/restart-rpc-fail.mcap",
+		AssetID:         "asset-a",
 		FileSize:        512,
 		RestartCount:    0,
 		UpdatedAt:       time.Now(),
 	})
 
 	u := newDecideResumeUploader(dir, gw, &fakeOSS{})
-	_, err := u.prepareUploadSession(context.Background(), map[string]string{}, "episodes/10/restart-rpc-fail.mcap", 512)
+	_, err := u.prepareUploadSession(context.Background(), map[string]string{}, "episodes/10/restart-rpc-fail.mcap", "asset-a", 512)
 	if err == nil {
 		t.Fatal("expected error when CreateLogicalUpload fails, got nil")
 	}
@@ -374,13 +411,14 @@ func TestPrepareUploadSession_Restart_NewStatePersisted_OldStateRemoved(t *testi
 		LogicalUploadID: "logical-old",
 		UploadID:        "upload-old",
 		McapKey:         "episodes/11/restart-ok.mcap",
+		AssetID:         "asset-a",
 		FileSize:        512,
 		RestartCount:    0,
 		UpdatedAt:       time.Now(),
 	})
 
 	u := newDecideResumeUploader(dir, gw, &fakeOSS{})
-	prepared, err := u.prepareUploadSession(context.Background(), map[string]string{}, "episodes/11/restart-ok.mcap", 512)
+	prepared, err := u.prepareUploadSession(context.Background(), map[string]string{}, "episodes/11/restart-ok.mcap", "asset-a", 512)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -528,7 +566,7 @@ func (f *fakeGateway) AbortUpload(_ context.Context, _ string, _ string) error {
 	return nil
 }
 
-func (f *fakeGateway) CompleteUpload(_ context.Context, _ string, _ int64, _ map[string]string, _ int32, _ string) error {
+func (f *fakeGateway) CompleteUpload(_ context.Context, _ string, _ int64, _ map[string]string, _ int32, _ string, _ int64) error {
 	panic("fakeGateway.CompleteUpload called unexpectedly")
 }
 
@@ -538,6 +576,8 @@ type fakeOSS struct {
 	listPartsFn func(ctx context.Context, session *UploadSession, multipartUploadID string) error
 	// headObjectETagFn is called by HeadObjectETag; must be set for tests that reach it.
 	headObjectETagFn func(ctx context.Context, session *UploadSession) (string, error)
+	// uploadPartFn is called by UploadPart; must be set for tests that reach it.
+	uploadPartFn func(ctx context.Context, session *UploadSession, multipartUploadID string, partNumber int, body []byte) (string, error)
 }
 
 func (f *fakeOSS) ListParts(ctx context.Context, session *UploadSession, multipartUploadID string) error {
@@ -558,8 +598,11 @@ func (f *fakeOSS) InitiateMultipartUpload(_ context.Context, _ *UploadSession) (
 	panic("fakeOSS.InitiateMultipartUpload called unexpectedly")
 }
 
-func (f *fakeOSS) UploadPart(_ context.Context, _ *UploadSession, _ string, _ int, _ []byte) (string, error) {
-	panic("fakeOSS.UploadPart called unexpectedly")
+func (f *fakeOSS) UploadPart(ctx context.Context, session *UploadSession, multipartUploadID string, partNumber int, body []byte) (string, error) {
+	if f.uploadPartFn == nil {
+		panic("fakeOSS.UploadPart called unexpectedly")
+	}
+	return f.uploadPartFn(ctx, session, multipartUploadID, partNumber, body)
 }
 
 func (f *fakeOSS) CompleteMultipartUpload(_ context.Context, _ *UploadSession, _ string, _ []UploadedPart) (string, error) {
@@ -593,6 +636,204 @@ func makeSession(logicalID, uploadID string) *UploadSession {
 		ObjectKey:       "uploads/test/obj",
 		STSExpireAt:     time.Now().Add(1 * time.Hour),
 		PartSizeBytes:   8 * 1024 * 1024,
+	}
+}
+
+func TestStreamMultipartParts_UploadsExpectedPartBoundaries(t *testing.T) {
+	var gotPartNumbers []int
+	var gotSizes []int
+	oss := &fakeOSS{
+		uploadPartFn: func(_ context.Context, _ *UploadSession, _ string, partNumber int, body []byte) (string, error) {
+			gotPartNumbers = append(gotPartNumbers, partNumber)
+			gotSizes = append(gotSizes, len(body))
+			return "etag", nil
+		},
+	}
+	u := newDecideResumeUploader("", &fakeGateway{}, oss)
+	session := makeSession("logical-stream", "upload-stream")
+	session.PartSizeBytes = 10
+
+	payload := []byte("abcdefghijklmnopqrstuvwxy")
+	factory := func(_ context.Context, offset, length int64) (io.ReadCloser, error) {
+		end := int(offset + length)
+		if end > len(payload) {
+			end = len(payload)
+		}
+		return io.NopCloser(bytes.NewReader(payload[offset:end])), nil
+	}
+	_, parts, partMD5s, err := u.streamMultipartParts(
+		context.Background(),
+		"episode-stream",
+		session,
+		"multipart-stream",
+		int64(len(payload)),
+		factory,
+	)
+	if err != nil {
+		t.Fatalf("streamMultipartParts() error = %v", err)
+	}
+	if len(parts) != 3 {
+		t.Fatalf("uploaded part count = %d, want 3", len(parts))
+	}
+	if len(partMD5s) != 3 {
+		t.Fatalf("part MD5 count = %d, want 3", len(partMD5s))
+	}
+
+	wantPartNumbers := []int{1, 2, 3}
+	wantSizes := []int{10, 10, 5}
+	for i := range wantPartNumbers {
+		if gotPartNumbers[i] != wantPartNumbers[i] {
+			t.Fatalf("part number[%d] = %d, want %d", i, gotPartNumbers[i], wantPartNumbers[i])
+		}
+		if gotSizes[i] != wantSizes[i] {
+			t.Fatalf("part size[%d] = %d, want %d", i, gotSizes[i], wantSizes[i])
+		}
+	}
+}
+
+func TestStreamMultipartParts_EarlyEOFStopsInsteadOfUploadingEmptyParts(t *testing.T) {
+	var uploadedPartNumbers []int
+	oss := &fakeOSS{
+		uploadPartFn: func(_ context.Context, _ *UploadSession, _ string, partNumber int, body []byte) (string, error) {
+			uploadedPartNumbers = append(uploadedPartNumbers, partNumber)
+			if len(body) == 0 {
+				t.Fatalf("uploaded empty part %d", partNumber)
+			}
+			return "etag", nil
+		},
+	}
+	u := newDecideResumeUploader("", &fakeGateway{}, oss)
+	session := makeSession("logical-short", "upload-short")
+	session.PartSizeBytes = 10
+
+	payload := []byte("abcdefghijkl") // 12 bytes — part 2 will fail with short read
+	factory := func(_ context.Context, offset, length int64) (io.ReadCloser, error) {
+		end := int(offset + length)
+		if end > len(payload) {
+			end = len(payload)
+		}
+		return io.NopCloser(bytes.NewReader(payload[offset:end])), nil
+	}
+
+	_, _, _, err := u.streamMultipartParts(
+		context.Background(),
+		"episode-short",
+		session,
+		"multipart-short",
+		25,
+		factory,
+	)
+	if err == nil {
+		t.Fatal("expected error for early EOF, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected 10 bytes, got 2") {
+		t.Fatalf("error = %q, want short read details", err.Error())
+	}
+	if len(uploadedPartNumbers) != 1 || uploadedPartNumbers[0] != 1 {
+		t.Fatalf("uploaded parts = %v, want only first complete part", uploadedPartNumbers)
+	}
+}
+
+func TestStreamMultipartParts_RefreshesCredentialsBeforeUploadPart(t *testing.T) {
+	var reissueCalls int
+	gw := &fakeGateway{
+		reissueCredentialsFn: func(_ context.Context, uploadID string) (*UploadSession, error) {
+			reissueCalls++
+			if uploadID != "upload-expiring" {
+				t.Fatalf("uploadID = %q, want upload-expiring", uploadID)
+			}
+			refreshed := makeSession("logical-expiring", uploadID)
+			refreshed.STSAccessKeyID = "fresh-key"
+			return refreshed, nil
+		},
+	}
+
+	var usedAccessKeyID string
+	oss := &fakeOSS{
+		uploadPartFn: func(_ context.Context, session *UploadSession, _ string, _ int, _ []byte) (string, error) {
+			usedAccessKeyID = session.STSAccessKeyID
+			return "etag", nil
+		},
+	}
+	u := newDecideResumeUploader("", gw, oss)
+	session := makeSession("logical-expiring", "upload-expiring")
+	session.STSAccessKeyID = "stale-key"
+	session.STSExpireAt = time.Now().Add(10 * time.Second)
+	session.PartSizeBytes = 4
+
+	payload := []byte("abcd")
+	factory := func(_ context.Context, offset, length int64) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(payload[offset : offset+length])), nil
+	}
+
+	_, parts, _, err := u.streamMultipartParts(context.Background(), "episode-expiring", session, "multipart-expiring", int64(len(payload)), factory)
+	if err != nil {
+		t.Fatalf("streamMultipartParts() error = %v", err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("uploaded part count = %d, want 1", len(parts))
+	}
+	if reissueCalls != 1 {
+		t.Fatalf("ReissueUploadCredentials calls = %d, want 1", reissueCalls)
+	}
+	if usedAccessKeyID != "fresh-key" {
+		t.Fatalf("UploadPart access key = %q, want fresh-key", usedAccessKeyID)
+	}
+}
+
+func TestStreamMultipartParts_RetriesCurrentPartAfterSecurityTokenExpired(t *testing.T) {
+	var reissueCalls int
+	gw := &fakeGateway{
+		reissueCredentialsFn: func(_ context.Context, uploadID string) (*UploadSession, error) {
+			reissueCalls++
+			refreshed := makeSession("logical-retry", uploadID)
+			refreshed.STSAccessKeyID = "fresh-key"
+			return refreshed, nil
+		},
+	}
+
+	var uploadPartCalls int
+	var partNumbers []int
+	var usedAccessKeyIDs []string
+	oss := &fakeOSS{
+		uploadPartFn: func(_ context.Context, session *UploadSession, _ string, partNumber int, _ []byte) (string, error) {
+			uploadPartCalls++
+			partNumbers = append(partNumbers, partNumber)
+			usedAccessKeyIDs = append(usedAccessKeyIDs, session.STSAccessKeyID)
+			if uploadPartCalls == 1 {
+				return "", errors.New("oss returned status 403: <Code>SecurityTokenExpired</Code>")
+			}
+			return "etag", nil
+		},
+	}
+	u := newDecideResumeUploader("", gw, oss)
+	session := makeSession("logical-retry", "upload-retry")
+	session.STSAccessKeyID = "stale-key"
+	session.PartSizeBytes = 4
+
+	payload := []byte("abcd")
+	factory := func(_ context.Context, offset, length int64) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(payload[offset : offset+length])), nil
+	}
+
+	_, parts, _, err := u.streamMultipartParts(context.Background(), "episode-retry", session, "multipart-retry", int64(len(payload)), factory)
+	if err != nil {
+		t.Fatalf("streamMultipartParts() error = %v", err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("uploaded part count = %d, want 1", len(parts))
+	}
+	if reissueCalls != 1 {
+		t.Fatalf("ReissueUploadCredentials calls = %d, want 1", reissueCalls)
+	}
+	if uploadPartCalls != 2 {
+		t.Fatalf("UploadPart calls = %d, want 2", uploadPartCalls)
+	}
+	if partNumbers[0] != 1 || partNumbers[1] != 1 {
+		t.Fatalf("part numbers = %v, want [1 1]", partNumbers)
+	}
+	if usedAccessKeyIDs[0] != "stale-key" || usedAccessKeyIDs[1] != "fresh-key" {
+		t.Fatalf("access keys = %v, want [stale-key fresh-key]", usedAccessKeyIDs)
 	}
 }
 

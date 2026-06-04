@@ -20,28 +20,21 @@ import (
 
 // SyncHandler handles cloud sync related HTTP requests.
 type SyncHandler struct {
-	db            *sqlx.DB
-	syncWorker    *services.SyncWorker
-	cliSyncRunner *services.CLISyncRunner
+	db         *sqlx.DB
+	syncWorker *services.SyncWorker
 }
 
 // NewSyncHandler creates a new SyncHandler.
-func NewSyncHandler(db *sqlx.DB, syncWorker *services.SyncWorker, cliSyncRunner ...*services.CLISyncRunner) *SyncHandler {
-	var runner *services.CLISyncRunner
-	if len(cliSyncRunner) > 0 {
-		runner = cliSyncRunner[0]
-	}
-	return &SyncHandler{db: db, syncWorker: syncWorker, cliSyncRunner: runner}
+func NewSyncHandler(db *sqlx.DB, syncWorker *services.SyncWorker) *SyncHandler {
+	return &SyncHandler{db: db, syncWorker: syncWorker}
 }
 
 // RegisterRoutes registers cloud sync related routes.
 func (h *SyncHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/sync/episodes", h.TriggerBatchSync)
 	apiV1.POST("/sync/episodes/:id", h.TriggerEpisodeSync)
-	apiV1.POST("/sync/episodes/:id/cli", h.TriggerEpisodeCLISync)
 	apiV1.GET("/sync/episodes", h.ListSyncJobs)
 	apiV1.GET("/sync/episodes/summary", h.ListEpisodeSyncSummaries)
-	apiV1.GET("/sync/episodes/:id/cli/status", h.GetEpisodeCLISyncStatus)
 	apiV1.GET("/sync/episodes/:id/logs", h.ListEpisodeSyncLogs)
 	apiV1.GET("/sync/episodes/:id/status", h.GetSyncStatus)
 	apiV1.GET("/sync/config", h.GetSyncConfig)
@@ -119,26 +112,6 @@ type SyncEpisodeSummaryResponse struct {
 	NextRetryAt        *string `json:"next_retry_at,omitempty"`
 	StartedAt          *string `json:"started_at,omitempty"`
 	CompletedAt        *string `json:"completed_at,omitempty"`
-}
-
-// CLISyncRunResponse represents one CLI sync sidepath run.
-type CLISyncRunResponse struct {
-	ID              int64   `json:"id"`
-	EpisodeID       int64   `json:"episode_id"`
-	Status          string  `json:"status"`
-	SourcePath      *string `json:"source_path,omitempty"`
-	TempPath        *string `json:"temp_path,omitempty"`
-	FileID          *string `json:"file_id,omitempty"`
-	LogicalUploadID *string `json:"logical_upload_id,omitempty"`
-	UploadID        *string `json:"upload_id,omitempty"`
-	Bucket          *string `json:"bucket,omitempty"`
-	ObjectKey       *string `json:"object_key,omitempty"`
-	FileSize        *int64  `json:"file_size,omitempty"`
-	OSSObjectETag   *string `json:"oss_object_etag,omitempty"`
-	DurationSec     *int64  `json:"duration_sec,omitempty"`
-	ErrorMessage    *string `json:"error_message,omitempty"`
-	StartedAt       *string `json:"started_at,omitempty"`
-	CompletedAt     *string `json:"completed_at,omitempty"`
 }
 
 // SyncJobListResponse represents the response for listing sync jobs.
@@ -283,82 +256,6 @@ func (h *SyncHandler) TriggerEpisodeSync(c *gin.Context) {
 		"episode_id": episodeID,
 		"message":    "episode enqueued for cloud sync",
 	})
-}
-
-// TriggerEpisodeCLISync triggers the dp CLI cloud sync sidepath for one episode.
-//
-// @Summary      Trigger single episode CLI cloud sync
-// @Description  Enqueues a specific episode for cloud sync through the dp CLI sidepath
-// @Tags         sync
-// @Produce      json
-// @Param        id   path      int  true  "Episode ID"
-// @Success      202  {object}  map[string]interface{}
-// @Failure      400  {object}  map[string]string
-// @Failure      404  {object}  map[string]string
-// @Failure      409  {object}  map[string]string
-// @Failure      429  {object}  map[string]string
-// @Failure      503  {object}  map[string]string
-// @Router       /sync/episodes/{id}/cli [post]
-func (h *SyncHandler) TriggerEpisodeCLISync(c *gin.Context) {
-	if h.cliSyncRunner == nil || !h.cliSyncRunner.IsEnabled() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "CLI sync is not configured"})
-		return
-	}
-
-	episodeID, ok := parseSyncEpisodeIDParam(c)
-	if !ok {
-		return
-	}
-
-	runID, err := h.cliSyncRunner.EnqueueEpisode(c.Request.Context(), episodeID)
-	if err != nil {
-		h.writeCLISyncError(c, episodeID, err)
-		return
-	}
-
-	c.JSON(http.StatusAccepted, gin.H{
-		"status":     "accepted",
-		"episode_id": episodeID,
-		"run_id":     runID,
-		"message":    "episode accepted for CLI cloud sync",
-	})
-}
-
-// GetEpisodeCLISyncStatus returns the latest CLI sync sidepath run for one episode.
-//
-// @Summary      Get episode CLI sync status
-// @Description  Returns the latest dp CLI sync run for a specific episode
-// @Tags         sync
-// @Produce      json
-// @Param        id   path      int  true  "Episode ID"
-// @Success      200  {object}  CLISyncRunResponse
-// @Failure      400  {object}  map[string]string
-// @Failure      404  {object}  map[string]string
-// @Failure      503  {object}  map[string]string
-// @Router       /sync/episodes/{id}/cli/status [get]
-func (h *SyncHandler) GetEpisodeCLISyncStatus(c *gin.Context) {
-	if h.cliSyncRunner == nil || !h.cliSyncRunner.IsEnabled() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "CLI sync is not configured"})
-		return
-	}
-
-	episodeID, ok := parseSyncEpisodeIDParam(c)
-	if !ok {
-		return
-	}
-
-	run, err := h.cliSyncRunner.LatestRun(c.Request.Context(), episodeID)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no CLI sync record found for this episode"})
-		return
-	}
-	if err != nil {
-		logger.Printf("[SYNC] Failed to query CLI sync status for episode %d: %v", episodeID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get CLI sync status"})
-		return
-	}
-
-	c.JSON(http.StatusOK, cliSyncRunResponseFromRun(run))
 }
 
 // ListSyncJobs lists sync log entries with filtering and pagination.
@@ -706,18 +603,10 @@ func (h *SyncHandler) GetSyncConfig(c *gin.Context) {
 		autoScanEnabled = h.syncWorker.AutoScanEnabled()
 		maxRetries = h.syncWorker.MaxRetries()
 	}
-	cliSyncEnabled := false
-	cliSyncRunning := false
-	if h.cliSyncRunner != nil {
-		cliSyncEnabled = h.cliSyncRunner.IsEnabled()
-		cliSyncRunning = h.cliSyncRunner.IsRunning()
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"worker_running":    workerRunning,
 		"auto_scan_enabled": autoScanEnabled,
 		"max_retries":       maxRetries,
-		"cli_sync_enabled":  cliSyncEnabled,
-		"cli_sync_running":  cliSyncRunning,
 	})
 }
 
@@ -756,79 +645,6 @@ func syncEpisodeSummaryResponseFromRow(r syncEpisodeSummaryRow) SyncEpisodeSumma
 		NextRetryAt:        nullableTime(r.NextRetryAt),
 		StartedAt:          nullableTime(r.StartedAt),
 		CompletedAt:        nullableTime(r.CompletedAt),
-	}
-}
-
-func cliSyncRunResponseFromRun(r *services.CLISyncRun) CLISyncRunResponse {
-	if r == nil {
-		return CLISyncRunResponse{}
-	}
-	return CLISyncRunResponse{
-		ID:              r.ID,
-		EpisodeID:       r.EpisodeID,
-		Status:          r.Status,
-		SourcePath:      nullableString(r.SourcePath),
-		TempPath:        nullableString(r.TempPath),
-		FileID:          nullableString(r.FileID),
-		LogicalUploadID: nullableString(r.LogicalUploadID),
-		UploadID:        nullableString(r.UploadID),
-		Bucket:          nullableString(r.Bucket),
-		ObjectKey:       nullableString(r.ObjectKey),
-		FileSize:        nullableInt64(r.FileSize),
-		OSSObjectETag:   nullableString(r.OSSObjectETag),
-		DurationSec:     nullableInt64(r.DurationSec),
-		ErrorMessage:    nullableString(r.ErrorMessage),
-		StartedAt:       nullableTime(r.StartedAt),
-		CompletedAt:     nullableTime(r.CompletedAt),
-	}
-}
-
-func parseSyncEpisodeIDParam(c *gin.Context) (int64, bool) {
-	idStr := c.Param("id")
-	episodeID, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
-	if err != nil || episodeID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode id"})
-		return 0, false
-	}
-	return episodeID, true
-}
-
-func (h *SyncHandler) writeCLISyncError(c *gin.Context, episodeID int64, err error) {
-	switch {
-	case errors.Is(err, services.ErrCLISyncDisabled), errors.Is(err, services.ErrCLISyncNotRunning):
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error":      err.Error(),
-			"episode_id": episodeID,
-			"status":     "cli_sync_unavailable",
-		})
-	case errors.Is(err, services.ErrCLISyncEpisodeNotFound):
-		c.JSON(http.StatusNotFound, gin.H{
-			"error":      "episode not found",
-			"episode_id": episodeID,
-		})
-	case errors.Is(err, services.ErrCLISyncNotEligible):
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":      err.Error(),
-			"episode_id": episodeID,
-			"status":     "not_eligible",
-		})
-	case errors.Is(err, services.ErrCLISyncAlreadySynced),
-		errors.Is(err, services.ErrCLISyncAlreadyActive),
-		errors.Is(err, services.ErrCLISyncNormalSyncActive):
-		c.JSON(http.StatusConflict, gin.H{
-			"error":      err.Error(),
-			"episode_id": episodeID,
-			"status":     "already_active",
-		})
-	case errors.Is(err, services.ErrCLISyncQueueFull):
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":      err.Error(),
-			"episode_id": episodeID,
-			"status":     "queue_full",
-		})
-	default:
-		logger.Printf("[SYNC] CLI enqueue episode %d failed: %v", episodeID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue CLI sync"})
 	}
 }
 

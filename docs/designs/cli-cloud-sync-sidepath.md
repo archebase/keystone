@@ -6,6 +6,12 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # CLI Cloud Sync Sidepath Design
 
+Status: Superseded. This sidepath is not implemented in Keystone anymore.
+Native cloud sync now uploads directly with the Go uploader and Data Platform
+device profiles; Keystone no longer registers CLI sync APIs, starts a
+`CLISyncRunner`, reads `KEYSTONE_CLI_SYNC_*` config, or creates
+`cli_sync_runs` migrations.
+
 ## 1. Overview
 
 This document defines a sidepath for syncing one Keystone episode to cloud by

@@ -870,6 +870,7 @@ type CompleteUploadRequest struct {
 	RawTags            map[string]string      `protobuf:"bytes,3,rep,name=raw_tags,json=rawTags,proto3" json:"raw_tags,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	CompletedPartCount int32                  `protobuf:"varint,4,opt,name=completed_part_count,json=completedPartCount,proto3" json:"completed_part_count,omitempty"`
 	OssObjectEtag      string                 `protobuf:"bytes,5,opt,name=oss_object_etag,json=ossObjectEtag,proto3" json:"oss_object_etag,omitempty"`
+	PartSizeBytes      int64                  `protobuf:"varint,6,opt,name=part_size_bytes,json=partSizeBytes,proto3" json:"part_size_bytes,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -937,6 +938,13 @@ func (x *CompleteUploadRequest) GetOssObjectEtag() string {
 		return x.OssObjectEtag
 	}
 	return ""
+}
+
+func (x *CompleteUploadRequest) GetPartSizeBytes() int64 {
+	if x != nil {
+		return x.PartSizeBytes
+	}
+	return 0
 }
 
 type CompleteUploadResponse struct {
@@ -1287,13 +1295,14 @@ const file_data_gateway_proto_rawDesc = "" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"^\n" +
 	"\x13AbortUploadResponse\x12*\n" +
 	"\x11logical_upload_id\x18\x01 \x01(\tR\x0flogicalUploadId\x12\x1b\n" +
-	"\tupload_id\x18\x02 \x01(\tR\buploadId\"\xc1\x02\n" +
+	"\tupload_id\x18\x02 \x01(\tR\buploadId\"\xe9\x02\n" +
 	"\x15CompleteUploadRequest\x12\x1b\n" +
 	"\tupload_id\x18\x01 \x01(\tR\buploadId\x12\x1b\n" +
 	"\tfile_size\x18\x02 \x01(\x03R\bfileSize\x12X\n" +
 	"\braw_tags\x18\x03 \x03(\v2=.archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntryR\arawTags\x120\n" +
 	"\x14completed_part_count\x18\x04 \x01(\x05R\x12completedPartCount\x12&\n" +
-	"\x0foss_object_etag\x18\x05 \x01(\tR\rossObjectEtag\x1a:\n" +
+	"\x0foss_object_etag\x18\x05 \x01(\tR\rossObjectEtag\x12&\n" +
+	"\x0fpart_size_bytes\x18\x06 \x01(\x03R\rpartSizeBytes\x1a:\n" +
 	"\fRawTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x18\n" +

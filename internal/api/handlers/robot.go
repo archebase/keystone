@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
@@ -132,6 +134,48 @@ func robotMetadataFromDB(ns sql.NullString) interface{} {
 		return nil
 	}
 	return parseJSONRaw(ns.String)
+}
+
+func normalizeAssetID(raw string) (sql.NullString, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return sql.NullString{}, nil
+	}
+	if utf8.RuneCountInString(value) > 100 {
+		return sql.NullString{}, fmt.Errorf("asset_id must be at most 100 characters")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return sql.NullString{}, fmt.Errorf("asset_id must not contain control characters")
+		}
+	}
+	return sql.NullString{String: value, Valid: true}, nil
+}
+
+func assetIDValue(ns sql.NullString) string {
+	if !ns.Valid {
+		return ""
+	}
+	return strings.TrimSpace(ns.String)
+}
+
+func (h *RobotHandler) assetIDInUse(assetID string, excludeRobotID int64) (bool, error) {
+	assetID = strings.TrimSpace(assetID)
+	if assetID == "" {
+		return false, nil
+	}
+	var exists bool
+	query := "SELECT EXISTS(SELECT 1 FROM robots WHERE asset_id = ? AND deleted_at IS NULL"
+	args := []interface{}{assetID}
+	if excludeRobotID > 0 {
+		query += " AND id <> ?"
+		args = append(args, excludeRobotID)
+	}
+	query += ")"
+	if err := h.db.Get(&exists, query, args...); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (h *RobotHandler) connectionState(deviceID string) (connected bool, connectedAt string) {
@@ -462,6 +506,11 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 	req.RobotTypeID = strings.TrimSpace(req.RobotTypeID)
 	req.DeviceID = strings.TrimSpace(req.DeviceID)
 	req.FactoryID = strings.TrimSpace(req.FactoryID)
+	assetID, err := normalizeAssetID(req.AssetID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if req.RobotTypeID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type_id is required"})
@@ -476,6 +525,18 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 	if req.FactoryID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "factory_id is required"})
 		return
+	}
+	if assetID.Valid {
+		inUse, err := h.assetIDInUse(assetID.String, 0)
+		if err != nil {
+			logger.Printf("[ROBOT] Failed to check asset_id uniqueness: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create robot"})
+			return
+		}
+		if inUse {
+			c.JSON(http.StatusConflict, gin.H{"error": "asset_id is already assigned to another robot"})
+			return
+		}
 	}
 
 	// Parse robot_type_id as numeric value
@@ -509,11 +570,6 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 
 	now := time.Now().UTC()
 
-	var assetIDStr sql.NullString
-	if a := strings.TrimSpace(req.AssetID); a != "" {
-		assetIDStr = sql.NullString{String: a, Valid: true}
-	}
-
 	metadataStr := sql.NullString{String: "{}", Valid: true}
 	if req.Metadata != nil {
 		metadataJSON, err := json.Marshal(req.Metadata)
@@ -539,7 +595,7 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		robotTypeID,
 		req.DeviceID,
 		factoryID,
-		assetIDStr,
+		assetID,
 		"active",
 		metadataStr,
 		now,
@@ -677,7 +733,7 @@ type UpdateRobotRequest struct {
 	RobotTypeID *string         `json:"robot_type_id,omitempty"`
 	DeviceID    *string         `json:"device_id,omitempty"`
 	FactoryID   *string         `json:"factory_id,omitempty"`
-	AssetID     *string         `json:"asset_id,omitempty"`
+	AssetID     json.RawMessage `json:"asset_id,omitempty" swaggertype:"string"`
 	Status      *string         `json:"status,omitempty"`
 	Metadata    json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
 }
@@ -710,11 +766,17 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 		return
 	}
 
-	// Check if robot exists
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robots WHERE id = ? AND deleted_at IS NULL)", id)
-	if err != nil || !exists {
+	var current struct {
+		AssetID sql.NullString `db:"asset_id"`
+	}
+	err = h.db.Get(&current, "SELECT asset_id FROM robots WHERE id = ? AND deleted_at IS NULL", id)
+	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to query robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
 		return
 	}
 
@@ -760,6 +822,47 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 		args = append(args, deviceID)
 	}
 
+	if len(req.AssetID) > 0 {
+		var rawAssetID string
+		meta := bytes.TrimSpace(req.AssetID)
+		if bytes.Equal(meta, []byte("null")) {
+			rawAssetID = ""
+		} else if err := json.Unmarshal(req.AssetID, &rawAssetID); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id must be a string or null"})
+			return
+		}
+		assetID, err := normalizeAssetID(rawAssetID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		currentAssetID := assetIDValue(current.AssetID)
+		if currentAssetID != "" {
+			if !assetID.Valid {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id cannot be cleared once set"})
+				return
+			}
+			if assetID.String != currentAssetID {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id cannot be changed once set"})
+				return
+			}
+		}
+		if assetID.Valid && assetID.String != currentAssetID {
+			inUse, err := h.assetIDInUse(assetID.String, id)
+			if err != nil {
+				logger.Printf("[ROBOT] Failed to check asset_id uniqueness: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+				return
+			}
+			if inUse {
+				c.JSON(http.StatusConflict, gin.H{"error": "asset_id is already assigned to another robot"})
+				return
+			}
+		}
+		updates = append(updates, "asset_id = ?")
+		args = append(args, assetID)
+	}
+
 	if req.FactoryID != nil {
 		if *req.FactoryID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "factory_id cannot be empty"})
@@ -779,16 +882,6 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 		}
 		updates = append(updates, "factory_id = ?")
 		args = append(args, parsedFactoryID)
-	}
-
-	if req.AssetID != nil {
-		trimmed := strings.TrimSpace(*req.AssetID)
-		var a sql.NullString
-		if trimmed != "" {
-			a = sql.NullString{String: trimmed, Valid: true}
-		}
-		updates = append(updates, "asset_id = ?")
-		args = append(args, a)
 	}
 
 	if req.Status != nil {

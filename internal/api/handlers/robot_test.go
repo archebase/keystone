@@ -5,9 +5,12 @@
 package handlers
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,6 +265,164 @@ func TestRobotHandlerListRobots_ConnectedFilterUsesHubIntersection(t *testing.T)
 	})
 }
 
+func TestRobotHandlerAssetID_CreateUpdateAndList(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+	seedRobotLookups(t, db)
+
+	r := newTestRobotRouter(t, db)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
+		"robot_type_id": "10",
+		"device_id": "local-device-1",
+		"asset_id": "  asset-1  ",
+		"factory_id": "30"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create status=%d want=%d body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+	var created CreateRobotResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+	if created.AssetID != "asset-1" {
+		t.Fatalf("created asset_id=%v want asset-1", created.AssetID)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/robots", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var list RobotListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("unmarshal list response: %v", err)
+	}
+	if len(list.Items) != 1 || list.Items[0].AssetID != "asset-1" {
+		t.Fatalf("list asset_id response=%#v", list)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/robots/"+created.ID, bytes.NewBufferString(`{"asset_id":"asset-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("same-value update status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestRobotHandlerAssetID_ImmutableOnceSet(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+	seedRobotLookups(t, db)
+	seedRobot(t, db, 1, "local-device-1", "asset-1", nil)
+
+	r := newTestRobotRouter(t, db)
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{name: "change rejected", body: `{"asset_id":"asset-2"}`},
+		{name: "clear rejected", body: `{"asset_id":""}`},
+		{name: "blank clear rejected", body: `{"asset_id":"   "}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/api/v1/robots/1", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+		})
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/robots/1", bytes.NewBufferString(`{"asset_id":null}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("null clear status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+func TestRobotHandlerAssetID_UniqueAmongActiveRobots(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+	seedRobotLookups(t, db)
+	seedRobot(t, db, 1, "local-device-1", "asset-1", nil)
+	deletedAt := time.Now().UTC()
+	seedRobot(t, db, 2, "deleted-device", "deleted-asset", &deletedAt)
+
+	r := newTestRobotRouter(t, db)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
+		"robot_type_id": "10",
+		"device_id": "local-device-2",
+		"asset_id": "asset-1",
+		"factory_id": "30"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate create status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
+		"robot_type_id": "10",
+		"device_id": "local-device-3",
+		"asset_id": "deleted-asset",
+		"factory_id": "30"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("soft-deleted reuse status=%d want=%d body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+}
+
+func TestRobotHandlerAssetID_Validation(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+	seedRobotLookups(t, db)
+
+	r := newTestRobotRouter(t, db)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString("{\n"+
+		`"robot_type_id":"10",`+
+		`"device_id":"local-device-1",`+
+		`"factory_id":"30",`+
+		`"asset_id":"asset\u0001id"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("control char status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	longID := strings.Repeat("a", 101)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
+		"robot_type_id": "10",
+		"device_id": "local-device-2",
+		"factory_id": "30",
+		"asset_id": "`+longID+`"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("long id status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
 func newTestRobotRouter(t *testing.T, db *sqlx.DB) *gin.Engine {
 	t.Helper()
 	return newTestRobotRouterWithHubs(t, db, nil, nil)
@@ -306,8 +467,8 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			robot_type_id INTEGER NOT NULL,
 		device_id TEXT NOT NULL,
-		factory_id INTEGER NOT NULL,
 		asset_id TEXT,
+		factory_id INTEGER NOT NULL,
 		status TEXT NOT NULL,
 		metadata TEXT,
 		created_at TIMESTAMP,
@@ -335,4 +496,33 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 	}
 
 	return db
+}
+
+func seedRobotLookups(t *testing.T, db *sqlx.DB) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'Arm Type', 'Model-A', NULL)`); err != nil {
+		t.Fatalf("seed robot type: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO factories (id, name, slug, deleted_at) VALUES (30, 'Factory 30', 'fac-30', NULL)`); err != nil {
+		t.Fatalf("seed factory: %v", err)
+	}
+}
+
+func seedRobot(t *testing.T, db *sqlx.DB, id int64, deviceID string, assetID string, deletedAt *time.Time) {
+	t.Helper()
+	var asset sql.NullString
+	if strings.TrimSpace(assetID) != "" {
+		asset = sql.NullString{String: strings.TrimSpace(assetID), Valid: true}
+	}
+	var deleted sql.NullTime
+	if deletedAt != nil {
+		deleted = sql.NullTime{Time: *deletedAt, Valid: true}
+	}
+	now := time.Now().UTC()
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, robot_type_id, device_id, asset_id, factory_id, status, created_at, updated_at, deleted_at)
+		VALUES (?, 10, ?, ?, 30, 'active', ?, ?, ?)
+	`, id, deviceID, asset, now, now, deleted); err != nil {
+		t.Fatalf("seed robot %d: %v", id, err)
+	}
 }

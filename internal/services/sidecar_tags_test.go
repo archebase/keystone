@@ -108,45 +108,6 @@ func TestFlattenSidecar_ArraysEncodedAsJSONString(t *testing.T) {
 	}
 }
 
-func TestFlattenSidecarScalars_SkipsArrays(t *testing.T) {
-	tags, err := flattenSidecarScalars([]byte(testSidecarJSON))
-	if err != nil {
-		t.Fatalf("flattenSidecarScalars failed: %v", err)
-	}
-
-	cases := map[string]string{
-		"device.device_id":           "robot_01",
-		"recording.file_size_bytes":  "147960982",
-		"task.data_collector_id":     "刘备",
-		"recording.message_count":    "222251",
-		"recording.recorder_version": "0.3.1",
-	}
-
-	for key, want := range cases {
-		got, ok := tags[key]
-		if !ok {
-			t.Errorf("key %q missing from tags", key)
-			continue
-		}
-		if got != want {
-			t.Errorf("tags[%q] = %q, want %q", key, got, want)
-		}
-	}
-
-	for _, key := range []string{"recording.topics_recorded", "task.skills", "topics_summary"} {
-		if _, ok := tags[key]; ok {
-			t.Errorf("array or excluded key %q should not be included", key)
-		}
-	}
-}
-
-func TestEncodeDPTagValue(t *testing.T) {
-	got := encodeDPTagValue("a,b%")
-	if got != "a%2Cb%25" {
-		t.Fatalf("encodeDPTagValue() = %q, want %q", got, "a%2Cb%25")
-	}
-}
-
 func TestFlattenSidecar_TopicsSummaryExcluded(t *testing.T) {
 	tags, err := flattenSidecar([]byte(testSidecarJSON))
 	if err != nil {
