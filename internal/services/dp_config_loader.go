@@ -29,7 +29,7 @@ type DPConfigEndpoints struct {
 // DPDeviceProfile contains upload credentials and tags for one DP device.
 type DPDeviceProfile struct {
 	DeviceID string            `json:"deviceId"`
-	APIKey   string            `json:"apiKey"`
+	APIKey   string            `json:"apiKey"` // #nosec G117 -- operator-provided local DP upload config credential
 	Tags     map[string]string `json:"tags"`
 }
 
