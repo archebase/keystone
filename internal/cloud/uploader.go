@@ -74,6 +74,7 @@ type persistedUploadState struct {
 	McapKey           string    `json:"mcap_key"`
 	AssetID           string    `json:"asset_id"`
 	FileSize          int64     `json:"file_size"`
+	PartSizeBytes     int64     `json:"part_size_bytes,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
@@ -262,6 +263,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 			McapKey:         req.McapKey,
 			AssetID:         req.AssetID,
 			FileSize:        fileSize,
+			PartSizeBytes:   session.PartSizeBytes,
 			UpdatedAt:       time.Now(),
 		}); err != nil {
 			return nil, fmt.Errorf("persist initial upload state: %w", err)
@@ -302,6 +304,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 		McapKey:           req.McapKey,
 		AssetID:           req.AssetID,
 		FileSize:          fileSize,
+		PartSizeBytes:     session.PartSizeBytes,
 		UpdatedAt:         time.Now(),
 	}); err != nil {
 		logger.Printf("[CLOUD-UPLOAD] Warning: failed to update state with multipart_upload_id: %v", err)
@@ -312,7 +315,7 @@ func (u *Uploader) Upload(ctx context.Context, req UploadRequest) (*UploadResult
 
 	// Step 4: Refresh STS credentials if about to expire before CompleteUpload RPC
 	if time.Until(session.STSExpireAt) <= u.cfg.RequestTimeout {
-		refreshed, err := u.gateway.ReissueUploadCredentials(ctx, session.UploadID)
+		refreshed, err := u.refreshUploadCredentials(ctx, session)
 		if err != nil {
 			logger.Printf("[CLOUD-UPLOAD] Warning: refresh credentials failed (proceeding anyway): %v", err)
 		} else {
@@ -478,6 +481,9 @@ func (u *Uploader) decideResumeAction(ctx context.Context, state *persistedUploa
 			// Treat RPC failures as transient: preserve local state for next retry.
 			return resumeContinue, nil, "", 0, fmt.Errorf("ReissueUploadCredentials: %w", err)
 		}
+		if state.PartSizeBytes > 0 {
+			session.PartSizeBytes = state.PartSizeBytes
+		}
 
 		if state.MultipartUploadID != "" {
 			outcome, err := u.reconcileRemoteParts(ctx, session, state.MultipartUploadID)
@@ -578,10 +584,12 @@ func (u *Uploader) minioRangeReader(key string) partStreamFactory {
 // uploadParts streams the MCAP from MinIO and uploads it to OSS in parts.
 // Returns the OSS multipart upload ID, the list of uploaded parts, per-part MD5 digests, and any error.
 func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *UploadSession, fileSize int64) (*UploadSession, string, []UploadedPart, [][16]byte, error) {
+	fixedPartSizeBytes := normalizedPartSizeBytes(session.PartSizeBytes)
 	session, err := u.ensureFreshUploadCredentials(ctx, session)
 	if err != nil {
 		return nil, "", nil, nil, fmt.Errorf("refresh credentials before initiate multipart upload: %w", err)
 	}
+	session.PartSizeBytes = fixedPartSizeBytes
 
 	// Initiate multipart upload on OSS
 	multipartUploadID, err := u.oss.InitiateMultipartUpload(ctx, session)
@@ -595,7 +603,7 @@ func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *
 	// connection is not left idle during OSS part uploads. A single streaming
 	// response would risk idle connection timeout (~20-25s on MinIO or network
 	// intermediaries) when upload speed is slow.
-	session, parts, partMD5s, err := u.streamMultipartParts(ctx, req.EpisodeID, session, multipartUploadID, fileSize, u.minioRangeReader(req.McapKey))
+	session, parts, partMD5s, err := u.streamMultipartParts(ctx, req.EpisodeID, session, multipartUploadID, fileSize, fixedPartSizeBytes, u.minioRangeReader(req.McapKey))
 	if err != nil {
 		u.abortMultipartUpload(session, multipartUploadID)
 		return nil, "", nil, nil, err
@@ -606,6 +614,7 @@ func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *
 		u.abortMultipartUpload(session, multipartUploadID)
 		return nil, "", nil, nil, fmt.Errorf("refresh credentials before complete multipart upload: %w", err)
 	}
+	session.PartSizeBytes = fixedPartSizeBytes
 
 	// Complete multipart upload on OSS
 	if _, err := u.oss.CompleteMultipartUpload(ctx, session, multipartUploadID, parts); err != nil {
@@ -616,11 +625,9 @@ func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *
 	return session, multipartUploadID, parts, partMD5s, nil
 }
 
-func (u *Uploader) streamMultipartParts(ctx context.Context, episodeID string, session *UploadSession, multipartUploadID string, fileSize int64, newPartStream partStreamFactory) (*UploadSession, []UploadedPart, [][16]byte, error) {
-	partSizeBytes := session.PartSizeBytes
-	if partSizeBytes <= 0 {
-		partSizeBytes = 8 * 1024 * 1024 // 8MB default
-	}
+func (u *Uploader) streamMultipartParts(ctx context.Context, episodeID string, session *UploadSession, multipartUploadID string, fileSize int64, partSizeBytes int64, newPartStream partStreamFactory) (*UploadSession, []UploadedPart, [][16]byte, error) {
+	partSizeBytes = normalizedPartSizeBytes(partSizeBytes)
+	session.PartSizeBytes = partSizeBytes
 	partSize := int(partSizeBytes)
 	if int64(partSize) != partSizeBytes {
 		return session, nil, nil, fmt.Errorf("invalid part_size_bytes %d", partSizeBytes)
@@ -676,6 +683,7 @@ func (u *Uploader) streamMultipartParts(ctx context.Context, episodeID string, s
 				return session, nil, nil, fmt.Errorf("refresh credentials after upload part %d token expiry: %w", partNumber, refreshErr)
 			}
 			session = refreshed
+			session.PartSizeBytes = partSizeBytes
 			etag, err = u.oss.UploadPart(ctx, session, multipartUploadID, partNumber, partSlice)
 		}
 		if err != nil {
@@ -715,7 +723,15 @@ func (u *Uploader) refreshUploadCredentials(ctx context.Context, session *Upload
 	if err != nil {
 		return nil, err
 	}
+	refreshed.PartSizeBytes = normalizedPartSizeBytes(session.PartSizeBytes)
 	return refreshed, nil
+}
+
+func normalizedPartSizeBytes(partSizeBytes int64) int64 {
+	if partSizeBytes <= 0 {
+		return 8 * 1024 * 1024
+	}
+	return partSizeBytes
 }
 
 func (u *Uploader) stsRefreshWindow() time.Duration {

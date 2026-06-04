@@ -667,6 +667,7 @@ func TestStreamMultipartParts_UploadsExpectedPartBoundaries(t *testing.T) {
 		session,
 		"multipart-stream",
 		int64(len(payload)),
+		session.PartSizeBytes,
 		factory,
 	)
 	if err != nil {
@@ -721,6 +722,7 @@ func TestStreamMultipartParts_EarlyEOFStopsInsteadOfUploadingEmptyParts(t *testi
 		session,
 		"multipart-short",
 		25,
+		session.PartSizeBytes,
 		factory,
 	)
 	if err == nil {
@@ -744,14 +746,17 @@ func TestStreamMultipartParts_RefreshesCredentialsBeforeUploadPart(t *testing.T)
 			}
 			refreshed := makeSession("logical-expiring", uploadID)
 			refreshed.STSAccessKeyID = "fresh-key"
+			refreshed.PartSizeBytes = 99
 			return refreshed, nil
 		},
 	}
 
 	var usedAccessKeyID string
+	var usedPartSizeBytes int64
 	oss := &fakeOSS{
 		uploadPartFn: func(_ context.Context, session *UploadSession, _ string, _ int, _ []byte) (string, error) {
 			usedAccessKeyID = session.STSAccessKeyID
+			usedPartSizeBytes = session.PartSizeBytes
 			return "etag", nil
 		},
 	}
@@ -766,7 +771,7 @@ func TestStreamMultipartParts_RefreshesCredentialsBeforeUploadPart(t *testing.T)
 		return io.NopCloser(bytes.NewReader(payload[offset : offset+length])), nil
 	}
 
-	_, parts, _, err := u.streamMultipartParts(context.Background(), "episode-expiring", session, "multipart-expiring", int64(len(payload)), factory)
+	finalSession, parts, _, err := u.streamMultipartParts(context.Background(), "episode-expiring", session, "multipart-expiring", int64(len(payload)), session.PartSizeBytes, factory)
 	if err != nil {
 		t.Fatalf("streamMultipartParts() error = %v", err)
 	}
@@ -778,6 +783,12 @@ func TestStreamMultipartParts_RefreshesCredentialsBeforeUploadPart(t *testing.T)
 	}
 	if usedAccessKeyID != "fresh-key" {
 		t.Fatalf("UploadPart access key = %q, want fresh-key", usedAccessKeyID)
+	}
+	if usedPartSizeBytes != 4 {
+		t.Fatalf("UploadPart part size = %d, want fixed original size 4", usedPartSizeBytes)
+	}
+	if finalSession.PartSizeBytes != 4 {
+		t.Fatalf("final session part size = %d, want fixed original size 4", finalSession.PartSizeBytes)
 	}
 }
 
@@ -816,7 +827,7 @@ func TestStreamMultipartParts_RetriesCurrentPartAfterSecurityTokenExpired(t *tes
 		return io.NopCloser(bytes.NewReader(payload[offset : offset+length])), nil
 	}
 
-	_, parts, _, err := u.streamMultipartParts(context.Background(), "episode-retry", session, "multipart-retry", int64(len(payload)), factory)
+	_, parts, _, err := u.streamMultipartParts(context.Background(), "episode-retry", session, "multipart-retry", int64(len(payload)), session.PartSizeBytes, factory)
 	if err != nil {
 		t.Fatalf("streamMultipartParts() error = %v", err)
 	}
