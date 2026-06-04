@@ -86,7 +86,6 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 		transfer.POST("/upload_all", h.UploadAll)
 		transfer.POST("/status_query", h.StatusQuery)
 		transfer.POST("/cancel", h.CancelUpload)
-		transfer.POST("/upload_ack", h.ManualACK)
 	}
 }
 
@@ -295,7 +294,7 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Transf
 	case "connected":
 		h.onConnected(dc, msg)
 	case "upload_started":
-		h.onUploadStarted(dc, msg)
+		h.onUploadStarted(ctx, dc, msg)
 	case "upload_progress":
 		h.onUploadProgress(dc, msg)
 	case "upload_complete":
@@ -332,12 +331,20 @@ func (h *TransferHandler) onConnected(dc *services.TransferConn, msg map[string]
 }
 
 // onUploadStarted handles "upload_started" message
-func (h *TransferHandler) onUploadStarted(dc *services.TransferConn, msg map[string]interface{}) {
+func (h *TransferHandler) onUploadStarted(ctx context.Context, dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
 	}
 	taskID := stringVal(data, "task_id")
+	if h.db != nil && taskID != "" {
+		res, err := markOwnedTaskUploading(ctx, h.db, dc.DeviceID, taskID)
+		if err != nil {
+			logger.Printf("[TRANSFER] Device %s: failed to mark task uploading after upload_started: task=%s err=%v", dc.DeviceID, taskID, err)
+		} else if n, _ := res.RowsAffected(); n > 0 {
+			logger.Printf("[TRANSFER] Device %s: task status reconciled: task=%s source=upload_started status=uploading", dc.DeviceID, taskID)
+		}
+	}
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Device %s: upload started task=%s total_bytes=%d",
 		dc.DeviceID, taskID, int64Val(data, "total_bytes"))
@@ -454,6 +461,30 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	if h.db == nil {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("[TRANSFER] Device %s: DB not configured, skipping upload_complete for task=%s", dc.DeviceID, taskID)
+		return
+	}
+
+	var ownedTask struct {
+		ID     int64  `db:"id"`
+		Status string `db:"status"`
+	}
+	if err := h.db.GetContext(ctx, &ownedTask, `
+		SELECT t.id, t.status
+		FROM tasks t
+		JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
+		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE t.task_id = ? AND r.device_id = ? AND t.deleted_at IS NULL
+		LIMIT 1
+	`, taskID, dc.DeviceID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			logger.Printf("[TRANSFER] Device %s: upload_complete ignored because task ownership check failed: task=%s", dc.DeviceID, taskID)
+		} else {
+			logger.Printf("[TRANSFER] Device %s: upload_complete ownership lookup failed: task=%s err=%v", dc.DeviceID, taskID, err)
+		}
+		return
+	}
+	if ownedTask.Status == "failed" || ownedTask.Status == "cancelled" {
+		logger.Printf("[TRANSFER] Device %s: upload_complete ignored for terminal task=%s status=%s", dc.DeviceID, taskID, ownedTask.Status)
 		return
 	}
 
@@ -720,9 +751,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	// #nosec G706 -- Set aside for now
 	logger.Printf("[TRANSFER] Device %s: upload_ack sent for task=%s", dc.DeviceID, taskID)
 
-	// After upload_ack is sent, mark task as completed (pending, ready, or in_progress -> completed).
-	// pending is allowed when Keystone rolled the task back during a transient recorder disconnect,
-	// while the device kept recording and successfully uploaded the episode.
+	// After upload_ack is sent, mark task as completed. pending/ready/in_progress remain accepted
+	// for legacy weak-network recovery; uploading is the normal post-recording path.
 	// Best-effort: do not affect the already-sent acknowledgement.
 	now := time.Now().UTC()
 	if _, err := h.db.ExecContext(ctx, `
@@ -730,11 +760,12 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		SET
 			status = 'completed',
 			completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
+			error_message = NULL,
 			updated_at = ?
-		WHERE id = ? AND status IN ('pending', 'in_progress', 'ready') AND deleted_at IS NULL
+		WHERE id = ? AND status IN ('pending', 'ready', 'in_progress', 'uploading', 'completed') AND deleted_at IS NULL
 	`, now, now, taskPK); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("[TRANSFER] Device %s: failed to mark task pending/ready/in_progress->completed after upload_ack: task=%s err=%v", dc.DeviceID, taskID, err)
+		logger.Printf("[TRANSFER] Device %s: failed to mark task completed after upload_ack: task=%s err=%v", dc.DeviceID, taskID, err)
 	} else {
 		if batchIDForAdvance > 0 {
 			// Must run after the task row is terminal: tryAdvanceBatchStatus counts tasks in DB.
@@ -776,19 +807,15 @@ func (h *TransferHandler) onUploadFailed(ctx context.Context, dc *services.Trans
 		logger.Printf("[TRANSFER] Keystone configured bucket: %s", h.s3.Bucket())
 	}
 
-	// Mark task as failed when upload_failed is received and task is in_progress.
+	// Mark task as failed when upload_failed is received and this transfer owns the task.
 	if h.db == nil || taskID == "" {
 		return
 	}
-	now := time.Now().UTC()
-	result, err := h.db.ExecContext(ctx, `
-		UPDATE tasks
-		SET
-			status = 'failed',
-			completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
-			updated_at = ?
-		WHERE task_id = ? AND status = 'in_progress' AND deleted_at IS NULL
-	`, now, now, taskID)
+	message := strings.TrimSpace(reason)
+	if message == "" {
+		message = "upload failed"
+	}
+	result, err := failOwnedUploadingTask(ctx, h.db, dc.DeviceID, taskID, message)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("[TRANSFER] Device %s: failed to mark task failed on upload_failed: task=%s err=%v", dc.DeviceID, taskID, err)
@@ -940,6 +967,15 @@ func (h *TransferHandler) onUploadNotFound(dc *services.TransferConn, msg map[st
 	if taskID == "" {
 		logger.Printf("[TRANSFER] ERROR: Device %s reported upload_not_found without task_id detail=%q", dc.DeviceID, detail)
 		return
+	}
+	message := "upload file not found"
+	if detail != "" {
+		message = detail
+	}
+	if h.db != nil {
+		if _, err := writeOwnedUploadingTaskError(context.Background(), h.db, dc.DeviceID, taskID, message); err != nil {
+			logger.Printf("[TRANSFER] ERROR: Device %s failed to write upload_not_found error task=%s err=%v", dc.DeviceID, taskID, err)
+		}
 	}
 	logger.Printf("[TRANSFER] ERROR: Device %s reported upload_not_found task=%s detail=%q", dc.DeviceID, taskID, detail)
 }
@@ -1115,65 +1151,6 @@ func (h *TransferHandler) StatusQuery(c *gin.Context) {
 	msg := map[string]interface{}{"type": "status_query"}
 	if !h.sendToDevice(c, deviceID, msg) {
 		return
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "sent"})
-}
-
-// ManualACK sends an upload_ack message to the device.
-//
-// @Summary      Manually acknowledge an upload
-// @Tags         transfer
-// @Accept       json
-// @Produce      json
-// @Param        device_id  path  string  true  "Device ID"
-// @Param        body       body  object  true  "task_id to acknowledge"
-// @Success      200  {object}  map[string]interface{}
-// @Failure      404  {object}  map[string]interface{}
-// @Router       /transfer/{device_id}/upload_ack [post]
-func (h *TransferHandler) ManualACK(c *gin.Context) {
-	deviceID := c.Param("device_id")
-
-	var body struct {
-		TaskID string `json:"task_id" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	msg := map[string]interface{}{
-		"type":    "upload_ack",
-		"task_id": body.TaskID,
-	}
-	if !h.sendToDevice(c, deviceID, msg) {
-		return
-	}
-
-	// After upload_ack is sent, mark task as completed (ready or in_progress -> completed).
-	// Best-effort: do not fail the acknowledgement response.
-	if h.db != nil {
-		now := time.Now().UTC()
-		if _, err := h.db.Exec(
-			`UPDATE tasks
-			 SET
-			   status = 'completed',
-			   completed_at = CASE WHEN completed_at IS NULL THEN ? ELSE completed_at END,
-			   updated_at = ?
-			 WHERE task_id = ? AND status IN ('in_progress', 'ready') AND deleted_at IS NULL`,
-			now, now, body.TaskID,
-		); err != nil {
-			// #nosec G706 -- Set aside for now
-			logger.Printf("[TRANSFER] Device %s: failed to mark task ready/in_progress->completed after manual upload_ack: task=%s err=%v", deviceID, body.TaskID, err)
-		} else {
-			var batchID int64
-			if err := h.db.Get(&batchID, "SELECT batch_id FROM tasks WHERE task_id = ? AND deleted_at IS NULL LIMIT 1", body.TaskID); err == nil && batchID > 0 {
-				go tryAdvanceBatchStatus(h.db, batchID)
-			}
-			var orderID int64
-			if err := h.db.Get(&orderID, "SELECT order_id FROM tasks WHERE task_id = ? AND deleted_at IS NULL LIMIT 1", body.TaskID); err == nil && orderID > 0 {
-				go tryAdvanceOrderStatus(h.db, orderID, h.recorderHub, h.recorderRPCTimeout)
-			}
-		}
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
 }

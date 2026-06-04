@@ -74,13 +74,35 @@ func newTransferTakeoverDB(t *testing.T) *sqlx.DB {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		task_id TEXT NOT NULL,
 		batch_id INTEGER NOT NULL DEFAULT 0,
+		workstation_id INTEGER NULL,
 		status TEXT NOT NULL,
 		completed_at TIMESTAMP NULL,
+		error_message TEXT NULL,
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL,
 		deleted_at TIMESTAMP NULL
 	)`); err != nil {
 		t.Fatalf("create tasks schema: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE robots (
+		id INTEGER PRIMARY KEY,
+		device_id TEXT NOT NULL,
+		deleted_at TIMESTAMP NULL
+	)`); err != nil {
+		t.Fatalf("create robots schema: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE workstations (
+		id INTEGER PRIMARY KEY,
+		robot_id INTEGER NOT NULL,
+		deleted_at TIMESTAMP NULL
+	)`); err != nil {
+		t.Fatalf("create workstations schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id) VALUES (1, 'robot-001')`); err != nil {
+		t.Fatalf("seed robot: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (10, 1)`); err != nil {
+		t.Fatalf("seed workstation: %v", err)
 	}
 	return db
 }
@@ -89,7 +111,7 @@ func seedTransferTakeoverTask(t *testing.T, db *sqlx.DB, taskID string, status s
 	t.Helper()
 	now := time.Now().UTC()
 	if _, err := db.Exec(
-		`INSERT INTO tasks (task_id, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO tasks (task_id, workstation_id, status, created_at, updated_at) VALUES (?, 10, ?, ?, ?)`,
 		taskID,
 		status,
 		now,

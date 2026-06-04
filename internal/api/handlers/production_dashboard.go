@@ -114,6 +114,7 @@ type dashboardOverviewSummary struct {
 	TodayEpisodes        int64   `json:"today_episodes"`
 	CompletedTasks       int64   `json:"completed_tasks"`
 	InProgressTasks      int64   `json:"in_progress_tasks"`
+	UploadingTasks       int64   `json:"uploading_tasks"`
 	PendingTasks         int64   `json:"pending_tasks"`
 	FailedTasks          int64   `json:"failed_tasks"`
 	CancelledTasks       int64   `json:"cancelled_tasks"`
@@ -132,6 +133,7 @@ type dashboardTaskCounts struct {
 	Total      int64 `json:"total" db:"total"`
 	Completed  int64 `json:"completed" db:"completed"`
 	InProgress int64 `json:"in_progress" db:"in_progress"`
+	Uploading  int64 `json:"uploading" db:"uploading"`
 	Pending    int64 `json:"pending" db:"pending"`
 	Ready      int64 `json:"ready" db:"ready"`
 	Failed     int64 `json:"failed" db:"failed"`
@@ -143,6 +145,7 @@ type dashboardTrendItem struct {
 	Total      int64  `json:"total" db:"total"`
 	Completed  int64  `json:"completed" db:"completed"`
 	InProgress int64  `json:"in_progress" db:"in_progress"`
+	Uploading  int64  `json:"uploading" db:"uploading"`
 	Pending    int64  `json:"pending" db:"pending"`
 	Failed     int64  `json:"failed" db:"failed"`
 }
@@ -358,6 +361,7 @@ type dashboardBatchTaskSummaryItem struct {
 	Pending      int64            `json:"-" db:"pending"`
 	Ready        int64            `json:"-" db:"ready"`
 	InProgress   int64            `json:"-" db:"in_progress"`
+	Uploading    int64            `json:"-" db:"uploading"`
 	Completed    int64            `json:"-" db:"completed"`
 	Failed       int64            `json:"-" db:"failed"`
 	Cancelled    int64            `json:"-" db:"cancelled"`
@@ -684,6 +688,7 @@ func (h *ProductionDashboardHandler) GetBatchTaskSummary(c *gin.Context) {
 			COALESCE(SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
 			COALESCE(SUM(CASE WHEN t.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready,
 			COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
+			COALESCE(SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END), 0) AS uploading,
 			COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
 			COALESCE(SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
 			COALESCE(SUM(CASE WHEN t.status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled
@@ -704,6 +709,7 @@ func (h *ProductionDashboardHandler) GetBatchTaskSummary(c *gin.Context) {
 			"pending":     items[i].Pending,
 			"ready":       items[i].Ready,
 			"in_progress": items[i].InProgress,
+			"uploading":   items[i].Uploading,
 			"completed":   items[i].Completed,
 			"failed":      items[i].Failed,
 			"cancelled":   items[i].Cancelled,
@@ -872,6 +878,7 @@ func (h *ProductionDashboardHandler) dashboardTaskCounts(db dashboardDB, scope p
 			COUNT(1) AS total,
 			COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
 			COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
+			COALESCE(SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END), 0) AS uploading,
 			COALESCE(SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
 			COALESCE(SUM(CASE WHEN t.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready,
 			COALESCE(SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
@@ -899,6 +906,7 @@ func (h *ProductionDashboardHandler) dashboardOverviewTaskMetrics(db dashboardDB
 			COALESCE(SUM(CASE WHEN t.assigned_at >= ? AND t.assigned_at < ? THEN 1 ELSE 0 END), 0) AS total,
 			COALESCE(SUM(CASE WHEN t.status = 'completed' AND t.completed_at >= ? AND t.completed_at < ? THEN 1 ELSE 0 END), 0) AS completed,
 			COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
+			COALESCE(SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END), 0) AS uploading,
 			COALESCE(SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
 			0 AS ready,
 			COALESCE(SUM(CASE WHEN t.status = 'failed' AND t.completed_at >= ? AND t.completed_at < ? THEN 1 ELSE 0 END), 0) AS failed,
@@ -962,6 +970,7 @@ func (h *ProductionDashboardHandler) dashboardTaskTrend(db dashboardDB, scope pr
 			DATE_FORMAT(` + localEventExpr + `, '%m-%d') AS date,
 			COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
 			COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
+			COALESCE(SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END), 0) AS uploading,
 			COALESCE(SUM(CASE WHEN t.status IN ('pending', 'ready') THEN 1 ELSE 0 END), 0) AS pending,
 			COALESCE(SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed
 		FROM tasks t
@@ -976,7 +985,7 @@ func (h *ProductionDashboardHandler) dashboardTaskTrend(db dashboardDB, scope pr
 
 	byDate := make(map[string]dashboardTrendItem, len(rows))
 	for _, row := range rows {
-		row.Total = row.Completed + row.InProgress + row.Pending + row.Failed
+		row.Total = row.Completed + row.InProgress + row.Uploading + row.Pending + row.Failed
 		byDate[row.Date] = row
 	}
 	items := make([]dashboardTrendItem, 0, q.TrendDays)
@@ -1423,6 +1432,7 @@ func buildOverviewSummary(
 		TodayEpisodes:        todayProductionTotals.TotalEpisodes,
 		CompletedTasks:       overviewTaskMetrics.Completed,
 		InProgressTasks:      overviewTaskMetrics.InProgress,
+		UploadingTasks:       overviewTaskMetrics.Uploading,
 		PendingTasks:         overviewTaskMetrics.Pending,
 		FailedTasks:          overviewTaskMetrics.Failed,
 		CancelledTasks:       tasks.Cancelled,
@@ -1443,6 +1453,7 @@ func buildTaskStatusDistribution(tasks dashboardTaskCounts) []dashboardStatusDis
 		{Status: "pending", Label: dashboardTaskStatusText("pending"), Value: tasks.Pending},
 		{Status: "ready", Label: dashboardTaskStatusText("ready"), Value: tasks.Ready},
 		{Status: "in_progress", Label: dashboardTaskStatusText("in_progress"), Value: tasks.InProgress},
+		{Status: "uploading", Label: dashboardTaskStatusText("uploading"), Value: tasks.Uploading},
 		{Status: "completed", Label: dashboardTaskStatusText("completed"), Value: tasks.Completed},
 		{Status: "failed", Label: dashboardTaskStatusText("failed"), Value: tasks.Failed},
 		{Status: "cancelled", Label: dashboardTaskStatusText("cancelled"), Value: tasks.Cancelled},
@@ -1671,6 +1682,8 @@ func dashboardTaskStatusText(status string) string {
 		return "就绪"
 	case "in_progress":
 		return "进行中"
+	case "uploading":
+		return "上传中"
 	case "completed":
 		return "已完成"
 	case "failed":

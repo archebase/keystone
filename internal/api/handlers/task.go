@@ -118,7 +118,6 @@ func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks", h.CreateTask)
 	apiV1.GET("/tasks", h.ListTasks)
 	apiV1.GET("/tasks/:id", h.GetTask)
-	apiV1.PUT("/tasks/:id", h.UpdateTask)
 	apiV1.DELETE("/tasks/:id", h.DeleteTask)
 	apiV1.GET("/tasks/:id/config", h.GetTaskConfig)
 }
@@ -127,6 +126,7 @@ var validTaskStatuses = map[string]struct{}{
 	"pending":     {},
 	"ready":       {},
 	"in_progress": {},
+	"uploading":   {},
 	"completed":   {},
 	"failed":      {},
 	"cancelled":   {},
@@ -147,6 +147,7 @@ type TaskListItem struct {
 	SubsceneID          string  `json:"subscene_id" db:"subscene_id"`
 	SubsceneName        string  `json:"subscene_name" db:"subscene_name"`
 	Status              string  `json:"status" db:"status"`
+	ErrorMessage        *string `json:"error_message" db:"error_message"`
 	AssignedAt          *string `json:"assigned_at" db:"assigned_at"`
 }
 
@@ -183,6 +184,7 @@ type TaskDetailResponse struct {
 	FactoryID        *string            `json:"factory_id" db:"factory_id"`
 	OrganizationID   *int64             `json:"organization_id" db:"organization_id"`
 	Status           string             `json:"status" db:"status"`
+	ErrorMessage     *string            `json:"error_message" db:"error_message"`
 	CreatedAt        *string            `json:"created_at" db:"created_at"`
 	AssignedAt       *string            `json:"assigned_at" db:"assigned_at"`
 	StartedAt        *string            `json:"started_at" db:"started_at"`
@@ -190,37 +192,6 @@ type TaskDetailResponse struct {
 	Episode          *TaskEpisodeDetail `json:"episode"`
 	EpisodeNumericID sql.NullInt64      `db:"episode_numeric_id" json:"-"`
 	EpisodePublicID  sql.NullString     `db:"episode_public_id" json:"-"`
-}
-
-// UpdateTaskRequest represents the request body for updating a task status.
-type UpdateTaskRequest struct {
-	Status    string `json:"status"`
-	UpdatedBy string `json:"updated_by"`
-}
-
-// UpdateTaskResponse represents the response body for updating a task status.
-type UpdateTaskResponse struct {
-	ID        string `json:"id"`
-	Status    string `json:"status"`
-	UpdatedAt string `json:"updated_at"`
-}
-
-var validTaskStatusTransitions = map[string]map[string]struct{}{
-	"pending": {
-		"ready": {},
-	},
-	"ready": {
-		"in_progress": {},
-		"pending":     {},
-	},
-	"in_progress": {
-		"pending":   {},
-		"completed": {},
-		"failed":    {},
-	},
-	"failed":    {},
-	"completed": {},
-	"cancelled": {},
 }
 
 // ListTasks handles task listing requests with optional filtering.
@@ -315,6 +286,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		CAST(tasks.subscene_id AS CHAR) AS subscene_id,
 		COALESCE(tasks.subscene_name, '') AS subscene_name,
 		tasks.status,
+		tasks.error_message,
 		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at
 		FROM tasks
 		LEFT JOIN workstations ws ON ws.id = tasks.workstation_id AND ws.deleted_at IS NULL
@@ -377,6 +349,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		CASE WHEN t.factory_id IS NULL THEN NULL ELSE CAST(t.factory_id AS CHAR) END AS factory_id,
 		t.organization_id AS organization_id,
 		t.status,
+		t.error_message,
 		CASE WHEN t.created_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.created_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS created_at,
 		CASE WHEN t.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.assigned_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS assigned_at,
 		CASE WHEN t.started_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.started_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS started_at,
@@ -412,161 +385,6 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 	c.JSON(http.StatusOK, task)
 }
 
-// UpdateTask handles task status update requests.
-//
-// @Summary      Update task
-// @Description  Updates task status with restricted state transitions. Setting status to cancelled is not allowed; cancel the parent batch instead. Rejected when the parent batch status is cancelled or recalled.
-// @Tags         tasks
-// @Accept       json
-// @Produce      json
-// @Param        id    path      string             true  "Task ID"
-// @Param        body  body      UpdateTaskRequest  true  "Task update payload"
-// @Success      200   {object}  UpdateTaskResponse
-// @Failure      400   {object}  map[string]string
-// @Failure      404   {object}  map[string]string
-// @Failure      409   {object}  map[string]string "Conflict (invalid transition or batch is cancelled/recalled)"
-// @Failure      500   {object}  map[string]string
-// @Router       /tasks/{id} [put]
-func (h *TaskHandler) UpdateTask(c *gin.Context) {
-	idStr := strings.TrimSpace(c.Param("id"))
-	if idStr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "task id is required"})
-		return
-	}
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid task id"})
-		return
-	}
-
-	var req UpdateTaskRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Invalid request body: " + err.Error(),
-		})
-		return
-	}
-
-	req.Status = strings.TrimSpace(req.Status)
-	req.UpdatedBy = strings.TrimSpace(req.UpdatedBy)
-
-	if req.Status == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "status is required"})
-		return
-	}
-
-	if _, ok := validTaskStatuses[req.Status]; !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid status"})
-		return
-	}
-
-	if req.Status == "cancelled" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "setting status to 'cancelled' is not allowed via PUT; cancel the parent batch (PATCH /batches/:id) instead",
-		})
-		return
-	}
-
-	if req.UpdatedBy == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "updated_by is required"})
-		return
-	}
-
-	var taskRow struct {
-		Status      string         `db:"status"`
-		OrderID     int64          `db:"order_id"`
-		BatchStatus sql.NullString `db:"batch_status"`
-	}
-	err = h.db.Get(&taskRow, `
-		SELECT t.status, t.order_id, b.status AS batch_status
-		FROM tasks t
-		LEFT JOIN batches b ON b.id = t.batch_id AND b.deleted_at IS NULL
-		WHERE t.id = ? AND t.deleted_at IS NULL`, id)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error_msg": "Task not found: " + idStr})
-		return
-	}
-	if err != nil {
-		logger.Printf("[TASK] Failed to query task: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task"})
-		return
-	}
-
-	if taskRow.BatchStatus.Valid {
-		bs := taskRow.BatchStatus.String
-		if bs == "cancelled" || bs == "recalled" {
-			c.JSON(http.StatusConflict, gin.H{
-				"error_msg":        fmt.Sprintf("cannot update task while parent batch status is %q", bs),
-				"batch_status":     bs,
-				"requested_status": req.Status,
-			})
-			return
-		}
-	}
-
-	if _, ok := validTaskStatusTransitions[taskRow.Status][req.Status]; !ok {
-		c.JSON(http.StatusConflict, gin.H{
-			"error_msg":        fmt.Sprintf("Cannot transition from '%s' to '%s'", taskRow.Status, req.Status),
-			"current_status":   taskRow.Status,
-			"requested_status": req.Status,
-		})
-		return
-	}
-
-	now := time.Now().UTC()
-
-	// Fetch batch_id for post-update batch state advancement
-	var batchIDForAdvance int64
-	_ = h.db.Get(&batchIDForAdvance, "SELECT batch_id FROM tasks WHERE id = ? AND deleted_at IS NULL LIMIT 1", id)
-	orderIDForAdvance := taskRow.OrderID
-
-	result, err := h.db.Exec(
-		"UPDATE tasks SET status = ?, updated_at = ?, ready_at = CASE WHEN ? = 'ready' THEN ? ELSE ready_at END WHERE id = ? AND status = ? AND deleted_at IS NULL",
-		req.Status,
-		now,
-		req.Status,
-		now,
-		id,
-		taskRow.Status,
-	)
-	if err != nil {
-		logger.Printf("[TASK] Failed to update task: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to update task"})
-		return
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		logger.Printf("[TASK] Failed to get rows affected: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to verify update"})
-		return
-	}
-
-	if rowsAffected == 0 {
-		c.JSON(http.StatusConflict, gin.H{
-			"error_msg":        fmt.Sprintf("Cannot transition from '%s' to '%s'", taskRow.Status, req.Status),
-			"current_status":   taskRow.Status,
-			"requested_status": req.Status,
-		})
-		return
-	}
-
-	// After completed/failed, try to advance the batch status (pending->active, active->completed).
-	if _, ok := batchAdvanceTriggerStatuses[req.Status]; ok && batchIDForAdvance > 0 {
-		go tryAdvanceBatchStatus(h.db, batchIDForAdvance)
-	}
-	// After completed, try to advance the order status (created->in_progress, in_progress->completed).
-	if req.Status == "completed" && orderIDForAdvance > 0 {
-		go tryAdvanceOrderStatus(h.db, orderIDForAdvance, h.recorderHub, h.recorderRPCTimeout)
-	}
-
-	c.JSON(http.StatusOK, UpdateTaskResponse{
-		ID:        idStr,
-		Status:    req.Status,
-		UpdatedAt: now.Format(time.RFC3339),
-	})
-}
-
 // DeleteTask handles soft deletion of a task.
 // Tasks with status "completed" cannot be deleted.
 //
@@ -600,9 +418,9 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 		return
 	}
 
-	// Completed tasks cannot be deleted (they form part of the audit trail)
-	if taskStatus == "completed" {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": "cannot delete a completed task; completed tasks form part of the audit trail"})
+	// Completed/uploading tasks cannot be deleted because their files or audit trail may still be in use.
+	if taskStatus == "completed" || taskStatus == "uploading" {
+		c.JSON(http.StatusConflict, gin.H{"error_msg": "cannot delete a completed or uploading task"})
 		return
 	}
 
@@ -1055,20 +873,30 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 	logger.Printf("[RECORDER] Device %s: received finish callback for task=%s", callback.DeviceID, callback.TaskID)
 
 	if h.db != nil {
-		res, err := advanceTaskPendingOrReadyToInProgress(h.db, callback.TaskID)
+		res, err := markOwnedTaskUploading(c.Request.Context(), h.db, deviceID, callback.TaskID)
 		if err != nil {
-			logger.Printf("[RECORDER] Device %s: failed to restore task pending/ready->in_progress after finish callback: task=%s err=%v", deviceID, callback.TaskID, err)
+			logger.Printf("[RECORDER] Device %s: failed to mark task uploading after finish callback: task=%s err=%v", deviceID, callback.TaskID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to update task status"})
+			return
 		} else if n, _ := res.RowsAffected(); n > 0 {
-			logger.Printf("[RECORDER] Device %s: task status reconciled: task=%s source=finish_callback status=in_progress", deviceID, callback.TaskID)
+			logger.Printf("[RECORDER] Device %s: task status reconciled: task=%s source=finish_callback status=uploading", deviceID, callback.TaskID)
+		} else {
+			logger.Printf("[RECORDER] Device %s: task uploading transition skipped after finish callback: task=%s", deviceID, callback.TaskID)
+			c.JSON(http.StatusConflict, gin.H{
+				"error_msg": "task is not owned by device or is not uploadable",
+			})
+			return
 		}
 	}
 
 	dc := h.hub.Get(deviceID)
 	if dc == nil {
-		// TODO: add status pending_upload, when device reconnects, check for any pending_upload tasks and trigger upload then
-		logger.Printf("[RECORDER] Device %s: Not found in hub for task=%s, cannot trigger upload", deviceID, callback.TaskID)
-		c.JSON(http.StatusConflict, gin.H{
-			"error_msg": "Recording finished, device not connected for auto-upload",
+		logger.Printf("[RECORDER] Device %s: Not found in hub for task=%s, upload_request not sent", deviceID, callback.TaskID)
+		c.JSON(http.StatusOK, gin.H{
+			"success":             true,
+			"message":             "Recording finished; upload_request not sent because transfer is disconnected",
+			"task_status":         "uploading",
+			"upload_request_sent": false,
 		})
 		return
 	}
@@ -1081,15 +909,17 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 
 	writeTimeout := h.axonTransferWriteTimeout()
 	if err := h.hub.SendToDeviceWithTimeout(c.Request.Context(), deviceID, uploadRequest, writeTimeout); err != nil {
-		status := http.StatusInternalServerError
 		if errors.Is(err, services.ErrTransferWriteTimeout) {
-			status = http.StatusGatewayTimeout
 			logger.Printf("[TRANSFER] Device %s: auto upload_request timed out after %s for task=%s: %v", deviceID, timeoutLogValue(writeTimeout), callback.TaskID, err)
 		} else {
 			logger.Printf("[RECORDER] Failed to send upload_request to device %s: %v", deviceID, err)
 		}
-		c.JSON(status, gin.H{
-			"error_msg": "Failed to trigger upload: " + err.Error(),
+		c.JSON(http.StatusOK, gin.H{
+			"success":              true,
+			"message":              "Recording finished; upload_request not sent",
+			"task_status":          "uploading",
+			"upload_request_sent":  false,
+			"upload_request_error": err.Error(),
 		})
 		return
 	}
@@ -1097,8 +927,10 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 	logger.Printf("[RECORDER] Device %s: successfully triggered upload for task_id=%s", deviceID, callback.TaskID)
 
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Upload triggered successfully",
+		"success":             true,
+		"message":             "Upload triggered successfully",
+		"task_status":         "uploading",
+		"upload_request_sent": true,
 	})
 }
 

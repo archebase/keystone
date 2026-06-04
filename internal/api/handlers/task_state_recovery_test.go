@@ -456,8 +456,8 @@ func TestRecordingFinishAutoUploadUsesConfiguredTransferWriteTimeout(t *testing.
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusGatewayTimeout {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusGatewayTimeout, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 	if hub.getDeviceID != "robot-001" {
 		t.Fatalf("Get device=%q want=%q", hub.getDeviceID, "robot-001")
@@ -474,8 +474,7 @@ func TestRecordingFinishAutoUploadUsesConfiguredTransferWriteTimeout(t *testing.
 	if got := fmt.Sprint(hub.msg["task_id"]); got != "task-finish" {
 		t.Fatalf("message task_id=%q want=%q", got, "task-finish")
 	}
-	assertTaskStateRecoveryStatus(t, db, "task-finish", "in_progress")
-	assertTaskStateRecoveryTimestampSet(t, db, "task-finish", "started_at")
+	assertTaskStateRecoveryStatus(t, db, "task-finish", "uploading")
 	if !strings.Contains(w.Body.String(), custom.String()) {
 		t.Fatalf("response body %q does not mention custom timeout %s", w.Body.String(), custom)
 	}
@@ -510,15 +509,37 @@ func newTaskStateRecoveryDB(t *testing.T) *sqlx.DB {
 	if _, err := db.Exec(`CREATE TABLE tasks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		task_id TEXT NOT NULL,
+		workstation_id INTEGER NULL,
 		status TEXT NOT NULL,
 		ready_at TIMESTAMP NULL,
 		started_at TIMESTAMP NULL,
 		completed_at TIMESTAMP NULL,
+		error_message TEXT NULL,
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL,
 		deleted_at TIMESTAMP NULL
 	)`); err != nil {
 		t.Fatalf("create tasks schema: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE robots (
+		id INTEGER PRIMARY KEY,
+		device_id TEXT NOT NULL,
+		deleted_at TIMESTAMP NULL
+	)`); err != nil {
+		t.Fatalf("create robots schema: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE workstations (
+		id INTEGER PRIMARY KEY,
+		robot_id INTEGER NOT NULL,
+		deleted_at TIMESTAMP NULL
+	)`); err != nil {
+		t.Fatalf("create workstations schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id) VALUES (1, 'robot-001')`); err != nil {
+		t.Fatalf("seed robot: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (10, 1)`); err != nil {
+		t.Fatalf("seed workstation: %v", err)
 	}
 	return db
 }
@@ -527,7 +548,7 @@ func seedTaskStateRecoveryTask(t *testing.T, db *sqlx.DB, taskID string, status 
 	t.Helper()
 	now := time.Now().UTC()
 	if _, err := db.Exec(
-		`INSERT INTO tasks (task_id, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO tasks (task_id, workstation_id, status, created_at, updated_at) VALUES (?, 10, ?, ?, ?)`,
 		taskID,
 		status,
 		now,
