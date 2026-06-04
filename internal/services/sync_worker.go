@@ -1281,38 +1281,6 @@ func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
 	return time.Duration(totalSec * float64(time.Second))
 }
 
-// tagsFromSidecar reads the sidecar JSON from MinIO and returns it as a flat string map
-// for use as RawTags. topics_summary is excluded. Returns nil map and an error if the
-// sidecar path is empty, the object cannot be read, or the JSON is malformed.
-func (w *SyncWorker) tagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) {
-	key := stripBucketPrefix(sidecarPath)
-	if key == "" {
-		return nil, fmt.Errorf("empty sidecar_path")
-	}
-	if w.minioClient == nil {
-		return nil, fmt.Errorf("minio client not available")
-	}
-
-	obj, err := w.minioClient.GetObject(ctx, w.minioBucket, key, minio.GetObjectOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("get sidecar object %s: %w", key, err)
-	}
-	defer func() {
-		_ = obj.Close()
-	}()
-
-	data, err := io.ReadAll(obj)
-	if err != nil {
-		return nil, fmt.Errorf("read sidecar object %s: %w", key, err)
-	}
-
-	tags, err := flattenSidecar(data)
-	if err != nil {
-		return nil, fmt.Errorf("flatten sidecar %s: %w", key, err)
-	}
-	return tags, nil
-}
-
 func (w *SyncWorker) directTagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) {
 	key := stripBucketPrefix(sidecarPath)
 	if key == "" {

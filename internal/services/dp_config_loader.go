@@ -20,23 +20,27 @@ type DPConfigFile struct {
 	Devices   []DPDeviceProfile `json:"devices"`
 }
 
+// DPConfigEndpoints contains the auth and gateway endpoints from a DP config file.
 type DPConfigEndpoints struct {
 	Auth    string `json:"auth"`
 	Gateway string `json:"gateway"`
 }
 
+// DPDeviceProfile contains upload credentials and tags for one DP device.
 type DPDeviceProfile struct {
 	DeviceID string            `json:"deviceId"`
 	APIKey   string            `json:"apiKey"`
 	Tags     map[string]string `json:"tags"`
 }
 
+// DPResolvedEndpoint is a normalized upload service endpoint.
 type DPResolvedEndpoint struct {
 	Target     string
 	UseTLS     bool
 	ServerName string
 }
 
+// DPDeviceUploadConfig contains the resolved upload config for one asset ID.
 type DPDeviceUploadConfig struct {
 	ConfigPath string
 	Auth       DPResolvedEndpoint
