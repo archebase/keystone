@@ -791,11 +791,11 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 		return
 	}
 
-	logger.Printf("[RECORDER] Device %s: received start callback for task=%s", callback.DeviceID, callback.TaskID)
+	logger.Printf("%s received start callback", recorderTaskLogPrefix(callback.DeviceID, callback.TaskID))
 
 	// Validate required fields
 	if callback.TaskID == "" {
-		logger.Printf("[RECORDER] Device %s: Missing task_id in callback", callback.DeviceID)
+		logger.Printf("%s missing task_id in callback", recorderLogPrefix(callback.DeviceID))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Missing required field: task_id",
 		})
@@ -804,12 +804,12 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 
 	taskStatus := "unknown"
 	if h.db != nil {
-		res, err := advanceTaskPendingOrReadyToInProgress(h.db, callback.TaskID)
+		rowsAffected, previousStatus, err := advanceTaskPendingOrReadyToInProgress(h.db, callback.TaskID)
 		if err != nil {
-			logger.Printf("[RECORDER] Device %s: failed to advance task pending/ready->in_progress after start callback: task=%s err=%v", callback.DeviceID, callback.TaskID, err)
-		} else if n, _ := res.RowsAffected(); n > 0 {
+			logger.Printf("%s failed to advance task pending/ready->in_progress after start callback: err=%v", recorderTaskLogPrefix(callback.DeviceID, callback.TaskID), err)
+		} else if rowsAffected > 0 {
 			taskStatus = "in_progress"
-			logger.Printf("[RECORDER] Device %s: task status reconciled: task=%s source=start_callback status=in_progress", callback.DeviceID, callback.TaskID)
+			logger.Printf("%s task status updated: %s -> in_progress reason=start_callback", recorderTaskLogPrefix(callback.DeviceID, callback.TaskID), taskStatusLogValue(previousStatus, "unknown"))
 		}
 	}
 
@@ -854,7 +854,7 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 	}
 
 	if callback.OutputPath == "" {
-		logger.Printf("[RECORDER] Failed to parse callback: missing output_path for task_id=%s", callback.TaskID)
+		logger.Printf("%s failed to parse callback: missing output_path", recorderTaskLogPrefix(callback.DeviceID, callback.TaskID))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error_msg": "Missing required field: output_path",
 		})
@@ -870,18 +870,19 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 		return
 	}
 
-	logger.Printf("[RECORDER] Device %s: received finish callback for task=%s", callback.DeviceID, callback.TaskID)
+	logger.Printf("%s received finish callback", recorderTaskLogPrefix(callback.DeviceID, callback.TaskID))
 
 	if h.db != nil {
+		previousStatus, _, _ := currentOwnedTaskStatus(c.Request.Context(), h.db, deviceID, callback.TaskID)
 		res, err := markOwnedTaskUploading(c.Request.Context(), h.db, deviceID, callback.TaskID)
 		if err != nil {
-			logger.Printf("[RECORDER] Device %s: failed to mark task uploading after finish callback: task=%s err=%v", deviceID, callback.TaskID, err)
+			logger.Printf("%s failed to mark task uploading after finish callback: err=%v", recorderTaskLogPrefix(deviceID, callback.TaskID), err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to update task status"})
 			return
 		} else if n, _ := res.RowsAffected(); n > 0 {
-			logger.Printf("[RECORDER] Device %s: task status reconciled: task=%s source=finish_callback status=uploading", deviceID, callback.TaskID)
+			logger.Printf("%s task status updated: %s -> uploading reason=finish_callback", recorderTaskLogPrefix(deviceID, callback.TaskID), taskStatusLogValue(previousStatus, "unknown"))
 		} else {
-			logger.Printf("[RECORDER] Device %s: task uploading transition skipped after finish callback: task=%s", deviceID, callback.TaskID)
+			logger.Printf("%s task uploading transition skipped after finish callback", recorderTaskLogPrefix(deviceID, callback.TaskID))
 			c.JSON(http.StatusConflict, gin.H{
 				"error_msg": "task is not owned by device or is not uploadable",
 			})
@@ -891,7 +892,7 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 
 	dc := h.hub.Get(deviceID)
 	if dc == nil {
-		logger.Printf("[RECORDER] Device %s: Not found in hub for task=%s, upload_request not sent", deviceID, callback.TaskID)
+		logger.Printf("%s not found in hub, upload_request not sent", recorderTaskLogPrefix(deviceID, callback.TaskID))
 		c.JSON(http.StatusOK, gin.H{
 			"success":             true,
 			"message":             "Recording finished; upload_request not sent because transfer is disconnected",
@@ -910,9 +911,9 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 	writeTimeout := h.axonTransferWriteTimeout()
 	if err := h.hub.SendToDeviceWithTimeout(c.Request.Context(), deviceID, uploadRequest, writeTimeout); err != nil {
 		if errors.Is(err, services.ErrTransferWriteTimeout) {
-			logger.Printf("[TRANSFER] Device %s: auto upload_request timed out after %s for task=%s: %v", deviceID, timeoutLogValue(writeTimeout), callback.TaskID, err)
+			logger.Printf("%s auto upload_request timed out after %s: %v", recorderTaskLogPrefix(deviceID, callback.TaskID), timeoutLogValue(writeTimeout), err)
 		} else {
-			logger.Printf("[RECORDER] Failed to send upload_request to device %s: %v", deviceID, err)
+			logger.Printf("%s failed to send upload_request: %v", recorderTaskLogPrefix(deviceID, callback.TaskID), err)
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"success":              true,
@@ -924,7 +925,7 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 		return
 	}
 
-	logger.Printf("[RECORDER] Device %s: successfully triggered upload for task_id=%s", deviceID, callback.TaskID)
+	logger.Printf("%s successfully triggered upload", recorderTaskLogPrefix(deviceID, callback.TaskID))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":             true,

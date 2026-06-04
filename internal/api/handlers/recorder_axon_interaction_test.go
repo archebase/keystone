@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -1305,6 +1307,44 @@ func TestRecorderWebSocketStateUpdateBeforeGetStateResponseIsIdempotent(t *testi
 	assertRecorderInteractionTaskStatus(t, db, "task-ready-ws", "ready")
 	if got := recorderInteractionTaskTimestamp(t, db, "task-ready-ws", "ready_at"); got != readyAt {
 		t.Fatalf("ready_at changed after duplicate get_state: got=%q want=%q", got, readyAt)
+	}
+}
+
+func TestRecorderStateSnapshotLogsOnlyStateChanges(t *testing.T) {
+	var buf bytes.Buffer
+	previousLogger := logger.Get()
+	logger.Set(log.New(&buf, "", 0))
+	defer logger.Set(previousLogger)
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{}, nil)
+	rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
+
+	if err := handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "get_state"); err != nil {
+		t.Fatalf("apply idle snapshot: %v", err)
+	}
+	if err := handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update"); err != nil {
+		t.Fatalf("apply duplicate idle snapshot: %v", err)
+	}
+	if err := handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "ready", TaskID: "task-ready"}, "state_update"); err != nil {
+		t.Fatalf("apply ready snapshot: %v", err)
+	}
+	if err := handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "ready", TaskID: "task-ready"}, "rpc_response:config"); err != nil {
+		t.Fatalf("apply duplicate ready snapshot: %v", err)
+	}
+
+	output := buf.String()
+	if got := strings.Count(output, "state changed:"); got != 2 {
+		t.Fatalf("state change log count=%d want=2 output=%q", got, output)
+	}
+	if !strings.Contains(output, "[RECORDER][robot-001] state changed: unknown -> idle source=get_state") {
+		t.Fatalf("initial state change log missing: %q", output)
+	}
+	if !strings.Contains(output, "[RECORDER][robot-001][task-ready] state changed: idle -> ready source=state_update") {
+		t.Fatalf("ready state change log missing: %q", output)
+	}
+	if strings.Contains(output, "rpc_response:config") {
+		t.Fatalf("duplicate rpc_response snapshot should not be logged: %q", output)
 	}
 }
 

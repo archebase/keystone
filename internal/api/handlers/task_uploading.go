@@ -15,6 +15,42 @@ type taskStateExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 }
 
+type taskStateQuerier interface {
+	GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+}
+
+func currentOwnedTaskStatus(ctx context.Context, querier taskStateQuerier, deviceID, taskID string) (string, bool, error) {
+	if querier == nil {
+		return "", false, nil
+	}
+	var status string
+	err := querier.GetContext(ctx, &status, `
+		SELECT t.status
+		FROM tasks t
+		JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
+		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE t.task_id = ?
+		  AND t.deleted_at IS NULL
+		  AND r.device_id = ?
+		LIMIT 1
+	`, strings.TrimSpace(taskID), strings.TrimSpace(deviceID))
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(status), true, nil
+}
+
+func taskStatusLogValue(status, fallback string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return fallback
+	}
+	return status
+}
+
 func markOwnedTaskUploading(ctx context.Context, exec taskStateExecutor, deviceID, taskID string) (sql.Result, error) {
 	if exec == nil {
 		return nil, nil
