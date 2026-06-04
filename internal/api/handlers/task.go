@@ -890,8 +890,17 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 		}
 	}
 
-	dc := h.hub.Get(deviceID)
+	var dc *services.TransferConn
+	if h.hub != nil {
+		dc = h.hub.Get(deviceID)
+	}
 	if dc == nil {
+		errorMessage := "transfer disconnected; upload_request not sent"
+		if h.db != nil {
+			if _, err := writeOwnedUploadingTaskError(c.Request.Context(), h.db, deviceID, callback.TaskID, errorMessage); err != nil {
+				logger.Printf("%s failed to write upload_request error: err=%v", recorderTaskLogPrefix(deviceID, callback.TaskID), err)
+			}
+		}
 		logger.Printf("%s not found in hub, upload_request not sent", recorderTaskLogPrefix(deviceID, callback.TaskID))
 		c.JSON(http.StatusOK, gin.H{
 			"success":             true,
@@ -915,6 +924,12 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 		} else {
 			logger.Printf("%s failed to send upload_request: %v", recorderTaskLogPrefix(deviceID, callback.TaskID), err)
 		}
+		errorMessage := "upload_request failed: " + err.Error()
+		if h.db != nil {
+			if _, writeErr := writeOwnedUploadingTaskError(c.Request.Context(), h.db, deviceID, callback.TaskID, errorMessage); writeErr != nil {
+				logger.Printf("%s failed to write upload_request error: err=%v", recorderTaskLogPrefix(deviceID, callback.TaskID), writeErr)
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success":              true,
 			"message":              "Recording finished; upload_request not sent",
@@ -925,6 +940,11 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 		return
 	}
 
+	if h.db != nil {
+		if _, err := clearOwnedUploadingTaskError(c.Request.Context(), h.db, deviceID, callback.TaskID); err != nil {
+			logger.Printf("%s failed to clear upload_request error: err=%v", recorderTaskLogPrefix(deviceID, callback.TaskID), err)
+		}
+	}
 	logger.Printf("%s successfully triggered upload", recorderTaskLogPrefix(deviceID, callback.TaskID))
 
 	c.JSON(http.StatusOK, gin.H{

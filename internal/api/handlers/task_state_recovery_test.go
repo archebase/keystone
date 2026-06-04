@@ -7,6 +7,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -475,8 +476,54 @@ func TestRecordingFinishAutoUploadUsesConfiguredTransferWriteTimeout(t *testing.
 		t.Fatalf("message task_id=%q want=%q", got, "task-finish")
 	}
 	assertTaskStateRecoveryStatus(t, db, "task-finish", "uploading")
+	assertTaskStateRecoveryErrorContains(t, db, "task-finish", "upload_request failed")
+	assertTaskStateRecoveryErrorContains(t, db, "task-finish", "fake blocked transfer write")
 	if !strings.Contains(w.Body.String(), custom.String()) {
 		t.Fatalf("response body %q does not mention custom timeout %s", w.Body.String(), custom)
+	}
+}
+
+func TestRecordingFinishDisconnectedTransferRecordsUploadRequestError(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-finish-disconnected", "pending")
+
+	hub := &recordingFinishTransferHub{}
+	handler := &TaskHandler{db: db, hub: hub}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler.RegisterCallbackRoutes(router.Group("/callbacks"))
+
+	body, err := json.Marshal(RecordingFinishCallback{
+		TaskID:     "task-finish-disconnected",
+		DeviceID:   "robot-001",
+		Status:     "finished",
+		FinishedAt: time.Now().UTC().Format(time.RFC3339),
+		OutputPath: "/data/task-finish-disconnected.mcap",
+	})
+	if err != nil {
+		t.Fatalf("marshal callback: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/callbacks/finish", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if hub.getDeviceID != "robot-001" {
+		t.Fatalf("Get device=%q want=%q", hub.getDeviceID, "robot-001")
+	}
+	if hub.sendDeviceID != "" {
+		t.Fatalf("Send device=%q want empty for disconnected transfer", hub.sendDeviceID)
+	}
+	assertTaskStateRecoveryStatus(t, db, "task-finish-disconnected", "uploading")
+	assertTaskStateRecoveryErrorContains(t, db, "task-finish-disconnected", "transfer disconnected")
+	if !strings.Contains(w.Body.String(), `"upload_request_sent":false`) {
+		t.Fatalf("response body %q does not report unsent upload request", w.Body.String())
 	}
 }
 
@@ -566,6 +613,20 @@ func assertTaskStateRecoveryStatus(t *testing.T, db *sqlx.DB, taskID string, wan
 	}
 	if got != want {
 		t.Fatalf("task status=%q want=%q", got, want)
+	}
+}
+
+func assertTaskStateRecoveryErrorContains(t *testing.T, db *sqlx.DB, taskID string, want string) {
+	t.Helper()
+	var got sql.NullString
+	if err := db.Get(&got, `SELECT error_message FROM tasks WHERE task_id = ?`, taskID); err != nil {
+		t.Fatalf("query task error_message: %v", err)
+	}
+	if !got.Valid {
+		t.Fatalf("task error_message is NULL, want substring %q", want)
+	}
+	if !strings.Contains(got.String, want) {
+		t.Fatalf("task error_message=%q want substring %q", got.String, want)
 	}
 }
 

@@ -125,3 +125,27 @@ func writeOwnedUploadingTaskError(ctx context.Context, exec taskStateExecutor, d
 		  )
 	`, strings.TrimSpace(message), now, strings.TrimSpace(taskID), strings.TrimSpace(deviceID))
 }
+
+func clearOwnedUploadingTaskError(ctx context.Context, exec taskStateExecutor, deviceID, taskID string) (sql.Result, error) {
+	if exec == nil {
+		return nil, nil
+	}
+	now := time.Now().UTC()
+	return exec.ExecContext(ctx, `
+		UPDATE tasks
+		SET
+			error_message = NULL,
+			updated_at = ?
+		WHERE task_id = ?
+		  AND status = 'uploading'
+		  AND deleted_at IS NULL
+		  AND EXISTS (
+			SELECT 1
+			FROM workstations ws
+			JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+			WHERE ws.id = tasks.workstation_id
+			  AND ws.deleted_at IS NULL
+			  AND r.device_id = ?
+		  )
+	`, now, strings.TrimSpace(taskID), strings.TrimSpace(deviceID))
+}

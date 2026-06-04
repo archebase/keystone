@@ -162,7 +162,6 @@ This document does not restate full table schemas; it only defines key field sem
 |------|------|------|
 | GET | `/tasks` | List (filters: `workstation_id/status/limit/offset`) |
 | GET | `/tasks/:id` | Detail (includes `episode` if linked) |
-| PUT | `/tasks/:id` | Status update (restricted transitions; see §6.2) |
 | GET | `/tasks/:id/config` | Generate recorder config (requires workstation robot + collector bindings) |
 
 ---
@@ -184,12 +183,14 @@ This document does not restate full table schemas; it only defines key field sem
 
 ### 6.2 Task states
 
-- **State set**: `pending` | `ready` | `in_progress` | `completed` | `failed` | `cancelled`
-- **Prepare (pending→ready)**: triggered by UI/scheduler (currently via `PUT /tasks/:id`).
-- **Run (ready→in_progress)**: triggered by UI/device workflow (currently via `PUT /tasks/:id`).
+- **State set**: `pending` | `ready` | `in_progress` | `uploading` | `completed` | `failed` | `cancelled`
+- **Prepare (pending→ready)**: triggered by recorder config application (`config_applied` / ready state snapshot).
+- **Run (ready→in_progress)**: triggered by recorder start callback or recording state snapshot.
+- **Finish (in_progress→uploading)**: triggered by recorder finish callback; Keystone sends `upload_request` to Transfer when connected.
 - **Transfer ACK**:
-  - On verified upload ACK, Keystone marks task `in_progress -> completed` (only if currently `in_progress`).
-  - On `upload_failed`, Keystone marks task `in_progress -> failed`.
+  - On verified upload ACK, Keystone sends `upload_ack`, then marks task `pending/ready/in_progress/uploading -> completed`.
+  - Duplicate ACKs for already `completed` tasks are allowed but must not re-advance batch/order state.
+  - On `upload_failed`, Keystone marks task `in_progress/uploading -> failed`.
 - **Revert to pending (ready/in_progress→pending)**: used for recovery when Transfer disconnects (to avoid stuck runnable tasks).
 
 ### 6.3 Batch states
@@ -227,15 +228,14 @@ When the device reports `upload_complete`, Keystone runs the Verified ACK flow:
    - **Idempotent**: if an Episode already exists for this `task_id`, do not insert again
    - Insert into `episodes` (persist denormalized fields such as `batch_id/order_id/scene_id/...`)
    - `batches.episode_count += 1` (only when a new Episode is inserted)
-   - Update `tasks.status` to **`completed`** (and set `completed_at`) **only when current status is `in_progress`**
 3. **Send `upload_ack`** to the device
+4. **Mark task completed**: update `tasks.status` to **`completed`** (and set `completed_at`) when current status is `pending/ready/in_progress/uploading`; already completed tasks remain idempotent
 
 ---
 
 ## 8. Known gaps and evolution
 
-- **In-recording state**: `callbacks/start` does not persist state today; `ready -> in_progress` validation/persistence is not implemented yet.
-- **Failure path**: an end-to-end `failed` terminal state and error attribution are not fully implemented (callbacks/transfer need to be extended).
+- **Failure path**: terminal `failed` handling exists for transfer failures; recorder callback failure attribution still needs tighter end-to-end coverage.
 - **Quota consistency**:
   - Dispatch quota is based on non-deleted task rows, not completed rows.
   - New/bulk batch creation uses `remaining_assignable = target_count - order_task_count`.

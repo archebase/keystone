@@ -50,10 +50,11 @@ The Task state machine defines the complete lifecycle of a Task, with state tran
 | State | Description | Valid Previous States | Valid Next States |
 |-------|-------------|----------------------|-------------------|
 | `pending` | Task created, awaiting workstation preparation | `ready`(cancel), `*`(new) | `ready`, `cancelled` |
-| `ready` | Data collector clicked "Make Ready", awaiting recording start | `pending` | `in_progress`, `pending`, `cancelled` |
-| `in_progress` | Recording in progress | `ready` | `completed`, `failed` |
-| `completed` | Recording completed successfully | `in_progress` | *(terminal)* |
-| `failed` | Recording failed | `in_progress` | *(terminal)* |
+| `ready` | Recorder applied TaskConfig, awaiting recording start | `pending` | `in_progress`, `pending`, `cancelled` |
+| `in_progress` | Recording in progress | `pending`, `ready` | `uploading`, `failed` |
+| `uploading` | Recording finished, waiting for Transfer upload ACK | `pending`, `ready`, `in_progress` | `completed`, `failed` |
+| `completed` | Recording uploaded and acknowledged successfully | `pending`, `ready`, `in_progress`, `uploading` | *(terminal)* |
+| `failed` | Recording or upload failed | `in_progress`, `uploading` | *(terminal)* |
 | `cancelled` | Task cancelled | `pending`, `ready` | *(terminal)* |
 
 ### 2.2 State Transition Diagram
@@ -61,13 +62,14 @@ The Task state machine defines the complete lifecycle of a Task, with state tran
 ```mermaid
 stateDiagram-v2
     [*] --> pending: Order created/Task generated
-    pending --> ready: Data Collector clicks "Make Ready"
+    pending --> ready: Recorder config_applied
     pending --> cancelled: Task cancelled
     ready --> in_progress: Axon POST /callbacks/start
-    ready --> pending: Data Collector clicks "Unready"
+    ready --> pending: Transfer disconnect recovery
     ready --> cancelled: Task cancelled
-    in_progress --> completed: Axon POST /callbacks/finish (success)
-    in_progress --> failed: Axon POST /callbacks/finish (failure)
+    in_progress --> uploading: Axon POST /callbacks/finish
+    uploading --> completed: Transfer upload_complete + upload_ack
+    uploading --> failed: Transfer upload_failed
     completed --> [*]
     failed --> [*]
     cancelled --> [*]
@@ -77,7 +79,7 @@ stateDiagram-v2
 
 #### pending → ready
 
-- **Trigger**: Data collector clicks "Make Ready" in Synapse UI
+- **Trigger**: Recorder confirms TaskConfig application (`config_applied` or ready state snapshot)
 - **Validation**:
   - Task status is `pending`
   - Task is assigned to a Workstation
@@ -96,12 +98,21 @@ stateDiagram-v2
   - Record `started_at` timestamp
   - Record active ROS Topics
 
-#### in_progress → completed
+#### in_progress → uploading
 
 - **Trigger**: Axon calls [`POST /callbacks/finish`](implementation/axon_teleoperation.md:1107) with `error == null`
 - **Validation**: Task status is `in_progress`
 - **Side Effects**:
+  - Mark Task `uploading`
+  - Trigger Transfer `upload_request` when the device is connected
+
+#### uploading → completed
+
+- **Trigger**: Transfer reports `upload_complete`, Keystone verifies S3 objects, then sends `upload_ack`
+- **Validation**: Task status is `pending`, `ready`, `in_progress`, or `uploading`
+- **Side Effects**:
   - Record `completed_at` timestamp
+  - Clear upload error message
   - Create Episode (`qa_status: pending_qa`)
   - Trigger Edge Dagster QA Job
 
@@ -147,13 +158,13 @@ Batch-scoped Tasks are created for selected Workstations (status: pending)
 ### Phase 1: Task Preparation and TaskConfig Distribution
 
 ```
-Data Collector → Synapse UI clicks "Make Ready"
+Keystone → Dispatch TaskConfig to recorder
                        ↓
-            Synapse → PATCH /tasks/{id} {status: "ready"}
+            Axon recorder applies config
                        ↓
             Keystone → Task: pending → ready
                        ↓
-            Trigger notification for Axon to pull config
+            Axon keeps TaskConfig locally
                        ↓
             Axon → GET /tasks/{id}/config (Device token)
                        ↓
@@ -253,7 +264,6 @@ Four weighted checks:
 | `GET` | `/tasks` | List tasks (with filtering) | Synapse UI |
 | `GET` | `/tasks/{id}` | Get task details | Synapse UI |
 | `GET` | `/tasks/{id}/config` | Get task config (Axon pull) | Axon |
-| `PATCH` | `/tasks/{id}` | Update task status | Synapse UI |
 | `POST` | `/tasks` | Create task (internal use) | Order Manager |
 
 ### 4.2 Callback Interfaces
@@ -388,8 +398,8 @@ Response 500:
 
 **Operations**:
 
-- "Make Ready": `pending` → `ready`
-- "Unready": `ready` → `pending` (timeout or reset)
+- Synapse displays task status and creates tasks.
+- Task status transitions are driven by recorder callbacks/state snapshots and Transfer upload events.
 
 ### 5.3 Task and Dagster QA Interaction
 
@@ -444,7 +454,7 @@ CREATE TABLE tasks (
     sop_id BIGINT NOT NULL,
     
     -- Status
-    status VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT 'pending|ready|in_progress|completed|failed|cancelled',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT 'pending|ready|in_progress|uploading|completed|failed|cancelled',
     
     -- Timestamps
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

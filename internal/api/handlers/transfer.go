@@ -756,7 +756,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	// for legacy weak-network recovery; uploading is the normal post-recording path.
 	// Best-effort: do not affect the already-sent acknowledgement.
 	now := time.Now().UTC()
-	if _, err := h.db.ExecContext(ctx, `
+	res, err := h.db.ExecContext(ctx, `
 		UPDATE tasks
 		SET
 			status = 'completed',
@@ -764,15 +764,21 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			error_message = NULL,
 			updated_at = ?
 		WHERE id = ? AND status IN ('pending', 'ready', 'in_progress', 'uploading', 'completed') AND deleted_at IS NULL
-	`, now, now, taskPK); err != nil {
+	`, now, now, taskPK)
+	if err != nil {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("%s failed to mark task completed after upload_ack: err=%v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 	} else {
-		if batchIDForAdvance > 0 {
+		rowsAffected, _ := res.RowsAffected()
+		shouldAdvance := ownedTask.Status != "completed" && rowsAffected > 0
+		if shouldAdvance {
+			logger.Printf("%s task status updated: %s -> completed reason=upload_ack", transferTaskLogPrefix(dc.DeviceID, taskID), taskStatusLogValue(ownedTask.Status, "unknown"))
+		}
+		if shouldAdvance && batchIDForAdvance > 0 {
 			// Must run after the task row is terminal: tryAdvanceBatchStatus counts tasks in DB.
 			go tryAdvanceBatchStatus(h.db, batchIDForAdvance)
 		}
-		if orderIDForAdvance > 0 {
+		if shouldAdvance && orderIDForAdvance > 0 {
 			go tryAdvanceOrderStatus(h.db, orderIDForAdvance, h.recorderHub, h.recorderRPCTimeout)
 		}
 	}
@@ -1056,6 +1062,11 @@ func (h *TransferHandler) UploadRequest(c *gin.Context) {
 	}
 	if !h.sendToDevice(c, deviceID, msg) {
 		return
+	}
+	if h.db != nil {
+		if _, err := clearOwnedUploadingTaskError(c.Request.Context(), h.db, deviceID, body.TaskID); err != nil {
+			logger.Printf("%s failed to clear upload_request error: err=%v", transferTaskLogPrefix(deviceID, body.TaskID), err)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "sent"})
 }
