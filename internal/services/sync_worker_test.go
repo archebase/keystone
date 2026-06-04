@@ -566,12 +566,12 @@ func TestRetryFailedEpisodes_PromotesDueFailureToPendingBeforeDispatch(t *testin
 	}
 }
 
-func TestRetryFailedEpisodes_IgnoresMissingDeletedAndSyncedEpisodes(t *testing.T) {
+func TestRetryFailedEpisodes_IgnoresMissingDeletedAndRetriesSyncedEpisodesAsResync(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
 		db:              db,
 		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
-		jobCh:           make(chan syncEnqueueRequest, 1),
+		jobCh:           make(chan syncEnqueueRequest, 2),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
 
@@ -597,17 +597,20 @@ func TestRetryFailedEpisodes_IgnoresMissingDeletedAndSyncedEpisodes(t *testing.T
 		t.Fatalf("unexpected retry queue failure log: %s", logs.String())
 	}
 
-	latest := latestSyncLogForSyncWorkerTest(t, db, 5)
-	if latest.Status != "pending" {
-		t.Fatalf("episode 5 latest status = %q, want pending", latest.Status)
-	}
-	select {
-	case got := <-w.jobCh:
-		if got.episodeID != 5 {
-			t.Fatalf("unexpected retry dispatch episode id: got %d want 5", got.episodeID)
+	for _, episodeID := range []int64{4, 5} {
+		latest := latestSyncLogForSyncWorkerTest(t, db, episodeID)
+		if latest.Status != "pending" {
+			t.Fatalf("episode %d latest status = %q, want pending", episodeID, latest.Status)
 		}
-	default:
-		t.Fatal("expected valid retryable episode to be dispatched")
+	}
+
+	gotSynced := <-w.jobCh
+	if gotSynced.episodeID != 4 || !gotSynced.resync {
+		t.Fatalf("unexpected synced retry dispatch: got %+v want episode 4 resync", gotSynced)
+	}
+	gotUnsynced := <-w.jobCh
+	if gotUnsynced.episodeID != 5 || gotUnsynced.resync {
+		t.Fatalf("unexpected unsynced retry dispatch: got %+v want episode 5 non-resync", gotUnsynced)
 	}
 }
 
