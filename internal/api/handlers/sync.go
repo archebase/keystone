@@ -32,12 +32,110 @@ func NewSyncHandler(db *sqlx.DB, syncWorker *services.SyncWorker) *SyncHandler {
 // RegisterRoutes registers cloud sync related routes.
 func (h *SyncHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/sync/episodes", h.TriggerBatchSync)
+	apiV1.POST("/sync/episodes/:id/resync", h.TriggerEpisodeResync)
 	apiV1.POST("/sync/episodes/:id", h.TriggerEpisodeSync)
 	apiV1.GET("/sync/episodes", h.ListSyncJobs)
 	apiV1.GET("/sync/episodes/summary", h.ListEpisodeSyncSummaries)
 	apiV1.GET("/sync/episodes/:id/logs", h.ListEpisodeSyncLogs)
 	apiV1.GET("/sync/episodes/:id/status", h.GetSyncStatus)
 	apiV1.GET("/sync/config", h.GetSyncConfig)
+}
+
+type syncEpisodeActionRow struct {
+	QaStatus    string `db:"qa_status"`
+	CloudSynced bool   `db:"cloud_synced"`
+}
+
+func (h *SyncHandler) loadSyncEpisodeForAction(c *gin.Context, episodeID int64) (syncEpisodeActionRow, bool) {
+	var row syncEpisodeActionRow
+	err := h.db.Get(&row, "SELECT qa_status, cloud_synced FROM episodes WHERE id = ? AND deleted_at IS NULL", episodeID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		return row, false
+	}
+	if err != nil {
+		logger.Printf("[SYNC] Failed to query episode %d: %v", episodeID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query episode"})
+		return row, false
+	}
+	return row, true
+}
+
+func (h *SyncHandler) enqueueSyncErrorResponse(c *gin.Context, episodeID int64, err error) {
+	switch {
+	case errors.Is(err, services.ErrSyncWorkerNotRunning):
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":      err.Error(),
+			"episode_id": episodeID,
+			"status":     "worker_not_running",
+		})
+	case errors.Is(err, services.ErrEpisodeAlreadyEnqueued), errors.Is(err, services.ErrSyncAlreadyInProgress):
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      err.Error(),
+			"episode_id": episodeID,
+			"status":     "already_queued",
+		})
+	case errors.Is(err, services.ErrSyncQueueFull):
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":      err.Error(),
+			"episode_id": episodeID,
+			"status":     "queue_full",
+		})
+	default:
+		logger.Printf("[SYNC] Enqueue episode %d failed: %v", episodeID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue episode"})
+	}
+}
+
+// TriggerEpisodeResync queues a new cloud upload for an already-synced episode.
+//
+// @Summary      Resync episode to cloud
+// @Description  Enqueues a new cloud upload for an already-synced episode without clearing previous sync history
+// @Tags         sync
+// @Produce      json
+// @Param        id   path      int  true  "Episode ID"
+// @Success      202  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      409  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /sync/episodes/{id}/resync [post]
+func (h *SyncHandler) TriggerEpisodeResync(c *gin.Context) {
+	if h.syncWorker == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync worker is not configured"})
+		return
+	}
+
+	episodeID, ok := parseEpisodeIDParam(c)
+	if !ok {
+		return
+	}
+
+	row, ok := h.loadSyncEpisodeForAction(c, episodeID)
+	if !ok {
+		return
+	}
+	if row.QaStatus != "approved" && row.QaStatus != "inspector_approved" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("episode qa_status is %q, must be approved or inspector_approved", row.QaStatus),
+		})
+		return
+	}
+	if !row.CloudSynced {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "episode has not completed cloud sync; use normal sync instead"})
+		return
+	}
+
+	if err := h.syncWorker.EnqueueEpisodeResync(c.Request.Context(), episodeID); err != nil {
+		h.enqueueSyncErrorResponse(c, episodeID, err)
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"status":     "accepted",
+		"episode_id": episodeID,
+		"message":    "episode enqueued for cloud resync",
+	})
 }
 
 // syncLogRow represents a row from the sync_logs table.

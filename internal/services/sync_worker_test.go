@@ -226,6 +226,68 @@ func TestEnqueueEpisodeManual_PromotesDueFailureToPending(t *testing.T) {
 	}
 }
 
+func TestEnqueueEpisodeResync_AllowsAlreadySyncedEpisode(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		enqueueCh:       make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+	w.running.Store(true)
+
+	insertEpisodeForSyncWorkerTest(t, db, 27, "approved", true)
+	insertSyncLogForSyncWorkerTest(t, db, 27, "completed", 1)
+
+	if err := w.EnqueueEpisodeResync(context.Background(), 27); err != nil {
+		t.Fatalf("resync enqueue failed: %v", err)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 27)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+	if count := countSyncLogsForSyncWorkerTest(t, db, 27); count != 2 {
+		t.Fatalf("sync log count = %d, want completed history plus resync pending", count)
+	}
+
+	select {
+	case got := <-w.enqueueCh:
+		if got.episodeID != 27 {
+			t.Fatalf("unexpected episode id: got %d want 27", got.episodeID)
+		}
+		if !got.manual || !got.resync {
+			t.Fatalf("enqueue flags = manual:%t resync:%t, want both true", got.manual, got.resync)
+		}
+	default:
+		t.Fatal("expected resync episode to be enqueued")
+	}
+}
+
+func TestDispatchPendingSyncLogs_TreatsSyncedPendingRowsAsResync(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		jobCh:           make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+
+	insertEpisodeForSyncWorkerTest(t, db, 28, "approved", true)
+	insertSyncLogForSyncWorkerTest(t, db, 28, "pending", 0)
+
+	w.dispatchPendingSyncLogs(context.Background())
+
+	select {
+	case got := <-w.jobCh:
+		if got.episodeID != 28 || !got.resync {
+			t.Fatalf("dispatched request = %+v, want episode 28 resync", got)
+		}
+	default:
+		t.Fatal("expected synced pending row to be dispatched as resync")
+	}
+}
+
 func TestEnqueueEpisode_RejectsInProgressEpisode(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
@@ -618,7 +680,7 @@ func TestProcessEnqueuedEpisode_HoldsMarkerUntilProcessingReturns(t *testing.T) 
 		w.processEnqueuedEpisodeWith(
 			context.Background(),
 			syncEnqueueRequest{episodeID: 77, manual: true},
-			func(context.Context, int64, bool) {
+			func(context.Context, int64, bool, bool) {
 				close(started)
 				<-release
 			},
