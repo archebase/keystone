@@ -94,6 +94,7 @@ type episodeRow struct {
 	DurationSec        sql.NullFloat64 `db:"duration_sec"`
 	QaStatus           string          `db:"qa_status"`
 	QaScore            sql.NullFloat64 `db:"qa_score"`
+	QualityFlag        sql.NullString  `db:"quality_flag"`
 	AutoApproved       bool            `db:"auto_approved"`
 	InspectorID        sql.NullString  `db:"inspector_id"`
 	InspectionDecision sql.NullString  `db:"inspection_decision"`
@@ -124,6 +125,7 @@ type Episode struct {
 	DurationSec        *float64 `json:"duration_sec"`
 	QaStatus           string   `json:"qa_status"`
 	QaScore            *float64 `json:"qa_score"`
+	QualityFlag        *string  `json:"quality_flag,omitempty"`
 	AutoApproved       bool     `json:"auto_approved"`
 	InspectorID        *string  `json:"inspector_id"`
 	InspectionDecision *string  `json:"inspection_decision"`
@@ -150,6 +152,7 @@ func (h *EpisodeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("", h.ListEpisodes)
 	apiV1.GET("/:id", h.GetEpisode)
 	apiV1.GET("/:id/presign", h.GetEpisodePresignedURL)
+	apiV1.POST("/:id/qa-checks", h.RunEpisodeQACheck)
 }
 
 // parseEpisodeRFC3339 parses RFC3339 / RFC3339Nano timestamps for episode list filters (UTC).
@@ -275,6 +278,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.duration_sec,
 			COALESCE(e.qa_status, '') as qa_status,
 			e.qa_score,
+			e.quality_flag,
 			e.auto_approved,
 			e.cloud_synced,
 			e.cloud_processed,
@@ -445,6 +449,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			DurationSec:        nullableFloat64(r.DurationSec),
 			QaStatus:           r.QaStatus,
 			QaScore:            nullableFloat64(r.QaScore),
+			QualityFlag:        nullableString(r.QualityFlag),
 			AutoApproved:       r.AutoApproved,
 			InspectorID:        nullableString(r.InspectorID),
 			InspectionDecision: nullableString(r.InspectionDecision),
@@ -537,10 +542,12 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 	}
 
 	var row struct {
-		McapPath    string `db:"mcap_path"`
-		SidecarPath string `db:"sidecar_path"`
+		McapPath    string         `db:"mcap_path"`
+		SidecarPath string         `db:"sidecar_path"`
+		QaStatus    string         `db:"qa_status"`
+		QualityFlag sql.NullString `db:"quality_flag"`
 	}
-	err := h.db.Get(&row, "SELECT mcap_path, sidecar_path FROM episodes WHERE id = ? AND deleted_at IS NULL LIMIT 1", episodeID)
+	err := h.db.Get(&row, "SELECT mcap_path, sidecar_path, COALESCE(qa_status, '') AS qa_status, quality_flag FROM episodes WHERE id = ? AND deleted_at IS NULL LIMIT 1", episodeID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
 		return
@@ -556,6 +563,14 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 	if kind == "sidecar" {
 		selectedPath = row.SidecarPath
 		fieldName = "sidecar_path"
+	}
+	if kind == "mcap" && row.QaStatus == "failed" {
+		resp := gin.H{"error": "episode mcap is blocked by failed qa status"}
+		if row.QualityFlag.Valid && strings.TrimSpace(row.QualityFlag.String) != "" {
+			resp["quality_flag"] = row.QualityFlag.String
+		}
+		c.JSON(http.StatusConflict, resp)
+		return
 	}
 
 	bucket, objectName, ok := resolveEpisodeMcapLocation(h.bucket, selectedPath)
@@ -609,6 +624,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.duration_sec,
 			COALESCE(e.qa_status, '') AS qa_status,
 			e.qa_score,
+			e.quality_flag,
 			e.auto_approved,
 			CASE WHEN i.inspector_id IS NULL THEN NULL ELSE ins.inspector_id END AS inspector_id,
 			CASE WHEN i.decision IS NULL THEN NULL ELSE i.decision END AS inspection_decision,
@@ -660,6 +676,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		DurationSec:        nullableFloat64(row.DurationSec),
 		QaStatus:           row.QaStatus,
 		QaScore:            nullableFloat64(row.QaScore),
+		QualityFlag:        nullableString(row.QualityFlag),
 		AutoApproved:       row.AutoApproved,
 		InspectorID:        nullableString(row.InspectorID),
 		InspectionDecision: nullableString(row.InspectionDecision),

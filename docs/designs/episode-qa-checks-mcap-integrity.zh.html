@@ -1,0 +1,733 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Episode 通用质检与 MCAP 完整性检查开发设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17231f;
+      --muted: #5d6a64;
+      --line: #d8e1dc;
+      --paper: #ffffff;
+      --surface: #f7faf8;
+      --surface-strong: #edf5f1;
+      --accent: #126b5e;
+      --accent-strong: #0b4f47;
+      --warn: #995515;
+      --danger: #a1322b;
+      --ok: #19714f;
+      --code-bg: #13211d;
+      --code-ink: #edf7f2;
+      --shadow: 0 18px 46px rgba(21, 42, 34, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(18, 107, 94, 0.13), transparent 35%),
+        linear-gradient(180deg, #f8fbf9 0%, #ffffff 44%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 28px;
+      align-items: end;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.14;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 780px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .header-meta {
+      border-left: 4px solid var(--accent);
+      padding-left: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .header-meta strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 4px;
+    }
+
+    nav a {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      border: 1px solid #c9ded5;
+      border-radius: 999px;
+      padding: 8px 12px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    section {
+      margin-top: 38px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      box-shadow: 0 10px 26px rgba(21, 42, 34, 0.05);
+      padding: 24px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .three-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .mini {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    .mini strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--accent-strong);
+      font-size: 15px;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 8px 0;
+    }
+
+    code {
+      border-radius: 5px;
+      background: #e9f1ed;
+      color: #0f4239;
+      padding: 2px 5px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      overflow: auto;
+      border-radius: 12px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      padding: 18px;
+      font: 14px/1.6 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      border-radius: 12px;
+      background: var(--surface-strong);
+      padding: 16px 18px;
+    }
+
+    .warn {
+      border-left-color: var(--warn);
+      background: #fff7eb;
+    }
+
+    .danger {
+      border-left-color: var(--danger);
+      background: #fff0ef;
+    }
+
+    .ok {
+      border-left-color: var(--ok);
+      background: #eff8f3;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .step {
+      min-height: 112px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+      padding: 14px;
+    }
+
+    .step span {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 15px;
+    }
+
+    .step p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .tag {
+      border-radius: 999px;
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      padding: 5px 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .footer-note {
+      margin-top: 48px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 900px) {
+      header,
+      .grid,
+      .three-grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding: 24px;
+      }
+
+      main {
+        padding: 28px 16px 56px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Keystone / Synapse Development Design</p>
+        <h1>Episode 通用质检与 MCAP 完整性检查</h1>
+        <p class="lead">在 episode 详情页提供手动触发的轻量质检入口。当前首个检查项为 MCAP 头尾 magic 校验；未来 Python 脚本型质检通过同一接口和落库模型接入。</p>
+      </div>
+      <div class="header-meta">
+        <strong>设计状态</strong>
+        <div>已确认方案，待实现</div>
+        <div>创建时间：2026-06-05</div>
+        <div>影响范围：keystone、synapse</div>
+      </div>
+    </header>
+
+    <nav aria-label="文档导航">
+      <a href="#background">背景</a>
+      <a href="#goals">目标</a>
+      <a href="#data-model">数据模型</a>
+      <a href="#api">API</a>
+      <a href="#backend">后端实现</a>
+      <a href="#frontend">前端实现</a>
+      <a href="#testing">测试</a>
+      <a href="#future">后续扩展</a>
+    </nav>
+
+    <section id="background" class="panel">
+      <h2>背景</h2>
+      <p>部分异常会导致上传后的 MCAP 无法播放，例如播放器初始化时报错：<code>Expected MCAP magic '89 4d 43 41 50 30 0d 0a', found ...</code>。当前错误通常在预览加载早期暴露，不需要等待全量数据解析。</p>
+      <p>因此需要在 keystone 和 synapse 中提供一个轻量、手动触发、可扩展的质检能力。当前优先检查 MCAP 容器边界是否满足基本格式要求，并将失败结果沉淀到 episode 状态，供后续预览、下载、上传和同步统一拦截。</p>
+      <div class="callout warn">
+        <strong>边界说明：</strong>头尾 magic 校验只能证明 MCAP 文件边界基本正确，不能证明文件一定可播放。内部 chunk、schema、压缩数据、CRC 或索引仍可能损坏。该检查用于快速拦截明显坏包。
+      </div>
+    </section>
+
+    <section id="goals">
+      <h2>目标与非目标</h2>
+      <div class="grid">
+        <div class="panel">
+          <h3>目标</h3>
+          <ul>
+            <li>在 episode 详情页提供固定按钮 <code>MCAP 质检</code>。</li>
+            <li>通过通用 API 触发质检项，当前检查项为 <code>mcap_magic</code>。</li>
+            <li>只读 MCAP 头 8 字节和尾 8 字节，保持轻量。</li>
+            <li>任何检查失败都将 <code>episodes.qa_status</code> 置为 <code>failed</code>。</li>
+            <li>失败状态阻止 MCAP 预览、MCAP 下载和云同步。</li>
+            <li>为后续 Python 脚本质检预留内部扩展结构。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>非目标</h3>
+          <ul>
+            <li>不新增 episode 状态字段。</li>
+            <li>不做全量 MCAP 解析。</li>
+            <li>不在通过头尾校验后自动批准 episode。</li>
+            <li>不在后续检查通过时自动从 <code>failed</code> 恢复。</li>
+            <li>不立即实现 Python 脚本执行器。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="data-model" class="panel">
+      <h2>数据模型复用</h2>
+      <p>本设计不新增字段，复用现有 <code>episodes</code> 和 <code>qa_checks</code>。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>字段/表</th>
+            <th>用途</th>
+            <th>规则</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>episodes.qa_status</code></td>
+            <td>episode 当前对外质量状态</td>
+            <td>任何检查失败都设置为 <code>failed</code>；检查通过不自动改为 <code>approved</code></td>
+          </tr>
+          <tr>
+            <td><code>episodes.quality_flag</code></td>
+            <td>面向研究员和运营人员的质量说明</td>
+            <td>检查失败时写入失败摘要，例如头尾 magic 不匹配</td>
+          </tr>
+          <tr>
+            <td><code>qa_checks</code></td>
+            <td>记录每次检查的历史和证据</td>
+            <td>每次点击都插入一条记录，不覆盖旧记录</td>
+          </tr>
+          <tr>
+            <td><code>qa_checks.check_metadata</code></td>
+            <td>结构化检查详情</td>
+            <td>记录 expected/head/tail/file_size 等数据</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>状态规则</h3>
+      <div class="three-grid">
+        <div class="mini">
+          <strong>失败</strong>
+          <p>插入 <code>qa_checks.passed=false</code>，设置 <code>qa_status=failed</code>，写入 <code>quality_flag</code>。</p>
+        </div>
+        <div class="mini">
+          <strong>通过</strong>
+          <p>插入 <code>qa_checks.passed=true</code>，不自动批准，也不自动恢复 <code>failed</code>。</p>
+        </div>
+        <div class="mini">
+          <strong>已同步数据</strong>
+          <p>如果检查失败，不回滚 <code>cloud_synced</code>；后续重新同步必须被阻止。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="api" class="panel">
+      <h2>API 设计</h2>
+      <h3>运行质检</h3>
+      <pre><code>POST /api/v1/episodes/:id/qa-checks
+Content-Type: application/json
+
+{
+  "check_name": "mcap_magic"
+}</code></pre>
+
+      <h3>响应示例：通过</h3>
+      <pre><code>{
+  "episode_id": 123,
+  "check_name": "mcap_magic",
+  "passed": true,
+  "score": 1,
+  "details": "MCAP head and tail magic matched",
+  "check_metadata": {
+    "expected_magic": "89 4d 43 41 50 30 0d 0a",
+    "found_head_magic": "89 4d 43 41 50 30 0d 0a",
+    "found_tail_magic": "89 4d 43 41 50 30 0d 0a",
+    "file_size_bytes": 123456789
+  },
+  "checked_at": "2026-06-05T10:30:00Z"
+}</code></pre>
+
+      <h3>响应示例：失败</h3>
+      <pre><code>{
+  "episode_id": 123,
+  "check_name": "mcap_magic",
+  "passed": false,
+  "score": 0,
+  "details": "MCAP integrity check failed: tail magic mismatch",
+  "check_metadata": {
+    "expected_magic": "89 4d 43 41 50 30 0d 0a",
+    "found_head_magic": "89 4d 43 41 50 30 0d 0a",
+    "found_tail_magic": "8b ef b8 75 c6 97 96 61",
+    "file_size_bytes": 123456789
+  },
+  "checked_at": "2026-06-05T10:30:00Z"
+}</code></pre>
+
+      <h3>错误处理</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>场景</th>
+            <th>状态码</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>episode 不存在</td>
+            <td><code>404</code></td>
+            <td>返回 <code>{"error":"episode not found"}</code></td>
+          </tr>
+          <tr>
+            <td>未知检查项</td>
+            <td><code>400</code></td>
+            <td>返回 <code>{"error":"unsupported qa check"}</code></td>
+          </tr>
+          <tr>
+            <td>S3/MinIO 不可用</td>
+            <td><code>502</code> 或 <code>503</code></td>
+            <td>不写入失败质检记录，避免把基础设施故障误判成数据坏包</td>
+          </tr>
+          <tr>
+            <td>文件格式检查失败</td>
+            <td><code>200</code></td>
+            <td>返回 <code>passed=false</code>，并落库更新 episode 状态</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="backend">
+      <h2>后端实现</h2>
+      <div class="panel">
+        <h3>执行流程</h3>
+        <div class="flow">
+          <div class="step">
+            <span>1</span>
+            <strong>接收请求</strong>
+            <p>解析 episode ID 和 <code>check_name</code>。</p>
+          </div>
+          <div class="step">
+            <span>2</span>
+            <strong>加载 episode</strong>
+            <p>读取 <code>mcap_path</code>、<code>qa_status</code> 等必要字段。</p>
+          </div>
+          <div class="step">
+            <span>3</span>
+            <strong>调用检查器</strong>
+            <p>通过 registry 调用 <code>mcap_magic</code>。</p>
+          </div>
+          <div class="step">
+            <span>4</span>
+            <strong>写入历史</strong>
+            <p>插入 <code>qa_checks</code>，保留每次执行证据。</p>
+          </div>
+          <div class="step">
+            <span>5</span>
+            <strong>更新门禁</strong>
+            <p>失败时设置 <code>qa_status=failed</code>。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="panel">
+          <h3>检查器结果模型</h3>
+          <pre><code>type QACheckResult struct {
+    CheckName string
+    Passed bool
+    Score float64
+    Details string
+    Metadata map[string]any
+}</code></pre>
+        </div>
+        <div class="panel">
+          <h3>检查项注册</h3>
+          <pre><code>mcap_magic -&gt; Go 内置检查器
+sidecar_schema -&gt; 未来检查器
+python:&lt;script_name&gt; -&gt; 未来脚本检查器</code></pre>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3><code>mcap_magic</code> 检查细节</h3>
+        <ul>
+          <li>期望 magic：<code>89 4d 43 41 50 30 0d 0a</code>。</li>
+          <li>先通过 S3 stat 获取对象大小。</li>
+          <li>对象大小小于 16 字节时直接返回 <code>passed=false</code>。</li>
+          <li>读取 <code>Range: bytes=0-7</code> 作为 head magic。</li>
+          <li>读取 <code>Range: bytes=(size-8)-(size-1)</code> 作为 tail magic。</li>
+          <li>head 或 tail 任一不匹配即失败。</li>
+          <li>不初始化 MCAP reader，不加载索引，不解压 chunk。</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <h3>后续门禁改造</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>行为</th>
+              <th>规则</th>
+              <th>实现点</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>MCAP 预览 URL</td>
+              <td><code>qa_status=failed</code> 时拒绝签发</td>
+              <td><code>EpisodeHandler.GetEpisodePresignedURL</code></td>
+            </tr>
+            <tr>
+              <td>MCAP 下载 URL</td>
+              <td><code>qa_status=failed</code> 时拒绝签发</td>
+              <td><code>kind=mcap</code> 的 presign 请求</td>
+            </tr>
+            <tr>
+              <td>JSON sidecar 下载</td>
+              <td>不受 MCAP 完整性失败影响</td>
+              <td><code>kind=sidecar</code> 保持现有行为</td>
+            </tr>
+            <tr>
+              <td>普通云同步</td>
+              <td>现有 approved 条件自然阻止 failed</td>
+              <td><code>SyncHandler.TriggerEpisodeSync</code></td>
+            </tr>
+            <tr>
+              <td>重新同步</td>
+              <td><code>qa_status=failed</code> 时阻止</td>
+              <td><code>SyncHandler.TriggerEpisodeResync</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="frontend" class="panel">
+      <h2>前端实现</h2>
+      <p>前端仅在 episode 详情页增加固定按钮，不引入检查项下拉。通用化保留在 API 和后端 registry。</p>
+      <div class="three-grid">
+        <div class="mini">
+          <strong>入口</strong>
+          <p><code>synapse/src/views/admin/episodes/EpisodeDetail.vue</code> 的“数据预览”卡片。</p>
+        </div>
+        <div class="mini">
+          <strong>按钮</strong>
+          <p>新增 <code>MCAP 质检</code> 按钮，点击后调用通用质检接口。</p>
+        </div>
+        <div class="mini">
+          <strong>状态</strong>
+          <p>展示 loading、通过提示、失败原因，并在失败后刷新详情。</p>
+        </div>
+      </div>
+
+      <h3>API 封装</h3>
+      <pre><code>episodesApi.runQACheck(id, { check_name: 'mcap_magic' })</code></pre>
+
+      <h3>交互规则</h3>
+      <ul>
+        <li>点击 <code>MCAP 质检</code> 后按钮进入提交中状态。</li>
+        <li>返回 <code>passed=true</code> 时显示“MCAP 头尾校验通过”。</li>
+        <li>返回 <code>passed=false</code> 时显示 <code>details</code>，并刷新 episode 详情。</li>
+        <li>当前 episode 的 <code>qaStatus === 'failed'</code> 时，前端可禁用 MCAP 预览和下载按钮。</li>
+        <li>后端仍是最终门禁，前端禁用只是体验优化。</li>
+      </ul>
+    </section>
+
+    <section id="testing">
+      <h2>测试计划</h2>
+      <div class="grid">
+        <div class="panel">
+          <h3>Keystone</h3>
+          <ul>
+            <li>有效 MCAP：head/tail 均匹配，写入 <code>qa_checks.passed=true</code>。</li>
+            <li>head 不匹配：写入失败记录并更新 <code>qa_status=failed</code>。</li>
+            <li>tail 不匹配：写入失败记录并更新 <code>qa_status=failed</code>。</li>
+            <li>文件小于 16 字节：失败并记录文件大小。</li>
+            <li>S3 不可用：返回基础设施错误，不误更新 <code>qa_status</code>。</li>
+            <li><code>presign?kind=mcap</code> 在 <code>failed</code> 时拒绝。</li>
+            <li><code>presign?kind=sidecar</code> 在 <code>failed</code> 时仍允许。</li>
+            <li>同步和重新同步在 <code>failed</code> 时拒绝。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>Synapse</h3>
+          <ul>
+            <li>详情页显示 <code>MCAP 质检</code> 按钮。</li>
+            <li>点击按钮时展示提交中状态。</li>
+            <li>通过后显示成功提示。</li>
+            <li>失败后显示失败原因并刷新 QA 状态。</li>
+            <li><code>qaStatus=failed</code> 时 MCAP 预览和下载按钮禁用或显示后端错误。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="future" class="panel">
+      <h2>后续 Python 脚本扩展</h2>
+      <p>当前实现只需要 registry 和统一结果模型，不执行 Python 脚本。后续接入脚本时，脚本输出应复用同一 JSON 结构，Go 侧只负责执行、解析、落库和状态更新。</p>
+      <pre><code>{
+  "passed": true,
+  "score": 1.0,
+  "details": "all required topics present",
+  "metadata": {
+    "topics": ["/camera/image/compressed"],
+    "missing_topics": []
+  }
+}</code></pre>
+      <div class="tag-row" aria-label="后续检查项示例">
+        <span class="tag">sidecar_schema</span>
+        <span class="tag">duration_range</span>
+        <span class="tag">topic_required</span>
+        <span class="tag">python:custom_script</span>
+      </div>
+    </section>
+
+    <section class="panel danger">
+      <h2>已确认决策</h2>
+      <ul>
+        <li>不新增字段，复用 <code>qa_status</code>、<code>quality_flag</code> 和 <code>qa_checks</code>。</li>
+        <li>所有检查项失败都把 <code>qa_status</code> 置为 <code>failed</code>。</li>
+        <li>检查通过不自动批准，也不自动恢复失败状态。</li>
+        <li>已经批准的 episode 质检失败后允许降级为 <code>failed</code>。</li>
+        <li>当前前端只做固定按钮 <code>MCAP 质检</code>。</li>
+        <li>MCAP 失败阻止 MCAP 预览、下载和云同步，sidecar 下载保持允许。</li>
+      </ul>
+    </section>
+
+    <p class="footer-note">本文档描述的是开发实现方案，不是用户操作手册。实现时应以现有 keystone/synapse 代码风格、鉴权规则和错误响应格式为准。</p>
+  </main>
+</body>
+</html>
