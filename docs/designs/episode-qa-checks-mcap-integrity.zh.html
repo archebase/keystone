@@ -8,7 +8,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Episode 通用质检与 MCAP 完整性检查开发设计</title>
+  <title>数据运维质检中心与 Episode 自动质检开发设计</title>
   <style>
     :root {
       color-scheme: light;
@@ -343,13 +343,13 @@ SPDX-License-Identifier: MulanPSL-2.0
     <header>
       <div>
         <p class="eyebrow">Keystone / Synapse Development Design</p>
-        <h1>Episode 通用质检与 MCAP 完整性检查</h1>
-        <p class="lead">在 episode 详情页提供手动触发的轻量质检入口。当前首个检查项为 MCAP 头尾 magic 校验；未来 Python 脚本型质检通过同一接口和落库模型接入。</p>
+        <h1>数据运维质检中心与 Episode 自动质检</h1>
+        <p class="lead">在管理后台“数据运维”板块增加质检中心，作为运营处理异常 episode 的工作台。第一版提供轻量 MCAP 完整性检查、episode 创建后自动质检、手动重新质检和统一质检历史；后续再扩展 robot_type 维度的 Go/Python 脚本质检配置。</p>
       </div>
       <div class="header-meta">
         <strong>设计状态</strong>
-        <div>已确认方案，待实现</div>
-        <div>创建时间：2026-06-05</div>
+        <div>MVP 已实现，后续扩展待规划</div>
+        <div>更新时间：2026-06-05</div>
         <div>影响范围：keystone、synapse</div>
       </div>
     </header>
@@ -358,6 +358,7 @@ SPDX-License-Identifier: MulanPSL-2.0
       <a href="#background">背景</a>
       <a href="#goals">目标</a>
       <a href="#data-model">数据模型</a>
+      <a href="#state">状态规则</a>
       <a href="#api">API</a>
       <a href="#backend">后端实现</a>
       <a href="#frontend">前端实现</a>
@@ -367,10 +368,10 @@ SPDX-License-Identifier: MulanPSL-2.0
 
     <section id="background" class="panel">
       <h2>背景</h2>
-      <p>部分异常会导致上传后的 MCAP 无法播放，例如播放器初始化时报错：<code>Expected MCAP magic '89 4d 43 41 50 30 0d 0a', found ...</code>。当前错误通常在预览加载早期暴露，不需要等待全量数据解析。</p>
-      <p>因此需要在 keystone 和 synapse 中提供一个轻量、手动触发、可扩展的质检能力。当前优先检查 MCAP 容器边界是否满足基本格式要求，并将失败结果沉淀到 episode 状态，供后续预览、下载、上传和同步统一拦截。</p>
+      <p>部分异常会导致上传后的 MCAP 无法播放，例如播放器初始化时报错：<code>Expected MCAP magic '89 4d 43 41 50 30 0d 0a', found ...</code>。这类错误通常在预览加载早期暴露，不需要等待全量数据解析。</p>
+      <p>上一版已经验证了轻量 MCAP 头尾 magic 检查的价值。下一版需要把单个详情页按钮升级为后台“质检中心”：运营人员能集中看到待处理 episode、重新触发完整质检 suite、查看最近一次检查结果和历史证据；episode 创建后也应自动进入质检流程。</p>
       <div class="callout warn">
-        <strong>边界说明：</strong>头尾 magic 校验只能证明 MCAP 文件边界基本正确，不能证明文件一定可播放。内部 chunk、schema、压缩数据、CRC 或索引仍可能损坏。该检查用于快速拦截明显坏包。
+        <strong>边界说明：</strong>头尾 magic 校验只能证明 MCAP 文件边界基本正确，不能证明文件一定可播放。内部 chunk、schema、压缩数据、CRC 或索引仍可能损坏。该检查用于快速拦截明显坏包，后续可以通过更多检查项补足。
       </div>
     </section>
 
@@ -380,22 +381,25 @@ SPDX-License-Identifier: MulanPSL-2.0
         <div class="panel">
           <h3>目标</h3>
           <ul>
-            <li>在 episode 详情页提供固定按钮 <code>MCAP 质检</code>。</li>
-            <li>通过通用 API 触发质检项，当前检查项为 <code>mcap_magic</code>。</li>
-            <li>只读 MCAP 头 8 字节和尾 8 字节，保持轻量。</li>
-            <li>任何检查失败都将 <code>episodes.qa_status</code> 置为 <code>failed</code>。</li>
-            <li>失败状态阻止 MCAP 预览、MCAP 下载和云同步。</li>
-            <li>为后续 Python 脚本质检预留内部扩展结构。</li>
+            <li>在 Synapse 管理后台“数据运维”板块增加 <code>质检中心</code> 页面。</li>
+            <li>质检中心第一版是运营工作台，默认展示 <code>pending_qa</code>、<code>failed</code>、<code>needs_inspection</code> 等可处理 episode。</li>
+            <li>episode 创建后由 Keystone 异步触发自动质检。</li>
+            <li>前端手动入口统一触发完整质检 suite，而不是触发单个检查项。</li>
+            <li>第一版默认质检 suite 固定为 <code>['mcap_magic']</code>。</li>
+            <li>所有检查项都写入 <code>qa_checks</code>，失败时写入 <code>quality_flag</code> 并将 <code>qa_status</code> 置为 <code>failed</code>。</li>
+            <li>完整 suite 全部通过后，允许自动将可自动流转的 episode 置为 <code>approved</code>。</li>
+            <li><code>qa_status=failed</code> 继续阻止 MCAP 预览、MCAP 下载和云同步。</li>
           </ul>
         </div>
         <div class="panel">
           <h3>非目标</h3>
           <ul>
-            <li>不新增 episode 状态字段。</li>
-            <li>不做全量 MCAP 解析。</li>
-            <li>不在通过头尾校验后自动批准 episode。</li>
-            <li>不在后续检查通过时自动从 <code>failed</code> 恢复。</li>
-            <li>不立即实现 Python 脚本执行器。</li>
+            <li>第一版不支持批量质检或批量同步。</li>
+            <li>第一版不引入持久化 QA job/queue 表。</li>
+            <li>第一版不做 robot_type 质检配置 UI。</li>
+            <li>第一版不执行 Python 脚本。</li>
+            <li>不新增 episode 状态字段，继续复用现有 <code>qa_status</code>、<code>quality_flag</code> 和 <code>qa_checks</code>。</li>
+            <li>不把 <code>POST /api/v1/episodes/:id/qa-checks</code> 作为新的 UI 主接口；UI 改走完整 suite 接口。</li>
           </ul>
         </div>
       </div>
@@ -403,7 +407,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 
     <section id="data-model" class="panel">
       <h2>数据模型复用</h2>
-      <p>本设计不新增字段，复用现有 <code>episodes</code> 和 <code>qa_checks</code>。</p>
+      <p>本设计不新增字段。Episode 当前质量状态继续放在 <code>episodes.qa_status</code>，运营可见质量摘要继续放在 <code>episodes.quality_flag</code>，每次检查证据继续沉淀到 <code>qa_checks</code>。</p>
       <table>
         <thead>
           <tr>
@@ -415,84 +419,183 @@ SPDX-License-Identifier: MulanPSL-2.0
         <tbody>
           <tr>
             <td><code>episodes.qa_status</code></td>
-            <td>episode 当前对外质量状态</td>
-            <td>任何检查失败都设置为 <code>failed</code>；检查通过不自动改为 <code>approved</code></td>
+            <td>episode 当前对外质量状态和门禁依据</td>
+            <td>自动/手动质检运行时置为 <code>qa_running</code>；任一检查失败置为 <code>failed</code>；全部通过时按状态保护规则置为 <code>approved</code> 或保持人工状态</td>
           </tr>
           <tr>
             <td><code>episodes.quality_flag</code></td>
             <td>面向研究员和运营人员的质量说明</td>
-            <td>检查失败时写入失败摘要，例如头尾 magic 不匹配</td>
+            <td>失败时写入失败摘要，例如头尾 magic 不匹配；通过时可清空由自动质检写入的失败摘要</td>
           </tr>
           <tr>
             <td><code>qa_checks</code></td>
-            <td>记录每次检查的历史和证据</td>
-            <td>每次点击都插入一条记录，不覆盖旧记录</td>
+            <td>记录每个检查项的历史和证据</td>
+            <td>每次 suite 运行内的每个检查项都插入记录，不覆盖旧记录</td>
+          </tr>
+          <tr>
+            <td><code>qa_checks.check_name</code></td>
+            <td>检查项标识</td>
+            <td>第一版固定为 <code>mcap_magic</code>，未来可出现 <code>topic_required</code>、<code>duration_range</code>、<code>python:&lt;script_name&gt;</code> 等</td>
           </tr>
           <tr>
             <td><code>qa_checks.check_metadata</code></td>
             <td>结构化检查详情</td>
-            <td>记录 expected/head/tail/file_size 等数据</td>
+            <td>记录 expected/head/tail/file_size 等数据，便于质检中心抽屉展示和问题排查</td>
           </tr>
         </tbody>
       </table>
 
-      <h3>状态规则</h3>
+      <h3><code>qa_checks.passed</code> 与 <code>qa_status</code> 的区别</h3>
       <div class="three-grid">
         <div class="mini">
-          <strong>失败</strong>
-          <p>插入 <code>qa_checks.passed=false</code>，设置 <code>qa_status=failed</code>，写入 <code>quality_flag</code>。</p>
+          <strong><code>qa_checks.passed</code></strong>
+          <p>单次、单项检查的事实记录。它回答“这一次 mcap_magic 是否通过”。</p>
         </div>
         <div class="mini">
-          <strong>通过</strong>
-          <p>插入 <code>qa_checks.passed=true</code>，不自动批准，也不自动恢复 <code>failed</code>。</p>
+          <strong><code>qa_status</code></strong>
+          <p>episode 当前对外状态。它回答“这个 episode 现在能否预览、下载、同步、进入后续流程”。</p>
         </div>
         <div class="mini">
-          <strong>已同步数据</strong>
-          <p>如果检查失败，不回滚 <code>cloud_synced</code>；后续重新同步必须被阻止。</p>
+          <strong>为什么都需要</strong>
+          <p>历史检查可能多次通过/失败，但门禁只看 episode 当前状态；两者分离可以保留证据，同时支持重新质检恢复。</p>
         </div>
+      </div>
+    </section>
+
+    <section id="state" class="panel">
+      <h2>状态规则</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>场景</th>
+            <th>输入状态</th>
+            <th>输出状态</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>自动质检开始</td>
+            <td><code>pending_qa</code></td>
+            <td><code>qa_running</code></td>
+            <td><code>qa_running</code> 作为 episode 级互斥锁，避免重复运行</td>
+          </tr>
+          <tr>
+            <td>自动质检全部通过</td>
+            <td><code>pending_qa</code> 或 <code>qa_running</code></td>
+            <td><code>approved</code></td>
+            <td>用户已确认希望自动批准</td>
+          </tr>
+          <tr>
+            <td>自动质检任一失败</td>
+            <td>可运行状态</td>
+            <td><code>failed</code></td>
+            <td>所有检查项失败都统一落为 <code>failed</code></td>
+          </tr>
+          <tr>
+            <td>手动重新质检全部通过</td>
+            <td><code>failed</code> 或 <code>qa_running</code></td>
+            <td><code>approved</code></td>
+            <td>允许修复数据或重新上传后从失败恢复</td>
+          </tr>
+          <tr>
+            <td>手动重新质检任一失败</td>
+            <td>可运行状态</td>
+            <td><code>failed</code></td>
+            <td>写入最新失败原因，继续阻止 MCAP 相关行为</td>
+          </tr>
+          <tr>
+            <td>人工终态保护</td>
+            <td><code>rejected</code>、<code>needs_inspection</code>、<code>inspector_approved</code></td>
+            <td>保持原状态</td>
+            <td>手动质检不能覆盖人工决策状态，但仍可写入 <code>qa_checks</code> 历史</td>
+          </tr>
+          <tr>
+            <td>已有质检运行中</td>
+            <td><code>qa_running</code></td>
+            <td><code>qa_running</code></td>
+            <td>新的手动运行返回 <code>409</code>，前端提示稍后重试</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout warn">
+        <strong>实现约束：</strong>如果手动入口从人工终态触发，只能记录检查事实，不能把 <code>rejected</code>、<code>needs_inspection</code>、<code>inspector_approved</code> 自动改成 <code>approved</code> 或 <code>failed</code>。这些状态代表人工判断，优先级高于自动质检。
       </div>
     </section>
 
     <section id="api" class="panel">
       <h2>API 设计</h2>
-      <h3>运行质检</h3>
-      <pre><code>POST /api/v1/episodes/:id/qa-checks
+      <p>新 UI 统一走 <code>/api/v1/qa</code> 命名空间。旧的单项接口不作为质检中心和 episode 详情页的主调用路径，后续可以删除或仅保留为内部兼容入口。</p>
+
+      <h3>查询质检中心 episode 列表</h3>
+      <pre><code>GET /api/v1/qa/episodes?status=failed&amp;robot_type=arm_bot&amp;q=demo&amp;page=1&amp;page_size=20</code></pre>
+      <pre><code>{
+  "items": [
+    {
+      "id": 123,
+      "public_id": "ep_20260605_001",
+      "task_id": 88,
+      "robot_type": "arm_bot",
+      "qa_status": "failed",
+      "quality_flag": "MCAP integrity check failed: tail magic mismatch",
+      "created_at": "2026-06-05T10:20:00Z",
+      "latest_qa_check": {
+        "check_name": "mcap_magic",
+        "passed": false,
+        "details": "MCAP integrity check failed: tail magic mismatch",
+        "checked_at": "2026-06-05T10:30:00Z"
+      }
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "total": 1
+  }
+}</code></pre>
+
+      <h3>查询 episode 质检历史</h3>
+      <pre><code>GET /api/v1/qa/episodes/:id/checks</code></pre>
+      <pre><code>{
+  "items": [
+    {
+      "id": 456,
+      "episode_id": 123,
+      "check_name": "mcap_magic",
+      "passed": false,
+      "score": 0,
+      "details": "MCAP integrity check failed: tail magic mismatch",
+      "check_metadata": {
+        "expected_magic": "89 4d 43 41 50 30 0d 0a",
+        "found_head_magic": "89 4d 43 41 50 30 0d 0a",
+        "found_tail_magic": "8b ef b8 75 c6 97 96 61",
+        "file_size_bytes": 123456789
+      },
+      "checked_at": "2026-06-05T10:30:00Z"
+    }
+  ]
+}</code></pre>
+
+      <h3>运行 episode 完整质检 suite</h3>
+      <pre><code>POST /api/v1/qa/episodes/:id/run
 Content-Type: application/json
 
 {
-  "check_name": "mcap_magic"
+  "mode": "manual"
 }</code></pre>
-
-      <h3>响应示例：通过</h3>
       <pre><code>{
   "episode_id": 123,
-  "check_name": "mcap_magic",
+  "qa_status": "approved",
   "passed": true,
-  "score": 1,
-  "details": "MCAP head and tail magic matched",
-  "check_metadata": {
-    "expected_magic": "89 4d 43 41 50 30 0d 0a",
-    "found_head_magic": "89 4d 43 41 50 30 0d 0a",
-    "found_tail_magic": "89 4d 43 41 50 30 0d 0a",
-    "file_size_bytes": 123456789
-  },
-  "checked_at": "2026-06-05T10:30:00Z"
-}</code></pre>
-
-      <h3>响应示例：失败</h3>
-      <pre><code>{
-  "episode_id": 123,
-  "check_name": "mcap_magic",
-  "passed": false,
-  "score": 0,
-  "details": "MCAP integrity check failed: tail magic mismatch",
-  "check_metadata": {
-    "expected_magic": "89 4d 43 41 50 30 0d 0a",
-    "found_head_magic": "89 4d 43 41 50 30 0d 0a",
-    "found_tail_magic": "8b ef b8 75 c6 97 96 61",
-    "file_size_bytes": 123456789
-  },
-  "checked_at": "2026-06-05T10:30:00Z"
+  "checks": [
+    {
+      "check_name": "mcap_magic",
+      "passed": true,
+      "score": 1,
+      "details": "MCAP head and tail magic matched",
+      "checked_at": "2026-06-05T10:35:00Z"
+    }
+  ]
 }</code></pre>
 
       <h3>错误处理</h3>
@@ -511,9 +614,9 @@ Content-Type: application/json
             <td>返回 <code>{"error":"episode not found"}</code></td>
           </tr>
           <tr>
-            <td>未知检查项</td>
-            <td><code>400</code></td>
-            <td>返回 <code>{"error":"unsupported qa check"}</code></td>
+            <td>已有质检运行中</td>
+            <td><code>409</code></td>
+            <td>返回 <code>{"error":"qa already running"}</code></td>
           </tr>
           <tr>
             <td>S3/MinIO 不可用</td>
@@ -536,33 +639,48 @@ Content-Type: application/json
         <div class="flow">
           <div class="step">
             <span>1</span>
-            <strong>接收请求</strong>
-            <p>解析 episode ID 和 <code>check_name</code>。</p>
+            <strong>创建或手动触发</strong>
+            <p>episode 创建后自动入内存队列；质检中心和详情页手动调用 run 接口。</p>
           </div>
           <div class="step">
             <span>2</span>
-            <strong>加载 episode</strong>
-            <p>读取 <code>mcap_path</code>、<code>qa_status</code> 等必要字段。</p>
+            <strong>获取互斥锁</strong>
+            <p>将可运行状态置为 <code>qa_running</code>；若已运行则手动请求返回 <code>409</code>。</p>
           </div>
           <div class="step">
             <span>3</span>
-            <strong>调用检查器</strong>
-            <p>通过 registry 调用 <code>mcap_magic</code>。</p>
+            <strong>加载 suite</strong>
+            <p>第一版硬编码 <code>['mcap_magic']</code>，未来按 <code>robot_type</code> 加载配置。</p>
           </div>
           <div class="step">
             <span>4</span>
             <strong>写入历史</strong>
-            <p>插入 <code>qa_checks</code>，保留每次执行证据。</p>
+            <p>每个检查项都插入 <code>qa_checks</code>，保留本次运行证据。</p>
           </div>
           <div class="step">
             <span>5</span>
             <strong>更新门禁</strong>
-            <p>失败时设置 <code>qa_status=failed</code>。</p>
+            <p>任一失败置为 <code>failed</code>；全部通过按状态保护规则置为 <code>approved</code>。</p>
           </div>
         </div>
       </div>
 
       <div class="grid">
+        <div class="panel">
+          <h3>核心服务接口</h3>
+          <pre><code>type QARunMode string
+
+const (
+    QARunModeAuto QARunMode = "auto"
+    QARunModeManual QARunMode = "manual"
+)
+
+func (s *QAService) RunEpisodeQASuite(
+    ctx context.Context,
+    episodeID int64,
+    mode QARunMode,
+) (*QASuiteResult, error)</code></pre>
+        </div>
         <div class="panel">
           <h3>检查器结果模型</h3>
           <pre><code>type QACheckResult struct {
@@ -573,12 +691,16 @@ Content-Type: application/json
     Metadata map[string]any
 }</code></pre>
         </div>
-        <div class="panel">
-          <h3>检查项注册</h3>
-          <pre><code>mcap_magic -&gt; Go 内置检查器
-sidecar_schema -&gt; 未来检查器
-python:&lt;script_name&gt; -&gt; 未来脚本检查器</code></pre>
-        </div>
+      </div>
+
+      <div class="panel">
+        <h3>自动质检队列</h3>
+        <ul>
+          <li>episode 创建成功并提交事务后，将 episode ID 推入 Keystone 进程内轻量队列。</li>
+          <li>队列 worker 异步调用 <code>RunEpisodeQASuite(ctx, episodeID, QARunModeAuto)</code>。</li>
+          <li>第一版不持久化 job，不提供批量重放；服务重启时可能丢失尚未执行的自动质检任务，当前接受该取舍。</li>
+          <li>质检中心仍可以通过筛选 <code>pending_qa</code> 发现漏检 episode，并手动触发 <code>重新质检</code>。</li>
+        </ul>
       </div>
 
       <div class="panel">
@@ -595,7 +717,7 @@ python:&lt;script_name&gt; -&gt; 未来脚本检查器</code></pre>
       </div>
 
       <div class="panel">
-        <h3>后续门禁改造</h3>
+        <h3>门禁改造</h3>
         <table>
           <thead>
             <tr>
@@ -637,32 +759,48 @@ python:&lt;script_name&gt; -&gt; 未来脚本检查器</code></pre>
 
     <section id="frontend" class="panel">
       <h2>前端实现</h2>
-      <p>前端仅在 episode 详情页增加固定按钮，不引入检查项下拉。通用化保留在 API 和后端 registry。</p>
+      <p>Synapse 需要新增质检中心页面，并让 episode 详情页复用同一个“重新质检”动作。前端不暴露检查项选择，也不显示 robot_type 脚本配置占位，避免第一版范围膨胀。</p>
       <div class="three-grid">
         <div class="mini">
-          <strong>入口</strong>
-          <p><code>synapse/src/views/admin/episodes/EpisodeDetail.vue</code> 的“数据预览”卡片。</p>
+          <strong>导航入口</strong>
+          <p>管理后台侧边栏的“数据运维”下新增 <code>质检中心</code>。</p>
         </div>
         <div class="mini">
-          <strong>按钮</strong>
-          <p>新增 <code>MCAP 质检</code> 按钮，点击后调用通用质检接口。</p>
+          <strong>默认列表</strong>
+          <p>默认筛选 <code>pending_qa</code>、<code>failed</code>、<code>needs_inspection</code>，优先展示需要处理的数据。</p>
         </div>
         <div class="mini">
-          <strong>状态</strong>
-          <p>展示 loading、通过提示、失败原因，并在失败后刷新详情。</p>
+          <strong>统一动作</strong>
+          <p>质检中心行操作和 episode 详情页按钮都命名为 <code>重新质检</code>，调用同一个 run 接口。</p>
         </div>
       </div>
 
-      <h3>API 封装</h3>
-      <pre><code>episodesApi.runQACheck(id, { check_name: 'mcap_magic' })</code></pre>
+      <h3>筛选项</h3>
+      <div class="tag-row" aria-label="质检中心筛选项">
+        <span class="tag">全部</span>
+        <span class="tag">pending_qa</span>
+        <span class="tag">failed</span>
+        <span class="tag">needs_inspection</span>
+        <span class="tag">approved / inspector_approved</span>
+        <span class="tag">rejected</span>
+      </div>
+
+      <h3>列表字段</h3>
+      <ul>
+        <li>episode ID / public ID / task ID。</li>
+        <li><code>robot_type</code>，为下一版按机器人类型配置质检脚本做铺垫。</li>
+        <li><code>qa_status</code> 和 <code>quality_flag</code>。</li>
+        <li>最近一次质检：<code>latest_qa_check.check_name</code>、<code>passed</code>、<code>details</code>、<code>checked_at</code>。</li>
+        <li>行操作：查看 episode、查看质检历史、重新质检。</li>
+      </ul>
 
       <h3>交互规则</h3>
       <ul>
-        <li>点击 <code>MCAP 质检</code> 后按钮进入提交中状态。</li>
-        <li>返回 <code>passed=true</code> 时显示“MCAP 头尾校验通过”。</li>
-        <li>返回 <code>passed=false</code> 时显示 <code>details</code>，并刷新 episode 详情。</li>
-        <li>当前 episode 的 <code>qaStatus === 'failed'</code> 时，前端可禁用 MCAP 预览和下载按钮。</li>
-        <li>后端仍是最终门禁，前端禁用只是体验优化。</li>
+        <li>点击 <code>重新质检</code> 后按钮进入提交中状态。</li>
+        <li>返回 <code>passed=true</code> 时刷新列表和详情，展示最新状态。</li>
+        <li>返回 <code>passed=false</code> 时展示 <code>details</code>，并刷新 <code>qa_status</code> 与 <code>quality_flag</code>。</li>
+        <li>返回 <code>409</code> 时提示该 episode 正在质检中，不重复提交。</li>
+        <li>质检历史使用抽屉或轻量面板展示 <code>GET /api/v1/qa/episodes/:id/checks</code> 的完整记录。</li>
       </ul>
     </section>
 
@@ -672,41 +810,46 @@ python:&lt;script_name&gt; -&gt; 未来脚本检查器</code></pre>
         <div class="panel">
           <h3>Keystone</h3>
           <ul>
-            <li>有效 MCAP：head/tail 均匹配，写入 <code>qa_checks.passed=true</code>。</li>
-            <li>head 不匹配：写入失败记录并更新 <code>qa_status=failed</code>。</li>
-            <li>tail 不匹配：写入失败记录并更新 <code>qa_status=failed</code>。</li>
-            <li>文件小于 16 字节：失败并记录文件大小。</li>
-            <li>S3 不可用：返回基础设施错误，不误更新 <code>qa_status</code>。</li>
-            <li><code>presign?kind=mcap</code> 在 <code>failed</code> 时拒绝。</li>
-            <li><code>presign?kind=sidecar</code> 在 <code>failed</code> 时仍允许。</li>
+            <li>episode 创建后自动入队并执行 <code>mcap_magic</code>。</li>
+            <li>自动质检全部通过时，<code>pending_qa</code> 或 <code>qa_running</code> 更新为 <code>approved</code>。</li>
+            <li>自动质检失败时写入 <code>qa_checks.passed=false</code>、<code>quality_flag</code>，并设置 <code>qa_status=failed</code>。</li>
+            <li>手动重新质检允许 <code>failed</code> 在全部通过后恢复为 <code>approved</code>。</li>
+            <li>手动重新质检不能覆盖 <code>rejected</code>、<code>needs_inspection</code>、<code>inspector_approved</code>。</li>
+            <li><code>qa_running</code> 状态下再次手动运行返回 <code>409</code>。</li>
+            <li><code>GET /api/v1/qa/episodes</code> 返回最新质检结果。</li>
+            <li><code>GET /api/v1/qa/episodes/:id/checks</code> 返回完整质检历史。</li>
+            <li><code>presign?kind=mcap</code> 在 <code>failed</code> 时拒绝，<code>presign?kind=sidecar</code> 仍允许。</li>
             <li>同步和重新同步在 <code>failed</code> 时拒绝。</li>
           </ul>
         </div>
         <div class="panel">
           <h3>Synapse</h3>
           <ul>
-            <li>详情页显示 <code>MCAP 质检</code> 按钮。</li>
-            <li>点击按钮时展示提交中状态。</li>
-            <li>通过后显示成功提示。</li>
-            <li>失败后显示失败原因并刷新 QA 状态。</li>
-            <li><code>qaStatus=failed</code> 时 MCAP 预览和下载按钮禁用或显示后端错误。</li>
+            <li>数据运维下显示 <code>质检中心</code> 菜单。</li>
+            <li>质检中心默认加载可处理 episode。</li>
+            <li>筛选项能切换全部、待质检、失败、待人工确认、已批准和已拒绝。</li>
+            <li>列表展示最近一次质检结果。</li>
+            <li>质检历史抽屉能展示完整 <code>qa_checks</code>。</li>
+            <li>质检中心和 episode 详情页都通过 <code>重新质检</code> 调用 <code>POST /api/v1/qa/episodes/:id/run</code>。</li>
           </ul>
         </div>
       </div>
     </section>
 
     <section id="future" class="panel">
-      <h2>后续 Python 脚本扩展</h2>
-      <p>当前实现只需要 registry 和统一结果模型，不执行 Python 脚本。后续接入脚本时，脚本输出应复用同一 JSON 结构，Go 侧只负责执行、解析、落库和状态更新。</p>
+      <h2>后续 robot_type 与 Python 脚本扩展</h2>
+      <p>下一阶段可以在质检中心增加配置能力：不同 <code>robot_type</code> 绑定多个检查脚本，episode 运行质检时根据机器人类型加载 suite。检查项可以是 Go 内置检查器，也可以是 Python 脚本。所有检查都复用同一结果模型、落库规则和状态流转规则。</p>
       <pre><code>{
-  "passed": true,
-  "score": 1.0,
-  "details": "all required topics present",
-  "metadata": {
-    "topics": ["/camera/image/compressed"],
-    "missing_topics": []
-  }
+  "robot_type": "arm_bot",
+  "checks": [
+    { "name": "mcap_magic", "runtime": "go" },
+    { "name": "topic_required", "runtime": "python", "script": "topic_required.py" },
+    { "name": "duration_range", "runtime": "python", "script": "duration_range.py" }
+  ]
 }</code></pre>
+      <div class="callout ok">
+        <strong>未来自动批准规则：</strong>如果某个机器人类型配置了多个检查脚本，该机器人生产的 episode 必须通过全部已配置检查，才自动把 <code>qa_status</code> 改成 <code>approved</code>；任一失败都改成 <code>failed</code>。
+      </div>
       <div class="tag-row" aria-label="后续检查项示例">
         <span class="tag">sidecar_schema</span>
         <span class="tag">duration_range</span>
@@ -718,16 +861,20 @@ python:&lt;script_name&gt; -&gt; 未来脚本检查器</code></pre>
     <section class="panel danger">
       <h2>已确认决策</h2>
       <ul>
-        <li>不新增字段，复用 <code>qa_status</code>、<code>quality_flag</code> 和 <code>qa_checks</code>。</li>
+        <li>质检中心放在管理后台“数据运维”板块。</li>
+        <li>第一版不支持批量质检、批量同步、持久化 job 队列、robot_type 配置 UI 或 Python 脚本执行。</li>
+        <li>episode 创建后触发自动质检；第一版使用进程内轻量队列，接受服务重启丢失未执行任务。</li>
+        <li>第一版默认 suite 固定为 <code>['mcap_magic']</code>。</li>
+        <li>质检中心和 episode 详情页都使用 <code>POST /api/v1/qa/episodes/:id/run</code>。</li>
+        <li>按钮文案使用 <code>重新质检</code>，不再使用单项检查文案。</li>
         <li>所有检查项失败都把 <code>qa_status</code> 置为 <code>failed</code>。</li>
-        <li>检查通过不自动批准，也不自动恢复失败状态。</li>
-        <li>已经批准的 episode 质检失败后允许降级为 <code>failed</code>。</li>
-        <li>当前前端只做固定按钮 <code>MCAP 质检</code>。</li>
+        <li>完整 suite 全部通过时，允许自动将可自动流转状态改为 <code>approved</code>。</li>
+        <li>手动质检不能覆盖 <code>rejected</code>、<code>needs_inspection</code>、<code>inspector_approved</code> 等人工状态。</li>
         <li>MCAP 失败阻止 MCAP 预览、下载和云同步，sidecar 下载保持允许。</li>
       </ul>
     </section>
 
-    <p class="footer-note">本文档描述的是开发实现方案，不是用户操作手册。实现时应以现有 keystone/synapse 代码风格、鉴权规则和错误响应格式为准。</p>
+    <p class="footer-note">本文档描述的是本轮 MVP 开发方案，不是用户操作手册。后续 robot_type 配置和 Python 脚本执行应继续沿用本文档中的扩展方向。</p>
   </main>
 </body>
 </html>

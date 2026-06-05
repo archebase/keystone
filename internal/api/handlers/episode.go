@@ -152,7 +152,6 @@ func (h *EpisodeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("", h.ListEpisodes)
 	apiV1.GET("/:id", h.GetEpisode)
 	apiV1.GET("/:id/presign", h.GetEpisodePresignedURL)
-	apiV1.POST("/:id/qa-checks", h.RunEpisodeQACheck)
 }
 
 // parseEpisodeRFC3339 parses RFC3339 / RFC3339Nano timestamps for episode list filters (UTC).

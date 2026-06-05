@@ -40,6 +40,7 @@ type Server struct {
 	recorder            *handlers.RecorderHandler
 	deviceState         *handlers.DeviceStateHandler
 	episode             *handlers.EpisodeHandler
+	qa                  *handlers.EpisodeQAHandler
 	task                *handlers.TaskHandler
 	batch               *handlers.BatchHandler
 	robotType           *handlers.RobotTypeHandler
@@ -110,6 +111,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
+	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
+	transferHandler.SetEpisodeQAEnqueuer(qaHandler)
 
 	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)
 
@@ -169,6 +172,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		recorder:            recorderHandler,
 		deviceState:         deviceStateHandler,
 		episode:             episodeHandler,
+		qa:                  qaHandler,
 		task:                taskHandler,
 		batch:               batchHandler,
 		robotType:           robotTypeHandler,
@@ -259,6 +263,9 @@ func (s *Server) buildRoutes() http.Handler {
 	// Episodes API
 	v1Episodes := v1Routes.Group("/episodes")
 	s.episode.RegisterRoutes(v1Episodes)
+	if s.qa != nil {
+		s.qa.RegisterRoutes(v1Routes)
+	}
 
 	// Tasks API
 	v1Tasks := v1Routes.Group("")
