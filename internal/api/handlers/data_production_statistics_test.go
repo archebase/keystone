@@ -131,11 +131,29 @@ func TestDataProductionBreakdownSQLGroupsByDimensionExpression(t *testing.T) {
 	}
 
 	querySQL := dataProductionBreakdownSQL("robot_device_id", "robot_device_id", "SELECT 1")
+	if !strings.Contains(querySQL, "SUM(duration_ms) AS total_duration_ms") {
+		t.Fatalf("breakdown SQL should select total duration: %s", querySQL)
+	}
 	if !strings.Contains(querySQL, "GROUP BY robot_device_id") {
 		t.Fatalf("breakdown SQL should group by the dimension expression: %s", querySQL)
 	}
 	if strings.Contains(querySQL, "GROUP BY id") {
 		t.Fatalf("breakdown SQL should not group by ambiguous id alias: %s", querySQL)
+	}
+}
+
+func TestBreakdownRowToItemIncludesTotalDuration(t *testing.T) {
+	item := breakdownRowToItem(breakdownStatsRow{
+		TotalDurationMs: sql.NullFloat64{Float64: 1234.4, Valid: true},
+		AvgDurationMs:   sql.NullFloat64{Float64: 617.2, Valid: true},
+		MaxDurationMs:   sql.NullFloat64{Float64: 900.6, Valid: true},
+	})
+
+	if item.Duration.TotalMs != 1234 {
+		t.Fatalf("total duration = %d, want 1234", item.Duration.TotalMs)
+	}
+	if item.Duration.AvgMs != 617 || item.Duration.MaxMs != 901 {
+		t.Fatalf("unexpected duration metrics: %+v", item.Duration)
 	}
 }
 

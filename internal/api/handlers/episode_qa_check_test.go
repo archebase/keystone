@@ -178,6 +178,59 @@ func TestPersistEpisodeQACheckManualSuccessRestoresFailedEpisode(t *testing.T) {
 	}
 }
 
+func TestPersistEpisodeQACheckAutoSuccessAutoApprovesEpisode(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	_, err := db.Exec(`
+		INSERT INTO episodes (id, qa_status, quality_flag, auto_approved, deleted_at)
+		VALUES (1, 'qa_running', NULL, 0, NULL)
+	`)
+	if err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	outcome := episodeQACheckOutcome{
+		CheckName: episodeQACheckMcapMagic,
+		Passed:    true,
+		Score:     1,
+		Details:   "MCAP head and tail magic matched",
+		Metadata: map[string]any{
+			"expected_magic": "89 4d 43 41 50 30 0d 0a",
+		},
+	}
+	claim := episodeQARunClaim{
+		EpisodeID:      1,
+		OriginalStatus: qaStatusPendingQA,
+		MutableStatus:  true,
+	}
+	result, err := handler.persistEpisodeQASuiteResult(context.Background(), claim, qaRunModeAuto, []episodeQACheckOutcome{outcome}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("persist qa check: %v", err)
+	}
+	if result.QAStatus != qaStatusApproved || !result.Passed {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	var episode struct {
+		QaStatus     string         `db:"qa_status"`
+		QualityFlag  sql.NullString `db:"quality_flag"`
+		AutoApproved bool           `db:"auto_approved"`
+	}
+	if err := db.Get(&episode, "SELECT qa_status, quality_flag, auto_approved FROM episodes WHERE id = 1"); err != nil {
+		t.Fatalf("query episode: %v", err)
+	}
+	if episode.QaStatus != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", episode.QaStatus)
+	}
+	if !episode.AutoApproved {
+		t.Fatalf("auto_approved = false, want true")
+	}
+	if episode.QualityFlag.Valid {
+		t.Fatalf("quality_flag = %q, want NULL", episode.QualityFlag.String)
+	}
+}
+
 func TestPersistEpisodeQACheckDoesNotOverrideProtectedManualStatus(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}

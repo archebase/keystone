@@ -56,6 +56,7 @@ type Server struct {
 	scene               *handlers.SceneHandler
 	subscene            *handlers.SubsceneHandler
 	order               *handlers.OrderHandler
+	dataOps             *handlers.DataOpsHandler
 	dataStats           *handlers.DataProductionStatisticsHandler
 	productionDashboard *handlers.ProductionDashboardHandler
 	syncHandler         *handlers.SyncHandler
@@ -135,6 +136,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sceneHandler               *handlers.SceneHandler
 		subsceneHandler            *handlers.SubsceneHandler
 		orderHandler               *handlers.OrderHandler
+		dataOpsHandler             *handlers.DataOpsHandler
 		dataStatsHandler           *handlers.DataProductionStatisticsHandler
 		productionDashboardHandler *handlers.ProductionDashboardHandler
 	)
@@ -153,6 +155,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
 		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
+		dataOpsHandler = handlers.NewDataOpsHandler(db)
 		dataStatsHandler = handlers.NewDataProductionStatisticsHandler(db)
 		productionDashboardHandler = handlers.NewProductionDashboardHandler(db, recorderHub, transferHub)
 	}
@@ -188,6 +191,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		scene:               sceneHandler,
 		subscene:            subsceneHandler,
 		order:               orderHandler,
+		dataOps:             dataOpsHandler,
 		dataStats:           dataStatsHandler,
 		productionDashboard: productionDashboardHandler,
 		syncHandler:         syncHandler,
@@ -323,6 +327,11 @@ func (s *Server) buildRoutes() http.Handler {
 		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
 		adminStats := v1Routes.Group("/admin/statistics/data-production", jwtMw, middleware.RequireRole("admin"))
 		s.dataStats.RegisterRoutes(adminStats)
+	}
+	if s.dataOps != nil {
+		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
+		adminDataOps := v1Routes.Group("/data-ops", jwtMw, middleware.RequireRole("admin"))
+		s.dataOps.RegisterRoutes(adminDataOps)
 	}
 	if s.productionDashboard != nil {
 		dashboard := v1Routes.Group("/production/dashboard", middleware.DashboardAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector", "display"))

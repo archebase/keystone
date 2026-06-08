@@ -1,0 +1,981 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数据明细中心开发设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17231f;
+      --muted: #5d6a64;
+      --line: #d8e1dc;
+      --paper: #ffffff;
+      --surface: #f7faf8;
+      --surface-strong: #edf5f1;
+      --accent: #126b5e;
+      --accent-strong: #0b4f47;
+      --warn: #995515;
+      --danger: #a1322b;
+      --ok: #19714f;
+      --code-bg: #13211d;
+      --code-ink: #edf7f2;
+      --shadow: 0 18px 46px rgba(21, 42, 34, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 8%, rgba(18, 107, 94, 0.14), transparent 34rem),
+        linear-gradient(180deg, #f8fbf9 0%, #ffffff 48%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 28px;
+      align-items: end;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.14;
+    }
+
+    .lead {
+      max-width: 780px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .header-meta {
+      border-left: 4px solid var(--accent);
+      padding-left: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .header-meta strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 4px;
+    }
+
+    nav a {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      border: 1px solid #c9ded5;
+      border-radius: 999px;
+      padding: 8px 12px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    section {
+      margin-top: 38px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+      line-height: 1.35;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      box-shadow: 0 10px 26px rgba(21, 42, 34, 0.05);
+      padding: 24px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .three-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .mini {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    .mini strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--accent-strong);
+      font-size: 15px;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 8px 0;
+    }
+
+    code {
+      border-radius: 5px;
+      background: #e9f1ed;
+      color: #0f4239;
+      padding: 2px 5px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      overflow: auto;
+      border-radius: 12px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      padding: 18px;
+      font: 14px/1.6 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      border-radius: 12px;
+      background: var(--surface-strong);
+      padding: 16px 18px;
+    }
+
+    .warn {
+      border-left-color: var(--warn);
+      background: #fff7eb;
+    }
+
+    .danger {
+      border-left-color: var(--danger);
+      background: #fff0ef;
+    }
+
+    .ok {
+      border-left-color: var(--ok);
+      background: #eff8f3;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .step {
+      min-height: 120px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+      padding: 14px;
+    }
+
+    .step span {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 15px;
+    }
+
+    .step p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .tag {
+      border-radius: 999px;
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      padding: 5px 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .footer-note {
+      margin-top: 48px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 900px) {
+      header,
+      .grid,
+      .three-grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding: 24px;
+      }
+
+      main {
+        padding: 28px 16px 56px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Keystone / Synapse Development Design</p>
+        <h1>数据明细中心</h1>
+        <p class="lead">在数据运维下新增统一的 episode 明细工作台，承接原质检中心、云同步中心和数据生产统计明细卡片的“查看、筛选、单条操作”需求。第一版只做分页明细、筛选、单条质检/同步操作和历史抽屉，不做批量、不做顶部统计卡、不做导出。</p>
+      </div>
+      <div class="header-meta">
+        <strong>设计状态</strong>
+        <div>已确认方案，待实现</div>
+        <div>创建时间：2026-06-06</div>
+        <div>影响范围：keystone、synapse</div>
+      </div>
+    </header>
+
+    <nav aria-label="文档导航">
+      <a href="#background">背景</a>
+      <a href="#scope">范围</a>
+      <a href="#navigation">导航调整</a>
+      <a href="#filters">筛选</a>
+      <a href="#table">表格与操作</a>
+      <a href="#api">API</a>
+      <a href="#query">查询策略</a>
+      <a href="#frontend">前端实现</a>
+      <a href="#stats">统计页调整</a>
+      <a href="#testing">测试</a>
+      <a href="#decisions">已确认决策</a>
+    </nav>
+
+    <section id="background" class="panel">
+      <h2>背景</h2>
+      <p>质检中心、云同步中心和数据生产统计中的明细记录卡片都在解决同一类需求：查看和筛选 episode 级别的数据记录。三处各自维护明细列表会造成字段、筛选、分页、操作栏和状态语义重复。</p>
+      <p>本设计将 episode 明细查看能力收敛到一个新页面：<code>数据明细</code>。质检和同步不再作为独立列表页面存在，而是成为数据明细中的筛选维度、状态列和行级操作。</p>
+      <div class="callout warn">
+        <strong>设计边界：</strong>本轮不是把所有统计分析、质检处理和同步队列监控塞进一个大页面。<code>数据明细</code> 只负责 episode 明细查询和单条操作；统计页继续负责汇总、趋势和分布。
+      </div>
+    </section>
+
+    <section id="scope">
+      <h2>目标与非目标</h2>
+      <div class="grid">
+        <div class="panel">
+          <h3>目标</h3>
+          <ul>
+            <li>新增 Synapse 管理后台 <code>数据运维 / 数据明细</code> 页面。</li>
+            <li>默认展示全部 episode，按 <code>created_at DESC, id DESC</code> 分页。</li>
+            <li>支持 QA 状态、云同步状态、时间、场景、设备类型、设备 ID、数采员和标签筛选。</li>
+            <li>表格展示 episode 基础信息、最近 QA、云同步状态和创建时间。</li>
+            <li>行级支持详情、预览、下载、重新质检、同步/重新同步/重试、QA 历史和同步历史。</li>
+            <li>新增统一列表 API：<code>GET /api/v1/data-ops/episodes</code>。</li>
+            <li>删除前端 <code>质检中心</code> 和 <code>云同步中心</code> 页面入口。</li>
+            <li>删除数据生产统计中的明细记录卡片。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>非目标</h3>
+          <ul>
+            <li>第一版不做批量质检。</li>
+            <li>第一版不做批量同步。</li>
+            <li>第一版不做顶部统计卡或状态汇总卡。</li>
+            <li>第一版不做 CSV/筛选结果导出。</li>
+            <li>第一版不一步到位清理全部旧后端 API。</li>
+            <li>第一版不支持 data_collector、display 或其他非 admin 角色。</li>
+            <li>第一版不在主列表展示 MCAP、sidecar、cloud destination 等长路径字段。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="navigation" class="panel">
+      <h2>导航与页面收敛</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>位置</th>
+            <th>调整</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>数据运维 / 数据明细</code></td>
+            <td>新增</td>
+            <td>唯一的 episode 明细查询和单条运维操作入口，路由为 <code>/admin/data-details</code>。</td>
+          </tr>
+          <tr>
+            <td><code>数据运维 / 质检中心</code></td>
+            <td>删除</td>
+            <td>不保留菜单和路由，不考虑旧路由兼容。</td>
+          </tr>
+          <tr>
+            <td><code>数据运维 / 云同步中心</code></td>
+            <td>删除</td>
+            <td>不保留菜单和路由，不考虑旧路由兼容。</td>
+          </tr>
+          <tr>
+            <td><code>统计分析 / 数据生产统计</code></td>
+            <td>保留</td>
+            <td>只保留汇总、趋势、分布和统计导出，删除明细记录卡片。</td>
+          </tr>
+        </tbody>
+      </table>
+      <pre><code>数据运维
+  - 数据明细
+
+统计分析
+  - 数据生产统计</code></pre>
+    </section>
+
+    <section id="filters" class="panel">
+      <h2>筛选设计</h2>
+      <p>筛选交互参考 <code>DataProductionStatistics.vue</code>：基础筛选 + 高级筛选 + <code>RemoteSelect</code> 多选。用户看到名称，API 传稳定 ID 或业务标识。</p>
+
+      <h3>基础筛选</h3>
+      <div class="three-grid">
+        <div class="mini">
+          <strong>时间范围</strong>
+          <p>复用统计页的时间 presets 和自定义时间输入。数据明细默认不限最近 7 天，仍按分页加载全部数据。</p>
+        </div>
+        <div class="mini">
+          <strong>查询 / 重置</strong>
+          <p>查询时重置到第一页；重置清空筛选并回到默认排序。</p>
+        </div>
+      </div>
+
+      <h3>高级筛选</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>筛选项</th>
+            <th>UI</th>
+            <th>API 参数</th>
+            <th>规则</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>场景</td>
+            <td><code>RemoteSelect</code> 多选</td>
+            <td><code>scene_id=12,13</code></td>
+            <td>下拉显示场景名称，传场景 ID。</td>
+          </tr>
+          <tr>
+            <td>设备类型</td>
+            <td><code>RemoteSelect</code> 多选</td>
+            <td><code>robot_type_id=3,5</code></td>
+            <td>下拉显示设备类型名称/型号，传 robot_type ID。</td>
+          </tr>
+          <tr>
+            <td>设备 ID</td>
+            <td><code>RemoteSelect</code> 多选</td>
+            <td><code>robot_device_id=robot-001,robot-002</code></td>
+            <td>精确匹配 <code>robots.device_id</code>。</td>
+          </tr>
+          <tr>
+            <td>数采员</td>
+            <td><code>RemoteSelect</code> 多选</td>
+            <td><code>collector_operator_id=op001,op002</code></td>
+            <td>精确匹配 <code>data_collectors.operator_id</code>。</td>
+          </tr>
+          <tr>
+            <td>QA 状态</td>
+            <td>多选</td>
+            <td><code>qa_status=failed,pending_qa</code></td>
+            <td>直接复用 <code>episodes.qa_status</code>，支持逗号多选。</td>
+          </tr>
+          <tr>
+            <td>云同步状态</td>
+            <td>多选</td>
+            <td><code>sync_status=not_started,failed</code></td>
+            <td>复用当前同步状态，并补充 <code>not_started</code>。</td>
+          </tr>
+          <tr>
+            <td>标签</td>
+            <td>输入框</td>
+            <td><code>label=recalled_batch</code></td>
+            <td>第一版只支持单个 label 精确匹配。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>QA 状态筛选</h3>
+      <div class="tag-row" aria-label="QA 状态筛选">
+        <span class="tag">全部</span>
+        <span class="tag">待质检 pending_qa</span>
+        <span class="tag">质检中 qa_running</span>
+        <span class="tag">失败 failed</span>
+        <span class="tag">待检查 needs_inspection</span>
+        <span class="tag">已通过 approved,inspector_approved</span>
+        <span class="tag">已拒绝 rejected</span>
+      </div>
+
+      <h3>云同步状态筛选</h3>
+      <div class="tag-row" aria-label="云同步状态筛选">
+        <span class="tag">全部</span>
+        <span class="tag">未同步 not_started</span>
+        <span class="tag">已入队 pending</span>
+        <span class="tag">同步中 in_progress</span>
+        <span class="tag">已同步 completed</span>
+        <span class="tag">失败 failed</span>
+      </div>
+    </section>
+
+    <section id="table" class="panel">
+      <h2>表格与行级操作</h2>
+      <h3>表格列</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>列</th>
+            <th>内容</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Episode</td>
+            <td><code>episode_id</code> + numeric <code>id</code></td>
+            <td>主标识，点击详情。</td>
+          </tr>
+          <tr>
+            <td>任务</td>
+            <td><code>task_public_id</code> / <code>task_id</code></td>
+            <td>展示任务业务 ID，缺失时回退 numeric ID。</td>
+          </tr>
+          <tr>
+            <td>场景</td>
+            <td><code>scene_name</code></td>
+            <td>第一版不强制展示 subscene。</td>
+          </tr>
+          <tr>
+            <td>机器人</td>
+            <td><code>robot_type</code> + <code>robot_device_id</code></td>
+            <td>设备类型和设备 ID 上下两行展示。</td>
+          </tr>
+          <tr>
+            <td>采集员</td>
+            <td><code>collector_operator_id</code></td>
+            <td>展示工号。</td>
+          </tr>
+          <tr>
+            <td>QA 状态</td>
+            <td><code>qa_status</code> + <code>quality_flag</code> 摘要</td>
+            <td>状态 badge + 一行质量说明。</td>
+          </tr>
+          <tr>
+            <td>最近质检</td>
+            <td><code>latest_qa_check</code></td>
+            <td>展示检查项、通过/失败、时间和摘要。</td>
+          </tr>
+          <tr>
+            <td>云同步</td>
+            <td><code>sync_status</code> + <code>latest_sync_log</code></td>
+            <td>状态沿用云同步中心，缺少日志时为 <code>not_started</code>。</td>
+          </tr>
+          <tr>
+            <td>创建时间</td>
+            <td><code>created_at</code></td>
+            <td>默认排序字段。</td>
+          </tr>
+          <tr>
+            <td>操作</td>
+            <td>固定在最右侧</td>
+            <td>sticky action column，和其他管理表格一致。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>不进入主列表的字段</h3>
+      <div class="tag-row" aria-label="不展示字段">
+        <span class="tag">mcap_path</span>
+        <span class="tag">sidecar_path</span>
+        <span class="tag">checksum</span>
+        <span class="tag">cloud_mcap_path</span>
+        <span class="tag">cloud_sidecar_path</span>
+        <span class="tag">destination_path</span>
+      </div>
+
+      <h3>操作列</h3>
+      <p>直接展示 <code>详情</code>、<code>预览</code>、<code>更多</code>。其他操作放入更多菜单，避免操作列过宽。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>操作</th>
+            <th>位置</th>
+            <th>规则</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>详情</td>
+            <td>直接按钮</td>
+            <td>跳转现有 <code>EpisodeDetail</code>。</td>
+          </tr>
+          <tr>
+            <td>预览</td>
+            <td>直接按钮</td>
+            <td><code>qa_status=failed</code> 时禁用，后端仍为最终门禁。</td>
+          </tr>
+          <tr>
+            <td>下载 MCAP</td>
+            <td>更多菜单</td>
+            <td><code>qa_status=failed</code> 时禁用。</td>
+          </tr>
+          <tr>
+            <td>下载 JSON</td>
+            <td>更多菜单</td>
+            <td>不受 MCAP QA 失败影响。</td>
+          </tr>
+          <tr>
+            <td>重新质检</td>
+            <td>更多菜单</td>
+            <td><code>qa_status=qa_running</code> 时禁用；复用现有 QA suite API。</td>
+          </tr>
+          <tr>
+            <td>同步 / 重试 / 重新同步</td>
+            <td>更多菜单</td>
+            <td>按 <code>sync_status</code> 和 <code>cloud_synced</code> 选择文案；QA 未通过时禁用。</td>
+          </tr>
+          <tr>
+            <td>QA 历史</td>
+            <td>更多菜单</td>
+            <td>当前页右侧抽屉展示。</td>
+          </tr>
+          <tr>
+            <td>同步历史</td>
+            <td>更多菜单</td>
+            <td>当前页右侧抽屉展示。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="api" class="panel">
+      <h2>后端 API</h2>
+      <p>第一版新增统一列表 API；单条 QA 和同步操作暂时复用现有 API，不一步到位迁移到 <code>data-ops</code> 命名空间。</p>
+
+      <h3>列表接口</h3>
+      <pre><code>GET /api/v1/data-ops/episodes
+  ?limit=20
+  &amp;offset=0
+  &amp;created_at_from=2026-06-01T00:00:00Z
+  &amp;created_at_to=2026-06-06T23:59:59Z
+  &amp;qa_status=failed,pending_qa
+  &amp;sync_status=not_started,failed
+  &amp;scene_id=12,13
+  &amp;robot_type_id=3,5
+  &amp;robot_device_id=robot-001,robot-002
+  &amp;collector_operator_id=op001,op002
+  &amp;label=recalled_batch</code></pre>
+
+      <h3>响应示例</h3>
+      <pre><code>{
+  "items": [
+    {
+      "id": 123,
+      "episode_id": "ep_20260606_001",
+      "task_id": 88,
+      "task_public_id": "task_20260606_001",
+      "scene_name": "pick",
+      "robot_type_id": 3,
+      "robot_type": "arm_bot",
+      "robot_device_id": "robot-001",
+      "collector_operator_id": "op001",
+      "qa_status": "failed",
+      "quality_flag": "MCAP integrity check failed: tail magic mismatch",
+      "latest_qa_check": {
+        "check_name": "mcap_magic",
+        "passed": false,
+        "details": "MCAP integrity check failed: tail magic mismatch",
+        "checked_at": "2026-06-06T09:30:00Z"
+      },
+      "sync_status": "not_started",
+      "latest_sync_log": null,
+      "cloud_synced": false,
+      "duration_sec": 30.5,
+      "file_size_bytes": 123456789,
+      "labels": ["recalled_batch"],
+      "created_at": "2026-06-06T09:20:00Z"
+    }
+  ],
+  "total": 1234,
+  "limit": 20,
+  "offset": 0,
+  "hasNext": true,
+  "hasPrev": false
+}</code></pre>
+
+      <h3>复用的现有单条能力</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>能力</th>
+            <th>接口</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>重新质检</td>
+            <td><code>POST /api/v1/qa/episodes/:id/run</code></td>
+            <td>运行完整 QA suite。</td>
+          </tr>
+          <tr>
+            <td>QA 历史</td>
+            <td><code>GET /api/v1/qa/episodes/:id/checks</code></td>
+            <td>右侧抽屉展示。</td>
+          </tr>
+          <tr>
+            <td>同步</td>
+            <td><code>POST /api/v1/sync/episodes/:id</code></td>
+            <td>未同步或失败重试时使用。</td>
+          </tr>
+          <tr>
+            <td>重新同步</td>
+            <td><code>POST /api/v1/sync/episodes/:id/resync</code></td>
+            <td>已同步时使用。</td>
+          </tr>
+          <tr>
+            <td>同步历史</td>
+            <td><code>GET /api/v1/sync/episodes/:id/logs</code></td>
+            <td>右侧抽屉展示。</td>
+          </tr>
+          <tr>
+            <td>同步状态</td>
+            <td><code>GET /api/v1/sync/episodes/:id/status</code></td>
+            <td>EpisodeDetail 可继续使用；数据明细列表由统一 API 返回。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="query" class="panel">
+      <h2>查询策略与数据库压力控制</h2>
+      <p>统一 API 不能写成一个巨型 join。后端应采用分页主查询 + 当前页附加状态查询的方式，把 QA 和同步查询限制在当前页 episode IDs 内。</p>
+      <div class="flow">
+        <div class="step">
+          <span>1</span>
+          <strong>查当前页</strong>
+          <p>从 <code>episodes</code> 出发按筛选和排序查出 20/50 条 episode。</p>
+        </div>
+        <div class="step">
+          <span>2</span>
+          <strong>取 IDs</strong>
+          <p>提取当前页 episode IDs，后续查询只围绕这些 ID。</p>
+        </div>
+        <div class="step">
+          <span>3</span>
+          <strong>查最近 QA</strong>
+          <p>按 <code>episode_id IN (...)</code> 查询每个 episode 最新 QA 记录。</p>
+        </div>
+        <div class="step">
+          <span>4</span>
+          <strong>查最近同步</strong>
+          <p>按 <code>episode_id IN (...)</code> 查询每个 episode 最新 sync log。</p>
+        </div>
+        <div class="step">
+          <span>5</span>
+          <strong>内存合并</strong>
+          <p>在 Go 侧组装 <code>latest_qa_check</code>、<code>sync_status</code> 和 <code>latest_sync_log</code>。</p>
+        </div>
+      </div>
+
+      <h3>同步状态映射</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>条件</th>
+            <th><code>sync_status</code></th>
+            <th>展示</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>无 sync log</td>
+            <td><code>not_started</code></td>
+            <td>未同步</td>
+          </tr>
+          <tr>
+            <td>latest sync log = <code>pending</code></td>
+            <td><code>pending</code></td>
+            <td>已入队</td>
+          </tr>
+          <tr>
+            <td>latest sync log = <code>in_progress</code></td>
+            <td><code>in_progress</code></td>
+            <td>同步中</td>
+          </tr>
+          <tr>
+            <td>latest sync log = <code>completed</code></td>
+            <td><code>completed</code></td>
+            <td>已同步</td>
+          </tr>
+          <tr>
+            <td>latest sync log = <code>failed</code></td>
+            <td><code>failed</code></td>
+            <td>失败</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>索引建议</h3>
+      <ul>
+        <li>确认 <code>episodes(created_at, id)</code> 或等价索引用于默认排序。</li>
+        <li>确认 <code>episodes(qa_status, created_at, id)</code> 或现有 QA 状态索引能支撑筛选。</li>
+        <li>确认 <code>qa_checks(episode_id, checked_at, id)</code> 支撑当前页 latest QA 查询。</li>
+        <li>确认 <code>sync_logs(episode_id, id)</code> 或 <code>sync_logs(episode_id, started_at, id)</code> 支撑当前页 latest sync 查询。</li>
+        <li>标签筛选第一版可用 <code>JSON_CONTAINS</code>；如果高频再考虑标签归一化表。</li>
+      </ul>
+    </section>
+
+    <section id="frontend" class="panel">
+      <h2>前端实现</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>文件/模块</th>
+            <th>动作</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/views/admin/data-ops/DataDetails.vue</code></td>
+            <td>新增</td>
+            <td>不要把 <code>QACenter.vue</code> 改名硬扩展；新页面从 episode 综合视角实现。</td>
+          </tr>
+          <tr>
+            <td><code>src/api/dataOps.js</code></td>
+            <td>新增</td>
+            <td>封装 <code>GET /data-ops/episodes</code>。</td>
+          </tr>
+          <tr>
+            <td><code>src/components/layout/AdminSidebar.vue</code></td>
+            <td>调整</td>
+            <td>数据运维下只保留 <code>数据明细</code>。</td>
+          </tr>
+          <tr>
+            <td><code>src/router/index.js</code></td>
+            <td>调整</td>
+            <td>新增 <code>/admin/data-details</code>，删除 <code>qa-center</code> 和 <code>cloud-sync</code> 路由。</td>
+          </tr>
+          <tr>
+            <td><code>src/views/admin/qa/QACenter.vue</code></td>
+            <td>删除</td>
+            <td>页面不再保留。</td>
+          </tr>
+          <tr>
+            <td><code>src/views/admin/sync/CloudSyncCenter.vue</code></td>
+            <td>删除</td>
+            <td>页面不再保留。</td>
+          </tr>
+          <tr>
+            <td><code>src/api/qa.js</code></td>
+            <td>保留</td>
+            <td>DataDetails 和 EpisodeDetail 仍复用单条 QA 操作/历史。</td>
+          </tr>
+          <tr>
+            <td><code>src/api/sync.js</code></td>
+            <td>保留</td>
+            <td>DataDetails 和 EpisodeDetail 仍复用单条同步操作/历史。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>页面交互</h3>
+      <ul>
+        <li>筛选 UI 参考数据生产统计页，使用基础筛选和可折叠高级筛选。</li>
+        <li>表格操作列固定在最右侧，横向滚动时始终展示。</li>
+        <li>QA 历史和同步历史使用右侧抽屉，不离开当前筛选上下文。</li>
+        <li>详情跳转现有 EpisodeDetail。</li>
+        <li>EpisodeDetail 保留现有操作，并与 DataDetails 共用文案和状态规则。</li>
+      </ul>
+    </section>
+
+    <section id="stats" class="panel">
+      <h2>数据生产统计调整</h2>
+      <p><code>数据生产统计</code> 后续只回答汇总、趋势、分布和统计导出，不再展示具体 episode 明细。</p>
+      <div class="grid">
+        <div class="mini">
+          <strong>删除</strong>
+          <p>明细记录卡片、明细表格、明细分页、明细 API 调用，以及只服务明细表格的状态和 formatter。</p>
+        </div>
+        <div class="mini">
+          <strong>保留</strong>
+          <p>顶部筛选器、汇总指标、趋势图、维度分布和统计导出能力。</p>
+        </div>
+      </div>
+      <div class="callout ok">
+        <strong>原则：</strong>统计页回答“数量、趋势、分布”；数据明细页回答“具体有哪些 episode，以及对单条 episode 做什么操作”。
+      </div>
+    </section>
+
+    <section id="testing">
+      <h2>测试计划</h2>
+      <div class="grid">
+        <div class="panel">
+          <h3>Keystone</h3>
+          <ul>
+            <li><code>GET /api/v1/data-ops/episodes</code> 默认分页返回全部 episode。</li>
+            <li>支持 <code>qa_status</code> 多选筛选。</li>
+            <li>支持 <code>sync_status</code> 多选筛选，包含 <code>not_started</code>。</li>
+            <li>支持时间范围、scene_id、robot_type_id、robot_device_id、collector_operator_id 和 label 筛选。</li>
+            <li>列表响应包含当前页 latest QA 和 latest sync。</li>
+            <li>无 sync log 的 episode 返回 <code>sync_status=not_started</code>。</li>
+            <li>复杂筛选下 total、hasNext、hasPrev 正确。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>Synapse</h3>
+          <ul>
+            <li>数据运维菜单只展示 <code>数据明细</code>。</li>
+            <li><code>/admin/data-details</code> 页面可分页加载。</li>
+            <li>筛选 UI 参考数据生产统计页，可查询和重置。</li>
+            <li>操作列固定在最右侧。</li>
+            <li>详情、预览、下载、重新质检、同步/重试/重新同步按状态启用/禁用。</li>
+            <li>QA 历史和同步历史抽屉可打开并展示数据。</li>
+            <li>数据生产统计不再展示明细记录卡片。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="decisions" class="panel danger">
+      <h2>已确认决策</h2>
+      <ul>
+        <li>新增页面名称为 <code>数据明细</code>，路由为 <code>/admin/data-details</code>。</li>
+        <li>后续不保留 <code>质检中心</code> 和 <code>云同步中心</code> 页面，不考虑旧路由兼容。</li>
+        <li>数据生产统计删除明细记录卡片，只保留聚合能力。</li>
+        <li>默认展示全部 episode，按 <code>created_at DESC, id DESC</code> 分页。</li>
+        <li>第一版保留 <code>total</code>，但不做顶部统计卡和多状态聚合 count。</li>
+        <li>后端新增统一列表 API，但查询实现必须采用分页主查询 + 当前页 QA/sync 附加查询。</li>
+        <li>筛选 UI 参考数据生产统计页，API 参数使用 <code>scene_id</code> 和 <code>robot_type_id</code>。</li>
+        <li>QA 状态直接复用 <code>episodes.qa_status</code>。</li>
+        <li>云同步状态复用 <code>pending/in_progress/completed/failed</code>，额外补 <code>not_started</code>。</li>
+        <li>第一版不做批量、不做导出、不支持非 admin 角色。</li>
+        <li>旧单条 QA/sync API 暂时保留并复用，后续再分阶段清理旧列表 API。</li>
+      </ul>
+    </section>
+
+    <p class="footer-note">本文档描述的是开发实现方案，不是用户操作手册。实现时应以现有 keystone/synapse 代码风格、鉴权规则和错误响应格式为准。</p>
+  </main>
+</body>
+</html>

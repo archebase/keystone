@@ -211,6 +211,7 @@ type breakdownStatsRow struct {
 	SuccessCount    sql.NullInt64   `db:"success_count"`
 	FailedCount     sql.NullInt64   `db:"failed_count"`
 	ProcessingCount sql.NullInt64   `db:"processing_count"`
+	TotalDurationMs sql.NullFloat64 `db:"total_duration_ms"`
 	AvgDurationMs   sql.NullFloat64 `db:"avg_duration_ms"`
 	MaxDurationMs   sql.NullFloat64 `db:"max_duration_ms"`
 	TotalBytes      sql.NullInt64   `db:"total_bytes"`
@@ -510,6 +511,7 @@ func dataProductionBreakdownSQL(idExpr string, nameExpr string, baseSQL string) 
 			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
 			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
 			COALESCE(SUM(CASE WHEN status = 'processing' THEN count_value ELSE 0 END), 0) AS processing_count,
+			SUM(duration_ms) AS total_duration_ms,
 			AVG(duration_ms) AS avg_duration_ms,
 			MAX(duration_ms) AS max_duration_ms,
 			COALESCE(SUM(COALESCE(size_bytes, 0)), 0) AS total_bytes,
@@ -971,8 +973,9 @@ func breakdownRowToItem(row breakdownStatsRow) dataProductionBreakdownItem {
 			SuccessRate: rate(success, total),
 		},
 		Duration: statsDurationMetrics{
-			AvgMs: roundNullFloat(row.AvgDurationMs),
-			MaxMs: roundNullFloat(row.MaxDurationMs),
+			TotalMs: roundNullFloat(row.TotalDurationMs),
+			AvgMs:   roundNullFloat(row.AvgDurationMs),
+			MaxMs:   roundNullFloat(row.MaxDurationMs),
 		},
 		Size: statsSizeMetrics{
 			TotalBytes: nullInt64(row.TotalBytes),
