@@ -16,6 +16,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 )
 
 const syncStatusNotStarted = "not_started"
@@ -30,7 +31,9 @@ var validDataOpsSyncStatuses = map[string]struct{}{
 
 // DataOpsHandler handles data operations APIs for the admin workbench.
 type DataOpsHandler struct {
-	db *sqlx.DB
+	db         *sqlx.DB
+	qa         *EpisodeQAHandler
+	syncWorker *services.SyncWorker
 }
 
 // NewDataOpsHandler creates a data operations handler.
@@ -38,9 +41,22 @@ func NewDataOpsHandler(db *sqlx.DB) *DataOpsHandler {
 	return &DataOpsHandler{db: db}
 }
 
+// SetBulkActionDeps wires optional services used by data-ops bulk actions.
+func (h *DataOpsHandler) SetBulkActionDeps(qa *EpisodeQAHandler, syncWorker *services.SyncWorker) {
+	if h == nil {
+		return
+	}
+	h.qa = qa
+	h.syncWorker = syncWorker
+}
+
 // RegisterRoutes registers data operations routes under /data-ops.
 func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/episodes", h.ListEpisodes)
+	apiV1.POST("/episodes/bulk-qa/preview", h.PreviewBulkEpisodeQA)
+	apiV1.POST("/episodes/bulk-sync/preview", h.PreviewBulkEpisodeSync)
+	apiV1.POST("/episodes/bulk-qa", h.BulkRunEpisodeQA)
+	apiV1.POST("/episodes/bulk-sync", h.BulkSyncEpisodes)
 }
 
 type dataOpsEpisodeQuery struct {
