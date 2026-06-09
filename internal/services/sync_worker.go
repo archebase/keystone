@@ -307,11 +307,12 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 
 	lockClause := txLockClause(tx)
 	var episode struct {
-		ID          int64 `db:"id"`
-		CloudSynced bool  `db:"cloud_synced"`
+		ID          int64  `db:"id"`
+		CloudSynced bool   `db:"cloud_synced"`
+		QaStatus    string `db:"qa_status"`
 	}
 	if err := tx.GetContext(ctx, &episode, `
-		SELECT id, cloud_synced
+		SELECT id, cloud_synced, COALESCE(qa_status, '') AS qa_status
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`+lockClause, episodeID); err != nil {
@@ -322,6 +323,9 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	}
 	if episode.CloudSynced && !allowSynced {
 		return fmt.Errorf("episode %d already synced", episodeID)
+	}
+	if episode.QaStatus != "approved" && episode.QaStatus != "inspector_approved" {
+		return fmt.Errorf("episode %d qa_status is %q, must be approved or inspector_approved", episodeID, episode.QaStatus)
 	}
 
 	var activeCount int
@@ -405,11 +409,12 @@ func (w *SyncWorker) persistResyncSyncLog(ctx context.Context, episodeID int64) 
 
 	lockClause := txLockClause(tx)
 	var episode struct {
-		ID          int64 `db:"id"`
-		CloudSynced bool  `db:"cloud_synced"`
+		ID          int64  `db:"id"`
+		CloudSynced bool   `db:"cloud_synced"`
+		QaStatus    string `db:"qa_status"`
 	}
 	if err := tx.GetContext(ctx, &episode, `
-		SELECT id, cloud_synced
+		SELECT id, cloud_synced, COALESCE(qa_status, '') AS qa_status
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`+lockClause, episodeID); err != nil {
@@ -420,6 +425,9 @@ func (w *SyncWorker) persistResyncSyncLog(ctx context.Context, episodeID int64) 
 	}
 	if !episode.CloudSynced {
 		return fmt.Errorf("episode %d has not completed cloud sync", episodeID)
+	}
+	if episode.QaStatus != "approved" && episode.QaStatus != "inspector_approved" {
+		return fmt.Errorf("episode %d qa_status is %q, must be approved or inspector_approved", episodeID, episode.QaStatus)
 	}
 
 	var activeCount int

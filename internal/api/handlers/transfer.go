@@ -31,6 +31,10 @@ import (
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
+type episodeQAEnqueuer interface {
+	EnqueueEpisode(episodeID int64)
+}
+
 // TransferHandler handles WebSocket connections and REST API for Transfer Service
 type TransferHandler struct {
 	hub       *services.TransferHub
@@ -45,6 +49,7 @@ type TransferHandler struct {
 	recorderHub        *services.RecorderHub
 	recorderRPCTimeout time.Duration
 	stateBroker        *services.DeviceStateBroker
+	qaEnqueuer         episodeQAEnqueuer
 }
 
 // NewTransferHandler creates a new TransferHandler.
@@ -72,6 +77,14 @@ func (h *TransferHandler) SetDeviceStateBroker(broker *services.DeviceStateBroke
 		return
 	}
 	h.stateBroker = broker
+}
+
+// SetEpisodeQAEnqueuer enables best-effort automatic QA after an episode is created.
+func (h *TransferHandler) SetEpisodeQAEnqueuer(enqueuer episodeQAEnqueuer) {
+	if h == nil {
+		return
+	}
+	h.qaEnqueuer = enqueuer
 }
 
 // RegisterRoutes registers all transfer-related REST routes
@@ -543,6 +556,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	sc := readSidecarFromS3(ctx, h.s3, h.bucket, jsonKey)
 
 	// Step 2: Insert into episodes table
+	var createdEpisodePK int64
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
@@ -675,7 +689,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			}
 			episodeMetadata := assetIDSnapshotMetadata(ctx, tx, taskRow.WorkstationID)
 
-			_, dbErr := tx.ExecContext(ctx,
+			insertRes, dbErr := tx.ExecContext(ctx,
 				`INSERT INTO episodes (
 					episode_id,
 					task_id,
@@ -710,12 +724,18 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				durationSec,
 				fileSizeBytes,
 				checksum,
-				"approved",
+				qaStatusPendingQA,
 				episodeMetadata,
 			)
 			if dbErr != nil {
 				// #nosec G706 -- Set aside for now
 				logger.Printf("%s DB insert failed: %v", transferTaskLogPrefix(dc.DeviceID, taskID), dbErr)
+				return
+			}
+			createdEpisodePK, dbErr = insertRes.LastInsertId()
+			if dbErr != nil {
+				// #nosec G706 -- Set aside for now
+				logger.Printf("%s DB insert id read failed: %v", transferTaskLogPrefix(dc.DeviceID, taskID), dbErr)
 				return
 			}
 
@@ -737,6 +757,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		// #nosec G706 -- Set aside for now
 		logger.Printf("%s DB commit error: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
+	}
+	if createdEpisodePK > 0 && h.qaEnqueuer != nil {
+		h.qaEnqueuer.EnqueueEpisode(createdEpisodePK)
 	}
 
 	// Step 3: Send upload_ack

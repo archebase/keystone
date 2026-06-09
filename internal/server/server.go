@@ -40,6 +40,7 @@ type Server struct {
 	recorder            *handlers.RecorderHandler
 	deviceState         *handlers.DeviceStateHandler
 	episode             *handlers.EpisodeHandler
+	qa                  *handlers.EpisodeQAHandler
 	task                *handlers.TaskHandler
 	batch               *handlers.BatchHandler
 	robotType           *handlers.RobotTypeHandler
@@ -55,6 +56,7 @@ type Server struct {
 	scene               *handlers.SceneHandler
 	subscene            *handlers.SubsceneHandler
 	order               *handlers.OrderHandler
+	dataOps             *handlers.DataOpsHandler
 	dataStats           *handlers.DataProductionStatisticsHandler
 	productionDashboard *handlers.ProductionDashboardHandler
 	syncHandler         *handlers.SyncHandler
@@ -110,6 +112,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
+	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
+	transferHandler.SetEpisodeQAEnqueuer(qaHandler)
 
 	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)
 
@@ -132,6 +136,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sceneHandler               *handlers.SceneHandler
 		subsceneHandler            *handlers.SubsceneHandler
 		orderHandler               *handlers.OrderHandler
+		dataOpsHandler             *handlers.DataOpsHandler
 		dataStatsHandler           *handlers.DataProductionStatisticsHandler
 		productionDashboardHandler *handlers.ProductionDashboardHandler
 	)
@@ -150,6 +155,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
 		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
+		dataOpsHandler = handlers.NewDataOpsHandler(db)
+		dataOpsHandler.SetBulkActionDeps(qaHandler, syncWorker)
 		dataStatsHandler = handlers.NewDataProductionStatisticsHandler(db)
 		productionDashboardHandler = handlers.NewProductionDashboardHandler(db, recorderHub, transferHub)
 	}
@@ -169,6 +176,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		recorder:            recorderHandler,
 		deviceState:         deviceStateHandler,
 		episode:             episodeHandler,
+		qa:                  qaHandler,
 		task:                taskHandler,
 		batch:               batchHandler,
 		robotType:           robotTypeHandler,
@@ -184,6 +192,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		scene:               sceneHandler,
 		subscene:            subsceneHandler,
 		order:               orderHandler,
+		dataOps:             dataOpsHandler,
 		dataStats:           dataStatsHandler,
 		productionDashboard: productionDashboardHandler,
 		syncHandler:         syncHandler,
@@ -259,6 +268,9 @@ func (s *Server) buildRoutes() http.Handler {
 	// Episodes API
 	v1Episodes := v1Routes.Group("/episodes")
 	s.episode.RegisterRoutes(v1Episodes)
+	if s.qa != nil {
+		s.qa.RegisterRoutes(v1Routes)
+	}
 
 	// Tasks API
 	v1Tasks := v1Routes.Group("")
@@ -316,6 +328,11 @@ func (s *Server) buildRoutes() http.Handler {
 		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
 		adminStats := v1Routes.Group("/admin/statistics/data-production", jwtMw, middleware.RequireRole("admin"))
 		s.dataStats.RegisterRoutes(adminStats)
+	}
+	if s.dataOps != nil {
+		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
+		adminDataOps := v1Routes.Group("/data-ops", jwtMw, middleware.RequireRole("admin"))
+		s.dataOps.RegisterRoutes(adminDataOps)
 	}
 	if s.productionDashboard != nil {
 		dashboard := v1Routes.Group("/production/dashboard", middleware.DashboardAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector", "display"))

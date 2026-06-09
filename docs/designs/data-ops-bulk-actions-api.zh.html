@@ -1,0 +1,846 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数据明细批量质检与云同步 API 设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17231f;
+      --muted: #5d6a64;
+      --line: #d8e1dc;
+      --paper: #ffffff;
+      --surface: #f7faf8;
+      --surface-strong: #edf5f1;
+      --accent: #126b5e;
+      --accent-strong: #0b4f47;
+      --warn: #995515;
+      --danger: #a1322b;
+      --ok: #19714f;
+      --code-bg: #13211d;
+      --code-ink: #edf7f2;
+      --shadow: 0 18px 46px rgba(21, 42, 34, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 14% 8%, rgba(18, 107, 94, 0.14), transparent 34rem),
+        linear-gradient(180deg, #f8fbf9 0%, #ffffff 48%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 310px;
+      gap: 28px;
+      align-items: end;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.14;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 800px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .header-meta {
+      border-left: 4px solid var(--accent);
+      padding-left: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .header-meta strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 4px;
+    }
+
+    nav a {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      border: 1px solid #c9ded5;
+      border-radius: 999px;
+      padding: 8px 12px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    section {
+      margin-top: 38px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+      box-shadow: 0 10px 26px rgba(21, 42, 34, 0.05);
+      padding: 24px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .three-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .mini {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    .mini strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--accent-strong);
+      font-size: 15px;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 8px 0;
+    }
+
+    code {
+      border-radius: 5px;
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      padding: 2px 5px;
+      font-family: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      overflow-x: auto;
+      border-radius: 12px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      padding: 18px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      font-size: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      font-weight: 750;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      border-radius: 12px;
+      background: var(--surface);
+      padding: 18px 20px;
+    }
+
+    .callout.warn {
+      border-left-color: var(--warn);
+      background: #fff9ed;
+    }
+
+    .callout.danger {
+      border-left-color: var(--danger);
+      background: #fff3f1;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid #c9ded5;
+      border-radius: 999px;
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      padding: 3px 9px;
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .decision-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .decision {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      gap: 14px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    .decision b {
+      color: var(--accent-strong);
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      counter-reset: step;
+    }
+
+    .flow li {
+      list-style: none;
+      position: relative;
+      margin: 0;
+      padding: 14px 16px 14px 52px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+
+    .flow li::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 16px;
+      top: 14px;
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    footer {
+      margin-top: 46px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 820px) {
+      header,
+      .grid,
+      .three-grid,
+      .decision {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        padding: 28px 16px 56px;
+      }
+
+      header {
+        padding: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Data Ops Bulk Actions</p>
+        <h1>数据明细批量质检与云同步 API 设计</h1>
+        <p class="lead">
+          为数据明细页面提供“按当前筛选结果批量质检”和“按当前筛选结果批量云同步”的后端能力。第一版提供确认前预览和轻量级异步执行 API，不做持久化批任务、进度查询或取消。
+        </p>
+      </div>
+      <div class="header-meta">
+        <strong>实现目标</strong>
+        <div>预览 API 先行</div>
+        <div>固定筛选快照</div>
+        <div>后台 goroutine 异步处理</div>
+        <div>无硬上限保护</div>
+      </div>
+    </header>
+
+    <nav aria-label="文档目录">
+      <a href="#scope">范围</a>
+      <a href="#decisions">已确认决策</a>
+      <a href="#api">API 规格</a>
+      <a href="#filters">筛选语义</a>
+      <a href="#execution">执行模型</a>
+      <a href="#testing">测试计划</a>
+      <a href="#checklist">实现清单</a>
+    </nav>
+
+    <section id="scope">
+      <h2>1. 范围</h2>
+      <div class="grid">
+        <div class="panel">
+          <h3>本次实现</h3>
+          <ul>
+            <li>在 <code>/api/v1/data-ops</code> 下新增两个 admin-only 预览接口和两个执行接口。</li>
+            <li>请求体只接收逗号字符串形式的筛选条件。</li>
+            <li>预览接口只计算命中和预计可操作统计，不启动后台任务。</li>
+            <li>请求内解析筛选条件并查询固定 episode ID 快照。</li>
+            <li>返回 <code>202 Accepted</code> 后由后台 goroutine 异步处理。</li>
+            <li>补 Swagger 注释和后端 helper 单测。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>明确不做</h3>
+          <ul>
+            <li>不做前端页面改造。</li>
+            <li>不新增批任务表、批次 ID、进度查询或取消接口。</li>
+            <li>不返回最终成功、跳过、失败统计。</li>
+            <li>不设置批量命中条数硬上限；逗号筛选值数量也不设置代码层数量上限。</li>
+            <li>批量同步不做已同步数据的重新同步。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="decisions">
+      <h2>2. 已确认决策</h2>
+      <div class="decision-list">
+        <div class="decision">
+          <b>异步模型</b>
+          <span>两个执行接口均返回 <code>202 Accepted</code>，后台继续处理，不等待整批完成。</span>
+        </div>
+        <div class="decision">
+          <b>作用范围</b>
+          <span>作用于当前筛选命中的全部 episode，忽略分页参数。</span>
+        </div>
+        <div class="decision">
+          <b>筛选快照</b>
+          <span>前端只发送筛选条件；后端请求内查出固定 ID 快照，再把 ID 列表交给后台 goroutine。</span>
+        </div>
+        <div class="decision">
+          <b>确认前预览</b>
+          <span>执行前先调用预览接口，返回命中数、预计可操作数和跳过原因汇总；预览不要求 <code>confirm</code>，也不启动后台任务。</span>
+        </div>
+        <div class="decision">
+          <b>确认保护</b>
+          <span>两个执行接口都必须带 <code>"confirm": true</code>，否则返回 <code>400</code>。预览接口不需要 <code>confirm</code>。</span>
+        </div>
+        <div class="decision">
+          <b>空筛选</b>
+          <span><code>{ "filters": {} }</code> 合法，表示全部未删除 episodes。</span>
+        </div>
+        <div class="decision">
+          <b>无硬上限</b>
+          <span>第一版不限制命中数量，也不限制逗号筛选值数量；仍不承诺完整批次可靠性。</span>
+        </div>
+        <div class="decision">
+          <b>matched_count</b>
+          <span>只表示筛选命中总数，不表示实际可操作数量。</span>
+        </div>
+        <div class="decision">
+          <b>QA 并发</b>
+          <span>批量 QA 后台固定并发 <code>4</code>，每条调用现有手动质检逻辑。</span>
+        </div>
+        <div class="decision">
+          <b>同步语义</b>
+          <span>批量同步只做普通同步或手动重试，不做批量 resync。</span>
+        </div>
+        <div class="decision">
+          <b>可用性检查</b>
+          <span>sync worker 未配置或未运行时，批量同步立即返回 <code>503</code>。</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="api">
+      <h2>3. API 规格</h2>
+      <div class="panel">
+        <h3>3.1 批量预览</h3>
+        <p><span class="badge">POST</span> <code>/api/v1/data-ops/episodes/bulk-qa/preview</code></p>
+        <p><span class="badge">POST</span> <code>/api/v1/data-ops/episodes/bulk-sync/preview</code></p>
+        <pre><code>{
+  "filters": {
+    "created_at_from": "2026-06-01T00:00:00Z",
+    "created_at_to": "2026-06-08T00:00:00Z",
+    "qa_status": "failed,pending_qa",
+    "sync_status": "not_started,failed",
+    "scene_id": "1,2",
+    "sop_id": "9,10",
+    "robot_type_id": "3",
+    "robot_device_id": "robot-001,robot-002",
+    "collector_operator_id": "op001"
+  }
+}</code></pre>
+        <pre><code>{
+  "status": "preview",
+  "action": "bulk_qa",
+  "matched_count": 123,
+  "eligible_count": 121,
+  "skipped_count": 2,
+  "protected_status_count": 8,
+  "skipped_breakdown": [
+    { "reason": "qa_running", "count": 2 }
+  ],
+  "warnings": [
+    "8 episodes are in protected manual QA statuses; checks can run but status will not be overwritten"
+  ]
+}</code></pre>
+        <pre><code>{
+  "status": "preview",
+  "action": "bulk_sync",
+  "matched_count": 42,
+  "eligible_count": 17,
+  "skipped_count": 25,
+  "sync_worker_running": true,
+  "skipped_breakdown": [
+    { "reason": "qa_not_approved", "count": 10 },
+    { "reason": "already_synced", "count": 8 },
+    { "reason": "sync_active", "count": 7 }
+  ],
+  "warnings": []
+}</code></pre>
+        <div class="callout warn" style="margin-top: 18px;">
+          <p>预览结果是确认前估算，不锁定批次。执行接口仍会按同一筛选条件重新查询固定 ID 快照，因此预览后如果筛选条件改变，前端必须让预览失效并要求重新预览。</p>
+        </div>
+
+        <h3>3.2 批量质检执行</h3>
+        <p><span class="badge">POST</span> <code>/api/v1/data-ops/episodes/bulk-qa</code></p>
+        <pre><code>{
+  "confirm": true,
+  "filters": {
+    "created_at_from": "2026-06-01T00:00:00Z",
+    "created_at_to": "2026-06-08T00:00:00Z",
+    "qa_status": "failed,pending_qa",
+    "sync_status": "not_started,failed",
+    "scene_id": "1,2",
+    "sop_id": "9,10",
+    "robot_type_id": "3",
+    "robot_device_id": "robot-001,robot-002",
+    "collector_operator_id": "op001"
+  }
+}</code></pre>
+        <pre><code>{
+  "status": "accepted",
+  "matched_count": 123,
+  "message": "123 episodes accepted for bulk QA"
+}</code></pre>
+
+        <h3>3.3 批量云同步执行</h3>
+        <p><span class="badge">POST</span> <code>/api/v1/data-ops/episodes/bulk-sync</code></p>
+        <pre><code>{
+  "confirm": true,
+  "filters": {
+    "qa_status": "approved,inspector_approved",
+    "sync_status": "not_started,failed"
+  }
+}</code></pre>
+        <pre><code>{
+  "status": "accepted",
+  "matched_count": 42,
+  "message": "42 episodes accepted for bulk cloud sync"
+}</code></pre>
+      </div>
+
+      <div class="panel" style="margin-top: 18px;">
+        <h3>3.4 错误响应</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>场景</th>
+              <th>HTTP</th>
+              <th>响应</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>缺少 <code>confirm: true</code></td>
+              <td><code>400</code></td>
+              <td><code>{ "error": "confirm must be true" }</code></td>
+            </tr>
+            <tr>
+              <td>筛选时间格式错误、状态非法、ID 非法</td>
+              <td><code>400</code></td>
+              <td><code>{ "error": "..." }</code></td>
+            </tr>
+            <tr>
+              <td>数据库未配置</td>
+              <td><code>503</code></td>
+              <td><code>{ "error": "database is not configured" }</code></td>
+            </tr>
+            <tr>
+              <td>批量 QA 依赖未配置</td>
+              <td><code>503</code></td>
+              <td><code>{ "error": "qa service is not configured" }</code></td>
+            </tr>
+            <tr>
+              <td>sync worker 未配置或未运行</td>
+              <td><code>503</code></td>
+              <td><code>{ "error": "sync worker is not running" }</code></td>
+            </tr>
+            <tr>
+              <td>查询 ID 快照失败</td>
+              <td><code>500</code></td>
+              <td><code>{ "error": "failed to select data operation episodes" }</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="filters">
+      <h2>4. 筛选语义</h2>
+      <div class="panel">
+        <p>预览接口和执行接口共用数据明细页面的完整筛选字段。第一版只支持逗号字符串，不支持数组。</p>
+        <table>
+          <thead>
+            <tr>
+              <th>字段</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>created_at_from</code></td>
+              <td>RFC3339 字符串</td>
+              <td>episode 创建时间下界。</td>
+            </tr>
+            <tr>
+              <td><code>created_at_to</code></td>
+              <td>RFC3339 字符串</td>
+              <td>episode 创建时间上界；必须晚于 <code>created_at_from</code>。</td>
+            </tr>
+            <tr>
+              <td><code>qa_status</code></td>
+              <td>逗号字符串</td>
+              <td>支持 <code>pending_qa</code>、<code>qa_running</code>、<code>approved</code>、<code>needs_inspection</code>、<code>inspector_approved</code>、<code>rejected</code>、<code>failed</code>。</td>
+            </tr>
+            <tr>
+              <td><code>sync_status</code></td>
+              <td>逗号字符串</td>
+              <td>支持 <code>not_started</code>、<code>pending</code>、<code>in_progress</code>、<code>completed</code>、<code>failed</code>。</td>
+            </tr>
+            <tr>
+              <td><code>scene_id</code></td>
+              <td>逗号字符串</td>
+              <td>场景 ID 列表。</td>
+            </tr>
+            <tr>
+              <td><code>sop_id</code></td>
+              <td>逗号字符串</td>
+              <td>SOP ID 列表，沿用 episode SOP 到 task SOP 的 fallback 逻辑。</td>
+            </tr>
+            <tr>
+              <td><code>robot_type_id</code></td>
+              <td>逗号字符串</td>
+              <td>设备类型 ID 列表。</td>
+            </tr>
+            <tr>
+              <td><code>robot_device_id</code></td>
+              <td>逗号字符串</td>
+              <td>设备 ID 列表。</td>
+            </tr>
+            <tr>
+              <td><code>collector_operator_id</code></td>
+              <td>逗号字符串</td>
+              <td>数采员工号列表。</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="callout warn" style="margin-top: 18px;">
+          <p>分页字段 <code>limit</code> 和 <code>offset</code> 不属于批量请求语义。即使前端误传，后端也应忽略。预览和执行都作用于完整筛选结果。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="execution">
+      <h2>5. 执行模型</h2>
+      <div class="grid">
+        <div class="panel">
+          <h3>预览路径</h3>
+          <ol class="flow">
+            <li>校验数据库可用性；批量同步预览额外返回 sync worker 当前运行状态。</li>
+            <li>解析 JSON 请求体；预览不要求 <code>confirm</code>。</li>
+            <li>把 <code>filters</code> 转换为 data-ops query。</li>
+            <li>复用数据明细筛选 SQL 计算 <code>matched_count</code>。</li>
+            <li>按动作规则计算 <code>eligible_count</code>、<code>skipped_count</code> 和 <code>skipped_breakdown</code>。</li>
+            <li>HTTP 返回 <code>200 OK</code>，不查询 ID 快照，不启动后台 goroutine。</li>
+          </ol>
+        </div>
+        <div class="panel">
+          <h3>执行请求路径</h3>
+          <ol class="flow">
+            <li>校验数据库、QA handler 或 sync worker 可用性。</li>
+            <li>解析 JSON 请求体，要求 <code>confirm: true</code>。</li>
+            <li>把 <code>filters</code> 转换为 data-ops query。</li>
+            <li>使用同一套 <code>dataOpsEpisodeBaseFromSQL</code> 和 <code>buildDataOpsEpisodeWhere</code> 查询 ID 快照。</li>
+            <li>按 <code>e.created_at DESC, e.id DESC</code> 固定顺序返回 ID。</li>
+            <li>启动后台 goroutine，HTTP 返回 <code>202</code> 和 <code>matched_count</code>。</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top: 18px;">
+        <h3>后台处理</h3>
+        <ol class="flow">
+          <li>后台不使用 HTTP request context，改用 <code>context.Background()</code>。</li>
+          <li>单条 QA 使用与自动 QA 相同的超时策略。</li>
+          <li>批量 QA 通过 worker pool 固定并发 <code>4</code>。</li>
+          <li>批量同步逐条调用 <code>EnqueueEpisodeManual</code>。</li>
+          <li>单条失败或跳过不影响整批继续处理。</li>
+          <li>开始和结束打印 summary 日志，异常错误逐条打印。</li>
+        </ol>
+      </div>
+
+      <div class="grid" style="margin-top: 18px;">
+        <div class="panel">
+          <h3>QA 预览口径</h3>
+          <ul>
+            <li><code>eligible_count</code>：命中项中非 <code>qa_running</code> 的数量。</li>
+            <li><code>skipped_breakdown.qa_running</code>：正在质检，执行时会跳过。</li>
+            <li><code>protected_status_count</code>：<code>needs_inspection</code>、<code>inspector_approved</code>、<code>rejected</code> 数量；这些会执行检查记录，但不会覆盖人工决策状态。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>同步预览口径</h3>
+          <ul>
+            <li><code>eligible_count</code>：QA 已通过、未 cloud synced、且最新同步不在 <code>pending</code>/<code>in_progress</code>/<code>completed</code> 的数量。</li>
+            <li><code>failed</code> 最新同步记录视为可手动重试。</li>
+            <li><code>sync_worker_running</code> 为 false 时仍可预览，但执行接口会返回 <code>503</code>。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="three-grid" style="margin-top: 18px;">
+        <div class="mini">
+          <strong>QA 状态处理</strong>
+          <p>不预先把所有命中项改成 <code>qa_running</code>。每条真正开始执行时，由现有 <code>RunEpisodeQASuite</code> claim 并更新状态。</p>
+        </div>
+        <div class="mini">
+          <strong>人工状态保护</strong>
+          <p><code>needs_inspection</code>、<code>inspector_approved</code>、<code>rejected</code> 继承现有手动质检保护规则，不覆盖人工决策。</p>
+        </div>
+        <div class="mini">
+          <strong>同步跳过规则</strong>
+          <p>已同步、QA 未通过、正在同步等情况由现有 sync worker 逻辑拒绝或跳过，批量 goroutine 只计数和记录异常。</p>
+        </div>
+      </div>
+
+      <div class="callout danger" style="margin-top: 18px;">
+        <p>第一版没有持久化批任务。服务重启后，未处理完的批量 QA 会丢失；批量同步中已经写入 <code>sync_logs</code> 的任务可由 worker 恢复，未写入的不会恢复。</p>
+      </div>
+    </section>
+
+    <section id="backend">
+      <h2>6. 后端改造建议</h2>
+      <div class="panel">
+        <h3>结构调整</h3>
+        <ul>
+          <li><code>DataOpsHandler</code> 增加 QA handler 和 sync worker 依赖。</li>
+          <li><code>NewDataOpsHandler</code> 接收新增依赖；server 初始化处传入现有 <code>qaHandler</code> 和 <code>syncWorker</code>。</li>
+          <li><code>RegisterRoutes</code> 新增 <code>POST /episodes/bulk-qa/preview</code>、<code>POST /episodes/bulk-sync/preview</code>、<code>POST /episodes/bulk-qa</code> 和 <code>POST /episodes/bulk-sync</code>。</li>
+          <li>新增 request/response struct：<code>DataOpsBulkEpisodeActionRequest</code>、<code>DataOpsBulkEpisodePreviewResponse</code>、<code>DataOpsBulkEpisodeActionResponse</code>。</li>
+          <li>新增 helper：解析 body filters、计算预览统计、查询 ID 快照、启动 QA worker pool、启动 sync enqueue goroutine。</li>
+        </ul>
+
+        <h3>伪代码</h3>
+        <pre><code>func (h *DataOpsHandler) PreviewBulkEpisodeQA(c *gin.Context) {
+  q, ok := h.parseBulkEpisodeFilters(c)
+  preview := h.previewBulkEpisodeQA(c.Request.Context(), q)
+  c.JSON(http.StatusOK, preview)
+}
+
+func (h *DataOpsHandler) PreviewBulkSyncEpisodes(c *gin.Context) {
+  q, ok := h.parseBulkEpisodeFilters(c)
+  preview := h.previewBulkEpisodeSync(c.Request.Context(), q)
+  c.JSON(http.StatusOK, preview)
+}
+
+func (h *DataOpsHandler) BulkRunEpisodeQA(c *gin.Context) {
+  req, q, ok := h.parseBulkEpisodeAction(c)
+  ids := h.selectBulkEpisodeIDs(c.Request.Context(), q)
+  go h.runBulkEpisodeQA(ids)
+  c.JSON(http.StatusAccepted, response("accepted", len(ids), "..."))
+}
+
+func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
+  if h.syncWorker == nil || !h.syncWorker.IsRunning() { ...503... }
+  req, q, ok := h.parseBulkEpisodeAction(c)
+  ids := h.selectBulkEpisodeIDs(c.Request.Context(), q)
+  go h.runBulkEpisodeSync(ids)
+  c.JSON(http.StatusAccepted, response("accepted", len(ids), "..."))
+}</code></pre>
+      </div>
+    </section>
+
+    <section id="logging">
+      <h2>7. 日志策略</h2>
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>时机</th>
+              <th>日志内容</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>接受批量请求</td>
+              <td><code>[DATA_OPS] Bulk QA accepted: matched=123</code></td>
+            </tr>
+            <tr>
+              <td>批量完成</td>
+              <td><code>[DATA_OPS] Bulk QA completed: matched=123, attempted=120, skipped=2, failed=1</code></td>
+            </tr>
+            <tr>
+              <td>单条异常失败</td>
+              <td>逐条打印 episode ID 和错误。</td>
+            </tr>
+            <tr>
+              <td>正常跳过</td>
+              <td>不逐条打印，只计数，避免大量日志。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="testing">
+      <h2>8. 测试计划</h2>
+      <div class="panel">
+        <h3>必须新增的 helper 单测</h3>
+        <ul>
+          <li>预览请求不要求 <code>confirm</code>，执行请求要求 <code>confirm: true</code>。</li>
+          <li>解析批量请求时，<code>confirm</code> 缺失或为 false 会失败。</li>
+          <li>批量请求 filters 只接受逗号字符串；逗号值数量不做代码层上限，但仍校验单值格式。</li>
+          <li>批量解析忽略 <code>limit</code> 和 <code>offset</code>。</li>
+          <li>QA 预览统计能计算 <code>matched_count</code>、<code>eligible_count</code>、<code>skipped_count</code> 和 <code>protected_status_count</code>。</li>
+          <li>同步预览统计能计算 QA 未通过、已同步、正在同步等跳过原因汇总。</li>
+          <li>ID 快照 SQL 复用 data-ops from/where，并按 <code>e.created_at DESC, e.id DESC</code> 排序。</li>
+          <li>空 filters 合法，会生成只包含 <code>e.deleted_at IS NULL</code> 的 where。</li>
+          <li>非法 <code>qa_status</code>、<code>sync_status</code>、ID 列表和时间范围仍返回解析错误。</li>
+        </ul>
+
+        <h3>可选集成测试</h3>
+        <ul>
+          <li>使用 fake QA runner 验证 bulk QA goroutine 能按 ID 调用。</li>
+          <li>使用 fake sync enqueuer 验证 worker 未运行时返回 <code>503</code>。</li>
+          <li>路由注册 smoke test，确保两个 POST endpoint 挂在 data-ops admin group 下。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="checklist">
+      <h2>9. 实现清单</h2>
+      <div class="panel">
+        <ul>
+          <li>修改 <code>keystone/internal/api/handlers/data_ops.go</code>：新增 request/response、routes、handlers、helpers。</li>
+          <li>修改 <code>keystone/internal/server/server.go</code>：构造 <code>DataOpsHandler</code> 时传入 QA handler 和 sync worker。</li>
+          <li>必要时给 sync worker 暴露轻量 enqueuer 接口，降低 handler 对具体类型的耦合。</li>
+          <li>补 Swagger 注释后运行 <code>swag init -g internal/server/server.go -o docs</code>。</li>
+          <li>补 <code>keystone/internal/api/handlers/data_ops_test.go</code> 测试。</li>
+          <li>运行 <code>go test ./internal/api/handlers/... -v</code>，最后按需要运行更大范围测试。</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer>
+      <p>本文档记录第一版轻量级后端 API 规格。后续如果需要可靠长任务、进度展示、取消、重试和审计，应升级为持久化 batch job 模型。</p>
+    </footer>
+  </main>
+</body>
+</html>
