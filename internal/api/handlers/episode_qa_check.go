@@ -827,7 +827,10 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 		if err != nil {
 			return nil, fmt.Errorf("insert qa_check: %w", err)
 		}
-		id, _ := res.LastInsertId()
+		id, err := res.LastInsertId()
+		if err != nil {
+			return nil, fmt.Errorf("read qa_check insert id: %w", err)
+		}
 		checks = append(checks, EpisodeQACheckRecordResponse{
 			ID:            id,
 			EpisodeID:     claim.EpisodeID,

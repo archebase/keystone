@@ -99,6 +99,7 @@ type dataOpsEpisodeRow struct {
 	CreatedAt           time.Time       `db:"created_at"`
 }
 
+// DataOpsEpisodeItemResponse describes one episode row in the data operations table.
 type DataOpsEpisodeItemResponse struct {
 	ID                  int64                         `json:"id"`
 	EpisodeID           string                        `json:"episode_id"`
@@ -125,6 +126,7 @@ type DataOpsEpisodeItemResponse struct {
 	CreatedAt           string                        `json:"created_at"`
 }
 
+// DataOpsEpisodeListResponse contains paginated episode rows for data operations.
 type DataOpsEpisodeListResponse struct {
 	Items   []DataOpsEpisodeItemResponse `json:"items"`
 	Total   int                          `json:"total"`

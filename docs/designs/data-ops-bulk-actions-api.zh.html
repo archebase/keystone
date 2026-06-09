@@ -389,7 +389,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>不做前端页面改造。</li>
             <li>不新增批任务表、批次 ID、进度查询或取消接口。</li>
             <li>不返回最终成功、跳过、失败统计。</li>
-            <li>不设置批量条数硬上限。</li>
+            <li>不设置批量命中条数硬上限；逗号筛选值数量也不设置代码层数量上限。</li>
             <li>批量同步不做已同步数据的重新同步。</li>
           </ul>
         </div>
@@ -425,7 +425,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         </div>
         <div class="decision">
           <b>无硬上限</b>
-          <span>第一版不限制命中数量，但文档和接口语义不承诺完整批次可靠性。</span>
+          <span>第一版不限制命中数量，也不限制逗号筛选值数量；仍不承诺完整批次可靠性。</span>
         </div>
         <div class="decision">
           <b>matched_count</b>
@@ -456,15 +456,13 @@ SPDX-License-Identifier: MulanPSL-2.0
   "filters": {
     "created_at_from": "2026-06-01T00:00:00Z",
     "created_at_to": "2026-06-08T00:00:00Z",
-    "q": "abc",
     "qa_status": "failed,pending_qa",
     "sync_status": "not_started,failed",
     "scene_id": "1,2",
     "sop_id": "9,10",
     "robot_type_id": "3",
     "robot_device_id": "robot-001,robot-002",
-    "collector_operator_id": "op001",
-    "label": "recalled_batch"
+    "collector_operator_id": "op001"
   }
 }</code></pre>
         <pre><code>{
@@ -506,15 +504,13 @@ SPDX-License-Identifier: MulanPSL-2.0
   "filters": {
     "created_at_from": "2026-06-01T00:00:00Z",
     "created_at_to": "2026-06-08T00:00:00Z",
-    "q": "abc",
     "qa_status": "failed,pending_qa",
     "sync_status": "not_started,failed",
     "scene_id": "1,2",
     "sop_id": "9,10",
     "robot_type_id": "3",
     "robot_device_id": "robot-001,robot-002",
-    "collector_operator_id": "op001",
-    "label": "recalled_batch"
+    "collector_operator_id": "op001"
   }
 }</code></pre>
         <pre><code>{
@@ -609,11 +605,6 @@ SPDX-License-Identifier: MulanPSL-2.0
               <td>episode 创建时间上界；必须晚于 <code>created_at_from</code>。</td>
             </tr>
             <tr>
-              <td><code>q</code></td>
-              <td>字符串</td>
-              <td>搜索 episode ID、task ID、质量说明。</td>
-            </tr>
-            <tr>
               <td><code>qa_status</code></td>
               <td>逗号字符串</td>
               <td>支持 <code>pending_qa</code>、<code>qa_running</code>、<code>approved</code>、<code>needs_inspection</code>、<code>inspector_approved</code>、<code>rejected</code>、<code>failed</code>。</td>
@@ -647,11 +638,6 @@ SPDX-License-Identifier: MulanPSL-2.0
               <td><code>collector_operator_id</code></td>
               <td>逗号字符串</td>
               <td>数采员工号列表。</td>
-            </tr>
-            <tr>
-              <td><code>label</code></td>
-              <td>字符串</td>
-              <td>精确匹配 episode labels 中的单个标签。</td>
             </tr>
           </tbody>
         </table>
@@ -820,7 +806,7 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
         <ul>
           <li>预览请求不要求 <code>confirm</code>，执行请求要求 <code>confirm: true</code>。</li>
           <li>解析批量请求时，<code>confirm</code> 缺失或为 false 会失败。</li>
-          <li>批量请求 filters 只接受逗号字符串，能复用现有 data-ops 筛选解析。</li>
+          <li>批量请求 filters 只接受逗号字符串；逗号值数量不做代码层上限，但仍校验单值格式。</li>
           <li>批量解析忽略 <code>limit</code> 和 <code>offset</code>。</li>
           <li>QA 预览统计能计算 <code>matched_count</code>、<code>eligible_count</code>、<code>skipped_count</code> 和 <code>protected_status_count</code>。</li>
           <li>同步预览统计能计算 QA 未通过、已同步、正在同步等跳过原因汇总。</li>

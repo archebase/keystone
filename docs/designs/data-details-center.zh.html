@@ -381,7 +381,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <ul>
             <li>新增 Synapse 管理后台 <code>数据运维 / 数据明细</code> 页面。</li>
             <li>默认展示全部 episode，按 <code>created_at DESC, id DESC</code> 分页。</li>
-            <li>支持 QA 状态、云同步状态、时间、场景、设备类型、设备 ID、数采员和标签筛选。</li>
+            <li>支持 QA 状态、云同步状态、时间、场景、设备类型、设备 ID 和数采员筛选。</li>
             <li>表格展示 episode 基础信息、最近 QA、云同步状态和创建时间。</li>
             <li>行级支持详情、预览、下载、重新质检、同步/重新同步/重试、QA 历史和同步历史。</li>
             <li>新增统一列表 API：<code>GET /api/v1/data-ops/episodes</code>。</li>
@@ -506,12 +506,6 @@ SPDX-License-Identifier: MulanPSL-2.0
             <td>多选</td>
             <td><code>sync_status=not_started,failed</code></td>
             <td>复用当前同步状态，并补充 <code>not_started</code>。</td>
-          </tr>
-          <tr>
-            <td>标签</td>
-            <td>输入框</td>
-            <td><code>label=recalled_batch</code></td>
-            <td>第一版只支持单个 label 精确匹配。</td>
           </tr>
         </tbody>
       </table>
@@ -683,8 +677,7 @@ SPDX-License-Identifier: MulanPSL-2.0
   &amp;scene_id=12,13
   &amp;robot_type_id=3,5
   &amp;robot_device_id=robot-001,robot-002
-  &amp;collector_operator_id=op001,op002
-  &amp;label=recalled_batch</code></pre>
+  &amp;collector_operator_id=op001,op002</code></pre>
 
       <h3>响应示例</h3>
       <pre><code>{
@@ -842,7 +835,6 @@ SPDX-License-Identifier: MulanPSL-2.0
         <li>确认 <code>episodes(qa_status, created_at, id)</code> 或现有 QA 状态索引能支撑筛选。</li>
         <li>确认 <code>qa_checks(episode_id, checked_at, id)</code> 支撑当前页 latest QA 查询。</li>
         <li>确认 <code>sync_logs(episode_id, id)</code> 或 <code>sync_logs(episode_id, started_at, id)</code> 支撑当前页 latest sync 查询。</li>
-        <li>标签筛选第一版可用 <code>JSON_CONTAINS</code>；如果高频再考虑标签归一化表。</li>
       </ul>
     </section>
 
@@ -937,7 +929,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li><code>GET /api/v1/data-ops/episodes</code> 默认分页返回全部 episode。</li>
             <li>支持 <code>qa_status</code> 多选筛选。</li>
             <li>支持 <code>sync_status</code> 多选筛选，包含 <code>not_started</code>。</li>
-            <li>支持时间范围、scene_id、robot_type_id、robot_device_id、collector_operator_id 和 label 筛选。</li>
+            <li>支持时间范围、scene_id、robot_type_id、robot_device_id 和 collector_operator_id 筛选。</li>
             <li>列表响应包含当前页 latest QA 和 latest sync。</li>
             <li>无 sync log 的 episode 返回 <code>sync_status=not_started</code>。</li>
             <li>复杂筛选下 total、hasNext、hasPrev 正确。</li>

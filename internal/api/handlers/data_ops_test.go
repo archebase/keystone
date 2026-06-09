@@ -154,6 +154,22 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	}
 }
 
+func TestParseDataOpsBulkEpisodeFiltersDoesNotCapMultiValueCount(t *testing.T) {
+	got, err := parseDataOpsBulkEpisodeFilters(DataOpsBulkEpisodeFilters{
+		SceneID:       joinedNumberList(maxMultiValueFilterItems + 1),
+		RobotDeviceID: joinedStringList("robot-", maxMultiValueFilterItems+1),
+	})
+	if err != nil {
+		t.Fatalf("parseDataOpsBulkEpisodeFilters returned error: %v", err)
+	}
+	if len(got.SceneIDs) != maxMultiValueFilterItems+1 {
+		t.Fatalf("scene id count = %d, want %d", len(got.SceneIDs), maxMultiValueFilterItems+1)
+	}
+	if len(got.RobotDeviceIDs) != maxMultiValueFilterItems+1 {
+		t.Fatalf("robot device id count = %d, want %d", len(got.RobotDeviceIDs), maxMultiValueFilterItems+1)
+	}
+}
+
 func TestParseDataOpsBulkEpisodeRequestConfirmGuard(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

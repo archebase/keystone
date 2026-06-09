@@ -732,7 +732,12 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				logger.Printf("%s DB insert failed: %v", transferTaskLogPrefix(dc.DeviceID, taskID), dbErr)
 				return
 			}
-			createdEpisodePK, _ = insertRes.LastInsertId()
+			createdEpisodePK, dbErr = insertRes.LastInsertId()
+			if dbErr != nil {
+				// #nosec G706 -- Set aside for now
+				logger.Printf("%s DB insert id read failed: %v", transferTaskLogPrefix(dc.DeviceID, taskID), dbErr)
+				return
+			}
 
 			// Write-time maintenance for batch episode_count.
 			if _, dbErr := tx.ExecContext(ctx, `

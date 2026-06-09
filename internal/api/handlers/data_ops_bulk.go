@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 
 const dataOpsBulkQAConcurrency = 4
 
+// DataOpsBulkEpisodeFilters contains data-ops filters for bulk episode actions.
 type DataOpsBulkEpisodeFilters struct {
 	CreatedAtFrom       string `json:"created_at_from,omitempty"`
 	CreatedAtTo         string `json:"created_at_to,omitempty"`
@@ -38,16 +40,19 @@ type DataOpsBulkEpisodeFilters struct {
 	Offset              string `json:"offset,omitempty"`
 }
 
+// DataOpsBulkEpisodeActionRequest is the request body for bulk preview and execute calls.
 type DataOpsBulkEpisodeActionRequest struct {
 	Confirm bool                      `json:"confirm,omitempty"`
 	Filters DataOpsBulkEpisodeFilters `json:"filters,omitempty"`
 }
 
+// DataOpsBulkSkippedBreakdownItem summarizes one skipped reason in a bulk preview.
 type DataOpsBulkSkippedBreakdownItem struct {
 	Reason string `json:"reason"`
 	Count  int    `json:"count"`
 }
 
+// DataOpsBulkEpisodePreviewResponse reports matched, eligible, and skipped counts before execution.
 type DataOpsBulkEpisodePreviewResponse struct {
 	Status               string                            `json:"status"`
 	Action               string                            `json:"action"`
@@ -60,6 +65,7 @@ type DataOpsBulkEpisodePreviewResponse struct {
 	Warnings             []string                          `json:"warnings"`
 }
 
+// DataOpsBulkEpisodeActionResponse acknowledges an accepted asynchronous bulk action.
 type DataOpsBulkEpisodeActionResponse struct {
 	Status       string `json:"status"`
 	MatchedCount int    `json:"matched_count"`
@@ -282,7 +288,7 @@ func (h *DataOpsHandler) parseBulkEpisodeActionRequest(c *gin.Context, requireCo
 }
 
 func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsEpisodeQuery, error) {
-	qaStatuses, err := parseNonEmptyStringList(filters.QAStatus, "qa_status")
+	qaStatuses, err := parseDataOpsBulkStringList(filters.QAStatus, "qa_status")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
@@ -292,7 +298,7 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 		}
 	}
 
-	syncStatuses, err := parseNonEmptyStringList(filters.SyncStatus, "sync_status")
+	syncStatuses, err := parseDataOpsBulkStringList(filters.SyncStatus, "sync_status")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
@@ -302,23 +308,23 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 		}
 	}
 
-	sceneIDs, err := parsePositiveInt64List(filters.SceneID, "scene_id")
+	sceneIDs, err := parseDataOpsBulkPositiveInt64List(filters.SceneID, "scene_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
-	sopIDs, err := parsePositiveInt64List(filters.SOPID, "sop_id")
+	sopIDs, err := parseDataOpsBulkPositiveInt64List(filters.SOPID, "sop_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
-	robotTypeIDs, err := parsePositiveInt64List(filters.RobotTypeID, "robot_type_id")
+	robotTypeIDs, err := parseDataOpsBulkPositiveInt64List(filters.RobotTypeID, "robot_type_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
-	robotDeviceIDs, err := parseNonEmptyStringList(filters.RobotDeviceID, "robot_device_id")
+	robotDeviceIDs, err := parseDataOpsBulkStringList(filters.RobotDeviceID, "robot_device_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
-	collectorOperatorIDs, err := parseNonEmptyStringList(filters.CollectorOperatorID, "collector_operator_id")
+	collectorOperatorIDs, err := parseDataOpsBulkStringList(filters.CollectorOperatorID, "collector_operator_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
@@ -359,6 +365,72 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 	}
 
 	return out, nil
+}
+
+func parseDataOpsBulkPositiveInt64List(raw string, fieldName string) ([]int64, error) {
+	items, err := splitDataOpsBulkCommaItems(raw, fieldName, maxMultiValueFilterIntegerItemLength)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[int64]struct{})
+	values := []int64{}
+	for _, item := range items {
+		parsed, err := strconv.ParseInt(item, 10, 64)
+		if err != nil || parsed <= 0 {
+			return nil, fmt.Errorf("invalid %s format", fieldName)
+		}
+		if _, ok := seen[parsed]; ok {
+			continue
+		}
+		seen[parsed] = struct{}{}
+		values = append(values, parsed)
+	}
+	return values, nil
+}
+
+func parseDataOpsBulkStringList(raw string, fieldName string) ([]string, error) {
+	items, err := splitDataOpsBulkCommaItems(raw, fieldName, maxMultiValueFilterStringItemLength)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{})
+	values := []string{}
+	for _, item := range items {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		values = append(values, item)
+	}
+	return values, nil
+}
+
+func splitDataOpsBulkCommaItems(raw string, fieldName string, maxItemLength int) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	items := []string{}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if len(item) > maxItemLength {
+			return nil, fmt.Errorf("%s contains a value longer than %d characters", fieldName, maxItemLength)
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 func (h *DataOpsHandler) previewBulkEpisodeQA(ctx context.Context, q dataOpsEpisodeQuery) (DataOpsBulkEpisodePreviewResponse, error) {
