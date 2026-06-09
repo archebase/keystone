@@ -861,6 +861,7 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 	if claim.MutableStatus {
 		if allPassed {
 			if mode == qaRunModeAuto {
+				// #nosec G701 -- static SQL with placeholder-bound episode QA values.
 				if _, err := tx.ExecContext(ctx, `
 					UPDATE episodes
 					SET qa_status = ?, qa_score = ?, quality_flag = NULL, auto_approved = ?
@@ -869,6 +870,7 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 					return nil, fmt.Errorf("mark episode qa approved: %w", err)
 				}
 			} else {
+				// #nosec G701 -- static SQL with placeholder-bound episode QA values.
 				if _, err := tx.ExecContext(ctx, `
 					UPDATE episodes
 					SET qa_status = ?, qa_score = ?, quality_flag = NULL
@@ -878,6 +880,7 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 				}
 			}
 		} else {
+			// #nosec G701 -- static SQL with placeholder-bound episode QA values.
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE episodes
 				SET qa_status = ?, qa_score = ?, quality_flag = ?
@@ -888,6 +891,7 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 		}
 	} else {
 		if failureDetails != "" {
+			// #nosec G701 -- static SQL with placeholder-bound episode QA values.
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE episodes
 				SET qa_score = ?, quality_flag = ?
