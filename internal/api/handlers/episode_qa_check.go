@@ -586,6 +586,7 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 		return claim, nil
 	}
 
+	// #nosec G701 -- static SQL with placeholder-bound status and episode values.
 	res, err := h.db.ExecContext(ctx, `
 		UPDATE episodes
 		SET qa_status = ?
@@ -620,6 +621,7 @@ func (h *EpisodeQAHandler) releaseEpisodeQARun(ctx context.Context, claim episod
 	if h == nil || h.db == nil || !claim.MutableStatus {
 		return
 	}
+	// #nosec G701 -- static SQL with placeholder-bound status and episode values.
 	if _, err := h.db.ExecContext(ctx, `
 		UPDATE episodes
 		SET qa_status = ?
@@ -820,6 +822,7 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 			return nil, fmt.Errorf("marshal qa check metadata: %w", err)
 		}
 
+		// #nosec G701 -- static SQL with placeholder-bound QA check values.
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO qa_checks (episode_id, check_name, passed, score, details, check_metadata, checked_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
