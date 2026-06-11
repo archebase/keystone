@@ -347,15 +347,15 @@ SPDX-License-Identifier: MulanPSL-2.0
         <p class="eyebrow">Data Ops Bulk Actions</p>
         <h1>数据明细批量质检与云同步 API 设计</h1>
         <p class="lead">
-          为数据明细页面提供“按当前筛选结果批量质检”和“按当前筛选结果批量云同步”的后端能力。第一版提供确认前预览和轻量级异步执行 API，不做持久化批任务、进度查询或取消。
+          为数据明细页面提供“按当前筛选结果批量质检”和“按当前筛选结果批量云同步”的后端能力。第一版保留确认前预览和异步执行模型，并为批量质检增加短期 run snapshot 与 SSE 实时进度；批量同步暂不接入实时进度。
         </p>
       </div>
       <div class="header-meta">
         <strong>实现目标</strong>
         <div>预览 API 先行</div>
         <div>固定筛选快照</div>
-        <div>后台 goroutine 异步处理</div>
-        <div>无硬上限保护</div>
+        <div>批量 QA run_id</div>
+        <div>Snapshot + SSE 进度</div>
       </div>
     </header>
 
@@ -365,6 +365,7 @@ SPDX-License-Identifier: MulanPSL-2.0
       <a href="#api">API 规格</a>
       <a href="#filters">筛选语义</a>
       <a href="#execution">执行模型</a>
+      <a href="#frontend">前端进度</a>
       <a href="#testing">测试计划</a>
       <a href="#checklist">实现清单</a>
     </nav>
@@ -379,18 +380,21 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>请求体只接收逗号字符串形式的筛选条件。</li>
             <li>预览接口只计算命中和预计可操作统计，不启动后台任务。</li>
             <li>请求内解析筛选条件并查询固定 episode ID 快照。</li>
-            <li>返回 <code>202 Accepted</code> 后由后台 goroutine 异步处理。</li>
+            <li>批量 QA 返回 <code>run_id</code>，后台 goroutine 异步处理，并通过 snapshot API 与 SSE 暴露聚合进度。</li>
+            <li>批量 QA 全局只允许一个 <code>queued</code> 或 <code>running</code> run。</li>
+            <li>批量同步仍返回 <code>202 Accepted</code> 后异步处理，本轮不接入实时进度。</li>
             <li>补 Swagger 注释和后端 helper 单测。</li>
           </ul>
         </div>
         <div class="panel">
           <h3>明确不做</h3>
           <ul>
-            <li>不做前端页面改造。</li>
-            <li>不新增批任务表、批次 ID、进度查询或取消接口。</li>
-            <li>不返回最终成功、跳过、失败统计。</li>
+            <li>不做批量同步进度面板；前端只做当前批量 QA 的右下角进度面板。</li>
+            <li>不做长期审计历史或完整任务中心；批量 run 只作为短期进度事实来源。</li>
+            <li>不返回或展示 episode 级明细列表。</li>
+            <li>不做取消、自动重试或服务重启后的继续执行。</li>
             <li>不设置批量命中条数硬上限；逗号筛选值数量也不设置代码层数量上限。</li>
-            <li>批量同步不做已同步数据的重新同步。</li>
+            <li>批量同步不做已同步数据的重新同步，也不接入本轮 SSE 进度。</li>
           </ul>
         </div>
       </div>
@@ -401,7 +405,7 @@ SPDX-License-Identifier: MulanPSL-2.0
       <div class="decision-list">
         <div class="decision">
           <b>异步模型</b>
-          <span>两个执行接口均返回 <code>202 Accepted</code>，后台继续处理，不等待整批完成。</span>
+          <span>两个执行接口仍不等待整批完成；批量 QA 返回 <code>run_id</code>，批量同步保持轻量 accepted 模型。</span>
         </div>
         <div class="decision">
           <b>作用范围</b>
@@ -409,7 +413,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         </div>
         <div class="decision">
           <b>筛选快照</b>
-          <span>前端只发送筛选条件；后端请求内查出固定 ID 快照，再把 ID 列表交给后台 goroutine。</span>
+          <span>前端只发送筛选条件；执行接口按请求时刻重新查询固定 ID 快照。批量 QA 的 <code>total_count</code> 以执行时快照为准。</span>
         </div>
         <div class="decision">
           <b>确认前预览</b>
@@ -426,6 +430,22 @@ SPDX-License-Identifier: MulanPSL-2.0
         <div class="decision">
           <b>无硬上限</b>
           <span>第一版不限制命中数量，也不限制逗号筛选值数量；仍不承诺完整批次可靠性。</span>
+        </div>
+        <div class="decision">
+          <b>批量 QA 进度</b>
+          <span>新增短期 <code>bulk_runs</code> 进度事实表、snapshot API 和单 run SSE stream。SSE 只推聚合进度，不推 episode 明细。</span>
+        </div>
+        <div class="decision">
+          <b>运行互斥</b>
+          <span>全局只允许一个 <code>bulk_qa</code> run 处于 <code>queued</code> 或 <code>running</code>；再次提交返回 <code>409</code> 和现有 <code>run_id</code>。</span>
+        </div>
+        <div class="decision">
+          <b>状态机</b>
+          <span>run 状态为 <code>queued</code>、<code>running</code>、<code>completed</code>、<code>failed</code>、<code>interrupted</code>。质检不通过或单条处理失败不改变 run 的 <code>completed</code> 终态。</span>
+        </div>
+        <div class="decision">
+          <b>认证方式</b>
+          <span>前端使用 <code>fetch</code> streaming 消费 SSE，并携带 <code>Authorization: Bearer ...</code>；不使用原生 <code>EventSource</code>，不把 token 放入 query string。</span>
         </div>
         <div class="decision">
           <b>matched_count</b>
@@ -514,12 +534,62 @@ SPDX-License-Identifier: MulanPSL-2.0
   }
 }</code></pre>
         <pre><code>{
-  "status": "accepted",
-  "matched_count": 123,
+  "run": {
+    "run_id": "bulk_qa_20260611_073012_a8f3c9",
+    "action": "bulk_qa",
+    "status": "queued",
+    "total_count": 123,
+    "processed_count": 0,
+    "passed_count": 0,
+    "qa_failed_count": 0,
+    "processing_failed_count": 0,
+    "skipped_count": 0,
+    "started_at": null,
+    "updated_at": "2026-06-11T07:30:12Z",
+    "finished_at": null,
+    "error_message": ""
+  },
   "message": "123 episodes accepted for bulk QA"
 }</code></pre>
 
-        <h3>3.3 批量云同步执行</h3>
+        <h3>3.3 批量质检进度查询</h3>
+        <p><span class="badge">GET</span> <code>/api/v1/data-ops/bulk-runs/:run_id</code></p>
+        <pre><code>{
+  "run_id": "bulk_qa_20260611_073012_a8f3c9",
+  "action": "bulk_qa",
+  "status": "running",
+  "total_count": 123,
+  "processed_count": 80,
+  "passed_count": 52,
+  "qa_failed_count": 18,
+  "processing_failed_count": 2,
+  "skipped_count": 8,
+  "started_at": "2026-06-11T07:30:12Z",
+  "updated_at": "2026-06-11T07:32:20Z",
+  "finished_at": null,
+  "error_message": ""
+}</code></pre>
+
+        <p><span class="badge">GET</span> <code>/api/v1/data-ops/bulk-runs/current?action=bulk_qa</code></p>
+        <p>如果存在 <code>queued</code> 或 <code>running</code> 的批量 QA run，返回同样的 snapshot；否则返回 <code>204 No Content</code>。该接口只用于页面加载时发现当前运行，不提供历史任务中心。</p>
+
+        <h3>3.4 批量质检 SSE</h3>
+        <p><span class="badge">GET</span> <code>/api/v1/data-ops/bulk-runs/:run_id/stream</code></p>
+        <p>前端使用 <code>fetch</code> streaming 连接，并携带 <code>Authorization: Bearer &lt;token&gt;</code>。连接前应先调用 snapshot；只有 <code>queued</code> 或 <code>running</code> 状态才建立 stream。</p>
+        <pre><code>event: bulk_run_snapshot
+data: {"run_id":"bulk_qa_20260611_073012_a8f3c9","action":"bulk_qa","status":"running","total_count":123,"processed_count":80,"passed_count":52,"qa_failed_count":18,"processing_failed_count":2,"skipped_count":8,"started_at":"2026-06-11T07:30:12Z","updated_at":"2026-06-11T07:32:20Z","finished_at":null,"error_message":""}
+
+event: bulk_run_progress
+data: {"run_id":"bulk_qa_20260611_073012_a8f3c9","action":"bulk_qa","status":"running","total_count":123,"processed_count":81,"passed_count":53,"qa_failed_count":18,"processing_failed_count":2,"skipped_count":8,"started_at":"2026-06-11T07:30:12Z","updated_at":"2026-06-11T07:32:21Z","finished_at":null,"error_message":""}
+
+event: bulk_run_completed
+data: {"run_id":"bulk_qa_20260611_073012_a8f3c9","action":"bulk_qa","status":"completed","total_count":123,"processed_count":123,"passed_count":90,"qa_failed_count":25,"processing_failed_count":2,"skipped_count":6,"started_at":"2026-06-11T07:30:12Z","updated_at":"2026-06-11T07:35:12Z","finished_at":"2026-06-11T07:35:12Z","error_message":""}
+
+event: ping
+data: {"ts":"2026-06-11T07:32:22Z"}</code></pre>
+        <p>SSE 事件使用 generic 命名：<code>bulk_run_snapshot</code>、<code>bulk_run_progress</code>、<code>bulk_run_completed</code>、<code>bulk_run_failed</code>、<code>bulk_run_interrupted</code> 和 <code>ping</code>。所有业务事件 payload 使用同一套 snapshot 结构。</p>
+
+        <h3>3.5 批量云同步执行</h3>
         <p><span class="badge">POST</span> <code>/api/v1/data-ops/episodes/bulk-sync</code></p>
         <pre><code>{
   "confirm": true,
@@ -536,7 +606,7 @@ SPDX-License-Identifier: MulanPSL-2.0
       </div>
 
       <div class="panel" style="margin-top: 18px;">
-        <h3>3.4 错误响应</h3>
+        <h3>3.6 错误响应</h3>
         <table>
           <thead>
             <tr>
@@ -565,6 +635,11 @@ SPDX-License-Identifier: MulanPSL-2.0
               <td>批量 QA 依赖未配置</td>
               <td><code>503</code></td>
               <td><code>{ "error": "qa service is not configured" }</code></td>
+            </tr>
+            <tr>
+              <td>已有批量 QA 正在运行</td>
+              <td><code>409</code></td>
+              <td><code>{ "error": "bulk qa already running", "run_id": "...", "status": "running" }</code></td>
             </tr>
             <tr>
               <td>sync worker 未配置或未运行</td>
@@ -669,7 +744,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>把 <code>filters</code> 转换为 data-ops query。</li>
             <li>使用同一套 <code>dataOpsEpisodeBaseFromSQL</code> 和 <code>buildDataOpsEpisodeWhere</code> 查询 ID 快照。</li>
             <li>按 <code>e.created_at DESC, e.id DESC</code> 固定顺序返回 ID。</li>
-            <li>启动后台 goroutine，HTTP 返回 <code>202</code> 和 <code>matched_count</code>。</li>
+            <li>批量 QA 创建 <code>bulk_runs</code> 记录并返回 <code>run_id</code>；批量同步仍直接启动后台 goroutine 并返回 <code>202</code>。</li>
           </ol>
         </div>
       </div>
@@ -678,12 +753,40 @@ SPDX-License-Identifier: MulanPSL-2.0
         <h3>后台处理</h3>
         <ol class="flow">
           <li>后台不使用 HTTP request context，改用 <code>context.Background()</code>。</li>
+          <li>批量 QA goroutine 启动后将 run 从 <code>queued</code> 更新为 <code>running</code>，并写入 <code>started_at</code>。</li>
           <li>单条 QA 使用与自动 QA 相同的超时策略。</li>
           <li>批量 QA 通过 worker pool 固定并发 <code>4</code>。</li>
-          <li>批量同步逐条调用 <code>EnqueueEpisodeManual</code>。</li>
-          <li>单条失败或跳过不影响整批继续处理。</li>
-          <li>开始和结束打印 summary 日志，异常错误逐条打印。</li>
+          <li>每条 episode 处理结束后立即更新 <code>bulk_runs</code> 聚合计数。</li>
+          <li>SSE 进度事件最多每 <code>500ms</code> 推送一次；终态事件立即推送。</li>
+          <li>批量同步逐条调用 <code>EnqueueEpisodeManual</code>，本轮不维护 run 进度。</li>
+          <li>单条失败或跳过不影响整批继续处理；整批无法继续时才将 run 标记为 <code>failed</code>。</li>
+          <li>开始、进度和结束打印 summary 日志，异常错误逐条打印。</li>
         </ol>
+      </div>
+
+      <div class="panel" style="margin-top: 18px;">
+        <h3>批量 QA run 语义</h3>
+        <ul>
+          <li><code>run_id</code> 格式为 <code>bulk_qa_YYYYMMDD_HHMMSS_&lt;random&gt;</code>，时间使用 UTC；数据库内部仍可使用自增 <code>id</code>。</li>
+          <li><code>total_count</code> 是执行接口查询到的 ID 快照数量，不使用预览接口的估算值。</li>
+          <li><code>processed_count</code> 表示本次 run 已经处理出终态的 episode 数量，不复用旧 <code>qa_status</code> 或旧 <code>latest_qa_check</code>。</li>
+          <li><code>processed_count = passed_count + qa_failed_count + processing_failed_count + skipped_count</code>。</li>
+          <li><code>passed_count</code> 和 <code>qa_failed_count</code> 只看本次 <code>RunEpisodeQASuite</code> 的 <code>result.Passed</code>，不根据 episode 最终状态推断。</li>
+          <li><code>skipped_count</code> 只返回一个总数，不返回 breakdown；包含已有质检运行中、快照后 episode 被删除等未实际执行 suite 的情况。</li>
+          <li><code>processing_failed_count</code> 表示单条执行过程错误，例如 S3/DB/超时；它不让 run 进入 <code>failed</code>。</li>
+          <li><code>total_count=0</code> 时仍创建 run，并直接标记为 <code>completed</code>。</li>
+        </ul>
+      </div>
+
+      <div class="panel" style="margin-top: 18px;">
+        <h3>SSE 与前端恢复</h3>
+        <ul>
+          <li>前端执行成功后拿到 <code>run_id</code>，先请求 snapshot，再在 <code>queued</code> 或 <code>running</code> 时连接 SSE。</li>
+          <li>SSE 断线后，前端先重新请求 snapshot；若仍是 <code>queued</code>/<code>running</code>，按 <code>1s -> 2s -> 5s -> 10s</code> 退避重连。</li>
+          <li>收到任意 SSE 事件后重置退避；超过一段时间仍无法恢复时，UI 提示“实时进度连接中断，点击重试”。</li>
+          <li>SSE stream 对终态 run 做防御：发送一次 <code>bulk_run_completed</code>、<code>bulk_run_failed</code> 或 <code>bulk_run_interrupted</code> 后关闭连接。</li>
+          <li>run 不存在时返回 <code>404</code>，不使用 SSE error event 伪装业务错误。</li>
+        </ul>
       </div>
 
       <div class="grid" style="margin-top: 18px;">
@@ -721,21 +824,82 @@ SPDX-License-Identifier: MulanPSL-2.0
       </div>
 
       <div class="callout danger" style="margin-top: 18px;">
-        <p>第一版没有持久化批任务。服务重启后，未处理完的批量 QA 会丢失；批量同步中已经写入 <code>sync_logs</code> 的任务可由 worker 恢复，未写入的不会恢复。</p>
+        <p>第一版只做短期进度事实，不做继续执行恢复。Keystone 启动时应将遗留 <code>queued</code> 或 <code>running</code> 的 <code>bulk_qa</code> run 标记为 <code>interrupted</code>，保留已有计数，并提示用户重新发起批量质检。批量同步中已经写入 <code>sync_logs</code> 的任务仍可由 worker 恢复，未写入的不会恢复。</p>
+      </div>
+    </section>
+
+    <section id="frontend">
+      <h2>6. 前端进度体验</h2>
+      <div class="grid">
+        <div class="panel">
+          <h3>展示形态</h3>
+          <ul>
+            <li>点击“批量质检”并确认后，页面右下角展示 floating task panel，不使用阻塞 modal。</li>
+            <li>面板收起态展示标题、<code>本次已处理 X / Y</code> 和进度条。</li>
+            <li>展开态展示 <code>质检通过</code>、<code>质检不通过</code>、<code>跳过</code>、<code>处理失败</code> 四个聚合计数。</li>
+            <li>完成后面板不自动消失，用户手动关闭；表格筛选变化不影响当前 run panel。</li>
+            <li>第一版不展示 episode 级明细，不提供失败列表或跳转入口。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>按钮行为</h3>
+          <ul>
+            <li>存在 <code>queued</code> 或 <code>running</code> run 时，批量质检按钮文案改为 <code>查看批量质检进度</code>。</li>
+            <li>点击时打开或展开当前 run panel，而不是再次提交执行请求。</li>
+            <li>如果前端未知但执行接口返回 <code>409</code>，使用响应里的 <code>run_id</code> 打开现有 run panel。</li>
+            <li>页面加载时调用 <code>GET /api/v1/data-ops/bulk-runs/current?action=bulk_qa</code> 自动发现当前运行中的批量 QA。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top: 18px;">
+        <h3>前端连接流程</h3>
+        <ol class="flow">
+          <li>用户点击批量质检，前端先调用 preview 接口并展示确认信息。</li>
+          <li>用户确认后调用 <code>POST /api/v1/data-ops/episodes/bulk-qa</code>。</li>
+          <li>响应中拿到 <code>run</code> snapshot 后立即展示右下角 panel。</li>
+          <li>如果 run 是 <code>queued</code> 或 <code>running</code>，使用 <code>fetch</code> streaming 连接 <code>/stream</code>，请求带 <code>Authorization: Bearer ...</code>。</li>
+          <li>如果 run 已是 <code>completed</code>，例如 <code>total_count=0</code>，直接展示完成态，不连接 SSE。</li>
+          <li>SSE 断开时先重新拉 snapshot，再按退避策略重连或显示终态。</li>
+        </ol>
       </div>
     </section>
 
     <section id="backend">
-      <h2>6. 后端改造建议</h2>
+      <h2>7. 后端改造建议</h2>
       <div class="panel">
         <h3>结构调整</h3>
         <ul>
           <li><code>DataOpsHandler</code> 增加 QA handler 和 sync worker 依赖。</li>
           <li><code>NewDataOpsHandler</code> 接收新增依赖；server 初始化处传入现有 <code>qaHandler</code> 和 <code>syncWorker</code>。</li>
-          <li><code>RegisterRoutes</code> 新增 <code>POST /episodes/bulk-qa/preview</code>、<code>POST /episodes/bulk-sync/preview</code>、<code>POST /episodes/bulk-qa</code> 和 <code>POST /episodes/bulk-sync</code>。</li>
-          <li>新增 request/response struct：<code>DataOpsBulkEpisodeActionRequest</code>、<code>DataOpsBulkEpisodePreviewResponse</code>、<code>DataOpsBulkEpisodeActionResponse</code>。</li>
-          <li>新增 helper：解析 body filters、计算预览统计、查询 ID 快照、启动 QA worker pool、启动 sync enqueue goroutine。</li>
+          <li><code>RegisterRoutes</code> 新增 bulk run snapshot、current 和 stream 路由，并保留现有 preview/execute 路由。</li>
+          <li>新增短期进度表 <code>bulk_runs</code>；本轮不建 <code>bulk_run_items</code>。</li>
+          <li>新增 response struct：<code>DataOpsBulkRunResponse</code>、<code>DataOpsBulkEpisodeActionResponse</code>，执行响应包裹 <code>run</code> snapshot。</li>
+          <li>新增 run helper：生成 <code>run_id</code>、创建 queued run、查 current run、更新聚合计数、发布 SSE 事件、服务启动时标记 interrupted。</li>
+          <li>新增 SSE broker，可参考 <code>DeviceStateBroker</code> 的内存 fan-out 模式；snapshot 仍以数据库为事实来源。</li>
         </ul>
+
+        <h3>数据表</h3>
+        <pre><code>CREATE TABLE bulk_runs (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  run_id VARCHAR(64) NOT NULL UNIQUE,
+  action VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  total_count BIGINT NOT NULL DEFAULT 0,
+  processed_count BIGINT NOT NULL DEFAULT 0,
+  passed_count BIGINT NOT NULL DEFAULT 0,
+  qa_failed_count BIGINT NOT NULL DEFAULT 0,
+  processing_failed_count BIGINT NOT NULL DEFAULT 0,
+  skipped_count BIGINT NOT NULL DEFAULT 0,
+  error_message TEXT,
+  started_at TIMESTAMP NULL,
+  finished_at TIMESTAMP NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_bulk_runs_action_status ON bulk_runs(action, status);
+CREATE INDEX idx_bulk_runs_updated_at ON bulk_runs(updated_at);</code></pre>
 
         <h3>伪代码</h3>
         <pre><code>func (h *DataOpsHandler) PreviewBulkEpisodeQA(c *gin.Context) {
@@ -752,9 +916,23 @@ func (h *DataOpsHandler) PreviewBulkSyncEpisodes(c *gin.Context) {
 
 func (h *DataOpsHandler) BulkRunEpisodeQA(c *gin.Context) {
   req, q, ok := h.parseBulkEpisodeAction(c)
+  if current := h.currentBulkRun("bulk_qa"); current != nil { ...409... }
   ids := h.selectBulkEpisodeIDs(c.Request.Context(), q)
-  go h.runBulkEpisodeQA(ids)
-  c.JSON(http.StatusAccepted, response("accepted", len(ids), "..."))
+  run := h.createBulkQARun(ids)
+  go h.runBulkEpisodeQA(run.RunID, ids)
+  c.JSON(http.StatusAccepted, response(run, "..."))
+}
+
+func (h *DataOpsHandler) GetBulkRun(c *gin.Context) {
+  run := h.loadBulkRun(c.Param("run_id"))
+  c.JSON(http.StatusOK, run)
+}
+
+func (h *DataOpsHandler) StreamBulkRun(c *gin.Context) {
+  run := h.loadBulkRun(c.Param("run_id"))
+  writeSSE("bulk_run_snapshot", run)
+  if isTerminal(run.Status) { return }
+  subscribeAndFlushRunEvents(run.RunID)
 }
 
 func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
@@ -768,7 +946,7 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
     </section>
 
     <section id="logging">
-      <h2>7. 日志策略</h2>
+      <h2>8. 日志策略</h2>
       <div class="panel">
         <table>
           <thead>
@@ -780,15 +958,19 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
           <tbody>
             <tr>
               <td>接受批量请求</td>
-              <td><code>[DATA_OPS] Bulk QA accepted: matched=123</code></td>
+              <td><code>[DATA_OPS] Bulk QA accepted: run_id=bulk_qa_... total=123</code></td>
             </tr>
             <tr>
               <td>批量完成</td>
-              <td><code>[DATA_OPS] Bulk QA completed: matched=123, attempted=120, skipped=2, failed=1</code></td>
+              <td><code>[DATA_OPS] Bulk QA completed: run_id=bulk_qa_... total=123 processed=123 passed=90 qa_failed=25 processing_failed=2 skipped=6</code></td>
             </tr>
             <tr>
               <td>单条异常失败</td>
-              <td>逐条打印 episode ID 和错误。</td>
+              <td>逐条打印 <code>run_id</code>、episode ID 和错误。</td>
+            </tr>
+            <tr>
+              <td>运行中断</td>
+              <td>服务启动标记遗留 run 为 <code>interrupted</code> 时打印 run 数量和 run_id。</td>
             </tr>
             <tr>
               <td>正常跳过</td>
@@ -800,7 +982,7 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
     </section>
 
     <section id="testing">
-      <h2>8. 测试计划</h2>
+      <h2>9. 测试计划</h2>
       <div class="panel">
         <h3>必须新增的 helper 单测</h3>
         <ul>
@@ -811,6 +993,11 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
           <li>QA 预览统计能计算 <code>matched_count</code>、<code>eligible_count</code>、<code>skipped_count</code> 和 <code>protected_status_count</code>。</li>
           <li>同步预览统计能计算 QA 未通过、已同步、正在同步等跳过原因汇总。</li>
           <li>ID 快照 SQL 复用 data-ops from/where，并按 <code>e.created_at DESC, e.id DESC</code> 排序。</li>
+          <li>批量 QA 执行创建 <code>queued</code> run，并返回 <code>run_id</code> 和 snapshot。</li>
+          <li>存在 <code>queued</code>/<code>running</code> 的 <code>bulk_qa</code> run 时，再次执行返回 <code>409</code> 和现有 <code>run_id</code>。</li>
+          <li>每条 episode 处理完成后按本次结果更新 <code>processed_count</code>、<code>passed_count</code>、<code>qa_failed_count</code>、<code>processing_failed_count</code> 或 <code>skipped_count</code>。</li>
+          <li><code>total_count=0</code> 时创建 <code>completed</code> run。</li>
+          <li>启动清理会把遗留 <code>queued</code>/<code>running</code> run 标记为 <code>interrupted</code>。</li>
           <li>空 filters 合法，会生成只包含 <code>e.deleted_at IS NULL</code> 的 where。</li>
           <li>非法 <code>qa_status</code>、<code>sync_status</code>、ID 列表和时间范围仍返回解析错误。</li>
         </ul>
@@ -818,6 +1005,7 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
         <h3>可选集成测试</h3>
         <ul>
           <li>使用 fake QA runner 验证 bulk QA goroutine 能按 ID 调用。</li>
+          <li>使用 SSE stream 测试验证连接建立时先发送 <code>bulk_run_snapshot</code>，终态时发送一次终态事件并关闭。</li>
           <li>使用 fake sync enqueuer 验证 worker 未运行时返回 <code>503</code>。</li>
           <li>路由注册 smoke test，确保两个 POST endpoint 挂在 data-ops admin group 下。</li>
         </ul>
@@ -825,11 +1013,16 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
     </section>
 
     <section id="checklist">
-      <h2>9. 实现清单</h2>
+      <h2>10. 实现清单</h2>
       <div class="panel">
         <ul>
-          <li>修改 <code>keystone/internal/api/handlers/data_ops.go</code>：新增 request/response、routes、handlers、helpers。</li>
+          <li>新增数据库 migration：创建 <code>bulk_runs</code> 表和索引。</li>
+          <li>修改 <code>keystone/internal/api/handlers/data_ops.go</code> / <code>data_ops_bulk.go</code>：新增 run response、routes、handlers、helpers。</li>
           <li>修改 <code>keystone/internal/server/server.go</code>：构造 <code>DataOpsHandler</code> 时传入 QA handler 和 sync worker。</li>
+          <li>服务启动时调用启动清理，将遗留 <code>bulk_qa</code> 的 <code>queued</code>/<code>running</code> run 标记为 <code>interrupted</code>。</li>
+          <li>新增 bulk run SSE broker 和 <code>GET /api/v1/data-ops/bulk-runs/:run_id/stream</code>。</li>
+          <li>新增 <code>GET /api/v1/data-ops/bulk-runs/:run_id</code> 和 <code>GET /api/v1/data-ops/bulk-runs/current?action=bulk_qa</code>。</li>
+          <li>前端批量质检按钮接入右下角 floating task panel，并用 <code>fetch</code> streaming 消费 SSE。</li>
           <li>必要时给 sync worker 暴露轻量 enqueuer 接口，降低 handler 对具体类型的耦合。</li>
           <li>补 Swagger 注释后运行 <code>swag init -g internal/server/server.go -o docs</code>。</li>
           <li>补 <code>keystone/internal/api/handlers/data_ops_test.go</code> 测试。</li>
@@ -839,7 +1032,7 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
     </section>
 
     <footer>
-      <p>本文档记录第一版轻量级后端 API 规格。后续如果需要可靠长任务、进度展示、取消、重试和审计，应升级为持久化 batch job 模型。</p>
+      <p>本文档记录第一版批量操作 API 与批量 QA 实时进度规格。当前只做短期 run snapshot 与 SSE，不做长期审计、取消、重试或服务重启后继续执行；后续如果需要可靠长任务和审计，应升级为完整 batch job 模型。</p>
     </footer>
   </main>
 </body>

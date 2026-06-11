@@ -28,7 +28,8 @@ import (
 )
 
 const (
-	episodeQACheckMcapMagic = "mcap_magic"
+	episodeQACheckMcapMagic         = "mcap_magic"
+	episodeQACheckRecordingNotEmpty = "recording_not_empty"
 
 	qaRunModeAuto   QARunMode = "auto"
 	qaRunModeManual QARunMode = "manual"
@@ -43,6 +44,7 @@ const (
 
 	defaultEpisodeQAQueueSize = 256
 	defaultEpisodeQATimeout   = 2 * time.Minute
+	maxEpisodeQASidecarBytes  = 4 * 1024 * 1024
 )
 
 var (
@@ -132,10 +134,11 @@ type episodeQACheckOutcome struct {
 }
 
 type episodeQACheckRow struct {
-	ID       int64          `db:"id"`
-	McapPath string         `db:"mcap_path"`
-	QAStatus string         `db:"qa_status"`
-	Quality  sql.NullString `db:"quality_flag"`
+	ID          int64          `db:"id"`
+	McapPath    string         `db:"mcap_path"`
+	SidecarPath string         `db:"sidecar_path"`
+	QAStatus    string         `db:"qa_status"`
+	Quality     sql.NullString `db:"quality_flag"`
 }
 
 type episodeQARunClaim struct {
@@ -520,7 +523,7 @@ func (h *EpisodeQAHandler) RunEpisodeQASuite(ctx context.Context, episodeID int6
 }
 
 func defaultEpisodeQASuite(_ episodeQACheckRow) []string {
-	return []string{episodeQACheckMcapMagic}
+	return []string{episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty}
 }
 
 func normalizeEpisodeQACheckName(raw string) string {
@@ -529,7 +532,7 @@ func normalizeEpisodeQACheckName(raw string) string {
 
 func isSupportedEpisodeQACheckName(checkName string) bool {
 	switch checkName {
-	case episodeQACheckMcapMagic:
+	case episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty:
 		return true
 	default:
 		return false
@@ -539,7 +542,7 @@ func isSupportedEpisodeQACheckName(checkName string) bool {
 func (h *EpisodeQAHandler) loadEpisodeForQACheck(ctx context.Context, episodeID int64) (episodeQACheckRow, error) {
 	var row episodeQACheckRow
 	err := h.db.GetContext(ctx, &row, `
-		SELECT id, mcap_path, COALESCE(qa_status, '') AS qa_status, quality_flag
+		SELECT id, mcap_path, COALESCE(sidecar_path, '') AS sidecar_path, COALESCE(qa_status, '') AS qa_status, quality_flag
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 		LIMIT 1
@@ -648,6 +651,8 @@ func (h *EpisodeQAHandler) runEpisodeQACheck(ctx context.Context, checkName stri
 	switch checkName {
 	case episodeQACheckMcapMagic:
 		return h.runMcapMagicQACheck(ctx, row)
+	case episodeQACheckRecordingNotEmpty:
+		return h.runRecordingNotEmptyQACheck(ctx, row)
 	default:
 		return episodeQACheckOutcome{}, fmt.Errorf("unsupported qa check %q", checkName)
 	}
@@ -707,6 +712,72 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 	return evaluateMcapMagicCheck(size, head, tail, ""), nil
 }
 
+func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row episodeQACheckRow) (episodeQACheckOutcome, error) {
+	if h.s3 == nil {
+		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
+	}
+
+	bucket, objectName, ok := resolveEpisodeMcapLocation(h.bucket, row.SidecarPath)
+	if !ok {
+		return recordingNotEmptyFailure("Recording sidecar check failed: invalid sidecar_path", map[string]any{
+			"sidecar_path": row.SidecarPath,
+		}), nil
+	}
+
+	metadata := map[string]any{
+		"bucket": bucket,
+		"object": objectName,
+	}
+
+	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		if isS3NotFound(err) {
+			return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object not found", metadata), nil
+		}
+		return episodeQACheckOutcome{}, fmt.Errorf("stat sidecar object: %w", err)
+	}
+	metadata["sidecar_size_bytes"] = stat.Size
+	if stat.Size <= 0 {
+		return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object is empty", metadata), nil
+	}
+	if stat.Size > maxEpisodeQASidecarBytes {
+		metadata["max_sidecar_size_bytes"] = maxEpisodeQASidecarBytes
+		return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object is too large", metadata), nil
+	}
+
+	data, err := h.readS3Object(ctx, bucket, objectName, maxEpisodeQASidecarBytes)
+	if err != nil {
+		if isS3NotFound(err) {
+			return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object not found", metadata), nil
+		}
+		return episodeQACheckOutcome{}, fmt.Errorf("read sidecar object: %w", err)
+	}
+
+	return evaluateRecordingNotEmptyCheck(data, metadata)
+}
+
+func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName string, maxBytes int64) ([]byte, error) {
+	obj, err := h.s3.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := obj.Close(); err != nil {
+			logger.Printf("[EPISODE-QA] S3 object close failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+		}
+	}()
+
+	limited := io.LimitReader(obj, maxBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("object exceeds max size %d bytes", maxBytes)
+	}
+	return data, nil
+}
+
 func (h *EpisodeQAHandler) readS3ObjectRange(ctx context.Context, bucket, objectName string, start, end int64) ([]byte, error) {
 	var opts minio.GetObjectOptions
 	if err := opts.SetRange(start, end); err != nil {
@@ -724,6 +795,82 @@ func (h *EpisodeQAHandler) readS3ObjectRange(ctx context.Context, bucket, object
 	}()
 
 	return io.ReadAll(obj)
+}
+
+func evaluateRecordingNotEmptyCheck(data []byte, metadata map[string]any) (episodeQACheckOutcome, error) {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["sidecar_json_bytes"] = len(data)
+	if len(data) == 0 {
+		return recordingNotEmptyFailure("Recording sidecar check failed: sidecar JSON is empty", metadata), nil
+	}
+
+	var sidecar sidecarJSON
+	if err := json.Unmarshal(data, &sidecar); err != nil {
+		metadata["parse_error"] = err.Error()
+		return recordingNotEmptyFailure("Recording sidecar check failed: invalid sidecar JSON", metadata), nil
+	}
+
+	messageCount := sidecar.Recording.MessageCount
+	topicsRecordedCount := countNonEmptyStrings(sidecar.Recording.TopicsRecorded)
+	topicsSummaryCount := countNonEmptySidecarTopics(sidecar.TopicsSummary)
+	metadata["message_count"] = messageCount
+	metadata["topics_recorded_count"] = topicsRecordedCount
+	metadata["topics_summary_count"] = topicsSummaryCount
+	metadata["duration_sec"] = sidecar.Recording.DurationSec
+	metadata["file_size_bytes"] = sidecar.Recording.FileSizeBytes
+
+	if messageCount <= 0 && topicsRecordedCount == 0 && topicsSummaryCount == 0 {
+		return recordingNotEmptyFailure("Recording sidecar check failed: message_count is zero and no recorded topics", metadata), nil
+	}
+	if messageCount <= 0 {
+		return recordingNotEmptyFailure("Recording sidecar check failed: message_count is zero", metadata), nil
+	}
+	if topicsRecordedCount == 0 && topicsSummaryCount == 0 {
+		return recordingNotEmptyFailure("Recording sidecar check failed: no recorded topics", metadata), nil
+	}
+
+	return episodeQACheckOutcome{
+		CheckName: episodeQACheckRecordingNotEmpty,
+		Passed:    true,
+		Score:     1,
+		Details:   "Recording sidecar reports messages and topics",
+		Metadata:  metadata,
+	}, nil
+}
+
+func recordingNotEmptyFailure(details string, metadata map[string]any) episodeQACheckOutcome {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	return episodeQACheckOutcome{
+		CheckName: episodeQACheckRecordingNotEmpty,
+		Passed:    false,
+		Score:     0,
+		Details:   details,
+		Metadata:  metadata,
+	}
+}
+
+func countNonEmptyStrings(values []string) int {
+	count := 0
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func countNonEmptySidecarTopics(values []sidecarTopicSummary) int {
+	count := 0
+	for _, value := range values {
+		if strings.TrimSpace(value.Topic) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func evaluateMcapMagicCheck(fileSize int64, head, tail []byte, explicitReason string) episodeQACheckOutcome {

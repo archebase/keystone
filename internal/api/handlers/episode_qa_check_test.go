@@ -71,6 +71,118 @@ func TestEvaluateMcapMagicCheck(t *testing.T) {
 	}
 }
 
+func TestEvaluateRecordingNotEmptyCheck(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantPassed bool
+		wantDetail string
+	}{
+		{
+			name: "messages and recorded topics pass",
+			body: `{
+				"recording": {
+					"duration_sec": 6.4,
+					"file_size_bytes": 2048,
+					"message_count": 12,
+					"topics_recorded": ["/camera/image_raw/compressed"]
+				},
+				"topics_summary": []
+			}`,
+			wantPassed: true,
+			wantDetail: "Recording sidecar reports messages and topics",
+		},
+		{
+			name: "messages and topic summary pass",
+			body: `{
+				"recording": {
+					"duration_sec": 6.4,
+					"file_size_bytes": 2048,
+					"message_count": 12,
+					"topics_recorded": []
+				},
+				"topics_summary": [{"topic": "/camera/image_raw/compressed"}]
+			}`,
+			wantPassed: true,
+			wantDetail: "Recording sidecar reports messages and topics",
+		},
+		{
+			name: "empty recording fails",
+			body: `{
+				"recording": {
+					"duration_sec": 6.461,
+					"file_size_bytes": 1129,
+					"message_count": 0,
+					"topics_recorded": []
+				},
+				"topics_summary": []
+			}`,
+			wantPassed: false,
+			wantDetail: "Recording sidecar check failed: message_count is zero and no recorded topics",
+		},
+		{
+			name: "zero messages with topics fails",
+			body: `{
+				"recording": {
+					"message_count": 0,
+					"topics_recorded": ["/camera/image_raw/compressed"]
+				}
+			}`,
+			wantPassed: false,
+			wantDetail: "Recording sidecar check failed: message_count is zero",
+		},
+		{
+			name: "messages without topics fail",
+			body: `{
+				"recording": {
+					"message_count": 12,
+					"topics_recorded": []
+				},
+				"topics_summary": []
+			}`,
+			wantPassed: false,
+			wantDetail: "Recording sidecar check failed: no recorded topics",
+		},
+		{
+			name:       "invalid json fails",
+			body:       `{`,
+			wantPassed: false,
+			wantDetail: "Recording sidecar check failed: invalid sidecar JSON",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := evaluateRecordingNotEmptyCheck([]byte(tt.body), nil)
+			if err != nil {
+				t.Fatalf("evaluate recording check: %v", err)
+			}
+			if got.Passed != tt.wantPassed {
+				t.Fatalf("passed = %v, want %v", got.Passed, tt.wantPassed)
+			}
+			if got.Details != tt.wantDetail {
+				t.Fatalf("details = %q, want %q", got.Details, tt.wantDetail)
+			}
+			if got.CheckName != episodeQACheckRecordingNotEmpty {
+				t.Fatalf("check name = %q, want %q", got.CheckName, episodeQACheckRecordingNotEmpty)
+			}
+		})
+	}
+}
+
+func TestDefaultEpisodeQASuiteIncludesRecordingNotEmpty(t *testing.T) {
+	got := defaultEpisodeQASuite(episodeQACheckRow{})
+	want := []string{episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty}
+	if len(got) != len(want) {
+		t.Fatalf("suite length = %d, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("suite[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestPersistEpisodeQACheckFailureMarksEpisodeFailed(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}
@@ -314,6 +426,7 @@ func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 		CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY,
 			mcap_path TEXT,
+			sidecar_path TEXT,
 			qa_status TEXT,
 			qa_score REAL,
 			auto_approved BOOLEAN,

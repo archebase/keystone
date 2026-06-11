@@ -157,6 +157,9 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
 		dataOpsHandler = handlers.NewDataOpsHandler(db)
 		dataOpsHandler.SetBulkActionDeps(qaHandler, syncWorker)
+		if err := dataOpsHandler.InterruptActiveBulkQARuns(context.Background()); err != nil {
+			logger.Printf("[DATA_OPS] Failed to interrupt stale bulk QA runs: %v", err)
+		}
 		dataStatsHandler = handlers.NewDataProductionStatisticsHandler(db)
 		productionDashboardHandler = handlers.NewProductionDashboardHandler(db, recorderHub, transferHub)
 	}
