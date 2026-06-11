@@ -378,14 +378,21 @@ func (h *TransferHandler) onUploadProgress(dc *services.TransferConn, msg map[st
 
 // sidecarRecording is the subset of the sidecar JSON "recording" block we care about.
 type sidecarRecording struct {
-	DurationSec    float64 `json:"duration_sec"`
-	FileSizeBytes  int64   `json:"file_size_bytes"`
-	ChecksumSHA256 string  `json:"checksum_sha256"`
+	DurationSec    float64  `json:"duration_sec"`
+	FileSizeBytes  int64    `json:"file_size_bytes"`
+	ChecksumSHA256 string   `json:"checksum_sha256"`
+	MessageCount   int64    `json:"message_count"`
+	TopicsRecorded []string `json:"topics_recorded"`
+}
+
+type sidecarTopicSummary struct {
+	Topic string `json:"topic"`
 }
 
 // sidecarJSON is the top-level structure of the task sidecar JSON file.
 type sidecarJSON struct {
-	Recording sidecarRecording `json:"recording"`
+	Recording     sidecarRecording      `json:"recording"`
+	TopicsSummary []sidecarTopicSummary `json:"topics_summary"`
 }
 
 // readSidecarFromS3 downloads the sidecar JSON object from MinIO and returns the parsed result.
