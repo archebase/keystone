@@ -229,6 +229,7 @@ func (h *DataOpsHandler) createBulkQARun(ctx context.Context, totalCount int64) 
 		finishedAt = now
 	}
 
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 	if _, err := h.db.ExecContext(ctx, `
 		INSERT INTO bulk_runs (
 			run_id, action, status, total_count, processed_count, passed_count,
@@ -259,6 +260,7 @@ func (h *DataOpsHandler) loadBulkRun(ctx context.Context, runID string) (DataOps
 
 func (h *DataOpsHandler) markBulkRunRunning(ctx context.Context, runID string) (DataOpsBulkRunResponse, error) {
 	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 	if _, err := h.db.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET status = ?, started_at = COALESCE(started_at, ?), updated_at = ?
@@ -287,6 +289,7 @@ func (h *DataOpsHandler) incrementBulkQARunCounts(ctx context.Context, runID str
 		return DataOpsBulkRunResponse{}, fmt.Errorf("unknown bulk qa outcome %q", outcome)
 	}
 
+	// #nosec G701 -- static SQL with placeholder-bound bulk run counters.
 	if _, err := h.db.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET processed_count = processed_count + 1,
@@ -304,6 +307,7 @@ func (h *DataOpsHandler) incrementBulkQARunCounts(ctx context.Context, runID str
 
 func (h *DataOpsHandler) markBulkRunTerminal(ctx context.Context, runID string, status string, errorMessage string) (DataOpsBulkRunResponse, error) {
 	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 	if _, err := h.db.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
@@ -327,6 +331,7 @@ func (h *DataOpsHandler) InterruptActiveBulkQARuns(ctx context.Context) error {
 		return nil
 	}
 	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 	_, err := h.db.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
@@ -500,15 +505,39 @@ func dataOpsBulkRunTerminalEventName(status string) (string, bool) {
 	}
 }
 
+func isAllowedDataOpsBulkRunSSEEventName(eventName string) bool {
+	switch eventName {
+	case "bulk_run_snapshot", "bulk_run_progress", "bulk_run_completed", "bulk_run_failed", "bulk_run_interrupted", "ping":
+		return true
+	default:
+		return false
+	}
+}
+
 func writeDataOpsBulkRunSSE(w gin.ResponseWriter, eventName string, payload interface{}) error {
+	if !isAllowedDataOpsBulkRunSSEEventName(eventName) {
+		return fmt.Errorf("unsupported bulk run sse event %q", eventName)
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", eventName); err != nil {
+	if _, err := w.Write([]byte("event: ")); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", encoded); err != nil {
+	if _, err := w.Write([]byte(eventName)); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("\n")); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(encoded); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("\n\n")); err != nil {
 		return err
 	}
 	w.Flush()
