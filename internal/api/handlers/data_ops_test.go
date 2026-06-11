@@ -7,10 +7,13 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -267,6 +270,364 @@ func TestPreviewBulkEpisodeSyncTreatsMissingSyncLogAsEligible(t *testing.T) {
 	}
 }
 
+func TestBulkRunEpisodeQACreatesRunSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	release := make(chan struct{})
+	h := &DataOpsHandler{db: db, qaRunner: controlledDataOpsQARunner{release: release}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-02T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 2, "2026-06-01T00:00:00Z")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-qa", bytes.NewBufferString(`{"confirm":true,"filters":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		Run     DataOpsBulkRunResponse `json:"run"`
+		Message string                 `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if !strings.HasPrefix(got.Run.RunID, "bulk_qa_") {
+		t.Fatalf("run_id = %q, want bulk_qa_ prefix", got.Run.RunID)
+	}
+	if got.Run.Action != "bulk_qa" || got.Run.Status != "queued" {
+		t.Fatalf("run action/status = %s/%s, want bulk_qa/queued", got.Run.Action, got.Run.Status)
+	}
+	if got.Run.TotalCount != 2 || got.Run.ProcessedCount != 0 {
+		t.Fatalf("run counts = total %d processed %d, want 2/0", got.Run.TotalCount, got.Run.ProcessedCount)
+	}
+	if got.Message != "2 episodes accepted for bulk QA" {
+		t.Fatalf("message = %q", got.Message)
+	}
+	close(release)
+	waitForBulkRunStatus(t, router, got.Run.RunID, dataOpsBulkRunStatusCompleted)
+}
+
+func TestBulkRunEpisodeQARejectsSecondActiveRun(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	release := make(chan struct{})
+	h := &DataOpsHandler{db: db, qaRunner: controlledDataOpsQARunner{release: release}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-01T00:00:00Z")
+
+	first := httptest.NewRecorder()
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-qa", bytes.NewBufferString(`{"confirm":true,"filters":{}}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(first, firstReq)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d, body = %s", first.Code, first.Body.String())
+	}
+	var firstBody struct {
+		Run DataOpsBulkRunResponse `json:"run"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &firstBody); err != nil {
+		t.Fatalf("decode first response: %v", err)
+	}
+
+	second := httptest.NewRecorder()
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-qa", bytes.NewBufferString(`{"confirm":true,"filters":{}}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(second, secondReq)
+
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status = %d, body = %s", second.Code, second.Body.String())
+	}
+	var conflict struct {
+		Error  string `json:"error"`
+		RunID  string `json:"run_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &conflict); err != nil {
+		t.Fatalf("decode conflict response: %v", err)
+	}
+	if conflict.RunID != firstBody.Run.RunID || (conflict.Status != dataOpsBulkRunStatusQueued && conflict.Status != dataOpsBulkRunStatusRunning) {
+		t.Fatalf("conflict = %+v, want run_id %s and active status", conflict, firstBody.Run.RunID)
+	}
+	close(release)
+	waitForBulkRunStatus(t, router, firstBody.Run.RunID, dataOpsBulkRunStatusCompleted)
+}
+
+func TestGetBulkRunAndCurrentBulkRunReturnSnapshots(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	release := make(chan struct{})
+	h := &DataOpsHandler{db: db, qaRunner: controlledDataOpsQARunner{release: release}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-01T00:00:00Z")
+
+	postRec := httptest.NewRecorder()
+	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-qa", bytes.NewBufferString(`{"confirm":true,"filters":{}}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusAccepted {
+		t.Fatalf("post status = %d, body = %s", postRec.Code, postRec.Body.String())
+	}
+	var postBody struct {
+		Run DataOpsBulkRunResponse `json:"run"`
+	}
+	if err := json.Unmarshal(postRec.Body.Bytes(), &postBody); err != nil {
+		t.Fatalf("decode post response: %v", err)
+	}
+
+	getRec := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/data-ops/bulk-runs/"+postBody.Run.RunID, nil)
+	router.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRec.Code, getRec.Body.String())
+	}
+	var got DataOpsBulkRunResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if got.RunID != postBody.Run.RunID || got.TotalCount != 1 {
+		t.Fatalf("snapshot = %+v, want run_id %s and total 1", got, postBody.Run.RunID)
+	}
+
+	currentRec := httptest.NewRecorder()
+	currentReq := httptest.NewRequest(http.MethodGet, "/api/v1/data-ops/bulk-runs/current?action=bulk_qa", nil)
+	router.ServeHTTP(currentRec, currentReq)
+	if currentRec.Code != http.StatusOK {
+		t.Fatalf("current status = %d, body = %s", currentRec.Code, currentRec.Body.String())
+	}
+	var current DataOpsBulkRunResponse
+	if err := json.Unmarshal(currentRec.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode current response: %v", err)
+	}
+	if current.RunID != postBody.Run.RunID {
+		t.Fatalf("current run_id = %s, want %s", current.RunID, postBody.Run.RunID)
+	}
+	close(release)
+	waitForBulkRunStatus(t, router, postBody.Run.RunID, dataOpsBulkRunStatusCompleted)
+}
+
+func TestCurrentBulkRunReturnsNoContentWhenNoRunIsActive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db, qaRunner: scriptedDataOpsQARunner{}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/data-ops/bulk-runs/current?action=bulk_qa", nil)
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBulkRunEpisodeQAWithNoMatchedEpisodesCompletesImmediately(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db, qaRunner: scriptedDataOpsQARunner{}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-qa", bytes.NewBufferString(`{"confirm":true,"filters":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Run DataOpsBulkRunResponse `json:"run"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Run.Status != dataOpsBulkRunStatusCompleted || got.Run.TotalCount != 0 || got.Run.FinishedAt == nil {
+		t.Fatalf("run = %+v, want completed empty run with finished_at", got.Run)
+	}
+}
+
+func TestBulkRunEpisodeQAUpdatesRunProgressFromSuiteResults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db, qaRunner: scriptedDataOpsQARunner{
+		results: map[int64]*EpisodeQASuiteResponse{
+			1: {EpisodeID: 1, Passed: true, Mode: qaRunModeManual},
+			2: {EpisodeID: 2, Passed: false, Mode: qaRunModeManual},
+		},
+		errs: map[int64]error{
+			3: errEpisodeQAAlreadyRunning,
+			4: errors.New("s3 read failed"),
+		},
+	}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-04T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 2, "2026-06-03T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 3, "2026-06-02T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 4, "2026-06-01T00:00:00Z")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-qa", bytes.NewBufferString(`{"confirm":true,"filters":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var accepted struct {
+		Run DataOpsBulkRunResponse `json:"run"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	got := waitForBulkRunStatus(t, router, accepted.Run.RunID, dataOpsBulkRunStatusCompleted)
+	if got.TotalCount != 4 || got.ProcessedCount != 4 {
+		t.Fatalf("total/processed = %d/%d, want 4/4", got.TotalCount, got.ProcessedCount)
+	}
+	if got.PassedCount != 1 || got.QAFailedCount != 1 || got.SkippedCount != 1 || got.ProcessingFailedCount != 1 {
+		t.Fatalf("run counts = passed %d qa_failed %d skipped %d processing_failed %d, want 1/1/1/1", got.PassedCount, got.QAFailedCount, got.SkippedCount, got.ProcessingFailedCount)
+	}
+}
+
+func TestInterruptActiveBulkQARunsMarksQueuedAndRunningRunsInterrupted(t *testing.T) {
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+
+	insertDataOpsBulkRunForTest(t, db, "bulk_qa_queued", dataOpsBulkRunStatusQueued)
+	insertDataOpsBulkRunForTest(t, db, "bulk_qa_running", dataOpsBulkRunStatusRunning)
+	insertDataOpsBulkRunForTest(t, db, "bulk_qa_completed", dataOpsBulkRunStatusCompleted)
+
+	if err := h.InterruptActiveBulkQARuns(context.Background()); err != nil {
+		t.Fatalf("InterruptActiveBulkQARuns returned error: %v", err)
+	}
+
+	for _, runID := range []string{"bulk_qa_queued", "bulk_qa_running"} {
+		run, err := h.loadBulkRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("load %s: %v", runID, err)
+		}
+		if run.Status != dataOpsBulkRunStatusInterrupted || run.FinishedAt == nil {
+			t.Fatalf("run %s = %+v, want interrupted with finished_at", runID, run)
+		}
+	}
+
+	completed, err := h.loadBulkRun(context.Background(), "bulk_qa_completed")
+	if err != nil {
+		t.Fatalf("load completed run: %v", err)
+	}
+	if completed.Status != dataOpsBulkRunStatusCompleted {
+		t.Fatalf("completed status = %s, want completed", completed.Status)
+	}
+}
+
+func TestStreamBulkRunSendsSnapshotAndTerminalEventForCompletedRun(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkRunForTest(t, db, "bulk_qa_completed", dataOpsBulkRunStatusCompleted)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/data-ops/bulk-runs/bulk_qa_completed/stream", nil)
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"event: bulk_run_snapshot\n",
+		`"run_id":"bulk_qa_completed"`,
+		"event: bulk_run_completed\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("SSE body should contain %q, got:\n%s", want, body)
+		}
+	}
+}
+
+func TestStreamBulkRunClosesWhenRunningRunCompletes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	release := make(chan struct{})
+	h := &DataOpsHandler{db: db, qaRunner: controlledDataOpsQARunner{release: release}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-01T00:00:00Z")
+
+	postRec := httptest.NewRecorder()
+	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-qa", bytes.NewBufferString(`{"confirm":true,"filters":{}}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusAccepted {
+		t.Fatalf("post status = %d, body = %s", postRec.Code, postRec.Body.String())
+	}
+	var accepted struct {
+		Run DataOpsBulkRunResponse `json:"run"`
+	}
+	if err := json.Unmarshal(postRec.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode post response: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	streamRec := httptest.NewRecorder()
+	streamReq := httptest.NewRequest(http.MethodGet, "/api/v1/data-ops/bulk-runs/"+accepted.Run.RunID+"/stream", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(streamRec, streamReq)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not close after bulk run completed")
+	}
+
+	body := streamRec.Body.String()
+	for _, want := range []string{
+		"event: bulk_run_snapshot\n",
+		"event: bulk_run_completed\n",
+		`"processed_count":1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("SSE body should contain %q, got:\n%s", want, body)
+		}
+	}
+}
+
 func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 
@@ -274,6 +635,7 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() {
 		if err := db.Close(); err != nil {
 			t.Fatalf("close sqlite: %v", err)
@@ -319,6 +681,23 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 			episode_id INTEGER NOT NULL,
 			status TEXT NOT NULL
 		)`,
+		`CREATE TABLE bulk_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id TEXT NOT NULL UNIQUE,
+			action TEXT NOT NULL,
+			status TEXT NOT NULL,
+			total_count INTEGER NOT NULL DEFAULT 0,
+			processed_count INTEGER NOT NULL DEFAULT 0,
+			passed_count INTEGER NOT NULL DEFAULT 0,
+			qa_failed_count INTEGER NOT NULL DEFAULT 0,
+			processing_failed_count INTEGER NOT NULL DEFAULT 0,
+			skipped_count INTEGER NOT NULL DEFAULT 0,
+			error_message TEXT,
+			started_at TIMESTAMP NULL,
+			finished_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
 	}
 	for _, stmt := range schema {
 		if _, err := db.Exec(stmt); err != nil {
@@ -326,4 +705,83 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 		}
 	}
 	return db
+}
+
+func insertDataOpsBulkTestEpisode(t *testing.T, db *sqlx.DB, id int64, createdAt string) {
+	t.Helper()
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, episode_id, task_id, scene_id, qa_status, cloud_synced, deleted_at, created_at)
+		VALUES (?, ?, 0, 0, 'pending_qa', 0, NULL, ?)
+	`, id, "episode", createdAt); err != nil {
+		t.Fatalf("insert episode %d: %v", id, err)
+	}
+}
+
+func insertDataOpsBulkRunForTest(t *testing.T, db *sqlx.DB, runID string, status string) {
+	t.Helper()
+
+	now := time.Date(2026, 6, 11, 7, 30, 12, 0, time.UTC)
+	if _, err := db.Exec(`
+		INSERT INTO bulk_runs (
+			run_id, action, status, total_count, processed_count, passed_count,
+			qa_failed_count, processing_failed_count, skipped_count, error_message,
+			started_at, finished_at, created_at, updated_at
+		)
+		VALUES (?, 'bulk_qa', ?, 10, 0, 0, 0, 0, 0, '', NULL, NULL, ?, ?)
+	`, runID, status, now, now); err != nil {
+		t.Fatalf("insert bulk run %s: %v", runID, err)
+	}
+}
+
+type controlledDataOpsQARunner struct {
+	release <-chan struct{}
+}
+
+func (r controlledDataOpsQARunner) RunEpisodeQASuite(ctx context.Context, episodeID int64, mode QARunMode) (*EpisodeQASuiteResponse, error) {
+	select {
+	case <-r.release:
+		return &EpisodeQASuiteResponse{EpisodeID: episodeID, Passed: true, Mode: mode}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+type scriptedDataOpsQARunner struct {
+	results map[int64]*EpisodeQASuiteResponse
+	errs    map[int64]error
+}
+
+func (r scriptedDataOpsQARunner) RunEpisodeQASuite(_ context.Context, episodeID int64, _ QARunMode) (*EpisodeQASuiteResponse, error) {
+	if err := r.errs[episodeID]; err != nil {
+		return nil, err
+	}
+	if result := r.results[episodeID]; result != nil {
+		return result, nil
+	}
+	return &EpisodeQASuiteResponse{EpisodeID: episodeID, Passed: true, Mode: qaRunModeManual}, nil
+}
+
+func waitForBulkRunStatus(t *testing.T, router http.Handler, runID string, status string) DataOpsBulkRunResponse {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var last DataOpsBulkRunResponse
+	for time.Now().Before(deadline) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/data-ops/bulk-runs/"+runID, nil)
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get run status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &last); err != nil {
+			t.Fatalf("decode run: %v", err)
+		}
+		if last.Status == status {
+			return last
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("bulk run %s did not reach status %s, last snapshot = %+v", runID, status, last)
+	return DataOpsBulkRunResponse{}
 }

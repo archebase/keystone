@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -31,14 +32,20 @@ var validDataOpsSyncStatuses = map[string]struct{}{
 
 // DataOpsHandler handles data operations APIs for the admin workbench.
 type DataOpsHandler struct {
-	db         *sqlx.DB
-	qa         *EpisodeQAHandler
-	syncWorker *services.SyncWorker
+	db            *sqlx.DB
+	qa            *EpisodeQAHandler
+	qaRunner      dataOpsEpisodeQARunner
+	syncWorker    *services.SyncWorker
+	bulkRunMu     sync.Mutex
+	bulkRunBroker *dataOpsBulkRunBroker
 }
 
 // NewDataOpsHandler creates a data operations handler.
 func NewDataOpsHandler(db *sqlx.DB) *DataOpsHandler {
-	return &DataOpsHandler{db: db}
+	return &DataOpsHandler{
+		db:            db,
+		bulkRunBroker: newDataOpsBulkRunBroker(),
+	}
 }
 
 // SetBulkActionDeps wires optional services used by data-ops bulk actions.
@@ -47,6 +54,7 @@ func (h *DataOpsHandler) SetBulkActionDeps(qa *EpisodeQAHandler, syncWorker *ser
 		return
 	}
 	h.qa = qa
+	h.qaRunner = qa
 	h.syncWorker = syncWorker
 }
 
@@ -57,6 +65,9 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/episodes/bulk-sync/preview", h.PreviewBulkEpisodeSync)
 	apiV1.POST("/episodes/bulk-qa", h.BulkRunEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync", h.BulkSyncEpisodes)
+	apiV1.GET("/bulk-runs/current", h.GetCurrentBulkRun)
+	apiV1.GET("/bulk-runs/:run_id", h.GetBulkRun)
+	apiV1.GET("/bulk-runs/:run_id/stream", h.StreamBulkRun)
 }
 
 type dataOpsEpisodeQuery struct {

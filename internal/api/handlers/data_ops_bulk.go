@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -70,6 +70,12 @@ type DataOpsBulkEpisodeActionResponse struct {
 	Status       string `json:"status"`
 	MatchedCount int    `json:"matched_count"`
 	Message      string `json:"message"`
+}
+
+// DataOpsBulkEpisodeQAActionResponse acknowledges an accepted asynchronous bulk QA run.
+type DataOpsBulkEpisodeQAActionResponse struct {
+	Run     DataOpsBulkRunResponse `json:"run"`
+	Message string                 `json:"message"`
 }
 
 type dataOpsBulkQAPreviewRow struct {
@@ -159,8 +165,9 @@ func (h *DataOpsHandler) PreviewBulkEpisodeSync(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        request  body      DataOpsBulkEpisodeActionRequest  true  "Bulk QA filters and confirmation"
-// @Success      202      {object}  DataOpsBulkEpisodeActionResponse
+// @Success      202      {object}  DataOpsBulkEpisodeQAActionResponse
 // @Failure      400      {object}  map[string]string
+// @Failure      409      {object}  map[string]string
 // @Failure      503      {object}  map[string]string
 // @Failure      500      {object}  map[string]string
 // @Router       /data-ops/episodes/bulk-qa [post]
@@ -177,6 +184,22 @@ func (h *DataOpsHandler) BulkRunEpisodeQA(c *gin.Context) {
 		return
 	}
 
+	h.bulkRunMu.Lock()
+	defer h.bulkRunMu.Unlock()
+
+	if current, exists, err := h.currentBulkRun(c.Request.Context(), dataOpsBulkRunActionQA); err != nil {
+		logger.Printf("[DATA_OPS] bulk QA current run lookup failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load current bulk run"})
+		return
+	} else if exists {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  "bulk qa already running",
+			"run_id": current.RunID,
+			"status": current.Status,
+		})
+		return
+	}
+
 	ids, err := h.selectBulkEpisodeIDs(c.Request.Context(), q)
 	if err != nil {
 		logger.Printf("[DATA_OPS] bulk QA ID snapshot failed: %v", err)
@@ -184,13 +207,21 @@ func (h *DataOpsHandler) BulkRunEpisodeQA(c *gin.Context) {
 		return
 	}
 
-	logger.Printf("[DATA_OPS] Bulk QA accepted: matched=%d", len(ids))
-	go h.runBulkEpisodeQA(ids)
+	run, err := h.createBulkQARun(c.Request.Context(), int64(len(ids)))
+	if err != nil {
+		logger.Printf("[DATA_OPS] bulk QA run create failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create bulk qa run"})
+		return
+	}
 
-	c.JSON(http.StatusAccepted, DataOpsBulkEpisodeActionResponse{
-		Status:       "accepted",
-		MatchedCount: len(ids),
-		Message:      fmt.Sprintf("%d episodes accepted for bulk QA", len(ids)),
+	logger.Printf("[DATA_OPS] Bulk QA accepted: run_id=%s total=%d", run.RunID, run.TotalCount)
+	if len(ids) > 0 {
+		go h.runBulkEpisodeQA(run.RunID, ids)
+	}
+
+	c.JSON(http.StatusAccepted, DataOpsBulkEpisodeQAActionResponse{
+		Run:     run,
+		Message: fmt.Sprintf("%d episodes accepted for bulk QA", len(ids)),
 	})
 }
 
@@ -246,7 +277,7 @@ func (h *DataOpsHandler) ensureDataOpsDatabase(c *gin.Context) bool {
 }
 
 func (h *DataOpsHandler) ensureBulkQAConfigured(c *gin.Context) bool {
-	if h.qa == nil || h.qa.db == nil || h.qa.s3 == nil {
+	if h.bulkQARunner() == nil || (h.qa != nil && (h.qa.db == nil || h.qa.s3 == nil)) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "qa service is not configured"})
 		return false
 	}
@@ -579,10 +610,20 @@ func dataOpsEpisodeIDSnapshotSQL(fromSQL string, where string) string {
 	`
 }
 
-func (h *DataOpsHandler) runBulkEpisodeQA(ids []int64) {
+func (h *DataOpsHandler) runBulkEpisodeQA(runID string, ids []int64) {
 	matched := int64(len(ids))
 	if matched == 0 {
-		logger.Printf("[DATA_OPS] Bulk QA completed: matched=0, attempted=0, skipped=0, failed=0")
+		logger.Printf("[DATA_OPS] Bulk QA completed: run_id=%s total=0 processed=0 passed=0 qa_failed=0 processing_failed=0 skipped=0", runID)
+		return
+	}
+	runner := h.bulkQARunner()
+	if runner == nil {
+		logger.Printf("[DATA_OPS] Bulk QA failed: run_id=%s, err=qa runner is not configured", runID)
+		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, "qa runner is not configured")
+		return
+	}
+	if _, err := h.markBulkRunRunning(context.Background(), runID); err != nil {
+		logger.Printf("[DATA_OPS] Bulk QA failed to start: run_id=%s, err=%v", runID, err)
 		return
 	}
 
@@ -591,10 +632,8 @@ func (h *DataOpsHandler) runBulkEpisodeQA(ids []int64) {
 		workerCount = len(ids)
 	}
 
-	var attempted int64
-	var skipped int64
-	var failed int64
 	jobs := make(chan int64)
+	results := make(chan dataOpsBulkQAEpisodeResult)
 	var wg sync.WaitGroup
 
 	for i := 0; i < workerCount; i++ {
@@ -603,34 +642,69 @@ func (h *DataOpsHandler) runBulkEpisodeQA(ids []int64) {
 			defer wg.Done()
 			for episodeID := range jobs {
 				ctx, cancel := context.WithTimeout(context.Background(), defaultEpisodeQATimeout)
-				_, err := h.qa.RunEpisodeQASuite(ctx, episodeID, qaRunModeManual)
+				result, err := runner.RunEpisodeQASuite(ctx, episodeID, qaRunModeManual)
 				cancel()
 				if err != nil {
 					if isBulkQASkippedError(err) {
-						atomic.AddInt64(&skipped, 1)
+						results <- dataOpsBulkQAEpisodeResult{episodeID: episodeID, outcome: dataOpsBulkQAEpisodeSkipped}
 						continue
 					}
-					atomic.AddInt64(&failed, 1)
 					logger.Printf("[DATA_OPS] Bulk QA failed: episode=%d, err=%v", episodeID, err)
+					results <- dataOpsBulkQAEpisodeResult{episodeID: episodeID, outcome: dataOpsBulkQAEpisodeProcessingFailed}
 					continue
 				}
-				atomic.AddInt64(&attempted, 1)
+				if result == nil {
+					logger.Printf("[DATA_OPS] Bulk QA failed: episode=%d, err=empty qa result", episodeID)
+					results <- dataOpsBulkQAEpisodeResult{episodeID: episodeID, outcome: dataOpsBulkQAEpisodeProcessingFailed}
+					continue
+				}
+				if result.Passed {
+					results <- dataOpsBulkQAEpisodeResult{episodeID: episodeID, outcome: dataOpsBulkQAEpisodePassed}
+				} else {
+					results <- dataOpsBulkQAEpisodeResult{episodeID: episodeID, outcome: dataOpsBulkQAEpisodeFailed}
+				}
 			}
 		}()
 	}
 
-	for _, episodeID := range ids {
-		jobs <- episodeID
+	go func() {
+		for _, episodeID := range ids {
+			jobs <- episodeID
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+
+	var lastProgressPublishedAt time.Time
+	for result := range results {
+		run, err := h.incrementBulkQARunCounts(context.Background(), runID, result.outcome)
+		if err != nil {
+			logger.Printf("[DATA_OPS] Bulk QA progress update failed: run_id=%s episode=%d err=%v", runID, result.episodeID, err)
+			continue
+		}
+		now := time.Now()
+		if lastProgressPublishedAt.IsZero() || now.Sub(lastProgressPublishedAt) >= 500*time.Millisecond {
+			h.publishBulkRunEvent("bulk_run_progress", run)
+			lastProgressPublishedAt = now
+		}
 	}
-	close(jobs)
-	wg.Wait()
+
+	finalRun, err := h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusCompleted, "")
+	if err != nil {
+		logger.Printf("[DATA_OPS] Bulk QA completion update failed: run_id=%s err=%v", runID, err)
+		return
+	}
 
 	logger.Printf(
-		"[DATA_OPS] Bulk QA completed: matched=%d, attempted=%d, skipped=%d, failed=%d",
+		"[DATA_OPS] Bulk QA completed: run_id=%s total=%d processed=%d passed=%d qa_failed=%d processing_failed=%d skipped=%d",
+		runID,
 		matched,
-		attempted,
-		skipped,
-		failed,
+		finalRun.ProcessedCount,
+		finalRun.PassedCount,
+		finalRun.QAFailedCount,
+		finalRun.ProcessingFailedCount,
+		finalRun.SkippedCount,
 	)
 }
 
