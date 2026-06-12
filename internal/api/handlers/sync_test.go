@@ -128,6 +128,92 @@ func TestListEpisodeSyncSummariesGroupsByEpisode(t *testing.T) {
 	}
 }
 
+func TestGetSyncStatusReturnsNotStartedWhenEpisodeHasNoSyncLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupSyncHandlerTestDB(t)
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, episode_id, deleted_at)
+		VALUES (4181, 'episode-no-sync', NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewSyncHandler(db, nil)
+	handler.RegisterRoutes(router.Group("/api/v1"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sync/episodes/4181/status", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got SyncJobResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.ID != 0 {
+		t.Fatalf("id = %d, want 0 for virtual status", got.ID)
+	}
+	if got.EpisodeID != 4181 {
+		t.Fatalf("episode_id = %d, want 4181", got.EpisodeID)
+	}
+	if got.EpisodePublicID == nil || *got.EpisodePublicID != "episode-no-sync" {
+		t.Fatalf("episode_public_id = %v, want episode-no-sync", got.EpisodePublicID)
+	}
+	if got.Status != "not_started" {
+		t.Fatalf("status = %q, want not_started", got.Status)
+	}
+	if got.AttemptCount != 0 {
+		t.Fatalf("attempt_count = %d, want 0", got.AttemptCount)
+	}
+}
+
+func TestGetSyncStatusReturnsNotFoundWhenEpisodeDoesNotExist(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupSyncHandlerTestDB(t)
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, episode_id, deleted_at)
+		VALUES (42, 'episode-deleted', ?)
+	`, time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("insert deleted episode: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewSyncHandler(db, nil)
+	handler.RegisterRoutes(router.Group("/api/v1"))
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "missing", path: "/api/v1/sync/episodes/404/status"},
+		{name: "soft deleted", path: "/api/v1/sync/episodes/42/status"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			var got map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got["error"] != "episode not found" {
+				t.Fatalf("error = %q, want episode not found", got["error"])
+			}
+		})
+	}
+}
+
 func setupSyncHandlerTestDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 

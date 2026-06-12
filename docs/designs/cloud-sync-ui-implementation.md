@@ -52,7 +52,7 @@ endpoints recommended for the episode-centered Cloud Sync Center redesign:
 | `POST` | `/api/v1/sync/episodes/:id` | Enqueue one episode for cloud sync by numeric episode ID |
 | `GET` | `/api/v1/sync/episodes` | Existing: list raw sync log entries for history/diagnosis |
 | `GET` | `/api/v1/sync/episodes/summary` | Recommended new endpoint: list latest sync state grouped by episode |
-| `GET` | `/api/v1/sync/episodes/:id/status` | Get latest sync log for one episode |
+| `GET` | `/api/v1/sync/episodes/:id/status` | Get current sync status for one episode |
 | `GET` | `/api/v1/sync/episodes/:id/logs` | Recommended new endpoint: list raw sync log history for one episode |
 | `GET` | `/api/v1/sync/config` | Get sanitized sync worker configuration |
 
@@ -482,8 +482,11 @@ Update `synapse/src/views/admin/episodes/EpisodeDetail.vue`:
 
 Important status handling:
 
-- `GET /sync/episodes/:id/status` may return 404 before the worker creates a
-  `sync_logs` row. Treat this as `queued` after a trigger, not as failure.
+- `GET /sync/episodes/:id/status` returns `200 status=not_started` when the
+  episode exists but has no `sync_logs` row. This is a virtual status and is not
+  inserted into `sync_logs`.
+- `GET /sync/episodes/:id/status` returns `404 episode not found` only when the
+  episode does not exist or has been soft-deleted.
 - `POST /sync/episodes/:id` returns `202 Accepted`, not completion.
 - `409 already synced` should refresh episode detail.
 - `409 already queued` should switch UI to `queued` or `syncing`.
