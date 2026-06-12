@@ -835,8 +835,9 @@ func (s *QAService) RunEpisodeQASuite(
       <h3>交互规则</h3>
       <ul>
         <li>点击 <code>重新质检</code> 后按钮进入提交中状态。</li>
-        <li>返回 <code>passed=true</code> 时刷新列表和详情，展示最新状态。</li>
-        <li>返回 <code>passed=false</code> 时展示 <code>details</code>，并刷新 <code>qa_status</code> 与 <code>quality_flag</code>。</li>
+        <li>返回 <code>passed=true</code> 时刷新列表和详情，展示最新状态，并在 episode 详情页弹出本次质检结果。</li>
+        <li>返回 <code>passed=false</code> 时在结果弹窗展示 <code>details</code>，并刷新 <code>qa_status</code> 与 <code>quality_flag</code>。</li>
+        <li>episode 详情页的质量检查卡片只常驻展示当前状态和 <code>quality_flag</code>；本次重新质检结果不再作为“最近结果”行常驻，避免与质量说明重复。</li>
         <li>返回 <code>409</code> 时提示该 episode 正在质检中，不重复提交。</li>
         <li>质检历史使用抽屉或轻量面板展示 <code>GET /api/v1/qa/episodes/:id/checks</code> 的完整记录。</li>
       </ul>
@@ -870,6 +871,7 @@ func (s *QAService) RunEpisodeQASuite(
             <li>列表展示最近一次质检结果。</li>
             <li>质检历史抽屉能展示完整 <code>qa_checks</code>。</li>
             <li>质检中心和 episode 详情页都通过 <code>重新质检</code> 调用 <code>POST /api/v1/qa/episodes/:id/run</code>。</li>
+            <li>episode 详情页重新质检完成后展示结果弹窗；关闭后页面仅保留当前质量状态和质量说明。</li>
           </ul>
         </div>
       </div>

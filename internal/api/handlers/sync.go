@@ -632,19 +632,38 @@ func (h *SyncHandler) ListEpisodeSyncLogs(c *gin.Context) {
 // GetSyncStatus returns the sync status for a specific episode.
 //
 // @Summary      Get episode sync status
-// @Description  Returns the latest sync log entry for a specific episode
+// @Description  Returns the latest sync log entry for a specific episode, or status=not_started when the episode has no sync log
 // @Tags         sync
 // @Produce      json
 // @Param        id   path      int  true  "Episode ID"
 // @Success      200  {object}  SyncJobResponse
 // @Failure      400  {object}  map[string]string
-// @Failure      404  {object}  map[string]string
+// @Failure      404  {object}  map[string]string  "Episode not found"
 // @Router       /sync/episodes/{id}/status [get]
 func (h *SyncHandler) GetSyncStatus(c *gin.Context) {
 	idStr := c.Param("id")
 	episodeID, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
 	if err != nil || episodeID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode id"})
+		return
+	}
+
+	var episode struct {
+		ID       int64          `db:"id"`
+		PublicID sql.NullString `db:"episode_id"`
+	}
+	err = h.db.Get(&episode, `
+		SELECT id, episode_id
+		FROM episodes
+		WHERE id = ? AND deleted_at IS NULL
+	`, episodeID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		return
+	}
+	if err != nil {
+		logger.Printf("[SYNC] Failed to query episode %d for sync status: %v", episodeID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get sync status"})
 		return
 	}
 
@@ -672,7 +691,13 @@ func (h *SyncHandler) GetSyncStatus(c *gin.Context) {
 		LIMIT 1
 	`, episodeID)
 	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no sync record found for this episode"})
+		c.JSON(http.StatusOK, SyncJobResponse{
+			ID:              0,
+			EpisodeID:       episode.ID,
+			EpisodePublicID: nullableString(episode.PublicID),
+			Status:          "not_started",
+			AttemptCount:    0,
+		})
 		return
 	}
 	if err != nil {
