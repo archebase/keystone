@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -265,12 +267,12 @@ func TestRobotHandlerListRobots_ConnectedFilterUsesHubIntersection(t *testing.T)
 	})
 }
 
-func TestRobotHandlerAssetID_CreateUpdateAndList(t *testing.T) {
+func TestRobotHandlerAssetID_CreateValidatesDPProfileAndList(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()
 	seedRobotLookups(t, db)
 
-	r := newTestRobotRouter(t, db)
+	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, robotDPConfigJSON("asset-1")))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
 		"robot_type_id": "10",
@@ -311,44 +313,56 @@ func TestRobotHandlerAssetID_CreateUpdateAndList(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("same-value update status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("ordinary update status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
 
-func TestRobotHandlerAssetID_ImmutableOnceSet(t *testing.T) {
+func TestRobotHandlerCloudAsset_BindChangeUnbind(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()
 	seedRobotLookups(t, db)
-	seedRobot(t, db, 1, "local-device-1", "asset-1", nil)
+	seedRobot(t, db, 1, "local-device-1", "", nil)
 
-	r := newTestRobotRouter(t, db)
+	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, robotDPConfigJSON("asset-1", "asset-2")))
 
 	for _, tt := range []struct {
-		name string
-		body string
+		name      string
+		method    string
+		path      string
+		body      string
+		wantAsset string
 	}{
-		{name: "change rejected", body: `{"asset_id":"asset-2"}`},
-		{name: "clear rejected", body: `{"asset_id":""}`},
-		{name: "blank clear rejected", body: `{"asset_id":"   "}`},
+		{name: "bind", method: http.MethodPut, path: "/api/v1/robots/1/cloud-asset", body: `{"asset_id":" asset-1 "}`, wantAsset: "asset-1"},
+		{name: "same value idempotent", method: http.MethodPut, path: "/api/v1/robots/1/cloud-asset", body: `{"asset_id":"asset-1"}`, wantAsset: "asset-1"},
+		{name: "change", method: http.MethodPut, path: "/api/v1/robots/1/cloud-asset", body: `{"asset_id":"asset-2"}`, wantAsset: "asset-2"},
+		{name: "unbind", method: http.MethodDelete, path: "/api/v1/robots/1/cloud-asset", wantAsset: ""},
+		{name: "unbind idempotent", method: http.MethodDelete, path: "/api/v1/robots/1/cloud-asset", wantAsset: ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPut, "/api/v1/robots/1", bytes.NewBufferString(tt.body))
+			req := httptest.NewRequest(tt.method, tt.path, bytes.NewBufferString(tt.body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+			var resp RobotResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+			}
+			if resp.AssetID != tt.wantAsset {
+				t.Fatalf("asset_id=%q want=%q response=%#v", resp.AssetID, tt.wantAsset, resp)
 			}
 		})
 	}
 
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/robots/1", bytes.NewBufferString(`{"asset_id":null}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/robots/1/cloud-asset", bytes.NewBufferString(`{"asset_id":"   "}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("null clear status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		t.Fatalf("blank bind status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
 
@@ -360,7 +374,7 @@ func TestRobotHandlerAssetID_UniqueAmongActiveRobots(t *testing.T) {
 	deletedAt := time.Now().UTC()
 	seedRobot(t, db, 2, "deleted-device", "deleted-asset", &deletedAt)
 
-	r := newTestRobotRouter(t, db)
+	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, robotDPConfigJSON("asset-1", "deleted-asset")))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
 		"robot_type_id": "10",
@@ -386,6 +400,49 @@ func TestRobotHandlerAssetID_UniqueAmongActiveRobots(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("soft-deleted reuse status=%d want=%d body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+}
+
+func TestRobotHandlerCloudAssetOptions(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+	seedRobotLookups(t, db)
+	seedRobot(t, db, 1, "local-device-1", "asset-1", nil)
+	seedRobot(t, db, 2, "local-device-2", "current-asset", nil)
+	deletedAt := time.Now().UTC()
+	seedRobot(t, db, 3, "deleted-device", "deleted-asset", &deletedAt)
+
+	body := `{
+		"version": 3,
+		"endpoints": {"auth": "auth:1", "gateway": "gateway:2"},
+		"devices": [
+			{"deviceId":"asset-1","apiKey":"key","tags":{"k":"v"}},
+			{"deviceId":"asset-2","apiKey":"key","tags":{"k":"v"}},
+			{"deviceId":"current-asset","apiKey":"key","tags":{"k":"v"}},
+			{"deviceId":"deleted-asset","apiKey":"key","tags":{"k":"v"}},
+			{"deviceId":"bad-api","apiKey":"  ","tags":{"k":"v"}},
+			{"deviceId":"bad-tags","apiKey":"key","tags":{}}
+		]
+	}`
+	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, body))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/robots/cloud-asset-options?robot_id=2&q=ASSET", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp CloudAssetOptionsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal options: %v body=%s", err, w.Body.String())
+	}
+	got := make([]string, 0, len(resp.Items))
+	for _, item := range resp.Items {
+		got = append(got, item.DeviceID)
+	}
+	want := []string{"asset-2", "deleted-asset"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("options=%v want=%v", got, want)
 	}
 }
 
@@ -428,12 +485,44 @@ func newTestRobotRouter(t *testing.T, db *sqlx.DB) *gin.Engine {
 	return newTestRobotRouterWithHubs(t, db, nil, nil)
 }
 
+func newTestRobotRouterWithDPConfig(t *testing.T, db *sqlx.DB, dpConfigPath string) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	NewRobotHandler(db, nil, nil, dpConfigPath).RegisterRoutes(r.Group("/api/v1"))
+	return r
+}
+
 func newTestRobotRouterWithHubs(t *testing.T, db *sqlx.DB, recorderHub *services.RecorderHub, transferHub *services.TransferHub) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	NewRobotHandler(db, recorderHub, transferHub).RegisterRoutes(r.Group("/api/v1"))
 	return r
+}
+
+func writeRobotDPConfigFixture(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dp-config.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write DP config fixture: %v", err)
+	}
+	return path
+}
+
+func robotDPConfigJSON(deviceIDs ...string) string {
+	var b strings.Builder
+	b.WriteString(`{"version":3,"endpoints":{"auth":"auth:1","gateway":"gateway:2"},"devices":[`)
+	for i, deviceID := range deviceIDs {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"deviceId":"`)
+		b.WriteString(deviceID)
+		b.WriteString(`","apiKey":"key","tags":{"k":"v"}}`)
+	}
+	b.WriteString(`]}`)
+	return b.String()
 }
 
 func connectRecorderForTest(t *testing.T, hub *services.RecorderHub, deviceID string, connectedAt time.Time) {

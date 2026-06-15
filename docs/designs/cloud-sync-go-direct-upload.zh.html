@@ -317,7 +317,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <h3>目标</h3>
           <ul>
             <li>更新 Keystone 原有 cloud sync worker 的上传身份和 raw tags 合成逻辑。</li>
-            <li>复用既有 <code>robots.asset_id</code> 作为“云资产编号”，即本地 robot 与 Data Platform device 的稳定映射。</li>
+            <li>复用既有 <code>robots.asset_id</code> 作为“云资产编号”，即本地 robot 与 Data Platform device 的当前绑定关系。</li>
             <li>episode 创建时将当时的 <code>asset_id</code> 快照写入 <code>episodes.metadata.asset_id</code>。</li>
             <li>读取 <code>KEYSTONE_SYNC_DP_CONFIG</code> 指向的 data-platform config，按 <code>asset_id</code> 选择 device profile。</li>
             <li>使用 device profile 的 <code>apiKey</code> 与 AuthService 交换 Bearer token。</li>
@@ -329,7 +329,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <h3>非目标</h3>
           <ul>
             <li>不在第一版集成 <code>dp device init</code>，device profile 由现场工程师提前初始化。</li>
-            <li>不生成或修改 Data Platform device id，只存储自动化流程写入的 <code>asset_id</code>。</li>
+            <li>不生成或修改 Data Platform device id，只存储从 DP config 候选中绑定的 <code>asset_id</code>。</li>
             <li>不迁移 data-platform config 到 Keystone 配置中心。</li>
             <li>删除 Keystone 后端 CLI 同步旁路，包括 <code>CLISyncRunner</code>、CLI sync API、CLI sync 配置和 <code>cli_sync_runs</code> 表迁移。</li>
             <li>不在每个 episode 上传前执行 device init；init 是一次性准备或凭证轮换动作。</li>
@@ -369,12 +369,12 @@ SPDX-License-Identifier: MulanPSL-2.0
       <h2>目标架构</h2>
       <p>
         新路径保留原有 cloud sync worker 的触发、重试、状态更新和同步日志。每次处理 episode 时，
-        worker 先解析 episode 对应的 <code>asset_id</code>，再根据该值读取 data-platform device
+        worker 先按 episode 关联的 workstation 解析当前 robot 绑定的 <code>asset_id</code>，再根据该值读取 data-platform device
         profile，并用该 profile 的 API key 构造本次上传专用客户端。
       </p>
       <pre><code>Keystone DB episode
-  -> resolve asset_id from episodes.metadata
-     or fallback through episode.workstation_id -> workstations -> robots.asset_id
+  -> resolve asset_id through episode.workstation_id -> workstations -> robots.asset_id
+     or fallback to episodes.metadata.asset_id only when workstation/robot cannot be traced
   -> load DP config from KEYSTONE_SYNC_DP_CONFIG
   -> select devices[].deviceId == asset_id
   -> build effective raw tags
@@ -396,8 +396,8 @@ SPDX-License-Identifier: MulanPSL-2.0
         <tbody>
           <tr>
             <td>Robot asset mapping</td>
-            <td>保存本地 robot 到 Data Platform device 的不可变映射。</td>
-            <td><code>robots.asset_id</code>、robot API、数据库迁移</td>
+            <td>保存本地 robot 到 Data Platform device 的当前绑定，并提供受控绑定、更换和解绑。</td>
+            <td><code>robots.asset_id</code>、robot API、数据库迁移、Synapse 远程下拉</td>
           </tr>
           <tr>
             <td>Asset resolver</td>
@@ -437,11 +437,58 @@ SPDX-License-Identifier: MulanPSL-2.0
 
       <h3>Robot 字段规则</h3>
       <ul>
-        <li><code>robots.asset_id</code> 初始允许为空，创建 robot 时可写可不写。</li>
-        <li>首次设置非空后不可修改、不可清空；同值更新视为幂等。</li>
+        <li><code>robots.asset_id</code> 初始允许为空，创建 robot 时可绑定可不绑定；不绑定不影响本地采集、QA 和入库。</li>
+        <li>非空 <code>asset_id</code> 必须来自 <code>KEYSTONE_SYNC_DP_CONFIG</code> 中可用且未被占用的 <code>devices[].deviceId</code>。</li>
+        <li>已有 robot 的云资产编号通过专用绑定接口管理，支持首次绑定、更换和解绑；普通 robot update 收到 <code>asset_id</code> 时应拒绝。</li>
+        <li>绑定、更换和解绑会影响之后发起的云同步；不自动改写历史 episode 的 <code>metadata.asset_id</code>。</li>
         <li>active robots 的非空 <code>asset_id</code> 必须唯一，软删除 robot 不占用唯一性。</li>
         <li>保存前 trim；空字符串按 NULL；最大长度 100；不做 Data Platform device id 格式正则。</li>
-        <li>robot create / update / list / detail API 暴露 <code>asset_id</code>。</li>
+        <li>robot create / list / detail API 暴露 <code>asset_id</code>；绑定、更换、解绑成功后返回完整 robot 对象。</li>
+      </ul>
+
+      <h3>后台管理交互规则</h3>
+      <ul>
+        <li>Synapse 机器人列表列名为“云资产编号”：有值显示完整编号，无值显示“未绑定”；列表和详情页不做 DP config 实时诊断。</li>
+        <li>新建和编辑弹窗第一行仍将“设备ID”和“云资产编号”并列展示；“云资产编号”复用后台表单现有远程下拉组件，不允许自由输入。</li>
+        <li>下拉每次打开时重新读取 DP config 候选项，不提供刷新按钮；搜索由候选接口按编号过滤。</li>
+        <li>候选项只显示完整云资产编号；长编号允许换行，不撑破弹窗布局。</li>
+        <li>新建 robot 时云资产编号可选、可清空，选择后随“创建”一起保存，不需要二次确认。</li>
+        <li>编辑 robot 时，云资产编号选择只修改表单草稿；点击“取消”不产生任何绑定副作用。</li>
+        <li>编辑已有未绑定 robot 时，选择云资产编号后随“保存”提交首次绑定，不需要二次确认。</li>
+        <li>编辑已有已绑定 robot 时，选择新编号后点击“保存”触发“更换云资产编号”确认。</li>
+        <li>编辑已有已绑定 robot 时，清空该字段后点击“保存”触发“解绑云资产编号”确认。</li>
+        <li>已绑定 robot 打开下拉时，当前编号通过 selected option 展示，即使该编号当前不在 DP config 候选中。</li>
+        <li>更换确认文案：将云资产编号从 <code>{old}</code> 更换为 <code>{new}</code>。</li>
+        <li>解绑确认文案：确认解绑云资产编号 <code>{old}</code>？</li>
+        <li>绑定 / 更换 / 解绑随表单保存成功后关闭弹窗并刷新列表。</li>
+      </ul>
+
+      <h3>后台管理 API</h3>
+      <pre><code>GET /api/v1/robots/cloud-asset-options?robot_id=123&amp;q=AB-F0001
+
+200 OK
+{
+  "items": [
+    { "device_id": "AB-F0001-T0001-000006" }
+  ]
+}
+
+PUT /api/v1/robots/:id/cloud-asset
+{
+  "asset_id": "AB-F0001-T0001-000006"
+}
+
+DELETE /api/v1/robots/:id/cloud-asset</code></pre>
+      <ul>
+        <li><code>robot_id</code> 可选：不传用于新建；传入时用于排除其他 active robot 已占用的编号。</li>
+        <li><code>q</code> 可选且 trim 后使用；搜索大小写不敏感，绑定校验仍大小写敏感。</li>
+        <li>候选接口不分页，只返回 <code>items</code>；不返回 <code>config_path</code>、<code>total</code> 或 profile 诊断信息。</li>
+        <li>候选列表按 <code>device_id</code> 升序排序，隐藏异常 profile 和已被其他 active robot 绑定的 profile；当前已绑定编号由前端 selected option 合并展示。</li>
+        <li>DP config 整体不可读、不可解析、endpoint 无效、存在空 <code>deviceId</code> 或重复 <code>deviceId</code> 时，候选接口返回错误；前端只展示“无法加载云资产编号”。</li>
+        <li>候选加载、空态和搜索无结果沿用后台通用远程下拉组件文案。</li>
+        <li><code>PUT</code> 传空 <code>asset_id</code> 返回 400，不执行解绑；解绑只走 <code>DELETE</code>，且 <code>DELETE</code> 幂等。</li>
+        <li><code>PUT</code> 收到与当前相同的 <code>asset_id</code> 时幂等成功，不强制重新校验 DP config。</li>
+        <li>绑定 / 更换 / 解绑失败前端将错误挂到“云资产编号”字段或保存错误态；不展示底层 config 细节。</li>
       </ul>
 
       <h3>Episode 快照规则</h3>
@@ -453,12 +500,13 @@ SPDX-License-Identifier: MulanPSL-2.0
       </ul>
 
       <h3>上传时解析优先级</h3>
-      <pre><code>if episodes.metadata.asset_id is non-empty:
-    use metadata.asset_id
-else:
+      <pre><code>if episode.workstation_id is non-empty:
     load workstation by episode.workstation_id, including soft-deleted workstation rows
-    load robots.asset_id by workstation.robot_id
+    load current robots.asset_id by workstation.robot_id
     use robots.asset_id if non-empty
+    fail if the current robot is unbound
+else if episodes.metadata.asset_id is non-empty:
+    use metadata.asset_id as legacy fallback
 if still empty:
     fail as non-retryable configuration error</code></pre>
 
@@ -533,6 +581,15 @@ type DPResolvedEndpoint struct {
         <li><code>tags</code> 不能为空，保持与 Rust SDK <code>require_device_upload()</code> 一致；tag key/value 不 trim、不改写，但 key 必须非空。</li>
         <li><code>endpoints.auth</code> 和 <code>endpoints.gateway</code> 必须来自 config 文件，不支持 <code>ARCHEBASE_*</code> 或 <code>KEYSTONE_SYNC_*</code> overlay。</li>
         <li>每个 episode 上传前重新读取 config 文件，避免长期进程缓存旧 device profile。</li>
+      </ul>
+
+      <h3>后台候选过滤规则</h3>
+      <ul>
+        <li>候选接口复用同一份 DP config 解析逻辑，但返回的是“可绑定云资产编号”列表，不返回密钥、tags 或配置路径。</li>
+        <li>config 文件不可读、JSON 不可解析、version 不支持、endpoint 无效、存在空 <code>deviceId</code> 或重复 <code>deviceId</code> 时，候选接口整体失败。</li>
+        <li>单个 profile 的 <code>apiKey</code> 为空、<code>tags</code> 为空、tag key 为空，或 <code>deviceId</code> 不满足 Keystone <code>asset_id</code> 基础校验时，该 profile 从候选中隐藏。</li>
+        <li>已被其他 active robot 绑定的 <code>deviceId</code> 从候选中隐藏；软删除 robot 不占用云资产编号。</li>
+        <li>候选接口每次请求都重新读取 config 文件；前端每次打开选择器面板时请求一次，不要求 Keystone 重启。</li>
       </ul>
 
       <h3>Endpoint 与 TLS 规则</h3>
@@ -644,7 +701,7 @@ return merged</code></pre>
       <div class="flow">
         <div class="step"><strong>1. 领取 episode</strong>：沿用原有 cloud sync worker 的自动扫描、手动触发、重试和并发控制。</div>
         <div class="step"><strong>2. 加载 episode</strong>：读取 MCAP MinIO key、sidecar path、metadata、workstation id 和任务上下文。</div>
-        <div class="step"><strong>3. 解析 asset_id</strong>：优先使用 <code>episodes.metadata.asset_id</code>，否则通过历史 workstation 反查 <code>robots.asset_id</code>。</div>
+        <div class="step"><strong>3. 解析 asset_id</strong>：优先通过历史 workstation 反查当前 <code>robots.asset_id</code>，无法追溯 workstation / robot 时才用 <code>episodes.metadata.asset_id</code> 兜底。</div>
         <div class="step"><strong>4. 加载 DP config</strong>：从 <code>KEYSTONE_SYNC_DP_CONFIG</code> 读取 device profile 和 endpoints。</div>
         <div class="step"><strong>5. 构造 raw tags</strong>：合并 device tags、reserved tags、sidecar tags 和 Keystone extra tags，执行冲突校验。</div>
         <div class="step"><strong>6. 构造 direct uploader</strong>：为本次 episode 创建专用 <code>AuthClient</code>、<code>GatewayClient</code> 和 <code>cloud.Uploader</code>。</div>
@@ -700,19 +757,28 @@ return merged</code></pre>
       <ol>
         <li>
           复用 <code>robots.asset_id</code> 字段，增加 active 非空唯一约束；
-          create / update 实现 trim、控制字符校验、“首次非空设置后不可修改、不可清空、同值幂等”。
+          create 和专用绑定接口实现 trim、控制字符校验、active 非空唯一与 DP profile 可绑定校验。
+        </li>
+        <li>
+          普通 robot update 拒绝 <code>asset_id</code>；新增
+          <code>GET /robots/cloud-asset-options</code>、<code>PUT /robots/:id/cloud-asset</code>、
+          <code>DELETE /robots/:id/cloud-asset</code>，绑定 / 更换 / 解绑成功后返回完整 robot 对象。
+        </li>
+        <li>
+          Synapse 机器人新建 / 编辑弹窗中的“云资产编号”复用现有 <code>RemoteSelect</code>；
+          下拉打开时读取候选，编辑态只更新表单草稿，保存时再按差异调用绑定 / 更换 / 解绑接口。
         </li>
         <li>
           episode 创建时解析 task -> workstation -> robot 的 <code>asset_id</code>，非空时写入
           <code>episodes.metadata.asset_id</code>，但缺失不阻止 episode 创建。
         </li>
         <li>
-          新增 DP config loader，读取 <code>SyncConfig.DPConfigPath</code> / <code>KEYSTONE_SYNC_DP_CONFIG</code>，
-          校验 version、endpoint、重复 device id、空 apiKey 和空 tags，并按 <code>asset_id</code> 返回 profile。
+          提取 DP config 公共解析与 profile 校验逻辑，读取 <code>SyncConfig.DPConfigPath</code> /
+          <code>KEYSTONE_SYNC_DP_CONFIG</code>，供候选接口、绑定接口和上传 loader 复用。
         </li>
         <li>
-          给 <code>SyncWorker</code> 增加 asset_id resolver：优先读 <code>episodes.metadata.asset_id</code>，
-          缺失时允许读取软删除 workstation 并反查 <code>robots.asset_id</code>。
+          给 <code>SyncWorker</code> 增加 asset_id resolver：优先读取软删除 workstation 并反查当前
+          <code>robots.asset_id</code>；无法追溯 workstation / robot 时才使用 <code>episodes.metadata.asset_id</code> 兜底。
         </li>
         <li>
           新增 raw tags builder，包含两个 reserved key 常量、非冲突插入、MinIO basename 选择、strict sidecar
@@ -760,13 +826,18 @@ return merged</code></pre>
           </tr>
           <tr>
             <td><code>asset_id</code> 填错</td>
-            <td>本地 robot 会永久绑定错误的 Data Platform device。</td>
-            <td>字段首次非空设置后不可修改；未来由自动化流程写入，第一版不提供 break-glass 维护入口。</td>
+            <td>之后发起的同步会使用错误的 Data Platform device 身份。</td>
+            <td>前端不允许自由输入，只能从可绑定 DP profile 中选择；已绑定 robot 支持受控更换，更换会影响之后发起的云同步。</td>
+          </tr>
+          <tr>
+            <td>解绑后继续云同步</td>
+            <td>该机器人之后发起的云同步缺少 <code>asset_id</code>，本次 sync 失败。</td>
+            <td>解绑需要二次确认；历史 episode 的 <code>metadata.asset_id</code> 不自动改写，但同步解析优先使用当前 robot 绑定。</td>
           </tr>
           <tr>
             <td>device profile 缺失或不完整</td>
             <td>上传前失败，episode 本次 sync 失败。</td>
-            <td>错误信息包含 <code>asset_id</code> 和 config path，但不打印 api key；提示现场执行 <code>dp device init</code> 或 <code>dp device reinit</code>。</td>
+            <td>候选下拉隐藏不可用 profile；上传 worker 错误信息包含 <code>asset_id</code> 和 config path，但不打印 api key。</td>
           </tr>
           <tr>
             <td>endpoint / TLS 配置错误</td>
@@ -800,10 +871,12 @@ return merged</code></pre>
     <section id="tests" class="panel">
       <h2>测试计划</h2>
       <ul>
-        <li>单元测试 robot API / 存储：<code>asset_id</code> 可首次设置、同值幂等、不可修改、不可清空、active 非空唯一。</li>
+        <li>单元测试 robot API / 存储：创建可不绑定；创建绑定需通过 DP profile 校验；普通 update 拒绝 <code>asset_id</code>；专用接口支持绑定、更换、解绑、同值幂等和 active 非空唯一。</li>
+        <li>单元测试 cloud asset options：过滤已占用、软删除不占用、隐藏不可用 profile、按 <code>device_id</code> 升序、<code>q</code> trim 且大小写不敏感、config 结构错误返回错误。</li>
         <li>单元测试 episode 创建：有 <code>asset_id</code> 时写入 <code>episodes.metadata.asset_id</code>，缺失时仍创建 episode。</li>
-        <li>单元测试 asset_id resolver：metadata 优先、fallback 读取软删除 workstation、缺失时报 non-retryable 错误、不 fallback 到 <code>robots.device_id</code>。</li>
-        <li>单元测试 DP config loader：version、endpoint scheme/TLS、禁止 path/query/fragment、成功选择 device、缺失 device、空 apiKey、空 tags、重复 deviceId。</li>
+        <li>单元测试 asset_id resolver：当前 robot 绑定优先、解绑后不使用 stale metadata、无 workstation 时 metadata 遗留兜底、缺失时报 non-retryable 错误、不 fallback 到 <code>robots.device_id</code>。</li>
+        <li>单元测试 DP config loader：version、endpoint scheme/TLS、禁止 path/query/fragment、成功选择 device、缺失 device、空 apiKey、空 tags、空 tag key、重复 deviceId。</li>
+        <li>前端组件测试 / 手动验证：新建可选可清空；编辑态选择 / 清空后取消不产生副作用；保存时首次绑定直接提交；已绑定更换 / 解绑需要确认；加载、空态、搜索无结果和错误文案正确。</li>
         <li>单元测试 raw tags builder：合并顺序、reserved device tag 注入、raw_file 使用 MinIO basename、相同 key 相同 value 幂等、相同 key 不同 value 报错、空 value 保留。</li>
         <li>单元测试 SyncWorker 错误分类：non-retryable failed 写 <code>next_retry_at=NULL</code>，auto scan 跳过，manual sync 可重新尝试。</li>
         <li>单元测试 uploader 持久化恢复：同 MCAP key 但 <code>asset_id</code> 不同不复用旧 state。</li>
