@@ -143,7 +143,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	if db != nil {
 		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
-		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub)
+		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub, cfg.Sync.DPConfigPath)
 		deviceRegistrationHandler = handlers.NewDeviceRegistrationHandler(db)
 		factoryHandler = handlers.NewFactoryHandler(db)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)

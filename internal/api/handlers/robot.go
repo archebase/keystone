@@ -26,17 +26,23 @@ import (
 
 // RobotHandler handles robot related HTTP requests.
 type RobotHandler struct {
-	db          *sqlx.DB
-	recorderHub *services.RecorderHub
-	transferHub *services.TransferHub
+	db           *sqlx.DB
+	recorderHub  *services.RecorderHub
+	transferHub  *services.TransferHub
+	dpConfigPath string
 }
 
 // NewRobotHandler creates a new RobotHandler.
-func NewRobotHandler(db *sqlx.DB, recorderHub *services.RecorderHub, transferHub *services.TransferHub) *RobotHandler {
+func NewRobotHandler(db *sqlx.DB, recorderHub *services.RecorderHub, transferHub *services.TransferHub, dpConfigPath ...string) *RobotHandler {
+	configPath := ""
+	if len(dpConfigPath) > 0 {
+		configPath = strings.TrimSpace(dpConfigPath[0])
+	}
 	return &RobotHandler{
-		db:          db,
-		recorderHub: recorderHub,
-		transferHub: transferHub,
+		db:           db,
+		recorderHub:  recorderHub,
+		transferHub:  transferHub,
+		dpConfigPath: configPath,
 	}
 }
 
@@ -67,6 +73,21 @@ type RobotListResponse struct {
 	Offset  int             `json:"offset"`
 	HasNext bool            `json:"hasNext,omitempty"`
 	HasPrev bool            `json:"hasPrev,omitempty"`
+}
+
+// CloudAssetOption is one bindable cloud asset choice for robot management.
+type CloudAssetOption struct {
+	DeviceID string `json:"device_id"`
+}
+
+// CloudAssetOptionsResponse represents available cloud asset choices.
+type CloudAssetOptionsResponse struct {
+	Items []CloudAssetOption `json:"items"`
+}
+
+// BindCloudAssetRequest represents a robot cloud asset binding request.
+type BindCloudAssetRequest struct {
+	AssetID string `json:"asset_id"`
 }
 
 // DeviceConnectionResponse is an in-memory connection snapshot keyed by Axon device_id (no database access).
@@ -106,9 +127,12 @@ type CreateRobotResponse struct {
 func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robots", h.ListRobots)
 	apiV1.POST("/robots", h.CreateRobot)
+	apiV1.GET("/robots/cloud-asset-options", h.ListCloudAssetOptions)
 	apiV1.GET("/devices/:device_id/connection", h.GetDeviceConnection)
 	apiV1.GET("/robots/:id", h.GetRobot)
 	apiV1.PUT("/robots/:id", h.UpdateRobot)
+	apiV1.PUT("/robots/:id/cloud-asset", h.BindCloudAsset)
+	apiV1.DELETE("/robots/:id/cloud-asset", h.UnbindCloudAsset)
 	apiV1.DELETE("/robots/:id", h.DeleteRobot)
 }
 
@@ -159,6 +183,30 @@ func assetIDValue(ns sql.NullString) string {
 	return strings.TrimSpace(ns.String)
 }
 
+func isDPConfigSystemError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "KEYSTONE_SYNC_DP_CONFIG") ||
+		strings.Contains(msg, "read DP config") ||
+		strings.Contains(msg, "parse DP config") ||
+		strings.Contains(msg, "unsupported version") ||
+		strings.Contains(msg, "endpoints.") ||
+		strings.Contains(msg, "deviceId is empty") ||
+		strings.Contains(msg, "duplicate deviceId")
+}
+
+func (h *RobotHandler) respondCloudAssetValidationError(c *gin.Context, err error, action string) {
+	if isDPConfigSystemError(err) {
+		logger.Printf("[ROBOT] Failed to %s cloud asset using DP config: %v", action, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate cloud asset"})
+		return
+	}
+	logger.Printf("[ROBOT] Cloud asset is not bindable while %s: %v", action, err)
+	c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id is not bindable"})
+}
+
 func (h *RobotHandler) assetIDInUse(assetID string, excludeRobotID int64) (bool, error) {
 	assetID = strings.TrimSpace(assetID)
 	if assetID == "" {
@@ -176,6 +224,25 @@ func (h *RobotHandler) assetIDInUse(assetID string, excludeRobotID int64) (bool,
 		return false, err
 	}
 	return exists, nil
+}
+
+func (h *RobotHandler) loadRobotRow(id int64) (robotRow, error) {
+	var r robotRow
+	err := h.db.Get(&r, `
+		SELECT
+			r.id,
+			r.robot_type_id,
+			r.device_id,
+			r.factory_id,
+			r.asset_id,
+			r.status,
+			r.metadata,
+			r.created_at,
+			r.updated_at
+		FROM robots r
+		WHERE r.id = ? AND r.deleted_at IS NULL
+	`, id)
+	return r, err
 }
 
 func (h *RobotHandler) connectionState(deviceID string) (connected bool, connectedAt string) {
@@ -484,6 +551,94 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	})
 }
 
+// ListCloudAssetOptions lists bindable cloud asset IDs from the DP config.
+//
+// @Summary      List cloud asset options
+// @Description  Lists cloud asset IDs that can be bound to a robot
+// @Tags         robots
+// @Produce      json
+// @Param        robot_id query string false "Current robot ID to exclude from occupancy checks"
+// @Param        q        query string false "Case-insensitive device ID search"
+// @Success      200      {object} CloudAssetOptionsResponse
+// @Failure      400      {object} map[string]string
+// @Failure      500      {object} map[string]string
+// @Router       /robots/cloud-asset-options [get]
+func (h *RobotHandler) ListCloudAssetOptions(c *gin.Context) {
+	excludeRobotID := int64(0)
+	robotIDRaw := strings.TrimSpace(c.Query("robot_id"))
+	if robotIDRaw != "" {
+		id, err := strconv.ParseInt(robotIDRaw, 10, 64)
+		if err != nil || id <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_id format"})
+			return
+		}
+		excludeRobotID = id
+	}
+	query := strings.ToLower(strings.TrimSpace(c.Query("q")))
+
+	currentAssetID := ""
+	if excludeRobotID > 0 {
+		current, err := h.loadRobotRow(excludeRobotID)
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+			return
+		}
+		if err != nil {
+			logger.Printf("[ROBOT] Failed to query robot for cloud asset options: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list cloud asset options"})
+			return
+		}
+		currentAssetID = assetIDValue(current.AssetID)
+	}
+
+	profiles, err := services.ListDPDeviceProfiles(h.dpConfigPath)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to list cloud asset options: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list cloud asset options"})
+		return
+	}
+
+	var occupied []string
+	occupiedQuery := "SELECT asset_id FROM robots WHERE asset_id IS NOT NULL AND asset_id <> '' AND deleted_at IS NULL"
+	args := []interface{}{}
+	if excludeRobotID > 0 {
+		occupiedQuery += " AND id <> ?"
+		args = append(args, excludeRobotID)
+	}
+	if err := h.db.Select(&occupied, occupiedQuery, args...); err != nil {
+		logger.Printf("[ROBOT] Failed to query occupied cloud assets: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list cloud asset options"})
+		return
+	}
+	occupiedSet := make(map[string]struct{}, len(occupied))
+	for _, assetID := range occupied {
+		if value := strings.TrimSpace(assetID); value != "" {
+			occupiedSet[value] = struct{}{}
+		}
+	}
+
+	options := make([]CloudAssetOption, 0, len(profiles))
+	for _, profile := range profiles {
+		deviceID := strings.TrimSpace(profile.DeviceID)
+		assetID, err := normalizeAssetID(deviceID)
+		if err != nil || !assetID.Valid {
+			continue
+		}
+		if _, used := occupiedSet[assetID.String]; used {
+			continue
+		}
+		if currentAssetID != "" && assetID.String == currentAssetID {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(assetID.String), query) {
+			continue
+		}
+		options = append(options, CloudAssetOption{DeviceID: assetID.String})
+	}
+
+	c.JSON(http.StatusOK, CloudAssetOptionsResponse{Items: options})
+}
+
 // CreateRobot handles robot creation requests.
 //
 // @Summary      Create robot
@@ -527,6 +682,10 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		return
 	}
 	if assetID.Valid {
+		if err := services.ValidateDPDeviceProfile(h.dpConfigPath, assetID.String); err != nil {
+			h.respondCloudAssetValidationError(c, err, "create robot with")
+			return
+		}
 		inUse, err := h.assetIDInUse(assetID.String, 0)
 		if err != nil {
 			logger.Printf("[ROBOT] Failed to check asset_id uniqueness: %v", err)
@@ -766,6 +925,11 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 		return
 	}
 
+	if len(req.AssetID) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id must be managed through cloud asset binding API"})
+		return
+	}
+
 	var current struct {
 		AssetID sql.NullString `db:"asset_id"`
 	}
@@ -820,47 +984,6 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 		}
 		updates = append(updates, "device_id = ?")
 		args = append(args, deviceID)
-	}
-
-	if len(req.AssetID) > 0 {
-		var rawAssetID string
-		meta := bytes.TrimSpace(req.AssetID)
-		if bytes.Equal(meta, []byte("null")) {
-			rawAssetID = ""
-		} else if err := json.Unmarshal(req.AssetID, &rawAssetID); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id must be a string or null"})
-			return
-		}
-		assetID, err := normalizeAssetID(rawAssetID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		currentAssetID := assetIDValue(current.AssetID)
-		if currentAssetID != "" {
-			if !assetID.Valid {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id cannot be cleared once set"})
-				return
-			}
-			if assetID.String != currentAssetID {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id cannot be changed once set"})
-				return
-			}
-		}
-		if assetID.Valid && assetID.String != currentAssetID {
-			inUse, err := h.assetIDInUse(assetID.String, id)
-			if err != nil {
-				logger.Printf("[ROBOT] Failed to check asset_id uniqueness: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
-				return
-			}
-			if inUse {
-				c.JSON(http.StatusConflict, gin.H{"error": "asset_id is already assigned to another robot"})
-				return
-			}
-		}
-		updates = append(updates, "asset_id = ?")
-		args = append(args, assetID)
 	}
 
 	if req.FactoryID != nil {
@@ -1019,6 +1142,181 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, h.responseFromRow(r))
+}
+
+// BindCloudAsset binds or changes a robot cloud asset ID.
+//
+// @Summary      Bind robot cloud asset
+// @Description  Binds or changes the Data Platform device ID used for future uploads
+// @Tags         robots
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string                 true  "Robot ID"
+// @Param        body body      BindCloudAssetRequest  true  "Cloud asset payload"
+// @Success      200  {object}  RobotResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      409  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /robots/{id}/cloud-asset [put]
+func (h *RobotHandler) BindCloudAsset(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	var req BindCloudAssetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	assetID, err := normalizeAssetID(req.AssetID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !assetID.Valid {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "asset_id is required"})
+		return
+	}
+
+	current, err := h.loadRobotRow(id)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to query robot for cloud asset bind: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+
+	currentAssetID := assetIDValue(current.AssetID)
+	if assetID.String == currentAssetID {
+		c.JSON(http.StatusOK, h.responseFromRow(current))
+		return
+	}
+
+	if err := services.ValidateDPDeviceProfile(h.dpConfigPath, assetID.String); err != nil {
+		h.respondCloudAssetValidationError(c, err, "bind")
+		return
+	}
+	inUse, err := h.assetIDInUse(assetID.String, id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to check asset_id uniqueness: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	if inUse {
+		c.JSON(http.StatusConflict, gin.H{"error": "asset_id is already assigned to another robot"})
+		return
+	}
+
+	now := time.Now().UTC()
+	result, err := h.db.Exec(
+		"UPDATE robots SET asset_id = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+		assetID,
+		now,
+		id,
+	)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to bind cloud asset: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to get rows affected for cloud asset bind: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+
+	updated, err := h.loadRobotRow(id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to fetch cloud asset bound robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated robot"})
+		return
+	}
+	if currentAssetID == "" {
+		logger.Printf("[ROBOT] Cloud asset bound: robot_id=%d asset_id=%s", id, assetID.String)
+	} else {
+		logger.Printf("[ROBOT] Cloud asset changed: robot_id=%d old_asset_id=%s new_asset_id=%s", id, currentAssetID, assetID.String)
+	}
+	c.JSON(http.StatusOK, h.responseFromRow(updated))
+}
+
+// UnbindCloudAsset clears a robot cloud asset ID.
+//
+// @Summary      Unbind robot cloud asset
+// @Description  Clears the Data Platform device ID used for future uploads
+// @Tags         robots
+// @Produce      json
+// @Param        id   path      string  true  "Robot ID"
+// @Success      200  {object}  RobotResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /robots/{id}/cloud-asset [delete]
+func (h *RobotHandler) UnbindCloudAsset(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	current, err := h.loadRobotRow(id)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to query robot for cloud asset unbind: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+
+	currentAssetID := assetIDValue(current.AssetID)
+	if currentAssetID == "" {
+		c.JSON(http.StatusOK, h.responseFromRow(current))
+		return
+	}
+
+	result, err := h.db.Exec(
+		"UPDATE robots SET asset_id = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+		time.Now().UTC(),
+		id,
+	)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to unbind cloud asset: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to get rows affected for cloud asset unbind: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update robot"})
+		return
+	}
+	if rowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		return
+	}
+
+	updated, err := h.loadRobotRow(id)
+	if err != nil {
+		logger.Printf("[ROBOT] Failed to fetch cloud asset unbound robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated robot"})
+		return
+	}
+	logger.Printf("[ROBOT] Cloud asset unbound: robot_id=%d old_asset_id=%s", id, currentAssetID)
+	c.JSON(http.StatusOK, h.responseFromRow(updated))
 }
 
 // DeleteRobot handles robot deletion requests (soft delete).

@@ -174,3 +174,37 @@ func TestLoadDPDeviceUploadConfigRejectsContractErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestListDPDeviceProfilesFiltersProfileErrors(t *testing.T) {
+	body := `{
+		"version":3,
+		"endpoints":{"auth":"auth:1","gateway":"gateway:2"},
+		"devices":[
+			{"deviceId":"z-ready","apiKey":"key","tags":{"k":"v"}},
+			{"deviceId":"bad-api","apiKey":"  ","tags":{"k":"v"}},
+			{"deviceId":"bad-tags","apiKey":"key","tags":{}},
+			{"deviceId":"bad-tag-key","apiKey":"key","tags":{"":"v"}},
+			{"deviceId":"a-ready","apiKey":"key","tags":{"k":"v"}}
+		]
+	}`
+	profiles, err := ListDPDeviceProfiles(writeDPConfigFixture(t, body))
+	if err != nil {
+		t.Fatalf("ListDPDeviceProfiles() error = %v", err)
+	}
+	got := []string{}
+	for _, profile := range profiles {
+		got = append(got, profile.DeviceID)
+	}
+	want := []string{"a-ready", "z-ready"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("profiles=%v want=%v", got, want)
+	}
+}
+
+func TestListDPDeviceProfilesRejectsConfigStructureErrors(t *testing.T) {
+	body := `{"version":3,"endpoints":{"auth":"auth:1","gateway":"gateway:2"},"devices":[{"deviceId":"asset-1","apiKey":"key","tags":{"k":"v"}},{"deviceId":" asset-1 ","apiKey":"key","tags":{"k":"v"}}]}`
+	_, err := ListDPDeviceProfiles(writeDPConfigFixture(t, body))
+	if err == nil || !strings.Contains(err.Error(), "duplicate deviceId") {
+		t.Fatalf("error=%v want duplicate deviceId", err)
+	}
+}

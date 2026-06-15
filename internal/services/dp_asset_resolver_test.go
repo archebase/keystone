@@ -42,12 +42,70 @@ func newTestAssetResolverDB(t *testing.T) *sqlx.DB {
 	return db
 }
 
-func TestResolveAssetIDForEpisode_MetadataWins(t *testing.T) {
+func TestResolveAssetIDForEpisode_CurrentRobotAssetWinsOverMetadata(t *testing.T) {
 	db := newTestAssetResolverDB(t)
-	if _, err := db.Exec(`INSERT INTO robots (id, device_id, asset_id) VALUES (1, 'local-device', 'fallback-asset')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, asset_id) VALUES (1, 'local-device', 'current-asset')`); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (10, 1)`); err != nil {
+		t.Fatalf("seed workstation: %v", err)
+	}
+
+	got, err := resolveAssetIDForEpisode(
+		context.Background(),
+		db,
+		1,
+		sql.NullString{String: `{"asset_id":" snapshot-asset "}`, Valid: true},
+		sql.NullInt64{Int64: 10, Valid: true},
+	)
+	if err != nil {
+		t.Fatalf("resolveAssetIDForEpisode() error = %v", err)
+	}
+	if got != "current-asset" {
+		t.Fatalf("asset_id=%q want current-asset", got)
+	}
+}
+
+func TestResolveAssetIDForEpisode_UnboundRobotDoesNotUseStaleMetadata(t *testing.T) {
+	db := newTestAssetResolverDB(t)
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, asset_id) VALUES (1, 'local-device', NULL)`); err != nil {
+		t.Fatalf("seed robot: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (10, 1)`); err != nil {
+		t.Fatalf("seed workstation: %v", err)
+	}
+
+	_, err := resolveAssetIDForEpisode(
+		context.Background(),
+		db,
+		1,
+		sql.NullString{String: `{"asset_id":"stale-asset"}`, Valid: true},
+		sql.NullInt64{Int64: 10, Valid: true},
+	)
+	if err == nil || !strings.Contains(err.Error(), "asset_id") {
+		t.Fatalf("error=%v want asset_id missing error", err)
+	}
+}
+
+func TestResolveAssetIDForEpisode_MetadataFallbackWhenNoWorkstation(t *testing.T) {
+	got, err := resolveAssetIDForEpisode(
+		context.Background(),
+		nil,
+		1,
+		sql.NullString{String: `{"asset_id":" snapshot-asset "}`, Valid: true},
+		sql.NullInt64{},
+	)
+	if err != nil {
+		t.Fatalf("resolveAssetIDForEpisode() error = %v", err)
+	}
+	if got != "snapshot-asset" {
+		t.Fatalf("asset_id=%q want snapshot-asset", got)
+	}
+}
+
+func TestResolveAssetIDForEpisode_MetadataFallbackWhenRobotMissing(t *testing.T) {
+	db := newTestAssetResolverDB(t)
+	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (10, 999)`); err != nil {
 		t.Fatalf("seed workstation: %v", err)
 	}
 
