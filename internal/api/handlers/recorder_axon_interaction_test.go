@@ -190,6 +190,37 @@ func TestRecorderConfigRejectsAdditionalBusyStates(t *testing.T) {
 	}
 }
 
+func TestRecorderConfigRejectsUploadingTaskBeforeRPC(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-config-uploading", "uploading")
+
+	hub := services.NewRecorderHub()
+	rpcCalled := make(chan services.RPCRequest, 1)
+	rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+		rpcCalled <- req
+		return services.RPCResponse{Success: true}
+	})
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "idle"}, "state_update")
+
+	router := newRecorderInteractionRouter(handler)
+	w := recorderInteractionPost(t, router, "/recorder/robot-001/config", `{"task_config":{"task_id":"task-config-uploading"}}`)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "task_not_configurable") {
+		t.Fatalf("response body %q does not include task_not_configurable", w.Body.String())
+	}
+	select {
+	case req := <-rpcCalled:
+		t.Fatalf("unexpected config RPC sent for uploading task: %#v", req)
+	default:
+	}
+	assertTaskStateRecoveryStatus(t, db, "task-config-uploading", "uploading")
+}
+
 func TestRecorderConfigTimeoutAndDisconnectedKeepTaskPending(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		db := newTaskStateRecoveryDB(t)
@@ -238,9 +269,10 @@ func TestRecorderBeginSuccessTimeoutAndDisconnectedTaskState(t *testing.T) {
 		seedTaskStateRecoveryTask(t, db, "task-begin-success", "pending")
 
 		hub := services.NewRecorderHub()
-		attachRecorderRPCResponder(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+		rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
 			return services.RPCResponse{Success: true}
 		})
+		rc.UpdateState(services.RecorderState{CurrentState: "ready", TaskID: "task-begin-success"})
 		handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
 		router := newRecorderInteractionRouter(handler)
 
@@ -259,7 +291,8 @@ func TestRecorderBeginSuccessTimeoutAndDisconnectedTaskState(t *testing.T) {
 		seedTaskStateRecoveryTask(t, db, "task-begin-timeout", "pending")
 
 		hub := services.NewRecorderHub()
-		_, requests := attachRecorderRPCObserverWithConn(t, hub, "robot-001")
+		rc, requests := attachRecorderRPCObserverWithConn(t, hub, "robot-001")
+		rc.UpdateState(services.RecorderState{CurrentState: "ready", TaskID: "task-begin-timeout"})
 		handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
 		router := newRecorderInteractionRouter(handler)
 
@@ -290,38 +323,87 @@ func TestRecorderBeginSuccessTimeoutAndDisconnectedTaskState(t *testing.T) {
 	})
 }
 
-func TestRecorderBeginSuccessAdvancesReadyAndLeavesInProgress(t *testing.T) {
-	for _, tt := range []struct {
-		name       string
-		initial    string
-		wantStatus string
-	}{
-		{name: "ready advances to in_progress", initial: "ready", wantStatus: "in_progress"},
-		{name: "in_progress stays in_progress", initial: "in_progress", wantStatus: "in_progress"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			db := newTaskStateRecoveryDB(t)
-			defer db.Close()
-			seedTaskStateRecoveryTask(t, db, "task-begin-idempotent", tt.initial)
+func TestRecorderBeginRejectsUploadingTaskBeforeRPC(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-begin-uploading", "uploading")
 
-			hub := services.NewRecorderHub()
-			attachRecorderRPCResponder(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
-				return services.RPCResponse{Success: true}
-			})
-			handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
-			router := newRecorderInteractionRouter(handler)
+	hub := services.NewRecorderHub()
+	rpcCalled := make(chan services.RPCRequest, 1)
+	rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+		rpcCalled <- req
+		return services.RPCResponse{Success: true}
+	})
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	_ = handler.applyRecorderStateSnapshot(rc, services.RecorderState{CurrentState: "ready", TaskID: "task-begin-uploading"}, "state_update")
 
-			w := recorderInteractionPost(t, router, "/recorder/robot-001/begin", `{"task_id":"task-begin-idempotent"}`)
+	router := newRecorderInteractionRouter(handler)
+	w := recorderInteractionPost(t, router, "/recorder/robot-001/begin", `{"task_id":"task-begin-uploading"}`)
 
-			if w.Code != http.StatusOK {
-				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
-			}
-			assertTaskStateRecoveryStatus(t, db, "task-begin-idempotent", tt.wantStatus)
-			if tt.initial == "ready" {
-				assertTaskStateRecoveryTimestampSet(t, db, "task-begin-idempotent", "started_at")
-			}
-		})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), "task_not_beginable") {
+		t.Fatalf("response body %q does not include task_not_beginable", w.Body.String())
+	}
+	select {
+	case req := <-rpcCalled:
+		t.Fatalf("unexpected begin RPC sent for uploading task: %#v", req)
+	default:
+	}
+	assertTaskStateRecoveryStatus(t, db, "task-begin-uploading", "uploading")
+}
+
+func TestRecorderBeginSuccessAdvancesReadyAndLeavesInProgress(t *testing.T) {
+	t.Run("ready advances to in_progress", func(t *testing.T) {
+		db := newTaskStateRecoveryDB(t)
+		defer db.Close()
+		seedTaskStateRecoveryTask(t, db, "task-begin-idempotent", "ready")
+
+		hub := services.NewRecorderHub()
+		rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+			return services.RPCResponse{Success: true}
+		})
+		rc.UpdateState(services.RecorderState{CurrentState: "ready", TaskID: "task-begin-idempotent"})
+		handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+		router := newRecorderInteractionRouter(handler)
+
+		w := recorderInteractionPost(t, router, "/recorder/robot-001/begin", `{"task_id":"task-begin-idempotent"}`)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		assertTaskStateRecoveryStatus(t, db, "task-begin-idempotent", "in_progress")
+		assertTaskStateRecoveryTimestampSet(t, db, "task-begin-idempotent", "started_at")
+	})
+
+	t.Run("in_progress is rejected before rpc", func(t *testing.T) {
+		db := newTaskStateRecoveryDB(t)
+		defer db.Close()
+		seedTaskStateRecoveryTask(t, db, "task-begin-idempotent", "in_progress")
+
+		hub := services.NewRecorderHub()
+		rpcCalled := make(chan services.RPCRequest, 1)
+		rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+			rpcCalled <- req
+			return services.RPCResponse{Success: true}
+		})
+		rc.UpdateState(services.RecorderState{CurrentState: "ready", TaskID: "task-begin-idempotent"})
+		handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+		router := newRecorderInteractionRouter(handler)
+
+		w := recorderInteractionPost(t, router, "/recorder/robot-001/begin", `{"task_id":"task-begin-idempotent"}`)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
+		}
+		select {
+		case req := <-rpcCalled:
+			t.Fatalf("unexpected begin RPC sent for in_progress task: %#v", req)
+		default:
+		}
+		assertTaskStateRecoveryStatus(t, db, "task-begin-idempotent", "in_progress")
+	})
 }
 
 func TestRecorderForwardOnlyActionsDoNotMutateTaskState(t *testing.T) {
@@ -1240,6 +1322,10 @@ func TestRecorderWebSocketRPCActionProtocol(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.wantAction == "begin" {
+				axon.sendStateUpdate(t, "ready", "task-protocol")
+				waitForRecorderCachedState(t, hub, "robot-001", true, "ready", "task-protocol")
+			}
 			resultC := recorderInteractionRequestAsync(router, tc.method, tc.path, tc.body)
 			req := axon.receiveRPC(t, tc.wantAction)
 			if tc.check != nil {

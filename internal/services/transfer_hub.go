@@ -37,14 +37,36 @@ type DeviceEvent struct {
 type DeviceStatus struct {
 	Version           string    `json:"version"`
 	PendingCount      int       `json:"pending_count"`
+	ActiveCount       int       `json:"active_count"`
 	UploadingCount    int       `json:"uploading_count"`
+	RetryWaitCount    int       `json:"retry_wait_count"`
 	WaitingACKCount   int       `json:"waiting_ack_count"`
 	WaitingACKTaskIDs []string  `json:"waiting_ack_task_ids"`
 	CompletedCount    int       `json:"completed_count"`
 	FailedCount       int       `json:"failed_count"`
 	PendingBytes      int64     `json:"pending_bytes"`
 	BytesPerSec       int64     `json:"bytes_per_sec"`
+	Uploads           []Upload  `json:"uploads"`
 	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// Upload is one axon_transfer upload_state record reported in a status snapshot.
+type Upload struct {
+	TaskID          string `json:"task_id"`
+	Status          string `json:"status"`
+	S3Key           string `json:"s3_key"`
+	ObjectKey       string `json:"object_key"`
+	FileSizeBytes   int64  `json:"file_size_bytes"`
+	ChecksumSHA256  string `json:"checksum_sha256"`
+	BytesUploaded   int64  `json:"bytes_uploaded"`
+	UploadMode      string `json:"upload_mode"`
+	RetryCount      int    `json:"retry_count"`
+	NextRetryAt     string `json:"next_retry_at"`
+	LastError       string `json:"last_error"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+	CompletedAt     string `json:"completed_at"`
+	DeleteLastError string `json:"delete_last_error"`
 }
 
 // ringBuffer is a fixed-size circular buffer for DeviceEvent
