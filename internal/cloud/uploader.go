@@ -37,9 +37,10 @@ type UploaderConfig struct {
 	MaxRestartCount uint32
 }
 
-// UploadRequest describes an episode upload from MinIO to cloud.
+// UploadProgressFunc is called after bytes are uploaded successfully.
 type UploadProgressFunc func(uploadedBytes int64, totalBytes int64)
 
+// UploadRequest describes an episode upload from MinIO to cloud.
 type UploadRequest struct {
 	// EpisodeID is the unique episode identifier used as client hint.
 	EpisodeID string
