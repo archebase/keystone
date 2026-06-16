@@ -56,6 +56,13 @@ type syncEpisodeUploadRow struct {
 	OrganizationID sql.NullInt64  `db:"organization_id"`
 }
 
+// SyncProgressSnapshot is the latest in-memory progress for an active episode sync.
+type SyncProgressSnapshot struct {
+	UploadedBytes int64
+	TotalBytes    int64
+	UpdatedAt     time.Time
+}
+
 // SyncWorker is a background goroutine that processes queued cloud sync work
 // and optionally discovers approved episodes for automatic cloud upload.
 type SyncWorker struct {
@@ -69,6 +76,9 @@ type SyncWorker struct {
 	mu              sync.Mutex
 	enqueuedEpisode map[int64]struct{}
 	stopDone        chan struct{}
+
+	progressMu        sync.RWMutex
+	progressByEpisode map[int64]SyncProgressSnapshot
 
 	running  atomic.Bool
 	stopping atomic.Bool
@@ -105,15 +115,58 @@ var (
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
 func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, minioClient *s3.Client, minioBucket string, cfg SyncWorkerConfig, syncCfg *config.SyncConfig) *SyncWorker {
 	return &SyncWorker{
-		db:              db,
-		uploader:        uploader,
-		minioClient:     minioClient,
-		minioBucket:     minioBucket,
-		cfg:             cfg,
-		syncCfg:         syncCfg,
-		enqueueCh:       make(chan syncEnqueueRequest, 100),
-		enqueuedEpisode: make(map[int64]struct{}),
+		db:                db,
+		uploader:          uploader,
+		minioClient:       minioClient,
+		minioBucket:       minioBucket,
+		cfg:               cfg,
+		syncCfg:           syncCfg,
+		enqueueCh:         make(chan syncEnqueueRequest, 100),
+		enqueuedEpisode:   make(map[int64]struct{}),
+		progressByEpisode: make(map[int64]SyncProgressSnapshot),
 	}
+}
+
+func (w *SyncWorker) setEpisodeProgress(episodeID int64, uploadedBytes int64, totalBytes int64) {
+	if w == nil {
+		return
+	}
+	if uploadedBytes < 0 {
+		uploadedBytes = 0
+	}
+	if totalBytes < 0 {
+		totalBytes = 0
+	}
+	w.progressMu.Lock()
+	defer w.progressMu.Unlock()
+	if w.progressByEpisode == nil {
+		w.progressByEpisode = make(map[int64]SyncProgressSnapshot)
+	}
+	w.progressByEpisode[episodeID] = SyncProgressSnapshot{
+		UploadedBytes: uploadedBytes,
+		TotalBytes:    totalBytes,
+		UpdatedAt:     time.Now().UTC(),
+	}
+}
+
+func (w *SyncWorker) finishEpisodeProgress(episodeID int64) {
+	if w == nil {
+		return
+	}
+	w.progressMu.Lock()
+	defer w.progressMu.Unlock()
+	delete(w.progressByEpisode, episodeID)
+}
+
+// GetEpisodeProgress returns the current in-memory upload progress for an episode.
+func (w *SyncWorker) GetEpisodeProgress(episodeID int64) (SyncProgressSnapshot, bool) {
+	if w == nil {
+		return SyncProgressSnapshot{}, false
+	}
+	w.progressMu.RLock()
+	defer w.progressMu.RUnlock()
+	progress, ok := w.progressByEpisode[episodeID]
+	return progress, ok
 }
 
 // Start begins the background sync worker loop.
@@ -891,12 +944,14 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 	if err != nil {
 		duration := int64(time.Since(startTime).Seconds())
 		w.markSyncFailed(ctx, syncLogID, episodeID, duration, err, attemptCount)
+		w.finishEpisodeProgress(episodeID)
 		return
 	}
 
 	// Success: update episode and sync_log
 	duration := int64(time.Since(startTime).Seconds())
 	w.markSyncCompleted(ctx, syncLogID, episodeID, result, duration)
+	w.finishEpisodeProgress(episodeID)
 }
 
 func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUploadRow) (*cloud.UploadResult, error) {
@@ -951,6 +1006,9 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 		McapKey:   mcapKey,
 		AssetID:   assetID,
 		RawTags:   rawTags,
+		Progress: func(uploadedBytes int64, totalBytes int64) {
+			w.setEpisodeProgress(ep.ID, uploadedBytes, totalBytes)
+		},
 	})
 }
 

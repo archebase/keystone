@@ -214,6 +214,88 @@ func TestGetSyncStatusReturnsNotFoundWhenEpisodeDoesNotExist(t *testing.T) {
 	}
 }
 
+func TestListSyncStatusesReturnsItemsInRequestOrderAndErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupSyncHandlerTestDB(t)
+
+	syncedAt := time.Date(2026, 5, 9, 11, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, episode_id, cloud_synced, cloud_processed, cloud_synced_at, deleted_at)
+		VALUES
+			(1, 'episode-a', FALSE, FALSE, NULL, NULL),
+			(2, 'episode-b', TRUE, FALSE, ?, NULL)
+	`, syncedAt); err != nil {
+		t.Fatalf("insert episodes: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (id, episode_id, status, attempt_count, started_at, completed_at, bytes_transferred)
+		VALUES
+			(10, 1, 'pending', 0, ?, NULL, NULL),
+			(11, 2, 'completed', 1, ?, ?, 4096)
+	`, syncedAt.Add(-time.Hour), syncedAt.Add(-2*time.Hour), syncedAt); err != nil {
+		t.Fatalf("insert sync logs: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewSyncHandler(db, nil)
+	handler.RegisterRoutes(router.Group("/api/v1"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sync/episode-statuses?ids=2,999,1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got EpisodeSyncStatusListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("items len = %d, want 2", len(got.Items))
+	}
+	if got.Items[0].EpisodeID != 2 || got.Items[0].Status != "completed" {
+		t.Fatalf("first item = %+v, want episode 2 completed", got.Items[0])
+	}
+	if !got.Items[0].CloudSynced || got.Items[0].CloudSyncedAt == nil {
+		t.Fatalf("first item cloud fields = synced %t at %v, want synced with timestamp", got.Items[0].CloudSynced, got.Items[0].CloudSyncedAt)
+	}
+	if got.Items[1].EpisodeID != 1 || got.Items[1].Status != "pending" {
+		t.Fatalf("second item = %+v, want episode 1 pending", got.Items[1])
+	}
+	if len(got.Errors) != 1 || got.Errors[0].EpisodeID != 999 || got.Errors[0].Error != "episode not found" {
+		t.Fatalf("errors = %+v, want missing episode 999", got.Errors)
+	}
+}
+
+func TestListSyncStatusesRejectsInvalidIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupSyncHandlerTestDB(t)
+	router := gin.New()
+	handler := NewSyncHandler(db, nil)
+	handler.RegisterRoutes(router.Group("/api/v1"))
+
+	tests := []string{
+		"/api/v1/sync/episode-statuses",
+		"/api/v1/sync/episode-statuses?ids=",
+		"/api/v1/sync/episode-statuses?ids=1,,2",
+		"/api/v1/sync/episode-statuses?ids=0",
+		"/api/v1/sync/episode-statuses?ids=abc",
+	}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func setupSyncHandlerTestDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 
@@ -227,6 +309,9 @@ func setupSyncHandlerTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY,
 			episode_id TEXT,
+			cloud_synced BOOLEAN DEFAULT FALSE,
+			cloud_processed BOOLEAN DEFAULT FALSE,
+			cloud_synced_at TIMESTAMP NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE sync_logs (

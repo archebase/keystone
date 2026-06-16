@@ -5,12 +5,14 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
@@ -36,6 +38,7 @@ func (h *SyncHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/sync/episodes/:id", h.TriggerEpisodeSync)
 	apiV1.GET("/sync/episodes", h.ListSyncJobs)
 	apiV1.GET("/sync/episodes/summary", h.ListEpisodeSyncSummaries)
+	apiV1.GET("/sync/episode-statuses", h.ListSyncStatuses)
 	apiV1.GET("/sync/episodes/:id/logs", h.ListEpisodeSyncLogs)
 	apiV1.GET("/sync/episodes/:id/status", h.GetSyncStatus)
 	apiV1.GET("/sync/config", h.GetSyncConfig)
@@ -176,6 +179,26 @@ type syncEpisodeSummaryRow struct {
 	CompletedAt        sql.NullTime   `db:"completed_at"`
 }
 
+type syncStatusDBRow struct {
+	EpisodeID        int64          `db:"episode_id"`
+	EpisodePublicID  sql.NullString `db:"episode_public_id"`
+	CloudSynced      bool           `db:"cloud_synced"`
+	CloudProcessed   bool           `db:"cloud_processed"`
+	CloudSyncedAt    sql.NullTime   `db:"cloud_synced_at"`
+	SyncLogID        sql.NullInt64  `db:"sync_log_id"`
+	SourceFactoryID  sql.NullString `db:"source_factory_id"`
+	SourcePath       sql.NullString `db:"source_path"`
+	DestinationPath  sql.NullString `db:"destination_path"`
+	Status           sql.NullString `db:"status"`
+	BytesTransferred sql.NullInt64  `db:"bytes_transferred"`
+	DurationSec      sql.NullInt64  `db:"duration_sec"`
+	ErrorMessage     sql.NullString `db:"error_message"`
+	AttemptCount     sql.NullInt64  `db:"attempt_count"`
+	NextRetryAt      sql.NullTime   `db:"next_retry_at"`
+	StartedAt        sql.NullTime   `db:"started_at"`
+	CompletedAt      sql.NullTime   `db:"completed_at"`
+}
+
 // SyncJobResponse represents a sync job in the API response.
 type SyncJobResponse struct {
 	ID               int64   `json:"id"`
@@ -191,6 +214,35 @@ type SyncJobResponse struct {
 	NextRetryAt      *string `json:"next_retry_at,omitempty"`
 	StartedAt        *string `json:"started_at,omitempty"`
 	CompletedAt      *string `json:"completed_at,omitempty"`
+}
+
+// SyncProgressResponse represents runtime-only upload progress for an in-progress sync.
+type SyncProgressResponse struct {
+	UploadedBytes int64  `json:"uploaded_bytes"`
+	TotalBytes    int64  `json:"total_bytes"`
+	Percent       int    `json:"percent"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+// EpisodeSyncStatusResponse represents one episode's latest sync status plus runtime progress.
+type EpisodeSyncStatusResponse struct {
+	SyncJobResponse
+	CloudSynced    bool                  `json:"cloud_synced"`
+	CloudSyncedAt  *string               `json:"cloud_synced_at,omitempty"`
+	CloudProcessed bool                  `json:"cloud_processed"`
+	Progress       *SyncProgressResponse `json:"progress,omitempty"`
+}
+
+// EpisodeSyncStatusError describes one missing or invalid episode in a batch status request.
+type EpisodeSyncStatusError struct {
+	EpisodeID int64  `json:"episode_id"`
+	Error     string `json:"error"`
+}
+
+// EpisodeSyncStatusListResponse represents batched episode sync status results.
+type EpisodeSyncStatusListResponse struct {
+	Items  []EpisodeSyncStatusResponse `json:"items"`
+	Errors []EpisodeSyncStatusError    `json:"errors,omitempty"`
 }
 
 // SyncEpisodeSummaryResponse represents an episode-centered sync summary.
@@ -629,6 +681,44 @@ func (h *SyncHandler) ListEpisodeSyncLogs(c *gin.Context) {
 	})
 }
 
+// ListSyncStatuses returns sync statuses for multiple episodes.
+//
+// @Summary      List episode sync statuses
+// @Description  Returns latest sync status for multiple episode numeric IDs, including runtime progress when available
+// @Tags         sync
+// @Produce      json
+// @Param        ids  query     string  true  "Comma-separated episode numeric IDs (max 50)"
+// @Success      200  {object}  EpisodeSyncStatusListResponse
+// @Failure      400  {object}  map[string]string
+// @Router       /sync/episode-statuses [get]
+func (h *SyncHandler) ListSyncStatuses(c *gin.Context) {
+	ids, err := parseSyncStatusIDs(c.Query("ids"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	statuses, err := h.loadEpisodeSyncStatuses(c.Request.Context(), ids)
+	if err != nil {
+		logger.Printf("[SYNC] Failed to query batch sync statuses: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get sync statuses"})
+		return
+	}
+
+	items := make([]EpisodeSyncStatusResponse, 0, len(ids))
+	errs := make([]EpisodeSyncStatusError, 0)
+	for _, id := range ids {
+		status, ok := statuses[id]
+		if !ok {
+			errs = append(errs, EpisodeSyncStatusError{EpisodeID: id, Error: "episode not found"})
+			continue
+		}
+		items = append(items, status)
+	}
+
+	c.JSON(http.StatusOK, EpisodeSyncStatusListResponse{Items: items, Errors: errs})
+}
+
 // GetSyncStatus returns the sync status for a specific episode.
 //
 // @Summary      Get episode sync status
@@ -636,7 +726,7 @@ func (h *SyncHandler) ListEpisodeSyncLogs(c *gin.Context) {
 // @Tags         sync
 // @Produce      json
 // @Param        id   path      int  true  "Episode ID"
-// @Success      200  {object}  SyncJobResponse
+// @Success      200  {object}  EpisodeSyncStatusResponse
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string  "Episode not found"
 // @Router       /sync/episodes/{id}/status [get]
@@ -648,31 +738,71 @@ func (h *SyncHandler) GetSyncStatus(c *gin.Context) {
 		return
 	}
 
-	var episode struct {
-		ID       int64          `db:"id"`
-		PublicID sql.NullString `db:"episode_id"`
-	}
-	err = h.db.Get(&episode, `
-		SELECT id, episode_id
-		FROM episodes
-		WHERE id = ? AND deleted_at IS NULL
-	`, episodeID)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
-		return
-	}
+	statuses, err := h.loadEpisodeSyncStatuses(c.Request.Context(), []int64{episodeID})
 	if err != nil {
 		logger.Printf("[SYNC] Failed to query episode %d for sync status: %v", episodeID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get sync status"})
 		return
 	}
+	status, ok := statuses[episodeID]
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		return
+	}
 
-	var row syncLogRow
-	err = h.db.Get(&row, `
+	c.JSON(http.StatusOK, status)
+}
+
+const maxBatchSyncStatusIDs = 50
+
+func parseSyncStatusIDs(raw string) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("ids is required")
+	}
+	parts := strings.Split(raw, ",")
+	ids := make([]int64, 0, len(parts))
+	seen := make(map[int64]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("ids must be comma-separated positive integers")
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("ids must be comma-separated positive integers")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("ids is required")
+	}
+	if len(ids) > maxBatchSyncStatusIDs {
+		return nil, fmt.Errorf("ids must contain at most %d values", maxBatchSyncStatusIDs)
+	}
+	return ids, nil
+}
+
+func (h *SyncHandler) loadEpisodeSyncStatuses(ctx context.Context, episodeIDs []int64) (map[int64]EpisodeSyncStatusResponse, error) {
+	out := make(map[int64]EpisodeSyncStatusResponse, len(episodeIDs))
+	if len(episodeIDs) == 0 {
+		return out, nil
+	}
+
+	placeholders, args := int64Placeholders(episodeIDs)
+	queryArgs := append(append([]interface{}{}, args...), args...)
+	query := `
 		SELECT
-			sl.id,
-			sl.episode_id,
+			e.id AS episode_id,
 			e.episode_id AS episode_public_id,
+			COALESCE(e.cloud_synced, FALSE) AS cloud_synced,
+			COALESCE(e.cloud_processed, FALSE) AS cloud_processed,
+			e.cloud_synced_at,
+			sl.id AS sync_log_id,
 			sl.source_factory_id,
 			sl.source_path,
 			sl.destination_path,
@@ -684,29 +814,100 @@ func (h *SyncHandler) GetSyncStatus(c *gin.Context) {
 			sl.next_retry_at,
 			sl.started_at,
 			sl.completed_at
-		FROM sync_logs sl
-		LEFT JOIN episodes e ON e.id = sl.episode_id AND e.deleted_at IS NULL
-		WHERE sl.episode_id = ?
-		ORDER BY sl.id DESC
-		LIMIT 1
-	`, episodeID)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusOK, SyncJobResponse{
+		FROM episodes e
+		LEFT JOIN (
+			SELECT sl_latest.*
+			FROM sync_logs sl_latest
+			INNER JOIN (
+				SELECT episode_id, MAX(id) AS latest_id
+				FROM sync_logs
+				WHERE episode_id IN (` + placeholders + `)
+				GROUP BY episode_id
+			) latest ON latest.episode_id = sl_latest.episode_id AND latest.latest_id = sl_latest.id
+		) sl ON sl.episode_id = e.id
+		WHERE e.id IN (` + placeholders + `)
+		  AND e.deleted_at IS NULL
+	`
+
+	var rows []syncStatusDBRow
+	// #nosec G201 -- placeholders are generated for integer IDs and values are parameterized.
+	if err := h.db.SelectContext(ctx, &rows, query, queryArgs...); err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		resp := syncStatusResponseFromRow(row)
+		h.attachSyncProgress(&resp)
+		out[row.EpisodeID] = resp
+	}
+	return out, nil
+}
+
+func syncStatusResponseFromRow(row syncStatusDBRow) EpisodeSyncStatusResponse {
+	resp := EpisodeSyncStatusResponse{
+		SyncJobResponse: SyncJobResponse{
 			ID:              0,
-			EpisodeID:       episode.ID,
-			EpisodePublicID: nullableString(episode.PublicID),
+			EpisodeID:       row.EpisodeID,
+			EpisodePublicID: nullableString(row.EpisodePublicID),
 			Status:          "not_started",
 			AttemptCount:    0,
+		},
+		CloudSynced:    row.CloudSynced,
+		CloudSyncedAt:  nullableTime(row.CloudSyncedAt),
+		CloudProcessed: row.CloudProcessed,
+	}
+	if row.SyncLogID.Valid {
+		attemptCount := 0
+		if row.AttemptCount.Valid {
+			attemptCount = int(row.AttemptCount.Int64)
+		}
+		resp.SyncJobResponse = syncJobResponseFromRow(syncLogRow{
+			ID:               row.SyncLogID.Int64,
+			EpisodeID:        row.EpisodeID,
+			EpisodePublicID:  row.EpisodePublicID,
+			SourceFactoryID:  row.SourceFactoryID,
+			SourcePath:       row.SourcePath,
+			DestinationPath:  row.DestinationPath,
+			Status:           row.Status.String,
+			BytesTransferred: row.BytesTransferred,
+			DurationSec:      row.DurationSec,
+			ErrorMessage:     row.ErrorMessage,
+			AttemptCount:     attemptCount,
+			NextRetryAt:      row.NextRetryAt,
+			StartedAt:        row.StartedAt,
+			CompletedAt:      row.CompletedAt,
 		})
-		return
 	}
-	if err != nil {
-		logger.Printf("[SYNC] Failed to query sync status for episode %d: %v", episodeID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get sync status"})
-		return
-	}
+	return resp
+}
 
-	c.JSON(http.StatusOK, syncJobResponseFromRow(row))
+func (h *SyncHandler) attachSyncProgress(resp *EpisodeSyncStatusResponse) {
+	if h == nil || h.syncWorker == nil || resp == nil || resp.Status != "in_progress" {
+		return
+	}
+	progress, ok := h.syncWorker.GetEpisodeProgress(resp.EpisodeID)
+	if !ok || progress.TotalBytes <= 0 {
+		return
+	}
+	uploaded := progress.UploadedBytes
+	if uploaded < 0 {
+		uploaded = 0
+	}
+	if uploaded > progress.TotalBytes {
+		uploaded = progress.TotalBytes
+	}
+	percent := int(float64(uploaded) * 100 / float64(progress.TotalBytes))
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 99 {
+		percent = 99
+	}
+	resp.Progress = &SyncProgressResponse{
+		UploadedBytes: uploaded,
+		TotalBytes:    progress.TotalBytes,
+		Percent:       percent,
+		UpdatedAt:     progress.UpdatedAt.UTC().Format(time.RFC3339),
+	}
 }
 
 // GetSyncConfig returns the current sync configuration (sanitized).

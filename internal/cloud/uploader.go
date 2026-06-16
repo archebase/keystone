@@ -38,6 +38,8 @@ type UploaderConfig struct {
 }
 
 // UploadRequest describes an episode upload from MinIO to cloud.
+type UploadProgressFunc func(uploadedBytes int64, totalBytes int64)
+
 type UploadRequest struct {
 	// EpisodeID is the unique episode identifier used as client hint.
 	EpisodeID string
@@ -49,6 +51,8 @@ type UploadRequest struct {
 	RawTags map[string]string
 	// ClientHints are passed to CreateLogicalUpload for server-side routing.
 	ClientHints map[string]string
+	// Progress is called after each OSS multipart part is uploaded successfully.
+	Progress UploadProgressFunc
 }
 
 // UploadResult describes the outcome of a successful cloud upload.
@@ -603,7 +607,7 @@ func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *
 	// connection is not left idle during OSS part uploads. A single streaming
 	// response would risk idle connection timeout (~20-25s on MinIO or network
 	// intermediaries) when upload speed is slow.
-	session, parts, partMD5s, err := u.streamMultipartParts(ctx, req.EpisodeID, session, multipartUploadID, fileSize, fixedPartSizeBytes, u.minioRangeReader(req.McapKey))
+	session, parts, partMD5s, err := u.streamMultipartParts(ctx, req.EpisodeID, session, multipartUploadID, fileSize, fixedPartSizeBytes, u.minioRangeReader(req.McapKey), req.Progress)
 	if err != nil {
 		u.abortMultipartUpload(session, multipartUploadID)
 		return nil, "", nil, nil, err
@@ -625,12 +629,17 @@ func (u *Uploader) uploadParts(ctx context.Context, req UploadRequest, session *
 	return session, multipartUploadID, parts, partMD5s, nil
 }
 
-func (u *Uploader) streamMultipartParts(ctx context.Context, episodeID string, session *UploadSession, multipartUploadID string, fileSize int64, partSizeBytes int64, newPartStream partStreamFactory) (*UploadSession, []UploadedPart, [][16]byte, error) {
+func (u *Uploader) streamMultipartParts(ctx context.Context, episodeID string, session *UploadSession, multipartUploadID string, fileSize int64, partSizeBytes int64, newPartStream partStreamFactory, progressFns ...UploadProgressFunc) (*UploadSession, []UploadedPart, [][16]byte, error) {
 	partSizeBytes = normalizedPartSizeBytes(partSizeBytes)
 	session.PartSizeBytes = partSizeBytes
 	partSize := int(partSizeBytes)
 	if int64(partSize) != partSizeBytes {
 		return session, nil, nil, fmt.Errorf("invalid part_size_bytes %d", partSizeBytes)
+	}
+
+	var progress UploadProgressFunc
+	if len(progressFns) > 0 {
+		progress = progressFns[0]
 	}
 
 	buf := make([]byte, partSize)
@@ -697,6 +706,9 @@ func (u *Uploader) streamMultipartParts(ctx context.Context, episodeID string, s
 
 		offset += int64(n)
 		partNumber++
+		if progress != nil {
+			progress(offset, fileSize)
+		}
 
 		logger.Printf("[CLOUD-UPLOAD] Progress: episode=%s parts=%d offset=%d/%d",
 			episodeID, len(parts), offset, fileSize)
