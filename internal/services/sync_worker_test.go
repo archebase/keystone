@@ -109,6 +109,40 @@ func TestEnqueueEpisode_AllowsReenqueueAfterProcessing(t *testing.T) {
 	}
 }
 
+func TestSyncWorkerEpisodeProgressSetGetAndFinish(t *testing.T) {
+	w := NewSyncWorker(nil, nil, nil, "", SyncWorkerConfig{}, nil)
+
+	if _, ok := w.GetEpisodeProgress(42); ok {
+		t.Fatal("GetEpisodeProgress before set ok = true, want false")
+	}
+
+	w.setEpisodeProgress(42, 12, 100)
+	progress, ok := w.GetEpisodeProgress(42)
+	if !ok {
+		t.Fatal("GetEpisodeProgress after set ok = false, want true")
+	}
+	if progress.UploadedBytes != 12 || progress.TotalBytes != 100 {
+		t.Fatalf("progress = %+v, want uploaded=12 total=100", progress)
+	}
+	if progress.UpdatedAt.IsZero() {
+		t.Fatal("progress UpdatedAt is zero")
+	}
+
+	w.setEpisodeProgress(42, 150, 200)
+	progress, ok = w.GetEpisodeProgress(42)
+	if !ok {
+		t.Fatal("GetEpisodeProgress after overwrite ok = false, want true")
+	}
+	if progress.UploadedBytes != 150 || progress.TotalBytes != 200 {
+		t.Fatalf("overwritten progress = %+v, want uploaded=150 total=200", progress)
+	}
+
+	w.finishEpisodeProgress(42)
+	if _, ok := w.GetEpisodeProgress(42); ok {
+		t.Fatal("GetEpisodeProgress after finish ok = true, want false")
+	}
+}
+
 func TestFindPendingEpisodes_ExcludesExhaustedFailuresFromPollingOnly(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{db: db, cfg: SyncWorkerConfig{BatchSize: 10, MaxRetries: 3}}

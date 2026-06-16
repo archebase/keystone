@@ -1,0 +1,868 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>单个 Episode 云同步进度设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #15211c;
+      --muted: #5e6f67;
+      --line: #d7e0da;
+      --paper: #fbfdfb;
+      --surface: #ffffff;
+      --surface-strong: #eef6f1;
+      --surface-warm: #fffaf1;
+      --accent: #126e5d;
+      --accent-strong: #084c42;
+      --blue: #235f8d;
+      --amber: #9a6416;
+      --danger: #a33b32;
+      --code-bg: #13221e;
+      --code-ink: #edf7f2;
+      --shadow: 0 18px 48px rgba(25, 43, 35, 0.09);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(18, 110, 93, 0.13), transparent 34%),
+        linear-gradient(180deg, #f4faf7 0%, var(--paper) 46%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 44px 24px 88px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 28px;
+      align-items: end;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 50px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 820px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .meta-panel {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface-strong);
+    }
+
+    .meta-panel p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .meta-panel strong {
+      display: block;
+      color: var(--ink);
+      font-size: 22px;
+      line-height: 1.2;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 22px 0 0;
+    }
+
+    nav a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 6px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--accent-strong);
+      background: rgba(255, 255, 255, 0.82);
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    section {
+      margin-top: 34px;
+      padding: 30px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: var(--shadow);
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 26px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    code {
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: #edf4f1;
+      color: var(--accent-strong);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 16px 0 0;
+      padding: 18px;
+      border-radius: 14px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      line-height: 1.55;
+    }
+
+    pre code {
+      padding: 0;
+      color: inherit;
+      background: transparent;
+      font-size: 13px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--accent-strong);
+      background: var(--surface-strong);
+      font-size: 14px;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .decision {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+
+    .decision b {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent-strong);
+    }
+
+    .callout {
+      margin-top: 16px;
+      padding: 16px 18px;
+      border-left: 5px solid var(--accent);
+      border-radius: 12px;
+      background: var(--surface-strong);
+    }
+
+    .warning {
+      border-left-color: var(--amber);
+      background: var(--surface-warm);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .flow-step {
+      min-height: 82px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #f9fcfa;
+    }
+
+    .flow-step span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .progress-demo {
+      width: min(320px, 100%);
+      margin-top: 14px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fbfdfb;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      color: var(--blue);
+      background: #eaf3fb;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .progress-copy {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .bar {
+      overflow: hidden;
+      width: 100%;
+      height: 5px;
+      margin-top: 10px;
+      border-radius: 999px;
+      background: #dfe8e3;
+    }
+
+    .bar-fill {
+      width: 37%;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin-top: 16px;
+    }
+
+    .checklist {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px 18px;
+      margin-top: 16px;
+      padding-left: 0;
+      list-style: none;
+    }
+
+    .checklist li {
+      margin: 0;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fbfdfb;
+    }
+
+    footer {
+      margin-top: 34px;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      header,
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      .grid,
+      .flow,
+      .checklist {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        padding: 28px 16px 64px;
+      }
+
+      section,
+      header {
+        padding: 22px;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Cloud Sync Runtime Progress</p>
+        <h1>单个 Episode 云同步进度设计</h1>
+        <p class="lead">
+          本文档定义 Synapse 在单个 episode 云同步时如何显示真实上传进度，以及 Keystone 如何在不落库的前提下提供运行时百分比。
+        </p>
+        <nav aria-label="目录">
+          <a href="#scope">范围</a>
+          <a href="#semantics">语义</a>
+          <a href="#backend">后端</a>
+          <a href="#api">API</a>
+          <a href="#frontend">前端</a>
+          <a href="#risks">风险</a>
+          <a href="#tests">测试</a>
+        </nav>
+      </div>
+      <aside class="meta-panel">
+        <p><strong>核心决策</strong></p>
+        <p>仅在 <code>in_progress</code> 展示百分比。</p>
+        <p>进度保存在 Keystone 内存，不写入 <code>sync_logs</code>。</p>
+        <p>前端当前页批量轮询，不使用 SSE。</p>
+      </aside>
+    </header>
+
+    <section id="scope">
+      <h2>1. 背景与范围</h2>
+      <p>
+        Synapse 数据明细页已经支持对单个 episode 触发云同步。当前交互只会在提交成功后刷新列表，用户能看到
+        <code>pending</code>、<code>in_progress</code>、<code>completed</code>、<code>failed</code> 等状态，
+        但看不到正在上传时的百分比进度。
+      </p>
+      <div class="flow">
+        <div class="flow-step"><b>Synapse</b><span>DataDetails 单条同步</span></div>
+        <div class="flow-step"><b>Keystone</b><span>SyncWorker 调度</span></div>
+        <div class="flow-step"><b>MinIO</b><span>读取 episode MCAP</span></div>
+        <div class="flow-step"><b>OSS</b><span>multipart upload</span></div>
+        <div class="flow-step"><b>Gateway</b><span>CompleteUpload 确认</span></div>
+      </div>
+      <div class="grid">
+        <div class="decision">
+          <b>目标</b>
+          <p>在单个 episode 进入 <code>in_progress</code> 后，行内显示真实上传百分比和字节数。</p>
+        </div>
+        <div class="decision">
+          <b>数据来源</b>
+          <p>进度来自 OSS 分片上传成功后的 <code>uploaded_bytes / total_bytes</code>。</p>
+        </div>
+        <div class="decision">
+          <b>状态边界</b>
+          <p>不把云端后处理、索引或 <code>cloud_processed</code> 算入本进度。</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. 非目标</h2>
+      <ul>
+        <li>不新增数据库字段，不写入中间进度到 <code>sync_logs</code>。</li>
+        <li>不实现 SSE 或 WebSocket 推送。</li>
+        <li>不展示 bulk sync 整体进度。</li>
+        <li>不在同步历史抽屉中显示运行时百分比。</li>
+        <li>不处理服务重启后遗留的 stale <code>in_progress</code> 修复。</li>
+        <li>不改变录制完成后的 Axon Transfer 上传链路。</li>
+      </ul>
+    </section>
+
+    <section id="semantics">
+      <h2>3. 进度语义</h2>
+      <p>进度只在 <code>status = in_progress</code> 时展示。其他状态只显示状态和现有提示。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>状态</th>
+            <th>UI 展示</th>
+            <th>进度语义</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>not_started</code></td>
+            <td>未同步</td>
+            <td>无进度</td>
+          </tr>
+          <tr>
+            <td><code>pending</code></td>
+            <td>已入队 / 排队中</td>
+            <td>无进度</td>
+          </tr>
+          <tr>
+            <td><code>in_progress</code> 且有内存进度</td>
+            <td>百分比、已上传/总大小、小进度条</td>
+            <td>OSS 分片上传成功进度</td>
+          </tr>
+          <tr>
+            <td><code>in_progress</code> 但无内存进度</td>
+            <td>同步中</td>
+            <td>进度未知</td>
+          </tr>
+          <tr>
+            <td><code>completed</code></td>
+            <td>已同步</td>
+            <td>不显示百分比，完成态代表 100%</td>
+          </tr>
+          <tr>
+            <td><code>failed</code></td>
+            <td>失败 + 错误摘要</td>
+            <td>不显示失败前百分比</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="two-col">
+        <div>
+          <h3>百分比规则</h3>
+          <ul>
+            <li>后端计算 <code>percent</code>，前端不重复计算。</li>
+            <li><code>percent = floor(uploaded_bytes * 100 / total_bytes)</code>。</li>
+            <li><code>in_progress</code> 状态下 <code>percent</code> 最大为 <code>99</code>。</li>
+            <li>只有 <code>completed</code> 才代表完整 100%。</li>
+            <li><code>total_bytes &lt;= 0</code> 时不返回 <code>progress</code>。</li>
+          </ul>
+        </div>
+        <div>
+          <h3>行内示例</h3>
+          <div class="progress-demo">
+            <span class="pill">同步中</span>
+            <div class="progress-copy">37% · 120.0MB / 320.0MB</div>
+            <div class="bar"><div class="bar-fill"></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="backend">
+      <h2>4. 后端设计</h2>
+      <h3>4.1 Uploader Progress Callback</h3>
+      <p>
+        <code>internal/cloud</code> 保持为通用上传库，不持有 episode 数字 ID，也不依赖 Keystone API 或数据库。
+        <code>cloud.UploadRequest</code> 增加可选 progress callback。
+      </p>
+      <pre><code class="language-go">type UploadProgressFunc func(uploadedBytes int64, totalBytes int64)
+
+type UploadRequest struct {
+    EpisodeID   string
+    McapKey     string
+    AssetID     string
+    RawTags     map[string]string
+    ClientHints map[string]string
+
+    Progress UploadProgressFunc
+}</code></pre>
+      <p>
+        <code>Uploader</code> 在每个 OSS multipart part 上传成功后调用回调。回调不能发生在读取 MinIO range 后，
+        避免把本地读取误认为云端同步成功。
+      </p>
+      <pre><code class="language-go">offset += int64(n)
+if req.Progress != nil {
+    req.Progress(offset, fileSize)
+}</code></pre>
+
+      <h3>4.2 SyncWorker 内存进度</h3>
+      <p><code>SyncWorker</code> 维护进程内 progress map，key 使用数据库 numeric <code>episodes.id</code>。</p>
+      <pre><code class="language-go">type SyncProgressSnapshot struct {
+    UploadedBytes int64
+    TotalBytes    int64
+    UpdatedAt     time.Time
+}
+
+progressMu        sync.RWMutex
+progressByEpisode map[int64]SyncProgressSnapshot</code></pre>
+      <ul>
+        <li><code>setEpisodeProgress</code> 写入或覆盖快照，<code>UpdatedAt = now</code>。</li>
+        <li><code>markSyncCompleted</code> 和 <code>markSyncFailed</code> 后调用 <code>finishEpisodeProgress</code>。</li>
+        <li><code>finishEpisodeProgress</code> 直接删除该 episode 的 progress 快照。</li>
+        <li>API 只在 DB 状态仍是 <code>in_progress</code> 时尝试合并内存 progress。</li>
+      </ul>
+
+      <h3>4.3 SyncWorker 调用 Uploader</h3>
+      <pre><code class="language-go">return uploader.Upload(ctx, cloud.UploadRequest{
+    EpisodeID: ep.EpisodeUUID,
+    McapKey:   mcapKey,
+    AssetID:   assetID,
+    RawTags:   rawTags,
+    Progress: func(uploadedBytes int64, totalBytes int64) {
+        w.setEpisodeProgress(ep.ID, uploadedBytes, totalBytes)
+    },
+})</code></pre>
+      <div class="callout warning">
+        如果 Keystone 重启，内存 progress 会丢失。数据库可能仍有 <code>in_progress</code>，API 此时返回状态但没有
+        <code>progress</code>，前端降级显示“同步中”。
+      </div>
+    </section>
+
+    <section id="api">
+      <h2>5. API 设计</h2>
+      <h3>5.1 单条状态接口扩展</h3>
+      <pre><code class="language-http">GET /api/v1/sync/episodes/:id/status</code></pre>
+      <p>扩展返回 <code>cloud_synced</code>、<code>cloud_synced_at</code>、<code>cloud_processed</code> 和可选 <code>progress</code>。</p>
+      <pre><code class="language-json">{
+  "id": 42,
+  "episode_id": 123,
+  "episode_public_id": "EP-20260615-001",
+  "status": "in_progress",
+  "attempt_count": 1,
+  "started_at": "2026-06-15T10:00:00Z",
+  "completed_at": null,
+  "error_message": null,
+  "cloud_synced": false,
+  "cloud_synced_at": null,
+  "cloud_processed": false,
+  "progress": {
+    "uploaded_bytes": 125829120,
+    "total_bytes": 335544320,
+    "percent": 37,
+    "updated_at": "2026-06-15T10:00:12Z"
+      }
+}</code></pre>
+      <ul>
+        <li><code>id</code> 保持现有含义：latest <code>sync_logs.id</code>。</li>
+        <li>保留现有 <code>episode_id</code> 语义：它是 numeric episode ID。</li>
+        <li><code>episode_public_id</code> 表示业务 episode 字符串 ID。</li>
+        <li><code>progress</code> 只在 <code>status = in_progress</code> 且内存快照有效时返回。</li>
+      </ul>
+
+      <h3>5.2 新增批量状态接口</h3>
+      <pre><code class="language-http">GET /api/v1/sync/episode-statuses?ids=1,2,3</code></pre>
+      <p>
+        该路径不放在 <code>/sync/episodes/status</code>，是为了避开现有
+        <code>/sync/episodes/:id/status</code> 和 <code>/sync/episodes/:id/logs</code> 的动态路由冲突。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>规则</th>
+            <th>行为</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>ids</code> 为空</td>
+            <td>返回 <code>400</code></td>
+          </tr>
+          <tr>
+            <td>非正整数或格式错误</td>
+            <td>返回 <code>400</code></td>
+          </tr>
+          <tr>
+            <td>超过 50 个 ID</td>
+            <td>返回 <code>400</code></td>
+          </tr>
+          <tr>
+            <td>部分 ID 不存在或已删除</td>
+            <td>返回 <code>200</code>，缺失项写入 <code>errors</code></td>
+          </tr>
+          <tr>
+            <td><code>syncWorker == nil</code> 或 worker 未运行</td>
+            <td>返回 DB 状态，不返回运行时 <code>progress</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <pre><code class="language-json">{
+  "items": [
+    {
+      "id": 42,
+      "episode_id": 1,
+      "episode_public_id": "EP-20260615-001",
+      "status": "in_progress",
+      "attempt_count": 1,
+      "cloud_synced": false,
+      "cloud_synced_at": null,
+      "cloud_processed": false,
+      "progress": {
+        "uploaded_bytes": 125829120,
+        "total_bytes": 335544320,
+        "percent": 37,
+        "updated_at": "2026-06-15T10:00:12Z"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "episode_id": 999,
+      "error": "episode not found"
+    }
+  ]
+}</code></pre>
+      <div class="callout">
+        批量接口应使用一次 SQL 查询当前请求 ID 的 episode 云字段和 latest sync log，再按请求 ID 顺序组装响应并合并内存 progress。
+      </div>
+    </section>
+
+    <section id="frontend">
+      <h2>6. 前端设计</h2>
+      <h3>6.1 API Client</h3>
+      <p><code>synapse/src/api/sync.js</code> 增加批量状态方法。</p>
+      <pre><code class="language-js">getStatuses: (ids = []) => api.get('/sync/episode-statuses', { ids: ids.join(',') })</code></pre>
+
+      <h3>6.2 当前页轮询</h3>
+      <p>使用一个全局 interval，不使用每行 timer。只追踪当前页可见的 <code>pending</code> 和 <code>in_progress</code> 行。</p>
+      <pre><code class="language-js">const activeSyncEpisodeIds = ref(new Set())
+const syncProgressFailures = ref(new Map())
+let syncProgressTimer = null</code></pre>
+      <div class="grid">
+        <div class="decision">
+          <b>启动点</b>
+          <p>同步提交成功、<code>loadEpisodes()</code> 成功、页面进入时发现活跃行。</p>
+        </div>
+        <div class="decision">
+          <b>停止点</b>
+          <p>active set 为空、页面卸载、换页筛选、某 ID 连续 3 次失败。</p>
+        </div>
+        <div class="decision">
+          <b>轮询频率</b>
+          <p>每 1000ms 批量请求一次当前页活跃行状态。</p>
+        </div>
+      </div>
+      <div class="callout">
+        同一轮询器不应并发发起多个状态请求。若实现允许请求重叠，必须使用 request sequence 忽略旧响应，避免旧
+        <code>in_progress</code> 覆盖新终态或导致百分比回退。
+      </div>
+
+      <h3>6.3 行内 Patch</h3>
+      <p>返回后只 patch 当前行，不整页刷新。</p>
+      <pre><code class="language-js">item.sync_status = status.status
+item.latest_sync_log = status
+item.sync_progress = status.progress || null
+item.cloud_synced = status.cloud_synced
+item.cloud_synced_at = status.cloud_synced_at
+item.cloud_processed = status.cloud_processed</code></pre>
+
+      <h3>6.4 失败处理</h3>
+      <ul>
+        <li>单次轮询失败只 <code>console.warn</code>。</li>
+        <li>连续 3 次失败后停止该 ID 的轮询。</li>
+        <li>不把 episode 标为同步失败，真正失败只能以后端 <code>sync_logs.status = failed</code> 为准。</li>
+        <li>行内 hint 可显示“进度刷新失败，请手动刷新”。</li>
+      </ul>
+    </section>
+
+    <section id="risks">
+      <h2>7. 关键风险与接受的取舍</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>取舍</th>
+            <th>影响</th>
+            <th>接受原因</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>进度只放 Keystone 内存</td>
+            <td>服务重启后进度丢失，只能显示“同步中”。</td>
+            <td>避免 DB 热写和 schema 变更；状态终态仍由 <code>sync_logs</code> 持久化。</td>
+          </tr>
+          <tr>
+            <td>假设单 Keystone 进程</td>
+            <td>多副本部署下，请求打到非 worker 实例会拿不到 progress。</td>
+            <td>当前方案面向单实例边缘部署；多实例需要 sticky routing 或共享 progress store。</td>
+          </tr>
+          <tr>
+            <td>按 OSS part 成功更新</td>
+            <td>单分片小文件可能从“同步中”直接变成“已同步”，看不到中间百分比。</td>
+            <td>进度语义更准确，不把 MinIO 读取误报为云端上传。</td>
+          </tr>
+          <tr>
+            <td>终态后立即删除 progress</td>
+            <td>失败后不保留失败前百分比。</td>
+            <td>UI 只在 <code>in_progress</code> 展示百分比，终态以 DB 状态和错误为准。</td>
+          </tr>
+          <tr>
+            <td>终态 DB 写入失败不在本方案修复</td>
+            <td>可能遗留 <code>in_progress</code> 且无 progress。</td>
+            <td>属于 stale sync 状态恢复问题，后续单独处理；本方案只做运行时展示。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>8. 数据模型</h2>
+      <p>不新增 migration。继续使用现有持久化字段保存最终状态和历史。</p>
+      <ul class="checklist">
+        <li><code>sync_logs.status</code></li>
+        <li><code>sync_logs.bytes_transferred</code></li>
+        <li><code>sync_logs.duration_sec</code></li>
+        <li><code>sync_logs.error_message</code></li>
+        <li><code>sync_logs.started_at</code></li>
+        <li><code>sync_logs.completed_at</code></li>
+        <li><code>episodes.cloud_synced</code></li>
+        <li><code>episodes.cloud_synced_at</code></li>
+        <li><code>episodes.cloud_processed</code></li>
+      </ul>
+      <div class="callout">
+        完成时 <code>markSyncCompleted</code> 仍把最终 <code>bytes_transferred = result.FileSize</code> 写入
+        <code>sync_logs</code>。中间 <code>uploaded_bytes</code> 不写 DB。
+      </div>
+    </section>
+
+    <section>
+      <h2>9. 错误和降级</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>场景</th>
+            <th>后端行为</th>
+            <th>前端行为</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>worker 未运行</td>
+            <td>查询接口返回 DB 状态，无 progress</td>
+            <td>显示状态，无百分比</td>
+          </tr>
+          <tr>
+            <td>Keystone 重启</td>
+            <td>内存 progress 丢失</td>
+            <td><code>in_progress</code> 显示“同步中”</td>
+          </tr>
+          <tr>
+            <td>上传失败</td>
+            <td><code>sync_logs.status = failed</code></td>
+            <td>显示失败和错误，不显示失败前百分比</td>
+          </tr>
+          <tr>
+            <td>批量状态部分 ID 不存在</td>
+            <td><code>200</code> + <code>errors</code></td>
+            <td>忽略不存在行或记录 warning</td>
+          </tr>
+          <tr>
+            <td>轮询连续失败</td>
+            <td>不影响同步任务</td>
+            <td>停止该 ID 轮询，提示手动刷新</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="tests">
+      <h2>10. 测试计划</h2>
+      <div class="two-col">
+        <div>
+          <h3>后端</h3>
+          <ul>
+            <li><code>internal/cloud</code>：多个 part 成功时 callback 收到正确进度。</li>
+            <li><code>internal/cloud</code>：part 上传失败时不推进失败 part 的进度。</li>
+            <li><code>internal/services</code>：progress map set/get、完成或失败后立即删除。</li>
+            <li><code>internal/api/handlers</code>：单条和批量 status 合并 progress。</li>
+            <li><code>internal/api/handlers</code>：missing ID、非法 ids、超过 50 个 ids。</li>
+          </ul>
+          <pre><code class="language-bash">cd keystone
+go test ./internal/cloud ./internal/services ./internal/api/handlers</code></pre>
+        </div>
+        <div>
+          <h3>前端</h3>
+          <ul>
+            <li><code>syncApi</code> 增加批量 status 方法。</li>
+            <li><code>DataDetails.vue</code> 当前页 active rows 轮询。</li>
+            <li>行内百分比、字节数和小进度条展示。</li>
+            <li>终态只 patch 行，不整页刷新。</li>
+          </ul>
+          <pre><code class="language-bash">cd synapse
+npm run build</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>11. 实施顺序</h2>
+      <ol>
+        <li>后端 <code>cloud.UploadRequest</code> 增加 progress callback，并在 OSS part 成功后触发。</li>
+        <li>后端 <code>SyncWorker</code> 增加内存 progress map 和生命周期方法。</li>
+        <li>后端扩展单条 status response，新增批量 status endpoint。</li>
+        <li>后端补单元测试。</li>
+        <li>前端 <code>syncApi</code> 增加批量状态方法。</li>
+        <li>前端 <code>DataDetails.vue</code> 增加当前页 active rows 轮询和行内 progress patch。</li>
+        <li>前端增加百分比、字节数和小进度条展示。</li>
+        <li>运行后端相关测试和前端 build。</li>
+      </ol>
+    </section>
+
+    <footer>
+      ArcheBase Keystone / Synapse design note · 2026
+    </footer>
+  </main>
+</body>
+</html>

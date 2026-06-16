@@ -692,6 +692,101 @@ func TestStreamMultipartParts_UploadsExpectedPartBoundaries(t *testing.T) {
 	}
 }
 
+func TestStreamMultipartParts_ReportsProgressAfterSuccessfulParts(t *testing.T) {
+	oss := &fakeOSS{
+		uploadPartFn: func(_ context.Context, _ *UploadSession, _ string, _ int, _ []byte) (string, error) {
+			return "etag", nil
+		},
+	}
+	u := newDecideResumeUploader("", &fakeGateway{}, oss)
+	session := makeSession("logical-progress", "upload-progress")
+	session.PartSizeBytes = 4
+
+	payload := []byte("abcdefghijkl")
+	factory := func(_ context.Context, offset, length int64) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(payload[offset : offset+length])), nil
+	}
+
+	var progress []struct {
+		uploaded int64
+		total    int64
+	}
+	_, parts, _, err := u.streamMultipartParts(
+		context.Background(),
+		"episode-progress",
+		session,
+		"multipart-progress",
+		int64(len(payload)),
+		session.PartSizeBytes,
+		factory,
+		func(uploadedBytes int64, totalBytes int64) {
+			progress = append(progress, struct {
+				uploaded int64
+				total    int64
+			}{uploaded: uploadedBytes, total: totalBytes})
+		},
+	)
+	if err != nil {
+		t.Fatalf("streamMultipartParts() error = %v", err)
+	}
+	if len(parts) != 3 {
+		t.Fatalf("uploaded part count = %d, want 3", len(parts))
+	}
+	want := []struct {
+		uploaded int64
+		total    int64
+	}{{4, 12}, {8, 12}, {12, 12}}
+	if len(progress) != len(want) {
+		t.Fatalf("progress count = %d, want %d (%v)", len(progress), len(want), progress)
+	}
+	for i := range want {
+		if progress[i] != want[i] {
+			t.Fatalf("progress[%d] = %+v, want %+v", i, progress[i], want[i])
+		}
+	}
+}
+
+func TestStreamMultipartParts_DoesNotReportFailedPartProgress(t *testing.T) {
+	var uploadPartCalls int
+	oss := &fakeOSS{
+		uploadPartFn: func(_ context.Context, _ *UploadSession, _ string, _ int, _ []byte) (string, error) {
+			uploadPartCalls++
+			if uploadPartCalls == 2 {
+				return "", errors.New("upload failed")
+			}
+			return "etag", nil
+		},
+	}
+	u := newDecideResumeUploader("", &fakeGateway{}, oss)
+	session := makeSession("logical-progress-fail", "upload-progress-fail")
+	session.PartSizeBytes = 4
+
+	payload := []byte("abcdefghijkl")
+	factory := func(_ context.Context, offset, length int64) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(payload[offset : offset+length])), nil
+	}
+
+	var progress []int64
+	_, _, _, err := u.streamMultipartParts(
+		context.Background(),
+		"episode-progress-fail",
+		session,
+		"multipart-progress-fail",
+		int64(len(payload)),
+		session.PartSizeBytes,
+		factory,
+		func(uploadedBytes int64, _ int64) {
+			progress = append(progress, uploadedBytes)
+		},
+	)
+	if err == nil {
+		t.Fatal("expected upload error, got nil")
+	}
+	if len(progress) != 1 || progress[0] != 4 {
+		t.Fatalf("progress = %v, want only first successful part", progress)
+	}
+}
+
 func TestStreamMultipartParts_EarlyEOFStopsInsteadOfUploadingEmptyParts(t *testing.T) {
 	var uploadedPartNumbers []int
 	oss := &fakeOSS{
