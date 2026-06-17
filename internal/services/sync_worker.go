@@ -44,16 +44,23 @@ type syncEnqueueRequest struct {
 }
 
 type syncEpisodeUploadRow struct {
-	ID             int64          `db:"id"`
-	EpisodeUUID    string         `db:"episode_id"`
-	TaskID         int64          `db:"task_id"`
-	McapPath       string         `db:"mcap_path"`
-	SidecarPath    string         `db:"sidecar_path"`
-	CloudSynced    bool           `db:"cloud_synced"`
-	Metadata       sql.NullString `db:"metadata"`
-	WorkstationID  sql.NullInt64  `db:"workstation_id"`
-	FactoryID      sql.NullInt64  `db:"factory_id"`
-	OrganizationID sql.NullInt64  `db:"organization_id"`
+	ID                      int64          `db:"id"`
+	EpisodeUUID             string         `db:"episode_id"`
+	McapPath                string         `db:"mcap_path"`
+	SidecarPath             string         `db:"sidecar_path"`
+	CloudSynced             bool           `db:"cloud_synced"`
+	Metadata                sql.NullString `db:"metadata"`
+	WorkstationID           sql.NullInt64  `db:"workstation_id"`
+	SOPSlug                 sql.NullString `db:"sop_slug"`
+	SOPVersion              sql.NullString `db:"sop_version"`
+	SOPDescription          sql.NullString `db:"sop_description"`
+	Scene                   sql.NullString `db:"scene"`
+	Subscene                sql.NullString `db:"subscene"`
+	RobotType               sql.NullString `db:"robot_type"`
+	DataCollectorOperatorID sql.NullString `db:"data_collector_operator_id"`
+	DataCollectorName       sql.NullString `db:"data_collector_name"`
+	OrderName               sql.NullString `db:"order_name"`
+	BatchID                 sql.NullString `db:"batch_id"`
 }
 
 // SyncProgressSnapshot is the latest in-memory progress for an active episode sync.
@@ -905,18 +912,35 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 	var ep syncEpisodeUploadRow
 	err := w.db.GetContext(ctx, &ep, `
 		SELECT
-			id,
-			episode_id,
-			task_id,
-			mcap_path,
-			sidecar_path,
-			cloud_synced,
-			metadata,
-			workstation_id,
-			factory_id,
-			organization_id
-		FROM episodes
-		WHERE id = ? AND deleted_at IS NULL
+			e.id,
+			e.episode_id,
+			e.mcap_path,
+			e.sidecar_path,
+			e.cloud_synced,
+			e.metadata,
+			e.workstation_id,
+			s.slug AS sop_slug,
+			s.version AS sop_version,
+			s.description AS sop_description,
+			COALESCE(NULLIF(e.scene_name, ''), NULLIF(t.scene_name, ''), NULLIF(sc.name, '')) AS scene,
+			COALESCE(NULLIF(t.subscene_name, ''), NULLIF(ss.name, '')) AS subscene,
+			COALESCE(NULLIF(rt.name, ''), NULLIF(rt.model, ''), NULLIF(ws.robot_name, '')) AS robot_type,
+			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS data_collector_operator_id,
+			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS data_collector_name,
+			o.name AS order_name,
+			b.batch_id AS batch_id
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN sops s ON s.id = COALESCE(e.sop_id, t.sop_id) AND s.deleted_at IS NULL
+		LEFT JOIN scenes sc ON sc.id = COALESCE(e.scene_id, t.scene_id) AND sc.deleted_at IS NULL
+		LEFT JOIN subscenes ss ON ss.id = t.subscene_id AND ss.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
+		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
+		LEFT JOIN orders o ON o.id = COALESCE(e.order_id, t.order_id) AND o.deleted_at IS NULL
+		LEFT JOIN batches b ON b.id = COALESCE(e.batch_id, t.batch_id) AND b.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
 	`, episodeID)
 	if err == sql.ErrNoRows {
 		logger.Printf("[SYNC-WORKER] Episode %d not found, skipping", episodeID)
@@ -982,11 +1006,19 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 		Profile:         dpConfig.Profile,
 		McapKey:         mcapKey,
 		SidecarTags:     sidecarTags,
-		EpisodeID:       ep.ID,
 		EpisodePublicID: ep.EpisodeUUID,
-		TaskID:          ep.TaskID,
-		FactoryID:       ep.FactoryID,
-		OrganizationID:  ep.OrganizationID,
+		Context: dpRawTagContext{
+			SOPSlug:                 ep.SOPSlug,
+			SOPVersion:              ep.SOPVersion,
+			SOPDescription:          ep.SOPDescription,
+			Scene:                   ep.Scene,
+			Subscene:                ep.Subscene,
+			RobotType:               ep.RobotType,
+			DataCollectorOperatorID: ep.DataCollectorOperatorID,
+			DataCollectorName:       ep.DataCollectorName,
+			OrderName:               ep.OrderName,
+			BatchID:                 ep.BatchID,
+		},
 	})
 	if err != nil {
 		return nil, wrapNonRetryableSyncError(err, "build raw tags for episode %d", ep.ID)

@@ -102,6 +102,8 @@ const (
 	resumeOSSAlreadyComplete                       // OSS object already present and verified; skip upload, go straight to CompleteUpload
 )
 
+const uploadProgressLogPartInterval = 10
+
 // gatewayClient is the subset of GatewayClient methods used by Uploader.
 // It is defined as an interface to allow test injection of fake implementations.
 type gatewayClient interface {
@@ -711,8 +713,10 @@ func (u *Uploader) streamMultipartParts(ctx context.Context, episodeID string, s
 			progress(offset, fileSize)
 		}
 
-		logger.Printf("[CLOUD-UPLOAD] Progress: episode=%s parts=%d offset=%d/%d",
-			episodeID, len(parts), offset, fileSize)
+		if len(parts)%uploadProgressLogPartInterval == 0 || offset == fileSize {
+			logger.Printf("[CLOUD-UPLOAD] Progress: episode=%s parts=%d offset=%d/%d",
+				episodeID, len(parts), offset, fileSize)
+		}
 	}
 
 	return session, parts, partMD5s, nil

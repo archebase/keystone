@@ -14,8 +14,8 @@ import (
 // suitable for use as RawTags in an upload request.
 //
 // Nested objects are flattened with dot notation (e.g. "device.device_id").
-// Array values are JSON-encoded into a single string under one key (e.g. task.skills -> ["pick"]).
-// The "topics_summary" key is intentionally excluded.
+// Array values are JSON-encoded into a single string under one key (e.g. recording.topics -> ["topic"]).
+// The "topics_summary" and top-level "task" keys are intentionally excluded.
 func flattenSidecar(data []byte) (map[string]string, error) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -31,7 +31,7 @@ func flattenValue(out map[string]string, prefix string, v interface{}) {
 	switch val := v.(type) {
 	case map[string]interface{}:
 		for k, child := range val {
-			if prefix == "" && k == "topics_summary" {
+			if prefix == "" && (k == "topics_summary" || k == "task") {
 				continue
 			}
 			flattenValue(out, joinKey(prefix, k), child)
