@@ -5,6 +5,7 @@
 package services
 
 import (
+	"database/sql"
 	"fmt"
 	"path"
 	"strings"
@@ -20,6 +21,20 @@ type dpRawTagsInput struct {
 	McapKey         string
 	SidecarTags     map[string]string
 	EpisodePublicID string
+	Context         dpRawTagContext
+}
+
+type dpRawTagContext struct {
+	SOPSlug                 sql.NullString
+	SOPVersion              sql.NullString
+	SOPDescription          sql.NullString
+	Scene                   sql.NullString
+	Subscene                sql.NullString
+	RobotType               sql.NullString
+	DataCollectorOperatorID sql.NullString
+	DataCollectorName       sql.NullString
+	OrderName               sql.NullString
+	BatchID                 sql.NullString
 }
 
 func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
@@ -49,10 +64,32 @@ func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
 }
 
 func keystoneExtraTags(input dpRawTagsInput) map[string]string {
-	return map[string]string{
+	tags := map[string]string{
 		"episode_id":   input.EpisodePublicID,
 		"sync_channel": "keystone_direct",
 	}
+	addNonEmptyTag(tags, "sop_slug", input.Context.SOPSlug)
+	addNonEmptyTag(tags, "sop_version", input.Context.SOPVersion)
+	addNonEmptyTag(tags, "sop_description", input.Context.SOPDescription)
+	addNonEmptyTag(tags, "scene", input.Context.Scene)
+	addNonEmptyTag(tags, "subscene", input.Context.Subscene)
+	addNonEmptyTag(tags, "robot_type", input.Context.RobotType)
+	addNonEmptyTag(tags, "data_collector_operator_id", input.Context.DataCollectorOperatorID)
+	addNonEmptyTag(tags, "data_collector_name", input.Context.DataCollectorName)
+	addNonEmptyTag(tags, "order_name", input.Context.OrderName)
+	addNonEmptyTag(tags, "batch_id", input.Context.BatchID)
+	return tags
+}
+
+func addNonEmptyTag(tags map[string]string, key string, value sql.NullString) {
+	if !value.Valid {
+		return
+	}
+	trimmed := strings.TrimSpace(value.String)
+	if trimmed == "" {
+		return
+	}
+	tags[key] = trimmed
 }
 
 func insertAllNonConflictingTags(dst map[string]string, src map[string]string) error {
