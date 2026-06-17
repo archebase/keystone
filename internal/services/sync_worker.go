@@ -44,16 +44,13 @@ type syncEnqueueRequest struct {
 }
 
 type syncEpisodeUploadRow struct {
-	ID             int64          `db:"id"`
-	EpisodeUUID    string         `db:"episode_id"`
-	TaskID         int64          `db:"task_id"`
-	McapPath       string         `db:"mcap_path"`
-	SidecarPath    string         `db:"sidecar_path"`
-	CloudSynced    bool           `db:"cloud_synced"`
-	Metadata       sql.NullString `db:"metadata"`
-	WorkstationID  sql.NullInt64  `db:"workstation_id"`
-	FactoryID      sql.NullInt64  `db:"factory_id"`
-	OrganizationID sql.NullInt64  `db:"organization_id"`
+	ID            int64          `db:"id"`
+	EpisodeUUID   string         `db:"episode_id"`
+	McapPath      string         `db:"mcap_path"`
+	SidecarPath   string         `db:"sidecar_path"`
+	CloudSynced   bool           `db:"cloud_synced"`
+	Metadata      sql.NullString `db:"metadata"`
+	WorkstationID sql.NullInt64  `db:"workstation_id"`
 }
 
 // SyncProgressSnapshot is the latest in-memory progress for an active episode sync.
@@ -907,14 +904,11 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 		SELECT
 			id,
 			episode_id,
-			task_id,
 			mcap_path,
 			sidecar_path,
 			cloud_synced,
 			metadata,
-			workstation_id,
-			factory_id,
-			organization_id
+			workstation_id
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`, episodeID)
@@ -982,11 +976,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 		Profile:         dpConfig.Profile,
 		McapKey:         mcapKey,
 		SidecarTags:     sidecarTags,
-		EpisodeID:       ep.ID,
 		EpisodePublicID: ep.EpisodeUUID,
-		TaskID:          ep.TaskID,
-		FactoryID:       ep.FactoryID,
-		OrganizationID:  ep.OrganizationID,
 	})
 	if err != nil {
 		return nil, wrapNonRetryableSyncError(err, "build raw tags for episode %d", ep.ID)

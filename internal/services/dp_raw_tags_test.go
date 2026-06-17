@@ -5,7 +5,6 @@
 package services
 
 import (
-	"database/sql"
 	"strings"
 	"testing"
 )
@@ -25,11 +24,7 @@ func TestBuildDPDirectRawTags_MergesInDocumentedOrder(t *testing.T) {
 			"array_field": `["a","b"]`,
 			"empty_value": "",
 		},
-		EpisodeID:       42,
 		EpisodePublicID: "episode-public-42",
-		TaskID:          77,
-		FactoryID:       sql.NullInt64{Int64: 3, Valid: true},
-		OrganizationID:  sql.NullInt64{Int64: 9, Valid: true},
 	})
 	if err != nil {
 		t.Fatalf("buildDPDirectRawTags() error = %v", err)
@@ -43,15 +38,16 @@ func TestBuildDPDirectRawTags_MergesInDocumentedOrder(t *testing.T) {
 		"array_field":            `["a","b"]`,
 		"empty_value":            "",
 		"episode_id":             "episode-public-42",
-		"keystone_episode_id":    "42",
 		"sync_channel":           "keystone_direct",
-		"task_id":                "77",
-		"factory_id":             "3",
-		"organization_id":        "9",
 	}
 	for key, want := range cases {
 		if got[key] != want {
 			t.Fatalf("tag[%q]=%q want %q tags=%+v", key, got[key], want, got)
+		}
+	}
+	for _, key := range []string{"keystone_episode_id", "task_id", "factory_id", "organization_id"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("tag[%q] should not be injected: %+v", key, got)
 		}
 	}
 	if _, ok := got["device_id"]; ok {
@@ -69,7 +65,6 @@ func TestBuildDPDirectRawTags_UsesMcapKeyBasenameNotSidecarMcapFile(t *testing.T
 		SidecarTags: map[string]string{
 			"mcap_file": "sidecar-claimed.mcap",
 		},
-		EpisodeID:       1,
 		EpisodePublicID: "episode-1",
 	})
 	if err != nil {
@@ -96,7 +91,6 @@ func TestBuildDPDirectRawTags_ConflictingTagsFail(t *testing.T) {
 					Tags:     map[string]string{dpReservedDeviceIDTagKey: "other-device"},
 				},
 				McapKey:         "bucket/file.mcap",
-				EpisodeID:       1,
 				EpisodePublicID: "episode-1",
 			},
 		},
@@ -109,7 +103,6 @@ func TestBuildDPDirectRawTags_ConflictingTagsFail(t *testing.T) {
 				},
 				McapKey:         "bucket/file.mcap",
 				SidecarTags:     map[string]string{"scene": "sidecar"},
-				EpisodeID:       1,
 				EpisodePublicID: "episode-1",
 			},
 		},
@@ -122,7 +115,6 @@ func TestBuildDPDirectRawTags_ConflictingTagsFail(t *testing.T) {
 				},
 				McapKey:         "bucket/file.mcap",
 				SidecarTags:     map[string]string{"sync_channel": "other"},
-				EpisodeID:       1,
 				EpisodePublicID: "episode-1",
 			},
 		},
@@ -143,7 +135,6 @@ func TestBuildDPDirectRawTags_RejectsEmptyKeyAndRawFile(t *testing.T) {
 			Tags:     map[string]string{"": "value"},
 		},
 		McapKey:         "bucket/file.mcap",
-		EpisodeID:       1,
 		EpisodePublicID: "episode-1",
 	})
 	if err == nil || !strings.Contains(err.Error(), "key") {
@@ -156,7 +147,6 @@ func TestBuildDPDirectRawTags_RejectsEmptyKeyAndRawFile(t *testing.T) {
 			Tags:     map[string]string{"profile": "tag"},
 		},
 		McapKey:         "bucket/",
-		EpisodeID:       1,
 		EpisodePublicID: "episode-1",
 	})
 	if err == nil || !strings.Contains(err.Error(), "raw_file") {

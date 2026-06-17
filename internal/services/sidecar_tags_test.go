@@ -35,6 +35,7 @@ const testSidecarJSON = `{
     "scene": "卧室",
     "skills": ["pick"],
     "subscene": "床",
+    "task": "collect-bedroom-bed",
     "task_id": "task_20260414_054145_205_27_fdd80b4c"
   },
   "topics_summary": [
@@ -65,11 +66,6 @@ func TestFlattenSidecar_BasicFields(t *testing.T) {
 		"recording.duration_sec":          "121.966222012",
 		"recording.recording_started_at":  "2026-04-14T09:15:05.858Z",
 		"recording.recording_finished_at": "2026-04-14T09:17:07.825Z",
-		"task.data_collector_id":          "刘备",
-		"task.factory":                    "Shanghai Factory",
-		"task.scene":                      "卧室",
-		"task.subscene":                   "床",
-		"task.task_id":                    "task_20260414_054145_205_27_fdd80b4c",
 		"version":                         "1.0",
 	}
 
@@ -83,6 +79,21 @@ func TestFlattenSidecar_BasicFields(t *testing.T) {
 			t.Errorf("tags[%q] = %q, want %q", key, got, want)
 		}
 	}
+
+	for _, key := range []string{
+		"task.data_collector_id",
+		"task.factory",
+		"task.order_id",
+		"task.scene",
+		"task.skills",
+		"task.subscene",
+		"task.task",
+		"task.task_id",
+	} {
+		if _, ok := tags[key]; ok {
+			t.Errorf("task subfield %q should be excluded", key)
+		}
+	}
 }
 
 func TestFlattenSidecar_ArraysEncodedAsJSONString(t *testing.T) {
@@ -93,7 +104,6 @@ func TestFlattenSidecar_ArraysEncodedAsJSONString(t *testing.T) {
 
 	cases := map[string]string{
 		"recording.topics_recorded": `["/hal/camera/head/color/camera_info","/system/info"]`,
-		"task.skills":               `["pick"]`,
 	}
 
 	for key, want := range cases {

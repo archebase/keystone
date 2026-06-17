@@ -5,10 +5,8 @@
 package services
 
 import (
-	"database/sql"
 	"fmt"
 	"path"
-	"strconv"
 	"strings"
 )
 
@@ -21,11 +19,7 @@ type dpRawTagsInput struct {
 	Profile         DPDeviceProfile
 	McapKey         string
 	SidecarTags     map[string]string
-	EpisodeID       int64
 	EpisodePublicID string
-	TaskID          int64
-	FactoryID       sql.NullInt64
-	OrganizationID  sql.NullInt64
 }
 
 func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
@@ -55,21 +49,10 @@ func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
 }
 
 func keystoneExtraTags(input dpRawTagsInput) map[string]string {
-	tags := map[string]string{
-		"episode_id":          input.EpisodePublicID,
-		"keystone_episode_id": strconv.FormatInt(input.EpisodeID, 10),
-		"sync_channel":        "keystone_direct",
+	return map[string]string{
+		"episode_id":   input.EpisodePublicID,
+		"sync_channel": "keystone_direct",
 	}
-	if input.TaskID > 0 {
-		tags["task_id"] = strconv.FormatInt(input.TaskID, 10)
-	}
-	if input.FactoryID.Valid {
-		tags["factory_id"] = strconv.FormatInt(input.FactoryID.Int64, 10)
-	}
-	if input.OrganizationID.Valid {
-		tags["organization_id"] = strconv.FormatInt(input.OrganizationID.Int64, 10)
-	}
-	return tags
 }
 
 func insertAllNonConflictingTags(dst map[string]string, src map[string]string) error {
