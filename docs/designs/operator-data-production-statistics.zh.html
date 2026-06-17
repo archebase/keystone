@@ -1,0 +1,582 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>数采员个人数据产量设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17231f;
+      --muted: #5d6a64;
+      --line: #d8e1dc;
+      --paper: #ffffff;
+      --surface: #f7faf8;
+      --surface-strong: #edf5f1;
+      --accent: #126b5e;
+      --accent-strong: #0b4f47;
+      --warn: #995515;
+      --danger: #a1322b;
+      --ok: #19714f;
+      --code-bg: #13211d;
+      --code-ink: #edf7f2;
+      --shadow: 0 18px 46px rgba(21, 42, 34, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 6%, rgba(18, 107, 94, 0.14), transparent 32rem),
+        linear-gradient(180deg, #f8fbf9 0%, #ffffff 46%);
+      font: 16px/1.72 "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    main {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 28px;
+      align-items: end;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 46px);
+      line-height: 1.14;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 760px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .status-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      padding: 18px;
+    }
+
+    .status-card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--accent-strong);
+      font-size: 15px;
+    }
+
+    .status-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 24px 0 0;
+    }
+
+    nav a {
+      color: var(--accent-strong);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 12px;
+      background: rgba(255, 255, 255, 0.72);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    section {
+      margin-top: 28px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.86);
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 24px;
+      line-height: 1.24;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      font-size: 13px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    code {
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: var(--surface-strong);
+      color: var(--accent-strong);
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      margin: 14px 0 0;
+      padding: 18px;
+      border-radius: 14px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      font-size: 13px;
+      line-height: 1.62;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 14px;
+    }
+
+    .decision {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      background: var(--surface);
+    }
+
+    .decision strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent-strong);
+    }
+
+    .decision p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .callout {
+      margin-top: 16px;
+      padding: 16px;
+      border-left: 4px solid var(--accent);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+
+    .callout.warn {
+      border-left-color: var(--warn);
+    }
+
+    .callout p:last-child {
+      margin-bottom: 0;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      margin: 0 6px 6px 0;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--accent-strong);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    @media (max-width: 820px) {
+      main {
+        padding: 28px 14px 56px;
+      }
+
+      header,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      header,
+      section {
+        padding: 22px;
+        border-radius: 14px;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Synapse Operator Portal</p>
+        <h1>数采员个人数据产量设计</h1>
+        <p class="lead">
+          本文档固化“数采员登录 Synapse 后查看自己每天数据产量”的产品口径、页面范围、API 形态和实现边界。
+          目标是在不影响管理后台统计页的前提下，复用现有数据生产统计能力。
+        </p>
+        <nav aria-label="目录">
+          <a href="#decisions">已确认决策</a>
+          <a href="#product">页面设计</a>
+          <a href="#api">API 设计</a>
+          <a href="#implementation">实现建议</a>
+          <a href="#acceptance">验收清单</a>
+        </nav>
+      </div>
+      <aside class="status-card">
+        <strong>状态</strong>
+        <p>方案已由需求讨论确认。下一步可以进入 Keystone API 与 Synapse 页面实现。</p>
+      </aside>
+    </header>
+
+    <section id="decisions">
+      <h2>1. 已确认决策</h2>
+      <div class="grid">
+        <article class="decision">
+          <strong>归属口径</strong>
+          <p>与管理后台“数据统计”按数采员筛选时完全一致，使用现有统计 SQL 里的 <code>collector_operator_id</code> 口径。</p>
+        </article>
+        <article class="decision">
+          <strong>入口</strong>
+          <p>新增数采员门户页面 <code>/operator/production</code>，侧边栏文案为“我的产量”。数采员门户不再保留原普通生产仪表板入口。</p>
+        </article>
+        <article class="decision">
+          <strong>默认时间</strong>
+          <p>默认展示“今天”。其他时间筛选交互尽量与管理后台统计页面一致。</p>
+        </article>
+        <article class="decision">
+          <strong>时区</strong>
+          <p>“今天”按浏览器本地时区切日，趋势接口继续传 <code>timezone_offset</code>。</p>
+        </article>
+        <article class="decision">
+          <strong>页面模块</strong>
+          <p>保留摘要卡、趋势图、维度分布。不做明细表，不做 CSV 导出。</p>
+        </article>
+        <article class="decision">
+          <strong>云同步</strong>
+          <p>个人页不展示云同步率，不展示云同步状态筛选，也不提供按云同步状态分布。</p>
+        </article>
+      </div>
+
+      <div class="callout warn">
+        <p>
+          注意：当前口径会沿用管理后台统计页的现有归属方式。它通过 episode/workstation/data_collector 关系得出数采员，
+          不在本次需求中新增 episode 历史归属快照字段。
+        </p>
+      </div>
+    </section>
+
+    <section id="product">
+      <h2>2. 页面设计</h2>
+
+      <h3>2.1 路由与文案</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>位置</th>
+            <th>内容</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>路由</td>
+            <td><code>/operator/production</code></td>
+          </tr>
+          <tr>
+            <td>侧边栏</td>
+            <td>我的产量</td>
+          </tr>
+          <tr>
+            <td>页面标题</td>
+            <td>我的数据产量</td>
+          </tr>
+          <tr>
+            <td>趋势区标题</td>
+            <td>产量趋势</td>
+          </tr>
+          <tr>
+            <td>分布区标题</td>
+            <td>维度分布</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>2.2 页面模块</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>内容</th>
+            <th>默认行为</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>摘要卡</td>
+            <td>数据条数、总时长、总大小、QA 通过率</td>
+            <td>基于当前时间范围和筛选条件展示</td>
+          </tr>
+          <tr>
+            <td>产量趋势</td>
+            <td>数量 / 时长 / 大小 三个视图</td>
+            <td>默认展示数量</td>
+          </tr>
+          <tr>
+            <td>维度分布</td>
+            <td>设备 ID、设备类型、场景、SOP、QA 状态</td>
+            <td>默认按设备 ID</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>2.3 筛选项</h3>
+      <p>时间筛选与管理后台统计页保持一致，默认值改为今天。高级筛选保留以下 5 项：</p>
+      <p>
+        <span class="tag">场景</span>
+        <span class="tag">SOP</span>
+        <span class="tag">设备 ID</span>
+        <span class="tag">设备类型</span>
+        <span class="tag">QA 状态</span>
+      </p>
+      <p class="muted">不显示“数采员”筛选，因为后端永远强制当前登录数采员 scope。不显示“云同步状态”筛选。</p>
+
+      <h3>2.4 空态与错误态</h3>
+      <ul>
+        <li>当前时间范围没有数据时，摘要卡显示 0 或空值格式化后的 0。</li>
+        <li>趋势图展示空时间轴或 0 值，不弹错误提示。</li>
+        <li>维度分布展示“暂无数据”。</li>
+        <li>只有接口失败、登录过期或权限异常时显示错误 banner。</li>
+      </ul>
+    </section>
+
+    <section id="api">
+      <h2>3. API 设计</h2>
+
+      <h3>3.1 新增路径</h3>
+      <p>新增 operator 专用统计路径，复用管理后台数据生产统计 handler 的核心查询逻辑。</p>
+      <pre><code>GET /api/v1/operator/statistics/data-production/summary
+GET /api/v1/operator/statistics/data-production/trend
+GET /api/v1/operator/statistics/data-production/breakdown</code></pre>
+
+      <h3>3.2 不提供的路径</h3>
+      <ul>
+        <li>不提供 <code>details</code>，因为个人页不展示明细表。</li>
+        <li>不提供 <code>export</code>，因为个人页不做 CSV 导出。</li>
+      </ul>
+
+      <h3>3.3 认证与权限</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>规则</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>认证</td>
+            <td><code>JWTAuth</code></td>
+          </tr>
+          <tr>
+            <td>角色</td>
+            <td><code>RequireRole("data_collector")</code></td>
+          </tr>
+          <tr>
+            <td>本人 scope</td>
+            <td>后端从 JWT claims 读取 <code>OperatorID</code>，强制覆盖查询中的 <code>collector_operator_id</code>。</td>
+          </tr>
+          <tr>
+            <td>越权参数</td>
+            <td>如果请求传入其他 <code>collector_operator_id</code>，不返回 403，直接忽略并仍然查询本人。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>3.4 查询参数</h3>
+      <p>保留管理后台统计接口已有参数中的子集：</p>
+      <table>
+        <thead>
+          <tr>
+            <th>参数</th>
+            <th>用途</th>
+            <th>个人页状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>start_time</code>, <code>end_time</code></td>
+            <td>统计时间范围，RFC3339</td>
+            <td>保留</td>
+          </tr>
+          <tr>
+            <td><code>granularity</code></td>
+            <td>趋势粒度：hour/day/week/month</td>
+            <td>保留</td>
+          </tr>
+          <tr>
+            <td><code>timezone_offset</code></td>
+            <td>趋势本地时间分桶</td>
+            <td>trend 保留</td>
+          </tr>
+          <tr>
+            <td><code>scene_id</code>, <code>sop_id</code></td>
+            <td>场景与 SOP 筛选</td>
+            <td>保留</td>
+          </tr>
+          <tr>
+            <td><code>robot_device_id</code>, <code>robot_type_id</code></td>
+            <td>设备筛选</td>
+            <td>保留</td>
+          </tr>
+          <tr>
+            <td><code>qa_status</code></td>
+            <td>QA 状态筛选</td>
+            <td>保留</td>
+          </tr>
+          <tr>
+            <td><code>collector_operator_id</code></td>
+            <td>数采员筛选</td>
+            <td>请求中忽略，由后端强制为本人</td>
+          </tr>
+          <tr>
+            <td><code>cloud_synced</code></td>
+            <td>云同步状态筛选</td>
+            <td>个人页不传、不展示</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="implementation">
+      <h2>4. 实现建议</h2>
+
+      <h3>4.1 Keystone</h3>
+      <ol>
+        <li>在 <code>DataProductionStatisticsHandler</code> 中新增 operator 注册方法，例如 <code>RegisterOperatorRoutes</code>。</li>
+        <li>新增 scope helper：解析通用 query 后，将 <code>CollectorOperatorIDs</code> 覆盖为 <code>[]string{claims.OperatorID}</code>。</li>
+        <li>operator 的 <code>summary</code>、<code>trend</code>、<code>breakdown</code> 复用现有查询与 response 结构。</li>
+        <li>不要把 admin 路由改成 data_collector 可访问，避免污染管理后台权限边界。</li>
+        <li>新增测试覆盖：data_collector 传入别人 <code>collector_operator_id</code> 时仍只查询本人。</li>
+      </ol>
+
+      <h3>4.2 Synapse</h3>
+      <ol>
+        <li>新增 API wrapper，例如 <code>operatorDataProductionStatistics.js</code>，endpoint 指向 <code>/operator/statistics/data-production</code>。</li>
+        <li>新增页面 <code>OperatorDataProduction.vue</code>，新写个人页，不大拆管理后台统计页。</li>
+        <li>在 <code>router/index.js</code> 增加 <code>/operator/production</code> 路由。</li>
+        <li>在 <code>OperatorSidebar.vue</code> 增加“我的产量”入口。</li>
+        <li>复用现有格式化函数、ECharts 初始化思路、<code>RemoteSelect</code> 组件和管理后台统计页的筛选交互。</li>
+      </ol>
+
+      <div class="callout">
+        <p>
+          前端页面应是管理后台统计页的个人精简版，而不是抽象出一个大而全的共享组件。
+          这样可以降低对现有 admin 页面的回归风险。
+        </p>
+      </div>
+    </section>
+
+    <section id="acceptance">
+      <h2>5. 验收清单</h2>
+      <ul>
+        <li>数采员登录后可从侧边栏进入“我的产量”。</li>
+        <li>默认时间范围为今天，并按浏览器本地时区切日。</li>
+        <li>页面展示 4 个摘要卡：数据条数、总时长、总大小、QA 通过率。</li>
+        <li>趋势图支持数量、时长、大小切换，默认数量。</li>
+        <li>维度分布支持设备 ID、设备类型、场景、SOP、QA 状态，默认设备 ID。</li>
+        <li>高级筛选支持场景、SOP、设备 ID、设备类型、QA 状态。</li>
+        <li>个人页不展示数采员筛选、云同步指标、云同步筛选、明细表、CSV 导出。</li>
+        <li>请求中手动传入其他 <code>collector_operator_id</code> 时，后端仍返回当前登录数采员的数据。</li>
+        <li>没有数据时页面正常显示 0 和“暂无数据”，不报错。</li>
+        <li>admin 数据统计页行为保持不变。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
