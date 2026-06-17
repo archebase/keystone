@@ -252,11 +252,46 @@ func (h *RecorderHandler) Config(c *gin.Context) {
 		return
 	}
 
+	if !h.requireTaskConfigurable(c, taskID) {
+		return
+	}
+
 	if !h.callRPC(c, "config", params) {
 		return
 	}
 
 	advanceTaskPendingToReady(h.db, c.Param("device_id"), taskID, "config")
+}
+
+func (h *RecorderHandler) requireTaskConfigurable(c *gin.Context, taskID string) bool {
+	if h == nil || h.db == nil {
+		return true
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":  "task_id_required",
+			"error": "task_config.task_id is required",
+		})
+		return false
+	}
+
+	deviceID := strings.TrimSpace(c.Param("device_id"))
+	status, ok, err := currentOwnedTaskStatus(c.Request.Context(), h.db, deviceID, taskID)
+	if err != nil {
+		logger.Printf("%s failed to check task configurability: err=%v", recorderTaskLogPrefix(deviceID, taskID), err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check task status"})
+		return false
+	}
+	if !ok || status != "pending" {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":           "task_not_configurable",
+			"error":          "task is not configurable",
+			"current_status": taskStatusLogValue(status, "not_found"),
+		})
+		return false
+	}
+	return true
 }
 
 // Begin sends begin recording RPC to the recorder.
@@ -286,6 +321,10 @@ func (h *RecorderHandler) Begin(c *gin.Context) {
 		}
 	}
 
+	if !h.requireTaskBeginable(c, taskID) {
+		return
+	}
+
 	if !h.callRPC(c, "begin", params) {
 		return
 	}
@@ -303,6 +342,83 @@ func (h *RecorderHandler) Begin(c *gin.Context) {
 			h.logBeginTransitionNoop(c.Param("device_id"), taskID)
 		}
 	}
+}
+
+func (h *RecorderHandler) requireTaskBeginable(c *gin.Context, taskID string) bool {
+	if h == nil || h.db == nil {
+		return true
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":  "task_id_required",
+			"error": "task_id is required",
+		})
+		return false
+	}
+
+	deviceID := strings.TrimSpace(c.Param("device_id"))
+	status, ok, err := currentOwnedTaskStatus(c.Request.Context(), h.db, deviceID, taskID)
+	if err != nil {
+		logger.Printf("%s failed to check task beginability: err=%v", recorderTaskLogPrefix(deviceID, taskID), err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check task status"})
+		return false
+	}
+	if !ok || (status != "pending" && status != "ready") {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":           "task_not_beginable",
+			"error":          "task is not beginable",
+			"current_status": taskStatusLogValue(status, "not_found"),
+		})
+		return false
+	}
+
+	if h.hub == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "recorder hub is not configured"})
+		return false
+	}
+	rc := h.hub.Get(deviceID)
+	if rc == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": services.ErrRecorderNotConnected.Error()})
+		return false
+	}
+	if !rc.IsStateSynced() {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":  "recorder_state_syncing",
+			"error": "recorder state is syncing; retry after initial state snapshot",
+		})
+		return false
+	}
+
+	state := rc.GetState()
+	if recorderStateAge(state) > defaultRecorderFreshMaxAge {
+		refreshed, _, err := h.refreshRecorderState(c.Request.Context(), deviceID, rc, -1)
+		if err != nil {
+			statusCode := http.StatusConflict
+			if errors.Is(err, services.ErrRecorderRPCTimeout) {
+				statusCode = http.StatusGatewayTimeout
+			}
+			out := h.recorderStateResponse(deviceID, rc, false)
+			out["code"] = "recorder_state_refresh_failed"
+			out["error"] = err.Error()
+			c.JSON(statusCode, out)
+			return false
+		}
+		state = refreshed
+	}
+
+	current := strings.ToLower(strings.TrimSpace(state.CurrentState))
+	if current != "ready" || strings.TrimSpace(state.TaskID) != taskID {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":             "task_not_beginable",
+			"error":            "recorder is not ready for task",
+			"current_status":   status,
+			"recorder_state":   state.CurrentState,
+			"recorder_task_id": state.TaskID,
+		})
+		return false
+	}
+	return true
 }
 
 // Finish sends finish recording RPC to the recorder.

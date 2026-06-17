@@ -873,7 +873,44 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 	logger.Printf("%s received finish callback", recorderTaskLogPrefix(callback.DeviceID, callback.TaskID))
 
 	if h.db != nil {
-		previousStatus, _, _ := currentOwnedTaskStatus(c.Request.Context(), h.db, deviceID, callback.TaskID)
+		previousStatus, owned, err := currentOwnedTaskStatus(c.Request.Context(), h.db, deviceID, callback.TaskID)
+		if err != nil {
+			logger.Printf("%s failed to query task status after finish callback: err=%v", recorderTaskLogPrefix(deviceID, callback.TaskID), err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task status"})
+			return
+		}
+		if !owned {
+			logger.Printf("%s finish callback rejected: task is not owned by device", recorderTaskLogPrefix(deviceID, callback.TaskID))
+			c.JSON(http.StatusConflict, gin.H{
+				"error_msg": "task is not owned by device or is not uploadable",
+			})
+			return
+		}
+		switch previousStatus {
+		case "uploading", "completed":
+			logger.Printf("%s finish callback idempotent: current_status=%s", recorderTaskLogPrefix(deviceID, callback.TaskID), previousStatus)
+			c.JSON(http.StatusOK, gin.H{
+				"success":             true,
+				"message":             "Recording finish callback already handled",
+				"task_status":         previousStatus,
+				"upload_request_sent": false,
+			})
+			return
+		case "failed", "cancelled":
+			logger.Printf("%s finish callback rejected: current_status=%s", recorderTaskLogPrefix(deviceID, callback.TaskID), previousStatus)
+			c.JSON(http.StatusConflict, gin.H{
+				"error_msg": "task is not uploadable",
+			})
+			return
+		case "pending", "ready", "in_progress":
+		default:
+			logger.Printf("%s finish callback rejected: current_status=%s", recorderTaskLogPrefix(deviceID, callback.TaskID), previousStatus)
+			c.JSON(http.StatusConflict, gin.H{
+				"error_msg": "task is not uploadable",
+			})
+			return
+		}
+
 		res, err := markOwnedTaskUploading(c.Request.Context(), h.db, deviceID, callback.TaskID)
 		if err != nil {
 			logger.Printf("%s failed to mark task uploading after finish callback: err=%v", recorderTaskLogPrefix(deviceID, callback.TaskID), err)
@@ -882,6 +919,22 @@ func (h *TaskHandler) OnRecordingFinish(c *gin.Context) {
 		} else if n, _ := res.RowsAffected(); n > 0 {
 			logger.Printf("%s task status updated: %s -> uploading reason=finish_callback", recorderTaskLogPrefix(deviceID, callback.TaskID), taskStatusLogValue(previousStatus, "unknown"))
 		} else {
+			currentStatus, _, statusErr := currentOwnedTaskStatus(c.Request.Context(), h.db, deviceID, callback.TaskID)
+			if statusErr != nil {
+				logger.Printf("%s failed to recheck task status after finish callback noop: err=%v", recorderTaskLogPrefix(deviceID, callback.TaskID), statusErr)
+				c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task status"})
+				return
+			}
+			if currentStatus == "uploading" || currentStatus == "completed" {
+				logger.Printf("%s finish callback idempotent after noop: current_status=%s", recorderTaskLogPrefix(deviceID, callback.TaskID), currentStatus)
+				c.JSON(http.StatusOK, gin.H{
+					"success":             true,
+					"message":             "Recording finish callback already handled",
+					"task_status":         currentStatus,
+					"upload_request_sent": false,
+				})
+				return
+			}
 			logger.Printf("%s task uploading transition skipped after finish callback", recorderTaskLogPrefix(deviceID, callback.TaskID))
 			c.JSON(http.StatusConflict, gin.H{
 				"error_msg": "task is not owned by device or is not uploadable",
@@ -972,6 +1025,30 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid task id"})
+		return
+	}
+
+	var currentStatus string
+	if err := h.db.Get(&currentStatus, `
+		SELECT status
+		FROM tasks
+		WHERE id = ? AND deleted_at IS NULL
+		LIMIT 1
+	`, id); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error_msg": "Task not found: " + idStr})
+			return
+		}
+		logger.Printf("[TASK] Failed to query task status for config: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query task"})
+		return
+	}
+	if strings.TrimSpace(currentStatus) != "pending" {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":           "task_not_configurable",
+			"error_msg":      "Task is not configurable",
+			"current_status": strings.TrimSpace(currentStatus),
+		})
 		return
 	}
 

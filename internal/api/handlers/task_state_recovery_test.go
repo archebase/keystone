@@ -313,9 +313,10 @@ func TestRecorderBeginDoesNotAdvanceTaskWhenRPCResponseUnsuccessful(t *testing.T
 	seedTaskStateRecoveryTask(t, db, "task-begin-false", "pending")
 
 	hub := services.NewRecorderHub()
-	attachRecorderRPCResponder(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
+	rc := attachRecorderRPCResponderWithConn(t, hub, "robot-001", func(req services.RPCRequest) services.RPCResponse {
 		return services.RPCResponse{Success: false, Message: "device rejected begin"}
 	})
+	rc.UpdateState(services.RecorderState{CurrentState: "ready", TaskID: "task-begin-false"})
 	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
 
 	gin.SetMode(gin.TestMode)
@@ -524,6 +525,135 @@ func TestRecordingFinishDisconnectedTransferRecordsUploadRequestError(t *testing
 	assertTaskStateRecoveryErrorContains(t, db, "task-finish-disconnected", "transfer disconnected")
 	if !strings.Contains(w.Body.String(), `"upload_request_sent":false`) {
 		t.Fatalf("response body %q does not report unsent upload request", w.Body.String())
+	}
+}
+
+func TestRecordingFinishUploadingTaskIsIdempotentWithoutUploadRequest(t *testing.T) {
+	db := newTaskStateRecoveryDB(t)
+	defer db.Close()
+	seedTaskStateRecoveryTask(t, db, "task-finish-uploading", "uploading")
+
+	hub := &recordingFinishTransferHub{
+		conn: &services.TransferConn{DeviceID: "robot-001"},
+	}
+	handler := &TaskHandler{db: db, hub: hub}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler.RegisterCallbackRoutes(router.Group("/callbacks"))
+
+	body, err := json.Marshal(RecordingFinishCallback{
+		TaskID:     "task-finish-uploading",
+		DeviceID:   "robot-001",
+		Status:     "finished",
+		FinishedAt: time.Now().UTC().Format(time.RFC3339),
+		OutputPath: "/data/task-finish-uploading.mcap",
+	})
+	if err != nil {
+		t.Fatalf("marshal callback: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/callbacks/finish", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if hub.sendDeviceID != "" {
+		t.Fatalf("Send device=%q want empty for idempotent uploading finish", hub.sendDeviceID)
+	}
+	assertTaskStateRecoveryStatus(t, db, "task-finish-uploading", "uploading")
+	if !strings.Contains(w.Body.String(), `"upload_request_sent":false`) {
+		t.Fatalf("response body %q does not report unsent upload request", w.Body.String())
+	}
+}
+
+func TestRecordingFinishTerminalStatusHandling(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		wantStatus int
+	}{
+		{name: "completed is idempotent", status: "completed", wantStatus: http.StatusOK},
+		{name: "failed is rejected", status: "failed", wantStatus: http.StatusConflict},
+		{name: "cancelled is rejected", status: "cancelled", wantStatus: http.StatusConflict},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newTaskStateRecoveryDB(t)
+			defer db.Close()
+			seedTaskStateRecoveryTask(t, db, "task-finish-terminal", tt.status)
+
+			hub := &recordingFinishTransferHub{
+				conn: &services.TransferConn{DeviceID: "robot-001"},
+			}
+			handler := &TaskHandler{db: db, hub: hub}
+
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			handler.RegisterCallbackRoutes(router.Group("/callbacks"))
+
+			body, err := json.Marshal(RecordingFinishCallback{
+				TaskID:     "task-finish-terminal",
+				DeviceID:   "robot-001",
+				Status:     "finished",
+				FinishedAt: time.Now().UTC().Format(time.RFC3339),
+				OutputPath: "/data/task-finish-terminal.mcap",
+			})
+			if err != nil {
+				t.Fatalf("marshal callback: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/callbacks/finish", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if hub.sendDeviceID != "" {
+				t.Fatalf("Send device=%q want empty for terminal finish status=%s", hub.sendDeviceID, tt.status)
+			}
+			assertTaskStateRecoveryStatus(t, db, "task-finish-terminal", tt.status)
+		})
+	}
+}
+
+func TestGetTaskConfigRejectsUploadingTask(t *testing.T) {
+	db, err := sqlx.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE tasks (
+		id INTEGER PRIMARY KEY,
+		task_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		deleted_at TIMESTAMP NULL
+	)`); err != nil {
+		t.Fatalf("create tasks schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks (id, task_id, status) VALUES (1, 'task-config-uploading', 'uploading')`); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	handler := &TaskHandler{db: db}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/tasks/:id/config", handler.GetTaskConfig)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/tasks/1/config", nil))
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "task_not_configurable") {
+		t.Fatalf("response body %q does not include task_not_configurable", w.Body.String())
 	}
 }
 

@@ -50,6 +50,8 @@ type TransferHandler struct {
 	recorderRPCTimeout time.Duration
 	stateBroker        *services.DeviceStateBroker
 	qaEnqueuer         episodeQAEnqueuer
+	reconcileMu        sync.Mutex
+	reconcileAttempts  map[string]time.Time
 }
 
 // NewTransferHandler creates a new TransferHandler.
@@ -331,16 +333,24 @@ func (h *TransferHandler) onConnected(dc *services.TransferConn, msg map[string]
 		return
 	}
 	s := services.DeviceStatus{
-		Version:         stringVal(data, "version"),
-		PendingCount:    intVal(data, "pending_count"),
-		UploadingCount:  intVal(data, "uploading_count"),
-		WaitingACKCount: intVal(data, "waiting_ack_count"),
-		FailedCount:     intVal(data, "failed_count"),
+		Version:           stringVal(data, "version"),
+		PendingCount:      intVal(data, "pending_count"),
+		ActiveCount:       intVal(data, "active_count"),
+		UploadingCount:    intVal(data, "uploading_count"),
+		RetryWaitCount:    intVal(data, "retry_wait_count"),
+		WaitingACKCount:   intVal(data, "waiting_ack_count"),
+		WaitingACKTaskIDs: stringSliceVal(data, "waiting_ack_task_ids"),
+		CompletedCount:    intVal(data, "completed_count"),
+		FailedCount:       intVal(data, "failed_count"),
+		PendingBytes:      int64Val(data, "pending_bytes"),
+		BytesPerSec:       int64Val(data, "bytes_per_sec"),
+		Uploads:           transferUploadsVal(data, "uploads"),
 	}
 	dc.UpdateStatus(s)
 	// #nosec G706 -- Set aside for now
 	logger.Printf("%s connected: version=%s pending=%d uploading=%d failed=%d",
 		transferLogPrefix(dc.DeviceID), s.Version, s.PendingCount, s.UploadingCount, s.FailedCount)
+	h.reconcileUploadRequestsFromStatus(dc)
 }
 
 // onUploadStarted handles "upload_started" message
@@ -1026,27 +1036,129 @@ func (h *TransferHandler) onStatus(dc *services.TransferConn, msg map[string]int
 		return
 	}
 
-	// Parse waiting_ack_task_ids
-	var waitingIDs []string
-	if raw, ok := data["waiting_ack_task_ids"].([]interface{}); ok {
-		for _, v := range raw {
-			if s, ok := v.(string); ok {
-				waitingIDs = append(waitingIDs, s)
-			}
-		}
-	}
-
 	s := services.DeviceStatus{
 		PendingCount:      intVal(data, "pending_count"),
+		ActiveCount:       intVal(data, "active_count"),
 		UploadingCount:    intVal(data, "uploading_count"),
+		RetryWaitCount:    intVal(data, "retry_wait_count"),
 		WaitingACKCount:   intVal(data, "waiting_ack_count"),
-		WaitingACKTaskIDs: waitingIDs,
+		WaitingACKTaskIDs: stringSliceVal(data, "waiting_ack_task_ids"),
 		CompletedCount:    intVal(data, "completed_count"),
 		FailedCount:       intVal(data, "failed_count"),
 		PendingBytes:      int64Val(data, "pending_bytes"),
 		BytesPerSec:       int64Val(data, "bytes_per_sec"),
+		Uploads:           transferUploadsVal(data, "uploads"),
 	}
 	dc.UpdateStatus(s)
+	h.reconcileUploadRequestsFromStatus(dc)
+}
+
+const transferReconcileCooldown = 30 * time.Second
+
+type uploadRequestReconcileTask struct {
+	TaskID       string `db:"task_id"`
+	ErrorMessage string `db:"error_message"`
+}
+
+func (h *TransferHandler) reconcileUploadRequestsFromStatus(dc *services.TransferConn) {
+	if h == nil || h.db == nil || h.hub == nil || dc == nil {
+		return
+	}
+
+	status := dc.GetStatus()
+	active := activeTransferUploadTasks(status.Uploads)
+	var rows []uploadRequestReconcileTask
+	if err := h.db.SelectContext(context.Background(), &rows, `
+		SELECT t.task_id, COALESCE(t.error_message, '') AS error_message
+		FROM tasks t
+		JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
+		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE t.status = 'uploading'
+		  AND t.deleted_at IS NULL
+		  AND r.device_id = ?
+		  AND t.error_message IS NOT NULL
+		  AND TRIM(t.error_message) <> ''
+	`, dc.DeviceID); err != nil {
+		logger.Printf("%s upload_request reconciliation query failed: %v", transferLogPrefix(dc.DeviceID), err)
+		return
+	}
+
+	for _, row := range rows {
+		taskID := strings.TrimSpace(row.TaskID)
+		if taskID == "" {
+			continue
+		}
+		if !shouldAutoRequeueUploadRequest(row.ErrorMessage) {
+			continue
+		}
+		if _, ok := active[taskID]; ok {
+			continue
+		}
+		if h.skipRecentTransferReconcile(dc.DeviceID, taskID) {
+			continue
+		}
+
+		msg := map[string]interface{}{
+			"type":     "upload_request",
+			"task_id":  taskID,
+			"priority": 1,
+		}
+		writeTimeout := transferWriteTimeout(h.cfg)
+		if err := h.hub.SendToConnWithTimeout(context.Background(), dc, msg, writeTimeout); err != nil {
+			logTransferSendFailure(dc.DeviceID, "upload_request", writeTimeout, err)
+			continue
+		}
+		if _, err := clearOwnedUploadingTaskError(context.Background(), h.db, dc.DeviceID, taskID); err != nil {
+			logger.Printf("%s failed to clear reconciled upload_request error: err=%v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
+		}
+		logger.Printf("%s reconciled upload_request after transfer status", transferTaskLogPrefix(dc.DeviceID, taskID))
+	}
+}
+
+func activeTransferUploadTasks(uploads []services.Upload) map[string]struct{} {
+	active := make(map[string]struct{}, len(uploads))
+	for _, upload := range uploads {
+		taskID := strings.TrimSpace(upload.TaskID)
+		if taskID == "" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(upload.Status)) {
+		case "pending", "active", "retry-wait", "retry_wait", "uploaded_wait_ack":
+			active[taskID] = struct{}{}
+		}
+	}
+	return active
+}
+
+func shouldAutoRequeueUploadRequest(message string) bool {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return false
+	}
+	if strings.Contains(msg, "upload_not_found") ||
+		strings.Contains(msg, "upload file not found") ||
+		strings.Contains(msg, "no mcap file") {
+		return false
+	}
+	return strings.Contains(msg, "upload_request not sent") ||
+		strings.Contains(msg, "upload_request failed") ||
+		strings.Contains(msg, "upload_request timed out") ||
+		strings.Contains(msg, "transfer write timeout")
+}
+
+func (h *TransferHandler) skipRecentTransferReconcile(deviceID, taskID string) bool {
+	key := strings.TrimSpace(deviceID) + "\x00" + strings.TrimSpace(taskID)
+	now := time.Now()
+	h.reconcileMu.Lock()
+	defer h.reconcileMu.Unlock()
+	if h.reconcileAttempts == nil {
+		h.reconcileAttempts = make(map[string]time.Time)
+	}
+	if last, ok := h.reconcileAttempts[key]; ok && now.Sub(last) < transferReconcileCooldown {
+		return true
+	}
+	h.reconcileAttempts[key] = now
+	return false
 }
 
 // ListDevices returns all currently connected devices.
@@ -1210,7 +1322,62 @@ func extractIP(remoteAddr string) string {
 
 func stringVal(m map[string]interface{}, key string) string {
 	v, _ := m[key].(string)
-	return v
+	return strings.TrimSpace(v)
+}
+
+func stringSliceVal(m map[string]interface{}, key string) []string {
+	raw, ok := m[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(raw))
+	for _, v := range raw {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s != "" {
+			values = append(values, s)
+		}
+	}
+	return values
+}
+
+func transferUploadsVal(m map[string]interface{}, key string) []services.Upload {
+	raw, ok := m[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	uploads := make([]services.Upload, 0, len(raw))
+	for _, item := range raw {
+		record, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		taskID := stringVal(record, "task_id")
+		if taskID == "" {
+			continue
+		}
+		uploads = append(uploads, services.Upload{
+			TaskID:          taskID,
+			Status:          stringVal(record, "status"),
+			S3Key:           stringVal(record, "s3_key"),
+			ObjectKey:       stringVal(record, "object_key"),
+			FileSizeBytes:   int64Val(record, "file_size_bytes"),
+			ChecksumSHA256:  stringVal(record, "checksum_sha256"),
+			BytesUploaded:   int64Val(record, "bytes_uploaded"),
+			UploadMode:      stringVal(record, "upload_mode"),
+			RetryCount:      intVal(record, "retry_count"),
+			NextRetryAt:     stringVal(record, "next_retry_at"),
+			LastError:       stringVal(record, "last_error"),
+			CreatedAt:       stringVal(record, "created_at"),
+			UpdatedAt:       stringVal(record, "updated_at"),
+			CompletedAt:     stringVal(record, "completed_at"),
+			DeleteLastError: stringVal(record, "delete_last_error"),
+		})
+	}
+	return uploads
 }
 
 func intVal(m map[string]interface{}, key string) int {

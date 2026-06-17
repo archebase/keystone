@@ -63,7 +63,7 @@ func markOwnedTaskUploading(ctx context.Context, exec taskStateExecutor, deviceI
 			updated_at = ?,
 			error_message = NULL
 		WHERE task_id = ?
-		  AND status IN ('pending', 'ready', 'in_progress', 'uploading')
+		  AND status IN ('pending', 'ready', 'in_progress')
 		  AND deleted_at IS NULL
 		  AND EXISTS (
 			SELECT 1
