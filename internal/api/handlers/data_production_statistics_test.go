@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -240,6 +242,41 @@ func TestParseDataProductionStatsQueryRejectsOversizedListFilters(t *testing.T) 
 
 	if _, err := parseDataProductionStatsQuery(c, true); err == nil {
 		t.Fatalf("expected oversized list validation error")
+	}
+}
+
+func TestParseOperatorDataProductionStatsQueryIgnoresCollectorFilter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	target := "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&collector_operator_id=" +
+		strings.Repeat("x", maxMultiValueFilterStringItemLength+1)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, target, nil)
+
+	got, err := parseOperatorDataProductionStatsQuery(c, true)
+	if err != nil {
+		t.Fatalf("parseOperatorDataProductionStatsQuery returned error: %v", err)
+	}
+	if len(got.CollectorOperatorIDs) != 0 {
+		t.Fatalf("collector filter should be ignored before auth scope, got %#v", got.CollectorOperatorIDs)
+	}
+}
+
+func TestScopeDataProductionStatsQueryToCurrentCollectorOverridesCollectorFilter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set(middleware.ClaimsKey, &auth.Claims{
+		OperatorID: "dc-001",
+		Role:       "data_collector",
+	})
+	q := dataProductionStatsQuery{CollectorOperatorIDs: []string{"dc-999"}}
+
+	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+		t.Fatalf("expected scope application to succeed")
+	}
+	if strings.Join(q.CollectorOperatorIDs, ",") != "dc-001" {
+		t.Fatalf("collector filter = %#v, want dc-001", q.CollectorOperatorIDs)
 	}
 }
 

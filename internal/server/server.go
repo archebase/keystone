@@ -331,6 +331,8 @@ func (s *Server) buildRoutes() http.Handler {
 		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
 		adminStats := v1Routes.Group("/admin/statistics/data-production", jwtMw, middleware.RequireRole("admin"))
 		s.dataStats.RegisterRoutes(adminStats)
+		operatorStats := v1Routes.Group("/operator/statistics/data-production", jwtMw, middleware.RequireRole("data_collector"))
+		s.dataStats.RegisterOperatorRoutes(operatorStats)
 	}
 	if s.dataOps != nil {
 		jwtMw := middleware.JWTAuth(&s.cfg.Auth)

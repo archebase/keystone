@@ -18,6 +18,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/middleware"
 )
 
 // DataProductionStatisticsHandler handles Synapse Admin data production statistics APIs.
@@ -37,6 +38,13 @@ func (h *DataProductionStatisticsHandler) RegisterRoutes(apiV1 *gin.RouterGroup)
 	apiV1.GET("/breakdown", h.GetBreakdown)
 	apiV1.GET("/details", h.ListDetails)
 	apiV1.GET("/export", h.ExportCSV)
+}
+
+// RegisterOperatorRoutes registers data collector self-service data production statistics routes.
+func (h *DataProductionStatisticsHandler) RegisterOperatorRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.GET("/summary", h.GetOperatorSummary)
+	apiV1.GET("/trend", h.GetOperatorTrend)
+	apiV1.GET("/breakdown", h.GetOperatorBreakdown)
 }
 
 type dataProductionStatsQuery struct {
@@ -237,6 +245,14 @@ var validDataProductionQAStatuses = map[string]struct{}{
 }
 
 func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dataProductionStatsQuery, error) {
+	return parseDataProductionStatsQueryWithOptions(c, requireGranularity, false)
+}
+
+func parseOperatorDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dataProductionStatsQuery, error) {
+	return parseDataProductionStatsQueryWithOptions(c, requireGranularity, true)
+}
+
+func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity bool, ignoreCollectorOperatorFilter bool) (dataProductionStatsQuery, error) {
 	startTime, err := parseStatsTime(c.Query("start_time"))
 	if err != nil {
 		return dataProductionStatsQuery{}, fmt.Errorf("start_time is required and must be RFC3339")
@@ -269,9 +285,12 @@ func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dat
 	if err != nil {
 		return dataProductionStatsQuery{}, err
 	}
-	collectorOperatorIDs, err := parseStatsStringListQuery(c, "collector_operator_id")
-	if err != nil {
-		return dataProductionStatsQuery{}, err
+	collectorOperatorIDs := []string{}
+	if !ignoreCollectorOperatorFilter {
+		collectorOperatorIDs, err = parseStatsStringListQuery(c, "collector_operator_id")
+		if err != nil {
+			return dataProductionStatsQuery{}, err
+		}
 	}
 	sopIDs, err := parseStatsStringListQuery(c, "sop_id")
 	if err != nil {
@@ -356,6 +375,24 @@ func (h *DataProductionStatisticsHandler) GetSummary(c *gin.Context) {
 		return
 	}
 
+	h.writeSummary(c, q)
+}
+
+// GetOperatorSummary returns aggregate data production statistics for the current data collector.
+func (h *DataProductionStatisticsHandler) GetOperatorSummary(c *gin.Context) {
+	q, err := parseOperatorDataProductionStatsQuery(c, false)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+		return
+	}
+
+	h.writeSummary(c, q)
+}
+
+func (h *DataProductionStatisticsHandler) writeSummary(c *gin.Context, q dataProductionStatsQuery) {
 	row, err := h.aggregateStats(q, "")
 	if err != nil {
 		logger.Printf("[DATA_STATS] summary query failed: %v", err)
@@ -398,6 +435,29 @@ func (h *DataProductionStatisticsHandler) GetTrend(c *gin.Context) {
 		return
 	}
 
+	h.writeTrend(c, q, timezoneOffset)
+}
+
+// GetOperatorTrend returns bucketed data production statistics for the current data collector.
+func (h *DataProductionStatisticsHandler) GetOperatorTrend(c *gin.Context) {
+	q, err := parseOperatorDataProductionStatsQuery(c, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+		return
+	}
+	timezoneOffset, err := parseStatsTimezoneOffset(c.Query("timezone_offset"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.writeTrend(c, q, timezoneOffset)
+}
+
+func (h *DataProductionStatisticsHandler) writeTrend(c *gin.Context, q dataProductionStatsQuery, timezoneOffset string) {
 	bucketExpr, bucketArgs := statsBucketExpression(q.Granularity, timezoneOffset)
 	baseSQL, args := h.filteredProductionRecordsSQL(q)
 	query := fmt.Sprintf(`
@@ -449,6 +509,29 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 		return
 	}
 
+	h.writeBreakdown(c, q, pagination)
+}
+
+// GetOperatorBreakdown returns paginated data production breakdown for the current data collector.
+func (h *DataProductionStatisticsHandler) GetOperatorBreakdown(c *gin.Context) {
+	q, err := parseOperatorDataProductionStatsQuery(c, false)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+		return
+	}
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+
+	h.writeBreakdown(c, q, pagination)
+}
+
+func (h *DataProductionStatisticsHandler) writeBreakdown(c *gin.Context, q dataProductionStatsQuery, pagination PaginationParams) {
 	dimension := strings.TrimSpace(c.DefaultQuery("dimension", "source"))
 	idExpr, nameExpr, err := statsBreakdownExpressions(dimension)
 	if err != nil {
@@ -489,6 +572,26 @@ func (h *DataProductionStatisticsHandler) GetBreakdown(c *gin.Context) {
 		HasNext:   int64(pagination.Offset+pagination.Limit) < total,
 		HasPrev:   pagination.Offset > 0,
 	})
+}
+
+func scopeDataProductionStatsQueryToCurrentCollector(c *gin.Context, q *dataProductionStatsQuery) bool {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return false
+	}
+	if claims.Role != "data_collector" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return false
+	}
+
+	operatorID := strings.TrimSpace(claims.OperatorID)
+	if operatorID == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "collector identity missing"})
+		return false
+	}
+	q.CollectorOperatorIDs = []string{operatorID}
+	return true
 }
 
 func dataProductionBreakdownCountSQL(idExpr string, baseSQL string) string {
