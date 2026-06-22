@@ -147,31 +147,8 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
-	// Validate device exists in robots table (if DB is configured)
-	if h.db != nil {
-		// Add independent 5s timeout to avoid blocking on slow DB queries
-		queryTimeout := 5 * time.Second
-		queryCtx, cancel := context.WithTimeout(r.Context(), queryTimeout)
-		defer cancel()
-
-		var count int
-		// #nosec G701 -- Set aside for now
-		if err := h.db.GetContext(queryCtx, &count,
-			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
-		); err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
-				logger.Printf("%s DB query timeout after %s (timeout_ms=%d): %v", recorderLogPrefix(deviceID), timeoutLogValue(queryTimeout), timeoutLogMilliseconds(queryTimeout), err)
-			} else {
-				logger.Printf("%s DB query error: %v", recorderLogPrefix(deviceID), err)
-			}
-		}
-		// Check count regardless of DB error (count defaults to 0 on error)
-		if count == 0 {
-			logger.Printf("%s robot not found in database", recorderLogPrefix(deviceID))
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
+	if !h.authorizeRecorderWebSocket(w, r, deviceID) {
+		return
 	}
 
 	// Allow any origin in dev; tighten in production

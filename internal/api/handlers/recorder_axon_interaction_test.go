@@ -7,6 +7,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -794,6 +795,145 @@ func TestOldRecorderDisconnectAfterReplacementDoesNotRevertTasks(t *testing.T) {
 	assertRecorderInteractionTaskStatus(t, db, "task-current-ready", "ready")
 }
 
+func TestRecorderWebSocketAuthRejectsMissingBearerToken(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
+
+	_, resp, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err == nil {
+		t.Fatalf("dial without bearer token succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%v want=%d err=%v", recorderWebSocketDialStatus(resp), http.StatusUnauthorized, err)
+	}
+	if got := resp.Header.Get("WWW-Authenticate"); got != "Bearer" {
+		t.Fatalf("WWW-Authenticate=%q want Bearer", got)
+	}
+}
+
+func TestRecorderWebSocketAuthRejectsTokenForDifferentDevice(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
+	seedRecorderInteractionDevice(t, db, "robot-002", 2, 102)
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-002")
+
+	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
+	if err == nil {
+		t.Fatalf("dial with another device token succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%v want=%d err=%v", recorderWebSocketDialStatus(resp), http.StatusUnauthorized, err)
+	}
+}
+
+func TestRecorderWebSocketAuthRejectsInactiveRobot(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
+	if _, err := db.Exec(`UPDATE robots SET status = 'inactive' WHERE device_id = 'robot-001'`); err != nil {
+		t.Fatalf("mark robot inactive: %v", err)
+	}
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
+
+	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
+	if err == nil {
+		t.Fatalf("dial with inactive robot token succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%v want=%d err=%v", recorderWebSocketDialStatus(resp), http.StatusUnauthorized, err)
+	}
+}
+
+func TestRecorderWebSocketAuthRejectsRevokedToken(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
+	if _, err := db.Exec(`
+		UPDATE ws_client_auth_tokens
+		SET revoked_at = ?
+		WHERE token_hash = ?
+	`, time.Now().UTC(), hashWSClientAuthToken(recorderWSAuthToken("robot-001"))); err != nil {
+		t.Fatalf("revoke ws client token: %v", err)
+	}
+
+	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
+	if err == nil {
+		t.Fatalf("dial with revoked token succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%v want=%d err=%v", recorderWebSocketDialStatus(resp), http.StatusUnauthorized, err)
+	}
+}
+
+func TestRecorderWebSocketAuthRejectsDeletedRobot(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
+	if _, err := db.Exec(`UPDATE robots SET deleted_at = ? WHERE device_id = 'robot-001'`, time.Now().UTC()); err != nil {
+		t.Fatalf("mark robot deleted: %v", err)
+	}
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
+
+	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
+	if err == nil {
+		t.Fatalf("dial with deleted robot token succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%v want=%d err=%v", recorderWebSocketDialStatus(resp), http.StatusUnauthorized, err)
+	}
+}
+
+func TestRecorderWebSocketAuthUpdatesLastUsedAt(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
+	axon := connectFakeRecorderAxon(t, wsURL)
+	defer axon.closeNow()
+
+	var lastUsedAt sql.NullTime
+	if err := db.Get(&lastUsedAt, `
+		SELECT last_used_at
+		FROM ws_client_auth_tokens
+		WHERE token_hash = ?
+	`, hashWSClientAuthToken(recorderWSAuthToken("robot-001"))); err != nil {
+		t.Fatalf("query last_used_at: %v", err)
+	}
+	if !lastUsedAt.Valid {
+		t.Fatalf("last_used_at was not updated after successful websocket auth")
+	}
+}
+
+func TestRecorderWebSocketAuthDBUnavailableReturnsServiceUnavailable(t *testing.T) {
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, nil)
+	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
+
+	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
+	if err == nil {
+		t.Fatalf("dial with nil db succeeded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status=%v want=%d err=%v", recorderWebSocketDialStatus(resp), http.StatusServiceUnavailable, err)
+	}
+}
+
 func newRecorderInteractionRouter(handler *RecorderHandler) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -869,9 +1009,22 @@ func newRecorderInteractionDB(t *testing.T) *sqlx.DB {
 	if _, err := db.Exec(`CREATE TABLE robots (
 		id INTEGER PRIMARY KEY,
 		device_id TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'active',
 		deleted_at TIMESTAMP NULL
 	)`); err != nil {
 		t.Fatalf("create robots schema: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE ws_client_auth_tokens (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		robot_id INTEGER NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		token_version TEXT NOT NULL DEFAULT 'kws_v1',
+		created_at TIMESTAMP,
+		last_rotated_at TIMESTAMP NULL,
+		last_used_at TIMESTAMP NULL,
+		revoked_at TIMESTAMP NULL
+	)`); err != nil {
+		t.Fatalf("create ws client token schema: %v", err)
 	}
 	if _, err := db.Exec(`CREATE TABLE workstations (
 		id INTEGER PRIMARY KEY,
@@ -901,7 +1054,7 @@ func newRecorderInteractionDB(t *testing.T) *sqlx.DB {
 
 func seedRecorderInteractionDevice(t *testing.T, db *sqlx.DB, deviceID string, robotID int64, workstationID int64) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO robots (id, device_id) VALUES (?, ?)`, robotID, deviceID); err != nil {
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, status) VALUES (?, ?, 'active')`, robotID, deviceID); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (?, ?)`, workstationID, robotID); err != nil {
@@ -1575,6 +1728,9 @@ type fakeRecorderAxon struct {
 
 func newRecorderWebSocketTestServer(t *testing.T, handler *RecorderHandler, deviceID string) string {
 	t.Helper()
+	if handler.db != nil {
+		seedRecorderWSClientTokenForDevice(t, handler.db, deviceID)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.HandleWebSocket(w, r, deviceID)
 	}))
@@ -1584,7 +1740,7 @@ func newRecorderWebSocketTestServer(t *testing.T, handler *RecorderHandler, devi
 
 func connectFakeRecorderAxon(t *testing.T, wsURL string) *fakeRecorderAxon {
 	t.Helper()
-	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	conn, _, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
 	if err != nil {
 		t.Fatalf("dial fake recorder websocket: %v", err)
 	}
@@ -1608,6 +1764,39 @@ func connectFakeRecorderAxon(t *testing.T, wsURL string) *fakeRecorderAxon {
 		}
 	}()
 	return axon
+}
+
+func recorderWebSocketDialOptions(token string) *websocket.DialOptions {
+	headers := http.Header{}
+	if token != "" {
+		headers.Set("Authorization", "Bearer "+token)
+	}
+	return &websocket.DialOptions{HTTPHeader: headers}
+}
+
+func recorderWebSocketDialStatus(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}
+
+func recorderWSAuthToken(deviceID string) string {
+	return "kws_v1_test_token_" + strings.ReplaceAll(deviceID, "-", "_")
+}
+
+func seedRecorderWSClientTokenForDevice(t *testing.T, db *sqlx.DB, deviceID string) {
+	t.Helper()
+	var robotID int64
+	if err := db.Get(&robotID, `SELECT id FROM robots WHERE device_id = ?`, deviceID); err != nil {
+		t.Fatalf("query robot id for ws token: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT OR IGNORE INTO ws_client_auth_tokens (robot_id, token_hash, token_version, created_at)
+		VALUES (?, ?, ?, ?)
+	`, robotID, hashWSClientAuthToken(recorderWSAuthToken(deviceID)), wsClientTokenVersion, time.Now().UTC()); err != nil {
+		t.Fatalf("seed ws client token: %v", err)
+	}
 }
 
 func (f *fakeRecorderAxon) receiveRPC(t *testing.T, wantAction string) services.RPCRequest {

@@ -52,6 +52,7 @@ type DeviceRegistrationResponse struct {
 	RobotType         string            `json:"robot_type"`
 	RobotTypeID       string            `json:"robot_type_id"`
 	RobotID           string            `json:"robot_id"`
+	WSClientAuthToken string            `json:"ws_client_auth_token"`
 	CallbackAllowlist CallbackAllowlist `json:"callback_allowlist"`
 }
 
@@ -187,6 +188,14 @@ func (h *DeviceRegistrationHandler) registerDevice(factoryName, robotTypeModel s
 		return DeviceRegistrationResponse{}, fmt.Errorf("get inserted robot id: %w", err)
 	}
 
+	wsClientAuthToken, err := generateWSClientAuthToken()
+	if err != nil {
+		return DeviceRegistrationResponse{}, fmt.Errorf("generate ws client auth token: %w", err)
+	}
+	if err := insertWSClientAuthToken(tx, robotID, wsClientAuthToken, now); err != nil {
+		return DeviceRegistrationResponse{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return DeviceRegistrationResponse{}, fmt.Errorf("commit transaction: %w", err)
 	}
@@ -198,6 +207,7 @@ func (h *DeviceRegistrationHandler) registerDevice(factoryName, robotTypeModel s
 		RobotType:         robotType.Model,
 		RobotTypeID:       strconv.FormatInt(robotType.ID, 10),
 		RobotID:           strconv.FormatInt(robotID, 10),
+		WSClientAuthToken: wsClientAuthToken,
 		CallbackAllowlist: h.callbackURLs.allowlist(),
 	}, nil
 }

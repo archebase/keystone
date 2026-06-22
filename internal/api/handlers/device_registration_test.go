@@ -6,9 +6,12 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -99,6 +102,9 @@ func TestDeviceRegistrationHandlerRegisterDevice_Success(t *testing.T) {
 	if resp.Factory != "上海一厂" || resp.RobotType != "搬运机器人" || resp.RobotID == "" {
 		t.Fatalf("unexpected response fields: %#v", resp)
 	}
+	if !strings.HasPrefix(resp.WSClientAuthToken, "kws_v1_") {
+		t.Fatalf("ws_client_auth_token=%q want kws_v1_ prefix", resp.WSClientAuthToken)
+	}
 	if !isASCII(resp.DeviceID) {
 		t.Fatalf("device_id is not ASCII: %q", resp.DeviceID)
 	}
@@ -115,6 +121,33 @@ func TestDeviceRegistrationHandlerRegisterDevice_Success(t *testing.T) {
 	}
 	if robotCount != 1 {
 		t.Fatalf("robot count=%d want=1", robotCount)
+	}
+
+	robotID, err := strconv.ParseInt(resp.RobotID, 10, 64)
+	if err != nil {
+		t.Fatalf("parse robot_id: %v", err)
+	}
+	tokenHash := sha256.Sum256([]byte(resp.WSClientAuthToken))
+	var storedToken struct {
+		RobotID      int64  `db:"robot_id"`
+		TokenHash    string `db:"token_hash"`
+		TokenVersion string `db:"token_version"`
+	}
+	if err := db.Get(&storedToken, `
+		SELECT robot_id, token_hash, token_version
+		FROM ws_client_auth_tokens
+		WHERE robot_id = ?
+	`, robotID); err != nil {
+		t.Fatalf("query ws client token: %v", err)
+	}
+	if storedToken.RobotID != robotID || storedToken.TokenVersion != "kws_v1" {
+		t.Fatalf("unexpected stored token metadata: %#v", storedToken)
+	}
+	if storedToken.TokenHash != hex.EncodeToString(tokenHash[:]) {
+		t.Fatalf("stored token_hash=%q does not match response token", storedToken.TokenHash)
+	}
+	if strings.Contains(storedToken.TokenHash, resp.WSClientAuthToken) {
+		t.Fatalf("stored token hash appears to contain plaintext token")
 	}
 
 	var nextSequence int64
@@ -144,6 +177,12 @@ func TestDeviceRegistrationHandlerRegisterDevice_RepeatedRequestAllocatesNewDevi
 	if first.RobotID == second.RobotID {
 		t.Fatalf("expected distinct robot ids, got %q", first.RobotID)
 	}
+	if first.WSClientAuthToken == "" || second.WSClientAuthToken == "" {
+		t.Fatalf("expected non-empty ws client tokens: first=%q second=%q", first.WSClientAuthToken, second.WSClientAuthToken)
+	}
+	if first.WSClientAuthToken == second.WSClientAuthToken {
+		t.Fatalf("expected distinct ws client tokens, got %q", first.WSClientAuthToken)
+	}
 
 	var robotCount int
 	if err := db.Get(&robotCount, "SELECT COUNT(*) FROM robots"); err != nil {
@@ -151,6 +190,40 @@ func TestDeviceRegistrationHandlerRegisterDevice_RepeatedRequestAllocatesNewDevi
 	}
 	if robotCount != 2 {
 		t.Fatalf("robot count=%d want=2", robotCount)
+	}
+
+	var tokenCount int
+	if err := db.Get(&tokenCount, "SELECT COUNT(*) FROM ws_client_auth_tokens"); err != nil {
+		t.Fatalf("count ws client tokens: %v", err)
+	}
+	if tokenCount != 2 {
+		t.Fatalf("ws client token count=%d want=2", tokenCount)
+	}
+}
+
+func TestDeviceRegistrationHandlerRegisterDevice_TokenInsertFailureRollsBackRobot(t *testing.T) {
+	db := newTestDeviceRegistrationDB(t)
+	defer db.Close()
+	seedDeviceRegistrationFixtures(t, db)
+	if _, err := db.Exec(`DROP TABLE ws_client_auth_tokens`); err != nil {
+		t.Fatalf("drop ws client token table: %v", err)
+	}
+
+	router := newTestDeviceRegistrationRouter(t, db)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/devices/register", bytes.NewBufferString(`{"factory":"上海一厂","robot_type":"搬运机器人"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	var robotCount int
+	if err := db.Get(&robotCount, "SELECT COUNT(*) FROM robots"); err != nil {
+		t.Fatalf("count robots: %v", err)
+	}
+	if robotCount != 0 {
+		t.Fatalf("robot count=%d want=0", robotCount)
 	}
 }
 
@@ -239,6 +312,16 @@ func newTestDeviceRegistrationDB(t *testing.T) *sqlx.DB {
 			created_at TIMESTAMP,
 			updated_at TIMESTAMP,
 			deleted_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE ws_client_auth_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			robot_id INTEGER NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			token_version TEXT NOT NULL DEFAULT 'kws_v1',
+			created_at TIMESTAMP,
+			last_rotated_at TIMESTAMP NULL,
+			last_used_at TIMESTAMP NULL,
+			revoked_at TIMESTAMP NULL
 		)`,
 	}
 
