@@ -102,6 +102,12 @@ func TestDeviceRegistrationHandlerRegisterDevice_Success(t *testing.T) {
 	if !isASCII(resp.DeviceID) {
 		t.Fatalf("device_id is not ASCII: %q", resp.DeviceID)
 	}
+	if resp.CallbackAllowlist.AllowedHost != "192.168.1.20:9999" {
+		t.Fatalf("allowed_host=%q want 192.168.1.20:9999", resp.CallbackAllowlist.AllowedHost)
+	}
+	if resp.CallbackAllowlist.AllowedPathPrefix != "/api/v1/callbacks/" {
+		t.Fatalf("allowed_path_prefix=%q want /api/v1/callbacks/", resp.CallbackAllowlist.AllowedPathPrefix)
+	}
 
 	var robotCount int
 	if err := db.Get(&robotCount, "SELECT COUNT(*) FROM robots WHERE device_id = ?", resp.DeviceID); err != nil {
@@ -162,7 +168,7 @@ func TestDeviceRegistrationRoutes_DoNotConflictWithRobotDeviceRoutes(t *testing.
 	v1 := router.Group("/api/v1")
 
 	NewRobotHandler(nil, nil, nil).RegisterRoutes(v1)
-	NewDeviceRegistrationHandler(nil).RegisterRoutes(v1)
+	NewDeviceRegistrationHandler(nil, "http://192.168.1.20:9999").RegisterRoutes(v1)
 }
 
 func registerTestDevice(t *testing.T, router *gin.Engine) DeviceRegistrationResponse {
@@ -188,7 +194,7 @@ func newTestDeviceRegistrationRouter(t *testing.T, db *sqlx.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
-	handler := NewDeviceRegistrationHandler(db)
+	handler := NewDeviceRegistrationHandler(db, "http://192.168.1.20:9999")
 	v1 := router.Group("/api/v1")
 	handler.RegisterRoutes(v1)
 

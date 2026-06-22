@@ -27,16 +27,25 @@ import (
 
 // RecorderHandler handles REST and WebSocket traffic for Axon Recorder RPC.
 type RecorderHandler struct {
-	hub         *services.RecorderHub
-	transferHub *services.TransferHub
-	stateBroker *services.DeviceStateBroker
-	cfg         *config.RecorderConfig
-	db          *sqlx.DB
+	hub          *services.RecorderHub
+	transferHub  *services.TransferHub
+	stateBroker  *services.DeviceStateBroker
+	cfg          *config.RecorderConfig
+	db           *sqlx.DB
+	callbackURLs callbackURLs
 }
 
 // NewRecorderHandler creates a new RecorderHandler.
 func NewRecorderHandler(hub *services.RecorderHub, cfg *config.RecorderConfig, db *sqlx.DB) *RecorderHandler {
 	return &RecorderHandler{hub: hub, cfg: cfg, db: db}
+}
+
+// SetCallbackPublicBaseURL configures callback URLs sent in recorder task config RPCs.
+func (h *RecorderHandler) SetCallbackPublicBaseURL(callbackPublicBaseURL string) {
+	if h == nil {
+		return
+	}
+	h.callbackURLs = newCallbackURLs(callbackPublicBaseURL)
 }
 
 // SetDeviceStateDeps enables device connection/state event publishing.
@@ -256,11 +265,25 @@ func (h *RecorderHandler) Config(c *gin.Context) {
 		return
 	}
 
+	h.overrideTaskConfigCallbackURLs(params)
+
 	if !h.callRPC(c, "config", params) {
 		return
 	}
 
 	advanceTaskPendingToReady(h.db, c.Param("device_id"), taskID, "config")
+}
+
+func (h *RecorderHandler) overrideTaskConfigCallbackURLs(params map[string]interface{}) {
+	if h == nil || !h.callbackURLs.configured() || params == nil {
+		return
+	}
+	taskConfig, ok := params["task_config"].(map[string]interface{})
+	if !ok || taskConfig == nil {
+		return
+	}
+	taskConfig["start_callback_url"] = h.callbackURLs.startURL()
+	taskConfig["finish_callback_url"] = h.callbackURLs.finishURL()
 }
 
 func (h *RecorderHandler) requireTaskConfigurable(c *gin.Context, taskID string) bool {

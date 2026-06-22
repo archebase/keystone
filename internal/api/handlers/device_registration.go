@@ -26,12 +26,16 @@ var (
 
 // DeviceRegistrationHandler handles install-time device registration requests.
 type DeviceRegistrationHandler struct {
-	db *sqlx.DB
+	db           *sqlx.DB
+	callbackURLs callbackURLs
 }
 
 // NewDeviceRegistrationHandler creates a new DeviceRegistrationHandler.
-func NewDeviceRegistrationHandler(db *sqlx.DB) *DeviceRegistrationHandler {
-	return &DeviceRegistrationHandler{db: db}
+func NewDeviceRegistrationHandler(db *sqlx.DB, callbackPublicBaseURL string) *DeviceRegistrationHandler {
+	return &DeviceRegistrationHandler{
+		db:           db,
+		callbackURLs: newCallbackURLs(callbackPublicBaseURL),
+	}
 }
 
 // DeviceRegistrationRequest represents the request body for device registration.
@@ -42,12 +46,13 @@ type DeviceRegistrationRequest struct {
 
 // DeviceRegistrationResponse represents a successful device registration.
 type DeviceRegistrationResponse struct {
-	DeviceID    string `json:"device_id"`
-	Factory     string `json:"factory"`
-	FactoryID   string `json:"factory_id"`
-	RobotType   string `json:"robot_type"`
-	RobotTypeID string `json:"robot_type_id"`
-	RobotID     string `json:"robot_id"`
+	DeviceID          string            `json:"device_id"`
+	Factory           string            `json:"factory"`
+	FactoryID         string            `json:"factory_id"`
+	RobotType         string            `json:"robot_type"`
+	RobotTypeID       string            `json:"robot_type_id"`
+	RobotID           string            `json:"robot_id"`
+	CallbackAllowlist CallbackAllowlist `json:"callback_allowlist"`
 }
 
 type deviceRegistrationFactoryRow struct {
@@ -187,12 +192,13 @@ func (h *DeviceRegistrationHandler) registerDevice(factoryName, robotTypeModel s
 	}
 
 	return DeviceRegistrationResponse{
-		DeviceID:    deviceID,
-		Factory:     factory.Name,
-		FactoryID:   strconv.FormatInt(factory.ID, 10),
-		RobotType:   robotType.Model,
-		RobotTypeID: strconv.FormatInt(robotType.ID, 10),
-		RobotID:     strconv.FormatInt(robotID, 10),
+		DeviceID:          deviceID,
+		Factory:           factory.Name,
+		FactoryID:         strconv.FormatInt(factory.ID, 10),
+		RobotType:         robotType.Model,
+		RobotTypeID:       strconv.FormatInt(robotType.ID, 10),
+		RobotID:           strconv.FormatInt(robotID, 10),
+		CallbackAllowlist: h.callbackURLs.allowlist(),
 	}, nil
 }
 

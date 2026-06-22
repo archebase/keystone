@@ -1245,6 +1245,7 @@ func TestRecorderWebSocketRPCActionProtocol(t *testing.T) {
 
 	hub := services.NewRecorderHub()
 	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler.SetCallbackPublicBaseURL("http://192.168.1.20:9999")
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
 	axon := connectFakeRecorderAxon(t, wsURL)
 	getState := axon.receiveRPC(t, "get_state")
@@ -1264,13 +1265,19 @@ func TestRecorderWebSocketRPCActionProtocol(t *testing.T) {
 			name:       "config forwards task_config payload",
 			method:     http.MethodPost,
 			path:       "/recorder/robot-001/config",
-			body:       `{"task_config":{"task_id":"task-protocol","device_id":"robot-001"}}`,
+			body:       `{"task_config":{"task_id":"task-protocol","device_id":"robot-001","start_callback_url":"http://localhost:5174/api/v1/callbacks/start","finish_callback_url":"http://localhost:5174/api/v1/callbacks/finish"}}`,
 			wantAction: "config",
 			check: func(t *testing.T, req services.RPCRequest) {
 				t.Helper()
 				tc, ok := req.Params["task_config"].(map[string]interface{})
 				if !ok || tc["task_id"] != "task-protocol" || tc["device_id"] != "robot-001" {
 					t.Fatalf("config params=%#v missing task_config", req.Params)
+				}
+				if tc["start_callback_url"] != "http://192.168.1.20:9999/api/v1/callbacks/start" {
+					t.Fatalf("start_callback_url=%#v", tc["start_callback_url"])
+				}
+				if tc["finish_callback_url"] != "http://192.168.1.20:9999/api/v1/callbacks/finish" {
+					t.Fatalf("finish_callback_url=%#v", tc["finish_callback_url"])
 				}
 			},
 		},

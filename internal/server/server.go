@@ -101,6 +101,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	stateBroker := services.NewDeviceStateBroker()
 	recorderHub := services.NewRecorderHub()
 	recorderHandler := handlers.NewRecorderHandler(recorderHub, &cfg.AxonRecorder, db)
+	recorderHandler.SetCallbackPublicBaseURL(cfg.Server.CallbackPublicBaseURL)
 	recorderRPCTimeout := time.Duration(cfg.AxonRecorder.ResponseTimeout) * time.Second
 
 	// Create TransferHub and TransferHandler for Transfer Service
@@ -119,6 +120,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create TaskHandler for task configuration
 	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout, transferWriteTimeout)
+	taskHandler.SetCallbackPublicBaseURL(cfg.Server.CallbackPublicBaseURL)
 
 	// Create database-dependent handlers only when DB is available
 	var (
@@ -144,7 +146,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub, cfg.Sync.DPConfigPath)
-		deviceRegistrationHandler = handlers.NewDeviceRegistrationHandler(db)
+		deviceRegistrationHandler = handlers.NewDeviceRegistrationHandler(db, cfg.Server.CallbackPublicBaseURL)
 		factoryHandler = handlers.NewFactoryHandler(db)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
