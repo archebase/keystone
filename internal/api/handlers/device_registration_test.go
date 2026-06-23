@@ -227,6 +227,207 @@ func TestDeviceRegistrationHandlerRegisterDevice_TokenInsertFailureRollsBackRobo
 	}
 }
 
+func TestDeviceRegistrationHandlerRotateWSClientAuthToken_SuccessRevokesOldToken(t *testing.T) {
+	db := newTestDeviceRegistrationDB(t)
+	defer db.Close()
+	seedDeviceRegistrationFixtures(t, db)
+
+	router := newTestDeviceRegistrationRouter(t, db)
+	registered := registerTestDevice(t, router)
+	robotID, err := strconv.ParseInt(registered.RobotID, 10, 64)
+	if err != nil {
+		t.Fatalf("parse robot_id: %v", err)
+	}
+	oldHashBytes := sha256.Sum256([]byte(registered.WSClientAuthToken))
+	oldHash := hex.EncodeToString(oldHashBytes[:])
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots/"+registered.RobotID+"/ws-client-auth-token/rotate", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		DeviceID          string `json:"device_id"`
+		RobotID           string `json:"robot_id"`
+		WSClientAuthToken string `json:"ws_client_auth_token"`
+		RotatedAt         string `json:"rotated_at"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+	}
+	if resp.DeviceID != registered.DeviceID || resp.RobotID != registered.RobotID {
+		t.Fatalf("unexpected rotate response identity: %#v", resp)
+	}
+	if !strings.HasPrefix(resp.WSClientAuthToken, "kws_v1_") {
+		t.Fatalf("ws_client_auth_token=%q want kws_v1_ prefix", resp.WSClientAuthToken)
+	}
+	if resp.WSClientAuthToken == registered.WSClientAuthToken {
+		t.Fatalf("rotated token should differ from old token")
+	}
+	if strings.TrimSpace(resp.RotatedAt) == "" {
+		t.Fatalf("rotated_at is empty")
+	}
+
+	var revokedOldCount int
+	if err := db.Get(&revokedOldCount, `
+		SELECT COUNT(*)
+		FROM ws_client_auth_tokens
+		WHERE robot_id = ? AND token_hash = ? AND revoked_at IS NOT NULL AND last_rotated_at IS NOT NULL
+	`, robotID, oldHash); err != nil {
+		t.Fatalf("count revoked old token: %v", err)
+	}
+	if revokedOldCount != 1 {
+		t.Fatalf("revoked old token count=%d want=1", revokedOldCount)
+	}
+
+	newHashBytes := sha256.Sum256([]byte(resp.WSClientAuthToken))
+	newHash := hex.EncodeToString(newHashBytes[:])
+	var activeTokenHash string
+	if err := db.Get(&activeTokenHash, `
+		SELECT token_hash
+		FROM ws_client_auth_tokens
+		WHERE robot_id = ? AND revoked_at IS NULL
+	`, robotID); err != nil {
+		t.Fatalf("query active token hash: %v", err)
+	}
+	if activeTokenHash != newHash {
+		t.Fatalf("active token hash=%q does not match rotated token", activeTokenHash)
+	}
+	if strings.Contains(activeTokenHash, resp.WSClientAuthToken) {
+		t.Fatalf("stored token hash appears to contain plaintext token")
+	}
+}
+
+func TestDeviceRegistrationHandlerRotateWSClientAuthToken_SucceedsWithoutActiveToken(t *testing.T) {
+	db := newTestDeviceRegistrationDB(t)
+	defer db.Close()
+	seedDeviceRegistrationFixtures(t, db)
+
+	router := newTestDeviceRegistrationRouter(t, db)
+	registered := registerTestDevice(t, router)
+	if _, err := db.Exec(`
+		UPDATE ws_client_auth_tokens
+		SET revoked_at = ?, last_rotated_at = ?
+		WHERE robot_id = ?
+	`, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", registered.RobotID); err != nil {
+		t.Fatalf("revoke seeded token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots/"+registered.RobotID+"/ws-client-auth-token/rotate", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp RotateWSClientAuthTokenResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+	}
+	if !strings.HasPrefix(resp.WSClientAuthToken, "kws_v1_") {
+		t.Fatalf("ws_client_auth_token=%q want kws_v1_ prefix", resp.WSClientAuthToken)
+	}
+
+	var activeTokenCount int
+	if err := db.Get(&activeTokenCount, `
+		SELECT COUNT(*)
+		FROM ws_client_auth_tokens
+		WHERE robot_id = ? AND revoked_at IS NULL
+	`, registered.RobotID); err != nil {
+		t.Fatalf("count active tokens: %v", err)
+	}
+	if activeTokenCount != 1 {
+		t.Fatalf("active token count=%d want=1", activeTokenCount)
+	}
+}
+
+func TestDeviceRegistrationHandlerRotateWSClientAuthToken_RobotNotFound(t *testing.T) {
+	db := newTestDeviceRegistrationDB(t)
+	defer db.Close()
+	seedDeviceRegistrationFixtures(t, db)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at)
+		VALUES (99, 12, 'deleted-device', 3, 'active', '2026-01-01T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("seed deleted robot: %v", err)
+	}
+
+	router := newTestDeviceRegistrationRouter(t, db)
+	for _, path := range []string{
+		"/api/v1/robots/42/ws-client-auth-token/rotate",
+		"/api/v1/robots/99/ws-client-auth-token/rotate",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d want=%d body=%s", path, w.Code, http.StatusNotFound, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "robot not found") {
+			t.Fatalf("%s unexpected error response: %s", path, w.Body.String())
+		}
+	}
+}
+
+func TestDeviceRegistrationHandlerRotateWSClientAuthToken_RobotNotActive(t *testing.T) {
+	db := newTestDeviceRegistrationDB(t)
+	defer db.Close()
+	seedDeviceRegistrationFixtures(t, db)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, robot_type_id, device_id, factory_id, status)
+		VALUES (88, 12, 'maintenance-device', 3, 'maintenance')
+	`); err != nil {
+		t.Fatalf("seed maintenance robot: %v", err)
+	}
+
+	router := newTestDeviceRegistrationRouter(t, db)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots/88/ws-client-auth-token/rotate", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "robot is not active") {
+		t.Fatalf("unexpected error response: %s", w.Body.String())
+	}
+
+	var tokenCount int
+	if err := db.Get(&tokenCount, "SELECT COUNT(*) FROM ws_client_auth_tokens WHERE robot_id = 88"); err != nil {
+		t.Fatalf("count tokens: %v", err)
+	}
+	if tokenCount != 0 {
+		t.Fatalf("token count=%d want=0", tokenCount)
+	}
+}
+
+func TestDeviceRegistrationHandlerRotateWSClientAuthToken_InvalidRobotID(t *testing.T) {
+	db := newTestDeviceRegistrationDB(t)
+	defer db.Close()
+
+	router := newTestDeviceRegistrationRouter(t, db)
+	for _, path := range []string{
+		"/api/v1/robots/not-a-number/ws-client-auth-token/rotate",
+		"/api/v1/robots/0/ws-client-auth-token/rotate",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s status=%d want=%d body=%s", path, w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "invalid robot id") {
+			t.Fatalf("%s unexpected error response: %s", path, w.Body.String())
+		}
+	}
+}
+
 func TestFormatRegisteredDeviceID_DoesNotTruncateLargeValues(t *testing.T) {
 	got := formatRegisteredDeviceID(12345, 98765, 1234567)
 	want := "AB-F12345-T98765-1234567"
@@ -241,7 +442,9 @@ func TestDeviceRegistrationRoutes_DoNotConflictWithRobotDeviceRoutes(t *testing.
 	v1 := router.Group("/api/v1")
 
 	NewRobotHandler(nil, nil, nil).RegisterRoutes(v1)
-	NewDeviceRegistrationHandler(nil, "http://192.168.1.20:9999").RegisterRoutes(v1)
+	handler := NewDeviceRegistrationHandler(nil, "http://192.168.1.20:9999")
+	handler.RegisterRoutes(v1)
+	handler.RegisterAdminRoutes(v1)
 }
 
 func registerTestDevice(t *testing.T, router *gin.Engine) DeviceRegistrationResponse {
@@ -270,6 +473,7 @@ func newTestDeviceRegistrationRouter(t *testing.T, db *sqlx.DB) *gin.Engine {
 	handler := NewDeviceRegistrationHandler(db, "http://192.168.1.20:9999")
 	v1 := router.Group("/api/v1")
 	handler.RegisterRoutes(v1)
+	handler.RegisterAdminRoutes(v1)
 
 	return router
 }

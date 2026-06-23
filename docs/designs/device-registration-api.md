@@ -204,10 +204,85 @@ The table intentionally does not define a database foreign key. Existing Keyston
 style keeps these relationships application-managed, and this avoids introducing migration
 ordering and SQLite fixture complexity.
 
-This version does not provide a rotate endpoint. `last_rotated_at` and `revoked_at` are
-reserved for a future explicit token rotation or revocation flow.
+`last_rotated_at` and `revoked_at` are used by the explicit token rotation flow described
+below.
 
-## 9. Recorder WebSocket Authentication
+## 9. WebSocket Client Token Rotation
+
+Keystone provides an admin-only token rotation endpoint for cases where the robot-side
+plaintext token was lost, exposed, or needs to be replaced during maintenance.
+
+| Method | Path | Auth | Caller |
+|------|------|------|------|
+| POST | `/api/v1/robots/:id/ws-client-auth-token/rotate` | Admin JWT | Synapse admin or operator-run admin tool |
+
+The endpoint uses `robots.id` from the path, not `device_id`, matching the existing robot
+management API style.
+
+### 9.1 Rotation Response
+
+Success returns `200 OK`.
+
+```json
+{
+  "device_id": "AB-F0001-T0003-000001",
+  "robot_id": "9",
+  "ws_client_auth_token": "kws_v1_3Z2iX5lFh7mYxLQd9P0sAqzF2Z3w4R5t6U7v8W9x0Y",
+  "rotated_at": "2026-06-23T10:15:30Z"
+}
+```
+
+| Field | Meaning |
+|------|------|
+| `device_id` | Current `robots.device_id` for the rotated robot |
+| `robot_id` | `robots.id`, encoded as a string for existing API style |
+| `ws_client_auth_token` | New one-time plaintext token for Axon recorder WebSocket client authentication |
+| `rotated_at` | UTC timestamp used for revoking old active tokens and creating the new token |
+
+The response must not include old token hashes or revoked token rows. The plaintext token
+is returned only once and must not be logged.
+
+### 9.2 Rotation Behavior
+
+Rotation is transactional:
+
+1. Lock and validate the target `robots` row.
+2. Reject soft-deleted robots as not found.
+3. Reject robots whose `status` is not `active`.
+4. Generate a new `kws_v1_` token.
+5. Set `revoked_at = rotated_at` and `last_rotated_at = rotated_at` on every active
+   `ws_client_auth_tokens` row for the robot.
+6. Insert one new active `ws_client_auth_tokens` row with the SHA-256 hash of the new
+   plaintext token.
+7. Commit and return the new plaintext token once.
+
+If the robot currently has no active token, rotation still succeeds and inserts a new
+active token. This supports recovery from failed manual cleanup or missing seed data.
+
+Old tokens stop authenticating new WebSocket handshakes immediately after the transaction
+commits. Keystone does not proactively close an already-established recorder WebSocket
+connection; that connection will need the new token after it disconnects and reconnects.
+
+### 9.3 Rotation Error Responses
+
+Errors follow Keystone's usual JSON shape:
+
+```json
+{
+  "error": "robot not found"
+}
+```
+
+| Status | Condition | Error |
+|------|------|------|
+| `400` | Path `id` is not a valid positive integer | `invalid robot id` |
+| `400` | Robot exists but `status` is not `active` | `robot is not active` |
+| `401` | Missing, expired, or invalid admin JWT | Existing auth middleware response |
+| `403` | Authenticated user is not an admin | Existing role middleware response |
+| `404` | No non-deleted robot with matching `robots.id` | `robot not found` |
+| `500` | Token generation, token update, token insert, or transaction failure | `failed to rotate ws client auth token` |
+
+## 10. Recorder WebSocket Authentication
 
 This token is required only for the Axon recorder WebSocket in this implementation. Axon
 transfer WebSocket remains unchanged because Axon transfer does not currently send a
@@ -277,7 +352,7 @@ Logs may include `device_id` and a broad reason such as `missing bearer token` o
 `invalid token`, but must not include token plaintext or distinguish "not found" from
 "belongs to another device".
 
-## 10. Concurrency
+## 11. Concurrency
 
 Concurrent requests with the same `factory` and `robot_type` are supported. Keystone uses
 `device_id_sequences` to serialize allocation for each `(factory_id, robot_type_id)` pair.
@@ -305,7 +380,12 @@ The selected `next_sequence` is used in `device_id`, then Keystone increments
 Token insertion is part of the same transaction. If inserting the token row fails, the
 robot insert and device sequence increment are rolled back with the transaction.
 
-## 11. Install Script Usage
+Token rotation also runs in a transaction. Concurrent rotations for the same robot must
+serialize on the `robots` row or token rows so only the final committed response contains
+the active token. A client should treat any earlier concurrent rotation response as stale if
+another successful rotation completes later.
+
+## 12. Install Script Usage
 
 Example:
 
@@ -330,14 +410,14 @@ Expected script behavior:
 `ws_client_auth_token_file`, it writes the token to `/var/lib/axon/secrets/ws_client.token`
 or the path supplied by `--ws-client-token-file`.
 
-## 12. Implementation Notes
+## 13. Implementation Notes
 
 Implementation files:
 
 | File | Purpose |
 |------|------|
-| `internal/api/handlers/device_registration.go` | Request validation, transaction, sequence allocation, robot insertion |
-| `internal/api/handlers/ws_client_auth.go` | Token generation, hashing, storage, and recorder WebSocket validation |
+| `internal/api/handlers/device_registration.go` | Request validation, registration transaction, sequence allocation, robot insertion, token rotation response handling |
+| `internal/api/handlers/ws_client_auth.go` | Token generation, hashing, storage, rotation helpers, and recorder WebSocket validation |
 | `internal/server/server.go` | Handler construction and route registration |
 | `internal/storage/database/migrations/000002_device_id_sequences.up.sql` | Sequence table migration |
 | `internal/storage/database/migrations/000002_device_id_sequences.down.sql` | Sequence table rollback |
@@ -356,18 +436,25 @@ TDD coverage should include:
 6. Recorder WebSocket with correct token and device ID connects.
 7. Token for robot A cannot connect as robot B.
 8. Deleted or non-active robot cannot authenticate.
+9. Rotation returns a new `ws_client_auth_token` with `kws_v1_` prefix.
+10. Rotation revokes prior active tokens and stores only the new token hash.
+11. Rotation succeeds when the robot has no active token.
+12. Rotation returns `404` for missing or soft-deleted robots.
+13. Rotation returns `400` for non-active robots.
+14. Old token fails and new token succeeds on recorder WebSocket authentication after
+    rotation.
 
 Out of scope for this implementation:
 
 - Axon transfer WebSocket token authentication.
 - Token query parameters, `X-API-Key`, or `Sec-WebSocket-Protocol`.
-- Token rotation API.
 - Register endpoint authentication.
 
 Validation performed during implementation:
 
 ```bash
 go test ./internal/api/handlers -run 'TestDeviceRegistration|TestFormatRegisteredDeviceID|TestDeviceRegistrationRoutes' -v
+go test ./internal/api/handlers -run 'TestDeviceRegistrationHandlerRotateWSClientAuthToken' -v
 go test ./...
 ```
 

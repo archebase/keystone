@@ -298,6 +298,8 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.deviceRegistration != nil {
 		s.deviceRegistration.RegisterRoutes(v1Tasks)
+		adminDeviceCredentials := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
+		s.deviceRegistration.RegisterAdminRoutes(adminDeviceCredentials)
 	}
 	if s.factory != nil {
 		s.factory.RegisterRoutes(v1Tasks)

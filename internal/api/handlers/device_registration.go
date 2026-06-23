@@ -22,6 +22,8 @@ import (
 var (
 	errRegistrationFactoryNotFound   = errors.New("factory not found")
 	errRegistrationRobotTypeNotFound = errors.New("robot_type not found")
+	errRegistrationRobotNotFound     = errors.New("robot not found")
+	errRegistrationRobotNotActive    = errors.New("robot is not active")
 )
 
 // DeviceRegistrationHandler handles install-time device registration requests.
@@ -56,6 +58,14 @@ type DeviceRegistrationResponse struct {
 	CallbackAllowlist CallbackAllowlist `json:"callback_allowlist"`
 }
 
+// RotateWSClientAuthTokenResponse represents a successful token rotation.
+type RotateWSClientAuthTokenResponse struct {
+	DeviceID          string `json:"device_id"`
+	RobotID           string `json:"robot_id"`
+	WSClientAuthToken string `json:"ws_client_auth_token"`
+	RotatedAt         string `json:"rotated_at"`
+}
+
 type deviceRegistrationFactoryRow struct {
 	ID   int64  `db:"id"`
 	Name string `db:"name"`
@@ -69,6 +79,11 @@ type deviceRegistrationRobotTypeRow struct {
 // RegisterRoutes registers device registration routes.
 func (h *DeviceRegistrationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/devices/register", h.RegisterDevice)
+}
+
+// RegisterAdminRoutes registers admin-only device credential routes.
+func (h *DeviceRegistrationHandler) RegisterAdminRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/robots/:id/ws-client-auth-token/rotate", h.RotateWSClientAuthToken)
 }
 
 // RegisterDevice handles install-time robot device registration.
@@ -118,6 +133,42 @@ func (h *DeviceRegistrationHandler) RegisterDevice(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, resp)
+}
+
+// RotateWSClientAuthToken handles admin-triggered recorder WebSocket token rotation.
+//
+// @Summary      Rotate recorder WebSocket client token
+// @Description  Revokes active recorder WebSocket client tokens for one robot and returns a new plaintext token once
+// @Tags         robots
+// @Produce      json
+// @Param        id  path      int  true  "Robot ID"
+// @Success      200 {object}  RotateWSClientAuthTokenResponse
+// @Failure      400 {object}  map[string]string
+// @Failure      404 {object}  map[string]string
+// @Failure      500 {object}  map[string]string
+// @Router       /robots/{id}/ws-client-auth-token/rotate [post]
+func (h *DeviceRegistrationHandler) RotateWSClientAuthToken(c *gin.Context) {
+	robotID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || robotID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot id"})
+		return
+	}
+
+	resp, err := h.rotateWSClientAuthToken(robotID)
+	if err != nil {
+		switch {
+		case errors.Is(err, errRegistrationRobotNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+		case errors.Is(err, errRegistrationRobotNotActive):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "robot is not active"})
+		default:
+			logger.Printf("[DEVICE] Failed to rotate ws client auth token: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rotate ws client auth token"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *DeviceRegistrationHandler) registerDevice(factoryName, robotTypeModel string) (DeviceRegistrationResponse, error) {
@@ -209,6 +260,69 @@ func (h *DeviceRegistrationHandler) registerDevice(factoryName, robotTypeModel s
 		RobotID:           strconv.FormatInt(robotID, 10),
 		WSClientAuthToken: wsClientAuthToken,
 		CallbackAllowlist: h.callbackURLs.allowlist(),
+	}, nil
+}
+
+func (h *DeviceRegistrationHandler) rotateWSClientAuthToken(robotID int64) (RotateWSClientAuthTokenResponse, error) {
+	tx, err := h.db.Beginx()
+	if err != nil {
+		return RotateWSClientAuthTokenResponse{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // Safe after successful Commit.
+
+	type robotTokenRotationRow struct {
+		ID       int64  `db:"id"`
+		DeviceID string `db:"device_id"`
+		Status   string `db:"status"`
+	}
+
+	query := `
+		SELECT id, device_id, status
+		FROM robots
+		WHERE id = ? AND deleted_at IS NULL
+	`
+	if tx.DriverName() != "sqlite" {
+		query += " FOR UPDATE"
+	}
+
+	var robot robotTokenRotationRow
+	if err := tx.Get(&robot, query, robotID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RotateWSClientAuthTokenResponse{}, errRegistrationRobotNotFound
+		}
+		return RotateWSClientAuthTokenResponse{}, fmt.Errorf("query robot: %w", err)
+	}
+	if robot.Status != "active" {
+		return RotateWSClientAuthTokenResponse{}, errRegistrationRobotNotActive
+	}
+
+	rotatedAt := time.Now().UTC()
+	token, err := generateWSClientAuthToken()
+	if err != nil {
+		return RotateWSClientAuthTokenResponse{}, fmt.Errorf("generate ws client auth token: %w", err)
+	}
+
+	if _, err := tx.Exec(`
+		UPDATE ws_client_auth_tokens
+		SET revoked_at = ?, last_rotated_at = ?
+		WHERE robot_id = ? AND revoked_at IS NULL
+	`, rotatedAt, rotatedAt, robot.ID); err != nil {
+		return RotateWSClientAuthTokenResponse{}, fmt.Errorf("revoke active ws client auth tokens: %w", err)
+	}
+
+	if err := insertWSClientAuthToken(tx, robot.ID, token, rotatedAt); err != nil {
+		return RotateWSClientAuthTokenResponse{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return RotateWSClientAuthTokenResponse{}, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return RotateWSClientAuthTokenResponse{
+		DeviceID:          robot.DeviceID,
+		RobotID:           strconv.FormatInt(robot.ID, 10),
+		WSClientAuthToken: token,
+		RotatedAt:         rotatedAt.Format(time.RFC3339),
 	}, nil
 }
 
