@@ -52,6 +52,13 @@ func TestGetEpisodeReturnsMetadata(t *testing.T) {
 	if writerHealth["state"] != "warning" {
 		t.Fatalf("writer_health.state=%v want warning", writerHealth["state"])
 	}
+	recording, ok := recorder["recording"].(map[string]any)
+	if !ok {
+		t.Fatalf("recording type=%T recorder=%#v", recorder["recording"], recorder)
+	}
+	if recording["recorder_version"] != "axon_recorder 0.5.0" {
+		t.Fatalf("recorder.recording.recorder_version=%v want axon_recorder 0.5.0", recording["recorder_version"])
+	}
 }
 
 func TestListEpisodesOmitsMetadata(t *testing.T) {
@@ -165,7 +172,7 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 
 func seedEpisodeMetadataTestRow(t *testing.T, db *sqlx.DB) {
 	t.Helper()
-	metadata := `{"asset_id":"asset-1","recorder":{"writer_health":{"state":"warning","writer_stall_state":"normal","writer_stall_suspected":false,"writer_partial_failures":0,"writer_queue_overflows":0,"error":null}}}`
+	metadata := `{"asset_id":"asset-1","recorder":{"recording":{"recorder_version":"axon_recorder 0.5.0"},"writer_health":{"state":"warning","writer_stall_state":"normal","writer_stall_suspected":false,"writer_partial_failures":0,"writer_queue_overflows":0,"error":null}}}`
 	if _, err := db.Exec(`
 		INSERT INTO tasks (id, task_id, sop_id, scene_name, subscene_name, deleted_at)
 		VALUES (10, 'task-public-1', NULL, 'scene', 'subscene', NULL)

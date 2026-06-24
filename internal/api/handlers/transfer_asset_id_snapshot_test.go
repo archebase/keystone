@@ -108,7 +108,33 @@ func TestSidecarWriterHealthMetadata_MissingDoesNotWrite(t *testing.T) {
 	}
 }
 
-func TestMergeRecorderWriterHealthMetadata_PreservesExistingFields(t *testing.T) {
+func TestSidecarRecorderVersionMetadata_ReadsRecordingBlock(t *testing.T) {
+	var sc sidecarJSON
+	if err := json.Unmarshal([]byte(`{
+		"recording": {
+			"recorder_version": "axon_recorder 0.5.0"
+		}
+	}`), &sc); err != nil {
+		t.Fatalf("unmarshal sidecar: %v", err)
+	}
+
+	got, ok := sidecarRecorderVersionMetadata(&sc)
+	if !ok {
+		t.Fatal("recorder_version was not detected")
+	}
+	if got != "axon_recorder 0.5.0" {
+		t.Fatalf("recorder_version=%q want axon_recorder 0.5.0", got)
+	}
+}
+
+func TestSidecarRecorderVersionMetadata_MissingDoesNotWrite(t *testing.T) {
+	got, ok := sidecarRecorderVersionMetadata(&sidecarJSON{})
+	if ok || got != "" {
+		t.Fatalf("recorder_version=%q ok=%t, want empty false", got, ok)
+	}
+}
+
+func TestMergeRecorderMetadata_PreservesExistingFields(t *testing.T) {
 	existing := sql.NullString{
 		String: `{"asset_id":"asset-1","recorder":{"profile":"high_rate"},"owner":"ops"}`,
 		Valid:  true,
@@ -122,7 +148,7 @@ func TestMergeRecorderWriterHealthMetadata_PreservesExistingFields(t *testing.T)
 		"error":                   "writer_partial_failures=2",
 	}
 
-	got := mergeRecorderWriterHealthMetadata(existing, writerHealth)
+	got := mergeRecorderMetadata(existing, writerHealth, "axon_recorder 0.5.0")
 	if !got.Valid {
 		t.Fatal("metadata was not written")
 	}
@@ -147,11 +173,18 @@ func TestMergeRecorderWriterHealthMetadata_PreservesExistingFields(t *testing.T)
 	if health["state"] != "critical" {
 		t.Fatalf("writer_health.state=%v want critical", health["state"])
 	}
+	recording, ok := recorder["recording"].(map[string]any)
+	if !ok {
+		t.Fatalf("recording type=%T", recorder["recording"])
+	}
+	if recording["recorder_version"] != "axon_recorder 0.5.0" {
+		t.Fatalf("recorder.recording.recorder_version=%v want axon_recorder 0.5.0", recording["recorder_version"])
+	}
 }
 
-func TestMergeRecorderWriterHealthMetadata_OverwritesOnlyWriterHealth(t *testing.T) {
+func TestMergeRecorderMetadata_OverwritesOnlyRecorderFields(t *testing.T) {
 	existing := sql.NullString{
-		String: `{"recorder":{"profile":"high_rate","writer_health":{"state":"warning"}}}`,
+		String: `{"recorder":{"profile":"high_rate","writer_health":{"state":"warning"},"recording":{"recorder_version":"old","duration_sec":12.5}}}`,
 		Valid:  true,
 	}
 	writerHealth := map[string]any{
@@ -159,7 +192,7 @@ func TestMergeRecorderWriterHealthMetadata_OverwritesOnlyWriterHealth(t *testing
 		"writer_partial_failures": float64(2),
 	}
 
-	got := mergeRecorderWriterHealthMetadata(existing, writerHealth)
+	got := mergeRecorderMetadata(existing, writerHealth, "new")
 	if !got.Valid {
 		t.Fatal("metadata was not written")
 	}
@@ -175,11 +208,18 @@ func TestMergeRecorderWriterHealthMetadata_OverwritesOnlyWriterHealth(t *testing
 	if health["state"] != "critical" {
 		t.Fatalf("writer_health.state=%v want critical", health["state"])
 	}
+	recording := recorder["recording"].(map[string]any)
+	if recording["recorder_version"] != "new" {
+		t.Fatalf("recorder.recording.recorder_version=%v want new", recording["recorder_version"])
+	}
+	if recording["duration_sec"] != 12.5 {
+		t.Fatalf("recorder.recording.duration_sec=%v want 12.5", recording["duration_sec"])
+	}
 }
 
-func TestMergeRecorderWriterHealthMetadata_InvalidExistingPreserved(t *testing.T) {
+func TestMergeRecorderMetadata_InvalidExistingPreserved(t *testing.T) {
 	existing := sql.NullString{String: `{invalid`, Valid: true}
-	got := mergeRecorderWriterHealthMetadata(existing, map[string]any{"state": "normal"})
+	got := mergeRecorderMetadata(existing, map[string]any{"state": "normal"}, "axon_recorder 0.5.0")
 	if !got.Valid || got.String != existing.String {
 		t.Fatalf("metadata=%#v want original invalid metadata", got)
 	}
