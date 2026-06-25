@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,11 +31,12 @@ type Config struct {
 
 // ServerConfig server configuration
 type ServerConfig struct {
-	Mode            string
-	BindAddr        string
-	ReadTimeout     int // seconds
-	WriteTimeout    int // seconds
-	ShutdownTimeout int // seconds
+	Mode                  string
+	BindAddr              string
+	CallbackPublicBaseURL string
+	ReadTimeout           int // seconds
+	WriteTimeout          int // seconds
+	ShutdownTimeout       int // seconds
 }
 
 // DatabaseConfig database configuration
@@ -152,11 +154,12 @@ type AuthConfig struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
-			Mode:            getEnv("KEYSTONE_MODE", "edge"),
-			BindAddr:        getEnv("KEYSTONE_BIND_ADDR", ":8080"),
-			ReadTimeout:     getEnvInt("KEYSTONE_READ_TIMEOUT", 30),
-			WriteTimeout:    getEnvInt("KEYSTONE_WRITE_TIMEOUT", 30),
-			ShutdownTimeout: getEnvInt("KEYSTONE_SHUTDOWN_TIMEOUT", 10),
+			Mode:                  getEnv("KEYSTONE_MODE", "edge"),
+			BindAddr:              getEnv("KEYSTONE_BIND_ADDR", ":8080"),
+			CallbackPublicBaseURL: getEnv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL", ""),
+			ReadTimeout:           getEnvInt("KEYSTONE_READ_TIMEOUT", 30),
+			WriteTimeout:          getEnvInt("KEYSTONE_WRITE_TIMEOUT", 30),
+			ShutdownTimeout:       getEnvInt("KEYSTONE_SHUTDOWN_TIMEOUT", 10),
 		},
 		Database: DatabaseConfig{
 			Driver: "mysql",
@@ -262,6 +265,11 @@ func (c *Config) Validate() error {
 	if c.Server.Mode != "edge" {
 		return fmt.Errorf("invalid mode: %s, must be 'edge'", c.Server.Mode)
 	}
+	callbackPublicBaseURL, err := normalizeCallbackPublicBaseURL(c.Server.CallbackPublicBaseURL)
+	if err != nil {
+		return err
+	}
+	c.Server.CallbackPublicBaseURL = callbackPublicBaseURL
 	if c.Database.DSN == "" {
 		return fmt.Errorf("database DSN is required")
 	}
@@ -324,6 +332,34 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func normalizeCallbackPublicBaseURL(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", fmt.Errorf("KEYSTONE_CALLBACK_PUBLIC_BASE_URL is required")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("KEYSTONE_CALLBACK_PUBLIC_BASE_URL %q is invalid: %w", raw, err)
+	}
+	if !parsed.IsAbs() || parsed.Host == "" {
+		return "", fmt.Errorf("KEYSTONE_CALLBACK_PUBLIC_BASE_URL must be an absolute URL with host")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("KEYSTONE_CALLBACK_PUBLIC_BASE_URL scheme must be http or https")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("KEYSTONE_CALLBACK_PUBLIC_BASE_URL path must be empty")
+	}
+	if parsed.RawQuery != "" {
+		return "", fmt.Errorf("KEYSTONE_CALLBACK_PUBLIC_BASE_URL query must be empty")
+	}
+	if parsed.Fragment != "" {
+		return "", fmt.Errorf("KEYSTONE_CALLBACK_PUBLIC_BASE_URL fragment must be empty")
+	}
+	parsed.Path = ""
+	return parsed.String(), nil
 }
 
 func getEnv(key, fallback string) string {

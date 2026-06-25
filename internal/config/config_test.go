@@ -15,14 +15,15 @@ import (
 func TestLoad(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                   os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_MYSQL_HOST":             os.Getenv("KEYSTONE_MYSQL_HOST"),
-		"KEYSTONE_MYSQL_PASSWORD":         os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":       os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":       os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_FACTORY_ID":             os.Getenv("KEYSTONE_FACTORY_ID"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED": os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
-		"KEYSTONE_SYNC_DP_CONFIG":         os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
+		"KEYSTONE_MODE":                     os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_MYSQL_HOST":               os.Getenv("KEYSTONE_MYSQL_HOST"),
+		"KEYSTONE_MYSQL_PASSWORD":           os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":         os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":         os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_FACTORY_ID":               os.Getenv("KEYSTONE_FACTORY_ID"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":   os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_SYNC_DP_CONFIG":           os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
+		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL": os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
 	}
 	defer func() {
 		// Restore original environment variables
@@ -42,6 +43,7 @@ func TestLoad(t *testing.T) {
 	os.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "test-access-key")
 	os.Setenv("KEYSTONE_MINIO_SECRET_KEY", "test-secret-key")
 	os.Setenv("KEYSTONE_FACTORY_ID", "factory-test")
+	os.Setenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL", "http://127.0.0.1:9999")
 
 	cfg, err := Load()
 	if err != nil {
@@ -55,6 +57,9 @@ func TestLoad(t *testing.T) {
 
 	if cfg.Server.BindAddr != ":8080" {
 		t.Errorf("Load().Server.BindAddr = %v, want :8080", cfg.Server.BindAddr)
+	}
+	if cfg.Server.CallbackPublicBaseURL != "http://127.0.0.1:9999" {
+		t.Errorf("Load().Server.CallbackPublicBaseURL = %q, want http://127.0.0.1:9999", cfg.Server.CallbackPublicBaseURL)
 	}
 
 	// Verify reading from environment variables
@@ -106,15 +111,16 @@ func TestLoad(t *testing.T) {
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                    os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_BIND_ADDR":               os.Getenv("KEYSTONE_BIND_ADDR"),
-		"KEYSTONE_MYSQL_PASSWORD":          os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":        os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":        os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_QA_MAX_WORKERS":          os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
-		"KEYSTONE_MAX_MEMORY_MB":           os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
-		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN": os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":  os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_MODE":                     os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_BIND_ADDR":                os.Getenv("KEYSTONE_BIND_ADDR"),
+		"KEYSTONE_MYSQL_PASSWORD":           os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":         os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":         os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_QA_MAX_WORKERS":           os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
+		"KEYSTONE_MAX_MEMORY_MB":            os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
+		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN":  os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":   os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL": os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
 	}
 	defer func() {
 		for k, v := range originalEnv {
@@ -136,6 +142,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Setenv("KEYSTONE_MAX_MEMORY_MB", "8192")
 	os.Setenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", "display-secret")
 	os.Setenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED", "true")
+	os.Setenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL", "https://keystone.factory.internal")
 
 	cfg, err := Load()
 	if err != nil {
@@ -161,6 +168,9 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	if !cfg.Sync.AutoScanEnabled {
 		t.Error("Load().Sync.AutoScanEnabled = false, want true")
 	}
+	if cfg.Server.CallbackPublicBaseURL != "https://keystone.factory.internal" {
+		t.Errorf("Load().Server.CallbackPublicBaseURL = %q, want https://keystone.factory.internal", cfg.Server.CallbackPublicBaseURL)
+	}
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -172,7 +182,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Valid configuration",
 			cfg: &Config{
-				Server: ServerConfig{Mode: "edge"},
+				Server: ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 				Database: DatabaseConfig{
 					DSN: "user:pass@tcp(localhost:3306)/db",
 				},
@@ -189,7 +199,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Invalid mode",
 			cfg: &Config{
-				Server: ServerConfig{Mode: "cloud"},
+				Server: ServerConfig{Mode: "cloud", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 				Database: DatabaseConfig{
 					DSN: "user:pass@tcp(localhost:3306)/db",
 				},
@@ -203,7 +213,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Empty DSN",
 			cfg: &Config{
-				Server: ServerConfig{Mode: "edge"},
+				Server: ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 				Database: DatabaseConfig{
 					DSN: "",
 				},
@@ -217,7 +227,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Empty storage keys",
 			cfg: &Config{
-				Server: ServerConfig{Mode: "edge"},
+				Server: ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 				Database: DatabaseConfig{
 					DSN: "user:pass@tcp(localhost:3306)/db",
 				},
@@ -241,7 +251,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Only admin username set (no password)",
 			cfg: &Config{
-				Server:   ServerConfig{Mode: "edge"},
+				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
 				Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
 				Auth:     AuthConfig{JWTSecret: "secret", AdminUsername: "admin", AdminPassword: ""},
@@ -251,7 +261,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Only admin password set (no username)",
 			cfg: &Config{
-				Server:   ServerConfig{Mode: "edge"},
+				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
 				Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
 				Auth:     AuthConfig{JWTSecret: "secret", AdminUsername: "", AdminPassword: "pass"},
@@ -261,7 +271,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "Valid admin credentials",
 			cfg: &Config{
-				Server:   ServerConfig{Mode: "edge"},
+				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
 				Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
 				Auth:     AuthConfig{JWTSecret: "secret", AdminUsername: "admin", AdminPassword: "pass"},
@@ -280,9 +290,54 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestValidateCallbackPublicBaseURL(t *testing.T) {
+	validBase := Config{
+		Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+		Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+		Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
+		Auth:     AuthConfig{JWTSecret: "jwt-secret"},
+	}
+
+	t.Run("required", func(t *testing.T) {
+		cfg := validBase
+		cfg.Server.CallbackPublicBaseURL = ""
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "KEYSTONE_CALLBACK_PUBLIC_BASE_URL") {
+			t.Fatalf("Validate() error = %v, want callback public base URL error", err)
+		}
+	})
+
+	for _, raw := range []string{
+		"192.168.1.20:9999",
+		"ftp://192.168.1.20:9999",
+		"http:///api",
+		"http://gateway.local/keystone",
+		"http://gateway.local?x=1",
+		"http://gateway.local#abc",
+	} {
+		t.Run("rejects "+raw, func(t *testing.T) {
+			cfg := validBase
+			cfg.Server.CallbackPublicBaseURL = raw
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "KEYSTONE_CALLBACK_PUBLIC_BASE_URL") {
+				t.Fatalf("Validate() error = %v, want callback public base URL error", err)
+			}
+		})
+	}
+
+	t.Run("normalizes trailing slash", func(t *testing.T) {
+		cfg := validBase
+		cfg.Server.CallbackPublicBaseURL = "https://keystone.factory.internal/"
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error = %v", err)
+		}
+		if cfg.Server.CallbackPublicBaseURL != "https://keystone.factory.internal" {
+			t.Fatalf("CallbackPublicBaseURL = %q, want normalized URL", cfg.Server.CallbackPublicBaseURL)
+		}
+	})
+}
+
 func TestValidateSyncDPConfig(t *testing.T) {
 	validBase := Config{
-		Server:   ServerConfig{Mode: "edge"},
+		Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 		Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
 		Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
 		Auth:     AuthConfig{JWTSecret: "jwt-secret"},

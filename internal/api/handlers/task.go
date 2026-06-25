@@ -70,6 +70,7 @@ type TaskHandler struct {
 	recorderHub          *services.RecorderHub
 	recorderRPCTimeout   time.Duration
 	transferWriteTimeout time.Duration
+	callbackURLs         callbackURLs
 }
 
 // NewTaskHandler creates a new TaskHandler.
@@ -85,6 +86,14 @@ func NewTaskHandler(db *sqlx.DB, hub *services.TransferHub, recorderHub *service
 		recorderRPCTimeout:   recorderRPCTimeout,
 		transferWriteTimeout: writeTimeout,
 	}
+}
+
+// SetCallbackPublicBaseURL configures Keystone callback URLs returned in task configs.
+func (h *TaskHandler) SetCallbackPublicBaseURL(callbackPublicBaseURL string) {
+	if h == nil {
+		return
+	}
+	h.callbackURLs = newCallbackURLs(callbackPublicBaseURL)
 }
 
 func (h *TaskHandler) axonTransferWriteTimeout() time.Duration {
@@ -1190,8 +1199,8 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		Skills:             skills,
 		SOPID:              strings.TrimSpace(row.SOPSlug.String),
 		Topics:             parseJSONArray(row.ROSTopics.String),
-		StartCallbackURL:   "http://keystone.factory.internal/api/v1/callbacks/start",
-		FinishCallbackURL:  "http://keystone.factory.internal/api/v1/callbacks/finish",
+		StartCallbackURL:   h.callbackURLs.startURL(),
+		FinishCallbackURL:  h.callbackURLs.finishURL(),
 		UserToken:          "",
 	}
 

@@ -388,11 +388,12 @@ func (h *TransferHandler) onUploadProgress(dc *services.TransferConn, msg map[st
 
 // sidecarRecording is the subset of the sidecar JSON "recording" block we care about.
 type sidecarRecording struct {
-	DurationSec    float64  `json:"duration_sec"`
-	FileSizeBytes  int64    `json:"file_size_bytes"`
-	ChecksumSHA256 string   `json:"checksum_sha256"`
-	MessageCount   int64    `json:"message_count"`
-	TopicsRecorded []string `json:"topics_recorded"`
+	DurationSec     float64  `json:"duration_sec"`
+	FileSizeBytes   int64    `json:"file_size_bytes"`
+	ChecksumSHA256  string   `json:"checksum_sha256"`
+	MessageCount    int64    `json:"message_count"`
+	TopicsRecorded  []string `json:"topics_recorded"`
+	RecorderVersion string   `json:"recorder_version"`
 }
 
 type sidecarTopicSummary struct {
@@ -403,6 +404,7 @@ type sidecarTopicSummary struct {
 type sidecarJSON struct {
 	Recording     sidecarRecording      `json:"recording"`
 	TopicsSummary []sidecarTopicSummary `json:"topics_summary"`
+	WriterHealth  json.RawMessage       `json:"writer_health"`
 }
 
 // readSidecarFromS3 downloads the sidecar JSON object from MinIO and returns the parsed result.
@@ -449,6 +451,66 @@ func assetIDSnapshotMetadata(ctx context.Context, tx *sql.Tx, workstationID sql.
 	})
 	if err != nil {
 		return sql.NullString{}
+	}
+	return sql.NullString{String: string(data), Valid: true}
+}
+
+func sidecarWriterHealthMetadata(sc *sidecarJSON) (map[string]any, bool) {
+	if sc == nil {
+		return nil, false
+	}
+	raw := strings.TrimSpace(string(sc.WriterHealth))
+	if raw == "" || raw == "null" {
+		return nil, false
+	}
+	var writerHealth map[string]any
+	if err := json.Unmarshal([]byte(raw), &writerHealth); err != nil || writerHealth == nil {
+		return nil, false
+	}
+	return writerHealth, true
+}
+
+func sidecarRecorderVersionMetadata(sc *sidecarJSON) (string, bool) {
+	if sc == nil {
+		return "", false
+	}
+	version := strings.TrimSpace(sc.Recording.RecorderVersion)
+	return version, version != ""
+}
+
+func mergeRecorderMetadata(existing sql.NullString, writerHealth map[string]any, recorderVersion string) sql.NullString {
+	recorderVersion = strings.TrimSpace(recorderVersion)
+	if writerHealth == nil && recorderVersion == "" {
+		return existing
+	}
+
+	metadata := map[string]any{}
+	if existing.Valid && strings.TrimSpace(existing.String) != "" && strings.TrimSpace(existing.String) != "null" {
+		if err := json.Unmarshal([]byte(existing.String), &metadata); err != nil || metadata == nil {
+			return existing
+		}
+	}
+
+	recorder, _ := metadata["recorder"].(map[string]any)
+	if recorder == nil {
+		recorder = map[string]any{}
+	}
+	if writerHealth != nil {
+		recorder["writer_health"] = writerHealth
+	}
+	if recorderVersion != "" {
+		recording, _ := recorder["recording"].(map[string]any)
+		if recording == nil {
+			recording = map[string]any{}
+		}
+		recording["recorder_version"] = recorderVersion
+		recorder["recording"] = recording
+	}
+	metadata["recorder"] = recorder
+
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return existing
 	}
 	return sql.NullString{String: string(data), Valid: true}
 }
@@ -667,15 +729,23 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 
 		// Idempotency: avoid creating duplicate episodes for the same task.
 		// This keeps batches.episode_count correct even if the device retries uploads.
-		var existingEpisodeID string
+		var existingEpisode struct {
+			ID        int64          `db:"id"`
+			EpisodeID string         `db:"episode_id"`
+			Metadata  sql.NullString `db:"metadata"`
+		}
 		err := tx.QueryRowContext(ctx, `
-			SELECT episode_id
+			SELECT id, episode_id, metadata
 			FROM episodes
 			WHERE task_id = ? AND deleted_at IS NULL
 			LIMIT 1
-		`, taskRow.ID).Scan(&existingEpisodeID)
+		`, taskRow.ID).Scan(
+			&existingEpisode.ID,
+			&existingEpisode.EpisodeID,
+			&existingEpisode.Metadata,
+		)
 
-		if err == nil && existingEpisodeID == "" {
+		if err == nil && existingEpisode.EpisodeID == "" {
 			// #nosec G706 -- Set aside for now
 			logger.Printf("%s data corruption: empty episode_id found for task_pk=%d", transferTaskLogPrefix(dc.DeviceID, taskID), taskRow.ID)
 			return
@@ -686,7 +756,22 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			return
 		}
 
-		if errors.Is(err, sql.ErrNoRows) {
+		if err == nil {
+			writerHealth, _ := sidecarWriterHealthMetadata(sc)
+			recorderVersion, _ := sidecarRecorderVersionMetadata(sc)
+			mergedMetadata := mergeRecorderMetadata(existingEpisode.Metadata, writerHealth, recorderVersion)
+			if mergedMetadata.Valid && mergedMetadata.String != existingEpisode.Metadata.String {
+				if _, dbErr := tx.ExecContext(ctx, `
+					UPDATE episodes
+					SET metadata = ?, updated_at = ?
+					WHERE id = ? AND deleted_at IS NULL
+				`, mergedMetadata, time.Now().UTC(), existingEpisode.ID); dbErr != nil {
+					// #nosec G706 -- Set aside for now
+					logger.Printf("%s DB metadata backfill failed for episode=%s: %v", transferTaskLogPrefix(dc.DeviceID, taskID), existingEpisode.EpisodeID, dbErr)
+					return
+				}
+			}
+		} else if errors.Is(err, sql.ErrNoRows) {
 			episodeID := uuid.New().String()
 
 			// Extract recording metadata from sidecar JSON (nullable).
@@ -705,6 +790,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				}
 			}
 			episodeMetadata := assetIDSnapshotMetadata(ctx, tx, taskRow.WorkstationID)
+			writerHealth, _ := sidecarWriterHealthMetadata(sc)
+			recorderVersion, _ := sidecarRecorderVersionMetadata(sc)
+			episodeMetadata = mergeRecorderMetadata(episodeMetadata, writerHealth, recorderVersion)
 
 			insertRes, dbErr := tx.ExecContext(ctx,
 				`INSERT INTO episodes (

@@ -104,6 +104,7 @@ type episodeRow struct {
 	CloudSyncedAt      sql.NullTime    `db:"cloud_synced_at"`
 	CreatedAt          time.Time       `db:"created_at"`
 	LabelsJSON         sql.NullString  `db:"labels"`
+	Metadata           sql.NullString  `db:"metadata"`
 }
 
 // Episode represents an episode in the API response
@@ -135,6 +136,7 @@ type Episode struct {
 	CloudSyncedAt      *string  `json:"cloud_synced_at"`
 	CreatedAt          string   `json:"created_at"`
 	Labels             []string `json:"labels"`
+	Metadata           any      `json:"metadata,omitempty"`
 }
 
 // EpisodeListResponse represents the response for listing episodes
@@ -632,7 +634,8 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.cloud_processed,
 			e.cloud_synced_at,
 			e.created_at,
-			e.labels
+			e.labels,
+			e.metadata
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
@@ -685,5 +688,6 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		CloudSyncedAt:      nullableTime(row.CloudSyncedAt),
 		CreatedAt:          row.CreatedAt.UTC().Format(time.RFC3339),
 		Labels:             episodeLabelsFromDB(row.LabelsJSON),
+		Metadata:           parseJSONRaw(row.Metadata.String),
 	})
 }
