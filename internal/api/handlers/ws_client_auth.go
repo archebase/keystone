@@ -87,6 +87,7 @@ func (h *RecorderHandler) authorizeRecorderWebSocket(w http.ResponseWriter, r *h
 		return false
 	}
 
+	// #nosec G701 -- static SQL with placeholder-bound token usage values.
 	if _, err := h.db.ExecContext(queryCtx, `
 		UPDATE ws_client_auth_tokens
 		SET last_used_at = ?
