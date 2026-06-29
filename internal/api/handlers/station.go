@@ -339,7 +339,8 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		ORDER BY updated_at DESC, id DESC
 		LIMIT 1
 	`, robotInfo.ID, dcInfo.ID)
-	if err == nil {
+	switch err {
+	case nil:
 		if _, err := tx.Exec(`
 			UPDATE workstations
 			SET
@@ -372,7 +373,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 			return
 		}
-	} else if err == sql.ErrNoRows {
+	case sql.ErrNoRows:
 		stationName, err := h.allocateStationName()
 		if err != nil {
 			logger.Printf("[STATION] Failed to allocate station name: %v", err)
@@ -423,7 +424,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 			return
 		}
-	} else {
+	default:
 		logger.Printf("[STATION] Failed to find reusable workstation: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
@@ -1173,7 +1174,8 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			ORDER BY updated_at DESC, id DESC
 			LIMIT 1
 		`, effectiveRobotID, effectiveDCID)
-		if err == nil {
+		switch err {
+		case nil:
 			if _, err := tx.Exec(`
 				UPDATE workstations
 				SET
@@ -1207,7 +1209,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 				return
 			}
 			responseID = reusedID
-		} else if err == sql.ErrNoRows {
+		case sql.ErrNoRows:
 			result, err := tx.Exec(`
 				INSERT INTO workstations (
 					robot_id,
@@ -1253,7 +1255,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 				return
 			}
 			responseID = newID
-		} else {
+		default:
 			logger.Printf("[STATION] Failed to find reusable station binding: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 			return
