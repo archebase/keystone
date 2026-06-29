@@ -195,7 +195,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 				if err := h.db.Get(&wsID, `
 					SELECT id
 					FROM workstations
-					WHERE data_collector_id = ? AND deleted_at IS NULL
+						WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
 					LIMIT 1
 				`, claims.CollectorID); err == nil {
 					if _, err := h.db.Exec(`
@@ -275,7 +275,7 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		FROM workstations ws
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		WHERE ws.data_collector_id = ? AND ws.deleted_at IS NULL
+			WHERE ws.data_collector_id = ? AND ws.is_current = TRUE AND ws.deleted_at IS NULL
 		LIMIT 1
 	`, claims.CollectorID)
 	var workstationID *string
@@ -329,7 +329,7 @@ func (h *AuthHandler) MeStationBreak(c *gin.Context) {
 	err := h.db.Get(&wsID, `
 		SELECT id
 		FROM workstations
-		WHERE data_collector_id = ? AND deleted_at IS NULL
+		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
 		LIMIT 1
 	`, claims.CollectorID)
 	if err == sql.ErrNoRows {
@@ -388,7 +388,7 @@ func (h *AuthHandler) MeStationEndBreak(c *gin.Context) {
 	err := h.db.Get(&wsID, `
 		SELECT id
 		FROM workstations
-		WHERE data_collector_id = ? AND deleted_at IS NULL
+		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
 		LIMIT 1
 	`, claims.CollectorID)
 	if err == sql.ErrNoRows {
@@ -455,7 +455,7 @@ func (h *AuthHandler) syncWorkstationStatusOnLogin(collectorID int64) {
 	if err := h.db.Get(&wsID, `
 		SELECT id
 		FROM workstations
-		WHERE data_collector_id = ? AND deleted_at IS NULL
+		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
 		LIMIT 1
 	`, collectorID); err != nil {
 		if err != sql.ErrNoRows {

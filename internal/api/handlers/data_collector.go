@@ -684,7 +684,7 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 		}
 		wsArgs = append(wsArgs, id)
 		wsQuery := fmt.Sprintf( //nolint:gosec // columns are hardcoded literals, not user input
-			"UPDATE workstations SET %s WHERE data_collector_id = ? AND deleted_at IS NULL",
+			"UPDATE workstations SET %s WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL",
 			strings.Join(wsUpdates, ", "),
 		)
 		if _, err := tx.Exec(wsQuery, wsArgs...); err != nil {
