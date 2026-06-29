@@ -514,9 +514,9 @@ func (h *RobotTypeHandler) UpdateRobotType(c *gin.Context) {
 	if newName != "" {
 		if _, err := tx.Exec(
 			`UPDATE workstations SET robot_name = ?
-			 WHERE robot_id IN (
-			   SELECT id FROM robots WHERE robot_type_id = ? AND deleted_at IS NULL
-			 ) AND deleted_at IS NULL`,
+				 WHERE robot_id IN (
+				   SELECT id FROM robots WHERE robot_type_id = ? AND deleted_at IS NULL
+				 ) AND is_current = TRUE AND deleted_at IS NULL`,
 			newName, id,
 		); err != nil {
 			logger.Printf("[ROBOT] Failed to sync workstation robot_name: %v", err)

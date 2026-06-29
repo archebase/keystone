@@ -581,7 +581,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 		OrganizationID int64 `db:"organization_id"`
 	}
 	var ws workstationRow
-	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND deleted_at IS NULL LIMIT 1", req.WorkstationID); err != nil {
+	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL LIMIT 1", req.WorkstationID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error_msg": fmt.Sprintf("Invalid workstation_id: %d", req.WorkstationID)})
 			return

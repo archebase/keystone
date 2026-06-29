@@ -790,6 +790,66 @@ func TestBatchHandlerCompleteTasks_RejectsOtherCollectorWorkstation(t *testing.T
 	}
 }
 
+func TestBatchHandlerCompleteTasks_SeesTasksAgainAfterStationSwitchBack(t *testing.T) {
+	db := newTestBatchHandlerDB(t)
+	defer db.Close()
+	seedBatchCompleteNextFixtures(t, db)
+
+	now := time.Now().UTC()
+	stmts := []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE workstations SET is_current = FALSE, updated_at = ? WHERE id = 20`, []any{now}},
+		{`INSERT INTO robots (id, device_id, asset_id) VALUES (31, 'external-device-002', 'asset-b')`, nil},
+		{`INSERT INTO workstations (id, robot_id, robot_serial, data_collector_id, collector_name, collector_operator_id, factory_id, organization_id, name, status, is_current, updated_at) VALUES (22, 31, 'external-device-002', 100, 'Collector A', 'op-100', 30, 60, 'ws-b', 'inactive', TRUE, ?)`, []any{now}},
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt.query, stmt.args...); err != nil {
+			t.Fatalf("switch collector to robot B fixture failed: %v\nquery=%s", err, stmt.query)
+		}
+	}
+
+	r := newTestCollectorBatchRouter(t, db, auth.NewCollectorClaims(100, "op-100"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":1,"sop_id":40,"subscene_id":50}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("switched-away status=%d want=%d body=%s", w.Code, http.StatusForbidden, w.Body.String())
+	}
+
+	switchBackStmts := []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE workstations SET is_current = FALSE, updated_at = ? WHERE id = 22`, []any{now.Add(time.Minute)}},
+		{`UPDATE workstations SET is_current = TRUE, updated_at = ? WHERE id = 20`, []any{now.Add(time.Minute)}},
+	}
+	for _, stmt := range switchBackStmts {
+		if _, err := db.Exec(stmt.query, stmt.args...); err != nil {
+			t.Fatalf("switch collector back to robot A fixture failed: %v\nquery=%s", err, stmt.query)
+		}
+	}
+
+	retryReq := httptest.NewRequest(http.MethodPost, "/api/v1/batches/1/complete-tasks", bytes.NewBufferString(`{"quantity":1,"sop_id":40,"subscene_id":50}`))
+	retryReq.Header.Set("Content-Type", "application/json")
+	retryW := httptest.NewRecorder()
+	r.ServeHTTP(retryW, retryReq)
+
+	if retryW.Code != http.StatusOK {
+		t.Fatalf("switched-back status=%d want=%d body=%s", retryW.Code, http.StatusOK, retryW.Body.String())
+	}
+	var resp CompleteTasksResponse
+	if err := json.Unmarshal(retryW.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, retryW.Body.String())
+	}
+	if resp.BatchID != "BATCH-COMPLETE" || resp.CompletedCount != 1 || len(resp.Tasks) != 1 || resp.Tasks[0].TaskID != "TASK-1" {
+		t.Fatalf("unexpected switched-back completion response: %#v", resp)
+	}
+}
+
 func TestBatchHandlerCompleteTasks_RejectsWhenSelectedGroupHasNoPending(t *testing.T) {
 	db := newTestBatchHandlerDB(t)
 	defer db.Close()
@@ -1023,12 +1083,13 @@ func newTestBatchHandlerDB(t *testing.T) *sqlx.DB {
 			collector_name TEXT,
 			collector_operator_id TEXT,
 			factory_id INTEGER NOT NULL,
-			organization_id INTEGER NOT NULL DEFAULT 0,
-			name TEXT,
-			status TEXT,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP NULL
-		)`,
+				organization_id INTEGER NOT NULL DEFAULT 0,
+				name TEXT,
+				status TEXT,
+				is_current BOOLEAN NOT NULL DEFAULT TRUE,
+				updated_at TIMESTAMP,
+				deleted_at TIMESTAMP NULL
+			)`,
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
 			device_id TEXT NOT NULL,

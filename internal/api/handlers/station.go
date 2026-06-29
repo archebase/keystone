@@ -64,6 +64,8 @@ type StationResponse struct {
 	OrganizationName    string      `json:"organization_name,omitempty"`
 	Status              string      `json:"status"`
 	Name                string      `json:"name"`
+	IsCurrent           bool        `json:"is_current"`
+	SupersededBy        string      `json:"superseded_by,omitempty"`
 	Metadata            interface{} `json:"metadata,omitempty"`
 	CreatedAt           string      `json:"created_at"`
 	UpdatedAt           string      `json:"updated_at"`
@@ -254,11 +256,11 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 
-	// Check if robot is already assigned to an active (not deleted) station
+	// Check if robot is already assigned to a current station.
 	var existingStationID int64
 	err = h.db.Get(&existingStationID, `
 		SELECT id FROM workstations 
-		WHERE robot_id = ? AND deleted_at IS NULL
+		WHERE robot_id = ? AND is_current = TRUE AND deleted_at IS NULL
 	`, robotInfo.ID)
 	if err == nil {
 		// Robot is already assigned
@@ -274,10 +276,10 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 
-	// Check if data_collector is already assigned to an active (not deleted) station
+	// Check if data_collector is already assigned to a current station.
 	err = h.db.Get(&existingStationID, `
 		SELECT id FROM workstations 
-		WHERE data_collector_id = ? AND deleted_at IS NULL
+		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
 	`, dcInfo.ID)
 	if err == nil {
 		// Data collector is already assigned
@@ -314,81 +316,133 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		metadataStr = sql.NullString{String: string(metadataJSON), Valid: true}
 	}
 
-	stationName, err := h.allocateStationName()
+	tx, err := h.db.Beginx()
 	if err != nil {
-		logger.Printf("[STATION] Failed to allocate station name: %v", err)
+		logger.Printf("[STATION] Failed to begin create transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
+		return
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			logger.Printf("[STATION] Transaction rollback error: %v", err)
+		}
+	}()
+
+	var stationID int64
+	err = tx.Get(&stationID, `
+		SELECT id
+		FROM workstations
+		WHERE robot_id = ?
+		  AND data_collector_id = ?
+		  AND is_current = FALSE
+		  AND deleted_at IS NULL
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
+	`, robotInfo.ID, dcInfo.ID)
+	switch err {
+	case nil:
+		if _, err := tx.Exec(`
+			UPDATE workstations
+			SET
+				robot_name = ?,
+				robot_serial = ?,
+				collector_name = ?,
+				collector_operator_id = ?,
+				factory_id = ?,
+				organization_id = ?,
+				status = ?,
+				is_current = TRUE,
+				superseded_at = NULL,
+				superseded_by = NULL,
+				metadata = ?,
+				updated_at = ?
+			WHERE id = ? AND is_current = FALSE AND deleted_at IS NULL
+		`,
+			robotType.Name,
+			robotInfo.DeviceID,
+			dcInfo.Name,
+			dcInfo.OperatorID,
+			robotInfo.FactoryID,
+			dcInfo.OrganizationID,
+			"offline",
+			metadataStr,
+			now,
+			stationID,
+		); err != nil {
+			logger.Printf("[STATION] Failed to reactivate workstation: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
+			return
+		}
+	case sql.ErrNoRows:
+		stationName, err := h.allocateStationName()
+		if err != nil {
+			logger.Printf("[STATION] Failed to allocate station name: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
+			return
+		}
+		result, err := tx.Exec(`
+			INSERT INTO workstations (
+				robot_id,
+				robot_name,
+				robot_serial,
+				data_collector_id,
+				collector_name,
+				collector_operator_id,
+				factory_id,
+				organization_id,
+				name,
+				status,
+				is_current,
+				metadata,
+				created_at,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			robotInfo.ID,
+			robotType.Name,     // robot_name from robot_types.name
+			robotInfo.DeviceID, // robot_serial from device_id
+			dcInfo.ID,
+			dcInfo.Name,           // collector_name
+			dcInfo.OperatorID,     // collector_operator_id
+			robotInfo.FactoryID,   // factory_id from robot
+			dcInfo.OrganizationID, // organization_id from data_collector
+			stationName,
+			"offline",
+			true,
+			metadataStr,
+			now,
+			now,
+		)
+		if err != nil {
+			logger.Printf("[STATION] Failed to insert workstation: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
+			return
+		}
+		stationID, err = result.LastInsertId()
+		if err != nil {
+			logger.Printf("[STATION] Failed to get inserted id: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
+			return
+		}
+	default:
+		logger.Printf("[STATION] Failed to find reusable workstation: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
 
-	// Insert the workstation (station)
-	result, err := h.db.Exec(`
-		INSERT INTO workstations (
-			robot_id,
-			robot_name,
-			robot_serial,
-			data_collector_id,
-			collector_name,
-			collector_operator_id,
-			factory_id,
-			organization_id,
-			name,
-			status,
-			metadata,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		robotInfo.ID,
-		robotType.Name,     // robot_name from robot_types.name
-		robotInfo.DeviceID, // robot_serial from device_id
-		dcInfo.ID,
-		dcInfo.Name,           // collector_name
-		dcInfo.OperatorID,     // collector_operator_id
-		robotInfo.FactoryID,   // factory_id from robot
-		dcInfo.OrganizationID, // organization_id from data_collector
-		stationName,
-		"offline",
-		metadataStr,
-		now,
-		now,
-	)
-	if err != nil {
-		logger.Printf("[STATION] Failed to insert workstation: %v", err)
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[STATION] Failed to commit station create: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
 
-	stationID, err := result.LastInsertId()
+	station, err := h.getStationResponseRow(stationID, true)
 	if err != nil {
-		logger.Printf("[STATION] Failed to get inserted id: %v", err)
+		logger.Printf("[STATION] Failed to fetch created station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
-
-	var metaOut interface{}
-	if metadataStr.Valid {
-		metaOut = stationMetadataFromDB(metadataStr)
-	}
-	var factoryName string
-	_ = h.db.Get(&factoryName, "SELECT name FROM factories WHERE id = ? AND deleted_at IS NULL", robotInfo.FactoryID)
-	var orgName string
-	_ = h.db.Get(&orgName, "SELECT name FROM organizations WHERE id = ? AND deleted_at IS NULL", dcInfo.OrganizationID)
-
-	c.JSON(http.StatusCreated, StationResponse{
-		ID:               fmt.Sprintf("%d", stationID),
-		RobotID:          fmt.Sprintf("%d", robotInfo.ID),
-		DataCollectorID:  fmt.Sprintf("%d", dcInfo.ID),
-		FactoryID:        fmt.Sprintf("%d", robotInfo.FactoryID),
-		FactoryName:      factoryName,
-		OrganizationID:   fmt.Sprintf("%d", dcInfo.OrganizationID),
-		OrganizationName: orgName,
-		Status:           "offline",
-		Name:             stationName,
-		Metadata:         metaOut,
-		CreatedAt:        now.Format(time.RFC3339),
-		UpdatedAt:        now.Format(time.RFC3339),
-	})
+	c.JSON(http.StatusCreated, stationResponseFromRow(station))
 }
 
 // stationListRow represents a station row from DB for listing
@@ -408,6 +462,8 @@ type stationListRow struct {
 	OrganizationName    sql.NullString `db:"organization_name"`
 	Name                sql.NullString `db:"name"`
 	Status              string         `db:"status"`
+	IsCurrent           bool           `db:"is_current"`
+	SupersededBy        sql.NullInt64  `db:"superseded_by"`
 	Metadata            sql.NullString `db:"metadata"`
 	CreatedAt           sql.NullTime   `db:"created_at"`
 	UpdatedAt           sql.NullTime   `db:"updated_at"`
@@ -433,6 +489,10 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 	robotTypeModel := ""
 	if s.RobotTypeModel.Valid {
 		robotTypeModel = s.RobotTypeModel.String
+	}
+	supersededBy := ""
+	if s.SupersededBy.Valid {
+		supersededBy = fmt.Sprintf("%d", s.SupersededBy.Int64)
 	}
 	meta := stationMetadataFromDB(s.Metadata)
 	createdAt := ""
@@ -460,10 +520,36 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 		OrganizationName:    orgName,
 		Status:              s.Status,
 		Name:                name,
+		IsCurrent:           s.IsCurrent,
+		SupersededBy:        supersededBy,
 		Metadata:            meta,
 		CreatedAt:           createdAt,
 		UpdatedAt:           updatedAt,
 	}
+}
+
+func (h *StationHandler) getStationResponseRow(stationID int64, currentOnly bool) (stationListRow, error) {
+	where := "WHERE ws.id = ? AND ws.deleted_at IS NULL"
+	if currentOnly {
+		where += " AND ws.is_current = TRUE"
+	}
+
+	var station stationListRow
+	err := h.db.Get(&station, `
+		SELECT
+			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			r.robot_type_id, rt.model AS robot_type_model,
+			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
+			ws.factory_id, f.name AS factory_name,
+			ws.organization_id, o.name AS organization_name,
+			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
+		FROM workstations ws
+		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
+		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
+		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		`+where, stationID)
+	return station, err
 }
 
 // ListStations handles listing all stations.
@@ -541,7 +627,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 	stationSearchFields := []string{"ws.name", "ws.robot_serial", "ws.collector_operator_id", "ws.robot_name", "ws.collector_name"}
 
-	whereClause := "WHERE ws.deleted_at IS NULL"
+	whereClause := "WHERE ws.deleted_at IS NULL AND ws.is_current = TRUE"
 	args := []any{}
 	whereClause, args = appendInt64InFilter(whereClause, args, "ws.factory_id", factoryIDs)
 	whereClause, args = appendInt64InFilter(whereClause, args, "ws.organization_id", orgIDs)
@@ -575,7 +661,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
 			ws.factory_id, f.name AS factory_name,
 			ws.organization_id, o.name AS organization_name,
-			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
+			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
@@ -845,21 +931,55 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		return
 	}
 
-	// Station must exist before pairing validations
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM workstations WHERE id = ? AND deleted_at IS NULL)", stationID)
+	var current struct {
+		ID                  int64          `db:"id"`
+		RobotID             int64          `db:"robot_id"`
+		RobotName           string         `db:"robot_name"`
+		RobotSerial         string         `db:"robot_serial"`
+		DataCollectorID     int64          `db:"data_collector_id"`
+		CollectorName       string         `db:"collector_name"`
+		CollectorOperatorID string         `db:"collector_operator_id"`
+		FactoryID           int64          `db:"factory_id"`
+		OrganizationID      int64          `db:"organization_id"`
+		Name                sql.NullString `db:"name"`
+		Status              string         `db:"status"`
+		Metadata            sql.NullString `db:"metadata"`
+		CreatedAt           sql.NullTime   `db:"created_at"`
+	}
+	err = h.db.Get(&current, `
+		SELECT
+			id,
+			robot_id,
+			COALESCE(robot_name, '') AS robot_name,
+			COALESCE(robot_serial, '') AS robot_serial,
+			data_collector_id,
+			COALESCE(collector_name, '') AS collector_name,
+			COALESCE(collector_operator_id, '') AS collector_operator_id,
+			factory_id,
+			organization_id,
+			name,
+			status,
+			metadata,
+			created_at
+		FROM workstations
+		WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL
+	`, stationID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "station not found"})
+		return
+	}
 	if err != nil {
 		logger.Printf("[STATION] Failed to query station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
 	}
-	if !exists {
-		c.JSON(http.StatusNotFound, gin.H{"error": "station not found"})
-		return
-	}
 
-	var robotInfo robotInfoRow
+	effectiveRobotID := current.RobotID
+	effectiveRobotName := current.RobotName
+	effectiveRobotSerial := current.RobotSerial
+	effectiveFactoryID := current.FactoryID
 	var robotType robotTypeInfoRow
+	var robotInfo robotInfoRow
 	if hasRobot {
 		ridStr := strings.TrimSpace(*req.RobotID)
 		ridStr = strings.TrimPrefix(ridStr, "robot_")
@@ -886,22 +1006,24 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "robot status must be active to be paired"})
 			return
 		}
-		var otherWS int64
-		err = h.db.Get(&otherWS, `
-			SELECT id FROM workstations
-			WHERE robot_id = ? AND deleted_at IS NULL AND id != ?
-		`, robotInfo.ID, stationID)
-		if err == nil {
-			c.JSON(http.StatusConflict, gin.H{
-				"error":   "ROBOT_ALREADY_ASSIGNED",
-				"message": fmt.Sprintf("Robot robot_%d is already assigned to station ws_%d", robotInfo.ID, otherWS),
-			})
-			return
-		}
-		if err != sql.ErrNoRows {
-			logger.Printf("[STATION] Failed to check robot assignment: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
-			return
+		if robotInfo.ID != current.RobotID {
+			var otherWS int64
+			err = h.db.Get(&otherWS, `
+				SELECT id FROM workstations
+				WHERE robot_id = ? AND is_current = TRUE AND deleted_at IS NULL AND id != ?
+			`, robotInfo.ID, stationID)
+			if err == nil {
+				c.JSON(http.StatusConflict, gin.H{
+					"error":   "ROBOT_ALREADY_ASSIGNED",
+					"message": fmt.Sprintf("Robot robot_%d is already assigned to station ws_%d", robotInfo.ID, otherWS),
+				})
+				return
+			}
+			if err != sql.ErrNoRows {
+				logger.Printf("[STATION] Failed to check robot assignment: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+				return
+			}
 		}
 		err = h.db.Get(&robotType, "SELECT id, name FROM robot_types WHERE id = ?", robotInfo.RobotTypeID)
 		if err != nil {
@@ -909,8 +1031,16 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 			return
 		}
+		effectiveRobotID = robotInfo.ID
+		effectiveRobotName = robotType.Name
+		effectiveRobotSerial = robotInfo.DeviceID
+		effectiveFactoryID = robotInfo.FactoryID
 	}
 
+	effectiveDCID := current.DataCollectorID
+	effectiveCollectorName := current.CollectorName
+	effectiveCollectorOperatorID := current.CollectorOperatorID
+	effectiveOrganizationID := current.OrganizationID
 	var dcInfo dataCollectorInfoRow
 	if hasDC {
 		dcStr := strings.TrimSpace(*req.DataCollectorID)
@@ -938,42 +1068,21 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector status must be active to be paired"})
 			return
 		}
-		var otherWS int64
-		err = h.db.Get(&otherWS, `
-			SELECT id FROM workstations
-			WHERE data_collector_id = ? AND deleted_at IS NULL AND id != ?
-		`, dcInfo.ID, stationID)
-		if err == nil {
-			c.JSON(http.StatusConflict, gin.H{
-				"error":   "DATA_COLLECTOR_ALREADY_ASSIGNED",
-				"message": fmt.Sprintf("Data collector dc_%d is already assigned to station ws_%d", dcInfo.ID, otherWS),
-			})
-			return
-		}
-		if err != sql.ErrNoRows {
-			logger.Printf("[STATION] Failed to check data collector assignment: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
-			return
-		}
-	}
-
-	updates := []string{}
-	args := []interface{}{}
-
-	if hasRobot {
-		updates = append(updates, "robot_id = ?", "robot_name = ?", "robot_serial = ?", "factory_id = ?")
-		args = append(args, robotInfo.ID, robotType.Name, robotInfo.DeviceID, robotInfo.FactoryID)
-	}
-
-	if hasDC {
-		// Validate that the new DC's organization belongs to the same factory as the current (or incoming) robot.
-		effectiveFactoryID := int64(0)
-		if hasRobot {
-			effectiveFactoryID = robotInfo.FactoryID
-		} else {
-			// Read factory_id from the existing workstation row.
-			if err := h.db.Get(&effectiveFactoryID, "SELECT factory_id FROM workstations WHERE id = ? AND deleted_at IS NULL", stationID); err != nil {
-				logger.Printf("[STATION] Failed to read workstation factory_id: %v", err)
+		if dcInfo.ID != current.DataCollectorID {
+			var otherWS int64
+			err = h.db.Get(&otherWS, `
+				SELECT id FROM workstations
+				WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL AND id != ?
+			`, dcInfo.ID, stationID)
+			if err == nil {
+				c.JSON(http.StatusConflict, gin.H{
+					"error":   "DATA_COLLECTOR_ALREADY_ASSIGNED",
+					"message": fmt.Sprintf("Data collector dc_%d is already assigned to station ws_%d", dcInfo.ID, otherWS),
+				})
+				return
+			}
+			if err != sql.ErrNoRows {
+				logger.Printf("[STATION] Failed to check data collector assignment: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 				return
 			}
@@ -988,10 +1097,13 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector's organization does not belong to the same factory as the robot"})
 			return
 		}
-		updates = append(updates, "data_collector_id = ?", "collector_name = ?", "collector_operator_id = ?", "organization_id = ?")
-		args = append(args, dcInfo.ID, dcInfo.Name, dcInfo.OperatorID, dcInfo.OrganizationID)
+		effectiveDCID = dcInfo.ID
+		effectiveCollectorName = dcInfo.Name
+		effectiveCollectorOperatorID = dcInfo.OperatorID
+		effectiveOrganizationID = dcInfo.OrganizationID
 	}
 
+	effectiveStatus := current.Status
 	if hasStatus {
 		status := strings.TrimSpace(*req.Status)
 		if status == "" {
@@ -1006,69 +1118,182 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			})
 			return
 		}
-		updates = append(updates, "status = ?")
-		args = append(args, status)
+		effectiveStatus = status
 	}
 
+	effectiveMetadata := current.Metadata
 	if hasMeta {
 		meta := bytes.TrimSpace(req.Metadata)
 		if bytes.Equal(meta, []byte("null")) {
-			updates = append(updates, "metadata = ?")
-			args = append(args, sql.NullString{String: "{}", Valid: true})
+			effectiveMetadata = sql.NullString{String: "{}", Valid: true}
 		} else {
 			var probe interface{}
 			if err := json.Unmarshal(req.Metadata, &probe); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid metadata JSON"})
 				return
 			}
-			updates = append(updates, "metadata = ?")
-			args = append(args, sql.NullString{String: string(req.Metadata), Valid: true})
+			effectiveMetadata = sql.NullString{String: string(req.Metadata), Valid: true}
 		}
 	}
 
-	if len(updates) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+	bindingChanged := effectiveRobotID != current.RobotID || effectiveDCID != current.DataCollectorID
+	now := time.Now().UTC()
+
+	tx, err := h.db.Beginx()
+	if err != nil {
+		logger.Printf("[STATION] Failed to begin update transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
 	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			logger.Printf("[STATION] Transaction rollback error: %v", err)
+		}
+	}()
 
-	updates = append(updates, "updated_at = NOW()")
-	args = append(args, stationID)
+	responseID := stationID
+	if bindingChanged {
+		if _, err := tx.Exec(`
+			UPDATE workstations
+			SET is_current = FALSE, superseded_at = ?, updated_at = ?
+			WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL
+		`, now, now, stationID); err != nil {
+			logger.Printf("[STATION] Failed to supersede old station binding: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+			return
+		}
 
-	query := fmt.Sprintf(`
-		UPDATE workstations 
-		SET %s
-		WHERE id = ? AND deleted_at IS NULL
-	`, strings.Join(updates, ", "))
-	_, err = h.db.Exec(query, args...)
-	if err != nil {
-		logger.Printf("[STATION] Failed to update station: %v", err)
+		var reusedID int64
+		err := tx.Get(&reusedID, `
+			SELECT id
+			FROM workstations
+			WHERE robot_id = ?
+			  AND data_collector_id = ?
+			  AND is_current = FALSE
+			  AND deleted_at IS NULL
+			ORDER BY updated_at DESC, id DESC
+			LIMIT 1
+		`, effectiveRobotID, effectiveDCID)
+		switch err {
+		case nil:
+			if _, err := tx.Exec(`
+				UPDATE workstations
+				SET
+					robot_name = ?,
+					robot_serial = ?,
+					collector_name = ?,
+					collector_operator_id = ?,
+					factory_id = ?,
+					organization_id = ?,
+					status = ?,
+					is_current = TRUE,
+					superseded_at = NULL,
+					superseded_by = NULL,
+					metadata = ?,
+					updated_at = ?
+				WHERE id = ? AND is_current = FALSE AND deleted_at IS NULL
+			`,
+				effectiveRobotName,
+				effectiveRobotSerial,
+				effectiveCollectorName,
+				effectiveCollectorOperatorID,
+				effectiveFactoryID,
+				effectiveOrganizationID,
+				effectiveStatus,
+				effectiveMetadata,
+				now,
+				reusedID,
+			); err != nil {
+				logger.Printf("[STATION] Failed to reactivate station binding: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+				return
+			}
+			responseID = reusedID
+		case sql.ErrNoRows:
+			result, err := tx.Exec(`
+				INSERT INTO workstations (
+					robot_id,
+					robot_name,
+					robot_serial,
+					data_collector_id,
+					collector_name,
+					collector_operator_id,
+					factory_id,
+					organization_id,
+					name,
+					status,
+					is_current,
+					metadata,
+					created_at,
+					updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`,
+				effectiveRobotID,
+				effectiveRobotName,
+				effectiveRobotSerial,
+				effectiveDCID,
+				effectiveCollectorName,
+				effectiveCollectorOperatorID,
+				effectiveFactoryID,
+				effectiveOrganizationID,
+				current.Name,
+				effectiveStatus,
+				true,
+				effectiveMetadata,
+				now,
+				now,
+			)
+			if err != nil {
+				logger.Printf("[STATION] Failed to insert new station binding: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+				return
+			}
+			newID, err := result.LastInsertId()
+			if err != nil {
+				logger.Printf("[STATION] Failed to get new station binding id: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+				return
+			}
+			responseID = newID
+		default:
+			logger.Printf("[STATION] Failed to find reusable station binding: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+			return
+		}
+
+		if _, err := tx.Exec(`
+			UPDATE workstations
+			SET superseded_by = ?, updated_at = ?
+			WHERE id = ? AND is_current = FALSE AND deleted_at IS NULL
+		`, responseID, now, stationID); err != nil {
+			logger.Printf("[STATION] Failed to link superseded station binding: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+			return
+		}
+	} else {
+		if _, err := tx.Exec(`
+			UPDATE workstations
+			SET status = ?, metadata = ?, updated_at = ?
+			WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL
+		`, effectiveStatus, effectiveMetadata, now, stationID); err != nil {
+			logger.Printf("[STATION] Failed to update station: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[STATION] Failed to commit station update: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
 	}
 
-	// Fetch the updated station for response
-	var station stationListRow
-	err = h.db.Get(&station, `
-		SELECT
-			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
-			r.robot_type_id, rt.model AS robot_type_model,
-			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
-			ws.factory_id, f.name AS factory_name,
-			ws.organization_id, o.name AS organization_name,
-			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
-		FROM workstations ws
-		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
-		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
-		WHERE ws.id = ? AND ws.deleted_at IS NULL
-	`, stationID)
+	station, err := h.getStationResponseRow(responseID, false)
 	if err != nil {
 		logger.Printf("[STATION] Failed to fetch updated station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
 	}
-
 	c.JSON(http.StatusOK, stationResponseFromRow(station))
 }
 
@@ -1094,22 +1319,7 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 		return
 	}
 
-	var station stationListRow
-	err = h.db.Get(&station, `
-		SELECT
-			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
-			r.robot_type_id, rt.model AS robot_type_model,
-			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
-			ws.factory_id, f.name AS factory_name,
-			ws.organization_id, o.name AS organization_name,
-			ws.name, ws.status, ws.metadata, ws.created_at, ws.updated_at
-		FROM workstations ws
-		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
-		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
-		WHERE ws.id = ? AND ws.deleted_at IS NULL
-	`, stationID)
+	station, err := h.getStationResponseRow(stationID, false)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "station not found"})
@@ -1123,10 +1333,10 @@ func (h *StationHandler) GetStation(c *gin.Context) {
 	c.JSON(http.StatusOK, stationResponseFromRow(station))
 }
 
-// DeleteStation handles station deletion requests (soft delete).
+// DeleteStation handles station deletion requests by unbinding the current station.
 //
 // @Summary      Delete station
-// @Description  Soft deletes a station by ID
+// @Description  Unbinds a current station by ID
 // @Tags         stations
 // @Accept       json
 // @Produce      json
@@ -1148,7 +1358,7 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 
 	// Check if station exists
 	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM workstations WHERE id = ? AND deleted_at IS NULL)", stationID)
+	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM workstations WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL)", stationID)
 	if err != nil {
 		logger.Printf("[STATION] Failed to check station existence: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete station"})
@@ -1175,17 +1385,20 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 	}
 	if hasBlockingBatch {
 		c.JSON(http.StatusConflict, gin.H{
-			"error": "cannot delete station while batches are pending or active",
+			"error": "cannot unbind station while batches are pending or active",
 		})
 		return
 	}
 
 	now := time.Now().UTC()
 
-	// Perform soft delete by setting deleted_at
-	_, err = h.db.Exec("UPDATE workstations SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, stationID)
+	_, err = h.db.Exec(`
+		UPDATE workstations
+		SET is_current = FALSE, superseded_at = ?, superseded_by = NULL, updated_at = ?
+		WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL
+	`, now, now, stationID)
 	if err != nil {
-		logger.Printf("[STATION] Failed to delete station: %v", err)
+		logger.Printf("[STATION] Failed to unbind station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete station"})
 		return
 	}

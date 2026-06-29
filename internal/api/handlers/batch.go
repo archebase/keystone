@@ -914,7 +914,7 @@ func (h *BatchHandler) CompleteTasks(c *gin.Context) {
 	if err := tx.Get(&workstationID, `
 		SELECT id
 		FROM workstations
-		WHERE data_collector_id = ? AND deleted_at IS NULL
+			WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
 		LIMIT 1
 	`, claims.CollectorID); err != nil {
 		if err == sql.ErrNoRows {

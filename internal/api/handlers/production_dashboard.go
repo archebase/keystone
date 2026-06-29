@@ -817,7 +817,7 @@ func (h *ProductionDashboardHandler) resolveProductionDashboardScope(c *gin.Cont
 		err := h.db.GetContext(c.Request.Context(), &workstationID, `
 			SELECT CAST(id AS CHAR)
 			FROM workstations
-			WHERE data_collector_id = ? AND deleted_at IS NULL
+				WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
 			LIMIT 1
 		`, claims.CollectorID)
 		if err == sql.ErrNoRows {
@@ -1119,7 +1119,7 @@ func (h *ProductionDashboardHandler) dashboardQuality(db dashboardDB, scope prod
 }
 
 func (h *ProductionDashboardHandler) dashboardStations(db dashboardDB, scope productionDashboardScope) ([]dashboardStationItem, error) {
-	conditions := []string{"ws.deleted_at IS NULL"}
+	conditions := []string{"ws.deleted_at IS NULL", "ws.is_current = TRUE"}
 	args := []interface{}{}
 	conditions, args = appendDashboardStationScope(conditions, args, scope)
 	query := `
