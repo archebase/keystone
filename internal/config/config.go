@@ -134,6 +134,7 @@ type TransferConfig struct {
 // RecorderConfig Axon Recorder RPC gateway configuration
 type RecorderConfig struct {
 	WSPort          int
+	AuthEnabled     bool
 	PingInterval    int // seconds
 	PingTimeout     int // seconds
 	StaleThreshold  int // seconds
@@ -250,6 +251,7 @@ func Load() (*Config, error) {
 		},
 		AxonRecorder: RecorderConfig{
 			WSPort:          getEnvInt("KEYSTONE_AXON_RECORDER_WS_PORT", 8091),
+			AuthEnabled:     getEnvBool("KEYSTONE_AXON_RECORDER_AUTH_ENABLED", false),
 			PingInterval:    getEnvInt("KEYSTONE_AXON_RECORDER_PING_INTERVAL", 30),
 			PingTimeout:     getEnvInt("KEYSTONE_AXON_RECORDER_PING_TIMEOUT", 10),
 			StaleThreshold:  getEnvInt("KEYSTONE_AXON_RECORDER_STALE_THRESHOLD", 60),

@@ -147,7 +147,7 @@ func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if !h.authorizeRecorderWebSocket(w, r, deviceID) {
+	if h.cfg != nil && h.cfg.AuthEnabled && !h.authorizeRecorderWebSocket(w, r, deviceID) {
 		return
 	}
 
