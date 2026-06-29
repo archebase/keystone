@@ -15,15 +15,16 @@ import (
 func TestLoad(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                     os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_MYSQL_HOST":               os.Getenv("KEYSTONE_MYSQL_HOST"),
-		"KEYSTONE_MYSQL_PASSWORD":           os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":         os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":         os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_FACTORY_ID":               os.Getenv("KEYSTONE_FACTORY_ID"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":   os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
-		"KEYSTONE_SYNC_DP_CONFIG":           os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
-		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL": os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
+		"KEYSTONE_MODE":                       os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_MYSQL_HOST":                 os.Getenv("KEYSTONE_MYSQL_HOST"),
+		"KEYSTONE_MYSQL_PASSWORD":             os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":           os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":           os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_FACTORY_ID":                 os.Getenv("KEYSTONE_FACTORY_ID"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":     os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_SYNC_DP_CONFIG":             os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
+		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":   os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
+		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED": os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
 	}
 	defer func() {
 		// Restore original environment variables
@@ -39,6 +40,7 @@ func TestLoad(t *testing.T) {
 	// Set test environment variables
 	os.Unsetenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED")
 	os.Unsetenv("KEYSTONE_SYNC_DP_CONFIG")
+	os.Unsetenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED")
 	os.Setenv("KEYSTONE_MYSQL_PASSWORD", "test-password")
 	os.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "test-access-key")
 	os.Setenv("KEYSTONE_MINIO_SECRET_KEY", "test-secret-key")
@@ -84,6 +86,9 @@ func TestLoad(t *testing.T) {
 	if cfg.Sync.DPConfigPath != filepath.Join(home, ".archebase", "config.json") {
 		t.Errorf("Load().Sync.DPConfigPath = %q, want default ~/.archebase/config.json", cfg.Sync.DPConfigPath)
 	}
+	if cfg.AxonRecorder.AuthEnabled {
+		t.Error("Load().AxonRecorder.AuthEnabled should default to false")
+	}
 
 	// Verify QA configuration
 	if !cfg.QA.Enabled {
@@ -111,16 +116,17 @@ func TestLoad(t *testing.T) {
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                     os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_BIND_ADDR":                os.Getenv("KEYSTONE_BIND_ADDR"),
-		"KEYSTONE_MYSQL_PASSWORD":           os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":         os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":         os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_QA_MAX_WORKERS":           os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
-		"KEYSTONE_MAX_MEMORY_MB":            os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
-		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN":  os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":   os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
-		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL": os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
+		"KEYSTONE_MODE":                       os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_BIND_ADDR":                  os.Getenv("KEYSTONE_BIND_ADDR"),
+		"KEYSTONE_MYSQL_PASSWORD":             os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":           os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":           os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_QA_MAX_WORKERS":             os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
+		"KEYSTONE_MAX_MEMORY_MB":              os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
+		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN":    os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":     os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":   os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
+		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED": os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
 	}
 	defer func() {
 		for k, v := range originalEnv {
@@ -143,6 +149,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Setenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", "display-secret")
 	os.Setenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED", "true")
 	os.Setenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL", "https://keystone.factory.internal")
+	os.Setenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -167,6 +174,9 @@ func TestLoadWithCustomEnv(t *testing.T) {
 
 	if !cfg.Sync.AutoScanEnabled {
 		t.Error("Load().Sync.AutoScanEnabled = false, want true")
+	}
+	if !cfg.AxonRecorder.AuthEnabled {
+		t.Error("Load().AxonRecorder.AuthEnabled = false, want true")
 	}
 	if cfg.Server.CallbackPublicBaseURL != "https://keystone.factory.internal" {
 		t.Errorf("Load().Server.CallbackPublicBaseURL = %q, want https://keystone.factory.internal", cfg.Server.CallbackPublicBaseURL)

@@ -800,7 +800,7 @@ func TestRecorderWebSocketAuthRejectsMissingBearerToken(t *testing.T) {
 	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
 
 	hub := services.NewRecorderHub()
-	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{AuthEnabled: true, ResponseTimeout: 1}, db)
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
 
 	_, resp, err := websocket.Dial(context.Background(), wsURL, nil)
@@ -815,13 +815,25 @@ func TestRecorderWebSocketAuthRejectsMissingBearerToken(t *testing.T) {
 	}
 }
 
+func TestRecorderWebSocketAuthDefaultsToDisabled(t *testing.T) {
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, nil)
+	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
+
+	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial without bearer token failed with default recorder auth config: %v", err)
+	}
+	_ = conn.CloseNow()
+}
+
 func TestRecorderWebSocketAuthRejectsTokenForDifferentDevice(t *testing.T) {
 	db := newRecorderInteractionDB(t)
 	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
 	seedRecorderInteractionDevice(t, db, "robot-002", 2, 102)
 
 	hub := services.NewRecorderHub()
-	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{AuthEnabled: true, ResponseTimeout: 1}, db)
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-002")
 
 	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
@@ -841,7 +853,7 @@ func TestRecorderWebSocketAuthRejectsInactiveRobot(t *testing.T) {
 	}
 
 	hub := services.NewRecorderHub()
-	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{AuthEnabled: true, ResponseTimeout: 1}, db)
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
 
 	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
@@ -858,7 +870,7 @@ func TestRecorderWebSocketAuthRejectsRevokedToken(t *testing.T) {
 	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
 
 	hub := services.NewRecorderHub()
-	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{AuthEnabled: true, ResponseTimeout: 1}, db)
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
 	if _, err := db.Exec(`
 		UPDATE ws_client_auth_tokens
@@ -885,7 +897,7 @@ func TestRecorderWebSocketAuthRejectsDeletedRobot(t *testing.T) {
 	}
 
 	hub := services.NewRecorderHub()
-	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{AuthEnabled: true, ResponseTimeout: 1}, db)
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
 
 	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
@@ -902,7 +914,7 @@ func TestRecorderWebSocketAuthUpdatesLastUsedAt(t *testing.T) {
 	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
 
 	hub := services.NewRecorderHub()
-	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{AuthEnabled: true, ResponseTimeout: 1}, db)
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
 	axon := connectFakeRecorderAxon(t, wsURL)
 	defer axon.closeNow()
@@ -922,7 +934,7 @@ func TestRecorderWebSocketAuthUpdatesLastUsedAt(t *testing.T) {
 
 func TestRecorderWebSocketAuthDBUnavailableReturnsServiceUnavailable(t *testing.T) {
 	hub := services.NewRecorderHub()
-	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, nil)
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{AuthEnabled: true, ResponseTimeout: 1}, nil)
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
 
 	_, resp, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("robot-001")))
