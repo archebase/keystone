@@ -3,14 +3,16 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 #
-# Episode 统计：调用管理后台 summary 接口，按 STATS_TZ 计算今日/昨日/总计；可选 POST 飞书自动化 Webhook。
+# Episode 统计：调用管理后台 summary 接口，按 STATS_TZ 计算今日/昨日/总计；可选 POST 飞书 Webhook。
 # 逻辑在下方 Python；本文件仅注入环境变量。
 #
 #   KEYSTONE_BASE=http://127.0.0.1:9999 TOKEN=… ./scripts/episode_day_stats.sh
 #   KEYSTONE_BASE=http://127.0.0.1:9999 ./scripts/episode_day_stats.sh
 #   ./scripts/episode_day_stats.sh 'https://www.feishu.cn/flow/api/trigger-webhook/…'
+#   ./scripts/episode_day_stats.sh 'https://open.feishu.cn/open-apis/bot/v2/hook/…'
 # TOKEN 为空时会用 KEYSTONE_ADMIN_USERNAME/KEYSTONE_ADMIN_PASSWORD 登录，默认 admin/admin123。
-# 不传参数则只打印统计、不发飞书（忽略父 shell 里的 FEISHU_WEBHOOK_URL）。飞书 JSON 含今日/总计及昨日 last_* 字段。
+# 不传参数则只打印统计、不发飞书（忽略父 shell 里的 FEISHU_WEBHOOK_URL）。
+# Flow webhook 会收到字段 JSON；群机器人 webhook 会收到文本消息。
 #
 # Requires: python3 (stdlib only)
 set -euo pipefail
@@ -21,7 +23,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --help | -h)
       echo "Usage: $(basename "$0") [WEBHOOK_URL]"
-      echo "  WEBHOOK_URL         Optional. https://… 飞书流程 Webhook；不传则不发飞书。"
+      echo "  WEBHOOK_URL         Optional. 飞书 Flow 或群机器人 Webhook；不传则不发飞书。"
       echo "  --help, -h          Show this help."
       exit 0
       ;;
@@ -34,7 +36,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     *)
-      echo "error: unknown argument: $1 (expected https://… webhook or --help)" >&2
+      echo "error: unknown argument: $1 (expected https://... webhook or --help)" >&2
       exit 1
       ;;
   esac
@@ -106,6 +108,68 @@ def fmt_json_duration(sec: float) -> str:
 def feishu_webhook_url() -> str:
     """Set by shell wrapper from optional CLI argument only (not for manual export)."""
     return os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
+
+
+def is_feishu_bot_webhook(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    return parsed.netloc == "open.feishu.cn" and parsed.path.startswith(
+        "/open-apis/bot/v2/hook/"
+    )
+
+
+def feishu_flow_body(
+    p_count: int,
+    p_bytes: int,
+    p_dur: float,
+    y_count: int,
+    y_bytes: int,
+    y_dur: float,
+    t_count: int,
+    t_bytes: int,
+    t_dur: float,
+) -> dict:
+    return {
+        "data_size": fmt_json_size(p_bytes),
+        "data_duration": fmt_json_duration(p_dur),
+        "count": p_count,
+        "last_count": y_count,
+        "last_data_size": fmt_json_size(y_bytes),
+        "last_data_duration": fmt_json_duration(y_dur),
+        "total_data_size": fmt_json_size(t_bytes),
+        "total_data_duration": fmt_json_duration(t_dur),
+        "total_count": t_count,
+    }
+
+
+def feishu_bot_body(
+    p_count: int,
+    p_bytes: int,
+    p_dur: float,
+    y_count: int,
+    y_bytes: int,
+    y_dur: float,
+    t_count: int,
+    t_bytes: int,
+    t_dur: float,
+) -> dict:
+    text = "\n".join(
+        [
+            "Episode 数据日报",
+            "",
+            "今日数据量: %d条" % p_count,
+            "今日数据大小: %s" % fmt_json_size(p_bytes),
+            "今日时长: %s" % fmt_json_duration(p_dur),
+            "",
+            "昨日数据量: %d条" % y_count,
+            "昨日数据大小: %s" % fmt_json_size(y_bytes),
+            "昨日时长: %s" % fmt_json_duration(y_dur),
+            "",
+            "总数据量: %d条" % t_count,
+            "总计数据大小: %s" % fmt_json_size(t_bytes),
+            "总计时长: %s" % fmt_json_duration(t_dur),
+        ]
+    )
+    return {"msg_type": "text", "content": {"text": text}}
 
 
 def http_get_json(url: str, headers: Dict[str, str]) -> dict:
@@ -239,20 +303,18 @@ def main() -> None:
 
     hook = feishu_webhook_url()
     if hook:
-        body = json.dumps(
-            {
-                "data_size": fmt_json_size(p_bytes),
-                "data_duration": fmt_json_duration(p_dur),
-                "count": p_count,
-                "last_count": y_count,
-                "last_data_size": fmt_json_size(y_bytes),
-                "last_data_duration": fmt_json_duration(y_dur),
-                "total_data_size": fmt_json_size(t_bytes),
-                "total_data_duration": fmt_json_duration(t_dur),
-                "total_count": t_count,
-            },
-            ensure_ascii=False,
-        ).encode("utf-8")
+        if is_feishu_bot_webhook(hook):
+            payload = feishu_bot_body(
+                p_count, p_bytes, p_dur, y_count, y_bytes, y_dur, t_count, t_bytes, t_dur
+            )
+            target = "bot"
+        else:
+            payload = feishu_flow_body(
+                p_count, p_bytes, p_dur, y_count, y_bytes, y_dur, t_count, t_bytes, t_dur
+            )
+            target = "flow"
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         req = urllib.request.Request(
             hook,
@@ -267,7 +329,7 @@ def main() -> None:
             sys.stderr.write("feishu HTTP %s: %s\n" % (e.code, e.read().decode()[:500]))
             sys.exit(1)
 
-        print("feishu flow:    sent OK")
+        print("feishu %s:    sent OK" % target)
     else:
         print("feishu flow:    skipped (no FEISHU_WEBHOOK_URL / no positional webhook)")
 
