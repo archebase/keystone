@@ -123,8 +123,9 @@ type hilbertNonceData struct {
 }
 
 type hilbertLoginData struct {
-	Account    HilbertAccount `json:"account"`
-	SessionKey string         `json:"sessionKey"`
+	Account HilbertAccount `json:"account"`
+	//nolint:gosec // Hilbert's response contract names this field sessionKey; Keystone only verifies it is present and never stores it.
+	SessionKey string `json:"sessionKey"`
 }
 
 func (c *HilbertClient) generateNonce(ctx context.Context) (*hilbertNonceData, error) {
@@ -174,12 +175,16 @@ func (c *HilbertClient) loginWithCipherDigest(ctx context.Context, code string, 
 	return &HilbertLoginResult{Account: resp.Data.Account}, nil
 }
 
-func (c *HilbertClient) doJSON(req *http.Request, out any) error {
-	resp, err := c.httpClient.Do(req)
+func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
+	resp, err := c.httpClient.Do(req) //nolint:gosec // Hilbert base URL is operator-configured backend infrastructure, not user-controlled request input.
 	if err != nil {
 		return fmt.Errorf("%w: request failed: %v", ErrHilbertUnavailable, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("%w: close response body: %v", ErrHilbertUnavailable, closeErr)
+		}
+	}()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("%w: status %d", ErrHilbertInvalidCredentials, resp.StatusCode)

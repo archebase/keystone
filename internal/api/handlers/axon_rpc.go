@@ -87,9 +87,6 @@ type RecorderTaskConfig struct {
 	// Recording subscene label
 	// @default aisle_a
 	Subscene string `json:"subscene,omitempty"`
-	// Skill tags associated with this recording
-	// @default ["pick","place"]
-	Skills []string `json:"skills,omitempty"`
 	// Factory identifier
 	// @default factory-shanghai
 	Factory string `json:"factory,omitempty"`

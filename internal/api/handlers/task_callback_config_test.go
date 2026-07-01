@@ -34,15 +34,18 @@ func TestGetTaskConfigUsesConfiguredCallbackPublicBaseURL(t *testing.T) {
 		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	var resp TaskConfig
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
 	}
-	if resp.StartCallbackURL != "http://192.168.1.20:9999/api/v1/callbacks/start" {
-		t.Fatalf("start_callback_url=%q", resp.StartCallbackURL)
+	if resp["start_callback_url"] != "http://192.168.1.20:9999/api/v1/callbacks/start" {
+		t.Fatalf("start_callback_url=%q", resp["start_callback_url"])
 	}
-	if resp.FinishCallbackURL != "http://192.168.1.20:9999/api/v1/callbacks/finish" {
-		t.Fatalf("finish_callback_url=%q", resp.FinishCallbackURL)
+	if resp["finish_callback_url"] != "http://192.168.1.20:9999/api/v1/callbacks/finish" {
+		t.Fatalf("finish_callback_url=%q", resp["finish_callback_url"])
+	}
+	if _, ok := resp["skills"]; ok {
+		t.Fatalf("task config unexpectedly contains skills: %#v", resp["skills"])
 	}
 }
 
@@ -98,12 +101,6 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE sops (
 			id INTEGER PRIMARY KEY,
 			slug TEXT NOT NULL,
-			skill_sequence TEXT NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE skills (
-			id INTEGER PRIMARY KEY,
-			slug TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 	}
@@ -123,8 +120,7 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 		{`INSERT INTO robot_types (id, ros_topics) VALUES (12, '["/camera","/tf"]')`, nil},
 		{`INSERT INTO robots (id, robot_type_id) VALUES (20, 12)`, nil},
 		{`INSERT INTO workstations (id, name, robot_serial, robot_id, collector_name) VALUES (40, 'station-a', 'robot-001', 20, 'collector-a')`, nil},
-		{`INSERT INTO sops (id, slug, skill_sequence) VALUES (50, 'sop-a', '["1"]')`, nil},
-		{`INSERT INTO skills (id, slug) VALUES (1, 'pick')`, nil},
+		{`INSERT INTO sops (id, slug) VALUES (50, 'sop-a')`, nil},
 		{`INSERT INTO tasks (id, task_id, workstation_id, order_id, factory_id, sop_id, scene_name, subscene_name, initial_scene_layout, status) VALUES (1, 'task-a', 40, 10, 30, 50, 'scene-a', 'sub-a', '{}', 'pending')`, []any{now}},
 	}
 	for _, stmt := range seed {

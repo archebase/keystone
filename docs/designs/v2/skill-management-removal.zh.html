@@ -1,0 +1,826 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>V2 去技能管理模型设计</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --base: #1D1A2F;
+      --signal: #8BD450;
+      --warn: #F5C024;
+      --ink: #000000;
+      --paper: #fff6df;
+      --paper-dim: rgba(255, 246, 223, 0.8);
+      --paper-soft: rgba(255, 246, 223, 0.18);
+      --signal-soft: rgba(139, 212, 80, 0.18);
+      --warn-soft: rgba(245, 192, 36, 0.2);
+      --max: 1180px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--base);
+    }
+
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--paper);
+      background: var(--base);
+      font: 16px/1.72 "Songti SC", "Noto Serif SC", "Source Han Serif SC", SimSun, STSong, serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      pointer-events: none;
+      background:
+        repeating-linear-gradient(0deg, rgba(255, 246, 223, 0.032) 0 1px, transparent 1px 5px),
+        repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 11px);
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        linear-gradient(128deg, transparent 0 42%, rgba(245, 192, 36, 0.13) 42% 49%, transparent 49%),
+        linear-gradient(58deg, transparent 0 72%, rgba(139, 212, 80, 0.13) 72% 82%, transparent 82%);
+    }
+
+    code {
+      padding: 1px 5px;
+      color: var(--paper);
+      background: var(--base);
+      border: 1px solid var(--ink);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.94em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 20px 0 0;
+      padding: 18px;
+      color: var(--paper);
+      background: var(--ink);
+      border: 4px solid var(--signal);
+      box-shadow: 8px 8px 0 var(--ink);
+      font: 14px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+    }
+
+    .page {
+      min-height: 100vh;
+    }
+
+    .hero {
+      position: relative;
+      min-height: min(760px, 92vh);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(300px, 450px);
+      gap: clamp(22px, 4vw, 54px);
+      align-items: stretch;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: clamp(28px, 5vw, 74px) clamp(18px, 4vw, 40px) clamp(28px, 5vw, 70px);
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      left: clamp(18px, 4vw, 40px);
+      right: clamp(18px, 4vw, 40px);
+      top: clamp(18px, 4vw, 34px);
+      height: 18px;
+      background: var(--warn);
+      border: 4px solid var(--ink);
+      box-shadow: 10px 10px 0 var(--ink);
+      transform: skewX(-18deg);
+    }
+
+    .title-card {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+      padding-top: 46px;
+    }
+
+    .kicker {
+      width: fit-content;
+      margin: 0 0 22px;
+      padding: 4px 12px 5px;
+      color: var(--ink);
+      background: var(--signal);
+      border: 3px solid var(--ink);
+      box-shadow: 7px 7px 0 var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(12px, 1.5vw, 15px);
+      font-weight: 900;
+      line-height: 1.1;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 860px;
+      margin: 0;
+      color: var(--paper);
+      text-shadow: 8px 8px 0 var(--ink);
+      font-size: clamp(48px, 10.5vw, 138px);
+      font-weight: 900;
+      line-height: 0.88;
+      letter-spacing: 0;
+    }
+
+    h1 span {
+      display: block;
+    }
+
+    .subtitle {
+      max-width: 740px;
+      margin: clamp(18px, 3vw, 32px) 0 0;
+      padding: clamp(14px, 2vw, 20px) clamp(16px, 2vw, 26px);
+      color: var(--ink);
+      background: var(--warn);
+      border: 4px solid var(--ink);
+      box-shadow: 9px 9px 0 var(--ink);
+      font-size: clamp(18px, 2.2vw, 28px);
+      font-weight: 900;
+      line-height: 1.35;
+    }
+
+    .machine {
+      position: relative;
+      align-self: center;
+      min-height: 540px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 16px 16px 0 var(--ink);
+      overflow: hidden;
+      transform: skewY(2deg);
+    }
+
+    .machine::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, transparent 0 22%, var(--ink) 22% 24%, transparent 24% 48%, var(--ink) 48% 50%, transparent 50% 74%, var(--ink) 74% 76%, transparent 76%),
+        linear-gradient(0deg, transparent 0 18%, var(--ink) 18% 20%, transparent 20% 40%, var(--ink) 40% 42%, transparent 42% 62%, var(--ink) 62% 64%, transparent 64% 84%, var(--ink) 84% 86%, transparent 86%);
+    }
+
+    .machine::after {
+      content: "";
+      position: absolute;
+      inset: 36px 40px 44px 34px;
+      border: 4px solid var(--ink);
+      background:
+        linear-gradient(135deg, var(--signal) 0 18%, transparent 18% 24%, var(--warn) 24% 34%, transparent 34% 100%),
+        var(--base);
+      clip-path: polygon(4% 0, 100% 12%, 82% 100%, 0 88%);
+      box-shadow: 10px 10px 0 var(--ink);
+    }
+
+    .cut {
+      position: absolute;
+      z-index: 2;
+      left: 6%;
+      right: 6%;
+      top: 48%;
+      height: 20px;
+      background: var(--warn);
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      transform: rotate(24deg);
+    }
+
+    .label {
+      position: absolute;
+      z-index: 3;
+      padding: 8px 10px;
+      color: var(--ink);
+      background: var(--signal);
+      border: 3px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--ink);
+      font-size: 15px;
+      font-weight: 900;
+      line-height: 1.1;
+      writing-mode: vertical-rl;
+    }
+
+    .label.old {
+      right: 24px;
+      top: 38px;
+      background: var(--warn);
+    }
+
+    .label.new {
+      left: 24px;
+      bottom: 36px;
+    }
+
+    .section {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: clamp(34px, 6vw, 74px) clamp(18px, 4vw, 40px);
+    }
+
+    .judgement {
+      display: grid;
+      grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
+      gap: clamp(20px, 4vw, 42px);
+      align-items: stretch;
+      border-top: 6px solid var(--warn);
+      border-bottom: 6px solid var(--warn);
+      background: rgba(0, 0, 0, 0.42);
+    }
+
+    .judgement-mark {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 260px;
+      color: var(--ink);
+      background: var(--warn);
+      border: 5px solid var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      font-size: clamp(72px, 14vw, 188px);
+      font-weight: 900;
+      line-height: 0.8;
+      transform: skewX(-7deg);
+    }
+
+    .judgement-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+    }
+
+    .judgement-copy h2,
+    .section-title h2 {
+      margin: 0;
+      font-size: clamp(32px, 6vw, 72px);
+      font-weight: 900;
+      line-height: 0.96;
+      letter-spacing: 0;
+      text-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .judgement-copy p {
+      max-width: 760px;
+      margin: 22px 0 0;
+      color: var(--paper-dim);
+      font-size: clamp(17px, 2vw, 22px);
+      line-height: 1.65;
+    }
+
+    .section-title {
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr);
+      gap: 22px;
+      align-items: end;
+      margin-bottom: 30px;
+    }
+
+    .section-no {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 94px;
+      height: 94px;
+      color: var(--ink);
+      background: var(--signal);
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 42px;
+      font-weight: 900;
+      line-height: 1;
+      transform: skewX(-8deg);
+    }
+
+    .content {
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      padding: clamp(20px, 4vw, 38px);
+    }
+
+    .content.dark {
+      color: var(--paper);
+      background: var(--base);
+      border-color: var(--signal);
+    }
+
+    .content p {
+      max-width: 900px;
+      margin: 0 0 18px;
+    }
+
+    .content p:last-child {
+      margin-bottom: 0;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+    }
+
+    .slab,
+    .decision {
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      padding: 18px;
+    }
+
+    .slab h3,
+    .decision strong,
+    .content h3 {
+      display: block;
+      margin: 0 0 10px;
+      font-size: 24px;
+      font-weight: 900;
+      line-height: 1.1;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 1.25em;
+    }
+
+    li {
+      margin: 8px 0;
+    }
+
+    .warning {
+      margin: 24px 0;
+      padding: 14px 18px;
+      color: var(--ink);
+      background: var(--warn);
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-size: clamp(18px, 2.2vw, 26px);
+      font-weight: 900;
+      line-height: 1.35;
+      transform: skewX(-4deg);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .node {
+      min-height: 128px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 14px;
+      color: var(--ink);
+      background: var(--signal);
+      border: 3px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--ink);
+      font-size: clamp(18px, 2.1vw, 27px);
+      font-weight: 900;
+      line-height: 1.15;
+      text-align: center;
+      clip-path: polygon(0 0, 92% 0, 100% 50%, 92% 100%, 0 100%, 8% 50%);
+    }
+
+    .node:first-child {
+      clip-path: polygon(0 0, 92% 0, 100% 50%, 92% 100%, 0 100%);
+    }
+
+    .node:last-child {
+      background: var(--warn);
+      clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 8% 50%);
+    }
+
+    .decision-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .decision {
+      min-height: 220px;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin: 20px 0 0;
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    table {
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+      color: var(--ink);
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      padding: 13px 14px;
+      border: 2px solid var(--ink);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--signal);
+      font-weight: 900;
+    }
+
+    .implementation {
+      counter-reset: step;
+    }
+
+    .implementation li {
+      position: relative;
+      list-style: none;
+      margin: 14px 0;
+      padding-left: 56px;
+    }
+
+    .implementation li::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 34px;
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--ink);
+      background: var(--warn);
+      border: 3px solid var(--ink);
+      box-shadow: 4px 4px 0 var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .footer {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 clamp(18px, 4vw, 40px) clamp(44px, 7vw, 86px);
+    }
+
+    .footer p {
+      margin: 0;
+      padding: clamp(20px, 4vw, 34px);
+      color: var(--ink);
+      background: var(--warn);
+      border: 5px solid var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      font-size: clamp(24px, 4.5vw, 54px);
+      font-weight: 900;
+      line-height: 1.12;
+    }
+
+    @media (max-width: 880px) {
+      .hero,
+      .judgement,
+      .split,
+      .decision-grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .machine {
+        min-height: 300px;
+        transform: none;
+      }
+
+      .machine::after {
+        inset: 26px;
+      }
+
+      .judgement-mark {
+        min-height: 160px;
+      }
+
+      .section-title {
+        grid-template-columns: 1fr;
+      }
+
+      .node,
+      .node:first-child,
+      .node:last-child {
+        clip-path: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      body {
+        font-size: 15px;
+      }
+
+      .hero,
+      .section {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      h1 {
+        font-size: clamp(42px, 16vw, 78px);
+        text-shadow: 5px 5px 0 var(--ink);
+      }
+
+      .subtitle,
+      .content,
+      .slab,
+      .decision {
+        box-shadow: 6px 6px 0 var(--ink);
+      }
+
+      .section-no {
+        width: 72px;
+        height: 72px;
+        font-size: 34px;
+      }
+
+      .label {
+        writing-mode: horizontal-tb;
+        font-size: 13px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="title-card">
+        <p class="kicker">V2 BASELINE / REMOVE THE SKILL MATRIX</p>
+        <h1 id="page-title">
+          <span>去技能</span>
+          <span>管理模型</span>
+        </h1>
+        <p class="subtitle">SOP 收缩为工艺标识，任务配置不再输出 skills，V2 schema 删除 skills、subscene_skills 与 operations。</p>
+      </div>
+      <div class="machine" aria-hidden="true">
+        <div class="cut"></div>
+        <div class="label old">SKILL<br>MATRIX</div>
+        <div class="label new">SOP<br>IDENTITY</div>
+      </div>
+    </section>
+
+    <section class="section judgement" aria-labelledby="judgement-title">
+      <div class="judgement-mark">B</div>
+      <div class="judgement-copy">
+        <h2 id="judgement-title">核心判断</h2>
+        <p>本设计不是隐藏技能菜单，而是从 V2 产品模型中删除 skill 领域概念。SOP 不再描述步骤序列，只作为任务与生产流程的工艺标识存在。</p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="background-title">
+      <div class="section-title">
+        <span class="section-no">01</span>
+        <h2 id="background-title">背景与问题</h2>
+      </div>
+      <div class="content">
+        <p>当前 Keystone 仍包含 <code>/skills</code> CRUD、<code>skills</code> 表、<code>subscene_skills</code> 表、<code>sops.skill_sequence</code> 字段和 <code>operations.skill_id</code>。Synapse 也有技能管理页面，并在 SOP 表单中通过技能 API 维护技能序列。</p>
+        <p>代码检查确认 <code>operations</code> 表没有运行时读写，只存在于 schema。Axon recorder 对任务配置中的 <code>skills</code> 字段是可选兼容：字段缺失时保持空数组，metadata 仅在非空时写入。因此 Keystone 可以删除任务配置响应里的 <code>skills</code> 字段，而无需同步修改 Axon。</p>
+        <div class="warning">必须整体删除：API、schema、SOP 契约、任务配置、前端页面和 OpenAPI 不能留下半截技能模型。</div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="goals-title">
+      <div class="section-title">
+        <span class="section-no">02</span>
+        <h2 id="goals-title">目标与非目标</h2>
+      </div>
+      <div class="split">
+        <div class="slab">
+          <h3>目标</h3>
+          <ul>
+            <li>删除 Keystone <code>/skills</code> API 和 <code>SkillHandler</code>。</li>
+            <li>V2 schema 删除 <code>skills</code>、<code>subscene_skills</code>、<code>operations</code>。</li>
+            <li>SOP 请求、响应和表结构删除 <code>skill_sequence</code>。</li>
+            <li>任务配置响应删除 <code>skills</code>，不再查询 <code>skills</code> 表。</li>
+            <li>Synapse 删除技能管理页面，SOP 表单只保留 <code>slug</code>、<code>version</code>、<code>description</code>。</li>
+          </ul>
+        </div>
+        <div class="slab">
+          <h3>非目标</h3>
+          <ul>
+            <li>不新增 SOP 步骤、任务模板或操作模板。</li>
+            <li>不把 <code>skill</code> 改名成别的新领域概念。</li>
+            <li>不修改 Axon recorder 的 optional <code>skills</code> 兼容字段。</li>
+            <li>不处理旧数据库自动迁移；V2 继续作为新基线。</li>
+            <li>不清理旧 <code>migrations/</code> 历史目录和历史设计文档。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="overview-title">
+      <div class="section-title">
+        <span class="section-no">03</span>
+        <h2 id="overview-title">方案总览</h2>
+      </div>
+      <div class="content dark">
+        <p>V2 的生产建模链路从“Subscene 关联 Skill，SOP 保存 Skill 序列，TaskConfig 输出 Skill tags”收缩为“Task 关联 SOP，SOP 作为工艺标识，TaskConfig 只输出录制所需上下文”。</p>
+        <div class="flow" aria-label="模型收缩流">
+          <div class="node">删除<br>skills / subscene_skills</div>
+          <div class="node">SOP<br>slug / version / description</div>
+          <div class="node">TaskConfig<br>无 skills 字段</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="contracts-title">
+      <div class="section-title">
+        <span class="section-no">04</span>
+        <h2 id="contracts-title">关键契约</h2>
+      </div>
+      <div class="content">
+        <h3>V2 schema</h3>
+        <pre><code>-- removed
+DROP CONCEPT skills;
+DROP CONCEPT subscene_skills;
+DROP CONCEPT operations;
+
+-- sops remains
+sops(
+  id,
+  slug,
+  description,
+  version,
+  created_at,
+  updated_at,
+  deleted_at
+)</code></pre>
+
+        <h3>TaskConfig</h3>
+        <pre><code>{
+  "task_id": "...",
+  "device_id": "...",
+  "data_collector_id": "...",
+  "order_id": "...",
+  "factory": "...",
+  "scene": "...",
+  "subscene": "...",
+  "initial_scene_layout": "...",
+  "sop_id": "...",
+  "topics": [...]
+}</code></pre>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="backend-title">
+      <div class="section-title">
+        <span class="section-no">05</span>
+        <h2 id="backend-title">后端修改面</h2>
+      </div>
+      <div class="decision-grid">
+        <div class="decision">
+          <strong>删除 Skill API</strong>
+          删除 <code>internal/api/handlers/skill.go</code>，从 <code>server.go</code> 移除 handler 字段、初始化与路由注册。
+        </div>
+        <div class="decision">
+          <strong>简化 SOP</strong>
+          <code>CreateSOPRequest</code>、<code>UpdateSOPRequest</code>、<code>SOPResponse</code> 和查询逻辑删除 <code>skill_sequence</code>。
+        </div>
+        <div class="decision">
+          <strong>简化 TaskConfig</strong>
+          <code>TaskConfig</code> 删除 <code>Skills</code>，<code>GetTaskConfig</code> 不再读取 <code>sops.skill_sequence</code> 或查询 <code>skills</code>。
+        </div>
+      </div>
+      <div class="content" style="margin-top: 24px;">
+        <p>组织、场景、子场景、SOP、任务、批次和订单的主链路继续保留。删除 skill 不改变任务分配、录制、上传、QA、同步流程。</p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="frontend-title">
+      <div class="section-title">
+        <span class="section-no">06</span>
+        <h2 id="frontend-title">前端修改面</h2>
+      </div>
+      <div class="content dark">
+        <p>Synapse 删除技能管理路由、菜单、API wrapper 和页面。SOP 列表、详情、表单不再拉取 skills，不再展示技能序列，不再维护 slug/version 组合选择器。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>页面</th>
+                <th>保留</th>
+                <th>删除</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>SOP 列表 / 表单</td>
+                <td><code>slug</code>、<code>version</code>、<code>description</code></td>
+                <td>技能选择器、技能版本选择、<code>skill_sequence</code> 校验</td>
+              </tr>
+              <tr>
+                <td>SOP 详情</td>
+                <td>SOP 基础信息</td>
+                <td>技能序列展示和 skills API 查询</td>
+              </tr>
+              <tr>
+                <td>技能管理</td>
+                <td>无</td>
+                <td><code>/admin/skills</code> 页面、路由、菜单、API wrapper</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="risks-title">
+      <div class="section-title">
+        <span class="section-no">07</span>
+        <h2 id="risks-title">权衡与风险</h2>
+      </div>
+      <div class="content">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>风险</th>
+                <th>影响</th>
+                <th>缓解措施</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>外部客户端仍调用 <code>/skills</code></td>
+                <td>接口删除后旧客户端失败。</td>
+                <td>OpenAPI 删除路径，并在变更说明中标记为 breaking change。</td>
+              </tr>
+              <tr>
+                <td>旧 SOP 数据依赖 <code>skill_sequence</code></td>
+                <td>V2 新基线不自动迁移旧库，旧数据不会直接兼容。</td>
+                <td>继续明确 V2 是新基线；旧数据迁移另行脚本化。</td>
+              </tr>
+              <tr>
+                <td>Axon metadata 不再出现 skills</td>
+                <td>下游如果用 skills 标签检索历史数据，新数据会缺少该标签。</td>
+                <td>这是产品模型删除的直接结果；Axon 端已验证兼容字段缺失。</td>
+              </tr>
+              <tr>
+                <td>SOP 语义变窄</td>
+                <td>SOP 只剩工艺标识，不表达执行步骤。</td>
+                <td>未来如果需要步骤模型，重新设计 task template / procedure steps，不复用旧 skill 概念。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="plan-title">
+      <div class="section-title">
+        <span class="section-no">08</span>
+        <h2 id="plan-title">实施与验证</h2>
+      </div>
+      <div class="content">
+        <ol class="implementation">
+          <li>修改 V2 schema：删除 <code>skills</code>、<code>subscene_skills</code>、<code>operations</code>，从 <code>sops</code> 删除 <code>skill_sequence</code>。</li>
+          <li>删除 Keystone <code>SkillHandler</code>、server 注册和相关 tests；更新 Swagger 注释后重新生成 OpenAPI。</li>
+          <li>简化 SOP handler、请求响应类型、SQL 查询、测试 fixture 和校验。</li>
+          <li>简化 TaskConfig：删除 <code>Skills</code> 字段和 <code>skills</code> 表查询；更新任务配置测试。</li>
+          <li>删除 Synapse 技能 API、页面、路由、菜单；简化 SOP 列表/详情/表单。</li>
+          <li>运行 Keystone 全量测试、Synapse build、残留扫描和 diff 检查。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="footer" aria-label="最终决策">
+      <p>最终状态：SOP 是标识，不是技能序列；任务配置只携带录制上下文，不再输出技能标签。</p>
+    </section>
+  </main>
+</body>
+</html>

@@ -6,9 +6,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, main-v2 ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, main-v2 ]
 
 jobs:
   # 1. gofmt check
