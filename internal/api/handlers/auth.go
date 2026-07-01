@@ -6,9 +6,11 @@ package handlers
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
@@ -16,18 +18,18 @@ import (
 	"archebase.com/keystone-edge/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // AuthHandler provides authentication-related HTTP handlers.
 type AuthHandler struct {
-	db  *sqlx.DB
-	cfg *config.AuthConfig
+	db            *sqlx.DB
+	cfg           *config.AuthConfig
+	hilbertClient *auth.HilbertClient
 }
 
 // NewAuthHandler constructs an AuthHandler with required dependencies.
 func NewAuthHandler(db *sqlx.DB, cfg *config.AuthConfig) *AuthHandler {
-	return &AuthHandler{db: db, cfg: cfg}
+	return &AuthHandler{db: db, cfg: cfg, hilbertClient: auth.NewHilbertClient(cfg)}
 }
 
 // LoginRequest is the unified login request body.
@@ -55,10 +57,10 @@ type collectorInfo struct {
 }
 
 type collectorAuthRow struct {
-	ID           int64          `db:"id"`
-	Name         string         `db:"name"`
-	OperatorID   string         `db:"operator_id"`
-	PasswordHash sql.NullString `db:"password_hash"`
+	ID         int64  `db:"id"`
+	Name       string `db:"name"`
+	OperatorID string `db:"operator_id"`
+	Status     string `db:"status"`
 }
 
 // RegisterRoutes registers auth endpoints under the provided router group.
@@ -78,7 +80,7 @@ func (h *AuthHandler) RegisterAuthenticatedRoutes(meGroup gin.IRoutes, stationGr
 	stationGroup.POST("/end-break", h.MeStationEndBreak)
 }
 
-// Login authenticates a user (admin or data collector) and returns a JWT.
+// Login authenticates a user (admin or Hilbert-backed data collector) and returns a JWT.
 //
 //	@Summary		Unified login
 //	@Tags			auth
@@ -126,39 +128,71 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// 2. Fall through to data collector DB lookup.
+	// 2. Fall through to Hilbert-backed data collector authentication.
 	if h.db == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return
+	}
+	if h.hilbertClient == nil || !h.hilbertClient.Configured() {
+		logger.Printf("[AUTH] Hilbert authentication is not configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authentication service unavailable"})
+		return
+	}
+
+	hilbertResult, err := h.hilbertClient.Login(c.Request.Context(), account, req.Password)
+	if err != nil {
+		if errors.Is(err, auth.ErrHilbertInvalidCredentials) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			return
+		}
+		logger.Printf("[AUTH] Hilbert authentication failed: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authentication service unavailable"})
+		return
+	}
+
+	hilbertAccount := hilbertResult.Account
+	if !isAllowedHilbertCollector(hilbertAccount) {
+		logger.Printf(
+			"[AUTH] Hilbert account rejected: code=%s role=%s external_user_type=%s status=%s",
+			hilbertAccount.Code,
+			hilbertAccount.Role,
+			hilbertAccount.ExternalUserType,
+			hilbertAccount.Status,
+		)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
 	var row collectorAuthRow
-	err := h.db.Get(&row, `
-		SELECT id, name, operator_id, password_hash
+	err = h.db.Get(&row, `
+		SELECT id, name, operator_id, status
 		FROM data_collectors
 		WHERE operator_id = ? AND deleted_at IS NULL
 		LIMIT 1
-	`, account)
+	`, hilbertAccount.Code)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "collector is not registered in keystone"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
 
-	if !row.PasswordHash.Valid || strings.TrimSpace(row.PasswordHash.String) == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+	if row.Status != "active" {
+		logger.Printf("[AUTH] Keystone collector is inactive: collector=%d operator_id=%s status=%s", row.ID, row.OperatorID, row.Status)
+		c.JSON(http.StatusForbidden, gin.H{"error": "collector is inactive"})
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(row.PasswordHash.String), []byte(req.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-		return
+	displayName := strings.TrimSpace(hilbertAccount.DisplayName)
+	if displayName != "" {
+		row.Name = displayName
+		_, _ = h.db.Exec("UPDATE data_collectors SET name = ?, last_login_at = ? WHERE id = ?", displayName, time.Now().UTC(), row.ID)
+		_, _ = h.db.Exec("UPDATE workstations SET collector_name = ?, updated_at = ? WHERE data_collector_id = ? AND deleted_at IS NULL", displayName, time.Now().UTC(), row.ID)
+	} else {
+		_, _ = h.db.Exec("UPDATE data_collectors SET last_login_at = ? WHERE id = ?", time.Now().UTC(), row.ID)
 	}
-
-	_, _ = h.db.Exec("UPDATE data_collectors SET last_login_at = NOW() WHERE id = ?", row.ID)
 
 	// Best-effort: sync workstation status on login.
 	h.syncWorkstationStatusOnLogin(row.ID)
@@ -183,6 +217,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 }
 
+func isAllowedHilbertCollector(account auth.HilbertAccount) bool {
+	return account.Role == "external_user" &&
+		account.ExternalUserType == "data_supplier" &&
+		account.Status == "enabled"
+}
+
 // Logout acknowledges logout. The client discards the token; if a valid Bearer
 // token is present, the handler best-effort sets the workstation status to offline.
 func (h *AuthHandler) Logout(c *gin.Context) {
@@ -200,9 +240,9 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 				`, claims.CollectorID); err == nil {
 					if _, err := h.db.Exec(`
 						UPDATE workstations
-						SET status = 'offline', updated_at = NOW()
+						SET status = 'offline', updated_at = ?
 						WHERE id = ? AND deleted_at IS NULL
-					`, wsID); err != nil {
+					`, time.Now().UTC(), wsID); err != nil {
 						logger.Printf("[AUTH] Failed to update workstation status on logout (ws=%d): %v", wsID, err)
 					}
 				} else if err != sql.ErrNoRows {
@@ -359,9 +399,9 @@ func (h *AuthHandler) MeStationBreak(c *gin.Context) {
 	if cur != "break" {
 		if _, err := h.db.Exec(`
 			UPDATE workstations
-			SET status = 'break', updated_at = NOW()
+			SET status = 'break', updated_at = ?
 			WHERE id = ? AND deleted_at IS NULL
-		`, wsID); err != nil {
+		`, time.Now().UTC(), wsID); err != nil {
 			logger.Printf("[AUTH] MeStationBreak: failed to update workstation %d: %v", wsID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
 			return
@@ -434,9 +474,9 @@ func (h *AuthHandler) MeStationEndBreak(c *gin.Context) {
 	}
 	if _, err := h.db.Exec(`
 		UPDATE workstations
-		SET status = ?, updated_at = NOW()
+		SET status = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL
-	`, newStatus, wsID); err != nil {
+	`, newStatus, time.Now().UTC(), wsID); err != nil {
 		logger.Printf("[AUTH] MeStationEndBreak: failed to update workstation %d: %v", wsID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
 		return
@@ -480,9 +520,9 @@ func (h *AuthHandler) syncWorkstationStatusOnLogin(collectorID int64) {
 	}
 	if _, err := h.db.Exec(`
 		UPDATE workstations
-		SET status = ?, updated_at = NOW()
+		SET status = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL
-	`, newStatus, wsID); err != nil {
+	`, newStatus, time.Now().UTC(), wsID); err != nil {
 		logger.Printf("[AUTH] Failed to update workstation status on login (ws=%d): %v", wsID, err)
 	}
 }

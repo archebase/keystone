@@ -17,7 +17,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
-	"golang.org/x/crypto/bcrypt"
 
 	"archebase.com/keystone-edge/internal/logger"
 )
@@ -64,7 +63,7 @@ type CreateDataCollectorRequest struct {
 	OperatorID     string      `json:"operator_id"`
 	Email          string      `json:"email,omitempty"`
 	Certification  string      `json:"certification,omitempty"`
-	Password       string      `json:"password,omitempty"` // #nosec G117 -- request DTO may include password for initial set
+	Password       string      `json:"password,omitempty"` // #nosec G117 -- deprecated; Keystone ignores collector passwords
 	Metadata       interface{} `json:"metadata,omitempty"`
 }
 
@@ -295,7 +294,6 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 	req.OperatorID = strings.TrimSpace(req.OperatorID)
 	req.Email = strings.TrimSpace(req.Email)
 	req.Certification = strings.TrimSpace(req.Certification)
-	req.Password = strings.TrimSpace(req.Password)
 
 	if req.OrganizationID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
@@ -360,19 +358,6 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		metadataStr = sql.NullString{String: string(metadataJSON), Valid: true}
 	}
 
-	var passwordHash sql.NullString
-	password := req.Password
-	if password == "" {
-		password = "123456"
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		logger.Printf("[DC] Failed to hash password: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create data collector"})
-		return
-	}
-	passwordHash = sql.NullString{String: string(hash), Valid: true}
-
 	result, err := h.db.Exec(
 		`INSERT INTO data_collectors (
 			organization_id,
@@ -390,7 +375,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 		req.Name,
 		req.OperatorID,
 		emailStr,
-		passwordHash,
+		sql.NullString{},
 		certStr,
 		"active",
 		metadataStr,
@@ -499,7 +484,7 @@ type UpdateDataCollectorRequest struct {
 	Email         *string         `json:"email,omitempty"`
 	Certification *string         `json:"certification,omitempty"`
 	Status        *string         `json:"status,omitempty"`
-	Password      *string         `json:"password,omitempty"` // #nosec G117 -- request DTO may include password update
+	Password      *string         `json:"password,omitempty"` // #nosec G117 -- deprecated; Keystone ignores collector passwords
 	Metadata      json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
 }
 
@@ -590,22 +575,6 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 		}
 		updates = append(updates, "certification = ?")
 		args = append(args, certStr)
-	}
-
-	if req.Password != nil {
-		pw := strings.TrimSpace(*req.Password)
-		if pw == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "password cannot be empty"})
-			return
-		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
-		if err != nil {
-			logger.Printf("[DC] Failed to hash password: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update data collector"})
-			return
-		}
-		updates = append(updates, "password_hash = ?")
-		args = append(args, sql.NullString{String: string(hash), Valid: true})
 	}
 
 	if req.Status != nil {

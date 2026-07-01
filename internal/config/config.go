@@ -149,6 +149,8 @@ type AuthConfig struct {
 	AdminUsername         string // #nosec G101 -- admin account name loaded from env
 	AdminPassword         string // #nosec G101 -- admin password loaded from env; never logged
 	DashboardDisplayToken string // #nosec G101 -- optional long-lived dashboard display token loaded from env
+	HilbertBaseURL        string
+	HilbertTimeoutSeconds int
 }
 
 // Load loads configuration from environment variables and defaults
@@ -218,6 +220,8 @@ func Load() (*Config, error) {
 			AdminUsername:         getEnv("KEYSTONE_ADMIN_USERNAME", ""),
 			AdminPassword:         getEnv("KEYSTONE_ADMIN_PASSWORD", ""),
 			DashboardDisplayToken: getEnv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", ""),
+			HilbertBaseURL:        getEnv("KEYSTONE_HILBERT_BASE_URL", ""),
+			HilbertTimeoutSeconds: getEnvInt("KEYSTONE_HILBERT_TIMEOUT_SECONDS", 5),
 		},
 		Features: FeaturesConfig{
 			StrataEnabled:  false,

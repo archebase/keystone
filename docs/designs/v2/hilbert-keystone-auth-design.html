@@ -1,0 +1,811 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hilbert 接管 Keystone 数采员认证</title>
+  <style>
+    :root {
+      --bg: #1D1A2F;
+      --panel: #8BD450;
+      --accent: #F47A16;
+      --ink: #000000;
+      --paper: #F7F1DF;
+      --line: #000000;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--bg);
+      color: var(--paper);
+      font-family: "Songti SC", "STSong", "Noto Serif SC", SimSun, serif;
+      line-height: 1.72;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        linear-gradient(90deg, rgba(0, 0, 0, 0.22) 1px, transparent 1px) 0 0 / 38px 38px,
+        linear-gradient(0deg, rgba(0, 0, 0, 0.18) 1px, transparent 1px) 0 0 / 38px 38px,
+        var(--bg);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.18;
+      background-image:
+        radial-gradient(circle at 20% 10%, var(--paper) 0 1px, transparent 1px),
+        radial-gradient(circle at 70% 80%, var(--paper) 0 1px, transparent 1px);
+      background-size: 23px 19px, 31px 29px;
+      mix-blend-mode: soft-light;
+      z-index: 20;
+    }
+
+    .page {
+      position: relative;
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 42px 0 72px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 76vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(280px, 0.92fr);
+      gap: 28px;
+      align-items: center;
+      border: 5px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 18px 18px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -20% 54% -20% -12%;
+      background: var(--panel);
+      transform: skewX(-18deg);
+      border-right: 5px solid var(--line);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -14%;
+      top: -20%;
+      width: 42%;
+      height: 120%;
+      background: var(--accent);
+      transform: skewX(-14deg);
+      border-left: 5px solid var(--line);
+    }
+
+    .title-block {
+      position: relative;
+      z-index: 2;
+      padding: clamp(26px, 5vw, 58px);
+    }
+
+    .kicker {
+      display: inline-block;
+      margin-bottom: 20px;
+      padding: 5px 10px 3px;
+      border: 3px solid var(--ink);
+      background: var(--accent);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 720px;
+      font-size: clamp(42px, 8.4vw, 116px);
+      line-height: 0.96;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .subtitle {
+      margin: 24px 0 0;
+      max-width: 620px;
+      font-size: clamp(18px, 2.1vw, 28px);
+      font-weight: 800;
+      line-height: 1.32;
+      border-left: 10px solid var(--ink);
+      padding-left: 16px;
+    }
+
+    .machine {
+      position: relative;
+      z-index: 3;
+      min-height: 520px;
+      margin-right: clamp(16px, 4vw, 52px);
+      display: grid;
+      place-items: center;
+      perspective: 900px;
+    }
+
+    .machine-core {
+      width: min(92%, 430px);
+      aspect-ratio: 4 / 5;
+      position: relative;
+      transform: rotateY(-14deg) rotateZ(2deg);
+      border: 5px solid var(--ink);
+      background: var(--bg);
+      box-shadow: 16px 16px 0 var(--ink);
+    }
+
+    .machine-core::before {
+      content: "";
+      position: absolute;
+      left: 10%;
+      right: 10%;
+      top: 12%;
+      height: 16%;
+      background: var(--panel);
+      border: 4px solid var(--ink);
+      box-shadow: 0 70px 0 var(--accent), 0 140px 0 var(--paper), 0 210px 0 var(--panel);
+    }
+
+    .machine-core::after {
+      content: "HILBERT\A AUTH\A ONLY";
+      white-space: pre;
+      position: absolute;
+      right: -10%;
+      bottom: 8%;
+      padding: 12px 14px;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      font: 900 28px/0.92 Georgia, "Times New Roman", serif;
+      box-shadow: 10px 10px 0 var(--ink);
+    }
+
+    .signal {
+      position: absolute;
+      left: -8%;
+      top: 14%;
+      width: 122%;
+      height: 5px;
+      background: var(--ink);
+      box-shadow: 0 54px 0 var(--ink), 0 108px 0 var(--ink), 0 162px 0 var(--ink);
+      transform: skewY(-12deg);
+    }
+
+    .decision {
+      margin-top: 64px;
+      display: grid;
+      grid-template-columns: 0.72fr 1.28fr;
+      gap: 26px;
+      align-items: stretch;
+    }
+
+    .verdict {
+      border: 5px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      box-shadow: 14px 14px 0 var(--ink);
+      padding: 28px;
+      transform: skewY(-1.5deg);
+    }
+
+    .verdict h2,
+    section h2 {
+      margin: 0 0 16px;
+      font-size: clamp(30px, 4vw, 56px);
+      line-height: 0.98;
+      font-weight: 900;
+    }
+
+    .verdict p {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 900;
+      line-height: 1.38;
+    }
+
+    .summary {
+      border-top: 5px solid var(--paper);
+      border-bottom: 5px solid var(--paper);
+      padding: 26px 0;
+      font-size: 18px;
+    }
+
+    .summary p {
+      max-width: 820px;
+      margin: 0 0 14px;
+    }
+
+    .content {
+      margin-top: 54px;
+      display: grid;
+      gap: 42px;
+    }
+
+    section {
+      position: relative;
+      border: 4px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      padding: clamp(22px, 3.6vw, 42px);
+    }
+
+    section:nth-child(even) {
+      background: var(--panel);
+    }
+
+    .section-num {
+      position: absolute;
+      right: 18px;
+      top: 10px;
+      color: var(--accent);
+      font: 900 clamp(46px, 7vw, 88px)/1 Georgia, "Times New Roman", serif;
+      text-shadow: 3px 3px 0 var(--ink);
+    }
+
+    .body-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.92fr) minmax(280px, 1.08fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    .notice {
+      margin-top: 20px;
+      padding: 16px 18px;
+      border: 4px solid var(--ink);
+      background: var(--accent);
+      color: var(--ink);
+      font-weight: 900;
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      counter-reset: step;
+    }
+
+    .flow div {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      gap: 12px;
+      align-items: stretch;
+      border: 3px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+    }
+
+    .flow div::before {
+      content: counter(step, decimal-leading-zero);
+      display: grid;
+      place-items: center;
+      background: var(--accent);
+      color: var(--ink);
+      font: 900 18px/1 Georgia, "Times New Roman", serif;
+      border-right: 3px solid var(--ink);
+    }
+
+    .flow span {
+      padding: 10px 12px;
+    }
+
+    code,
+    pre {
+      font-family: "Times New Roman", Georgia, serif;
+    }
+
+    pre {
+      margin: 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 4px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      line-height: 1.45;
+      font-size: 15px;
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--paper);
+      color: var(--ink);
+      border: 4px solid var(--ink);
+      font-size: 15px;
+    }
+
+    th,
+    td {
+      border: 3px solid var(--ink);
+      padding: 10px 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: var(--accent);
+      font-weight: 900;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    .split-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .mini-panel {
+      border: 4px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      padding: 16px;
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    .mini-panel strong {
+      display: block;
+      margin-bottom: 10px;
+      color: var(--panel);
+      font-size: 19px;
+    }
+
+    .closing {
+      margin-top: 48px;
+      padding: 28px;
+      border: 5px solid var(--paper);
+      background: var(--bg);
+      color: var(--paper);
+      box-shadow: 14px 14px 0 var(--ink);
+    }
+
+    .closing h2 {
+      margin: 0 0 14px;
+      color: var(--panel);
+      font-size: clamp(30px, 5vw, 66px);
+      line-height: 0.98;
+    }
+
+    @media (max-width: 860px) {
+      .page {
+        width: min(100% - 24px, 720px);
+        padding-top: 18px;
+      }
+
+      .hero,
+      .decision,
+      .body-grid,
+      .split-list {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        min-height: 0;
+        box-shadow: 9px 9px 0 var(--ink);
+      }
+
+      .hero::before {
+        inset: -8% 18% 54% -16%;
+        transform: skewY(-8deg);
+        border-right: 0;
+        border-bottom: 5px solid var(--line);
+      }
+
+      .hero::after {
+        right: -32%;
+        top: 60%;
+        width: 70%;
+        height: 46%;
+      }
+
+      .machine {
+        min-height: 320px;
+        margin: 0 18px 26px;
+      }
+
+      .machine-core {
+        width: min(84%, 310px);
+        transform: rotateZ(1deg);
+      }
+
+      .machine-core::after {
+        right: -4%;
+        font-size: 20px;
+      }
+
+      .decision {
+        margin-top: 38px;
+      }
+
+      section {
+        box-shadow: 8px 8px 0 var(--ink);
+      }
+
+      .section-num {
+        position: static;
+        display: block;
+        margin-bottom: 4px;
+        font-size: 42px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .title-block {
+        padding: 24px 18px;
+      }
+
+      h1 {
+        font-size: clamp(38px, 14vw, 62px);
+      }
+
+      .subtitle {
+        font-size: 18px;
+      }
+
+      .verdict,
+      section,
+      .closing {
+        padding: 20px 16px;
+      }
+
+      .flow div {
+        grid-template-columns: 40px minmax(0, 1fr);
+      }
+
+      pre,
+      table {
+        font-size: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="title-block">
+        <div class="kicker">DEVELOPMENT DESIGN</div>
+        <h1>Hilbert 接管 Keystone 数采员认证</h1>
+        <p class="subtitle">凭据归 Hilbert；现场业务归 Keystone。</p>
+      </div>
+      <div class="machine" aria-hidden="true">
+        <div class="signal"></div>
+        <div class="machine-core"></div>
+      </div>
+    </header>
+
+    <div class="decision">
+      <aside class="verdict">
+        <h2>核心判断</h2>
+        <p>本版本只切换数采员认证来源，不重构 Synapse，不引入 Hilbert logout，不改变 Keystone JWT 形态。</p>
+      </aside>
+      <div class="summary">
+        <p>Keystone 在数采员登录时代理调用 Hilbert 验证账号密码。验证成功后，Keystone 仍使用本地 <code>data_collectors</code> 作为业务身份锚点，并签发现有 Keystone JWT。</p>
+        <p>新项目部署新环境，Keystone 必须配置 Hilbert。数采员登录没有本地密码兼容路径，Hilbert 不可用时直接返回认证服务不可用。</p>
+      </div>
+    </div>
+
+    <div class="content">
+      <section>
+        <span class="section-num">01</span>
+        <h2>背景与问题</h2>
+        <div class="body-grid">
+          <div>
+            <p>当前 Keystone 的数采员登录由 <code>/auth/login</code> 处理：管理员走环境变量，数采员走本地 <code>data_collectors.operator_id + password_hash</code>。</p>
+            <p>Hilbert 已经加入仓库并提供账号体系。你希望以后只在 Hilbert 上新建数采员，数采员在 Synapse 页面输入 Hilbert 用户名和密码，由 Keystone 与 Hilbert 交互完成验证。</p>
+          </div>
+          <div class="notice">核心矛盾：账号密码要单一来源，但 Keystone 不能失去本地采集员、工位、任务和统计的业务关系。</div>
+        </div>
+      </section>
+
+      <section>
+        <span class="section-num">02</span>
+        <h2>目标与非目标</h2>
+        <div class="split-list">
+          <div class="mini-panel">
+            <strong>本版本目标</strong>
+            <ul>
+              <li>Hilbert 启用后，数采员密码只由 Hilbert 验证。</li>
+              <li>Keystone 本地 collector 仍是业务身份锚点。</li>
+              <li>Admin 登录保持 Keystone 环境变量优先。</li>
+              <li>登录成功后覆盖本地采集员姓名和工位冗余姓名。</li>
+              <li>新增测试覆盖 Hilbert 成功、无绑定、认证失败、服务异常。</li>
+            </ul>
+          </div>
+          <div class="mini-panel">
+            <strong>明确不做</strong>
+            <ul>
+              <li>不改 Synapse 页面和接口调用。</li>
+              <li>不保存 Hilbert <code>sessionKey</code>。</li>
+              <li>不通知 Hilbert logout。</li>
+              <li>不新增 <code>auth_sessions</code> 表。</li>
+              <li>不修改 Keystone JWT claims。</li>
+              <li>不重新生成 Swagger docs。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <span class="section-num">03</span>
+        <h2>认证总览</h2>
+        <div class="body-grid">
+          <div class="flow">
+            <div><span>Synapse 继续提交 <code>operator_id/account + password</code> 到 Keystone <code>/auth/login</code>。</span></div>
+            <div><span>Keystone 先尝试匹配本地 admin 环境变量账号。</span></div>
+            <div><span>若不是 admin，Keystone 调用 Hilbert nonce 与 login；未配置 Hilbert 视为服务配置错误。</span></div>
+            <div><span>Hilbert 验证成功后，Keystone 校验账号类型和状态。</span></div>
+            <div><span>Keystone 查找本地 <code>data_collectors.operator_id = account.code</code> 且 <code>status = active</code>。</span></div>
+            <div><span>Keystone 更新本地姓名与 last login，签发现有 JWT。</span></div>
+          </div>
+          <pre><code>if admin_credentials_match:
+  issue_keystone_admin_jwt()
+
+if hilbert_base_url == "":
+  fail_service_misconfigured()
+
+account = hilbert_login(code, password)
+require account.role == "external_user"
+require account.externalUserType == "data_supplier"
+require account.status == "enabled"
+
+collector = find_active_collector(account.code)
+sync_display_name(account.displayName)
+issue_keystone_collector_jwt(collector)</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <span class="section-num">04</span>
+        <h2>Hilbert 协议</h2>
+        <div class="body-grid">
+          <div>
+            <p>已验证真实 Hilbert 登录流程。先调用 nonce 接口获取 <code>id</code> 和 <code>randomKey</code>，再把明文密码做 SHA-256，使用 nonce material 的前 32 字节作为 AES-256 key，后 12 字节作为 GCM nonce，生成 <code>cipherDigest</code>。</p>
+            <p>本版本解析 Hilbert 返回的 <code>sessionKey</code> 以确认响应完整，但立即丢弃，不保存、不入 JWT、不写日志。</p>
+          </div>
+          <pre><code>GET {base}/v1/console/nonce/generate
+
+POST {base}/v1/console/account/login
+{
+  "code": "dc01",
+  "nonceId": 67,
+  "cipherDigest": "base64-aes-gcm"
+}</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <span class="section-num">05</span>
+        <h2>准入与绑定规则</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>检查点</th>
+                <th>规则</th>
+                <th>失败结果</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Hilbert 角色</td>
+                <td><code>role == external_user</code></td>
+                <td><code>401 invalid credentials</code></td>
+              </tr>
+              <tr>
+                <td>Hilbert 外部用户类型</td>
+                <td><code>externalUserType == data_supplier</code></td>
+                <td><code>401 invalid credentials</code></td>
+              </tr>
+              <tr>
+                <td>Hilbert 状态</td>
+                <td><code>status == enabled</code></td>
+                <td><code>401 invalid credentials</code></td>
+              </tr>
+              <tr>
+                <td>Keystone 绑定</td>
+                <td>必须存在 <code>data_collectors.operator_id = account.code</code></td>
+                <td><code>403 collector is not registered in keystone</code></td>
+              </tr>
+              <tr>
+                <td>Keystone 本地状态</td>
+                <td><code>data_collectors.status == active</code></td>
+                <td><code>403 collector is inactive</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="notice">这些准入规则写死在本版本中，不做环境变量配置。</div>
+      </section>
+
+      <section>
+        <span class="section-num">06</span>
+        <h2>本地数据处理</h2>
+        <div class="body-grid">
+          <div>
+            <p>Keystone 不自动创建本地 collector。Hilbert 登录成功但本地没有绑定时拒绝登录，避免产生没有组织、工位和业务归属的半成品身份。</p>
+            <p>Hilbert <code>displayName</code> 非空时覆盖本地姓名，并同步工位冗余字段，避免列表、看板和任务页面展示不一致。</p>
+          </div>
+          <pre><code>UPDATE data_collectors
+SET name = ?, last_login_at = NOW()
+WHERE id = ? AND deleted_at IS NULL;
+
+UPDATE workstations
+SET collector_name = ?, updated_at = NOW()
+WHERE data_collector_id = ?
+  AND deleted_at IS NULL;</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <span class="section-num">07</span>
+        <h2>密码字段废弃</h2>
+        <div class="split-list">
+          <div class="mini-panel">
+            <strong>创建数采员</strong>
+            <p><code>POST /data_collectors</code> 继续接受请求结构，但忽略 <code>password</code> 字段，新建记录写入 <code>password_hash = NULL</code>。</p>
+          </div>
+          <div class="mini-panel">
+            <strong>编辑数采员</strong>
+            <p><code>PUT /data_collectors/:id</code> 忽略 <code>password</code> 字段，不再更新 <code>password_hash</code>。</p>
+          </div>
+        </div>
+        <div class="notice">新环境不保留旧本地密码数据。登录路径永远不读取本地 <code>password_hash</code>。</div>
+      </section>
+
+      <section>
+        <span class="section-num">08</span>
+        <h2>配置要求</h2>
+        <div class="body-grid">
+          <div>
+            <p>新环境强制配置 Hilbert base URL 和超时时间。base URL 为空时，数采员登录返回服务配置错误；base URL 非空时，数采员只走 Hilbert，Hilbert 调用失败不回退本地密码。</p>
+          </div>
+          <pre><code>KEYSTONE_HILBERT_BASE_URL=http://192.168.120.226:8080/hilbert-be-backend
+KEYSTONE_HILBERT_TIMEOUT_SECONDS=5</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <span class="section-num">09</span>
+        <h2>错误语义</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>场景</th>
+                <th>Keystone HTTP</th>
+                <th>响应语义</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>请求体缺字段</td>
+                <td>400</td>
+                <td><code>invalid request body</code></td>
+              </tr>
+              <tr>
+                <td>Hilbert 凭据错误、账号禁用、类型不符</td>
+                <td>401</td>
+                <td><code>invalid credentials</code></td>
+              </tr>
+              <tr>
+                <td>Hilbert 登录成功但 Keystone 未绑定 collector</td>
+                <td>403</td>
+                <td><code>collector is not registered in keystone</code></td>
+              </tr>
+              <tr>
+                <td>Keystone collector 非 active</td>
+                <td>403</td>
+                <td><code>collector is inactive</code></td>
+              </tr>
+              <tr>
+                <td>Hilbert 超时、不可达、5xx、响应格式异常</td>
+                <td>503</td>
+                <td><code>authentication service unavailable</code></td>
+              </tr>
+              <tr>
+                <td>Keystone 数据库或 JWT 生成失败</td>
+                <td>500</td>
+                <td><code>internal error</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <span class="section-num">10</span>
+        <h2>安全边界</h2>
+        <div class="body-grid">
+          <div>
+            <p>Keystone 不打印密码、<code>cipherDigest</code>、<code>randomKey</code> 或 Hilbert <code>sessionKey</code>。Hilbert 角色和状态拒绝原因可以进入日志，但对前端统一返回认证失败。</p>
+            <p>本版本不保存 Hilbert session，因此 logout 不通知 Hilbert。下一版本如要做 Hilbert logout 和 Keystone JWT 可撤销，需要单独设计会话表和敏感 token 加密存储。</p>
+          </div>
+          <div class="notice">本版本接受 Keystone JWT 在过期前仍按现有无状态方式生效；这是既有 logout 行为，不在本次扩大。</div>
+        </div>
+      </section>
+
+      <section>
+        <span class="section-num">11</span>
+        <h2>实施计划</h2>
+        <ol>
+          <li>在 Keystone auth config 中增加 Hilbert base URL 和 timeout。</li>
+          <li>在 <code>internal/auth</code> 新增 Hilbert client，封装 nonce、SHA-256、AES-GCM、login 和错误分类。</li>
+          <li>修改 <code>handlers.AuthHandler.Login</code>，在 Hilbert 启用时替换 collector 密码校验路径。</li>
+          <li>修改 collector create/update，忽略 password 并停止写入新 password hash。</li>
+          <li>登录成功时覆盖 <code>data_collectors.name</code> 和 <code>workstations.collector_name</code>，并更新 <code>last_login_at</code>。</li>
+          <li>更新源码注释，不运行 Swagger 生成。</li>
+        </ol>
+      </section>
+
+      <section>
+        <span class="section-num">12</span>
+        <h2>验证标准</h2>
+        <div class="split-list">
+          <div class="mini-panel">
+            <strong>自动化测试</strong>
+            <ul>
+              <li>Hilbert 成功 + 本地 active collector 存在，返回 Keystone JWT。</li>
+              <li>Hilbert 成功 + 本地 collector 不存在，返回 403。</li>
+              <li>Hilbert 业务认证失败，返回 401。</li>
+              <li>Hilbert 5xx、超时或坏 JSON，返回 503。</li>
+            </ul>
+          </div>
+          <div class="mini-panel">
+            <strong>手工验收</strong>
+            <ul>
+              <li>使用 Hilbert 账号 <code>dc01</code> 和正确密码可完成 Keystone 登录。</li>
+              <li>错误密码不会回退 Keystone 本地 hash。</li>
+              <li>Hilbert displayName 非空时，本地 collector 和工位展示名被覆盖。</li>
+              <li>Synapse 不改代码也能继续提交原登录请求。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <footer class="closing">
+      <h2>最终锁定</h2>
+      <p>本版本是一条窄切换：Hilbert 成为数采员凭据源，Keystone 保持业务身份和 JWT 发行者。同步只处理必要的姓名一致性，不引入会话持久化和可撤销 token。</p>
+    </footer>
+  </main>
+</body>
+</html>

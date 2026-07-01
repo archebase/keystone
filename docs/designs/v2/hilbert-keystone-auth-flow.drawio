@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="26.0.0">
+  <diagram name="Hilbert-Keystone Auth Flow">
+    <mxGraphModel dx="1600" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" value="Hilbert 接管 Keystone 数采员认证流程" style="text;html=1;strokeColor=none;fillColor=none;fontSize=28;fontStyle=1;fontColor=#1D1A2F;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="330" y="30" width="740" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="边界：Synapse 不改接口；Keystone 代理 Hilbert 登录；不保存 Hilbert sessionKey；无本地密码 fallback。" style="text;html=1;strokeColor=none;fillColor=none;fontSize=14;fontColor=#5F2A62;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="300" y="82" width="800" height="34" as="geometry" />
+        </mxCell>
+
+        <mxCell id="10" value="Synapse 提交登录&#xa;operator_id/account + password" style="ellipse;whiteSpace=wrap;html=1;fillColor=#8BD450;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="570" y="150" width="260" height="84" as="geometry" />
+        </mxCell>
+        <mxCell id="11" value="Keystone /auth/login&#xa;解析请求体" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F1DF;strokeColor=#000000;strokeWidth=3;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="570" y="280" width="260" height="72" as="geometry" />
+        </mxCell>
+        <mxCell id="12" value="匹配 Keystone admin&#xa;环境变量账号？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#F5C024;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="585" y="400" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="13" value="签发 Keystone Admin JWT&#xa;role=admin" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#8BD450;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="920" y="430" width="260" height="76" as="geometry" />
+        </mxCell>
+        <mxCell id="14" value="Hilbert Base URL&#xa;已配置？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#F5C024;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="585" y="585" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="15" value="503&#xa;authentication service unavailable&#xa;服务配置错误" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F47A16;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="210" y="612" width="280" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="GET Hilbert nonce/generate&#xa;获取 nonceId + randomKey" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F1DF;strokeColor=#000000;strokeWidth=3;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="570" y="765" width="260" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="17" value="本地计算 cipherDigest&#xa;SHA256(password) + AES-256-GCM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F1DF;strokeColor=#000000;strokeWidth=3;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="570" y="895" width="260" height="78" as="geometry" />
+        </mxCell>
+        <mxCell id="18" value="POST Hilbert account/login&#xa;code + nonceId + cipherDigest" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fillColor=#F47A16;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="555" y="1025" width="290" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="19" value="Hilbert 登录成功？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#F5C024;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="585" y="1160" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="20" value="401 invalid credentials&#xa;或 503 auth service unavailable" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F47A16;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="915" y="1182" width="285" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="21" value="Hilbert 账号准入？&#xa;external_user + data_supplier + enabled" style="rhombus;whiteSpace=wrap;html=1;fillColor=#F5C024;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="565" y="1340" width="270" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="22" value="401 invalid credentials&#xa;日志记录 role/type/status" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F47A16;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="915" y="1370" width="285" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="23" value="查 Keystone 本地 collector&#xa;operator_id = Hilbert code&#xa;status = active" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F1DF;strokeColor=#000000;strokeWidth=3;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="570" y="1535" width="260" height="92" as="geometry" />
+        </mxCell>
+        <mxCell id="24" value="本地绑定存在且 active？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#F5C024;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="585" y="1675" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="25" value="403&#xa;collector is not registered&#xa;或 collector is inactive" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F47A16;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="915" y="1697" width="285" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="26" value="同步本地展示名&#xa;data_collectors.name&#xa;workstations.collector_name&#xa;更新 last_login_at" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#965FD4;strokeColor=#000000;strokeWidth=3;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="570" y="1870" width="260" height="112" as="geometry" />
+        </mxCell>
+        <mxCell id="27" value="签发 Keystone Collector JWT&#xa;claims 不变：collector_id/operator_id/role" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#8BD450;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="570" y="2035" width="260" height="88" as="geometry" />
+        </mxCell>
+        <mxCell id="28" value="返回 Synapse&#xa;access_token + role=data_collector" style="ellipse;whiteSpace=wrap;html=1;fillColor=#8BD450;strokeColor=#000000;strokeWidth=3;fontColor=#000000;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="570" y="2175" width="260" height="84" as="geometry" />
+        </mxCell>
+
+        <mxCell id="40" value="数据维护规则" style="swimlane;startSize=34;whiteSpace=wrap;html=1;fillColor=#1D1A2F;strokeColor=#000000;strokeWidth=3;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="830" width="330" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="41" value="POST /data_collectors&#xa;忽略 password&#xa;password_hash = NULL" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F1DF;strokeColor=#000000;strokeWidth=2;fontColor=#000000;" vertex="1" parent="40">
+          <mxGeometry x="30" y="60" width="270" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="42" value="PUT /data_collectors/:id&#xa;忽略 password&#xa;不更新 password_hash" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F1DF;strokeColor=#000000;strokeWidth=2;fontColor=#000000;" vertex="1" parent="40">
+          <mxGeometry x="30" y="158" width="270" height="74" as="geometry" />
+        </mxCell>
+
+        <mxCell id="50" value="Hilbert sessionKey 边界" style="swimlane;startSize=34;whiteSpace=wrap;html=1;fillColor=#1D1A2F;strokeColor=#000000;strokeWidth=3;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="805" width="330" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="51" value="解析 login 响应以确认成功" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F7F1DF;strokeColor=#000000;strokeWidth=2;fontColor=#000000;" vertex="1" parent="50">
+          <mxGeometry x="30" y="58" width="270" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="52" value="不保存、不入 JWT、不用于 logout、不写日志" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F47A16;strokeColor=#000000;strokeWidth=2;fontColor=#000000;fontStyle=1;" vertex="1" parent="50">
+          <mxGeometry x="30" y="144" width="270" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="100" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;" edge="1" parent="1" source="10" target="11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="101" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;" edge="1" parent="1" source="11" target="12">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="102" value="Yes" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="12" target="13">
+          <mxGeometry x="-0.15" y="-12" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="103" value="No" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="12" target="14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="104" value="No" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="14" target="15">
+          <mxGeometry x="-0.25" y="-12" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="105" value="Yes" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="14" target="16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="106" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;" edge="1" parent="1" source="16" target="17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="107" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;" edge="1" parent="1" source="17" target="18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="108" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;" edge="1" parent="1" source="18" target="19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="109" value="No / Error" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="19" target="20">
+          <mxGeometry x="-0.15" y="-12" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="110" value="Yes" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="19" target="21">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="111" value="No" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="21" target="22">
+          <mxGeometry x="-0.15" y="-12" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="112" value="Yes" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="21" target="23">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="113" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;" edge="1" parent="1" source="23" target="24">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="114" value="No" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="24" target="25">
+          <mxGeometry x="-0.15" y="-12" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="115" value="Yes" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;labelBackgroundColor=#F7F1DF;fontStyle=1;" edge="1" parent="1" source="24" target="26">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="116" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;" edge="1" parent="1" source="26" target="27">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="117" value="" style="endArrow=block;html=1;rounded=0;strokeColor=#000000;strokeWidth=3;" edge="1" parent="1" source="27" target="28">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
