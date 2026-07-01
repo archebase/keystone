@@ -20,20 +20,20 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/v2/*.sql
 var migrationsFS embed.FS
 
 // Migrate runs all pending database migrations
 func Migrate(db *sqlx.DB) error {
 	logger.Println("[DATABASE] Running database migrations...")
 
-	src, err := iofs.New(migrationsFS, "migrations")
+	src, err := iofs.New(migrationsFS, "migrations/v2")
 	if err != nil {
 		return fmt.Errorf("failed to create migration source: %w", err)
 	}
 
 	driver, err := mysql.WithInstance(db.DB, &mysql.Config{
-		MigrationsTable: "schema_migrations",
+		MigrationsTable: "schema_migrations_v2",
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create migration driver: %w", err)

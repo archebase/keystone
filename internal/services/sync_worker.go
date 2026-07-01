@@ -384,8 +384,8 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	if episode.CloudSynced && !allowSynced {
 		return fmt.Errorf("episode %d already synced", episodeID)
 	}
-	if episode.QaStatus != "approved" && episode.QaStatus != "inspector_approved" {
-		return fmt.Errorf("episode %d qa_status is %q, must be approved or inspector_approved", episodeID, episode.QaStatus)
+	if episode.QaStatus != "approved" {
+		return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QaStatus)
 	}
 
 	var activeCount int
@@ -486,8 +486,8 @@ func (w *SyncWorker) persistResyncSyncLog(ctx context.Context, episodeID int64) 
 	if !episode.CloudSynced {
 		return fmt.Errorf("episode %d has not completed cloud sync", episodeID)
 	}
-	if episode.QaStatus != "approved" && episode.QaStatus != "inspector_approved" {
-		return fmt.Errorf("episode %d qa_status is %q, must be approved or inspector_approved", episodeID, episode.QaStatus)
+	if episode.QaStatus != "approved" {
+		return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QaStatus)
 	}
 
 	var activeCount int
@@ -801,7 +801,7 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFa
 	query := `
 		SELECT e.id
 		FROM episodes e
-		WHERE e.qa_status IN ('approved', 'inspector_approved')
+		WHERE e.qa_status = 'approved'
 		  AND e.cloud_synced = FALSE
 		  AND e.deleted_at IS NULL
 		  AND NOT EXISTS (

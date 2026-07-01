@@ -20,7 +20,7 @@ import (
 func TestParseDataProductionStatsQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&source_id=12&scene_id=34,35&robot_type_id=7,8&sop_id=9,10&qa_status=approved,rejected&cloud_synced=false&data_type=episode&task_id=task_1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&source_id=12&scene_id=34,35&robot_type_id=7,8&sop_id=9,10&qa_status=approved,failed&cloud_synced=false&data_type=episode&task_id=task_1", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -34,7 +34,7 @@ func TestParseDataProductionStatsQuery(t *testing.T) {
 	if len(got.SceneIDs) != 2 || got.SceneIDs[0] != 34 || got.SceneIDs[1] != 35 {
 		t.Fatalf("unexpected scene ids: %#v", got.SceneIDs)
 	}
-	if strings.Join(got.RobotTypeIDs, ",") != "7,8" || strings.Join(got.SOPIDs, ",") != "9,10" || strings.Join(got.QAStatuses, ",") != "approved,rejected" {
+	if strings.Join(got.RobotTypeIDs, ",") != "7,8" || strings.Join(got.SOPIDs, ",") != "9,10" || strings.Join(got.QAStatuses, ",") != "approved,failed" {
 		t.Fatalf("unexpected list filters: %+v", got)
 	}
 	if len(got.CloudSyncedValues) != 1 || got.CloudSyncedValues[0] {
@@ -110,7 +110,7 @@ func TestFilteredProductionRecordsSQLIncludesEpisodeFilters(t *testing.T) {
 		StartTime:         mustParseStatsTimeForTest(t, "2026-05-01T00:00:00Z"),
 		EndTime:           mustParseStatsTimeForTest(t, "2026-05-02T00:00:00Z"),
 		SceneIDs:          []int64{34},
-		QAStatuses:        []string{"rejected"},
+		QAStatuses:        []string{"failed"},
 		CloudSyncedValues: []bool{cloudSynced},
 	})
 	for _, want := range []string{"scene_id IN (?)", "qa_status IN (?)", "cloud_synced = ?"} {

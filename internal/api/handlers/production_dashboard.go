@@ -1082,9 +1082,9 @@ func (h *ProductionDashboardHandler) dashboardQuality(db dashboardDB, scope prod
 	query := `
 		SELECT
 			COALESCE(SUM(CASE WHEN e.qa_status <> 'pending_qa' THEN 1 ELSE 0 END), 0) AS total_inspected,
-			COALESCE(SUM(CASE WHEN e.qa_status IN ('approved', 'inspector_approved') THEN 1 ELSE 0 END), 0) AS passed,
-			COALESCE(SUM(CASE WHEN e.qa_status = 'rejected' THEN 1 ELSE 0 END), 0) AS failed,
-			COALESCE(SUM(CASE WHEN e.qa_status = 'needs_inspection' THEN 1 ELSE 0 END), 0) AS inspecting,
+			COALESCE(SUM(CASE WHEN e.qa_status = 'approved' THEN 1 ELSE 0 END), 0) AS passed,
+			COALESCE(SUM(CASE WHEN e.qa_status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+			COALESCE(SUM(CASE WHEN e.qa_status = 'qa_running' THEN 1 ELSE 0 END), 0) AS inspecting,
 			COALESCE(SUM(CASE WHEN e.qa_status = 'pending_qa' THEN 1 ELSE 0 END), 0) AS pending_qa,
 			COUNT(1) AS total_episodes,
 			COALESCE(SUM(COALESCE(e.duration_sec, 0)), 0) AS total_duration_sec,

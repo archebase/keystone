@@ -51,7 +51,6 @@ type Server struct {
 	station             *handlers.StationHandler
 	organization        *handlers.OrganizationHandler
 	skill               *handlers.SkillHandler
-	inspector           *handlers.InspectorHandler
 	sop                 *handlers.SOPHandler
 	scene               *handlers.SceneHandler
 	subscene            *handlers.SubsceneHandler
@@ -133,7 +132,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		stationHandler             *handlers.StationHandler
 		organizationHandler        *handlers.OrganizationHandler
 		skillHandler               *handlers.SkillHandler
-		inspectorHandler           *handlers.InspectorHandler
 		sopHandler                 *handlers.SOPHandler
 		sceneHandler               *handlers.SceneHandler
 		subsceneHandler            *handlers.SubsceneHandler
@@ -152,7 +150,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		stationHandler = handlers.NewStationHandler(db)
 		organizationHandler = handlers.NewOrganizationHandler(db)
 		skillHandler = handlers.NewSkillHandler(db)
-		inspectorHandler = handlers.NewInspectorHandler(db)
 		sopHandler = handlers.NewSOPHandler(db)
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
@@ -192,7 +189,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		station:             stationHandler,
 		organization:        organizationHandler,
 		skill:               skillHandler,
-		inspector:           inspectorHandler,
 		sop:                 sopHandler,
 		scene:               sceneHandler,
 		subscene:            subsceneHandler,
@@ -315,9 +311,6 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.skill != nil {
 		s.skill.RegisterRoutes(v1Tasks)
-	}
-	if s.inspector != nil {
-		s.inspector.RegisterRoutes(v1Tasks)
 	}
 	if s.sop != nil {
 		s.sop.RegisterRoutes(v1Tasks)

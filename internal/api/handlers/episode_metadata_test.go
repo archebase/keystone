@@ -52,6 +52,11 @@ func TestGetEpisodeReturnsMetadata(t *testing.T) {
 	if writerHealth["state"] != "warning" {
 		t.Fatalf("writer_health.state=%v want warning", writerHealth["state"])
 	}
+	for _, removedField := range []string{"inspector_id", "inspection_decision", "inspected_at"} {
+		if _, ok := body[removedField]; ok {
+			t.Fatalf("response unexpectedly contains removed field %q", removedField)
+		}
+	}
 	recording, ok := recorder["recording"].(map[string]any)
 	if !ok {
 		t.Fatalf("recording type=%T recorder=%#v", recorder["recording"], recorder)
@@ -151,16 +156,6 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			operator_id TEXT,
 			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE inspections (
-			episode_id INTEGER,
-			inspector_id INTEGER,
-			decision TEXT,
-			inspected_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE inspectors (
-			id INTEGER PRIMARY KEY,
-			inspector_id TEXT
 		)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {

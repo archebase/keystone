@@ -34,13 +34,10 @@ const (
 	qaRunModeAuto   QARunMode = "auto"
 	qaRunModeManual QARunMode = "manual"
 
-	qaStatusPendingQA         = "pending_qa"
-	qaStatusRunning           = "qa_running"
-	qaStatusApproved          = "approved"
-	qaStatusNeedsInspection   = "needs_inspection"
-	qaStatusInspectorApproved = "inspector_approved"
-	qaStatusRejected          = "rejected"
-	qaStatusFailed            = "failed"
+	qaStatusPendingQA = "pending_qa"
+	qaStatusRunning   = "qa_running"
+	qaStatusApproved  = "approved"
+	qaStatusFailed    = "failed"
 
 	defaultEpisodeQAQueueSize = 256
 	defaultEpisodeQATimeout   = 2 * time.Minute
@@ -244,7 +241,7 @@ func (h *EpisodeQAHandler) requireBearerJWT(c *gin.Context) bool {
 // @Description  Lists episodes with latest QA check. Defaults to actionable statuses.
 // @Tags         qa
 // @Produce      json
-// @Param        status      query     string  false  "QA status filter: all, pending_qa, failed, needs_inspection, approved, rejected"
+// @Param        status      query     string  false  "QA status filter: all, pending_qa, qa_running, approved, failed"
 // @Param        robot_type  query     string  false  "Robot type name or model"
 // @Param        q           query     string  false  "Search episode/task/quality text"
 // @Param        page        query     int     false  "Page number, default 1"
@@ -585,10 +582,6 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 	if mode == qaRunModeAuto && row.QAStatus != qaStatusPendingQA {
 		return claim, errEpisodeQAAutoSkipped
 	}
-	if mode == qaRunModeManual && isManualQAProtectedStatus(row.QAStatus) {
-		return claim, nil
-	}
-
 	// #nosec G701 -- static SQL with placeholder-bound status and episode values.
 	res, err := h.db.ExecContext(ctx, `
 		UPDATE episodes
@@ -631,15 +624,6 @@ func (h *EpisodeQAHandler) releaseEpisodeQARun(ctx context.Context, claim episod
 		WHERE id = ? AND deleted_at IS NULL AND qa_status = ?
 	`, claim.OriginalStatus, claim.EpisodeID, qaStatusRunning); err != nil {
 		logger.Printf("[EPISODE-QA] Failed to release QA run: episode=%d, err=%v", claim.EpisodeID, err)
-	}
-}
-
-func isManualQAProtectedStatus(status string) bool {
-	switch status {
-	case qaStatusRejected, qaStatusNeedsInspection, qaStatusInspectorApproved:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -1078,13 +1062,10 @@ func parsePositiveIntQuery(c *gin.Context, key string, fallback int) int {
 func qaEpisodeStatusFilter(raw string) ([]string, error) {
 	status := strings.TrimSpace(strings.ToLower(raw))
 	if status == "" {
-		return []string{qaStatusPendingQA, qaStatusFailed, qaStatusNeedsInspection}, nil
+		return []string{qaStatusPendingQA, qaStatusFailed}, nil
 	}
 	if status == "all" {
 		return nil, nil
-	}
-	if status == qaStatusApproved {
-		return []string{qaStatusApproved, qaStatusInspectorApproved}, nil
 	}
 
 	parts := strings.Split(status, ",")
@@ -1095,7 +1076,7 @@ func qaEpisodeStatusFilter(raw string) ([]string, error) {
 			continue
 		}
 		switch s {
-		case qaStatusPendingQA, qaStatusRunning, qaStatusFailed, qaStatusNeedsInspection, qaStatusInspectorApproved, qaStatusRejected:
+		case qaStatusPendingQA, qaStatusRunning, qaStatusApproved, qaStatusFailed:
 			out = append(out, s)
 		default:
 			return nil, fmt.Errorf("unsupported qa status %q", s)

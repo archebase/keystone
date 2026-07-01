@@ -253,7 +253,7 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 	}
 	for _, status := range qaStatuses {
 		if _, ok := validDataProductionQAStatuses[status]; !ok {
-			return dataOpsEpisodeQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, needs_inspection, inspector_approved, rejected, failed")
+			return dataOpsEpisodeQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed")
 		}
 	}
 

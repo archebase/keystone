@@ -54,15 +54,14 @@ type DataOpsBulkSkippedBreakdownItem struct {
 
 // DataOpsBulkEpisodePreviewResponse reports matched, eligible, and skipped counts before execution.
 type DataOpsBulkEpisodePreviewResponse struct {
-	Status               string                            `json:"status"`
-	Action               string                            `json:"action"`
-	MatchedCount         int                               `json:"matched_count"`
-	EligibleCount        int                               `json:"eligible_count"`
-	SkippedCount         int                               `json:"skipped_count"`
-	ProtectedStatusCount int                               `json:"protected_status_count,omitempty"`
-	SyncWorkerRunning    *bool                             `json:"sync_worker_running,omitempty"`
-	SkippedBreakdown     []DataOpsBulkSkippedBreakdownItem `json:"skipped_breakdown"`
-	Warnings             []string                          `json:"warnings"`
+	Status            string                            `json:"status"`
+	Action            string                            `json:"action"`
+	MatchedCount      int                               `json:"matched_count"`
+	EligibleCount     int                               `json:"eligible_count"`
+	SkippedCount      int                               `json:"skipped_count"`
+	SyncWorkerRunning *bool                             `json:"sync_worker_running,omitempty"`
+	SkippedBreakdown  []DataOpsBulkSkippedBreakdownItem `json:"skipped_breakdown"`
+	Warnings          []string                          `json:"warnings"`
 }
 
 // DataOpsBulkEpisodeActionResponse acknowledges an accepted asynchronous bulk action.
@@ -79,9 +78,8 @@ type DataOpsBulkEpisodeQAActionResponse struct {
 }
 
 type dataOpsBulkQAPreviewRow struct {
-	MatchedCount         int64 `db:"matched_count"`
-	QARunningCount       int64 `db:"qa_running_count"`
-	ProtectedStatusCount int64 `db:"protected_status_count"`
+	MatchedCount   int64 `db:"matched_count"`
+	QARunningCount int64 `db:"qa_running_count"`
 }
 
 type dataOpsBulkSyncPreviewRow struct {
@@ -325,7 +323,7 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 	}
 	for _, status := range qaStatuses {
 		if _, ok := validDataProductionQAStatuses[status]; !ok {
-			return dataOpsEpisodeQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, needs_inspection, inspector_approved, rejected, failed")
+			return dataOpsEpisodeQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed")
 		}
 	}
 
@@ -476,7 +474,6 @@ func (h *DataOpsHandler) previewBulkEpisodeQA(ctx context.Context, q dataOpsEpis
 
 	matched := int(row.MatchedCount)
 	qaRunning := int(row.QARunningCount)
-	protected := int(row.ProtectedStatusCount)
 	eligible := matched - qaRunning
 	if eligible < 0 {
 		eligible = 0
@@ -487,19 +484,15 @@ func (h *DataOpsHandler) previewBulkEpisodeQA(ctx context.Context, q dataOpsEpis
 		breakdown = append(breakdown, DataOpsBulkSkippedBreakdownItem{Reason: "qa_running", Count: qaRunning})
 	}
 	warnings := []string{}
-	if protected > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d episodes are in protected manual QA statuses; checks can run but status will not be overwritten", protected))
-	}
 
 	return DataOpsBulkEpisodePreviewResponse{
-		Status:               "preview",
-		Action:               "bulk_qa",
-		MatchedCount:         matched,
-		EligibleCount:        eligible,
-		SkippedCount:         qaRunning,
-		ProtectedStatusCount: protected,
-		SkippedBreakdown:     breakdown,
-		Warnings:             warnings,
+		Status:           "preview",
+		Action:           "bulk_qa",
+		MatchedCount:     matched,
+		EligibleCount:    eligible,
+		SkippedCount:     qaRunning,
+		SkippedBreakdown: breakdown,
+		Warnings:         warnings,
 	}, nil
 }
 
@@ -507,8 +500,7 @@ func dataOpsBulkQAPreviewSQL(fromSQL string, where string) string {
 	return `
 		SELECT
 			COUNT(1) AS matched_count,
-			COALESCE(SUM(CASE WHEN COALESCE(e.qa_status, '') = 'qa_running' THEN 1 ELSE 0 END), 0) AS qa_running_count,
-			COALESCE(SUM(CASE WHEN COALESCE(e.qa_status, '') IN ('needs_inspection', 'inspector_approved', 'rejected') THEN 1 ELSE 0 END), 0) AS protected_status_count
+			COALESCE(SUM(CASE WHEN COALESCE(e.qa_status, '') = 'qa_running' THEN 1 ELSE 0 END), 0) AS qa_running_count
 	` + fromSQL + where
 }
 
@@ -572,7 +564,7 @@ func dataOpsLatestSyncPreviewJoinSQL() string {
 }
 
 func dataOpsBulkSyncPreviewSQL(fromSQL string, where string) string {
-	approved := "(COALESCE(e.qa_status, '') IN ('approved', 'inspector_approved'))"
+	approved := "(COALESCE(e.qa_status, '') = 'approved')"
 	latestStatus := "COALESCE(latest_sync.status, '')"
 	synced := "(e.cloud_synced = TRUE OR " + latestStatus + " = 'completed')"
 	active := "(" + latestStatus + " IN ('pending', 'in_progress'))"

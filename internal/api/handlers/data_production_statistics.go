@@ -235,13 +235,10 @@ var validStatsGranularities = map[string]struct{}{
 }
 
 var validDataProductionQAStatuses = map[string]struct{}{
-	"pending_qa":         {},
-	"qa_running":         {},
-	"approved":           {},
-	"needs_inspection":   {},
-	"inspector_approved": {},
-	"rejected":           {},
-	"failed":             {},
+	"pending_qa": {},
+	"qa_running": {},
+	"approved":   {},
+	"failed":     {},
 }
 
 func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dataProductionStatsQuery, error) {
@@ -302,7 +299,7 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 	}
 	for _, qaStatus := range qaStatuses {
 		if _, ok := validDataProductionQAStatuses[qaStatus]; !ok {
-			return dataProductionStatsQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, needs_inspection, inspector_approved, rejected, failed")
+			return dataProductionStatsQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed")
 		}
 	}
 
@@ -467,7 +464,7 @@ func (h *DataProductionStatisticsHandler) writeTrend(c *gin.Context, q dataProdu
 			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
 			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
 			COALESCE(SUM(CASE WHEN status = 'processing' THEN count_value ELSE 0 END), 0) AS processing_count,
-			COALESCE(SUM(CASE WHEN qa_status IN ('approved', 'inspector_approved') THEN count_value ELSE 0 END), 0) AS approved_qa_count,
+			COALESCE(SUM(CASE WHEN qa_status = 'approved' THEN count_value ELSE 0 END), 0) AS approved_qa_count,
 			COALESCE(SUM(CASE WHEN cloud_synced THEN count_value ELSE 0 END), 0) AS cloud_synced_count,
 			COALESCE(SUM(CASE WHEN NOT COALESCE(cloud_synced, FALSE) THEN count_value ELSE 0 END), 0) AS cloud_unsynced_count,
 			SUM(duration_ms) AS total_duration_ms,
@@ -779,7 +776,7 @@ func (h *DataProductionStatisticsHandler) aggregateStats(q dataProductionStatsQu
 			COALESCE(SUM(CASE WHEN status = 'success' THEN count_value ELSE 0 END), 0) AS success_count,
 			COALESCE(SUM(CASE WHEN status IN ('failed', 'cancelled') THEN count_value ELSE 0 END), 0) AS failed_count,
 			COALESCE(SUM(CASE WHEN status = 'processing' THEN count_value ELSE 0 END), 0) AS processing_count,
-			COALESCE(SUM(CASE WHEN qa_status IN ('approved', 'inspector_approved') THEN count_value ELSE 0 END), 0) AS approved_qa_count,
+			COALESCE(SUM(CASE WHEN qa_status = 'approved' THEN count_value ELSE 0 END), 0) AS approved_qa_count,
 			COALESCE(SUM(CASE WHEN cloud_synced THEN count_value ELSE 0 END), 0) AS cloud_synced_count,
 			COALESCE(SUM(CASE WHEN NOT COALESCE(cloud_synced, FALSE) THEN count_value ELSE 0 END), 0) AS cloud_unsynced_count,
 			SUM(duration_ms) AS total_duration_ms,
@@ -1149,9 +1146,6 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 			WHEN 'pending_qa' THEN '待质检'
 			WHEN 'qa_running' THEN '质检中'
 			WHEN 'approved' THEN '已通过'
-			WHEN 'needs_inspection' THEN '需人工复核'
-			WHEN 'inspector_approved' THEN '人工通过'
-			WHEN 'rejected' THEN '已驳回'
 			WHEN 'failed' THEN '质检失败'
 			ELSE qa_status
 		END`, nil

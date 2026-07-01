@@ -343,13 +343,13 @@ func TestPersistEpisodeQACheckAutoSuccessAutoApprovesEpisode(t *testing.T) {
 	}
 }
 
-func TestPersistEpisodeQACheckDoesNotOverrideProtectedManualStatus(t *testing.T) {
+func TestPersistEpisodeQACheckManualFailureMarksApprovedEpisodeFailed(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}
 
 	_, err := db.Exec(`
 		INSERT INTO episodes (id, qa_status, quality_flag, deleted_at)
-		VALUES (1, 'needs_inspection', NULL, NULL)
+		VALUES (1, 'qa_running', NULL, NULL)
 	`)
 	if err != nil {
 		t.Fatalf("insert episode: %v", err)
@@ -366,11 +366,15 @@ func TestPersistEpisodeQACheckDoesNotOverrideProtectedManualStatus(t *testing.T)
 	}
 	claim := episodeQARunClaim{
 		EpisodeID:      1,
-		OriginalStatus: qaStatusNeedsInspection,
-		MutableStatus:  false,
+		OriginalStatus: qaStatusApproved,
+		MutableStatus:  true,
 	}
-	if _, err := handler.persistEpisodeQASuiteResult(context.Background(), claim, qaRunModeManual, []episodeQACheckOutcome{outcome}, time.Now().UTC()); err != nil {
+	result, err := handler.persistEpisodeQASuiteResult(context.Background(), claim, qaRunModeManual, []episodeQACheckOutcome{outcome}, time.Now().UTC())
+	if err != nil {
 		t.Fatalf("persist qa check: %v", err)
+	}
+	if result.QAStatus != qaStatusFailed {
+		t.Fatalf("result qa_status = %q, want failed", result.QAStatus)
 	}
 
 	var episode struct {
@@ -380,8 +384,8 @@ func TestPersistEpisodeQACheckDoesNotOverrideProtectedManualStatus(t *testing.T)
 	if err := db.Get(&episode, "SELECT qa_status, quality_flag FROM episodes WHERE id = 1"); err != nil {
 		t.Fatalf("query episode: %v", err)
 	}
-	if episode.QaStatus != "needs_inspection" {
-		t.Fatalf("qa_status = %q, want needs_inspection", episode.QaStatus)
+	if episode.QaStatus != qaStatusFailed {
+		t.Fatalf("qa_status = %q, want failed", episode.QaStatus)
 	}
 	if episode.QualityFlag != outcome.Details {
 		t.Fatalf("quality_flag = %q, want %q", episode.QualityFlag, outcome.Details)

@@ -1,0 +1,871 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>V2 去人工质检模型设计</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --base: #1D1A2F;
+      --signal: #8BD450;
+      --warn: #F5C024;
+      --ink: #000000;
+      --paper: #fff6df;
+      --paper-dim: rgba(255, 246, 223, 0.78);
+      --paper-faint: rgba(255, 246, 223, 0.18);
+      --black-soft: rgba(0, 0, 0, 0.42);
+      --signal-soft: rgba(139, 212, 80, 0.18);
+      --warn-soft: rgba(245, 192, 36, 0.18);
+      --max: 1180px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-width: 0;
+      background: var(--base);
+    }
+
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--paper);
+      background: var(--base);
+      font: 16px/1.72 "Songti SC", "Noto Serif SC", "Source Han Serif SC", SimSun, STSong, serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      pointer-events: none;
+      background:
+        repeating-linear-gradient(0deg, rgba(255, 246, 223, 0.035) 0 1px, transparent 1px 4px),
+        repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.16) 0 1px, transparent 1px 9px);
+      mix-blend-mode: normal;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        linear-gradient(115deg, transparent 0 58%, rgba(139, 212, 80, 0.13) 58% 68%, transparent 68%),
+        linear-gradient(68deg, transparent 0 72%, rgba(245, 192, 36, 0.13) 72% 79%, transparent 79%);
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .page {
+      min-height: 100vh;
+    }
+
+    .hero {
+      position: relative;
+      min-height: min(760px, 92vh);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 440px);
+      align-items: stretch;
+      gap: clamp(18px, 4vw, 48px);
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: clamp(28px, 5vw, 74px) clamp(18px, 4vw, 40px) clamp(24px, 5vw, 64px);
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      left: clamp(18px, 4vw, 40px);
+      right: clamp(18px, 4vw, 40px);
+      top: clamp(18px, 4vw, 34px);
+      height: 18px;
+      background: var(--signal);
+      border: 4px solid var(--ink);
+      box-shadow: 10px 10px 0 var(--ink);
+      transform: skewX(-18deg);
+    }
+
+    .title-card {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+      padding-top: 46px;
+    }
+
+    .kicker {
+      width: fit-content;
+      margin: 0 0 22px;
+      padding: 4px 12px 5px;
+      color: var(--ink);
+      background: var(--warn);
+      border: 3px solid var(--ink);
+      box-shadow: 7px 7px 0 var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(12px, 1.5vw, 15px);
+      font-weight: 900;
+      line-height: 1.1;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 820px;
+      margin: 0;
+      color: var(--paper);
+      text-shadow: 8px 8px 0 var(--ink);
+      font-size: clamp(48px, 11vw, 142px);
+      font-weight: 900;
+      line-height: 0.88;
+      letter-spacing: 0;
+    }
+
+    h1 span {
+      display: block;
+    }
+
+    .subtitle {
+      max-width: 690px;
+      margin: clamp(18px, 3vw, 32px) 0 0;
+      color: var(--base);
+      background: var(--signal);
+      border: 4px solid var(--ink);
+      box-shadow: 9px 9px 0 var(--ink);
+      padding: clamp(14px, 2vw, 20px) clamp(16px, 2vw, 26px);
+      font-size: clamp(18px, 2.2vw, 28px);
+      font-weight: 900;
+      line-height: 1.35;
+    }
+
+    .machine {
+      position: relative;
+      align-self: center;
+      min-height: 540px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 16px 16px 0 var(--ink);
+      overflow: hidden;
+      transform: skewY(-2deg);
+    }
+
+    .machine::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, transparent 0 44%, var(--ink) 44% 46%, transparent 46%),
+        linear-gradient(0deg, transparent 0 36%, var(--ink) 36% 37%, transparent 37% 64%, var(--ink) 64% 65%, transparent 65%);
+      opacity: 0.95;
+    }
+
+    .machine::after {
+      content: "";
+      position: absolute;
+      inset: 32px 44px 40px 36px;
+      border: 4px solid var(--ink);
+      background:
+        linear-gradient(90deg, var(--signal) 0 26%, transparent 26% 30%, var(--warn) 30% 44%, transparent 44%),
+        var(--base);
+      clip-path: polygon(0 0, 100% 8%, 86% 100%, 10% 92%);
+      box-shadow: 10px 10px 0 var(--ink);
+    }
+
+    .cut-line {
+      position: absolute;
+      left: 16%;
+      right: 12%;
+      top: 50%;
+      height: 18px;
+      z-index: 2;
+      background: var(--warn);
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      transform: rotate(-18deg);
+    }
+
+    .module-label {
+      position: absolute;
+      z-index: 3;
+      color: var(--ink);
+      background: var(--signal);
+      border: 3px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--ink);
+      padding: 8px 10px;
+      font-size: 15px;
+      font-weight: 900;
+      line-height: 1.1;
+      writing-mode: vertical-rl;
+    }
+
+    .module-label.old {
+      right: 24px;
+      top: 42px;
+      background: var(--warn);
+    }
+
+    .module-label.new {
+      left: 24px;
+      bottom: 34px;
+    }
+
+    .section {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: clamp(34px, 6vw, 74px) clamp(18px, 4vw, 40px);
+    }
+
+    .judgement {
+      display: grid;
+      grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr);
+      gap: clamp(20px, 4vw, 42px);
+      align-items: stretch;
+      border-top: 6px solid var(--signal);
+      border-bottom: 6px solid var(--signal);
+      background: var(--black-soft);
+    }
+
+    .judgement-mark {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 260px;
+      color: var(--ink);
+      background: var(--signal);
+      border: 5px solid var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      font-size: clamp(72px, 14vw, 188px);
+      font-weight: 900;
+      line-height: 0.8;
+      transform: skewX(-7deg);
+    }
+
+    .judgement-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+    }
+
+    .judgement-copy h2,
+    .section-title h2 {
+      margin: 0;
+      font-size: clamp(32px, 6vw, 72px);
+      font-weight: 900;
+      line-height: 0.96;
+      letter-spacing: 0;
+      text-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .judgement-copy p {
+      max-width: 700px;
+      margin: 22px 0 0;
+      color: var(--paper-dim);
+      font-size: clamp(17px, 2vw, 22px);
+      line-height: 1.65;
+    }
+
+    .section-title {
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr);
+      gap: 22px;
+      align-items: end;
+      margin-bottom: 30px;
+    }
+
+    .section-no {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 94px;
+      height: 94px;
+      color: var(--ink);
+      background: var(--warn);
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 42px;
+      font-weight: 900;
+      line-height: 1;
+      transform: skewX(-8deg);
+    }
+
+    .content-band {
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      padding: clamp(20px, 4vw, 38px);
+    }
+
+    .content-band.dark {
+      background: var(--base);
+      color: var(--paper);
+      border-color: var(--signal);
+      box-shadow: 12px 12px 0 var(--ink);
+    }
+
+    .content-band p {
+      max-width: 880px;
+      margin: 0 0 18px;
+    }
+
+    .content-band p:last-child {
+      margin-bottom: 0;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+    }
+
+    .slab {
+      border: 3px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      padding: 18px;
+      box-shadow: 7px 7px 0 var(--ink);
+    }
+
+    .dark .slab {
+      border-color: var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+    }
+
+    .slab h3 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      line-height: 1.1;
+    }
+
+    .slab ul,
+    .content-band ul,
+    .content-band ol {
+      margin: 0;
+      padding-left: 1.25em;
+    }
+
+    .slab li,
+    .content-band li {
+      margin: 8px 0;
+    }
+
+    .warning-strip {
+      margin: 24px 0;
+      padding: 14px 18px;
+      color: var(--ink);
+      background: var(--warn);
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-size: clamp(18px, 2.2vw, 26px);
+      font-weight: 900;
+      line-height: 1.35;
+      transform: skewX(-4deg);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .node {
+      min-height: 116px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 14px;
+      color: var(--ink);
+      background: var(--signal);
+      border: 3px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--ink);
+      font-size: clamp(18px, 2.2vw, 27px);
+      font-weight: 900;
+      line-height: 1.15;
+      text-align: center;
+      clip-path: polygon(0 0, 92% 0, 100% 50%, 92% 100%, 0 100%, 8% 50%);
+    }
+
+    .node:first-child {
+      clip-path: polygon(0 0, 92% 0, 100% 50%, 92% 100%, 0 100%);
+    }
+
+    .node:last-child {
+      background: var(--warn);
+      clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 8% 50%);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin: 20px 0 0;
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    table {
+      width: 100%;
+      min-width: 680px;
+      border-collapse: collapse;
+      background: var(--paper);
+      color: var(--ink);
+    }
+
+    th,
+    td {
+      padding: 13px 14px;
+      border: 2px solid var(--ink);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--signal);
+      font-weight: 900;
+    }
+
+    code {
+      padding: 1px 5px;
+      color: var(--paper);
+      background: var(--base);
+      border: 1px solid var(--ink);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.94em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 20px 0 0;
+      padding: 18px;
+      color: var(--paper);
+      background: var(--ink);
+      border: 4px solid var(--signal);
+      box-shadow: 8px 8px 0 var(--ink);
+      font: 14px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+    }
+
+    .decision-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .decision {
+      min-height: 210px;
+      padding: 18px;
+      color: var(--ink);
+      background: var(--paper);
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    .decision strong {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 23px;
+      line-height: 1.1;
+    }
+
+    .badge-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 16px 0 0;
+    }
+
+    .badge {
+      color: var(--ink);
+      background: var(--warn);
+      border: 3px solid var(--ink);
+      padding: 5px 9px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-weight: 900;
+      line-height: 1.2;
+    }
+
+    .implementation {
+      counter-reset: step;
+    }
+
+    .implementation li {
+      position: relative;
+      list-style: none;
+      margin: 14px 0;
+      padding-left: 56px;
+    }
+
+    .implementation li::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 34px;
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--ink);
+      background: var(--signal);
+      border: 3px solid var(--ink);
+      box-shadow: 4px 4px 0 var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .footer-signal {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 clamp(18px, 4vw, 40px) clamp(44px, 7vw, 86px);
+    }
+
+    .footer-signal p {
+      margin: 0;
+      padding: clamp(20px, 4vw, 34px);
+      color: var(--ink);
+      background: var(--signal);
+      border: 5px solid var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      font-size: clamp(24px, 4.5vw, 54px);
+      font-weight: 900;
+      line-height: 1.12;
+    }
+
+    @media (max-width: 880px) {
+      .hero {
+        grid-template-columns: 1fr;
+        min-height: auto;
+      }
+
+      .machine {
+        min-height: 300px;
+        transform: none;
+      }
+
+      .machine::after {
+        inset: 26px;
+      }
+
+      .judgement {
+        grid-template-columns: 1fr;
+      }
+
+      .judgement-mark {
+        min-height: 160px;
+      }
+
+      .section-title {
+        grid-template-columns: 1fr;
+      }
+
+      .split,
+      .decision-grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .node,
+      .node:first-child,
+      .node:last-child {
+        clip-path: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      body {
+        font-size: 15px;
+      }
+
+      .hero {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      h1 {
+        font-size: clamp(42px, 16vw, 78px);
+        text-shadow: 5px 5px 0 var(--ink);
+      }
+
+      .subtitle,
+      .content-band,
+      .decision,
+      .slab {
+        box-shadow: 6px 6px 0 var(--ink);
+      }
+
+      .section {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      .section-no {
+        width: 72px;
+        height: 72px;
+        font-size: 34px;
+      }
+
+      .module-label {
+        writing-mode: horizontal-tb;
+        font-size: 13px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="title-card">
+        <p class="kicker">V2 BASELINE / CUT THE MANUAL LOOP</p>
+        <h1 id="page-title">
+          <span>去人工</span>
+          <span>质检模型</span>
+        </h1>
+        <p class="subtitle">V2 只保留自动 QA 四状态，切断 inspector / inspection 旧模型，让 schema、API、前端与测试重新对齐。</p>
+      </div>
+      <div class="machine" aria-hidden="true">
+        <div class="cut-line"></div>
+        <div class="module-label old">INSPECTOR<br>REMOVED</div>
+        <div class="module-label new">AUTO QA<br>ONLY</div>
+      </div>
+    </section>
+
+    <section class="section judgement" aria-labelledby="judgement-title">
+      <div class="judgement-mark">A</div>
+      <div class="judgement-copy">
+        <h2 id="judgement-title">核心判断</h2>
+        <p>这不是隐藏页面，也不是保留兼容接口。V2 是新的数据库基线，产品模型中不再存在检查员和人工复核终态；所有代码路径必须服从同一个四状态 QA 契约。</p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="background-title">
+      <div class="section-title">
+        <span class="section-no">01</span>
+        <h2 id="background-title">背景与问题</h2>
+      </div>
+      <div class="content-band">
+        <p>当前未提交代码已经把 Keystone 的迁移入口切到 <code>migrations/v2</code> 和 <code>schema_migrations_v2</code>，同时 Synapse 删除了 inspector 页面、路由和部分人工 QA 状态展示。这说明目标方向是新 V2 基线，而不是在旧模型上做小修。</p>
+        <p>问题在于后端运行时代码还保留旧契约：仍注册 <code>/inspectors</code> 路由，episode detail 仍 join <code>inspections</code> 与 <code>inspectors</code>，同步、数据运维和统计仍接受 <code>needs_inspection</code>、<code>inspector_approved</code>、<code>rejected</code>。这会让干净 V2 数据库和应用代码直接不匹配。</p>
+        <div class="warning-strip">必须一次性对齐：数据库基线、后端状态机、OpenAPI、Synapse UI、测试断言。</div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="goals-title">
+      <div class="section-title">
+        <span class="section-no">02</span>
+        <h2 id="goals-title">目标与非目标</h2>
+      </div>
+      <div class="split">
+        <div class="slab">
+          <h3>目标</h3>
+          <ul>
+            <li>彻底移除 <code>inspector</code> / <code>inspection</code> 人工复核领域模型。</li>
+            <li>V2 schema 只描述当前可运行模型，不自动迁移旧库。</li>
+            <li>QA 状态统一为四个值：待质检、质检中、已通过、失败。</li>
+            <li>云同步只允许 <code>approved</code> episode。</li>
+            <li>前端不再展示人工 QA 状态，也不保留 inspector 功能死代码。</li>
+          </ul>
+        </div>
+        <div class="slab">
+          <h3>非目标</h3>
+          <ul>
+            <li>不做旧生产数据库的自动数据迁移。</li>
+            <li>不保留 <code>/inspectors</code> 兼容接口或 410 过渡接口。</li>
+            <li>不把旧历史设计文档全部重写。</li>
+            <li>不引入新的人工审核状态，如 <code>needs_review</code>。</li>
+            <li>不把自动 QA 和人工检查字段混合复用。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="overview-title">
+      <div class="section-title">
+        <span class="section-no">03</span>
+        <h2 id="overview-title">方案总览</h2>
+      </div>
+      <div class="content-band dark">
+        <p>系统从“自动 QA + 人工复核”收敛为“自动 QA 单一路径”。<code>qa_checks</code> 继续记录检查事实，<code>episodes.qa_status</code> 只保存自动 QA 的聚合状态。人工检查员、检查决策和检查时间从数据模型与 API 契约中删除。</p>
+        <div class="flow" aria-label="QA 状态流">
+          <div class="node">pending_qa<br>待质检</div>
+          <div class="node">qa_running<br>质检中</div>
+          <div class="node">approved<br>已通过</div>
+          <div class="node">failed<br>失败</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="contracts-title">
+      <div class="section-title">
+        <span class="section-no">04</span>
+        <h2 id="contracts-title">关键契约</h2>
+      </div>
+      <div class="content-band">
+        <h3>状态映射</h3>
+        <p>旧状态不会在 V2 运行模型中出现；如果离线迁移旧数据，映射规则应保持简单、可解释。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>旧状态 / 旧语义</th>
+                <th>V2 状态</th>
+                <th>理由</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>inspector_approved</code></td>
+                <td><code>approved</code></td>
+                <td>人工通过不再是独立终态；能同步的数据统一视为通过。</td>
+              </tr>
+              <tr>
+                <td><code>needs_inspection</code></td>
+                <td><code>failed</code></td>
+                <td>没有人工队列后，不确定或异常必须落到自动 QA 失败。</td>
+              </tr>
+              <tr>
+                <td><code>rejected</code></td>
+                <td><code>failed</code></td>
+                <td>拒绝数据在新模型中等价于未通过自动 QA。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>V2 schema</h3>
+        <pre><code>episodes.qa_status ENUM(
+  'pending_qa',
+  'qa_running',
+  'approved',
+  'failed'
+) DEFAULT 'pending_qa'</code></pre>
+
+        <h3>同步门禁</h3>
+        <pre><code>if episode.qa_status != 'approved' {
+  reject sync request
+}</code></pre>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="backend-title">
+      <div class="section-title">
+        <span class="section-no">05</span>
+        <h2 id="backend-title">后端修改面</h2>
+      </div>
+      <div class="decision-grid">
+        <div class="decision">
+          <strong>删除 inspector 模块</strong>
+          移除 <code>internal/api/handlers/inspector.go</code>，从 <code>server.go</code> 删除 handler 初始化、字段和路由注册。
+        </div>
+        <div class="decision">
+          <strong>删除 inspection 响应字段</strong>
+          <code>EpisodeResponse</code> 不再暴露 <code>inspector_id</code>、<code>inspection_decision</code>、<code>inspected_at</code>，查询移除对应 join。
+        </div>
+        <div class="decision">
+          <strong>收紧 QA 状态</strong>
+          QA、data-ops、statistics、sync worker、sync API 统一只接受四状态；同步只认 <code>approved</code>。
+        </div>
+      </div>
+      <div class="content-band" style="margin-top: 24px;">
+        <p>组织删除逻辑必须同步移除对 <code>inspectors</code> 表的依赖，否则 V2 干净数据库删除组织时会查询不存在的表。Swagger 注释和生成文件必须跟随代码再生成，避免运行契约和文档契约分裂。</p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="frontend-title">
+      <div class="section-title">
+        <span class="section-no">06</span>
+        <h2 id="frontend-title">前端修改面</h2>
+      </div>
+      <div class="content-band dark">
+        <p>Synapse 采取彻底删除策略，不保留隐藏功能文件。删除 inspector API wrapper、页面组件、路由和侧边栏入口；确认没有残留 import。QA 状态筛选、badge、统计样式、同步按钮判断都只识别四状态模型。</p>
+        <div class="badge-line">
+          <span class="badge">pending_qa</span>
+          <span class="badge">qa_running</span>
+          <span class="badge">approved</span>
+          <span class="badge">failed</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="risks-title">
+      <div class="section-title">
+        <span class="section-no">07</span>
+        <h2 id="risks-title">权衡与风险</h2>
+      </div>
+      <div class="content-band">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>风险</th>
+                <th>影响</th>
+                <th>缓解措施</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>旧库不会自动升级</td>
+                <td>老环境直接切 V2 可能保留旧表和旧 enum，造成环境差异。</td>
+                <td>明确 V2 是新基线；旧数据迁移另开脚本，不在启动 migration 中隐式处理。</td>
+              </tr>
+              <tr>
+                <td>外部客户端仍调用 <code>/inspectors</code></td>
+                <td>接口消失后旧客户端会失败。</td>
+                <td>OpenAPI 删除路径，发布说明中标记 breaking change；本设计不提供 410 过渡。</td>
+              </tr>
+              <tr>
+                <td>旧状态残留在代码路径</td>
+                <td>可能出现无法写入 enum、统计错误或 UI 状态裸显。</td>
+                <td>用搜索和测试覆盖 <code>needs_inspection</code>、<code>inspector_approved</code>、<code>rejected</code> 的运行代码残留。</td>
+              </tr>
+              <tr>
+                <td>Swagger 未同步</td>
+                <td>前端和外部集成继续按旧契约开发。</td>
+                <td>后端代码完成后运行 <code>swag init -g internal/server/server.go -o docs</code>。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="plan-title">
+      <div class="section-title">
+        <span class="section-no">08</span>
+        <h2 id="plan-title">实施与验证</h2>
+      </div>
+      <div class="content-band">
+        <ol class="implementation">
+          <li>清理 Keystone inspector handler、server 注册、组织删除依赖、episode detail inspection join 和响应字段。</li>
+          <li>将 QA、data-ops、statistics、sync API、sync worker 中的状态集合收敛到四状态，并把同步资格改为只允许 <code>approved</code>。</li>
+          <li>确认 <code>migrations/v2</code> 不创建 <code>inspectors</code>、<code>inspections</code>，并保留旧 <code>migrations/</code> 目录作为历史，不参与运行。</li>
+          <li>同步清理 Synapse inspector 文件、路由、菜单、状态筛选、badge 和统计样式。</li>
+          <li>删除或改写测试：旧 inspector 测试删除，QA 失败路径期望 <code>failed</code>，sync 测试只允许 <code>approved</code>。</li>
+          <li>重新生成 Swagger/OpenAPI，验证 <code>/inspectors</code> 路径、人工检查字段和旧 QA 状态说明都已消失。</li>
+          <li>执行 Keystone 测试、Synapse build，并记录任何受本地 sandbox 限制无法完成的验证。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="footer-signal" aria-label="最终决策">
+      <p>最终状态：一个 V2 基线，一个 QA 状态机，一个同步门禁。旧人工复核链路被切断，不再悬挂在运行代码里。</p>
+    </section>
+  </main>
+</body>
+</html>

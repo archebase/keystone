@@ -222,9 +222,14 @@ func TestDataOpsEpisodeIDSnapshotSQLUsesDataOpsOrdering(t *testing.T) {
 
 func TestDataOpsBulkPreviewSQLs(t *testing.T) {
 	qaSQL := dataOpsBulkQAPreviewSQL(dataOpsEpisodeBaseFromSQL(), " WHERE e.deleted_at IS NULL")
-	for _, want := range []string{"matched_count", "qa_running_count", "protected_status_count"} {
+	for _, want := range []string{"matched_count", "qa_running_count"} {
 		if !strings.Contains(qaSQL, want) {
 			t.Fatalf("QA preview SQL should include %q: %s", want, qaSQL)
+		}
+	}
+	for _, removed := range []string{"protected_status_count", "needs_inspection", "inspector_approved", "rejected"} {
+		if strings.Contains(qaSQL, removed) {
+			t.Fatalf("QA preview SQL should not include %q: %s", removed, qaSQL)
 		}
 	}
 

@@ -578,7 +578,7 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 		return
 	}
 
-	// Block deletion if the organization still has active data_collectors, inspectors, or orders.
+	// Block deletion if the organization still has active data_collectors or orders.
 	var dcCount int
 	if err = tx.Get(&dcCount, "SELECT COUNT(*) FROM data_collectors WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
 		logger.Printf("[ORGANIZATION] Failed to check data_collector count: %v", err)
@@ -587,17 +587,6 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 	}
 	if dcCount > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete organization with %d associated data collectors", dcCount)})
-		return
-	}
-
-	var inspectorCount int
-	if err = tx.Get(&inspectorCount, "SELECT COUNT(*) FROM inspectors WHERE organization_id = ? AND deleted_at IS NULL", id); err != nil {
-		logger.Printf("[ORGANIZATION] Failed to check inspector count: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete organization"})
-		return
-	}
-	if inspectorCount > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cannot delete organization with %d associated inspectors", inspectorCount)})
 		return
 	}
 

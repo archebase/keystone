@@ -118,9 +118,9 @@ func (h *SyncHandler) TriggerEpisodeResync(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if row.QaStatus != "approved" && row.QaStatus != "inspector_approved" {
+	if row.QaStatus != "approved" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": fmt.Sprintf("episode qa_status is %q, must be approved or inspector_approved", row.QaStatus),
+			"error": fmt.Sprintf("episode qa_status is %q, must be approved", row.QaStatus),
 		})
 		return
 	}
@@ -364,9 +364,9 @@ func (h *SyncHandler) TriggerEpisodeSync(c *gin.Context) {
 		return
 	}
 
-	if row.QaStatus != "approved" && row.QaStatus != "inspector_approved" {
+	if row.QaStatus != "approved" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": fmt.Sprintf("episode qa_status is %q, must be approved or inspector_approved", row.QaStatus),
+			"error": fmt.Sprintf("episode qa_status is %q, must be approved", row.QaStatus),
 		})
 		return
 	}
