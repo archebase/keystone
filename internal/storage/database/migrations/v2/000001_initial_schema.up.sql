@@ -75,37 +75,13 @@ CREATE TABLE IF NOT EXISTS subscenes (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================
--- Capability & Procedure
+-- Procedure
 -- ============================================================
-
-CREATE TABLE IF NOT EXISTS skills (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    slug VARCHAR(100) NOT NULL,
-    description TEXT,
-    version VARCHAR(20) DEFAULT '1.0.0',
-    metadata JSON DEFAULT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL,
-    _slug_unique VARCHAR(300) GENERATED ALWAYS AS (CONCAT(IFNULL(slug, ''), '|', IFNULL(version, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    UNIQUE INDEX idx_slug_ver_del (_slug_unique),
-    INDEX idx_deleted (deleted_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS subscene_skills (
-    subscene_id BIGINT NOT NULL,
-    skill_id BIGINT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (subscene_id, skill_id),
-    INDEX idx_subscene (subscene_id),
-    INDEX idx_skill (skill_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS sops (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     slug VARCHAR(100) NOT NULL,
     description TEXT,
-    skill_sequence JSON NOT NULL,
     version VARCHAR(20) DEFAULT '1.0.0',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -396,17 +372,6 @@ CREATE TABLE IF NOT EXISTS episodes (
     INDEX idx_created (created_at),
     INDEX idx_deleted (deleted_at),
     INDEX idx_qa_queue (qa_status, qa_score, created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS operations (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    task_id BIGINT NOT NULL,
-    skill_id BIGINT NOT NULL,
-    sequence_order INT NOT NULL COMMENT 'Order within the task',
-    description TEXT NOT NULL COMMENT 'Natural language operation description',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_task (task_id),
-    INDEX idx_skill (skill_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================

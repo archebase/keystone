@@ -114,7 +114,6 @@ type TaskConfig struct {
 	WorkstationID      string   `json:"workstation_id"`
 	Subscene           string   `json:"subscene"`
 	InitialSceneLayout string   `json:"initial_scene_layout"`
-	Skills             []string `json:"skills"`
 	SOPID              string   `json:"sop_id"`
 	Topics             []string `json:"topics"`
 	StartCallbackURL   string   `json:"start_callback_url"`
@@ -770,10 +769,9 @@ type RecordingFinishCallback struct {
 	SidecarPath   string   `json:"sidecar_path"`
 	Topics        []string `json:"topics"`
 	Metadata      struct {
-		Scene    string   `json:"scene"`
-		Subscene string   `json:"subscene"`
-		Skills   []string `json:"skills"`
-		Factory  string   `json:"factory"`
+		Scene    string `json:"scene"`
+		Subscene string `json:"subscene"`
+		Factory  string `json:"factory"`
 	} `json:"metadata"`
 	Error string `json:"error"`
 }
@@ -1074,7 +1072,6 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		SubsceneName  sql.NullString `db:"subscene_name"`
 		Layout        sql.NullString `db:"initial_scene_layout"`
 		SOPSlug       sql.NullString `db:"sop_slug"`
-		SkillSequence sql.NullString `db:"skill_sequence"`
 		ROSTopics     sql.NullString `db:"ros_topics"`
 	}
 
@@ -1093,7 +1090,6 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 			COALESCE(t.subscene_name, '') AS subscene_name,
 			COALESCE(t.initial_scene_layout, '') AS initial_scene_layout,
 			s.slug AS sop_slug,
-			COALESCE(s.skill_sequence, '[]') AS skill_sequence,
 			COALESCE(rt.ros_topics, '[]') AS ros_topics
 		FROM tasks t
 		LEFT JOIN factories f ON f.id = t.factory_id AND f.deleted_at IS NULL
@@ -1151,41 +1147,6 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		return
 	}
 
-	// Resolve skill ids (from sop.skill_sequence) to skill slugs, preserving order.
-	skillIDs := parseJSONArray(row.SkillSequence.String)
-	skills := make([]string, 0, len(skillIDs))
-	if len(skillIDs) > 0 {
-		type skillRow struct {
-			ID   string `db:"id"`
-			Slug string `db:"slug"`
-		}
-		query, args, err := sqlx.In(
-			`SELECT CAST(id AS CHAR) AS id, slug FROM skills WHERE deleted_at IS NULL AND id IN (?)`,
-			skillIDs,
-		)
-		if err != nil {
-			logger.Printf("[TASK] Failed to build skill query: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query skills"})
-			return
-		}
-		query = h.db.Rebind(query)
-		var rows []skillRow
-		if err := h.db.Select(&rows, query, args...); err != nil {
-			logger.Printf("[TASK] Failed to query skills: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "Failed to query skills"})
-			return
-		}
-		slugByID := make(map[string]string, len(rows))
-		for _, r := range rows {
-			slugByID[strings.TrimSpace(r.ID)] = strings.TrimSpace(r.Slug)
-		}
-		for _, id := range skillIDs {
-			if slug, ok := slugByID[strings.TrimSpace(id)]; ok && slug != "" {
-				skills = append(skills, slug)
-			}
-		}
-	}
-
 	taskConfig := TaskConfig{
 		TaskID:             row.TaskID,
 		DeviceID:           strings.TrimSpace(row.RobotSerial.String),
@@ -1196,7 +1157,6 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		WorkstationID:      strings.TrimSpace(row.Workstation.String),
 		Subscene:           strings.TrimSpace(row.SubsceneName.String),
 		InitialSceneLayout: strings.TrimSpace(row.Layout.String),
-		Skills:             skills,
 		SOPID:              strings.TrimSpace(row.SOPSlug.String),
 		Topics:             parseJSONArray(row.ROSTopics.String),
 		StartCallbackURL:   h.callbackURLs.startURL(),

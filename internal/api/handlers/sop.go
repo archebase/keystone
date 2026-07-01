@@ -7,7 +7,6 @@ package handlers
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -31,13 +30,12 @@ func NewSOPHandler(db *sqlx.DB) *SOPHandler {
 
 // SOPResponse represents an SOP in the response.
 type SOPResponse struct {
-	ID            string   `json:"id"`
-	Slug          string   `json:"slug"`
-	Description   string   `json:"description,omitempty"`
-	SkillSequence []string `json:"skill_sequence"`
-	Version       string   `json:"version,omitempty"`
-	CreatedAt     string   `json:"created_at,omitempty"`
-	UpdatedAt     string   `json:"updated_at,omitempty"`
+	ID          string `json:"id"`
+	Slug        string `json:"slug"`
+	Description string `json:"description,omitempty"`
+	Version     string `json:"version,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 // SOPListResponse represents the response for listing SOPs.
@@ -52,27 +50,24 @@ type SOPListResponse struct {
 
 // CreateSOPRequest represents the request body for creating an SOP.
 type CreateSOPRequest struct {
-	Slug          string   `json:"slug"`
-	Description   string   `json:"description,omitempty"`
-	SkillSequence []string `json:"skill_sequence"`
-	Version       string   `json:"version,omitempty"`
+	Slug        string `json:"slug"`
+	Description string `json:"description,omitempty"`
+	Version     string `json:"version,omitempty"`
 }
 
 // CreateSOPResponse represents the response for creating an SOP.
 type CreateSOPResponse struct {
-	ID            string   `json:"id"`
-	Slug          string   `json:"slug"`
-	SkillSequence []string `json:"skill_sequence"`
-	Version       string   `json:"version"`
-	CreatedAt     string   `json:"created_at"`
+	ID        string `json:"id"`
+	Slug      string `json:"slug"`
+	Version   string `json:"version"`
+	CreatedAt string `json:"created_at"`
 }
 
 // UpdateSOPRequest represents the request body for updating an SOP.
 type UpdateSOPRequest struct {
-	Slug          *string   `json:"slug,omitempty"`
-	Description   *string   `json:"description,omitempty"`
-	SkillSequence *[]string `json:"skill_sequence,omitempty"`
-	Version       *string   `json:"version,omitempty"`
+	Slug        *string `json:"slug,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Version     *string `json:"version,omitempty"`
 }
 
 // RegisterRoutes registers SOP related routes.
@@ -86,13 +81,12 @@ func (h *SOPHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // sopRow represents an SOP in the database
 type sopRow struct {
-	ID            int64          `db:"id"`
-	Slug          string         `db:"slug"`
-	Description   sql.NullString `db:"description"`
-	SkillSequence string         `db:"skill_sequence"`
-	Version       sql.NullString `db:"version"`
-	CreatedAt     sql.NullTime   `db:"created_at"`
-	UpdatedAt     sql.NullTime   `db:"updated_at"`
+	ID          int64          `db:"id"`
+	Slug        string         `db:"slug"`
+	Description sql.NullString `db:"description"`
+	Version     sql.NullString `db:"version"`
+	CreatedAt   sql.NullTime   `db:"created_at"`
+	UpdatedAt   sql.NullTime   `db:"updated_at"`
 }
 
 // ListSOPs handles SOP listing requests.
@@ -145,7 +139,6 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 			id,
 			slug,
 			description,
-			skill_sequence,
 			version,
 			created_at,
 			updated_at
@@ -170,7 +163,6 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		if s.Description.Valid {
 			description = s.Description.String
 		}
-		skillSequence := parseJSONArray(s.SkillSequence)
 		version := "1.0.0"
 		if s.Version.Valid {
 			version = s.Version.String
@@ -185,13 +177,12 @@ func (h *SOPHandler) ListSOPs(c *gin.Context) {
 		}
 
 		sops = append(sops, SOPResponse{
-			ID:            fmt.Sprintf("%d", s.ID),
-			Slug:          s.Slug,
-			Description:   description,
-			SkillSequence: skillSequence,
-			Version:       version,
-			CreatedAt:     createdAt,
-			UpdatedAt:     updatedAt,
+			ID:          fmt.Sprintf("%d", s.ID),
+			Slug:        s.Slug,
+			Description: description,
+			Version:     version,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
 		})
 	}
 
@@ -234,7 +225,6 @@ func (h *SOPHandler) GetSOP(c *gin.Context) {
 			id,
 			slug,
 			description,
-			skill_sequence,
 			version,
 			created_at,
 			updated_at
@@ -257,7 +247,6 @@ func (h *SOPHandler) GetSOP(c *gin.Context) {
 	if s.Description.Valid {
 		description = s.Description.String
 	}
-	skillSequence := parseJSONArray(s.SkillSequence)
 	version := "1.0.0"
 	if s.Version.Valid {
 		version = s.Version.String
@@ -272,13 +261,12 @@ func (h *SOPHandler) GetSOP(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, SOPResponse{
-		ID:            fmt.Sprintf("%d", s.ID),
-		Slug:          s.Slug,
-		Description:   description,
-		SkillSequence: skillSequence,
-		Version:       version,
-		CreatedAt:     createdAt,
-		UpdatedAt:     updatedAt,
+		ID:          fmt.Sprintf("%d", s.ID),
+		Slug:        s.Slug,
+		Description: description,
+		Version:     version,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
 	})
 }
 
@@ -326,18 +314,6 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 		return
 	}
 
-	skillSequence := req.SkillSequence
-	if skillSequence == nil {
-		skillSequence = []string{}
-	}
-
-	// Convert skill_sequence to JSON string
-	skillSeqJSON, err := json.Marshal(skillSequence)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process skill_sequence"})
-		return
-	}
-
 	var descriptionStr sql.NullString
 	if req.Description != "" {
 		descriptionStr = sql.NullString{String: req.Description, Valid: true}
@@ -349,14 +325,12 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 		`INSERT INTO sops (
 			slug,
 			description,
-			skill_sequence,
 			version,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?)`,
 		req.Slug,
 		descriptionStr,
-		string(skillSeqJSON),
 		version,
 		now,
 		now,
@@ -375,11 +349,10 @@ func (h *SOPHandler) CreateSOP(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, CreateSOPResponse{
-		ID:            fmt.Sprintf("%d", id),
-		Slug:          req.Slug,
-		SkillSequence: skillSequence,
-		Version:       version,
-		CreatedAt:     now.Format(time.RFC3339),
+		ID:        fmt.Sprintf("%d", id),
+		Slug:      req.Slug,
+		Version:   version,
+		CreatedAt: now.Format(time.RFC3339),
 	})
 }
 
@@ -455,16 +428,6 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 		}
 		updates = append(updates, "description = ?")
 		args = append(args, descStr)
-	}
-
-	if req.SkillSequence != nil {
-		skillSeqJSON, err := json.Marshal(*req.SkillSequence)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to process skill_sequence"})
-			return
-		}
-		updates = append(updates, "skill_sequence = ?")
-		args = append(args, string(skillSeqJSON))
 	}
 
 	// version is immutable after creation; allow no-op payloads that resend the same version
@@ -557,7 +520,7 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 
 	// Fetch the updated SOP
 	var s sopRow
-	err = h.db.Get(&s, "SELECT id, slug, description, skill_sequence, version, created_at, updated_at FROM sops WHERE id = ?", id)
+	err = h.db.Get(&s, "SELECT id, slug, description, version, created_at, updated_at FROM sops WHERE id = ?", id)
 	if err != nil {
 		logger.Printf("[SOP] Failed to fetch updated SOP: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated SOP"})
@@ -568,7 +531,6 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 	if s.Description.Valid {
 		description = s.Description.String
 	}
-	skillSequence := parseJSONArray(s.SkillSequence)
 	version := "1.0.0"
 	if s.Version.Valid {
 		version = s.Version.String
@@ -583,13 +545,12 @@ func (h *SOPHandler) UpdateSOP(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, SOPResponse{
-		ID:            fmt.Sprintf("%d", s.ID),
-		Slug:          s.Slug,
-		Description:   description,
-		SkillSequence: skillSequence,
-		Version:       version,
-		CreatedAt:     createdAt,
-		UpdatedAt:     updatedAt,
+		ID:          fmt.Sprintf("%d", s.ID),
+		Slug:        s.Slug,
+		Description: description,
+		Version:     version,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
 	})
 }
 

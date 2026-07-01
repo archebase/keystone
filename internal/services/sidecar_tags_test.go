@@ -33,7 +33,7 @@ const testSidecarJSON = `{
     "factory": "Shanghai Factory",
     "order_id": "采集",
     "scene": "卧室",
-    "skills": ["pick"],
+    "tags": ["calibration"],
     "subscene": "床",
     "task": "collect-bedroom-bed",
     "task_id": "task_20260414_054145_205_27_fdd80b4c"
@@ -85,8 +85,8 @@ func TestFlattenSidecar_BasicFields(t *testing.T) {
 		"task.factory",
 		"task.order_id",
 		"task.scene",
-		"task.skills",
 		"task.subscene",
+		"task.tags",
 		"task.task",
 		"task.task_id",
 	} {
