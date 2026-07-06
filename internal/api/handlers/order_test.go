@@ -77,7 +77,7 @@ func newTestOrderHandlerDB(t *testing.T) *sqlx.DB {
 	}
 
 	schema := []string{
-		`CREATE TABLE organizations (
+		`CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
@@ -121,8 +121,8 @@ func seedOrderListFixtures(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	now := time.Now().UTC()
 	stmts := []string{
-		`INSERT INTO organizations (id, name) VALUES (1, '组织A')`,
-		`INSERT INTO organizations (id, name) VALUES (2, '组织B')`,
+		`INSERT INTO workspaces (id, name) VALUES (1, '组织A')`,
+		`INSERT INTO workspaces (id, name) VALUES (2, '组织B')`,
 		`INSERT INTO scenes (id, name) VALUES (10, '厨房')`,
 		`INSERT INTO scenes (id, name) VALUES (11, '卧室')`,
 	}

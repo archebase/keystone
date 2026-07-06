@@ -9,21 +9,16 @@
 -- Environmental Hierarchy
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS organizations (
+CREATE TABLE IF NOT EXISTS workspaces (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    factory_id BIGINT NOT NULL DEFAULT 0,
-    name VARCHAR(255) NOT NULL,
-    slug VARCHAR(100) NOT NULL,
-    description TEXT,
-    settings JSON DEFAULT NULL,
+    name VARCHAR(100) NOT NULL,
+    admins_str VARCHAR(200) NOT NULL,
+    members_str VARCHAR(1024),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL,
-    _slug_unique VARCHAR(200) GENERATED ALWAYS AS (CONCAT(IFNULL(slug, ''), '|', IFNULL(deleted_at, ''))) STORED,
     _name_unique VARCHAR(400) GENERATED ALWAYS AS (CONCAT(IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    UNIQUE INDEX idx_slug_del (_slug_unique),
     UNIQUE INDEX idx_name_del (_name_unique),
-    INDEX idx_factory (factory_id),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

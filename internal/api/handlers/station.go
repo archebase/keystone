@@ -244,15 +244,15 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 
-	// Validate that the data_collector's organization belongs to the same factory as the robot.
-	var dcOrgFactoryID int64
-	if err = h.db.Get(&dcOrgFactoryID, "SELECT factory_id FROM organizations WHERE id = ? AND deleted_at IS NULL", dcInfo.OrganizationID); err != nil {
-		logger.Printf("[STATION] Failed to query organization for data collector: %v", err)
+	// Validate that the data_collector's workspace still exists.
+	var dcWorkspaceExists bool
+	if err = h.db.Get(&dcWorkspaceExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", dcInfo.OrganizationID); err != nil {
+		logger.Printf("[STATION] Failed to query workspace for data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
-	if dcOrgFactoryID != robotInfo.FactoryID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector's organization does not belong to the same factory as the robot"})
+	if !dcWorkspaceExists {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace not found"})
 		return
 	}
 
@@ -547,7 +547,7 @@ func (h *StationHandler) getStationResponseRow(stationID int64, currentOnly bool
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
-		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		`+where, stationID)
 	return station, err
 }
@@ -644,7 +644,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
-		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		` + whereClause
 	var total int
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
@@ -666,7 +666,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
-		INNER JOIN organizations o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		` + whereClause + `
 	`
 	orderClause, orderArgs := keywordOrderBy(keyword, "ws.id DESC", stationSearchFields...)
@@ -1087,14 +1087,14 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 				return
 			}
 		}
-		var dcOrgFactoryID int64
-		if err := h.db.Get(&dcOrgFactoryID, "SELECT factory_id FROM organizations WHERE id = ? AND deleted_at IS NULL", dcInfo.OrganizationID); err != nil {
-			logger.Printf("[STATION] Failed to query organization for data collector: %v", err)
+		var dcWorkspaceExists bool
+		if err := h.db.Get(&dcWorkspaceExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", dcInfo.OrganizationID); err != nil {
+			logger.Printf("[STATION] Failed to query workspace for data collector: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 			return
 		}
-		if dcOrgFactoryID != effectiveFactoryID {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector's organization does not belong to the same factory as the robot"})
+		if !dcWorkspaceExists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "workspace not found"})
 			return
 		}
 		effectiveDCID = dcInfo.ID

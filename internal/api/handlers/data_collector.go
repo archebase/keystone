@@ -236,7 +236,7 @@ func (h *DataCollectorHandler) ListDataCollectors(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
-		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		` + whereClause + `
 		` + orderClause + `
 		LIMIT ? OFFSET ?
@@ -308,7 +308,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 
 	// Verify organization exists
 	var orgExists bool
-	if err := h.db.Get(&orgExists, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id = ? AND deleted_at IS NULL)", orgID); err != nil || !orgExists {
+	if err := h.db.Get(&orgExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", orgID); err != nil || !orgExists {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
 		return
 	}
@@ -410,7 +410,7 @@ func (h *DataCollectorHandler) CreateDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
-		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`, id)
 	if err != nil {
@@ -458,7 +458,7 @@ func (h *DataCollectorHandler) GetDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
-		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`
 
@@ -685,7 +685,7 @@ func (h *DataCollectorHandler) UpdateDataCollector(c *gin.Context) {
 			dc.created_at,
 			dc.updated_at
 		FROM data_collectors dc
-		INNER JOIN organizations o ON o.id = dc.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = dc.organization_id AND o.deleted_at IS NULL
 		WHERE dc.id = ? AND dc.deleted_at IS NULL
 	`, id)
 	if err != nil {

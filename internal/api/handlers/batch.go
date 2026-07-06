@@ -364,7 +364,7 @@ func (h *BatchHandler) ListBatches(c *gin.Context) {
 			b.updated_at
 		FROM batches b
 		LEFT JOIN workstations ws ON ws.id = b.workstation_id
-		LEFT JOIN organizations org ON org.id = b.organization_id AND org.deleted_at IS NULL
+		LEFT JOIN workspaces org ON org.id = b.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN orders o ON o.id = b.order_id AND o.deleted_at IS NULL
 		LEFT JOIN (
 			SELECT
@@ -451,7 +451,7 @@ func (h *BatchHandler) GetBatch(c *gin.Context) {
 			b.created_at,
 			b.updated_at
 		FROM batches b
-		LEFT JOIN organizations org ON org.id = b.organization_id AND org.deleted_at IS NULL
+		LEFT JOIN workspaces org ON org.id = b.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN (
 			SELECT
 				batch_id,
