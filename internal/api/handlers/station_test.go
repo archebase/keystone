@@ -31,8 +31,8 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 		{sql: `INSERT INTO robot_types (id, model, deleted_at) VALUES (11, 'arm-v2', NULL)`},
 		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
 		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (31, 'F2', NULL)`},
-		{sql: `INSERT INTO organizations (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
-		{sql: `INSERT INTO organizations (id, name, deleted_at) VALUES (61, 'Org B', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (61, 'Org B', NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, deleted_at) VALUES (1, 10, 'device-a', 30, NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, deleted_at) VALUES (2, 10, 'device-b', 30, NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, deleted_at) VALUES (3, 11, 'device-c', 31, NULL)`},
@@ -104,7 +104,7 @@ func TestStationHandlerUpdateStationCreatesNewBindingVersion(t *testing.T) {
 		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
 		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (11, 'arm-v2', 'arm-v2', NULL)`},
 		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO organizations (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
 		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (2, 11, 'device-b', 30, 'active', NULL)`},
@@ -182,7 +182,7 @@ func TestStationHandlerUpdateStationReusesHistoricalBindingVersion(t *testing.T)
 		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
 		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (11, 'arm-v2', 'arm-v2', NULL)`},
 		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO organizations (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
 		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (2, 11, 'device-b', 30, 'active', NULL)`},
@@ -278,7 +278,7 @@ func TestStationHandlerDeleteUnbindsAndCreateReusesHistoricalBinding(t *testing.
 	}{
 		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
 		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO organizations (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
 		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
 		{
@@ -365,7 +365,7 @@ func TestStationHandlerUpdateHistoricalStationReturnsNotFound(t *testing.T) {
 	}{
 		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
 		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO organizations (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
 		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
 		{
@@ -405,7 +405,7 @@ func TestStationHandlerDeleteRejectsPendingOrActiveBatches(t *testing.T) {
 	}{
 		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
 		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO organizations (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
 		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
 		{
@@ -472,7 +472,7 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 			name TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
-		`CREATE TABLE organizations (
+		`CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY,
 			factory_id INTEGER NOT NULL DEFAULT 30,
 			name TEXT NOT NULL,

@@ -1069,7 +1069,7 @@ func newTestBatchHandlerDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP,
 			deleted_at TIMESTAMP NULL
 		)`,
-		`CREATE TABLE organizations (
+		`CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY,
 			factory_id INTEGER NOT NULL DEFAULT 0,
 			name TEXT NOT NULL,
@@ -1139,7 +1139,7 @@ func seedBatchListFixtures(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	now := time.Now().UTC()
 	// Insert a shared organization so the LEFT JOIN in ListBatches resolves correctly.
-	if _, err := db.Exec(`INSERT OR IGNORE INTO organizations (id, factory_id, name) VALUES (60, 30, 'Test Org')`); err != nil {
+	if _, err := db.Exec(`INSERT OR IGNORE INTO workspaces (id, factory_id, name) VALUES (60, 30, 'Test Org')`); err != nil {
 		t.Fatalf("seed organization failed: %v", err)
 	}
 	stmts := []string{
@@ -1178,7 +1178,7 @@ func seedBatchListFixturesForPagination(t *testing.T, db *sqlx.DB) {
 func seedBatchCreateFixtures(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	stmts := []string{
-		`INSERT INTO organizations (id, factory_id, name) VALUES (60, 30, 'Test Org')`,
+		`INSERT INTO workspaces (id, factory_id, name) VALUES (60, 30, 'Test Org')`,
 		`INSERT INTO orders (id, target_count, organization_id) VALUES (10, 10, 60)`,
 		`INSERT INTO factories (id) VALUES (30)`,
 		`INSERT INTO workstations (id, factory_id, organization_id, status) VALUES (20, 30, 60, 'idle')`,
@@ -1200,7 +1200,7 @@ func seedBatchCompleteNextFixtures(t *testing.T, db *sqlx.DB) {
 		query string
 		args  []any
 	}{
-		{`INSERT INTO organizations (id, factory_id, name) VALUES (60, 30, 'Test Org')`, nil},
+		{`INSERT INTO workspaces (id, factory_id, name) VALUES (60, 30, 'Test Org')`, nil},
 		{`INSERT INTO factories (id) VALUES (30)`, nil},
 		{`INSERT INTO scenes (id, name) VALUES (70, 'scene-a')`, nil},
 		{`INSERT INTO orders (id, name, target_count, organization_id, scene_id, status, updated_at) VALUES (10, 'Order Complete', 50, 60, 70, 'created', ?)`, []any{now}},

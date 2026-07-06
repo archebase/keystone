@@ -39,7 +39,6 @@ type FactoryResponse struct {
 	Timezone   string      `json:"timezone,omitempty"`
 	Settings   interface{} `json:"settings"`
 	SceneCount int         `json:"sceneCount"`
-	OrgCount   int         `json:"orgCount"`
 	CreatedAt  string      `json:"created_at,omitempty"`
 	UpdatedAt  string      `json:"updated_at,omitempty"`
 }
@@ -86,7 +85,6 @@ type factoryRow struct {
 	Timezone   sql.NullString `db:"timezone"`
 	Settings   sql.NullString `db:"settings"`
 	SceneCount int            `db:"scene_count"`
-	OrgCount   int            `db:"org_count"`
 	CreatedAt  sql.NullTime   `db:"created_at"`
 	UpdatedAt  sql.NullTime   `db:"updated_at"`
 }
@@ -191,7 +189,6 @@ func (h *FactoryHandler) ListFactories(c *gin.Context) {
 			timezone,
 			settings,
 			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
-			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
 			created_at,
 			updated_at
 		FROM factories
@@ -369,7 +366,6 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 	if err := h.db.Get(&f, `
 		SELECT id, name, slug, location, timezone, settings,
 			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
-			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
 			created_at, updated_at
 		FROM factories
 		WHERE id = ? AND deleted_at IS NULL
@@ -389,10 +385,27 @@ func (h *FactoryHandler) GetFactory(c *gin.Context) {
 // UpdateFactoryRequest represents the request body for updating a factory.
 // Factory slug is immutable after creation; a slug field in JSON, if sent, is ignored.
 type UpdateFactoryRequest struct {
-	Name     *string                   `json:"name,omitempty"`
-	Location *string                   `json:"location,omitempty"`
-	Timezone *string                   `json:"timezone,omitempty"`
-	Settings organizationSettingsPatch `json:"settings,omitempty"`
+	Name     *string              `json:"name,omitempty"`
+	Location *string              `json:"location,omitempty"`
+	Timezone *string              `json:"timezone,omitempty"`
+	Settings factorySettingsPatch `json:"settings,omitempty"`
+}
+
+// factorySettingsPatch distinguishes a missing "settings" key from JSON null.
+type factorySettingsPatch struct {
+	present bool
+	isNull  bool
+	raw     json.RawMessage
+}
+
+func (p *factorySettingsPatch) UnmarshalJSON(data []byte) error {
+	p.present = true
+	if string(data) == "null" {
+		p.isNull = true
+		return nil
+	}
+	p.raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // UpdateFactory handles updating a factory.
@@ -514,7 +527,6 @@ func (h *FactoryHandler) UpdateFactory(c *gin.Context) {
 	err = h.db.Get(&f, `
 		SELECT id, name, slug, location, timezone, settings,
 			(SELECT COUNT(*) FROM scenes s WHERE s.factory_id = factories.id AND s.deleted_at IS NULL) AS scene_count,
-			(SELECT COUNT(*) FROM organizations o WHERE o.factory_id = factories.id AND o.deleted_at IS NULL) AS org_count,
 			created_at, updated_at
 		FROM factories WHERE id = ?`, id)
 	if err != nil {
@@ -627,7 +639,6 @@ func factoryResponseFromRow(f factoryRow) FactoryResponse {
 		Timezone:   timezone,
 		Settings:   factorySettingsFromDB(f.Settings),
 		SceneCount: f.SceneCount,
-		OrgCount:   f.OrgCount,
 		CreatedAt:  createdAt,
 		UpdatedAt:  updatedAt,
 	}

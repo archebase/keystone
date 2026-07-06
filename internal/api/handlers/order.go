@@ -230,7 +230,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	countQuery := `
 		SELECT COUNT(*)
 		FROM orders o
-		LEFT JOIN organizations org ON org.id = o.organization_id AND org.deleted_at IS NULL
+		LEFT JOIN workspaces org ON org.id = o.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
 		WHERE o.deleted_at IS NULL
 	`
@@ -268,7 +268,7 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 			o.created_at,
 			o.updated_at
 		FROM orders o
-		LEFT JOIN organizations org ON org.id = o.organization_id AND org.deleted_at IS NULL
+		LEFT JOIN workspaces org ON org.id = o.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
 		WHERE o.deleted_at IS NULL
 	`
@@ -433,7 +433,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 			SUM(CASE WHEN t.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
 			SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed_count
 		FROM orders o
-		LEFT JOIN organizations org ON org.id = o.organization_id AND org.deleted_at IS NULL
+		LEFT JOIN workspaces org ON org.id = o.organization_id AND org.deleted_at IS NULL
 		LEFT JOIN scenes s ON s.id = o.scene_id AND s.deleted_at IS NULL
 		LEFT JOIN tasks t ON t.order_id = o.id AND t.deleted_at IS NULL
 		WHERE o.id = ? AND o.deleted_at IS NULL
@@ -589,40 +589,33 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Validate: organization must exist and belong to the same factory as the scene.
-	var orgFactoryID int64
+	// Validate: workspace must exist. The workspace no longer carries factory ownership.
 	var orgName string
 	if err = h.db.QueryRowx(
-		"SELECT factory_id, name FROM organizations WHERE id = ? AND deleted_at IS NULL",
+		"SELECT name FROM workspaces WHERE id = ? AND deleted_at IS NULL",
 		organizationID,
-	).Scan(&orgFactoryID, &orgName); err != nil {
+	).Scan(&orgName); err != nil {
 		if err == sql.ErrNoRows {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "organization not found"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "workspace not found"})
 			return
 		}
-		logger.Printf("[ORDER] Failed to query organization: %v", err)
+		logger.Printf("[ORDER] Failed to query workspace: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create order"})
 		return
 	}
 
-	var sceneFactoryID int64
 	var sceneName string
 	if err = h.db.QueryRowx(`
-		SELECT s.factory_id, s.name
+		SELECT s.name
 		FROM scenes s
 		WHERE s.id = ? AND s.deleted_at IS NULL
-	`, sceneID).Scan(&sceneFactoryID, &sceneName); err != nil {
+	`, sceneID).Scan(&sceneName); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "scene not found"})
 			return
 		}
 		logger.Printf("[ORDER] Failed to query scene: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create order"})
-		return
-	}
-
-	if orgFactoryID != sceneFactoryID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "organization does not belong to the same factory as the scene"})
 		return
 	}
 
