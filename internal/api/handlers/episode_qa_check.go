@@ -13,6 +13,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +33,7 @@ import (
 const (
 	episodeQACheckMcapMagic         = "mcap_magic"
 	episodeQACheckRecordingNotEmpty = "recording_not_empty"
+	episodeQACheckPythonScript      = "python_script"
 
 	qaRunModeAuto   QARunMode = "auto"
 	qaRunModeManual QARunMode = "manual"
@@ -42,9 +46,12 @@ const (
 	qaStatusRejected          = "rejected"
 	qaStatusFailed            = "failed"
 
-	defaultEpisodeQAQueueSize = 256
-	defaultEpisodeQATimeout   = 2 * time.Minute
-	maxEpisodeQASidecarBytes  = 4 * 1024 * 1024
+	defaultEpisodeQAQueueSize        = 256
+	defaultEpisodeQATimeout          = 2 * time.Minute
+	defaultEpisodePythonQATimeout    = 30 * time.Minute
+	maxEpisodeQASidecarBytes         = 4 * 1024 * 1024
+	defaultEpisodePythonQAScriptPath = "scripts/qa/run_all_checks.py"
+	pythonQAMetadataLogLimit         = 8 * 1024
 )
 
 var (
@@ -158,6 +165,18 @@ type episodeQACheckDBRow struct {
 	CheckedAt     sql.NullTime   `db:"checked_at"`
 }
 
+type episodePythonQAResult struct {
+	Passed   *bool          `json:"passed"`
+	Score    float64        `json:"score"`
+	Details  string         `json:"details"`
+	Metadata map[string]any `json:"metadata"`
+}
+
+type tailBuffer struct {
+	limit int
+	data  []byte
+}
+
 type episodeQAListRow struct {
 	ID                   int64           `db:"id"`
 	EpisodeID            string          `db:"episode_id"`
@@ -197,6 +216,7 @@ func (h *EpisodeQAHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	qa.GET("/episodes", h.ListQAEpisodes)
 	qa.GET("/episodes/:id/checks", h.ListEpisodeQAChecks)
 	qa.POST("/episodes/:id/run", h.RunEpisodeQASuiteHTTP)
+	qa.POST("/episodes/:id/run-python", h.RunEpisodePythonQAHTTP)
 }
 
 // EnqueueEpisode schedules lightweight automatic QA for a newly created episode.
@@ -484,6 +504,53 @@ func (h *EpisodeQAHandler) RunEpisodeQASuiteHTTP(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// RunEpisodePythonQAHTTP runs the fixed Python checksum QA check for one episode.
+//
+// @Summary      Run episode Python QA check
+// @Description  Runs the fixed Python checksum QA script for one episode.
+// @Tags         qa
+// @Produce      json
+// @Param        id   path      int  true  "Episode ID"
+// @Success      200  {object}  EpisodeQASuiteResponse
+// @Failure      404  {object}  map[string]string
+// @Failure      409  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /qa/episodes/{id}/run-python [post]
+func (h *EpisodeQAHandler) RunEpisodePythonQAHTTP(c *gin.Context) {
+	if h.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "database is not configured"})
+		return
+	}
+	if !h.requireBearerJWT(c) {
+		return
+	}
+
+	episodeID, ok := parseEpisodeIDParam(c)
+	if !ok {
+		return
+	}
+
+	if err := http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(defaultEpisodePythonQATimeout + time.Minute)); err != nil {
+		logger.Printf("[EPISODE-QA] Failed to extend Python QA response deadline: episode=%d, err=%v", episodeID, err)
+	}
+
+	result, err := h.RunEpisodePythonQACheck(c.Request.Context(), episodeID)
+	if err != nil {
+		switch {
+		case errors.Is(err, errEpisodeQANotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		case errors.Is(err, errEpisodeQAAlreadyRunning):
+			c.JSON(http.StatusConflict, gin.H{"error": "qa already running"})
+		default:
+			logger.Printf("[EPISODE-QA] Python check failed: episode=%d, err=%v", episodeID, err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to run python qa check"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 // RunEpisodeQASuite executes and persists the configured QA suite for one episode.
 func (h *EpisodeQAHandler) RunEpisodeQASuite(ctx context.Context, episodeID int64, mode QARunMode) (*EpisodeQASuiteResponse, error) {
 	if h == nil || h.db == nil {
@@ -522,6 +589,33 @@ func (h *EpisodeQAHandler) RunEpisodeQASuite(ctx context.Context, episodeID int6
 	return result, nil
 }
 
+// RunEpisodePythonQACheck executes and persists only the fixed Python checksum QA check.
+func (h *EpisodeQAHandler) RunEpisodePythonQACheck(ctx context.Context, episodeID int64) (*EpisodeQASuiteResponse, error) {
+	if h == nil || h.db == nil {
+		return nil, fmt.Errorf("database is not configured")
+	}
+
+	row, err := h.loadEpisodeForQACheck(ctx, episodeID)
+	if err != nil {
+		return nil, err
+	}
+
+	claim, err := h.claimEpisodePythonQARun(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, defaultEpisodePythonQATimeout)
+	defer cancel()
+
+	outcome := h.runPythonScriptQACheck(checkCtx, row)
+	result, err := h.persistEpisodeQASuiteResult(ctx, claim, qaRunModeManual, []episodeQACheckOutcome{outcome}, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func defaultEpisodeQASuite(_ episodeQACheckRow) []string {
 	return []string{episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty}
 }
@@ -532,7 +626,7 @@ func normalizeEpisodeQACheckName(raw string) string {
 
 func isSupportedEpisodeQACheckName(checkName string) bool {
 	switch checkName {
-	case episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty:
+	case episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty, episodeQACheckPythonScript:
 		return true
 	default:
 		return false
@@ -612,6 +706,43 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 		}
 		if mode == qaRunModeAuto {
 			return claim, errEpisodeQAAutoSkipped
+		}
+		return claim, fmt.Errorf("episode qa status changed from %q to %q", row.QAStatus, fresh.QAStatus)
+	}
+
+	claim.MutableStatus = true
+	return claim, nil
+}
+
+func (h *EpisodeQAHandler) claimEpisodePythonQARun(ctx context.Context, row episodeQACheckRow) (episodeQARunClaim, error) {
+	claim := episodeQARunClaim{
+		EpisodeID:      row.ID,
+		OriginalStatus: row.QAStatus,
+	}
+	if row.QAStatus == qaStatusRunning {
+		return claim, errEpisodeQAAlreadyRunning
+	}
+
+	// #nosec G701 -- static SQL with placeholder-bound status and episode values.
+	res, err := h.db.ExecContext(ctx, `
+		UPDATE episodes
+		SET qa_status = ?
+		WHERE id = ? AND deleted_at IS NULL AND COALESCE(qa_status, '') = ?
+	`, qaStatusRunning, row.ID, row.QAStatus)
+	if err != nil {
+		return claim, fmt.Errorf("claim episode python qa run: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return claim, fmt.Errorf("read python qa claim rows affected: %w", err)
+	}
+	if affected == 0 {
+		fresh, err := h.loadEpisodeForQACheck(ctx, row.ID)
+		if err != nil {
+			return claim, err
+		}
+		if fresh.QAStatus == qaStatusRunning {
+			return claim, errEpisodeQAAlreadyRunning
 		}
 		return claim, fmt.Errorf("episode qa status changed from %q to %q", row.QAStatus, fresh.QAStatus)
 	}
@@ -754,6 +885,174 @@ func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row 
 	}
 
 	return evaluateRecordingNotEmptyCheck(data, metadata)
+}
+
+func (h *EpisodeQAHandler) runPythonScriptQACheck(ctx context.Context, row episodeQACheckRow) episodeQACheckOutcome {
+	metadata := map[string]any{
+		"script_path": defaultEpisodePythonQAScriptPath,
+		"timeout_sec": int(defaultEpisodePythonQATimeout.Seconds()),
+	}
+	if h.s3 == nil {
+		return pythonQAFailure("Python QA failed: storage is not configured", metadata)
+	}
+	if _, err := os.Stat(defaultEpisodePythonQAScriptPath); err != nil {
+		metadata["script_error"] = err.Error()
+		return pythonQAFailure("Python QA failed: script not found", metadata)
+	}
+
+	mcapBucket, mcapObject, ok := resolveEpisodeMcapLocation(h.bucket, row.McapPath)
+	if !ok {
+		metadata["mcap_path"] = row.McapPath
+		return pythonQAFailure("Python QA failed: invalid mcap_path", metadata)
+	}
+	sidecarBucket, sidecarObject, ok := resolveEpisodeMcapLocation(h.bucket, row.SidecarPath)
+	if !ok {
+		metadata["sidecar_path"] = row.SidecarPath
+		return pythonQAFailure("Python QA failed: invalid sidecar_path", metadata)
+	}
+	metadata["mcap_bucket"] = mcapBucket
+	metadata["mcap_object"] = mcapObject
+	metadata["sidecar_bucket"] = sidecarBucket
+	metadata["sidecar_object"] = sidecarObject
+
+	tempDir, err := os.MkdirTemp("", "keystone-python-qa-*")
+	if err != nil {
+		metadata["temp_dir_error"] = err.Error()
+		return pythonQAFailure("Python QA failed: create temp directory failed", metadata)
+	}
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			logger.Printf("[EPISODE-QA] Failed to remove Python QA temp dir: dir=%s, err=%v", tempDir, err)
+		}
+	}()
+
+	mcapPath := filepath.Join(tempDir, "input.mcap")
+	sidecarPath := filepath.Join(tempDir, "sidecar.json")
+	outputPath := filepath.Join(tempDir, "result.json")
+
+	if err := h.downloadS3ObjectToFile(ctx, mcapBucket, mcapObject, mcapPath); err != nil {
+		metadata["download_error"] = err.Error()
+		return pythonQAFailure("Python QA failed: download MCAP failed", metadata)
+	}
+	if err := h.downloadS3ObjectToFile(ctx, sidecarBucket, sidecarObject, sidecarPath); err != nil {
+		metadata["download_error"] = err.Error()
+		return pythonQAFailure("Python QA failed: download sidecar failed", metadata)
+	}
+
+	startedAt := time.Now()
+	stdout := newTailBuffer(pythonQAMetadataLogLimit)
+	stderr := newTailBuffer(pythonQAMetadataLogLimit)
+	// #nosec G204 -- fixed python binary and repository script; variable args are local temp paths.
+	cmd := exec.CommandContext(ctx, "python3", defaultEpisodePythonQAScriptPath, "--mcap", mcapPath, "--sidecar", sidecarPath, "--output", outputPath)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err = cmd.Run()
+	durationMS := time.Since(startedAt).Milliseconds()
+	metadata["duration_ms"] = durationMS
+	metadata["stdout_tail"] = stdout.String()
+	metadata["stderr_tail"] = stderr.String()
+	if ctx.Err() != nil {
+		metadata["execution_error"] = ctx.Err().Error()
+		return pythonQAFailure("Python QA failed: script timed out", metadata)
+	}
+	if err != nil {
+		metadata["execution_error"] = err.Error()
+		return pythonQAFailure("Python QA failed: script exited with error", metadata)
+	}
+
+	// #nosec G304 -- output path is created under the private temp directory above.
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		metadata["result_error"] = err.Error()
+		return pythonQAFailure("Python QA failed: result JSON missing", metadata)
+	}
+	var result episodePythonQAResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		metadata["result_error"] = err.Error()
+		return pythonQAFailure("Python QA failed: invalid result JSON", metadata)
+	}
+	if result.Passed == nil {
+		return pythonQAFailure("Python QA failed: result passed is required", metadata)
+	}
+	if strings.TrimSpace(result.Details) == "" {
+		return pythonQAFailure("Python QA failed: result details is required", metadata)
+	}
+	if result.Score < 0 || result.Score > 1 {
+		metadata["score"] = result.Score
+		return pythonQAFailure("Python QA failed: result score must be between 0 and 1", metadata)
+	}
+	for key, value := range result.Metadata {
+		metadata[key] = value
+	}
+
+	return episodeQACheckOutcome{
+		CheckName: episodeQACheckPythonScript,
+		Passed:    *result.Passed,
+		Score:     result.Score,
+		Details:   result.Details,
+		Metadata:  metadata,
+	}
+}
+
+func (h *EpisodeQAHandler) downloadS3ObjectToFile(ctx context.Context, bucket, objectName, destination string) error {
+	obj, err := h.s3.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := obj.Close(); err != nil {
+			logger.Printf("[EPISODE-QA] S3 object close failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+		}
+	}()
+
+	// #nosec G304 -- destination is generated under the private temp directory above.
+	file, err := os.Create(destination)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			logger.Printf("[EPISODE-QA] temp file close failed: path=%s, err=%v", destination, err)
+		}
+	}()
+
+	if _, err := io.Copy(file, obj); err != nil {
+		return err
+	}
+	return nil
+}
+
+func pythonQAFailure(details string, metadata map[string]any) episodeQACheckOutcome {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["check"] = "checksum_sha256_match"
+	return episodeQACheckOutcome{
+		CheckName: episodeQACheckPythonScript,
+		Passed:    false,
+		Score:     0,
+		Details:   details,
+		Metadata:  metadata,
+	}
+}
+
+func newTailBuffer(limit int) *tailBuffer {
+	return &tailBuffer{limit: limit}
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return len(p), nil
+	}
+	b.data = append(b.data, p...)
+	if len(b.data) > b.limit {
+		b.data = append([]byte(nil), b.data[len(b.data)-b.limit:]...)
+	}
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	return strings.TrimSpace(string(b.data))
 }
 
 func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName string, maxBytes int64) ([]byte, error) {
