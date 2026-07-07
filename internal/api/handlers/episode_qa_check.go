@@ -177,6 +177,11 @@ type tailBuffer struct {
 	data  []byte
 }
 
+type s3DownloadResult struct {
+	ObjectSize   int64
+	BytesWritten int64
+}
+
 type episodeQAListRow struct {
 	ID                   int64           `db:"id"`
 	EpisodeID            string          `db:"episode_id"`
@@ -891,6 +896,7 @@ func (h *EpisodeQAHandler) runPythonScriptQACheck(ctx context.Context, row episo
 	metadata := map[string]any{
 		"script_path": defaultEpisodePythonQAScriptPath,
 		"timeout_sec": int(defaultEpisodePythonQATimeout.Seconds()),
+		"episode_id":  row.ID,
 	}
 	if h.s3 == nil {
 		return pythonQAFailure("Python QA failed: storage is not configured", metadata)
@@ -910,8 +916,10 @@ func (h *EpisodeQAHandler) runPythonScriptQACheck(ctx context.Context, row episo
 		metadata["sidecar_path"] = row.SidecarPath
 		return pythonQAFailure("Python QA failed: invalid sidecar_path", metadata)
 	}
+	metadata["mcap_path"] = row.McapPath
 	metadata["mcap_bucket"] = mcapBucket
 	metadata["mcap_object"] = mcapObject
+	metadata["sidecar_path"] = row.SidecarPath
 	metadata["sidecar_bucket"] = sidecarBucket
 	metadata["sidecar_object"] = sidecarObject
 
@@ -920,6 +928,7 @@ func (h *EpisodeQAHandler) runPythonScriptQACheck(ctx context.Context, row episo
 		metadata["temp_dir_error"] = err.Error()
 		return pythonQAFailure("Python QA failed: create temp directory failed", metadata)
 	}
+	metadata["temp_dir"] = tempDir
 	defer func() {
 		if err := os.RemoveAll(tempDir); err != nil {
 			logger.Printf("[EPISODE-QA] Failed to remove Python QA temp dir: dir=%s, err=%v", tempDir, err)
@@ -929,15 +938,32 @@ func (h *EpisodeQAHandler) runPythonScriptQACheck(ctx context.Context, row episo
 	mcapPath := filepath.Join(tempDir, "input.mcap")
 	sidecarPath := filepath.Join(tempDir, "sidecar.json")
 	outputPath := filepath.Join(tempDir, "result.json")
+	metadata["local_mcap_path"] = mcapPath
+	metadata["local_sidecar_path"] = sidecarPath
 
-	if err := h.downloadS3ObjectToFile(ctx, mcapBucket, mcapObject, mcapPath); err != nil {
+	logger.Printf("[EPISODE-QA] Python QA downloading MCAP: episode=%d bucket=%s object=%s local=%s", row.ID, mcapBucket, mcapObject, mcapPath)
+	mcapDownload, err := h.downloadS3ObjectToFile(ctx, mcapBucket, mcapObject, mcapPath)
+	if err != nil {
 		metadata["download_error"] = err.Error()
+		addS3ErrorMetadata(metadata, "mcap_download", err)
+		logger.Printf("[EPISODE-QA] Python QA MCAP download failed: episode=%d bucket=%s object=%s local=%s err=%v", row.ID, mcapBucket, mcapObject, mcapPath, err)
 		return pythonQAFailure("Python QA failed: download MCAP failed", metadata)
 	}
-	if err := h.downloadS3ObjectToFile(ctx, sidecarBucket, sidecarObject, sidecarPath); err != nil {
+	metadata["mcap_object_size_bytes"] = mcapDownload.ObjectSize
+	metadata["mcap_downloaded_bytes"] = mcapDownload.BytesWritten
+	logger.Printf("[EPISODE-QA] Python QA MCAP download completed: episode=%d bucket=%s object=%s bytes=%d object_size=%d", row.ID, mcapBucket, mcapObject, mcapDownload.BytesWritten, mcapDownload.ObjectSize)
+
+	logger.Printf("[EPISODE-QA] Python QA downloading sidecar: episode=%d bucket=%s object=%s local=%s", row.ID, sidecarBucket, sidecarObject, sidecarPath)
+	sidecarDownload, err := h.downloadS3ObjectToFile(ctx, sidecarBucket, sidecarObject, sidecarPath)
+	if err != nil {
 		metadata["download_error"] = err.Error()
+		addS3ErrorMetadata(metadata, "sidecar_download", err)
+		logger.Printf("[EPISODE-QA] Python QA sidecar download failed: episode=%d bucket=%s object=%s local=%s err=%v", row.ID, sidecarBucket, sidecarObject, sidecarPath, err)
 		return pythonQAFailure("Python QA failed: download sidecar failed", metadata)
 	}
+	metadata["sidecar_object_size_bytes"] = sidecarDownload.ObjectSize
+	metadata["sidecar_downloaded_bytes"] = sidecarDownload.BytesWritten
+	logger.Printf("[EPISODE-QA] Python QA sidecar download completed: episode=%d bucket=%s object=%s bytes=%d object_size=%d", row.ID, sidecarBucket, sidecarObject, sidecarDownload.BytesWritten, sidecarDownload.ObjectSize)
 
 	startedAt := time.Now()
 	stdout := newTailBuffer(pythonQAMetadataLogLimit)
@@ -994,10 +1020,17 @@ func (h *EpisodeQAHandler) runPythonScriptQACheck(ctx context.Context, row episo
 	}
 }
 
-func (h *EpisodeQAHandler) downloadS3ObjectToFile(ctx context.Context, bucket, objectName, destination string) error {
+func (h *EpisodeQAHandler) downloadS3ObjectToFile(ctx context.Context, bucket, objectName, destination string) (s3DownloadResult, error) {
+	var result s3DownloadResult
+	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		return result, fmt.Errorf("stat s3 object bucket=%s object=%s: %w", bucket, objectName, err)
+	}
+	result.ObjectSize = stat.Size
+
 	obj, err := h.s3.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
-		return err
+		return result, fmt.Errorf("get s3 object bucket=%s object=%s: %w", bucket, objectName, err)
 	}
 	defer func() {
 		if err := obj.Close(); err != nil {
@@ -1008,7 +1041,7 @@ func (h *EpisodeQAHandler) downloadS3ObjectToFile(ctx context.Context, bucket, o
 	// #nosec G304 -- destination is generated under the private temp directory above.
 	file, err := os.Create(destination)
 	if err != nil {
-		return err
+		return result, fmt.Errorf("create temp file %s: %w", destination, err)
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
@@ -1016,10 +1049,41 @@ func (h *EpisodeQAHandler) downloadS3ObjectToFile(ctx context.Context, bucket, o
 		}
 	}()
 
-	if _, err := io.Copy(file, obj); err != nil {
-		return err
+	written, err := io.Copy(file, obj)
+	result.BytesWritten = written
+	if err != nil {
+		return result, fmt.Errorf("copy s3 object bucket=%s object=%s to %s after %d bytes: %w", bucket, objectName, destination, written, err)
 	}
-	return nil
+	return result, nil
+}
+
+func addS3ErrorMetadata(metadata map[string]any, prefix string, err error) {
+	if metadata == nil || err == nil {
+		return
+	}
+	errResp := minio.ToErrorResponse(err)
+	metadata[prefix+"_error"] = err.Error()
+	if errResp.Code != "" {
+		metadata[prefix+"_s3_code"] = errResp.Code
+	}
+	if errResp.StatusCode != 0 {
+		metadata[prefix+"_s3_status_code"] = errResp.StatusCode
+	}
+	if errResp.Message != "" {
+		metadata[prefix+"_s3_message"] = errResp.Message
+	}
+	if errResp.BucketName != "" {
+		metadata[prefix+"_s3_bucket"] = errResp.BucketName
+	}
+	if errResp.Key != "" {
+		metadata[prefix+"_s3_key"] = errResp.Key
+	}
+	if errResp.RequestID != "" {
+		metadata[prefix+"_s3_request_id"] = errResp.RequestID
+	}
+	if errResp.HostID != "" {
+		metadata[prefix+"_s3_host_id"] = errResp.HostID
+	}
 }
 
 func pythonQAFailure(details string, metadata map[string]any) episodeQACheckOutcome {
