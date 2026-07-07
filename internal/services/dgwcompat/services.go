@@ -86,7 +86,7 @@ type authService struct {
 func (s *authService) ExchangeCredential(context.Context, *cloudpb.ExchangeCredentialRequest) (*cloudpb.ExchangeCredentialResponse, error) {
 	expiresAt := time.Now().UTC().Add(time.Hour).Unix()
 	return &cloudpb.ExchangeCredentialResponse{
-		AccessToken:   "keystone-poc-access-token",
+		AccessToken:   "keystone-poc-" + uuid.NewString(),
 		ExpiresAtUnix: expiresAt,
 		TokenType:     "Bearer",
 		KeyId:         "keystone-poc",
