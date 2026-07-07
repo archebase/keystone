@@ -18,12 +18,35 @@ service DataGatewayService {
       returns (CompleteUploadResponse);
 }
 
+// SDK-facing device initialization service exposed on the dedicated init port.
+service DeviceInitService {
+  rpc InitDevice(InitDeviceRequest) returns (InitDeviceResponse);
+  rpc ReinitDevice(ReinitDeviceRequest) returns (InitDeviceResponse);
+}
+
 // Internal-only storage service exposed by data-gateway.
 // This service is served on a dedicated internal gRPC port and is not
 // protected by the public JWT interceptor chain.
 service InternalStorageService {
   // Generates presigned access for a single object.
   rpc PresignObject(PresignObjectRequest) returns (PresignObjectResponse);
+}
+
+message InitDeviceRequest {
+  string device_id = 1;
+  string sdk_version = 2;
+  string platform = 3;
+}
+
+message ReinitDeviceRequest {
+  string device_id = 1;
+  string sdk_version = 2;
+  string platform = 3;
+}
+
+message InitDeviceResponse {
+  string api_key = 1;
+  map<string, string> tags = 2;
 }
 
 message UploadCredentials {

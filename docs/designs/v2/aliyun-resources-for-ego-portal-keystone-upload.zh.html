@@ -1,0 +1,708 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>阿里云资源准备：ego-portal-lite 上传到 Keystone</title>
+  <style>
+    :root {
+      --bg: #1D1A2F;
+      --panel: #8BD450;
+      --accent: #F47A16;
+      --ink: #000000;
+      --paper: #F7F1DF;
+      --muted: rgba(247, 241, 223, 0.78);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--bg);
+      color: var(--paper);
+      font-family: "Songti SC", "STSong", "Noto Serif SC", SimSun, serif;
+      line-height: 1.72;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        linear-gradient(90deg, rgba(0, 0, 0, 0.25) 1px, transparent 1px) 0 0 / 38px 38px,
+        linear-gradient(0deg, rgba(0, 0, 0, 0.18) 1px, transparent 1px) 0 0 / 38px 38px,
+        var(--bg);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+      opacity: 0.14;
+      background-image:
+        radial-gradient(circle at 20% 12%, var(--paper) 0 1px, transparent 1px),
+        radial-gradient(circle at 76% 78%, var(--paper) 0 1px, transparent 1px);
+      background-size: 23px 19px, 31px 29px;
+      mix-blend-mode: soft-light;
+    }
+
+    .page {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 42px 0 76px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 68vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+      gap: 24px;
+      align-items: center;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 18px 18px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -22% 58% -20% -12%;
+      background: var(--panel);
+      transform: skewX(-17deg);
+      border-right: 5px solid var(--ink);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -18%;
+      top: -18%;
+      width: 42%;
+      height: 122%;
+      background: var(--accent);
+      transform: skewX(-13deg);
+      border-left: 5px solid var(--ink);
+    }
+
+    .title-block {
+      position: relative;
+      z-index: 3;
+      padding: clamp(28px, 5vw, 60px);
+    }
+
+    .kicker {
+      display: inline-block;
+      margin-bottom: 18px;
+      padding: 5px 10px 3px;
+      border: 3px solid var(--ink);
+      background: var(--accent);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 760px;
+      font-size: clamp(40px, 7.8vw, 108px);
+      line-height: 0.96;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .subtitle {
+      margin: 24px 0 0;
+      max-width: 650px;
+      padding-left: 16px;
+      border-left: 10px solid var(--ink);
+      font-size: clamp(18px, 2vw, 27px);
+      font-weight: 800;
+      line-height: 1.34;
+    }
+
+    .signal-panel {
+      position: relative;
+      z-index: 3;
+      margin: clamp(24px, 4vw, 52px) clamp(18px, 4vw, 52px) clamp(24px, 4vw, 52px) 0;
+      min-height: 420px;
+      border: 5px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      box-shadow: 12px 12px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .signal-panel::before {
+      content: "RAM / STS / OSS";
+      position: absolute;
+      top: 18px;
+      left: -22px;
+      width: 210px;
+      padding: 3px 0;
+      transform: rotate(-11deg);
+      border: 3px solid var(--ink);
+      background: var(--panel);
+      color: var(--ink);
+      text-align: center;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .diagram {
+      position: absolute;
+      inset: 74px 28px 34px;
+      display: grid;
+      grid-template-rows: repeat(4, 1fr);
+      gap: 14px;
+    }
+
+    .node {
+      display: grid;
+      grid-template-columns: 64px 1fr;
+      align-items: center;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 7px 7px 0 var(--ink);
+    }
+
+    .node strong {
+      height: 100%;
+      display: grid;
+      place-items: center;
+      border-right: 4px solid var(--ink);
+      background: var(--accent);
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    .node span {
+      display: block;
+      padding: 10px 14px;
+      font-size: 18px;
+      font-weight: 900;
+      line-height: 1.28;
+    }
+
+    .node small {
+      display: block;
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+
+    .section {
+      margin-top: 42px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 14px 14px 0 var(--ink);
+    }
+
+    .section-header {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      border-bottom: 5px solid var(--ink);
+      background: var(--panel);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      min-height: 84px;
+      border-right: 5px solid var(--ink);
+      background: var(--accent);
+      font-size: 34px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .section-title {
+      padding: 18px 24px 16px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(26px, 4vw, 50px);
+      line-height: 1.02;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .section-title p {
+      margin: 8px 0 0;
+      max-width: 860px;
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.45;
+    }
+
+    .content {
+      padding: clamp(22px, 4vw, 40px);
+    }
+
+    p {
+      margin: 0 0 16px;
+      font-size: 17px;
+    }
+
+    ul,
+    ol {
+      margin: 0 0 18px;
+      padding-left: 1.35em;
+    }
+
+    li {
+      margin: 7px 0;
+      font-size: 17px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border: 3px solid var(--ink);
+      vertical-align: top;
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    th {
+      background: var(--accent);
+      text-align: left;
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    code,
+    pre {
+      font-family: "Times New Roman", Georgia, serif;
+    }
+
+    code {
+      padding: 1px 5px;
+      border: 2px solid var(--ink);
+      background: var(--panel);
+      color: var(--ink);
+      font-weight: 900;
+    }
+
+    pre {
+      margin: 18px 0;
+      padding: 18px;
+      overflow-x: auto;
+      border: 4px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-size: 15px;
+      line-height: 1.45;
+      white-space: pre;
+    }
+
+    pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font-weight: 700;
+    }
+
+    .callout {
+      margin: 20px 0;
+      padding: 18px 20px;
+      border: 4px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-size: 18px;
+      font-weight: 900;
+      line-height: 1.45;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin: 20px 0;
+    }
+
+    .tile {
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 7px 7px 0 var(--ink);
+    }
+
+    .tile h3 {
+      margin: 0;
+      padding: 10px 14px 8px;
+      border-bottom: 4px solid var(--ink);
+      background: var(--accent);
+      font-size: 20px;
+      font-weight: 900;
+      line-height: 1.22;
+    }
+
+    .tile div {
+      padding: 14px 16px 16px;
+    }
+
+    .footer {
+      margin-top: 44px;
+      padding: 20px 22px;
+      border: 5px solid var(--ink);
+      background: var(--panel);
+      color: var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    @media (max-width: 860px) {
+      .page {
+        width: min(100% - 22px, 680px);
+        padding-top: 18px;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+        min-height: auto;
+        box-shadow: 10px 10px 0 var(--ink);
+      }
+
+      .signal-panel {
+        min-height: 420px;
+        margin: 0 18px 24px;
+      }
+
+      .section {
+        box-shadow: 9px 9px 0 var(--ink);
+      }
+
+      .section-header {
+        grid-template-columns: 64px 1fr;
+      }
+
+      .section-no {
+        min-height: 70px;
+        font-size: 25px;
+      }
+
+      .section-title {
+        padding: 14px 16px 12px;
+      }
+
+      .content {
+        padding: 20px 16px 24px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="title-block">
+        <span class="kicker">ALIYUN RESOURCE PLAN / POC</span>
+        <h1>上传权限<br>云侧准备</h1>
+        <p class="subtitle">为 Keystone 的 dgwcompat 兼容层创建专用 OSS Bucket、RAM User、RAM Role 和最小权限策略。</p>
+      </div>
+      <div class="signal-panel" aria-label="阿里云资源关系图">
+        <div class="diagram">
+          <div class="node"><strong>01</strong><span>RAM User<br><small>Keystone 持有 AK/SK，只允许 AssumeRole</small></span></div>
+          <div class="node"><strong>02</strong><span>RAM Role<br><small>签发短期 STS，权限限制到上传前缀</small></span></div>
+          <div class="node"><strong>03</strong><span>OSS Bucket<br><small>私有 bucket，接收 iOS SDK 直传对象</small></span></div>
+          <div class="node"><strong>04</strong><span>Keystone Env<br><small>输出 RoleArn、bucket、endpoint 和 AK/SK</small></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">00</div>
+        <div class="section-title">
+          <h2>执行结论</h2>
+          <p>使用当前阿里云 CLI default profile 创建一套专用资源，不复用 data-platform 现有资源。</p>
+        </div>
+      </div>
+      <div class="content">
+        <div class="callout">Keystone 长期 AK/SK 不直接拥有 OSS 写权限；它只用于 AssumeRole。iOS 端只拿到短期、受限到 <code>ego-portal-lite/*</code> 的 STS。</div>
+        <p>本机已确认存在阿里云 CLI：<code>/usr/local/bin/aliyun</code>，版本 <code>3.3.4</code>。当前 <code>default</code> profile 凭证有效，默认 region 是 <code>cn-shanghai</code>。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">01</div>
+        <div class="section-title">
+          <h2>资源命名</h2>
+          <p>默认命名固定，便于 Keystone 配置和回滚；bucket 若被占用再追加账号后缀。</p>
+        </div>
+      </div>
+      <div class="content">
+        <table>
+          <thead>
+            <tr><th>类型</th><th>名称</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>OSS Bucket</td><td><code>archebase-keystone-poc</code></td></tr>
+            <tr><td>OSS Prefix</td><td><code>ego-portal-lite/*</code></td></tr>
+            <tr><td>RAM User</td><td><code>keystone-dgw-poc</code></td></tr>
+            <tr><td>RAM Role</td><td><code>keystone-ego-upload-role</code></td></tr>
+            <tr><td>Role 写 OSS 权限策略</td><td><code>KeystoneEgoUploadRolePolicy</code></td></tr>
+            <tr><td>User AssumeRole 权限策略</td><td><code>KeystoneDgwAssumeRolePolicy</code></td></tr>
+            <tr><td>Region</td><td><code>cn-shanghai</code></td></tr>
+            <tr><td>STS endpoint</td><td><code>https://sts.cn-shanghai.aliyuncs.com</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">02</div>
+        <div class="section-title">
+          <h2>权限模型</h2>
+          <p>权限链路分两层，长期凭证与对象写权限隔离。</p>
+        </div>
+      </div>
+      <div class="content">
+        <ol>
+          <li>Keystone 持有 <code>keystone-dgw-poc</code> 的 AK/SK。</li>
+          <li><code>keystone-dgw-poc</code> 只能调用 <code>sts:AssumeRole</code> 扮演 <code>keystone-ego-upload-role</code>。</li>
+          <li><code>keystone-ego-upload-role</code> 拿到的临时 STS 只能写 OSS bucket 下的 <code>ego-portal-lite/*</code> prefix。</li>
+          <li>第一版不授予读权限，因为 Keystone 不做 <code>HeadObject</code> 校验。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">03</div>
+        <div class="section-title">
+          <h2>策略内容</h2>
+          <p>策略文本会在执行时带入真实 AccountId 和最终 bucket 名。</p>
+        </div>
+      </div>
+      <div class="content">
+        <div class="grid">
+          <div class="tile">
+            <h3>Role 写 OSS 策略</h3>
+            <div>
+              <pre><code>{
+  "Version": "1",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "oss:PutObject",
+      "oss:InitiateMultipartUpload",
+      "oss:UploadPart",
+      "oss:CompleteMultipartUpload",
+      "oss:AbortMultipartUpload",
+      "oss:ListParts"
+    ],
+    "Resource": [
+      "acs:oss:*:*:archebase-keystone-poc/ego-portal-lite/*"
+    ]
+  }]
+}</code></pre>
+            </div>
+          </div>
+          <div class="tile">
+            <h3>User AssumeRole 策略</h3>
+            <div>
+              <pre><code>{
+  "Version": "1",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["sts:AssumeRole"],
+    "Resource": [
+      "acs:ram::&lt;ACCOUNT_ID&gt;:role/keystone-ego-upload-role"
+    ]
+  }]
+}</code></pre>
+            </div>
+          </div>
+        </div>
+        <h3>Role 信任策略</h3>
+        <pre><code>{
+  "Version": "1",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "RAM": [
+        "acs:ram::&lt;ACCOUNT_ID&gt;:user/keystone-dgw-poc"
+      ]
+    },
+    "Action": "sts:AssumeRole"
+  }]
+}</code></pre>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">04</div>
+        <div class="section-title">
+          <h2>CLI 执行步骤</h2>
+          <p>以下是会真实创建资源的计划。执行前需要联网和云资源写权限。</p>
+        </div>
+      </div>
+      <div class="content">
+        <h3>获取账号 ID</h3>
+        <pre><code>aliyun sts GetCallerIdentity</code></pre>
+
+        <h3>创建 OSS Bucket</h3>
+        <pre><code>aliyun oss mb oss://archebase-keystone-poc --region cn-shanghai
+aliyun oss set-acl oss://archebase-keystone-poc private
+aliyun oss stat oss://archebase-keystone-poc</code></pre>
+
+        <h3>创建 RAM User</h3>
+        <pre><code>aliyun ram CreateUser \
+  --UserName keystone-dgw-poc \
+  --DisplayName keystone-dgw-poc</code></pre>
+
+        <h3>创建 RAM Role</h3>
+        <pre><code>aliyun ram CreateRole \
+  --RoleName keystone-ego-upload-role \
+  --Description "Keystone ego-portal-lite OSS upload POC role" \
+  --MaxSessionDuration 3600 \
+  --AssumeRolePolicyDocument '&lt;TRUST_POLICY_JSON&gt;'</code></pre>
+
+        <h3>创建并绑定 Role 写 OSS 权限</h3>
+        <pre><code>aliyun ram CreatePolicy \
+  --PolicyName KeystoneEgoUploadRolePolicy \
+  --Description "Allow Keystone POC STS credentials to upload ego-portal-lite captures" \
+  --PolicyDocument '&lt;ROLE_OSS_WRITE_POLICY_JSON&gt;'
+
+aliyun ram AttachPolicyToRole \
+  --RoleName keystone-ego-upload-role \
+  --PolicyType Custom \
+  --PolicyName KeystoneEgoUploadRolePolicy</code></pre>
+
+        <h3>创建并绑定 User AssumeRole 权限</h3>
+        <pre><code>aliyun ram CreatePolicy \
+  --PolicyName KeystoneDgwAssumeRolePolicy \
+  --Description "Allow Keystone POC RAM user to assume upload role" \
+  --PolicyDocument '&lt;USER_ASSUME_ROLE_POLICY_JSON&gt;'
+
+aliyun ram AttachPolicyToUser \
+  --UserName keystone-dgw-poc \
+  --PolicyType Custom \
+  --PolicyName KeystoneDgwAssumeRolePolicy</code></pre>
+
+        <h3>创建 Keystone 专用 AK/SK</h3>
+        <pre><code>aliyun ram CreateAccessKey --UserName keystone-dgw-poc</code></pre>
+        <p><code>AccessKeySecret</code> 只显示一次，需要立即写入部署 secret，不写入仓库。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">05</div>
+        <div class="section-title">
+          <h2>Keystone 环境变量</h2>
+          <p>创建完成后输出这组配置给 Keystone 部署使用。</p>
+        </div>
+      </div>
+      <div class="content">
+        <pre><code>KEYSTONE_DGW_COMPAT_ENABLED=true
+KEYSTONE_DGW_AUTH_ADDR=:50051
+KEYSTONE_DGW_GATEWAY_ADDR=:50053
+KEYSTONE_DGW_DEVICE_INIT_ADDR=:50057
+
+KEYSTONE_DGW_OSS_BUCKET=archebase-keystone-poc
+KEYSTONE_DGW_OSS_PUBLIC_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com
+KEYSTONE_DGW_OSS_KEY_PREFIX=ego-portal-lite
+KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES=8388608
+
+KEYSTONE_DGW_STS_ROLE_ARN=acs:ram::&lt;ACCOUNT_ID&gt;:role/keystone-ego-upload-role
+KEYSTONE_DGW_STS_SESSION_TTL_SECONDS=3600
+KEYSTONE_DGW_ALIBABA_CLOUD_ACCESS_KEY_ID=&lt;keystone-dgw-poc AccessKeyId&gt;
+KEYSTONE_DGW_ALIBABA_CLOUD_ACCESS_KEY_SECRET=&lt;keystone-dgw-poc AccessKeySecret&gt;
+KEYSTONE_DGW_ALIBABA_CLOUD_STS_REGION=cn-shanghai
+KEYSTONE_DGW_ALIBABA_CLOUD_STS_ENDPOINT=https://sts.cn-shanghai.aliyuncs.com</code></pre>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">06</div>
+        <div class="section-title">
+          <h2>验证计划</h2>
+          <p>先验证云资源，再验证 Keystone 到 iOS 的端到端链路。</p>
+        </div>
+      </div>
+      <div class="content">
+        <ul>
+          <li>用 Keystone RAM User AK/SK 调 <code>AssumeRole</code>，确认返回 <code>AccessKeyId</code>、<code>AccessKeySecret</code>、<code>SecurityToken</code>、<code>Expiration</code>。</li>
+          <li>用临时 STS 写入测试对象：<code>oss://archebase-keystone-poc/ego-portal-lite/probe.txt</code>。</li>
+          <li>Keystone 启动 <code>dgwcompat</code>，iOS base URL 指向 Keystone POC host。</li>
+          <li>Keystone 日志出现 <code>CreateLogicalUpload</code> 和 <code>CompleteUpload</code>。</li>
+          <li>OSS 中出现 <code>ego-portal-lite/{device_id}/{capture_id}/{upload_id}/capture.mcap</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">07</div>
+        <div class="section-title">
+          <h2>回滚计划</h2>
+          <p>删除资源前先解绑策略；删除 bucket 前必须清空对象。</p>
+        </div>
+      </div>
+      <div class="content">
+        <pre><code>aliyun ram DetachPolicyFromRole \
+  --RoleName keystone-ego-upload-role \
+  --PolicyType Custom \
+  --PolicyName KeystoneEgoUploadRolePolicy
+
+aliyun ram DetachPolicyFromUser \
+  --UserName keystone-dgw-poc \
+  --PolicyType Custom \
+  --PolicyName KeystoneDgwAssumeRolePolicy
+
+aliyun ram DeletePolicy --PolicyName KeystoneEgoUploadRolePolicy
+aliyun ram DeletePolicy --PolicyName KeystoneDgwAssumeRolePolicy
+
+aliyun ram ListAccessKeys --UserName keystone-dgw-poc
+aliyun ram DeleteAccessKey --UserName keystone-dgw-poc --UserAccessKeyId &lt;ACCESS_KEY_ID&gt;
+
+aliyun ram DeleteRole --RoleName keystone-ego-upload-role
+aliyun ram DeleteUser --UserName keystone-dgw-poc
+
+aliyun oss rm oss://archebase-keystone-poc/ego-portal-lite/ -r -f
+aliyun oss rm oss://archebase-keystone-poc</code></pre>
+      </div>
+    </section>
+
+    <div class="footer">
+      执行前确认：使用当前 default profile；创建专用 RAM User、RAM Role、两条自定义策略和私有 OSS bucket；AK/SK 只输出给 Keystone 部署配置，不写入仓库。
+    </div>
+  </main>
+</body>
+</html>

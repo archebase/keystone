@@ -21,6 +21,7 @@ import (
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/server"
 	"archebase.com/keystone-edge/internal/services"
+	"archebase.com/keystone-edge/internal/services/dgwcompat"
 	"archebase.com/keystone-edge/internal/storage/database"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
@@ -137,6 +138,10 @@ func main() {
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}
+	dgwCompatServer, err := dgwcompat.StartFromEnv()
+	if err != nil {
+		logger.Fatalf("[DGW_COMPAT] Failed to start compatibility server: %v", err)
+	}
 
 	logger.Println("[SERVER] Keystone Edge started successfully")
 
@@ -158,6 +163,7 @@ func main() {
 			logger.Printf("[SERVER] Error during shutdown: %v", err)
 		}
 	}
+	dgwCompatServer.Stop(ctx)
 
 	logger.Println("[SERVER] Keystone Edge stopped")
 }
