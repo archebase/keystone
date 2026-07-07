@@ -1,0 +1,941 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ego-portal-lite 上传到 Keystone 的 OSS 兼容链路设计</title>
+  <style>
+    :root {
+      --bg: #1D1A2F;
+      --panel: #8BD450;
+      --accent: #F47A16;
+      --ink: #000000;
+      --paper: #F7F1DF;
+      --muted: rgba(247, 241, 223, 0.78);
+      --line: #000000;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--bg);
+      color: var(--paper);
+      font-family: "Songti SC", "STSong", "Noto Serif SC", SimSun, serif;
+      line-height: 1.72;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        linear-gradient(90deg, rgba(0, 0, 0, 0.24) 1px, transparent 1px) 0 0 / 40px 40px,
+        linear-gradient(0deg, rgba(0, 0, 0, 0.20) 1px, transparent 1px) 0 0 / 40px 40px,
+        var(--bg);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+      opacity: 0.16;
+      background-image:
+        radial-gradient(circle at 18% 22%, var(--paper) 0 1px, transparent 1px),
+        radial-gradient(circle at 72% 76%, var(--paper) 0 1px, transparent 1px);
+      background-size: 19px 23px, 31px 29px;
+      mix-blend-mode: soft-light;
+    }
+
+    .page {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 42px 0 80px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 74vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1.02fr) minmax(300px, 0.98fr);
+      gap: 26px;
+      align-items: stretch;
+      border: 5px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 18px 18px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -22% 55% -18% -16%;
+      background: var(--panel);
+      transform: skewX(-18deg);
+      border-right: 5px solid var(--line);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -16%;
+      top: -18%;
+      width: 44%;
+      height: 124%;
+      background: var(--accent);
+      transform: skewX(-13deg);
+      border-left: 5px solid var(--line);
+    }
+
+    .title-block {
+      position: relative;
+      z-index: 3;
+      padding: clamp(28px, 5vw, 60px);
+      align-self: center;
+    }
+
+    .kicker {
+      display: inline-block;
+      margin-bottom: 18px;
+      padding: 5px 10px 3px;
+      border: 3px solid var(--ink);
+      background: var(--accent);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 720px;
+      font-size: clamp(40px, 7.7vw, 108px);
+      line-height: 0.96;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .subtitle {
+      margin: 24px 0 0;
+      max-width: 640px;
+      padding-left: 16px;
+      border-left: 10px solid var(--ink);
+      font-size: clamp(18px, 2.1vw, 28px);
+      font-weight: 800;
+      line-height: 1.32;
+    }
+
+    .machine {
+      position: relative;
+      z-index: 4;
+      min-height: 520px;
+      margin: clamp(24px, 4vw, 54px) clamp(18px, 4vw, 58px) clamp(24px, 4vw, 54px) 0;
+      border: 5px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      box-shadow: 12px 12px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .machine::before {
+      content: "CONTROL PLANE";
+      position: absolute;
+      top: 18px;
+      left: -28px;
+      width: 220px;
+      padding: 3px 0;
+      transform: rotate(-12deg);
+      border: 3px solid var(--ink);
+      background: var(--panel);
+      color: var(--ink);
+      text-align: center;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .machine::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(135deg, transparent 0 44%, rgba(247, 241, 223, 0.22) 44% 45%, transparent 45%),
+        linear-gradient(45deg, transparent 0 61%, rgba(247, 241, 223, 0.18) 61% 62%, transparent 62%);
+      pointer-events: none;
+    }
+
+    .diagram {
+      position: absolute;
+      inset: 72px 30px 34px;
+      display: grid;
+      grid-template-rows: 1fr 1fr 1fr;
+      gap: 22px;
+    }
+
+    .node {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: 76px 1fr;
+      align-items: center;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      min-height: 108px;
+    }
+
+    .node strong {
+      display: block;
+      padding: 18px 8px;
+      border-right: 4px solid var(--ink);
+      background: var(--accent);
+      font-size: 26px;
+      font-weight: 900;
+      text-align: center;
+      line-height: 1;
+    }
+
+    .node span {
+      display: block;
+      padding: 12px 16px;
+      font-size: clamp(17px, 1.7vw, 23px);
+      font-weight: 900;
+      line-height: 1.25;
+    }
+
+    .node small {
+      display: block;
+      margin-top: 6px;
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .pulse {
+      position: absolute;
+      z-index: 1;
+      left: 62px;
+      right: 62px;
+      top: 50%;
+      height: 18px;
+      transform: translateY(-50%) skewX(-18deg);
+      border: 3px solid var(--ink);
+      background: var(--panel);
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+
+    .section {
+      margin-top: 44px;
+      border: 5px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 14px 14px 0 var(--ink);
+    }
+
+    .section-header {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      border-bottom: 5px solid var(--line);
+      background: var(--panel);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      min-height: 86px;
+      border-right: 5px solid var(--line);
+      background: var(--accent);
+      font-size: 34px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .section-title {
+      padding: 18px 24px 16px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(26px, 4vw, 52px);
+      line-height: 1.02;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .section-title p {
+      margin: 8px 0 0;
+      max-width: 860px;
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.45;
+    }
+
+    .content {
+      padding: clamp(22px, 4vw, 40px);
+    }
+
+    p {
+      margin: 0 0 16px;
+      font-size: 17px;
+    }
+
+    ul,
+    ol {
+      margin: 0 0 18px;
+      padding-left: 1.35em;
+    }
+
+    li {
+      margin: 7px 0;
+      font-size: 17px;
+    }
+
+    .callout {
+      margin: 20px 0;
+      padding: 18px 20px;
+      border: 4px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-size: 18px;
+      font-weight: 900;
+      line-height: 1.45;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin: 20px 0;
+    }
+
+    .tile {
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 7px 7px 0 var(--ink);
+    }
+
+    .tile h3 {
+      margin: 0;
+      padding: 10px 14px 8px;
+      border-bottom: 4px solid var(--ink);
+      background: var(--accent);
+      font-size: 20px;
+      font-weight: 900;
+      line-height: 1.22;
+    }
+
+    .tile div {
+      padding: 14px 16px 16px;
+    }
+
+    .tile p,
+    .tile li {
+      font-size: 16px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(130px, 1fr));
+      gap: 10px;
+      margin: 24px 0 10px;
+      overflow-x: auto;
+      padding-bottom: 8px;
+    }
+
+    .step {
+      min-width: 130px;
+      border: 4px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+
+    .step b {
+      display: block;
+      padding: 8px 10px;
+      border-bottom: 4px solid var(--ink);
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.1;
+    }
+
+    .step span {
+      display: block;
+      padding: 12px 10px 14px;
+      font-size: 15px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    code,
+    pre {
+      font-family: "Times New Roman", Georgia, serif;
+    }
+
+    code {
+      padding: 1px 5px;
+      border: 2px solid var(--ink);
+      background: var(--panel);
+      color: var(--ink);
+      font-weight: 900;
+    }
+
+    pre {
+      margin: 18px 0;
+      padding: 18px;
+      overflow-x: auto;
+      border: 4px solid var(--ink);
+      background: var(--bg);
+      color: var(--paper);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-size: 15px;
+      line-height: 1.45;
+      white-space: pre;
+    }
+
+    pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font-weight: 700;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border: 3px solid var(--ink);
+      vertical-align: top;
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    th {
+      background: var(--accent);
+      text-align: left;
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .footer {
+      margin-top: 44px;
+      padding: 20px 22px;
+      border: 5px solid var(--ink);
+      background: var(--panel);
+      color: var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    @media (max-width: 860px) {
+      .page {
+        width: min(100% - 22px, 680px);
+        padding-top: 18px;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+        min-height: auto;
+        box-shadow: 10px 10px 0 var(--ink);
+      }
+
+      .hero::before {
+        inset: -18% 42% 52% -16%;
+      }
+
+      .hero::after {
+        top: 58%;
+        right: -24%;
+        width: 58%;
+        height: 52%;
+      }
+
+      .machine {
+        min-height: 430px;
+        margin: 0 18px 24px;
+      }
+
+      .diagram {
+        inset: 66px 20px 28px;
+        gap: 16px;
+      }
+
+      .node {
+        grid-template-columns: 58px 1fr;
+        min-height: 94px;
+      }
+
+      .node strong {
+        font-size: 21px;
+      }
+
+      .node span {
+        padding: 10px 12px;
+      }
+
+      .section {
+        box-shadow: 9px 9px 0 var(--ink);
+      }
+
+      .section-header {
+        grid-template-columns: 64px 1fr;
+      }
+
+      .section-no {
+        min-height: 70px;
+        font-size: 25px;
+      }
+
+      .section-title {
+        padding: 14px 16px 12px;
+      }
+
+      .content {
+        padding: 20px 16px 24px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .flow {
+        grid-template-columns: repeat(5, 150px);
+      }
+
+      p,
+      li {
+        font-size: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="title-block">
+        <span class="kicker">V2 / Keystone Compatibility Upload</span>
+        <h1>移动端上传<br>控制面接管</h1>
+        <p class="subtitle">Keystone 扮演 data-platform 的 SDK-facing control plane，文件由 ego-portal-lite 经 data-sdk 直传阿里云 OSS。</p>
+      </div>
+      <div class="machine" aria-label="兼容链路示意">
+        <div class="pulse"></div>
+        <div class="diagram">
+          <div class="node">
+            <strong>01</strong>
+            <span>ego-portal-lite<br><small>仅切换 base URL，不改变上传业务逻辑</small></span>
+          </div>
+          <div class="node">
+            <strong>02</strong>
+            <span>Keystone gRPC shim<br><small>Auth / Gateway / DeviceInit 三个端口兼容 data-sdk</small></span>
+          </div>
+          <div class="node">
+            <strong>03</strong>
+            <span>Aliyun OSS<br><small>Keystone 发 STS，iOS SDK 直接写对象</small></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">00</div>
+        <div class="section-title">
+          <h2>核心判断</h2>
+          <p>本设计解决的核心矛盾是：尽量不改变 ego-portal-lite 和 data-sdk，同时让 Keystone 接住上传控制面。</p>
+        </div>
+      </div>
+      <div class="content">
+        <div class="callout">
+          方案 A 的成功定义：文件实际落在阿里云 OSS；Keystone 负责发放上传会话、签发临时 STS、接收 CompleteUpload，并记录可追踪日志。
+        </div>
+        <p>这不是把文件写入 Keystone 当前 MinIO/S3 的方案。data-sdk 的数据面使用 AlibabaCloudOSS Swift SDK，第一版不改 SDK，因此 Keystone 不能把 MinIO 当成目标数据面。Keystone 在本方案中是 data-platform SDK-facing gRPC API 的兼容实现。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">01</div>
+        <div class="section-title">
+          <h2>背景与问题</h2>
+          <p>ego-portal-lite 已经集成 data-sdk；Keystone 现有上传链路面向 axon_transfer 和 MinIO，两者协议不同。</p>
+        </div>
+      </div>
+      <div class="content">
+        <div class="grid">
+          <div class="tile">
+            <h3>现有移动端链路</h3>
+            <div>
+              <ul>
+                <li>App 调用 <code>QiongcheDataGatewaySDK.saveConfigAndInit</code> 完成设备初始化。</li>
+                <li>App 创建 <code>DataGatewayClient.fromArchebaseConfig</code>。</li>
+                <li>App 调用 <code>client.uploadEvents(request)</code> 上传 <code>capture.mcap</code>。</li>
+                <li>控制面是 gRPC；数据面是 Alibaba OSS SDK。</li>
+              </ul>
+            </div>
+          </div>
+          <div class="tile">
+            <h3>现有 Keystone 链路</h3>
+            <div>
+              <ul>
+                <li>Keystone 通过 WebSocket 通知 <code>axon_transfer</code>。</li>
+                <li><code>axon_transfer</code> 上传文件到 MinIO/S3。</li>
+                <li>Keystone 校验上传对象后推进 task 状态。</li>
+                <li>这条链路不是 data-sdk 期望的 public gRPC control plane。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <p>因此，第一版不尝试改造 Keystone 现有 Axon 上传链路，也不让 data-sdk 写 Keystone REST 接口；而是在 Keystone 里增加一个隔离的兼容层。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">02</div>
+        <div class="section-title">
+          <h2>目标与非目标</h2>
+          <p>范围必须收紧：先让链路可运行、可观察、可验收，再决定是否产品化。</p>
+        </div>
+      </div>
+      <div class="content">
+        <table>
+          <thead>
+            <tr>
+              <th>类型</th>
+              <th>内容</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>目标</td>
+              <td>Keystone 监听 data-sdk 需要的三个 gRPC 端口：<code>50051</code>、<code>50053</code>、<code>50057</code>。</td>
+            </tr>
+            <tr>
+              <td>目标</td>
+              <td>Keystone 用阿里云 STS <code>AssumeRole</code> 生成临时 OSS 上传凭证，并返回给 iOS SDK。</td>
+            </tr>
+            <tr>
+              <td>目标</td>
+              <td>ego-portal-lite 只改 base URL；业务上传逻辑和 data-sdk 不改。</td>
+            </tr>
+            <tr>
+              <td>目标</td>
+              <td>Keystone 收到 <code>CompleteUpload</code> 后打印完整非敏感 metadata 日志。</td>
+            </tr>
+            <tr>
+              <td>非目标</td>
+              <td>不把对象落到 Keystone MinIO；不改 data-sdk 数据面；不接入 Keystone 现有 task 表。</td>
+            </tr>
+            <tr>
+              <td>非目标</td>
+              <td>第一版不做 TLS、不做入库、不做 OSS HeadObject 校验、不做跨进程持久化恢复。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">03</div>
+        <div class="section-title">
+          <h2>方案总览</h2>
+          <p>Keystone 新增一个独立兼容包，向外呈现 data-platform 的 SDK-facing API。</p>
+        </div>
+      </div>
+      <div class="content">
+        <div class="flow" aria-label="上传流程">
+          <div class="step"><b>InitDevice</b><span>App 通过 50057 初始化设备，Keystone 返回 dummy api_key 和 tags。</span></div>
+          <div class="step"><b>Exchange</b><span>SDK 通过 50051 换 token，Keystone 直接放行。</span></div>
+          <div class="step"><b>Create</b><span>SDK 通过 50053 创建 logical upload，Keystone 生成 object key。</span></div>
+          <div class="step"><b>STS</b><span>Keystone AssumeRole，返回 OSS 临时凭证。</span></div>
+          <div class="step"><b>Complete</b><span>iOS 直传 OSS 后回调 Keystone 完成上传。</span></div>
+        </div>
+
+        <pre><code>ego-portal-lite
+  -> DeviceInitService.InitDevice        :50057
+  -> AuthService.ExchangeCredential      :50051
+  -> DataGatewayService.CreateLogicalUpload :50053
+  -> AlibabaCloudOSS multipart/put object
+  -> DataGatewayService.CompleteUpload   :50053</code></pre>
+
+        <p>Keystone 兼容层只通过 `main.go` 启停，与现有 Axon transfer、MinIO、REST API 低耦合。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">04</div>
+        <div class="section-title">
+          <h2>模块边界</h2>
+          <p>兼容层作为独立 POC 包存在，避免污染 Keystone 当前上传模型。</p>
+        </div>
+      </div>
+      <div class="content">
+        <pre><code>keystone/internal/services/dgwcompat/
+  config.go
+  server.go
+  auth_service.go
+  device_init_service.go
+  gateway_service.go
+  sts_client.go
+  object_key.go</code></pre>
+
+        <table>
+          <thead>
+            <tr>
+              <th>文件</th>
+              <th>职责</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>config.go</code></td>
+              <td>从环境变量读取 compat 配置，不接 Keystone 全局 config loader。</td>
+            </tr>
+            <tr>
+              <td><code>server.go</code></td>
+              <td>启动和关闭三个 plaintext gRPC server。</td>
+            </tr>
+            <tr>
+              <td><code>auth_service.go</code></td>
+              <td>实现认证放行，返回 dummy bearer token。</td>
+            </tr>
+            <tr>
+              <td><code>device_init_service.go</code></td>
+              <td>实现设备初始化，返回 dummy api_key 和基础 tags。</td>
+            </tr>
+            <tr>
+              <td><code>gateway_service.go</code></td>
+              <td>管理内存 upload session，处理 create/reissue/recovery/abort/complete。</td>
+            </tr>
+            <tr>
+              <td><code>sts_client.go</code></td>
+              <td>手写最小阿里云 STS AssumeRole HTTP 调用；另支持 mock STS。</td>
+            </tr>
+            <tr>
+              <td><code>object_key.go</code></td>
+              <td>生成安全、可读、低冲突的 OSS object key。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">05</div>
+        <div class="section-title">
+          <h2>gRPC 合约</h2>
+          <p>Keystone 需要补齐 DeviceInitService 的 Go 生成代码，并实现 data-sdk 会调用的方法。</p>
+        </div>
+      </div>
+      <div class="content">
+        <div class="grid">
+          <div class="tile">
+            <h3>AuthService :50051</h3>
+            <div>
+              <p><code>ExchangeCredential</code> 接受任意 credential，返回非空 access token、token type、过期时间。</p>
+            </div>
+          </div>
+          <div class="tile">
+            <h3>DeviceInitService :50057</h3>
+            <div>
+              <p><code>InitDevice</code> 和 <code>ReinitDevice</code> 都返回 dummy api_key。tags 至少包含 <code>device_id</code> 和 <code>source</code>。</p>
+            </div>
+          </div>
+          <div class="tile">
+            <h3>DataGatewayService :50053</h3>
+            <div>
+              <p><code>CreateLogicalUpload</code> 创建内存 session，生成 OSS key，返回 STS 凭证。</p>
+            </div>
+          </div>
+          <div class="tile">
+            <h3>Recovery RPC</h3>
+            <div>
+              <p><code>GetUploadRecovery</code>、<code>ReissueUploadCredentials</code>、<code>AbortUpload</code> 做最小兼容，支持进程内恢复。</p>
+            </div>
+          </div>
+        </div>
+
+        <pre><code>UploadCredentials {
+  bucket: OSS_BUCKET
+  endpoint: OSS_PUBLIC_ENDPOINT
+  object_key: ego-portal-lite/{device_id}/{capture_id}/{upload_id}/capture.mcap
+  sts_access_key_id: AssumeRole result
+  sts_access_key_secret: AssumeRole result
+  sts_security_token: AssumeRole result
+  sts_expire_at_unix: AssumeRole expiration
+  part_size_bytes: KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES
+}</code></pre>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">06</div>
+        <div class="section-title">
+          <h2>配置与部署</h2>
+          <p>POC 重新部署专用 OSS bucket 和 RAM Role，不复用 data-platform 现有云资源。</p>
+        </div>
+      </div>
+      <div class="content">
+        <pre><code>KEYSTONE_DGW_COMPAT_ENABLED=true
+KEYSTONE_DGW_AUTH_ADDR=:50051
+KEYSTONE_DGW_GATEWAY_ADDR=:50053
+KEYSTONE_DGW_DEVICE_INIT_ADDR=:50057
+
+KEYSTONE_DGW_OSS_BUCKET=archebase-keystone-poc
+KEYSTONE_DGW_OSS_PUBLIC_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com
+KEYSTONE_DGW_OSS_KEY_PREFIX=ego-portal-lite
+KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES=8388608
+
+KEYSTONE_DGW_STS_ROLE_ARN=acs:ram::ACCOUNT_ID:role/keystone-ego-upload-role
+KEYSTONE_DGW_STS_SESSION_TTL_SECONDS=3600
+KEYSTONE_DGW_ALIBABA_CLOUD_ACCESS_KEY_ID=...
+KEYSTONE_DGW_ALIBABA_CLOUD_ACCESS_KEY_SECRET=...
+KEYSTONE_DGW_ALIBABA_CLOUD_STS_REGION=cn-shanghai
+KEYSTONE_DGW_ALIBABA_CLOUD_STS_ENDPOINT=https://sts.cn-shanghai.aliyuncs.com
+
+KEYSTONE_DGW_MOCK_STS=false</code></pre>
+
+        <p>第一版使用 plaintext gRPC。ego-portal-lite 的 base URL 使用 <code>http</code> scheme，SDK 会根据 scheme 选择明文连接，并按固定端口访问三个服务。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">07</div>
+        <div class="section-title">
+          <h2>对象命名与状态</h2>
+          <p>object key 由 Keystone 生成，不信任客户端路径；状态只保存在进程内。</p>
+        </div>
+      </div>
+      <div class="content">
+        <pre><code>ego-portal-lite/{device_id}/{capture_id}/{upload_id}/capture.mcap</code></pre>
+
+        <ul>
+          <li><code>device_id</code> 从 <code>client_hints["device_id"]</code> 取，缺失为 <code>unknown-device</code>。</li>
+          <li><code>capture_id</code> 从 <code>client_hints["capture_id"]</code> 取，缺失为 <code>unknown-capture</code>。</li>
+          <li><code>upload_id</code> 使用 UUID，避免覆盖。</li>
+          <li>path segment 只保留字母、数字、<code>-</code>、<code>_</code>、<code>.</code>；其他字符替换成 <code>_</code>。</li>
+          <li>第一版重启丢失 session 可以接受；客户端会重新上传。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">08</div>
+        <div class="section-title">
+          <h2>权衡与风险</h2>
+          <p>本方案有意牺牲产品化完整性，换取最低改动的链路验证。</p>
+        </div>
+      </div>
+      <div class="content">
+        <table>
+          <thead>
+            <tr>
+              <th>风险</th>
+              <th>影响</th>
+              <th>缓解</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>不入库</td>
+              <td>Keystone 重启后无法恢复 upload session。</td>
+              <td>第一版接受；后续再设计 upload_attempt 表或复用正式数据模型。</td>
+            </tr>
+            <tr>
+              <td>不 HeadObject</td>
+              <td>Keystone 无法判断对象是否真的存在。</td>
+              <td>验收时人工在 OSS 控制台或 ossutil 检查；日志作为控制面证据。</td>
+            </tr>
+            <tr>
+              <td>plaintext gRPC</td>
+              <td>不适合公网长期运行。</td>
+              <td>仅用于 POC；链路通过后补 TLS、证书、SNI 和 iOS 信任链。</td>
+            </tr>
+            <tr>
+              <td>手写 STS 客户端</td>
+              <td>签名和 XML 解析可能出错。</td>
+              <td>参考 data-platform Rust 实现和 Keystone 现有 OSS 签名代码；补单元测试。</td>
+            </tr>
+            <tr>
+              <td>专用 RAM 权限过宽</td>
+              <td>POC bug 可能写入非预期路径。</td>
+              <td>Role policy 限制到专用 bucket 和 <code>ego-portal-lite/*</code> prefix。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">09</div>
+        <div class="section-title">
+          <h2>实施计划</h2>
+          <p>按垂直链路拆分，先让 gRPC 合约打通，再接真实 OSS STS。</p>
+        </div>
+      </div>
+      <div class="content">
+        <ol>
+          <li>同步 proto：把 <code>DeviceInitService</code> 相关定义加入 Keystone proto，并运行 <code>make proto</code>。</li>
+          <li>新增 <code>dgwcompat</code> 包：实现配置读取、三个 gRPC server、内存 session store。</li>
+          <li>实现 mock STS：先用本地测试覆盖 <code>CreateLogicalUpload</code> 和 <code>ReissueUploadCredentials</code>。</li>
+          <li>实现真实 STS：手写最小 <code>AssumeRole</code>，解析 XML 凭证和 expiration。</li>
+          <li>接入 <code>main.go</code>：按 <code>KEYSTONE_DGW_COMPAT_ENABLED</code> 启停 compat server。</li>
+          <li>小改 ego-portal-lite：只切换 <code>DataGatewayUploadService.endpoint</code> 到 Keystone POC host。</li>
+          <li>联调验收：iOS 端收到 completed，Keystone 日志出现 completion，OSS 中能看到对象且大小一致。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <div class="section-no">10</div>
+        <div class="section-title">
+          <h2>验收标准</h2>
+          <p>第一版验收以端到端上传完成和 OSS 可见对象为准。</p>
+        </div>
+      </div>
+      <div class="content">
+        <ul>
+          <li>ego-portal-lite 上传流程不改调用方式，只替换 base URL。</li>
+          <li>iOS 端 <code>uploadEvents</code> 收到 <code>.completed</code>。</li>
+          <li>Keystone 日志出现 <code>CompleteUpload</code> 成功记录，包含 upload id、logical upload id、bucket、object key、file size、capture id、task id、device id。</li>
+          <li>日志不包含 STS secret、STS token、长期 AK/SK。</li>
+          <li>OSS 控制台或 ossutil 可见对象，key 符合约定，size 与本地 <code>capture.mcap</code> 一致。</li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="footer">
+      决议状态：方案 A 已收敛。文件落阿里云 OSS；Keystone 实现兼容控制面；不改 data-sdk；第一版不入库、不做 HeadObject、不做 TLS。
+    </div>
+  </main>
+</body>
+</html>

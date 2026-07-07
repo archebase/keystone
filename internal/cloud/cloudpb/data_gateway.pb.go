@@ -251,6 +251,178 @@ func (DataGatewayErrorCode) EnumDescriptor() ([]byte, []int) {
 	return file_data_gateway_proto_rawDescGZIP(), []int{3}
 }
 
+type InitDeviceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId      string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	SdkVersion    string                 `protobuf:"bytes,2,opt,name=sdk_version,json=sdkVersion,proto3" json:"sdk_version,omitempty"`
+	Platform      string                 `protobuf:"bytes,3,opt,name=platform,proto3" json:"platform,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InitDeviceRequest) Reset() {
+	*x = InitDeviceRequest{}
+	mi := &file_data_gateway_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InitDeviceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InitDeviceRequest) ProtoMessage() {}
+
+func (x *InitDeviceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_data_gateway_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InitDeviceRequest.ProtoReflect.Descriptor instead.
+func (*InitDeviceRequest) Descriptor() ([]byte, []int) {
+	return file_data_gateway_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *InitDeviceRequest) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *InitDeviceRequest) GetSdkVersion() string {
+	if x != nil {
+		return x.SdkVersion
+	}
+	return ""
+}
+
+func (x *InitDeviceRequest) GetPlatform() string {
+	if x != nil {
+		return x.Platform
+	}
+	return ""
+}
+
+type ReinitDeviceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId      string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	SdkVersion    string                 `protobuf:"bytes,2,opt,name=sdk_version,json=sdkVersion,proto3" json:"sdk_version,omitempty"`
+	Platform      string                 `protobuf:"bytes,3,opt,name=platform,proto3" json:"platform,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReinitDeviceRequest) Reset() {
+	*x = ReinitDeviceRequest{}
+	mi := &file_data_gateway_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReinitDeviceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReinitDeviceRequest) ProtoMessage() {}
+
+func (x *ReinitDeviceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_data_gateway_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReinitDeviceRequest.ProtoReflect.Descriptor instead.
+func (*ReinitDeviceRequest) Descriptor() ([]byte, []int) {
+	return file_data_gateway_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ReinitDeviceRequest) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *ReinitDeviceRequest) GetSdkVersion() string {
+	if x != nil {
+		return x.SdkVersion
+	}
+	return ""
+}
+
+func (x *ReinitDeviceRequest) GetPlatform() string {
+	if x != nil {
+		return x.Platform
+	}
+	return ""
+}
+
+type InitDeviceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ApiKey        string                 `protobuf:"bytes,1,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
+	Tags          map[string]string      `protobuf:"bytes,2,rep,name=tags,proto3" json:"tags,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InitDeviceResponse) Reset() {
+	*x = InitDeviceResponse{}
+	mi := &file_data_gateway_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InitDeviceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InitDeviceResponse) ProtoMessage() {}
+
+func (x *InitDeviceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_data_gateway_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InitDeviceResponse.ProtoReflect.Descriptor instead.
+func (*InitDeviceResponse) Descriptor() ([]byte, []int) {
+	return file_data_gateway_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *InitDeviceResponse) GetApiKey() string {
+	if x != nil {
+		return x.ApiKey
+	}
+	return ""
+}
+
+func (x *InitDeviceResponse) GetTags() map[string]string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
 type UploadCredentials struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	Bucket             string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
@@ -267,7 +439,7 @@ type UploadCredentials struct {
 
 func (x *UploadCredentials) Reset() {
 	*x = UploadCredentials{}
-	mi := &file_data_gateway_proto_msgTypes[0]
+	mi := &file_data_gateway_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -279,7 +451,7 @@ func (x *UploadCredentials) String() string {
 func (*UploadCredentials) ProtoMessage() {}
 
 func (x *UploadCredentials) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[0]
+	mi := &file_data_gateway_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -292,7 +464,7 @@ func (x *UploadCredentials) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadCredentials.ProtoReflect.Descriptor instead.
 func (*UploadCredentials) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{0}
+	return file_data_gateway_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *UploadCredentials) GetBucket() string {
@@ -361,7 +533,7 @@ type CreateLogicalUploadRequest struct {
 
 func (x *CreateLogicalUploadRequest) Reset() {
 	*x = CreateLogicalUploadRequest{}
-	mi := &file_data_gateway_proto_msgTypes[1]
+	mi := &file_data_gateway_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -373,7 +545,7 @@ func (x *CreateLogicalUploadRequest) String() string {
 func (*CreateLogicalUploadRequest) ProtoMessage() {}
 
 func (x *CreateLogicalUploadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[1]
+	mi := &file_data_gateway_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -386,7 +558,7 @@ func (x *CreateLogicalUploadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateLogicalUploadRequest.ProtoReflect.Descriptor instead.
 func (*CreateLogicalUploadRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{1}
+	return file_data_gateway_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CreateLogicalUploadRequest) GetClientHints() map[string]string {
@@ -414,7 +586,7 @@ type CreateLogicalUploadResponse struct {
 
 func (x *CreateLogicalUploadResponse) Reset() {
 	*x = CreateLogicalUploadResponse{}
-	mi := &file_data_gateway_proto_msgTypes[2]
+	mi := &file_data_gateway_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -426,7 +598,7 @@ func (x *CreateLogicalUploadResponse) String() string {
 func (*CreateLogicalUploadResponse) ProtoMessage() {}
 
 func (x *CreateLogicalUploadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[2]
+	mi := &file_data_gateway_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -439,7 +611,7 @@ func (x *CreateLogicalUploadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateLogicalUploadResponse.ProtoReflect.Descriptor instead.
 func (*CreateLogicalUploadResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{2}
+	return file_data_gateway_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CreateLogicalUploadResponse) GetLogicalUploadId() string {
@@ -472,7 +644,7 @@ type GetUploadRecoveryRequest struct {
 
 func (x *GetUploadRecoveryRequest) Reset() {
 	*x = GetUploadRecoveryRequest{}
-	mi := &file_data_gateway_proto_msgTypes[3]
+	mi := &file_data_gateway_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -484,7 +656,7 @@ func (x *GetUploadRecoveryRequest) String() string {
 func (*GetUploadRecoveryRequest) ProtoMessage() {}
 
 func (x *GetUploadRecoveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[3]
+	mi := &file_data_gateway_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -497,7 +669,7 @@ func (x *GetUploadRecoveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUploadRecoveryRequest.ProtoReflect.Descriptor instead.
 func (*GetUploadRecoveryRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{3}
+	return file_data_gateway_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GetUploadRecoveryRequest) GetLogicalUploadId() string {
@@ -529,7 +701,7 @@ type GetUploadRecoveryResponse struct {
 
 func (x *GetUploadRecoveryResponse) Reset() {
 	*x = GetUploadRecoveryResponse{}
-	mi := &file_data_gateway_proto_msgTypes[4]
+	mi := &file_data_gateway_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -541,7 +713,7 @@ func (x *GetUploadRecoveryResponse) String() string {
 func (*GetUploadRecoveryResponse) ProtoMessage() {}
 
 func (x *GetUploadRecoveryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[4]
+	mi := &file_data_gateway_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -554,7 +726,7 @@ func (x *GetUploadRecoveryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUploadRecoveryResponse.ProtoReflect.Descriptor instead.
 func (*GetUploadRecoveryResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{4}
+	return file_data_gateway_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetUploadRecoveryResponse) GetLogicalUploadId() string {
@@ -664,7 +836,7 @@ type ReissueUploadCredentialsRequest struct {
 
 func (x *ReissueUploadCredentialsRequest) Reset() {
 	*x = ReissueUploadCredentialsRequest{}
-	mi := &file_data_gateway_proto_msgTypes[5]
+	mi := &file_data_gateway_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -676,7 +848,7 @@ func (x *ReissueUploadCredentialsRequest) String() string {
 func (*ReissueUploadCredentialsRequest) ProtoMessage() {}
 
 func (x *ReissueUploadCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[5]
+	mi := &file_data_gateway_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -689,7 +861,7 @@ func (x *ReissueUploadCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReissueUploadCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*ReissueUploadCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{5}
+	return file_data_gateway_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ReissueUploadCredentialsRequest) GetUploadId() string {
@@ -710,7 +882,7 @@ type ReissueUploadCredentialsResponse struct {
 
 func (x *ReissueUploadCredentialsResponse) Reset() {
 	*x = ReissueUploadCredentialsResponse{}
-	mi := &file_data_gateway_proto_msgTypes[6]
+	mi := &file_data_gateway_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -722,7 +894,7 @@ func (x *ReissueUploadCredentialsResponse) String() string {
 func (*ReissueUploadCredentialsResponse) ProtoMessage() {}
 
 func (x *ReissueUploadCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[6]
+	mi := &file_data_gateway_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -735,7 +907,7 @@ func (x *ReissueUploadCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReissueUploadCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*ReissueUploadCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{6}
+	return file_data_gateway_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ReissueUploadCredentialsResponse) GetLogicalUploadId() string {
@@ -769,7 +941,7 @@ type AbortUploadRequest struct {
 
 func (x *AbortUploadRequest) Reset() {
 	*x = AbortUploadRequest{}
-	mi := &file_data_gateway_proto_msgTypes[7]
+	mi := &file_data_gateway_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -781,7 +953,7 @@ func (x *AbortUploadRequest) String() string {
 func (*AbortUploadRequest) ProtoMessage() {}
 
 func (x *AbortUploadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[7]
+	mi := &file_data_gateway_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -794,7 +966,7 @@ func (x *AbortUploadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortUploadRequest.ProtoReflect.Descriptor instead.
 func (*AbortUploadRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{7}
+	return file_data_gateway_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AbortUploadRequest) GetLogicalUploadId() string {
@@ -821,7 +993,7 @@ type AbortUploadResponse struct {
 
 func (x *AbortUploadResponse) Reset() {
 	*x = AbortUploadResponse{}
-	mi := &file_data_gateway_proto_msgTypes[8]
+	mi := &file_data_gateway_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -833,7 +1005,7 @@ func (x *AbortUploadResponse) String() string {
 func (*AbortUploadResponse) ProtoMessage() {}
 
 func (x *AbortUploadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[8]
+	mi := &file_data_gateway_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -846,7 +1018,7 @@ func (x *AbortUploadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortUploadResponse.ProtoReflect.Descriptor instead.
 func (*AbortUploadResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{8}
+	return file_data_gateway_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *AbortUploadResponse) GetLogicalUploadId() string {
@@ -877,7 +1049,7 @@ type CompleteUploadRequest struct {
 
 func (x *CompleteUploadRequest) Reset() {
 	*x = CompleteUploadRequest{}
-	mi := &file_data_gateway_proto_msgTypes[9]
+	mi := &file_data_gateway_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -889,7 +1061,7 @@ func (x *CompleteUploadRequest) String() string {
 func (*CompleteUploadRequest) ProtoMessage() {}
 
 func (x *CompleteUploadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[9]
+	mi := &file_data_gateway_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -902,7 +1074,7 @@ func (x *CompleteUploadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteUploadRequest.ProtoReflect.Descriptor instead.
 func (*CompleteUploadRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{9}
+	return file_data_gateway_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CompleteUploadRequest) GetUploadId() string {
@@ -955,7 +1127,7 @@ type CompleteUploadResponse struct {
 
 func (x *CompleteUploadResponse) Reset() {
 	*x = CompleteUploadResponse{}
-	mi := &file_data_gateway_proto_msgTypes[10]
+	mi := &file_data_gateway_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -967,7 +1139,7 @@ func (x *CompleteUploadResponse) String() string {
 func (*CompleteUploadResponse) ProtoMessage() {}
 
 func (x *CompleteUploadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[10]
+	mi := &file_data_gateway_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -980,7 +1152,7 @@ func (x *CompleteUploadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteUploadResponse.ProtoReflect.Descriptor instead.
 func (*CompleteUploadResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{10}
+	return file_data_gateway_proto_rawDescGZIP(), []int{13}
 }
 
 // Identifies an object within the configured OSS bucket.
@@ -996,7 +1168,7 @@ type StorageObject struct {
 
 func (x *StorageObject) Reset() {
 	*x = StorageObject{}
-	mi := &file_data_gateway_proto_msgTypes[11]
+	mi := &file_data_gateway_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1008,7 +1180,7 @@ func (x *StorageObject) String() string {
 func (*StorageObject) ProtoMessage() {}
 
 func (x *StorageObject) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[11]
+	mi := &file_data_gateway_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1021,7 +1193,7 @@ func (x *StorageObject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageObject.ProtoReflect.Descriptor instead.
 func (*StorageObject) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{11}
+	return file_data_gateway_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *StorageObject) GetBucket() string {
@@ -1053,7 +1225,7 @@ type PresignedOperation struct {
 
 func (x *PresignedOperation) Reset() {
 	*x = PresignedOperation{}
-	mi := &file_data_gateway_proto_msgTypes[12]
+	mi := &file_data_gateway_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1065,7 +1237,7 @@ func (x *PresignedOperation) String() string {
 func (*PresignedOperation) ProtoMessage() {}
 
 func (x *PresignedOperation) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[12]
+	mi := &file_data_gateway_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1078,7 +1250,7 @@ func (x *PresignedOperation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresignedOperation.ProtoReflect.Descriptor instead.
 func (*PresignedOperation) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{12}
+	return file_data_gateway_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *PresignedOperation) GetMethod() string {
@@ -1117,7 +1289,7 @@ type PresignObjectRequest struct {
 
 func (x *PresignObjectRequest) Reset() {
 	*x = PresignObjectRequest{}
-	mi := &file_data_gateway_proto_msgTypes[13]
+	mi := &file_data_gateway_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1129,7 +1301,7 @@ func (x *PresignObjectRequest) String() string {
 func (*PresignObjectRequest) ProtoMessage() {}
 
 func (x *PresignObjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[13]
+	mi := &file_data_gateway_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1142,7 +1314,7 @@ func (x *PresignObjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresignObjectRequest.ProtoReflect.Descriptor instead.
 func (*PresignObjectRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{13}
+	return file_data_gateway_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *PresignObjectRequest) GetObject() *StorageObject {
@@ -1183,7 +1355,7 @@ type PresignObjectResponse struct {
 
 func (x *PresignObjectResponse) Reset() {
 	*x = PresignObjectResponse{}
-	mi := &file_data_gateway_proto_msgTypes[14]
+	mi := &file_data_gateway_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1195,7 +1367,7 @@ func (x *PresignObjectResponse) String() string {
 func (*PresignObjectResponse) ProtoMessage() {}
 
 func (x *PresignObjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[14]
+	mi := &file_data_gateway_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1208,7 +1380,7 @@ func (x *PresignObjectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresignObjectResponse.ProtoReflect.Descriptor instead.
 func (*PresignObjectResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{14}
+	return file_data_gateway_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PresignObjectResponse) GetObject() *StorageObject {
@@ -1243,7 +1415,23 @@ var File_data_gateway_proto protoreflect.FileDescriptor
 
 const file_data_gateway_proto_rawDesc = "" +
 	"\n" +
-	"\x12data_gateway.proto\x12\x19archebase.data_gateway.v1\x1a\fcommon.proto\"\xc7\x02\n" +
+	"\x12data_gateway.proto\x12\x19archebase.data_gateway.v1\x1a\fcommon.proto\"m\n" +
+	"\x11InitDeviceRequest\x12\x1b\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1f\n" +
+	"\vsdk_version\x18\x02 \x01(\tR\n" +
+	"sdkVersion\x12\x1a\n" +
+	"\bplatform\x18\x03 \x01(\tR\bplatform\"o\n" +
+	"\x13ReinitDeviceRequest\x12\x1b\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1f\n" +
+	"\vsdk_version\x18\x02 \x01(\tR\n" +
+	"sdkVersion\x12\x1a\n" +
+	"\bplatform\x18\x03 \x01(\tR\bplatform\"\xb3\x01\n" +
+	"\x12InitDeviceResponse\x12\x17\n" +
+	"\aapi_key\x18\x01 \x01(\tR\x06apiKey\x12K\n" +
+	"\x04tags\x18\x02 \x03(\v27.archebase.data_gateway.v1.InitDeviceResponse.TagsEntryR\x04tags\x1a7\n" +
+	"\tTagsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc7\x02\n" +
 	"\x11UploadCredentials\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x1a\n" +
 	"\bendpoint\x18\x02 \x01(\tR\bendpoint\x12\x1d\n" +
@@ -1360,7 +1548,11 @@ const file_data_gateway_proto_rawDesc = "" +
 	"\x11GetUploadRecovery\x123.archebase.data_gateway.v1.GetUploadRecoveryRequest\x1a4.archebase.data_gateway.v1.GetUploadRecoveryResponse\x12\x93\x01\n" +
 	"\x18ReissueUploadCredentials\x12:.archebase.data_gateway.v1.ReissueUploadCredentialsRequest\x1a;.archebase.data_gateway.v1.ReissueUploadCredentialsResponse\x12l\n" +
 	"\vAbortUpload\x12-.archebase.data_gateway.v1.AbortUploadRequest\x1a..archebase.data_gateway.v1.AbortUploadResponse\x12u\n" +
-	"\x0eCompleteUpload\x120.archebase.data_gateway.v1.CompleteUploadRequest\x1a1.archebase.data_gateway.v1.CompleteUploadResponse2\x8c\x01\n" +
+	"\x0eCompleteUpload\x120.archebase.data_gateway.v1.CompleteUploadRequest\x1a1.archebase.data_gateway.v1.CompleteUploadResponse2\xed\x01\n" +
+	"\x11DeviceInitService\x12i\n" +
+	"\n" +
+	"InitDevice\x12,.archebase.data_gateway.v1.InitDeviceRequest\x1a-.archebase.data_gateway.v1.InitDeviceResponse\x12m\n" +
+	"\fReinitDevice\x12..archebase.data_gateway.v1.ReinitDeviceRequest\x1a-.archebase.data_gateway.v1.InitDeviceResponse2\x8c\x01\n" +
 	"\x16InternalStorageService\x12r\n" +
 	"\rPresignObject\x12/.archebase.data_gateway.v1.PresignObjectRequest\x1a0.archebase.data_gateway.v1.PresignObjectResponseB<Z:archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpbb\x06proto3"
 
@@ -1377,61 +1569,70 @@ func file_data_gateway_proto_rawDescGZIP() []byte {
 }
 
 var file_data_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_data_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_data_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_data_gateway_proto_goTypes = []any{
 	(UploadRecoveryAction)(0),                // 0: archebase.data_gateway.v1.UploadRecoveryAction
 	(LogicalUploadStatus)(0),                 // 1: archebase.data_gateway.v1.LogicalUploadStatus
 	(PresignAccessMode)(0),                   // 2: archebase.data_gateway.v1.PresignAccessMode
 	(DataGatewayErrorCode)(0),                // 3: archebase.data_gateway.v1.DataGatewayErrorCode
-	(*UploadCredentials)(nil),                // 4: archebase.data_gateway.v1.UploadCredentials
-	(*CreateLogicalUploadRequest)(nil),       // 5: archebase.data_gateway.v1.CreateLogicalUploadRequest
-	(*CreateLogicalUploadResponse)(nil),      // 6: archebase.data_gateway.v1.CreateLogicalUploadResponse
-	(*GetUploadRecoveryRequest)(nil),         // 7: archebase.data_gateway.v1.GetUploadRecoveryRequest
-	(*GetUploadRecoveryResponse)(nil),        // 8: archebase.data_gateway.v1.GetUploadRecoveryResponse
-	(*ReissueUploadCredentialsRequest)(nil),  // 9: archebase.data_gateway.v1.ReissueUploadCredentialsRequest
-	(*ReissueUploadCredentialsResponse)(nil), // 10: archebase.data_gateway.v1.ReissueUploadCredentialsResponse
-	(*AbortUploadRequest)(nil),               // 11: archebase.data_gateway.v1.AbortUploadRequest
-	(*AbortUploadResponse)(nil),              // 12: archebase.data_gateway.v1.AbortUploadResponse
-	(*CompleteUploadRequest)(nil),            // 13: archebase.data_gateway.v1.CompleteUploadRequest
-	(*CompleteUploadResponse)(nil),           // 14: archebase.data_gateway.v1.CompleteUploadResponse
-	(*StorageObject)(nil),                    // 15: archebase.data_gateway.v1.StorageObject
-	(*PresignedOperation)(nil),               // 16: archebase.data_gateway.v1.PresignedOperation
-	(*PresignObjectRequest)(nil),             // 17: archebase.data_gateway.v1.PresignObjectRequest
-	(*PresignObjectResponse)(nil),            // 18: archebase.data_gateway.v1.PresignObjectResponse
-	nil,                                      // 19: archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntry
-	nil,                                      // 20: archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntry
-	nil,                                      // 21: archebase.data_gateway.v1.PresignedOperation.HeadersEntry
+	(*InitDeviceRequest)(nil),                // 4: archebase.data_gateway.v1.InitDeviceRequest
+	(*ReinitDeviceRequest)(nil),              // 5: archebase.data_gateway.v1.ReinitDeviceRequest
+	(*InitDeviceResponse)(nil),               // 6: archebase.data_gateway.v1.InitDeviceResponse
+	(*UploadCredentials)(nil),                // 7: archebase.data_gateway.v1.UploadCredentials
+	(*CreateLogicalUploadRequest)(nil),       // 8: archebase.data_gateway.v1.CreateLogicalUploadRequest
+	(*CreateLogicalUploadResponse)(nil),      // 9: archebase.data_gateway.v1.CreateLogicalUploadResponse
+	(*GetUploadRecoveryRequest)(nil),         // 10: archebase.data_gateway.v1.GetUploadRecoveryRequest
+	(*GetUploadRecoveryResponse)(nil),        // 11: archebase.data_gateway.v1.GetUploadRecoveryResponse
+	(*ReissueUploadCredentialsRequest)(nil),  // 12: archebase.data_gateway.v1.ReissueUploadCredentialsRequest
+	(*ReissueUploadCredentialsResponse)(nil), // 13: archebase.data_gateway.v1.ReissueUploadCredentialsResponse
+	(*AbortUploadRequest)(nil),               // 14: archebase.data_gateway.v1.AbortUploadRequest
+	(*AbortUploadResponse)(nil),              // 15: archebase.data_gateway.v1.AbortUploadResponse
+	(*CompleteUploadRequest)(nil),            // 16: archebase.data_gateway.v1.CompleteUploadRequest
+	(*CompleteUploadResponse)(nil),           // 17: archebase.data_gateway.v1.CompleteUploadResponse
+	(*StorageObject)(nil),                    // 18: archebase.data_gateway.v1.StorageObject
+	(*PresignedOperation)(nil),               // 19: archebase.data_gateway.v1.PresignedOperation
+	(*PresignObjectRequest)(nil),             // 20: archebase.data_gateway.v1.PresignObjectRequest
+	(*PresignObjectResponse)(nil),            // 21: archebase.data_gateway.v1.PresignObjectResponse
+	nil,                                      // 22: archebase.data_gateway.v1.InitDeviceResponse.TagsEntry
+	nil,                                      // 23: archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntry
+	nil,                                      // 24: archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntry
+	nil,                                      // 25: archebase.data_gateway.v1.PresignedOperation.HeadersEntry
 }
 var file_data_gateway_proto_depIdxs = []int32{
-	19, // 0: archebase.data_gateway.v1.CreateLogicalUploadRequest.client_hints:type_name -> archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntry
-	4,  // 1: archebase.data_gateway.v1.CreateLogicalUploadResponse.credentials:type_name -> archebase.data_gateway.v1.UploadCredentials
-	1,  // 2: archebase.data_gateway.v1.GetUploadRecoveryResponse.logical_upload_status:type_name -> archebase.data_gateway.v1.LogicalUploadStatus
-	0,  // 3: archebase.data_gateway.v1.GetUploadRecoveryResponse.next_action:type_name -> archebase.data_gateway.v1.UploadRecoveryAction
-	4,  // 4: archebase.data_gateway.v1.ReissueUploadCredentialsResponse.credentials:type_name -> archebase.data_gateway.v1.UploadCredentials
-	20, // 5: archebase.data_gateway.v1.CompleteUploadRequest.raw_tags:type_name -> archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntry
-	21, // 6: archebase.data_gateway.v1.PresignedOperation.headers:type_name -> archebase.data_gateway.v1.PresignedOperation.HeadersEntry
-	15, // 7: archebase.data_gateway.v1.PresignObjectRequest.object:type_name -> archebase.data_gateway.v1.StorageObject
-	2,  // 8: archebase.data_gateway.v1.PresignObjectRequest.access_mode:type_name -> archebase.data_gateway.v1.PresignAccessMode
-	15, // 9: archebase.data_gateway.v1.PresignObjectResponse.object:type_name -> archebase.data_gateway.v1.StorageObject
-	16, // 10: archebase.data_gateway.v1.PresignObjectResponse.read:type_name -> archebase.data_gateway.v1.PresignedOperation
-	16, // 11: archebase.data_gateway.v1.PresignObjectResponse.write:type_name -> archebase.data_gateway.v1.PresignedOperation
-	5,  // 12: archebase.data_gateway.v1.DataGatewayService.CreateLogicalUpload:input_type -> archebase.data_gateway.v1.CreateLogicalUploadRequest
-	7,  // 13: archebase.data_gateway.v1.DataGatewayService.GetUploadRecovery:input_type -> archebase.data_gateway.v1.GetUploadRecoveryRequest
-	9,  // 14: archebase.data_gateway.v1.DataGatewayService.ReissueUploadCredentials:input_type -> archebase.data_gateway.v1.ReissueUploadCredentialsRequest
-	11, // 15: archebase.data_gateway.v1.DataGatewayService.AbortUpload:input_type -> archebase.data_gateway.v1.AbortUploadRequest
-	13, // 16: archebase.data_gateway.v1.DataGatewayService.CompleteUpload:input_type -> archebase.data_gateway.v1.CompleteUploadRequest
-	17, // 17: archebase.data_gateway.v1.InternalStorageService.PresignObject:input_type -> archebase.data_gateway.v1.PresignObjectRequest
-	6,  // 18: archebase.data_gateway.v1.DataGatewayService.CreateLogicalUpload:output_type -> archebase.data_gateway.v1.CreateLogicalUploadResponse
-	8,  // 19: archebase.data_gateway.v1.DataGatewayService.GetUploadRecovery:output_type -> archebase.data_gateway.v1.GetUploadRecoveryResponse
-	10, // 20: archebase.data_gateway.v1.DataGatewayService.ReissueUploadCredentials:output_type -> archebase.data_gateway.v1.ReissueUploadCredentialsResponse
-	12, // 21: archebase.data_gateway.v1.DataGatewayService.AbortUpload:output_type -> archebase.data_gateway.v1.AbortUploadResponse
-	14, // 22: archebase.data_gateway.v1.DataGatewayService.CompleteUpload:output_type -> archebase.data_gateway.v1.CompleteUploadResponse
-	18, // 23: archebase.data_gateway.v1.InternalStorageService.PresignObject:output_type -> archebase.data_gateway.v1.PresignObjectResponse
-	18, // [18:24] is the sub-list for method output_type
-	12, // [12:18] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	22, // 0: archebase.data_gateway.v1.InitDeviceResponse.tags:type_name -> archebase.data_gateway.v1.InitDeviceResponse.TagsEntry
+	23, // 1: archebase.data_gateway.v1.CreateLogicalUploadRequest.client_hints:type_name -> archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntry
+	7,  // 2: archebase.data_gateway.v1.CreateLogicalUploadResponse.credentials:type_name -> archebase.data_gateway.v1.UploadCredentials
+	1,  // 3: archebase.data_gateway.v1.GetUploadRecoveryResponse.logical_upload_status:type_name -> archebase.data_gateway.v1.LogicalUploadStatus
+	0,  // 4: archebase.data_gateway.v1.GetUploadRecoveryResponse.next_action:type_name -> archebase.data_gateway.v1.UploadRecoveryAction
+	7,  // 5: archebase.data_gateway.v1.ReissueUploadCredentialsResponse.credentials:type_name -> archebase.data_gateway.v1.UploadCredentials
+	24, // 6: archebase.data_gateway.v1.CompleteUploadRequest.raw_tags:type_name -> archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntry
+	25, // 7: archebase.data_gateway.v1.PresignedOperation.headers:type_name -> archebase.data_gateway.v1.PresignedOperation.HeadersEntry
+	18, // 8: archebase.data_gateway.v1.PresignObjectRequest.object:type_name -> archebase.data_gateway.v1.StorageObject
+	2,  // 9: archebase.data_gateway.v1.PresignObjectRequest.access_mode:type_name -> archebase.data_gateway.v1.PresignAccessMode
+	18, // 10: archebase.data_gateway.v1.PresignObjectResponse.object:type_name -> archebase.data_gateway.v1.StorageObject
+	19, // 11: archebase.data_gateway.v1.PresignObjectResponse.read:type_name -> archebase.data_gateway.v1.PresignedOperation
+	19, // 12: archebase.data_gateway.v1.PresignObjectResponse.write:type_name -> archebase.data_gateway.v1.PresignedOperation
+	8,  // 13: archebase.data_gateway.v1.DataGatewayService.CreateLogicalUpload:input_type -> archebase.data_gateway.v1.CreateLogicalUploadRequest
+	10, // 14: archebase.data_gateway.v1.DataGatewayService.GetUploadRecovery:input_type -> archebase.data_gateway.v1.GetUploadRecoveryRequest
+	12, // 15: archebase.data_gateway.v1.DataGatewayService.ReissueUploadCredentials:input_type -> archebase.data_gateway.v1.ReissueUploadCredentialsRequest
+	14, // 16: archebase.data_gateway.v1.DataGatewayService.AbortUpload:input_type -> archebase.data_gateway.v1.AbortUploadRequest
+	16, // 17: archebase.data_gateway.v1.DataGatewayService.CompleteUpload:input_type -> archebase.data_gateway.v1.CompleteUploadRequest
+	4,  // 18: archebase.data_gateway.v1.DeviceInitService.InitDevice:input_type -> archebase.data_gateway.v1.InitDeviceRequest
+	5,  // 19: archebase.data_gateway.v1.DeviceInitService.ReinitDevice:input_type -> archebase.data_gateway.v1.ReinitDeviceRequest
+	20, // 20: archebase.data_gateway.v1.InternalStorageService.PresignObject:input_type -> archebase.data_gateway.v1.PresignObjectRequest
+	9,  // 21: archebase.data_gateway.v1.DataGatewayService.CreateLogicalUpload:output_type -> archebase.data_gateway.v1.CreateLogicalUploadResponse
+	11, // 22: archebase.data_gateway.v1.DataGatewayService.GetUploadRecovery:output_type -> archebase.data_gateway.v1.GetUploadRecoveryResponse
+	13, // 23: archebase.data_gateway.v1.DataGatewayService.ReissueUploadCredentials:output_type -> archebase.data_gateway.v1.ReissueUploadCredentialsResponse
+	15, // 24: archebase.data_gateway.v1.DataGatewayService.AbortUpload:output_type -> archebase.data_gateway.v1.AbortUploadResponse
+	17, // 25: archebase.data_gateway.v1.DataGatewayService.CompleteUpload:output_type -> archebase.data_gateway.v1.CompleteUploadResponse
+	6,  // 26: archebase.data_gateway.v1.DeviceInitService.InitDevice:output_type -> archebase.data_gateway.v1.InitDeviceResponse
+	6,  // 27: archebase.data_gateway.v1.DeviceInitService.ReinitDevice:output_type -> archebase.data_gateway.v1.InitDeviceResponse
+	21, // 28: archebase.data_gateway.v1.InternalStorageService.PresignObject:output_type -> archebase.data_gateway.v1.PresignObjectResponse
+	21, // [21:29] is the sub-list for method output_type
+	13, // [13:21] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_data_gateway_proto_init() }
@@ -1446,9 +1647,9 @@ func file_data_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_data_gateway_proto_rawDesc), len(file_data_gateway_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   18,
+			NumMessages:   22,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   3,
 		},
 		GoTypes:           file_data_gateway_proto_goTypes,
 		DependencyIndexes: file_data_gateway_proto_depIdxs,

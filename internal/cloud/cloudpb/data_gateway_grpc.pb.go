@@ -273,6 +273,150 @@ var DataGatewayService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	DeviceInitService_InitDevice_FullMethodName   = "/archebase.data_gateway.v1.DeviceInitService/InitDevice"
+	DeviceInitService_ReinitDevice_FullMethodName = "/archebase.data_gateway.v1.DeviceInitService/ReinitDevice"
+)
+
+// DeviceInitServiceClient is the client API for DeviceInitService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// SDK-facing device initialization service exposed on the dedicated init port.
+type DeviceInitServiceClient interface {
+	InitDevice(ctx context.Context, in *InitDeviceRequest, opts ...grpc.CallOption) (*InitDeviceResponse, error)
+	ReinitDevice(ctx context.Context, in *ReinitDeviceRequest, opts ...grpc.CallOption) (*InitDeviceResponse, error)
+}
+
+type deviceInitServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewDeviceInitServiceClient(cc grpc.ClientConnInterface) DeviceInitServiceClient {
+	return &deviceInitServiceClient{cc}
+}
+
+func (c *deviceInitServiceClient) InitDevice(ctx context.Context, in *InitDeviceRequest, opts ...grpc.CallOption) (*InitDeviceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InitDeviceResponse)
+	err := c.cc.Invoke(ctx, DeviceInitService_InitDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *deviceInitServiceClient) ReinitDevice(ctx context.Context, in *ReinitDeviceRequest, opts ...grpc.CallOption) (*InitDeviceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InitDeviceResponse)
+	err := c.cc.Invoke(ctx, DeviceInitService_ReinitDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// DeviceInitServiceServer is the server API for DeviceInitService service.
+// All implementations must embed UnimplementedDeviceInitServiceServer
+// for forward compatibility.
+//
+// SDK-facing device initialization service exposed on the dedicated init port.
+type DeviceInitServiceServer interface {
+	InitDevice(context.Context, *InitDeviceRequest) (*InitDeviceResponse, error)
+	ReinitDevice(context.Context, *ReinitDeviceRequest) (*InitDeviceResponse, error)
+	mustEmbedUnimplementedDeviceInitServiceServer()
+}
+
+// UnimplementedDeviceInitServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedDeviceInitServiceServer struct{}
+
+func (UnimplementedDeviceInitServiceServer) InitDevice(context.Context, *InitDeviceRequest) (*InitDeviceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InitDevice not implemented")
+}
+func (UnimplementedDeviceInitServiceServer) ReinitDevice(context.Context, *ReinitDeviceRequest) (*InitDeviceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReinitDevice not implemented")
+}
+func (UnimplementedDeviceInitServiceServer) mustEmbedUnimplementedDeviceInitServiceServer() {}
+func (UnimplementedDeviceInitServiceServer) testEmbeddedByValue()                           {}
+
+// UnsafeDeviceInitServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to DeviceInitServiceServer will
+// result in compilation errors.
+type UnsafeDeviceInitServiceServer interface {
+	mustEmbedUnimplementedDeviceInitServiceServer()
+}
+
+func RegisterDeviceInitServiceServer(s grpc.ServiceRegistrar, srv DeviceInitServiceServer) {
+	// If the following call panics, it indicates UnimplementedDeviceInitServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&DeviceInitService_ServiceDesc, srv)
+}
+
+func _DeviceInitService_InitDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InitDeviceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeviceInitServiceServer).InitDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeviceInitService_InitDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeviceInitServiceServer).InitDevice(ctx, req.(*InitDeviceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeviceInitService_ReinitDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReinitDeviceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeviceInitServiceServer).ReinitDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeviceInitService_ReinitDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeviceInitServiceServer).ReinitDevice(ctx, req.(*ReinitDeviceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// DeviceInitService_ServiceDesc is the grpc.ServiceDesc for DeviceInitService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var DeviceInitService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "archebase.data_gateway.v1.DeviceInitService",
+	HandlerType: (*DeviceInitServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "InitDevice",
+			Handler:    _DeviceInitService_InitDevice_Handler,
+		},
+		{
+			MethodName: "ReinitDevice",
+			Handler:    _DeviceInitService_ReinitDevice_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "data_gateway.proto",
+}
+
+const (
 	InternalStorageService_PresignObject_FullMethodName = "/archebase.data_gateway.v1.InternalStorageService/PresignObject"
 )
 
