@@ -415,7 +415,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <h3>后续的连续技</h3>
             <ul>
               <li>PR-1B 已接入 Hilbert service identity bootstrap 和 workspace sync。</li>
-              <li>PR-1C 让 Synapse 使用全局 Workspace Selector 和只读状态页。</li>
+              <li>PR-1C 让 Synapse 使用只读 Workspace 状态页，暂不做全局 selector。</li>
               <li>PR-2 之后再迁移业务表 <code>organization_id -> workspace_id</code>。</li>
             </ul>
           </div>
@@ -437,7 +437,7 @@ SPDX-License-Identifier: MulanPSL-2.0
               <li>保留 <code>id=0</code> default workspace，支持未配置 Hilbert 时的本地闭环。</li>
               <li>禁止 default workspace 进入 Hilbert / 云同步。</li>
               <li>定义 PR-1B 的临时 bootstrap 与正式鉴权替换边界。</li>
-              <li>定义 Synapse 在 PR-1C 中的只读选择器行为。</li>
+              <li>定义 Synapse 在 PR-1C 中的只读状态页过渡行为。</li>
             </ul>
           </div>
           <div class="panel">
@@ -690,10 +690,10 @@ Future provider
           <li><code>src/api/organizations.js</code> 替换为 <code>src/api/workspaces.js</code>。</li>
           <li><code>/admin/organizations</code> 替换为 <code>/admin/workspaces</code>。</li>
           <li>删除组织管理表单，不提供 workspace 创建、编辑、删除控件。</li>
-          <li>新增全局 Workspace Selector，默认选第一个可上传 Hilbert workspace；没有 Hilbert workspace 时选择 default。</li>
+          <li>PR-1C 是过渡方案：不做全局 Workspace Selector，不做当前 workspace，不写 <code>localStorage</code>，不影响业务页面查询。</li>
           <li>新增只读 Workspace 状态页，展示 <code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code> 和手动同步按钮。</li>
-          <li>default workspace 可选，但必须标记“本地 / 不可云同步”。</li>
-          <li>admin 登录默认跳转从 <code>/admin/factories</code> 改为 <code>/admin/workspaces</code>。</li>
+          <li>default workspace 必须标记“本地 default / 不可云同步”，但不作为全局上下文。</li>
+          <li>admin 默认入口改为 <code>/admin/data-details</code>，<code>/admin/workspaces</code> 只作为状态页。</li>
         </ul>
       </div>
     </section>
@@ -729,7 +729,7 @@ Future provider
           <li>Hilbert 同步成功后，<code>GET /workspaces</code> 返回 default 加本地缓存的 Hilbert workspaces。</li>
           <li>Hilbert 后续失败时，<code>GET /workspaces</code> 仍返回上次缓存加 default；手动 sync 返回失败。</li>
           <li>Swagger 不暴露 workspace 创建、更新、删除接口。</li>
-          <li>Synapse selector 展示 default，但明确标记本地和不可云同步。</li>
+          <li>Synapse 只读状态页展示 default，并明确标记本地和不可云同步。</li>
           <li>cloud sync worker 和任何 Hilbert raw data / dataset 创建路径必须拒绝 <code>workspace_id=0</code>。</li>
           <li>云同步资格统一使用 <code>workspace_id != 0 && source='hilbert' && upload_enabled=true</code>。</li>
         </ul>
