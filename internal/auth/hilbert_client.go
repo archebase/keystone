@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	hilbertNoncePath = "/v1/console/nonce/generate"
-	hilbertLoginPath = "/v1/console/account/login"
+	hilbertNoncePath              = "/v1/console/nonce/generate"
+	hilbertLoginPath              = "/v1/console/account/login"
+	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
 
 	hilbertNonceKeyLengthBytes = 32
 	hilbertNonceIVLengthBytes  = 12
@@ -63,6 +64,32 @@ type HilbertAccount struct {
 type HilbertLoginResult struct {
 	// Account stores the Hilbert account that authenticated successfully.
 	Account HilbertAccount
+
+	sessionKey string
+}
+
+// NewHilbertLoginResult creates a Hilbert login result without exporting the bearer token field.
+func NewHilbertLoginResult(account HilbertAccount, sessionKey string) *HilbertLoginResult {
+	return &HilbertLoginResult{Account: account, sessionKey: sessionKey}
+}
+
+// SessionKey returns the bearer token Hilbert returned for subsequent API calls.
+func (r *HilbertLoginResult) SessionKey() string {
+	if r == nil {
+		return ""
+	}
+	return r.sessionKey
+}
+
+// HilbertWorkspace stores the Hilbert workspace projection Keystone caches locally.
+type HilbertWorkspace struct {
+	ID          int64      `json:"id"`
+	Name        string     `json:"name"`
+	Description *string    `json:"description"`
+	Admins      []string   `json:"admins"`
+	Members     []string   `json:"members"`
+	CreatedTime time.Time  `json:"createdTime"`
+	UpdatedTime *time.Time `json:"updatedTime"`
 }
 
 // HilbertClient authenticates collector credentials against the Hilbert backend.
@@ -71,17 +98,17 @@ type HilbertClient struct {
 	httpClient *http.Client
 }
 
-// NewHilbertClient creates a Hilbert authentication client from Keystone auth configuration.
-func NewHilbertClient(cfg *config.AuthConfig) *HilbertClient {
+// NewHilbertClient creates a Hilbert API client from Keystone Hilbert configuration.
+func NewHilbertClient(cfg *config.HilbertConfig) *HilbertClient {
 	if cfg == nil {
 		return &HilbertClient{httpClient: &http.Client{Timeout: 5 * time.Second}}
 	}
-	timeoutSeconds := cfg.HilbertTimeoutSeconds
+	timeoutSeconds := cfg.TimeoutSeconds
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 5
 	}
 	return &HilbertClient{
-		baseURL: strings.TrimRight(strings.TrimSpace(cfg.HilbertBaseURL), "/"),
+		baseURL: strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
 		httpClient: &http.Client{
 			Timeout: time.Duration(timeoutSeconds) * time.Second,
 		},
@@ -110,6 +137,31 @@ func (c *HilbertClient) Login(ctx context.Context, code string, password string)
 	}
 
 	return c.loginWithCipherDigest(ctx, code, nonceRecord.ID, cipherDigest)
+}
+
+// ListAvailableWorkspaces fetches workspaces available to the authenticated Hilbert session.
+func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context, sessionKey string) ([]HilbertWorkspace, error) {
+	if !c.Configured() {
+		return nil, ErrHilbertUnavailable
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertWorkspaceAvailablePath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create workspace list request", ErrHilbertUnavailable)
+	}
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+
+	var resp hilbertCommonResponse[[]HilbertWorkspace]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: workspace list response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return resp.Data, nil
 }
 
 type hilbertCommonResponse[T any] struct {
@@ -172,7 +224,7 @@ func (c *HilbertClient) loginWithCipherDigest(ctx context.Context, code string, 
 	if strings.TrimSpace(resp.Data.SessionKey) == "" {
 		return nil, fmt.Errorf("%w: missing session key", ErrHilbertUnavailable)
 	}
-	return &HilbertLoginResult{Account: resp.Data.Account}, nil
+	return NewHilbertLoginResult(resp.Data.Account, resp.Data.SessionKey), nil
 }
 
 func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {

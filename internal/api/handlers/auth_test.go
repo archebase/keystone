@@ -51,7 +51,7 @@ func TestAuthHandlerLoginWithHilbertSuccessIssuesKeystoneJWT(t *testing.T) {
 		t.Fatalf("unexpected login response: %#v", resp)
 	}
 
-	claims, err := auth.ParseToken(resp.AccessToken, testAuthConfig(hilbert.URL))
+	claims, err := auth.ParseToken(resp.AccessToken, testAuthConfig())
 	if err != nil {
 		t.Fatalf("parse token: %v", err)
 	}
@@ -181,7 +181,7 @@ func newTestHilbertServer(t *testing.T, behavior testHilbertBehavior) *httptest.
 func newTestAuthRouter(db *sqlx.DB, hilbertBaseURL string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	NewAuthHandler(db, testAuthConfig(hilbertBaseURL)).RegisterRoutes(router.Group("/api/v1"))
+	NewAuthHandler(db, testAuthConfig(), testHilbertConfig(hilbertBaseURL)).RegisterRoutes(router.Group("/api/v1"))
 	return router
 }
 
@@ -193,13 +193,18 @@ func performAuthLogin(router *gin.Engine, body string) *httptest.ResponseRecorde
 	return w
 }
 
-func testAuthConfig(hilbertBaseURL string) *config.AuthConfig {
+func testAuthConfig() *config.AuthConfig {
 	return &config.AuthConfig{
-		JWTSecret:             "test-jwt-secret-at-least-32-bytes-long",
-		Issuer:                "keystone-test",
-		JWTExpiryHours:        24,
-		HilbertBaseURL:        hilbertBaseURL,
-		HilbertTimeoutSeconds: 2,
+		JWTSecret:      "test-jwt-secret-at-least-32-bytes-long",
+		Issuer:         "keystone-test",
+		JWTExpiryHours: 24,
+	}
+}
+
+func testHilbertConfig(hilbertBaseURL string) *config.HilbertConfig {
+	return &config.HilbertConfig{
+		BaseURL:        hilbertBaseURL,
+		TimeoutSeconds: 2,
 	}
 }
 

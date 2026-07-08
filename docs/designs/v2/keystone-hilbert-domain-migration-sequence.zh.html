@@ -527,7 +527,7 @@ SPDX-License-Identifier: MulanPSL-2.0
                 <li>新增独立 <code>HilbertConfig</code> 和 Hilbert service identity provider。</li>
                 <li>启动时和手动触发时调用 <code>/workspace/list-available</code>，只 upsert，不删除缺失 workspace。</li>
                 <li>Workspace API 只提供 <code>GET /workspaces</code>、<code>GET /workspaces/:id</code>、<code>POST /workspaces/sync</code>。</li>
-                <li>Synapse 删除组织管理，新增全局 workspace selector 和只读状态页。</li>
+                <li>Synapse 删除组织管理，新增只读 Workspace 状态页，暂不做全局 selector。</li>
               </ul>
             </div>
           </article>
@@ -695,23 +695,25 @@ SPDX-License-Identifier: MulanPSL-2.0
                 不做正式 Keystone-Hilbert 鉴权；不处理 workspace 撤权策略。
               </td>
               <td>
-                <span class="badge hot">未完成</span>：
-                Hilbert 代码已确认登录、Bearer <code>sessionKey</code> 和 <code>list-available</code> 接口形态；
-                Keystone 尚无 <code>HilbertConfig</code>、service identity provider、workspace sync API 和事务 upsert。
+                <span class="badge">已完成</span>：
+                Keystone 已新增 <code>HilbertConfig</code>、Hilbert service identity provider、内存
+                <code>sessionKey</code>、启动 best-effort sync、<code>POST /workspaces/sync</code>
+                和事务化 Hilbert workspace upsert。
                 PR-1B 的 password bootstrap 是临时 provider，后续必须替换为 Hilbert 正式 Keystone 鉴权。
               </td>
             </tr>
             <tr>
               <td>PR-1C</td>
-              <td>Synapse Workspace Selector</td>
+              <td>Synapse Workspace Read-only Status</td>
               <td>
-                删除组织管理入口；新增全局 Workspace Selector 和只读 Workspace 状态页；
-                default 可选但标记本地 / 不可云同步，默认优先选择可上传 Hilbert workspace。
+                删除组织管理入口；新增只读 Workspace 状态页和手动同步入口；
+                default 标记本地 / 不可云同步，但不做全局 selector 或当前 workspace。
               </td>
-              <td>不改业务页面筛选参数；不提供 workspace 创建、编辑、删除表单；不自动迁移 default 数据。</td>
+              <td>不改业务页面筛选参数；不提供 workspace 创建、编辑、删除表单；不做 localStorage 上下文；不自动迁移 default 数据。</td>
               <td>
-                <span class="badge hot">未完成</span>：
-                后端 default workspace 的只读 GET API 已就绪；Synapse 仍需要按全局 selector / 只读状态页接入。
+                <span class="badge">已完成</span>：
+                Synapse 已删除 workspace CRUD 管理入口，<code>/admin/workspaces</code> 已改为只读状态页，
+                并接入手动 <code>POST /workspaces/sync</code>；admin 默认入口改为 <code>/admin/data-details</code>。
               </td>
             </tr>
             <tr>
@@ -770,7 +772,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         </table>
         <div class="callout">
           结合当前代码，PR-1A 已完成：default workspace 的后端基础能力已经落地，且不依赖 Hilbert。
-          PR-1B 再接 Hilbert service identity bootstrap；PR-1C 再让 Synapse 使用新的只读 selector。
+          PR-1B 已完成 Hilbert service identity bootstrap；PR-1C 再让 Synapse 使用只读 Workspace 状态页。
           Robot / workstation 会牵动设备注册、Axon、任务派发，是独立风险面，不应混入 PR-1。
         </div>
       </div>
@@ -788,9 +790,10 @@ SPDX-License-Identifier: MulanPSL-2.0
           <a href="./keystone-workspace-pr1-decision-lock.zh.html">PR-1 Workspace 来源规则决策锁定</a>。
         </p>
         <div class="callout">
-          当前实现进度：PR-1A 已完成。Keystone 后端已具备 <code>id=0</code> default workspace、
-          只读 <code>GET /workspaces</code> / <code>GET /workspaces/:id</code>、以及 V2 baseline schema 支撑。
-          <code>POST /workspaces/sync</code>、Hilbert service identity bootstrap 和 Synapse selector 仍属于 PR-1B / PR-1C。
+          当前实现进度：PR-1A / PR-1B 已完成。Keystone 后端已具备 <code>id=0</code> default workspace、
+          只读 <code>GET /workspaces</code> / <code>GET /workspaces/:id</code>、V2 baseline schema、
+          <code>POST /workspaces/sync</code>、Hilbert service identity bootstrap 和事务 upsert 支撑。
+          PR-1C 也已接入 Synapse 只读 Workspace 状态页和手动同步入口，但仍不引入全局 selector 或当前 workspace。
         </div>
         <table>
           <thead>
@@ -809,12 +812,12 @@ SPDX-License-Identifier: MulanPSL-2.0
             <tr>
               <td>PR-1B</td>
               <td>Hilbert workspace sync bootstrap：service identity provider、临时 password bootstrap、事务 upsert。</td>
-              <td><span class="badge hot">未完成</span></td>
+              <td><span class="badge">已完成</span></td>
             </tr>
             <tr>
               <td>PR-1C</td>
-              <td>Synapse workspace selector：删除组织管理入口，新增全局 selector 和只读状态页。</td>
-              <td><span class="badge hot">未完成</span></td>
+              <td>Synapse workspace 状态页：删除组织管理入口，新增只读状态页，暂不做全局 selector。</td>
+              <td><span class="badge">已完成</span></td>
             </tr>
           </tbody>
         </table>
@@ -863,7 +866,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <li>Hilbert 同步成功后，<code>GET /workspaces</code> 返回 default 加本地缓存的 Hilbert workspaces。</li>
           <li>Hilbert 后续失败时，<code>GET /workspaces</code> 仍返回上次缓存加 default；手动 sync 返回失败。</li>
           <li>Swagger 不暴露 workspace 创建、更新、删除接口。</li>
-          <li>Synapse selector 展示 default，但明确标记本地和不可云同步。</li>
+          <li>Synapse 只读状态页展示 default，并明确标记本地和不可云同步。</li>
         </ul>
         <h3>本地上传与云同步验收</h3>
         <ul>

@@ -22,6 +22,7 @@ type Config struct {
 	QA           QAConfig
 	Sync         SyncConfig
 	Auth         AuthConfig
+	Hilbert      HilbertConfig
 	Features     FeaturesConfig
 	Monitoring   MonitoringConfig
 	Resources    ResourceLimitsConfig
@@ -149,8 +150,14 @@ type AuthConfig struct {
 	AdminUsername         string // #nosec G101 -- admin account name loaded from env
 	AdminPassword         string // #nosec G101 -- admin password loaded from env; never logged
 	DashboardDisplayToken string // #nosec G101 -- optional long-lived dashboard display token loaded from env
-	HilbertBaseURL        string
-	HilbertTimeoutSeconds int
+}
+
+// HilbertConfig owns Hilbert endpoint and Keystone service identity bootstrap settings.
+type HilbertConfig struct {
+	BaseURL                string
+	TimeoutSeconds         int
+	ServiceAccountCode     string // #nosec G101 -- bootstrap account loaded from env
+	ServiceAccountPassword string // #nosec G101 -- bootstrap password loaded from env; never logged
 }
 
 // Load loads configuration from environment variables and defaults
@@ -220,8 +227,12 @@ func Load() (*Config, error) {
 			AdminUsername:         getEnv("KEYSTONE_ADMIN_USERNAME", ""),
 			AdminPassword:         getEnv("KEYSTONE_ADMIN_PASSWORD", ""),
 			DashboardDisplayToken: getEnv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", ""),
-			HilbertBaseURL:        getEnv("KEYSTONE_HILBERT_BASE_URL", ""),
-			HilbertTimeoutSeconds: getEnvInt("KEYSTONE_HILBERT_TIMEOUT_SECONDS", 5),
+		},
+		Hilbert: HilbertConfig{
+			BaseURL:                getEnv("KEYSTONE_HILBERT_BASE_URL", ""),
+			TimeoutSeconds:         getEnvInt("KEYSTONE_HILBERT_TIMEOUT_SECONDS", 5),
+			ServiceAccountCode:     getEnv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE", ""),
+			ServiceAccountPassword: getEnv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD", ""),
 		},
 		Features: FeaturesConfig{
 			StrataEnabled:  false,
@@ -289,6 +300,12 @@ func (c *Config) Validate() error {
 	adminPass := strings.TrimSpace(c.Auth.AdminPassword)
 	if (adminUser == "") != (adminPass == "") {
 		return fmt.Errorf("KEYSTONE_ADMIN_USERNAME and KEYSTONE_ADMIN_PASSWORD must both be set or both be empty")
+	}
+	c.Hilbert.BaseURL = strings.TrimRight(strings.TrimSpace(c.Hilbert.BaseURL), "/")
+	c.Hilbert.ServiceAccountCode = strings.TrimSpace(c.Hilbert.ServiceAccountCode)
+	c.Hilbert.ServiceAccountPassword = strings.TrimSpace(c.Hilbert.ServiceAccountPassword)
+	if c.Hilbert.TimeoutSeconds <= 0 {
+		c.Hilbert.TimeoutSeconds = 5
 	}
 	if c.Sync.Enabled {
 		c.Sync.DPConfigPath = strings.TrimSpace(c.Sync.DPConfigPath)

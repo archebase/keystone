@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
@@ -30,12 +31,17 @@ const (
 
 // WorkspaceHandler handles workspace related HTTP requests.
 type WorkspaceHandler struct {
-	db *sqlx.DB
+	db          *sqlx.DB
+	syncService *services.WorkspaceSyncService
 }
 
 // NewWorkspaceHandler creates a new WorkspaceHandler.
-func NewWorkspaceHandler(db *sqlx.DB) *WorkspaceHandler {
-	return &WorkspaceHandler{db: db}
+func NewWorkspaceHandler(db *sqlx.DB, syncService ...*services.WorkspaceSyncService) *WorkspaceHandler {
+	var service *services.WorkspaceSyncService
+	if len(syncService) > 0 {
+		service = syncService[0]
+	}
+	return &WorkspaceHandler{db: db, syncService: service}
 }
 
 // WorkspaceResponse represents a workspace in the response.
@@ -62,9 +68,17 @@ type WorkspaceListResponse struct {
 	HasPrev bool                `json:"hasPrev,omitempty"`
 }
 
+// WorkspaceSyncResponse represents a manual workspace sync result.
+type WorkspaceSyncResponse struct {
+	SyncedCount     int    `json:"synced_count"`
+	DefaultIncluded bool   `json:"default_included"`
+	LastSyncedAt    string `json:"last_synced_at"`
+}
+
 // RegisterRoutes registers workspace related routes.
 func (h *WorkspaceHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/workspaces", h.ListWorkspaces)
+	apiV1.POST("/workspaces/sync", h.SyncWorkspaces)
 	apiV1.GET("/workspaces/:id", h.GetWorkspace)
 }
 
@@ -213,6 +227,40 @@ func (h *WorkspaceHandler) GetWorkspace(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, workspaceResponseFromRow(workspace))
+}
+
+// SyncWorkspaces handles manual Hilbert workspace sync requests.
+//
+// @Summary      Sync workspaces from Hilbert
+// @Description  Logs in with Keystone's Hilbert service identity and transactionally upserts available Hilbert workspaces.
+// @Tags         workspaces
+// @Accept       json
+// @Produce      json
+// @Success      200 {object} WorkspaceSyncResponse
+// @Failure      503 {object} map[string]string
+// @Router       /workspaces/sync [post]
+func (h *WorkspaceHandler) SyncWorkspaces(c *gin.Context) {
+	if h.syncService == nil || !h.syncService.Configured() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace sync is not configured"})
+		return
+	}
+
+	result, err := h.syncService.Sync(c.Request.Context())
+	if err != nil {
+		if errors.Is(err, services.ErrWorkspaceSyncNotConfigured) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace sync is not configured"})
+			return
+		}
+		logger.Printf("[WORKSPACE] Hilbert workspace sync failed: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace sync failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, WorkspaceSyncResponse{
+		SyncedCount:     result.SyncedCount,
+		DefaultIncluded: result.DefaultIncluded,
+		LastSyncedAt:    result.LastSyncedAt.UTC().Format(time.RFC3339),
+	})
 }
 
 func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
