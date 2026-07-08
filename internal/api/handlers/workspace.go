@@ -19,6 +19,15 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+const (
+	defaultWorkspaceID          int64  = 0
+	defaultWorkspaceName        string = "Default Workspace"
+	defaultWorkspaceDescription string = "Local-only fallback workspace"
+
+	workspaceSourceDefault string = "default"
+	workspaceSourceHilbert string = "hilbert"
+)
+
 // WorkspaceHandler handles workspace related HTTP requests.
 type WorkspaceHandler struct {
 	db *sqlx.DB
@@ -31,12 +40,16 @@ func NewWorkspaceHandler(db *sqlx.DB) *WorkspaceHandler {
 
 // WorkspaceResponse represents a workspace in the response.
 type WorkspaceResponse struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Admins    []string `json:"admins"`
-	Members   []string `json:"members"`
-	CreatedAt string   `json:"created_at,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description,omitempty"`
+	Source        string   `json:"source"`
+	UploadEnabled bool     `json:"upload_enabled"`
+	Admins        []string `json:"admins"`
+	Members       []string `json:"members"`
+	LastSyncedAt  string   `json:"last_synced_at,omitempty"`
+	CreatedAt     string   `json:"created_at,omitempty"`
+	UpdatedAt     string   `json:"updated_at,omitempty"`
 }
 
 // WorkspaceListResponse represents the response for listing workspaces.
@@ -49,47 +62,34 @@ type WorkspaceListResponse struct {
 	HasPrev bool                `json:"hasPrev,omitempty"`
 }
 
-// CreateWorkspaceRequest represents the request body for creating a workspace.
-type CreateWorkspaceRequest struct {
-	Name    string   `json:"name"`
-	Admins  []string `json:"admins"`
-	Members []string `json:"members,omitempty"`
-}
-
-// UpdateWorkspaceRequest represents the request body for updating a workspace.
-type UpdateWorkspaceRequest struct {
-	Name    string    `json:"name,omitempty"`
-	Admins  *[]string `json:"admins,omitempty"`
-	Members *[]string `json:"members,omitempty"`
-}
-
 // RegisterRoutes registers workspace related routes.
 func (h *WorkspaceHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/workspaces", h.ListWorkspaces)
-	apiV1.POST("/workspaces", h.CreateWorkspace)
 	apiV1.GET("/workspaces/:id", h.GetWorkspace)
-	apiV1.PUT("/workspaces/:id", h.UpdateWorkspace)
-	apiV1.DELETE("/workspaces/:id", h.DeleteWorkspace)
 }
 
 // workspaceRow represents a workspace in the database.
 type workspaceRow struct {
-	ID         int64          `db:"id"`
-	Name       string         `db:"name"`
-	AdminsStr  string         `db:"admins_str"`
-	MembersStr sql.NullString `db:"members_str"`
-	CreatedAt  sql.NullTime   `db:"created_at"`
-	UpdatedAt  sql.NullTime   `db:"updated_at"`
+	ID            int64          `db:"id"`
+	Name          string         `db:"name"`
+	Description   sql.NullString `db:"description"`
+	Source        string         `db:"source"`
+	UploadEnabled bool           `db:"upload_enabled"`
+	AdminsStr     sql.NullString `db:"admins_str"`
+	MembersStr    sql.NullString `db:"members_str"`
+	LastSyncedAt  sql.NullTime   `db:"last_synced_at"`
+	CreatedAt     sql.NullTime   `db:"created_at"`
+	UpdatedAt     sql.NullTime   `db:"updated_at"`
 }
 
 // ListWorkspaces handles workspace listing requests.
 //
 // @Summary      List workspaces
-// @Description  Lists all workspaces with pagination
+// @Description  Lists locally cached workspaces with pagination. Keystone always ensures id=0 default workspace exists.
 // @Tags         workspaces
 // @Accept       json
 // @Produce      json
-// @Param        workspace_id query string false "Filter by workspace ID(s), comma-separated"
+// @Param        workspace_id query string false "Filter by workspace ID(s), comma-separated; 0 selects default workspace"
 // @Param        id           query string false "Alias of workspace_id"
 // @Param        keyword      query string false "Search by name"
 // @Param        q            query string false "Alias of keyword"
@@ -101,13 +101,17 @@ type workspaceRow struct {
 // @Failure      500 {object} map[string]string
 // @Router       /workspaces [get]
 func (h *WorkspaceHandler) ListWorkspaces(c *gin.Context) {
+	if !h.ensureDefaultWorkspace(c) {
+		return
+	}
+
 	pagination, err := ParsePagination(c)
 	if err != nil {
 		PaginationErrorResponse(c, err)
 		return
 	}
 
-	workspaceIDs, err := parsePositiveInt64List(firstNonEmptyQuery(c, "workspace_id", "id"), "workspace_id")
+	workspaceIDs, err := parseNonNegativeInt64List(firstNonEmptyQuery(c, "workspace_id", "id"), "workspace_id")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -127,13 +131,17 @@ func (h *WorkspaceHandler) ListWorkspaces(c *gin.Context) {
 		return
 	}
 
-	orderClause, orderArgs := keywordOrderBy(keyword, "w.id DESC", "w.name")
+	orderClause, orderArgs := keywordOrderBy(keyword, "w.id ASC", "w.name")
 	query := `
 		SELECT
 			w.id,
 			w.name,
+			w.description,
+			w.source,
+			w.upload_enabled,
 			w.admins_str,
 			w.members_str,
+			w.last_synced_at,
 			w.created_at,
 			w.updated_at
 		FROM workspaces w
@@ -169,7 +177,7 @@ func (h *WorkspaceHandler) ListWorkspaces(c *gin.Context) {
 // GetWorkspace handles getting a single workspace by ID.
 //
 // @Summary      Get workspace
-// @Description  Gets a workspace by ID
+// @Description  Gets a workspace by ID. ID 0 is Keystone's local-only default workspace.
 // @Tags         workspaces
 // @Accept       json
 // @Produce      json
@@ -180,6 +188,10 @@ func (h *WorkspaceHandler) ListWorkspaces(c *gin.Context) {
 // @Failure      500 {object} map[string]string
 // @Router       /workspaces/{id} [get]
 func (h *WorkspaceHandler) GetWorkspace(c *gin.Context) {
+	if !h.ensureDefaultWorkspace(c) {
+		return
+	}
+
 	id, ok := parseWorkspaceID(c)
 	if !ok {
 		return
@@ -187,7 +199,7 @@ func (h *WorkspaceHandler) GetWorkspace(c *gin.Context) {
 
 	var workspace workspaceRow
 	if err := h.db.Get(&workspace, `
-		SELECT id, name, admins_str, members_str, created_at, updated_at
+		SELECT id, name, description, source, upload_enabled, admins_str, members_str, last_synced_at, created_at, updated_at
 		FROM workspaces
 		WHERE id = ? AND deleted_at IS NULL
 	`, id); err != nil {
@@ -203,298 +215,119 @@ func (h *WorkspaceHandler) GetWorkspace(c *gin.Context) {
 	c.JSON(http.StatusOK, workspaceResponseFromRow(workspace))
 }
 
-// CreateWorkspace handles workspace creation requests.
-//
-// @Summary      Create workspace
-// @Description  Creates a new workspace. Workspace names must be unique among non-deleted rows.
-// @Tags         workspaces
-// @Accept       json
-// @Produce      json
-// @Param        body body CreateWorkspaceRequest true "Workspace payload"
-// @Success      201 {object} WorkspaceResponse
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Router       /workspaces [post]
-func (h *WorkspaceHandler) CreateWorkspace(c *gin.Context) {
-	var req CreateWorkspaceRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
+func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
+	var activeDefaultExists bool
+	if err := h.db.Get(&activeDefaultExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", defaultWorkspaceID); err != nil {
+		logger.Printf("[WORKSPACE] Failed to check default workspace: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ensure default workspace"})
+		return false
+	}
+	if activeDefaultExists {
+		return true
 	}
 
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-		return
-	}
-
-	admins, members, ok := normalizeWorkspacePeople(c, req.Admins, req.Members, true)
-	if !ok {
-		return
-	}
-
-	if !h.ensureWorkspaceNameAvailable(c, name, 0) {
-		return
-	}
-
-	membersStr := nullableHashWrappedString(members)
 	now := time.Now().UTC()
-
-	result, err := h.db.Exec(
-		`INSERT INTO workspaces (
-			name,
-			admins_str,
-			members_str,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?)`,
-		name,
-		joinHashWrappedString(admins),
-		membersStr,
+	result, err := h.db.Exec(`
+		UPDATE workspaces
+		SET
+			name = ?,
+			description = ?,
+			source = ?,
+			upload_enabled = ?,
+			admins_str = ?,
+			members_str = ?,
+			deleted_at = NULL,
+			updated_at = ?
+		WHERE id = ?
+	`,
+		defaultWorkspaceName,
+		defaultWorkspaceDescription,
+		workspaceSourceDefault,
+		false,
+		sql.NullString{},
+		sql.NullString{},
 		now,
-		now,
+		defaultWorkspaceID,
 	)
 	if err != nil {
-		logger.Printf("[WORKSPACE] Failed to insert workspace: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create workspace"})
-		return
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		logger.Printf("[WORKSPACE] Failed to fetch inserted id: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create workspace"})
-		return
-	}
-
-	workspace := workspaceRow{
-		ID:         id,
-		Name:       name,
-		AdminsStr:  joinHashWrappedString(admins),
-		MembersStr: membersStr,
-		CreatedAt:  sql.NullTime{Time: now, Valid: true},
-		UpdatedAt:  sql.NullTime{Time: now, Valid: true},
-	}
-	c.JSON(http.StatusCreated, workspaceResponseFromRow(workspace))
-}
-
-// UpdateWorkspace handles workspace update requests.
-//
-// @Summary      Update workspace
-// @Description  Updates an existing workspace. Workspace names must be unique among non-deleted rows.
-// @Tags         workspaces
-// @Accept       json
-// @Produce      json
-// @Param        id   path string                 true "Workspace ID"
-// @Param        body body UpdateWorkspaceRequest true "Workspace payload"
-// @Success      200 {object} WorkspaceResponse
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Router       /workspaces/{id} [put]
-func (h *WorkspaceHandler) UpdateWorkspace(c *gin.Context) {
-	id, ok := parseWorkspaceID(c)
-	if !ok {
-		return
-	}
-
-	var req UpdateWorkspaceRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-
-	var existing workspaceRow
-	if err := h.db.Get(&existing,
-		"SELECT id, name, admins_str, members_str, created_at, updated_at FROM workspaces WHERE id = ? AND deleted_at IS NULL",
-		id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-			return
-		}
-		logger.Printf("[WORKSPACE] Failed to query workspace: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workspace"})
-		return
-	}
-
-	updates := []string{}
-	args := []any{}
-
-	name := strings.TrimSpace(req.Name)
-	if name != "" {
-		if !h.ensureWorkspaceNameAvailable(c, name, id) {
-			return
-		}
-		updates = append(updates, "name = ?")
-		args = append(args, name)
-	}
-
-	admins := splitHashWrappedString(existing.AdminsStr)
-	members := splitHashWrappedString(existing.MembersStr.String)
-	if req.Admins != nil {
-		admins = normalizeStringList(*req.Admins)
-	}
-	if req.Members != nil {
-		members = normalizeStringList(*req.Members)
-	}
-	if req.Admins != nil || req.Members != nil {
-		if err := validateWorkspacePeople(admins, members, true); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	if req.Admins != nil {
-		updates = append(updates, "admins_str = ?")
-		args = append(args, joinHashWrappedString(admins))
-	}
-	if req.Members != nil {
-		updates = append(updates, "members_str = ?")
-		args = append(args, nullableHashWrappedString(members))
-	}
-
-	if len(updates) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
-		return
-	}
-
-	now := time.Now().UTC()
-	updates = append(updates, "updated_at = ?")
-	args = append(args, now, id)
-
-	query := fmt.Sprintf("UPDATE workspaces SET %s WHERE id = ? AND deleted_at IS NULL", strings.Join(updates, ", "))
-	if _, err := h.db.Exec(query, args...); err != nil {
-		logger.Printf("[WORKSPACE] Failed to update workspace: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workspace"})
-		return
-	}
-
-	var workspace workspaceRow
-	if err := h.db.Get(&workspace,
-		"SELECT id, name, admins_str, members_str, created_at, updated_at FROM workspaces WHERE id = ?",
-		id); err != nil {
-		logger.Printf("[WORKSPACE] Failed to fetch updated workspace: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get updated workspace"})
-		return
-	}
-
-	c.JSON(http.StatusOK, workspaceResponseFromRow(workspace))
-}
-
-// DeleteWorkspace handles workspace deletion requests (soft delete).
-//
-// @Summary      Delete workspace
-// @Description  Soft deletes a workspace by ID
-// @Tags         workspaces
-// @Accept       json
-// @Produce      json
-// @Param        id path string true "Workspace ID"
-// @Success      204
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Router       /workspaces/{id} [delete]
-func (h *WorkspaceHandler) DeleteWorkspace(c *gin.Context) {
-	id, ok := parseWorkspaceID(c)
-	if !ok {
-		return
-	}
-
-	now := time.Now().UTC()
-	result, err := h.db.Exec("UPDATE workspaces SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", now, now, id)
-	if err != nil {
-		logger.Printf("[WORKSPACE] Failed to delete workspace: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete workspace"})
-		return
+		logger.Printf("[WORKSPACE] Failed to update default workspace: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ensure default workspace"})
+		return false
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		logger.Printf("[WORKSPACE] Failed to inspect deleted rows: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete workspace"})
-		return
+		logger.Printf("[WORKSPACE] Failed to inspect default workspace update: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ensure default workspace"})
+		return false
 	}
-	if affected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-		return
+	if affected > 0 {
+		return true
 	}
 
-	c.Status(http.StatusNoContent)
+	if _, err := h.db.Exec(`
+		INSERT INTO workspaces (
+			id,
+			name,
+			description,
+			source,
+			upload_enabled,
+			admins_str,
+			members_str,
+			last_synced_at,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		defaultWorkspaceID,
+		defaultWorkspaceName,
+		defaultWorkspaceDescription,
+		workspaceSourceDefault,
+		false,
+		sql.NullString{},
+		sql.NullString{},
+		sql.NullTime{},
+		now,
+		now,
+	); err != nil {
+		logger.Printf("[WORKSPACE] Failed to insert default workspace: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ensure default workspace"})
+		return false
+	}
+	return true
 }
 
 func parseWorkspaceID(c *gin.Context) (int64, bool) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || id <= 0 {
+	if err != nil || id < 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workspace id"})
 		return 0, false
 	}
 	return id, true
 }
 
-func (h *WorkspaceHandler) ensureWorkspaceNameAvailable(c *gin.Context, name string, excludeID int64) bool {
-	var nameTaken bool
-	if err := h.db.Get(&nameTaken,
-		"SELECT EXISTS(SELECT 1 FROM workspaces WHERE name = ? AND id != ? AND deleted_at IS NULL)", name, excludeID); err != nil {
-		logger.Printf("[WORKSPACE] Failed to check workspace name: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save workspace"})
-		return false
+func parseNonNegativeInt64List(raw string, fieldName string) ([]int64, error) {
+	items, err := splitBoundedMultiValueItems([]string{raw}, fieldName, maxMultiValueFilterIntegerItemLength)
+	if err != nil {
+		return nil, err
 	}
-	if nameTaken {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace name already exists"})
-		return false
+	if len(items) == 0 {
+		return nil, nil
 	}
-	return true
-}
 
-func normalizeWorkspacePeople(c *gin.Context, admins []string, members []string, requireAdmins bool) ([]string, []string, bool) {
-	normalizedAdmins := normalizeStringList(admins)
-	normalizedMembers := normalizeStringList(members)
-	if err := validateWorkspacePeople(normalizedAdmins, normalizedMembers, requireAdmins); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return nil, nil, false
-	}
-	return normalizedAdmins, normalizedMembers, true
-}
-
-func normalizeStringList(values []string) []string {
-	normalized := make([]string, 0, len(values))
-	for _, value := range values {
-		item := strings.TrimSpace(value)
-		if item == "" {
+	seen := make(map[int64]struct{})
+	values := []int64{}
+	for _, item := range items {
+		parsed, err := strconv.ParseInt(item, 10, 64)
+		if err != nil || parsed < 0 {
+			return nil, fmt.Errorf("invalid %s format", fieldName)
+		}
+		if _, ok := seen[parsed]; ok {
 			continue
 		}
-		normalized = append(normalized, item)
+		seen[parsed] = struct{}{}
+		values = append(values, parsed)
 	}
-	return normalized
-}
-
-func validateWorkspacePeople(admins []string, members []string, requireAdmins bool) error {
-	if requireAdmins && len(admins) == 0 {
-		return fmt.Errorf("admins is required")
-	}
-	adminSet := map[string]struct{}{}
-	for _, admin := range admins {
-		if _, exists := adminSet[admin]; exists {
-			return fmt.Errorf("admins contains duplicate value %q", admin)
-		}
-		adminSet[admin] = struct{}{}
-	}
-	memberSet := map[string]struct{}{}
-	for _, member := range members {
-		if _, exists := memberSet[member]; exists {
-			return fmt.Errorf("members contains duplicate value %q", member)
-		}
-		if _, isAdmin := adminSet[member]; isAdmin {
-			return fmt.Errorf("admins and members cannot overlap")
-		}
-		memberSet[member] = struct{}{}
-	}
-	return nil
-}
-
-func joinHashWrappedString(values []string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	return "#" + strings.Join(values, "#") + "#"
+	return values, nil
 }
 
 func splitHashWrappedString(value string) []string {
@@ -509,31 +342,37 @@ func splitHashWrappedString(value string) []string {
 	return normalizeStringList(strings.Split(value, "#"))
 }
 
-func nullableHashWrappedString(values []string) sql.NullString {
-	if len(values) == 0 {
-		return sql.NullString{}
+func normalizeStringList(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" {
+			continue
+		}
+		normalized = append(normalized, item)
 	}
-	return sql.NullString{String: joinHashWrappedString(values), Valid: true}
+	return normalized
+}
+
+func formatWorkspaceNullableTime(value sql.NullTime) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.Time.UTC().Format(time.RFC3339)
 }
 
 // workspaceResponseFromRow converts a workspaceRow to a WorkspaceResponse.
 func workspaceResponseFromRow(workspace workspaceRow) WorkspaceResponse {
-	createdAt := ""
-	if workspace.CreatedAt.Valid {
-		createdAt = workspace.CreatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
-	updatedAt := ""
-	if workspace.UpdatedAt.Valid {
-		updatedAt = workspace.UpdatedAt.Time.UTC().Format(time.RFC3339)
-	}
-
 	return WorkspaceResponse{
-		ID:        fmt.Sprintf("%d", workspace.ID),
-		Name:      workspace.Name,
-		Admins:    splitHashWrappedString(workspace.AdminsStr),
-		Members:   splitHashWrappedString(workspace.MembersStr.String),
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
+		ID:            strconv.FormatInt(workspace.ID, 10),
+		Name:          workspace.Name,
+		Description:   workspace.Description.String,
+		Source:        workspace.Source,
+		UploadEnabled: workspace.UploadEnabled,
+		Admins:        splitHashWrappedString(workspace.AdminsStr.String),
+		Members:       splitHashWrappedString(workspace.MembersStr.String),
+		LastSyncedAt:  formatWorkspaceNullableTime(workspace.LastSyncedAt),
+		CreatedAt:     formatWorkspaceNullableTime(workspace.CreatedAt),
+		UpdatedAt:     formatWorkspaceNullableTime(workspace.UpdatedAt),
 	}
 }

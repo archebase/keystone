@@ -10,17 +10,48 @@
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS workspaces (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    id BIGINT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    admins_str VARCHAR(200) NOT NULL,
+    description VARCHAR(200),
+    source VARCHAR(32) NOT NULL,
+    upload_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    admins_str VARCHAR(200),
     members_str VARCHAR(1024),
+    last_synced_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL,
-    _name_unique VARCHAR(400) GENERATED ALWAYS AS (CONCAT(IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    UNIQUE INDEX idx_name_del (_name_unique),
+    INDEX idx_source (source),
+    INDEX idx_upload_enabled (upload_enabled),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO workspaces (
+    id,
+    name,
+    description,
+    source,
+    upload_enabled,
+    admins_str,
+    members_str,
+    last_synced_at
+) VALUES (
+    0,
+    'Default Workspace',
+    'Local-only fallback workspace',
+    'default',
+    FALSE,
+    NULL,
+    NULL,
+    NULL
+) ON DUPLICATE KEY UPDATE
+    name = VALUES(name),
+    description = VALUES(description),
+    source = VALUES(source),
+    upload_enabled = VALUES(upload_enabled),
+    admins_str = VALUES(admins_str),
+    members_str = VALUES(members_str),
+    last_synced_at = VALUES(last_synced_at);
 
 CREATE TABLE IF NOT EXISTS factories (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
