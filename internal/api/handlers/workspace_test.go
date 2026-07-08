@@ -139,7 +139,7 @@ func TestWorkspaceSyncReturnsResult(t *testing.T) {
 	defer db.Close()
 
 	client := &fakeWorkspaceHilbertClient{
-		loginResult: &auth.HilbertLoginResult{SessionKey: "session-key"},
+		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces:  []auth.HilbertWorkspace{{ID: 123, Name: "Hilbert Workspace"}},
 	}
 	syncService := services.NewWorkspaceSyncService(db, &config.HilbertConfig{

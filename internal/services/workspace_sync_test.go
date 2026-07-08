@@ -25,7 +25,7 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 	updatedAt := createdAt.Add(time.Hour)
 	description := " synced from Hilbert "
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: &auth.HilbertLoginResult{SessionKey: "session-key"},
+		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{
 				ID:          123,
@@ -106,7 +106,7 @@ func TestWorkspaceSyncServiceInvalidHilbertRecordDoesNotPartiallyUpsert(t *testi
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: &auth.HilbertLoginResult{SessionKey: "session-key"},
+		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Valid Workspace"},
 			{ID: 0, Name: "Invalid Workspace"},

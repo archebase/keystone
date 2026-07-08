@@ -65,8 +65,20 @@ type HilbertLoginResult struct {
 	// Account stores the Hilbert account that authenticated successfully.
 	Account HilbertAccount
 
-	// SessionKey is the bearer token Hilbert returns for subsequent API calls.
-	SessionKey string
+	sessionKey string
+}
+
+// NewHilbertLoginResult creates a Hilbert login result without exporting the bearer token field.
+func NewHilbertLoginResult(account HilbertAccount, sessionKey string) *HilbertLoginResult {
+	return &HilbertLoginResult{Account: account, sessionKey: sessionKey}
+}
+
+// SessionKey returns the bearer token Hilbert returned for subsequent API calls.
+func (r *HilbertLoginResult) SessionKey() string {
+	if r == nil {
+		return ""
+	}
+	return r.sessionKey
 }
 
 // HilbertWorkspace stores the Hilbert workspace projection Keystone caches locally.
@@ -212,7 +224,7 @@ func (c *HilbertClient) loginWithCipherDigest(ctx context.Context, code string, 
 	if strings.TrimSpace(resp.Data.SessionKey) == "" {
 		return nil, fmt.Errorf("%w: missing session key", ErrHilbertUnavailable)
 	}
-	return &HilbertLoginResult{Account: resp.Data.Account, SessionKey: resp.Data.SessionKey}, nil
+	return NewHilbertLoginResult(resp.Data.Account, resp.Data.SessionKey), nil
 }
 
 func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {

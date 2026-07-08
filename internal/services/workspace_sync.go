@@ -88,11 +88,12 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 	if err != nil {
 		return nil, fmt.Errorf("%w: login hilbert: %v", ErrWorkspaceSyncFailed, err)
 	}
-	if loginResult == nil || strings.TrimSpace(loginResult.SessionKey) == "" {
+	sessionKey := loginResult.SessionKey()
+	if strings.TrimSpace(sessionKey) == "" {
 		return nil, fmt.Errorf("%w: login hilbert: missing session key", ErrWorkspaceSyncFailed)
 	}
 	logger.Printf("[WORKSPACE] Hilbert service identity login succeeded: code=%s", s.cfg.ServiceAccountCode)
-	workspaces, err := s.hilbertClient.ListAvailableWorkspaces(ctx, loginResult.SessionKey)
+	workspaces, err := s.hilbertClient.ListAvailableWorkspaces(ctx, sessionKey)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list hilbert workspaces: %v", ErrWorkspaceSyncFailed, err)
 	}
