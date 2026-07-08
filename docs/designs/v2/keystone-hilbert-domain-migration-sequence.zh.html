@@ -784,314 +784,48 @@ SPDX-License-Identifier: MulanPSL-2.0
       <div class="content">
         <p>
           PR-1 的目标是建立 Workspace 来源规则，而不是提供 Keystone 本地 Workspace 管理。
-          该 PR 引入 Hilbert service identity，只同步可访问 Workspace；同时创建 <code>id=0</code>
-          的 default workspace，支撑本地离线采集和后续业务归属迁移。
+          详细决策已拆分到独立文档：
+          <a href="./keystone-workspace-pr1-decision-lock.zh.html">PR-1 Workspace 来源规则决策锁定</a>。
         </p>
         <div class="callout">
           当前实现进度：PR-1A 已完成。Keystone 后端已具备 <code>id=0</code> default workspace、
           只读 <code>GET /workspaces</code> / <code>GET /workspaces/:id</code>、以及 V2 baseline schema 支撑。
           <code>POST /workspaces/sync</code>、Hilbert service identity bootstrap 和 Synapse selector 仍属于 PR-1B / PR-1C。
         </div>
-
-        <h3>后端范围</h3>
         <table>
           <thead>
             <tr>
-              <th>项目</th>
-              <th>决策</th>
-              <th>说明</th>
+              <th>PR</th>
+              <th>锁定内容</th>
+              <th>状态</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td>主键</td>
-              <td><code>workspaces.id</code> 直接使用 Hilbert workspace ID</td>
-              <td><code>id=0</code> 是 Keystone 保留 default workspace；不使用本地自增 ID。</td>
+              <td>PR-1A</td>
+              <td>Default workspace foundation：保留 <code>id=0</code>，Workspace API 只读，移除本地写路由。</td>
+              <td><span class="badge">已完成</span></td>
             </tr>
             <tr>
-              <td>表结构</td>
-              <td><code>workspaces</code></td>
-              <td>替换 V2 baseline 中的 <code>organizations</code>；删除 <code>factory_id</code>、<code>slug</code>、<code>settings</code>。</td>
+              <td>PR-1B</td>
+              <td>Hilbert workspace sync bootstrap：service identity provider、临时 password bootstrap、事务 upsert。</td>
+              <td><span class="badge hot">未完成</span></td>
             </tr>
             <tr>
-              <td>成员字段</td>
-              <td><code>admins_str</code> / <code>members_str</code></td>
-              <td>只作为 Hilbert 投影展示；第一阶段不驱动 Keystone 本地权限，也不要求非空。</td>
-            </tr>
-            <tr>
-              <td>来源与上传资格</td>
-              <td><code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code></td>
-              <td>最终云同步资格为 <code>id != 0 && source='hilbert' && upload_enabled=true</code>。</td>
-            </tr>
-            <tr>
-              <td>同步语义</td>
-              <td>只 upsert，不删除</td>
-              <td>Hilbert 本轮未返回的 workspace 第一阶段不禁用、不软删；撤权策略后置。</td>
-            </tr>
-            <tr>
-              <td>配置</td>
-              <td>新增独立 <code>HilbertConfig</code></td>
-              <td><code>HilbertConfig</code> 成为 Hilbert endpoint、timeout 和 service identity 设置的唯一归属；<code>AuthConfig</code> 不再持有 Hilbert endpoint。</td>
+              <td>PR-1C</td>
+              <td>Synapse workspace selector：删除组织管理入口，新增全局 selector 和只读状态页。</td>
+              <td><span class="badge hot">未完成</span></td>
             </tr>
           </tbody>
         </table>
-
-        <h3>PR-1B 临时 Bootstrap 与正式鉴权边界</h3>
-        <p>
-          Keystone 的真实身份应是 Hilbert 中被授予若干 Workspace scope 的独立服务身份。
-          由于 Hilbert 暂未提供正式 Keystone 鉴权，PR-1B 允许临时配置一个 Hilbert 管理员账号的
-          <code>code/password</code> 作为 service identity bootstrap。代码和配置使用
-          <code>service identity</code> 命名，不使用 admin 命名，避免把临时方案固化。
-        </p>
-        <div class="diagram">
-          <pre>HilbertServiceIdentityProvider
-  └─ BootstrapPasswordProvider   (PR-1B temporary)
-       ├─ GET /v1/console/nonce/generate
-       ├─ POST /v1/console/account/login
-       └─ sessionKey kept in memory only
-
-Future provider
-  ├─ app credential / token exchange
-  └─ same workspace sync service contract</pre>
-        </div>
+        <h3>核心不变量</h3>
         <ul>
-          <li>PR-1B 不引入多模式配置；只要求代码边界不要把 password login 泄漏到 workspace sync 逻辑里。</li>
-          <li>临时 bootstrap account 应是 Hilbert system admin，或目标 workspaces 的管理员账号。</li>
-          <li>PR-1B 使用 Hilbert 当前的 <code>list-available</code> 返回值，不本地强校验 <code>admins</code> 是否包含 bootstrap account。</li>
-          <li>正式鉴权阶段应让 Hilbert 审计中能区分 Keystone service identity 和人工管理员。</li>
+          <li>Hilbert 是 Workspace source of truth；Keystone 只保存可访问 Workspace 的本地投影。</li>
+          <li><code>workspaces.id=0</code> 是 Keystone 保留 default workspace，不对应 Hilbert Workspace。</li>
+          <li>default workspace 允许本地采集和 Keystone MinIO 本地制品上传，但禁止进入 Hilbert / 云同步。</li>
+          <li>云同步资格统一使用 <code>workspace_id != 0 && source='hilbert' && upload_enabled=true</code>。</li>
+          <li>Hilbert <code>admins/members</code> 第一阶段只展示，不驱动 Keystone 本地权限。</li>
         </ul>
-
-        <h3>Hilbert 接口事实</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>能力</th>
-              <th>Hilbert 接口 / 字段</th>
-              <th>Keystone 使用方式</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>获取 nonce</td>
-              <td><code>GET /v1/console/nonce/generate</code></td>
-              <td>复用现有 Hilbert password digest 加密流程。</td>
-            </tr>
-            <tr>
-              <td>登录</td>
-              <td><code>POST /v1/console/account/login</code>，返回 <code>data.sessionKey</code></td>
-              <td>service identity provider 登录后把 <code>sessionKey</code> 仅缓存在内存。</td>
-            </tr>
-            <tr>
-              <td>请求鉴权</td>
-              <td><code>Authorization: Bearer &lt;sessionKey&gt;</code></td>
-              <td>调用 Hilbert workspace API 时加 Bearer header。</td>
-            </tr>
-            <tr>
-              <td>可用 Workspace</td>
-              <td><code>GET /v1/console/workspace/list-available</code>，返回 <code>[]WorkspaceVO</code></td>
-              <td>system admin 会返回全部；普通账号返回 admins/members 可访问 workspace。</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <h3>目标表结构</h3>
-        <div class="diagram">
-          <pre>workspaces
-  ├─ id BIGINT PRIMARY KEY
-  ├─ name VARCHAR(100) NOT NULL
-  ├─ description VARCHAR(200)
-  ├─ source VARCHAR(32) NOT NULL              -- default | hilbert
-  ├─ upload_enabled BOOLEAN NOT NULL
-  ├─ admins_str VARCHAR(200)
-  ├─ members_str VARCHAR(1024)
-  ├─ last_synced_at TIMESTAMP NULL
-  ├─ hilbert_created_at TIMESTAMP NULL
-  ├─ hilbert_updated_at TIMESTAMP NULL
-  ├─ created_at TIMESTAMP
-  ├─ updated_at TIMESTAMP
-  ├─ deleted_at TIMESTAMP NULL
-  └─ id=0 reserved for default workspace</pre>
-        </div>
-
-        <h3>PR-1B 同步算法</h3>
-        <ol>
-          <li>Ensure <code>id=0</code> default workspace exists.</li>
-          <li>如果 <code>HilbertConfig</code> 的 <code>BaseURL</code>、<code>ServiceAccountCode</code>、<code>ServiceAccountPassword</code> 不完整，启动同步跳过；手动同步返回 <code>503</code>。</li>
-          <li>通过 service identity provider 登录 Hilbert，获得内存 <code>sessionKey</code>。</li>
-          <li>调用 <code>GET /v1/console/workspace/list-available</code>。</li>
-          <li>先校验全部记录：<code>id &gt; 0</code>、<code>name</code> 非空、无重复 ID。</li>
-          <li>校验通过后开启事务，upsert 全部 Hilbert workspaces。</li>
-          <li>提交事务；本轮未返回的 Hilbert workspace 不删除、不禁用。</li>
-        </ol>
-        <div class="diagram">
-          <pre>Upsert mapping
-  id                 <- Hilbert WorkspaceVO.id
-  name               <- WorkspaceVO.name
-  description        <- WorkspaceVO.description
-  source             <- "hilbert"
-  upload_enabled     <- true
-  admins_str         <- hash-wrapped normalized WorkspaceVO.admins
-  members_str        <- hash-wrapped normalized WorkspaceVO.members
-  last_synced_at     <- Keystone sync time
-  hilbert_created_at <- WorkspaceVO.createdTime
-  hilbert_updated_at <- WorkspaceVO.updatedTime</pre>
-        </div>
-        <ul>
-          <li>Hilbert 返回 <code>id=0</code> 或非法记录时，本次 sync 整体失败，不 upsert 任何记录，本地缓存保持不变。</li>
-          <li><code>admins/members</code> 继续以 hash-wrapped <code>admins_str/members_str</code> 存储，只做 trim、drop-empty、dedupe，不做严格业务校验。</li>
-          <li><code>created_at/updated_at</code> 保留 Keystone 本地投影行时间；Hilbert 原始时间写入 <code>hilbert_created_at/hilbert_updated_at</code>。</li>
-          <li><code>upload_enabled=true</code> 仅表示来自 Hilbert sync 且可进入 Keystone 云同步候选集，不保证后续 raw data / dataset 创建一定成功。</li>
-        </ul>
-
-        <h3>启动同步与失败行为</h3>
-        <ul>
-          <li>启动时只有 Hilbert service identity 三要素完整时才尝试登录和同步。</li>
-          <li>启动登录失败或 <code>list-available</code> 失败时，只记录日志并继续启动；Keystone 保持 default/cache 模式。</li>
-          <li><code>POST /api/v1/workspaces/sync</code> 必须 Keystone admin-only，且使用 Hilbert service identity，不使用调用者身份。</li>
-          <li>手动 sync 未配置、登录失败、接口失败或校验失败时返回 <code>503</code>；<code>GET /workspaces</code> 继续返回本地 projection。</li>
-          <li>PR-1B 不把 Hilbert <code>admins/members</code> 接入 Keystone 本地权限；<code>GET /workspaces</code> 仍按现有 Keystone auth 边界返回本地投影。</li>
-        </ul>
-
-        <h3>正式 Keystone-Hilbert 鉴权目标</h3>
-        <ul>
-          <li>Hilbert 为 Keystone 提供独立 service identity，不复用真人管理员账号。</li>
-          <li>Hilbert 能向 Keystone service identity 授予一个或多个 workspace scope。</li>
-          <li>Keystone 可以用非密码式 credential 获取 bearer token。</li>
-          <li>Hilbert 审计中能区分 Keystone service identity 和人工管理员。</li>
-          <li>Workspace sync 语义不变：获取 bearer token，列出 scoped workspaces，事务化 upsert 本地 projection。</li>
-        </ul>
-
-        <h3>API 决策</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>维度</th>
-              <th>PR-1 选择</th>
-              <th>理由</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>路由</td>
-              <td>只读投影 + 手动同步</td>
-              <td><code>GET /api/v1/workspaces</code>、<code>GET /api/v1/workspaces/:id</code>、<code>POST /api/v1/workspaces/sync</code>。</td>
-            </tr>
-            <tr>
-              <td>写路由</td>
-              <td>完全不注册</td>
-              <td>不提供 <code>POST /workspaces</code>、<code>PUT /workspaces/:id</code>、<code>DELETE /workspaces/:id</code>。</td>
-            </tr>
-            <tr>
-              <td>字段 shape</td>
-              <td>Keystone 响应包装 + Hilbert 投影字段</td>
-              <td>响应使用 <code>id</code>、<code>name</code>、<code>description</code>、<code>source</code>、<code>upload_enabled</code>、<code>admins</code>、<code>members</code>、<code>last_synced_at</code>。</td>
-            </tr>
-            <tr>
-              <td>分页</td>
-              <td>保持 Keystone 格式</td>
-              <td>继续使用 <code>items/total/limit/offset/hasNext/hasPrev</code>，不切 Hilbert <code>records/pageNum/pageSize</code>。</td>
-            </tr>
-            <tr>
-              <td>时间字段</td>
-              <td>保持 Keystone 风格</td>
-              <td>响应用 <code>created_at</code>、<code>updated_at</code>；不引入 <code>createdBy</code>、<code>createdTime</code>。</td>
-            </tr>
-            <tr>
-              <td>权限</td>
-              <td>同步 admin-only</td>
-              <td><code>POST /workspaces/sync</code> 只允许 Keystone admin；<code>admins/members</code> 不驱动 Keystone 权限控制。</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <h3>请求与响应形态</h3>
-        <div class="diagram">
-          <pre>GET /api/v1/workspaces
-{
-  "items": [
-    {
-      "id": "0",
-      "name": "Default Workspace",
-      "description": "Local-only fallback workspace",
-      "source": "default",
-      "upload_enabled": false,
-      "admins": [],
-      "members": [],
-      "last_synced_at": null
-    },
-    {
-      "id": "123",
-      "name": "Customer Workspace",
-      "description": "from Hilbert",
-      "source": "hilbert",
-      "upload_enabled": true,
-      "admins": ["admin01"],
-      "members": ["user01"],
-      "last_synced_at": "2026-07-07T..."
-    }
-  ],
-  "total": 2,
-  "limit": 50,
-  "offset": 0,
-  "hasNext": false,
-  "hasPrev": false
-}
-
-POST /api/v1/workspaces/sync
-{
-  "synced_count": 3,
-  "default_included": true,
-  "last_synced_at": "2026-07-07T..."
-}</pre>
-        </div>
-
-        <h3>Synapse 范围</h3>
-        <ul>
-          <li><code>src/api/organizations.js</code> 替换为 <code>src/api/workspaces.js</code>。</li>
-          <li><code>/admin/organizations</code> 替换为 <code>/admin/workspaces</code>。</li>
-          <li>删除组织管理表单，不提供 workspace 创建、编辑、删除控件。</li>
-          <li>新增全局 Workspace Selector，默认选第一个可上传 Hilbert workspace；没有 Hilbert workspace 时选择 default。</li>
-          <li>新增只读 Workspace 状态页，展示 <code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code> 和手动同步按钮。</li>
-          <li>default workspace 可选，但必须标记“本地 / 不可云同步”。</li>
-          <li>admin 登录默认跳转从 <code>/admin/factories</code> 改为 <code>/admin/workspaces</code>。</li>
-          <li><code>/admin</code> 默认重定向从 <code>/admin/factories</code> 改为 <code>/admin/workspaces</code>。</li>
-        </ul>
-
-        <h3>测试与文档</h3>
-        <ul>
-          <li>PR-1A 已新增 workspace handler 单测，覆盖 default 返回、<code>workspace_id=0</code> 过滤和写路由不存在。</li>
-          <li>PR-1B 需要继续新增 Hilbert sync upsert、缓存保留和手动 sync 失败场景测试。</li>
-          <li>运行 <code>swag init -g internal/server/server.go -o docs</code> 同步 Swagger；PR-1A 只应出现 <code>GET /workspaces</code> 和 <code>GET /workspaces/{id}</code>。</li>
-          <li>PR-1B 完成后，Swagger 中应再出现 <code>POST /workspaces/sync</code>。</li>
-          <li>Swagger 中不应出现 <code>POST /workspaces</code>、<code>PUT /workspaces/{id}</code>、<code>DELETE /workspaces/{id}</code>。</li>
-          <li>Swagger 中不应再出现 <code>/organizations</code> 和 <code>/organizations/{id}</code>。</li>
-          <li>不新增额外设计文档；PR 描述引用本文档和 Hilbert 归属文档。</li>
-        </ul>
-
-        <h3>PR-1 明确不做</h3>
-        <div class="split">
-          <div class="panel">
-            <h3>后端不做</h3>
-            <ul>
-              <li>不修改任何业务表的 <code>organization_id</code>。</li>
-              <li>不新增 <code>robots.workspace_id</code>。</li>
-              <li>不同步 Hilbert <code>dc_device</code>、<code>dc_plan</code>、<code>raw_data</code>、<code>dataset</code>。</li>
-              <li>不把 <code>admins/members</code> 接入 Keystone 本地权限模型。</li>
-              <li>不校验 admins/members 账号是否真实存在。</li>
-              <li>不处理 Hilbert workspace 撤权 / 下线策略。</li>
-            </ul>
-          </div>
-          <div class="panel">
-            <h3>前端不做</h3>
-            <ul>
-              <li>不改 collectors/orders/robots/tasks 页面。</li>
-              <li>不改业务筛选参数。</li>
-              <li>不保留组织管理入口。</li>
-              <li>不提供 workspace CRUD 表单。</li>
-              <li>不把 default 数据自动迁移到 Hilbert workspace。</li>
-            </ul>
-          </div>
-        </div>
       </div>
     </section>
 

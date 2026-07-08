@@ -1,0 +1,754 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PR-1 Workspace 来源规则决策锁定</title>
+  <style>
+    :root {
+      --bg: #F47A16;
+      --panel: #FFF2D4;
+      --ink: #15110D;
+      --blue: #1E4E9A;
+      --yellow: #FFD23F;
+      --red: #D93A24;
+      --brown: #7A3E16;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 9%, var(--yellow) 0 8%, transparent 9%),
+        linear-gradient(135deg, transparent 0 48%, rgba(21, 17, 13, 0.16) 48% 52%, transparent 52%),
+        var(--bg);
+      color: var(--ink);
+      font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", SimHei, sans-serif;
+      line-height: 1.65;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        repeating-radial-gradient(circle at 82% 18%, rgba(21,17,13,.18) 0 1px, transparent 1px 8px),
+        repeating-linear-gradient(102deg, rgba(21,17,13,.16) 0 3px, transparent 3px 28px);
+      mix-blend-mode: multiply;
+      opacity: .45;
+    }
+
+    .page {
+      position: relative;
+      width: min(1180px, calc(100vw - 28px));
+      margin: 0 auto;
+      padding: 30px 0 60px;
+    }
+
+    .hero {
+      min-height: 78vh;
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 26px;
+      align-items: stretch;
+      border: 6px solid var(--ink);
+      background: var(--panel);
+      box-shadow: 12px 12px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .hero-copy {
+      padding: clamp(28px, 5vw, 62px);
+      position: relative;
+      z-index: 1;
+    }
+
+    .kicker {
+      display: inline-block;
+      padding: 6px 12px;
+      background: var(--yellow);
+      border: 4px solid var(--ink);
+      box-shadow: 5px 5px 0 var(--ink);
+      font-weight: 900;
+      transform: rotate(-2deg);
+    }
+
+    h1 {
+      margin: 28px 0 18px;
+      font-family: Impact, "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(52px, 9vw, 118px);
+      line-height: .9;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      color: var(--red);
+      -webkit-text-stroke: 3px var(--ink);
+      text-shadow: 8px 8px 0 var(--yellow), 13px 13px 0 var(--ink);
+      transform: skew(-5deg);
+    }
+
+    .subtitle {
+      max-width: 760px;
+      font-size: clamp(18px, 2.4vw, 25px);
+      font-weight: 900;
+    }
+
+    .hero-board {
+      position: relative;
+      min-height: 520px;
+      background: var(--blue);
+      border-left: 6px solid var(--ink);
+      overflow: hidden;
+    }
+
+    .hero-board::before {
+      content: "";
+      position: absolute;
+      inset: -18%;
+      background:
+        conic-gradient(from 12deg at 50% 50%, transparent 0 8deg, rgba(255,242,212,.9) 8deg 11deg, transparent 11deg 22deg),
+        radial-gradient(circle at 50% 50%, var(--yellow) 0 12%, transparent 13%);
+      opacity: .8;
+      animation: pulse 3.8s ease-in-out infinite;
+    }
+
+    .arena {
+      position: absolute;
+      inset: 15% 10%;
+      border: 6px solid var(--ink);
+      background: var(--panel);
+      box-shadow: 10px 10px 0 var(--ink);
+      transform: rotate(3deg);
+      display: grid;
+      grid-template-rows: repeat(4, 1fr);
+      gap: 10px;
+      padding: 18px;
+    }
+
+    .node {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--yellow);
+      border: 4px solid var(--ink);
+      font-weight: 900;
+      box-shadow: 5px 5px 0 var(--brown);
+    }
+
+    .node:nth-child(2),
+    .node:nth-child(4) {
+      background: var(--panel);
+    }
+
+    .node strong {
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+
+    .burst {
+      display: inline-block;
+      margin-top: 24px;
+      padding: 12px 16px;
+      background: var(--blue);
+      color: var(--panel);
+      border: 4px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--ink);
+      font-weight: 900;
+    }
+
+    section {
+      margin-top: 34px;
+      border: 5px solid var(--ink);
+      background: var(--panel);
+      box-shadow: 9px 9px 0 var(--ink);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: stretch;
+      border-bottom: 5px solid var(--ink);
+      background: var(--yellow);
+    }
+
+    .section-no {
+      padding: 14px 18px;
+      background: var(--red);
+      color: var(--panel);
+      border-right: 5px solid var(--ink);
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 42px;
+      line-height: 1;
+      -webkit-text-stroke: 1px var(--ink);
+    }
+
+    h2 {
+      margin: 0;
+      padding: 16px 20px;
+      font-size: clamp(26px, 4vw, 44px);
+      line-height: 1.1;
+      font-weight: 1000;
+    }
+
+    .content {
+      padding: clamp(18px, 3vw, 34px);
+    }
+
+    h3 {
+      margin: 24px 0 12px;
+      font-size: 24px;
+      line-height: 1.2;
+      font-weight: 1000;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    code {
+      padding: 1px 5px;
+      background: var(--yellow);
+      border: 2px solid var(--ink);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: .92em;
+      font-weight: 800;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      background: var(--panel);
+    }
+
+    th,
+    td {
+      border: 4px solid var(--ink);
+      padding: 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: var(--blue);
+      color: var(--panel);
+      font-size: 18px;
+    }
+
+    ul,
+    ol {
+      margin: 12px 0;
+      padding-left: 26px;
+    }
+
+    li {
+      margin: 8px 0;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 14px 0;
+      padding: 18px;
+      background: var(--ink);
+      color: var(--panel);
+      border: 5px solid var(--brown);
+      box-shadow: 7px 7px 0 var(--brown);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      line-height: 1.55;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .panel {
+      border: 4px solid var(--ink);
+      background: var(--panel);
+      box-shadow: 6px 6px 0 var(--brown);
+      padding: 16px;
+    }
+
+    .panel.hot {
+      background: var(--yellow);
+    }
+
+    .callout {
+      margin: 18px 0;
+      padding: 16px;
+      border: 5px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 7px 7px 0 var(--ink);
+      font-weight: 900;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 5px 10px;
+      border: 3px solid var(--ink);
+      background: var(--panel);
+      box-shadow: 4px 4px 0 var(--ink);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .badge.red {
+      background: var(--red);
+      color: var(--panel);
+    }
+
+    .badge.blue {
+      background: var(--blue);
+      color: var(--panel);
+    }
+
+    a {
+      color: var(--blue);
+      font-weight: 900;
+      text-decoration-thickness: 3px;
+    }
+
+    footer {
+      margin: 34px 0 0;
+      padding: 18px;
+      border: 5px solid var(--ink);
+      background: var(--panel);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-weight: 800;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1) rotate(0deg); }
+      50% { transform: scale(1.06) rotate(1deg); }
+    }
+
+    @media (max-width: 840px) {
+      .hero {
+        grid-template-columns: 1fr;
+        min-height: 0;
+      }
+
+      .hero-board {
+        min-height: 360px;
+        border-left: 0;
+        border-top: 6px solid var(--ink);
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: clamp(48px, 17vw, 84px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-copy">
+        <span class="kicker">PR-1 DECISION LOCK</span>
+        <h1>Workspace<br>来源规则<br>锁定</h1>
+        <p class="subtitle">
+          核心判断：Keystone 不创建、不编辑、不删除 Workspace；它只消费 Hilbert Workspace 投影，并保留 <code>id=0</code> 的本地兜底。
+        </p>
+        <div class="badges">
+          <span class="badge red">Hilbert source of truth</span>
+          <span class="badge blue">Default local-only</span>
+          <span class="badge">只读投影</span>
+          <span class="badge">PR-1A 已完成</span>
+        </div>
+        <div class="burst">本文件是 PR-1 的唯一决策锁定文档；迁移顺序文档只保留摘要。</div>
+      </div>
+      <div class="hero-board" aria-hidden="true">
+        <div class="arena">
+          <div class="node"><strong>0</strong><span>Default Workspace</span></div>
+          <div class="node"><strong>GET</strong><span>Read-only Projection</span></div>
+          <div class="node"><strong>SYNC</strong><span>Hilbert list-available</span></div>
+          <div class="node"><strong>NO</strong><span>Local Workspace CRUD</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">01</div>
+        <h2>背景与问题</h2>
+      </div>
+      <div class="content">
+        <p>
+          Keystone 正在从本地组织模型迁移到 Hilbert Workspace 模型。这里的关键压力不是字段重命名，
+          而是所有权迁移：Workspace 的事实来源必须从 Keystone 本地 CRUD 转移到 Hilbert。
+        </p>
+        <div class="callout">
+          PR-1 只解决 Workspace 来源规则。它不迁移业务表归属，不重建设备模型，也不处理任务、Episode、raw data、dataset 的主链路语义。
+        </div>
+        <div class="grid">
+          <div class="panel hot">
+            <h3>已完成的第一击：PR-1A</h3>
+            <ul>
+              <li>Keystone 后端具备 <code>id=0</code> default workspace。</li>
+              <li><code>GET /workspaces</code> 和 <code>GET /workspaces/:id</code> 只读可用。</li>
+              <li>V2 baseline schema 已支持 <code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code>。</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>后续的连续技</h3>
+            <ul>
+              <li>PR-1B 接入 Hilbert service identity bootstrap 和 workspace sync。</li>
+              <li>PR-1C 让 Synapse 使用全局 Workspace Selector 和只读状态页。</li>
+              <li>PR-2 之后再迁移业务表 <code>organization_id -> workspace_id</code>。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">02</div>
+        <h2>目标与非目标</h2>
+      </div>
+      <div class="content">
+        <div class="grid">
+          <div class="panel hot">
+            <h3>目标</h3>
+            <ul>
+              <li>建立 Workspace 来源规则：Hilbert 是源头，Keystone 是投影消费者。</li>
+              <li>保留 <code>id=0</code> default workspace，支持未配置 Hilbert 时的本地闭环。</li>
+              <li>禁止 default workspace 进入 Hilbert / 云同步。</li>
+              <li>定义 PR-1B 的临时 bootstrap 与正式鉴权替换边界。</li>
+              <li>定义 Synapse 在 PR-1C 中的只读选择器行为。</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>非目标</h3>
+            <ul>
+              <li>不提供 Keystone 本地 workspace 创建、编辑、删除。</li>
+              <li>不修改业务表的 <code>organization_id</code>。</li>
+              <li>不同步 Hilbert <code>dc_device</code>、<code>dc_plan</code>、<code>raw_data</code>、<code>dataset</code>。</li>
+              <li>不把 Hilbert <code>admins/members</code> 接入 Keystone 本地权限。</li>
+              <li>不自动把 default 数据补绑或上传到 Hilbert workspace。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">03</div>
+        <h2>后端决策</h2>
+      </div>
+      <div class="content">
+        <table>
+          <thead>
+            <tr>
+              <th>项目</th>
+              <th>决策</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>主键</td>
+              <td><code>workspaces.id</code> 直接使用 Hilbert workspace ID</td>
+              <td><code>id=0</code> 是 Keystone 保留 default workspace；不使用本地自增 ID。</td>
+            </tr>
+            <tr>
+              <td>表结构</td>
+              <td><code>workspaces</code></td>
+              <td>替换 V2 baseline 中的 <code>organizations</code>；删除 <code>factory_id</code>、<code>slug</code>、<code>settings</code>。</td>
+            </tr>
+            <tr>
+              <td>成员字段</td>
+              <td><code>admins_str</code> / <code>members_str</code></td>
+              <td>只作为 Hilbert 投影展示；第一阶段不驱动 Keystone 本地权限，也不要求非空。</td>
+            </tr>
+            <tr>
+              <td>来源与上传资格</td>
+              <td><code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code></td>
+              <td>最终云同步资格为 <code>id != 0 && source='hilbert' && upload_enabled=true</code>。</td>
+            </tr>
+            <tr>
+              <td>同步语义</td>
+              <td>只 upsert，不删除</td>
+              <td>Hilbert 本轮未返回的 workspace 第一阶段不禁用、不软删；撤权策略后置。</td>
+            </tr>
+            <tr>
+              <td>配置</td>
+              <td>新增独立 <code>HilbertConfig</code></td>
+              <td><code>HilbertConfig</code> 成为 Hilbert endpoint、timeout 和 service identity 设置的唯一归属；<code>AuthConfig</code> 不再持有 Hilbert endpoint。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>目标表结构</h3>
+        <pre>workspaces
+  id BIGINT PRIMARY KEY
+  name VARCHAR(100) NOT NULL
+  description VARCHAR(200)
+  source VARCHAR(32) NOT NULL              -- default | hilbert
+  upload_enabled BOOLEAN NOT NULL
+  admins_str VARCHAR(200)
+  members_str VARCHAR(1024)
+  last_synced_at TIMESTAMP NULL
+  hilbert_created_at TIMESTAMP NULL
+  hilbert_updated_at TIMESTAMP NULL
+  created_at TIMESTAMP
+  updated_at TIMESTAMP
+  deleted_at TIMESTAMP NULL
+  id=0 reserved for default workspace</pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">04</div>
+        <h2>PR-1B 鉴权边界</h2>
+      </div>
+      <div class="content">
+        <p>
+          Keystone 的真实身份应是 Hilbert 中被授予若干 Workspace scope 的独立服务身份。
+          由于 Hilbert 暂未提供正式 Keystone 鉴权，PR-1B 允许临时配置一个 Hilbert 管理员账号的
+          <code>code/password</code> 作为 service identity bootstrap。
+        </p>
+        <pre>HilbertServiceIdentityProvider
+  BootstrapPasswordProvider   (PR-1B temporary)
+    GET /v1/console/nonce/generate
+    POST /v1/console/account/login
+    sessionKey kept in memory only
+
+Future provider
+  app credential / token exchange
+  same workspace sync service contract</pre>
+        <ul>
+          <li>代码和配置使用 <code>service identity</code> 命名，不使用 admin 命名。</li>
+          <li>PR-1B 不引入多模式配置；只要求 password login 不泄漏到 workspace sync 逻辑里。</li>
+          <li>临时 bootstrap account 应是 Hilbert system admin，或目标 workspaces 的管理员账号。</li>
+          <li>PR-1B 使用 Hilbert 当前的 <code>list-available</code> 返回值，不本地强校验 <code>admins</code> 是否包含 bootstrap account。</li>
+          <li>正式鉴权阶段应让 Hilbert 审计中能区分 Keystone service identity 和人工管理员。</li>
+        </ul>
+
+        <h3>Hilbert 接口事实</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>能力</th>
+              <th>Hilbert 接口 / 字段</th>
+              <th>Keystone 使用方式</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>获取 nonce</td>
+              <td><code>GET /v1/console/nonce/generate</code></td>
+              <td>复用现有 Hilbert password digest 加密流程。</td>
+            </tr>
+            <tr>
+              <td>登录</td>
+              <td><code>POST /v1/console/account/login</code>，返回 <code>data.sessionKey</code></td>
+              <td>service identity provider 登录后把 <code>sessionKey</code> 仅缓存在内存。</td>
+            </tr>
+            <tr>
+              <td>请求鉴权</td>
+              <td><code>Authorization: Bearer &lt;sessionKey&gt;</code></td>
+              <td>调用 Hilbert workspace API 时加 Bearer header。</td>
+            </tr>
+            <tr>
+              <td>可用 Workspace</td>
+              <td><code>GET /v1/console/workspace/list-available</code>，返回 <code>[]WorkspaceVO</code></td>
+              <td>system admin 会返回全部；普通账号返回 admins/members 可访问 workspace。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">05</div>
+        <h2>同步算法与 API</h2>
+      </div>
+      <div class="content">
+        <h3>PR-1B 同步算法</h3>
+        <ol>
+          <li>Ensure <code>id=0</code> default workspace exists.</li>
+          <li>如果 <code>HilbertConfig</code> 的 <code>BaseURL</code>、<code>ServiceAccountCode</code>、<code>ServiceAccountPassword</code> 不完整，启动同步跳过；手动同步返回 <code>503</code>。</li>
+          <li>通过 service identity provider 登录 Hilbert，获得内存 <code>sessionKey</code>。</li>
+          <li>调用 <code>GET /v1/console/workspace/list-available</code>。</li>
+          <li>先校验全部记录：<code>id &gt; 0</code>、<code>name</code> 非空、无重复 ID。</li>
+          <li>校验通过后开启事务，upsert 全部 Hilbert workspaces。</li>
+          <li>提交事务；本轮未返回的 Hilbert workspace 不删除、不禁用。</li>
+        </ol>
+        <pre>Upsert mapping
+  id                 <- Hilbert WorkspaceVO.id
+  name               <- WorkspaceVO.name
+  description        <- WorkspaceVO.description
+  source             <- "hilbert"
+  upload_enabled     <- true
+  admins_str         <- hash-wrapped normalized WorkspaceVO.admins
+  members_str        <- hash-wrapped normalized WorkspaceVO.members
+  last_synced_at     <- Keystone sync time
+  hilbert_created_at <- WorkspaceVO.createdTime
+  hilbert_updated_at <- WorkspaceVO.updatedTime</pre>
+        <ul>
+          <li>Hilbert 返回 <code>id=0</code> 或非法记录时，本次 sync 整体失败，不 upsert 任何记录，本地缓存保持不变。</li>
+          <li><code>admins/members</code> 继续以 hash-wrapped <code>admins_str/members_str</code> 存储，只做 trim、drop-empty、dedupe，不做严格业务校验。</li>
+          <li><code>created_at/updated_at</code> 保留 Keystone 本地投影行时间；Hilbert 原始时间写入 <code>hilbert_created_at/hilbert_updated_at</code>。</li>
+          <li><code>upload_enabled=true</code> 仅表示来自 Hilbert sync 且可进入 Keystone 云同步候选集，不保证后续 raw data / dataset 创建一定成功。</li>
+        </ul>
+
+        <h3>API 决策</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>维度</th>
+              <th>PR-1 选择</th>
+              <th>理由</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>路由</td>
+              <td>只读投影 + 手动同步</td>
+              <td><code>GET /api/v1/workspaces</code>、<code>GET /api/v1/workspaces/:id</code>、<code>POST /api/v1/workspaces/sync</code>。</td>
+            </tr>
+            <tr>
+              <td>写路由</td>
+              <td>完全不注册</td>
+              <td>不提供 <code>POST /workspaces</code>、<code>PUT /workspaces/:id</code>、<code>DELETE /workspaces/:id</code>。</td>
+            </tr>
+            <tr>
+              <td>字段 shape</td>
+              <td>Keystone 响应包装 + Hilbert 投影字段</td>
+              <td>响应使用 <code>id</code>、<code>name</code>、<code>description</code>、<code>source</code>、<code>upload_enabled</code>、<code>admins</code>、<code>members</code>、<code>last_synced_at</code>。</td>
+            </tr>
+            <tr>
+              <td>分页</td>
+              <td>保持 Keystone 格式</td>
+              <td>继续使用 <code>items/total/limit/offset/hasNext/hasPrev</code>，不切 Hilbert <code>records/pageNum/pageSize</code>。</td>
+            </tr>
+            <tr>
+              <td>权限</td>
+              <td>同步 admin-only</td>
+              <td><code>POST /workspaces/sync</code> 只允许 Keystone admin；<code>admins/members</code> 不驱动 Keystone 权限控制。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>响应形态</h3>
+        <pre>GET /api/v1/workspaces
+{
+  "items": [
+    {
+      "id": "0",
+      "name": "Default Workspace",
+      "description": "Local-only fallback workspace",
+      "source": "default",
+      "upload_enabled": false,
+      "admins": [],
+      "members": [],
+      "last_synced_at": null
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0,
+  "hasNext": false,
+  "hasPrev": false
+}</pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">06</div>
+        <h2>Synapse 范围</h2>
+      </div>
+      <div class="content">
+        <ul>
+          <li><code>src/api/organizations.js</code> 替换为 <code>src/api/workspaces.js</code>。</li>
+          <li><code>/admin/organizations</code> 替换为 <code>/admin/workspaces</code>。</li>
+          <li>删除组织管理表单，不提供 workspace 创建、编辑、删除控件。</li>
+          <li>新增全局 Workspace Selector，默认选第一个可上传 Hilbert workspace；没有 Hilbert workspace 时选择 default。</li>
+          <li>新增只读 Workspace 状态页，展示 <code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code> 和手动同步按钮。</li>
+          <li>default workspace 可选，但必须标记“本地 / 不可云同步”。</li>
+          <li>admin 登录默认跳转从 <code>/admin/factories</code> 改为 <code>/admin/workspaces</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">07</div>
+        <h2>风险、权衡与验证</h2>
+      </div>
+      <div class="content">
+        <div class="grid">
+          <div class="panel hot">
+            <h3>权衡</h3>
+            <ul>
+              <li>default workspace 使用真实 DB 行，而不是虚拟 API 对象，便于后续业务表以 <code>workspace_id=0</code> 形成一致外键语义。</li>
+              <li>Hilbert sync 只 upsert 不删除，优先保护历史可见性；撤权、下线和 access status 后置。</li>
+              <li>临时 password bootstrap 封装在 provider 内，给正式服务身份鉴权留下替换点。</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>风险</h3>
+            <ul>
+              <li>删除本地 workspace 写路由是行为变化，依赖本地组织管理的旧 UI 必须同步迁移。</li>
+              <li>PR-1B 使用 <code>list-available</code>，不是严格的 manageable workspace 列表。</li>
+              <li>default 数据后续必须通过显式人工补绑进入 Hilbert workspace，不能自动上传。</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>PR-1 必须满足</h3>
+        <ul>
+          <li>未配置 Hilbert 时，<code>GET /workspaces</code> 返回 <code>id=0</code> 的 default workspace，且 <code>upload_enabled=false</code>。</li>
+          <li>Hilbert 同步成功后，<code>GET /workspaces</code> 返回 default 加本地缓存的 Hilbert workspaces。</li>
+          <li>Hilbert 后续失败时，<code>GET /workspaces</code> 仍返回上次缓存加 default；手动 sync 返回失败。</li>
+          <li>Swagger 不暴露 workspace 创建、更新、删除接口。</li>
+          <li>Synapse selector 展示 default，但明确标记本地和不可云同步。</li>
+          <li>cloud sync worker 和任何 Hilbert raw data / dataset 创建路径必须拒绝 <code>workspace_id=0</code>。</li>
+          <li>云同步资格统一使用 <code>workspace_id != 0 && source='hilbert' && upload_enabled=true</code>。</li>
+        </ul>
+
+        <h3>测试与文档</h3>
+        <ul>
+          <li>PR-1A 已新增 workspace handler 单测，覆盖 default 返回、<code>workspace_id=0</code> 过滤和写路由不存在。</li>
+          <li>PR-1B 需要继续新增 Hilbert sync upsert、缓存保留和手动 sync 失败场景测试。</li>
+          <li>PR-1A Swagger 只应出现 <code>GET /workspaces</code> 和 <code>GET /workspaces/{id}</code>。</li>
+          <li>PR-1B 完成后，Swagger 中应再出现 <code>POST /workspaces/sync</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer>
+      相关文档：
+      <a href="./keystone-hilbert-domain-migration-sequence.zh.html">Keystone 对齐 Hilbert 领域模型实施顺序</a>，
+      <a href="./hilbert-domain-ownership.zh.html">Hilbert 数据采集领域实体归属关系梳理</a>。
+    </footer>
+  </main>
+</body>
+</html>
