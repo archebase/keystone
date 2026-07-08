@@ -14,6 +14,7 @@ import (
 
 	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -90,10 +91,12 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 	if loginResult == nil || strings.TrimSpace(loginResult.SessionKey) == "" {
 		return nil, fmt.Errorf("%w: login hilbert: missing session key", ErrWorkspaceSyncFailed)
 	}
+	logger.Printf("[WORKSPACE] Hilbert service identity login succeeded: code=%s", s.cfg.ServiceAccountCode)
 	workspaces, err := s.hilbertClient.ListAvailableWorkspaces(ctx, loginResult.SessionKey)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list hilbert workspaces: %v", ErrWorkspaceSyncFailed, err)
 	}
+	logger.Printf("[WORKSPACE] Hilbert workspace list fetched: count=%d", len(workspaces))
 
 	if err := validateHilbertWorkspaces(workspaces); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrWorkspaceSyncFailed, err)
@@ -101,6 +104,7 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 	if err := s.upsertHilbertWorkspaces(ctx, workspaces, now); err != nil {
 		return nil, fmt.Errorf("%w: upsert hilbert workspaces: %v", ErrWorkspaceSyncFailed, err)
 	}
+	logger.Printf("[WORKSPACE] Hilbert workspace sync upsert committed: synced_count=%d", len(workspaces))
 
 	return &WorkspaceSyncResult{
 		SyncedCount:     len(workspaces),

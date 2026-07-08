@@ -444,6 +444,7 @@ func (s *Server) Start() error {
 
 func (s *Server) syncWorkspacesOnStartup() {
 	if s.workspaceSync == nil || !s.workspaceSync.Configured() {
+		logger.Printf("[WORKSPACE] Startup Hilbert workspace sync skipped: service identity config incomplete")
 		return
 	}
 	timeout := time.Duration(s.cfg.Hilbert.TimeoutSeconds) * time.Second
