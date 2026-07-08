@@ -1,0 +1,1173 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone 对齐 Hilbert 领域模型实施顺序</title>
+  <style>
+    :root {
+      --bg: #1D1A2F;
+      --panel: #5F2A62;
+      --accent: #8BD450;
+      --warn: #F5C024;
+      --orange: #F47A16;
+      --paper: #fff7e6;
+      --ink: #05040a;
+      --line: #05040a;
+      --muted: rgba(255, 247, 230, 0.74);
+      --shadow: 10px 10px 0 #05040a;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background: var(--bg);
+      color: var(--paper);
+      font-family: "Songti SC", "STSong", "SimSun", "Noto Serif SC", serif;
+      line-height: 1.72;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        linear-gradient(90deg, rgba(0, 0, 0, 0.26) 1px, transparent 1px) 0 0 / 42px 42px,
+        linear-gradient(0deg, rgba(0, 0, 0, 0.20) 1px, transparent 1px) 0 0 / 42px 42px,
+        linear-gradient(135deg, transparent 0 56%, rgba(139, 212, 80, 0.12) 56% 58%, transparent 58%),
+        var(--bg);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+      opacity: 0.18;
+      background-image:
+        radial-gradient(circle at 20% 12%, var(--paper) 0 1px, transparent 1px),
+        radial-gradient(circle at 78% 70%, var(--paper) 0 1px, transparent 1px);
+      background-size: 19px 23px, 31px 29px;
+      mix-blend-mode: soft-light;
+    }
+
+    .page {
+      width: min(1220px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 36px 0 72px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 610px;
+      border: 5px solid var(--line);
+      background:
+        linear-gradient(101deg, var(--panel) 0 47%, transparent 47%),
+        linear-gradient(164deg, transparent 0 56%, var(--accent) 56% 66%, transparent 66%),
+        linear-gradient(34deg, transparent 0 76%, var(--warn) 76%),
+        var(--paper);
+      color: var(--ink);
+      box-shadow: 18px 18px 0 var(--line);
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "SEQUENCE LOCKED";
+      position: absolute;
+      right: -14px;
+      bottom: 30px;
+      padding: 11px 18px;
+      border: 4px solid var(--line);
+      background: var(--orange);
+      color: var(--ink);
+      font: 900 18px/1 Georgia, "Times New Roman", serif;
+      transform: skewX(-12deg);
+      letter-spacing: 0;
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 2;
+      width: min(960px, 100%);
+      padding: clamp(28px, 5vw, 66px);
+    }
+
+    .kicker {
+      display: inline-block;
+      margin-bottom: 24px;
+      padding: 6px 11px 4px;
+      border: 3px solid var(--line);
+      background: var(--accent);
+      color: var(--ink);
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 860px;
+      font-size: clamp(43px, 7.8vw, 108px);
+      line-height: 0.96;
+      letter-spacing: 0;
+      text-shadow: 5px 5px 0 var(--line);
+    }
+
+    .lede {
+      margin: 28px 0 0;
+      max-width: 820px;
+      color: var(--paper);
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .signal {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-top: 36px;
+      max-width: 980px;
+    }
+
+    .signal-card {
+      min-height: 92px;
+      border: 3px solid var(--line);
+      background: rgba(5, 4, 10, 0.58);
+      color: var(--paper);
+      padding: 13px;
+    }
+
+    .signal-card b {
+      display: block;
+      color: var(--accent);
+      font-size: 13px;
+    }
+
+    .signal-card span {
+      display: block;
+      margin-top: 7px;
+      font-size: 15px;
+    }
+
+    section {
+      margin-top: 30px;
+      border: 4px solid var(--line);
+      background: rgba(95, 42, 98, 0.78);
+      box-shadow: var(--shadow);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 88px 1fr;
+      border-bottom: 4px solid var(--line);
+      background: var(--accent);
+      color: var(--ink);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      border-right: 4px solid var(--line);
+      font: 900 34px/1 Georgia, "Times New Roman", serif;
+    }
+
+    h2 {
+      margin: 0;
+      padding: 14px 18px;
+      font-size: clamp(25px, 4vw, 42px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .content { padding: 24px; }
+
+    h3 {
+      margin: 28px 0 10px;
+      color: var(--warn);
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    h3:first-child { margin-top: 0; }
+
+    p { margin: 0 0 14px; }
+
+    code {
+      padding: 1px 5px;
+      border: 1px solid rgba(255, 247, 230, 0.35);
+      background: rgba(5, 4, 10, 0.34);
+      color: var(--accent);
+      font-family: "Courier New", monospace;
+      font-size: 0.94em;
+    }
+
+    .decision-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0 6px;
+    }
+
+    .decision {
+      min-height: 170px;
+      border: 3px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 6px 6px 0 var(--line);
+      padding: 16px;
+    }
+
+    .decision strong {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 21px;
+      line-height: 1.22;
+    }
+
+    .decision.green { background: var(--accent); }
+    .decision.yellow { background: var(--warn); }
+    .decision.orange { background: var(--orange); }
+
+    .timeline {
+      display: grid;
+      gap: 16px;
+      margin-top: 18px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 96px 1fr;
+      border: 3px solid var(--line);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 6px 6px 0 var(--line);
+    }
+
+    .step-index {
+      display: grid;
+      place-items: center;
+      border-right: 3px solid var(--line);
+      background: var(--warn);
+      font: 900 34px/1 Georgia, "Times New Roman", serif;
+    }
+
+    .step-body { padding: 16px; }
+
+    .step-title {
+      margin: 0 0 8px;
+      color: var(--ink);
+      font-size: 24px;
+      line-height: 1.2;
+    }
+
+    .step-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 10px 0 12px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border: 2px solid var(--line);
+      background: var(--accent);
+      color: var(--ink);
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .badge.warn { background: var(--warn); }
+    .badge.hot { background: var(--orange); }
+    .badge.paper { background: var(--paper); }
+
+    ul,
+    ol {
+      margin: 8px 0 0;
+      padding-left: 24px;
+    }
+
+    li { margin: 6px 0; }
+
+    .diagram {
+      margin: 18px 0;
+      border: 3px solid var(--line);
+      background: var(--ink);
+      color: var(--paper);
+      box-shadow: 6px 6px 0 var(--line);
+      padding: 18px;
+      overflow-x: auto;
+    }
+
+    pre {
+      margin: 0;
+      font-family: "Courier New", monospace;
+      font-size: 15px;
+      line-height: 1.5;
+      white-space: pre;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0;
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 6px 6px 0 var(--line);
+    }
+
+    th,
+    td {
+      border: 3px solid var(--line);
+      padding: 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: var(--warn);
+      font-size: 17px;
+    }
+
+    .callout {
+      margin: 18px 0 0;
+      border: 3px solid var(--line);
+      background: var(--warn);
+      color: var(--ink);
+      box-shadow: 6px 6px 0 var(--line);
+      padding: 16px;
+      font-weight: 800;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .panel {
+      border: 3px solid var(--line);
+      background: rgba(5, 4, 10, 0.35);
+      padding: 16px;
+    }
+
+    .panel h3 { margin-top: 0; }
+
+    footer {
+      margin-top: 34px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 860px) {
+      .page { width: min(100% - 22px, 1220px); padding-top: 16px; }
+      .hero { min-height: auto; box-shadow: 9px 9px 0 var(--line); }
+      .hero-inner { padding: 24px; }
+      .lede { font-size: 17px; }
+      .signal,
+      .decision-grid,
+      .split { grid-template-columns: 1fr; }
+      .section-head { grid-template-columns: 60px 1fr; }
+      .section-no { font-size: 24px; }
+      .content { padding: 18px; }
+      .step { grid-template-columns: 62px 1fr; }
+      .step-index { font-size: 24px; }
+      th, td { padding: 9px; }
+      pre { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-inner">
+        <span class="kicker">Keystone V2 / Hilbert Alignment / 2026-07-06</span>
+        <h1>领域模型<br>迁移顺序<br>实施计划</h1>
+        <p class="lede">
+          本计划以新环境为前提，不考虑历史数据、不保留旧 API、不做旧字段兼容。
+          目标是先让 Keystone 消费 Hilbert Workspace，并用不可云同步的 default workspace 支撑本地离线采集；
+          再逐步替换设备、工厂和生产主链路。
+        </p>
+        <div class="signal">
+          <div class="signal-card"><b>前提</b><span>破坏式 V2 baseline</span></div>
+          <div class="signal-card"><b>主轴</b><span>workspace_id 是业务归属</span></div>
+          <div class="signal-card"><b>物理维度</b><span>factory_id 降级为采集地点</span></div>
+          <div class="signal-card"><b>顺序</b><span>边界先行，主链路后置</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">00</div>
+        <h2>固定前提</h2>
+      </div>
+      <div class="content">
+        <div class="decision-grid">
+          <div class="decision green">
+            <strong>不迁历史数据</strong>
+            <p>直接修改 V2 baseline schema，不写历史 <code>ALTER TABLE</code> 回填脚本。</p>
+          </div>
+          <div class="decision yellow">
+            <strong>不保留兼容 API</strong>
+            <p>删除 <code>/organizations</code> 和 <code>organization_id</code> 字段，不做别名。</p>
+          </div>
+          <div class="decision orange">
+            <strong>本地兜底不可云同步</strong>
+            <p><code>workspace_id=0</code> 是 default workspace，只能承载本地采集和本地制品。</p>
+          </div>
+        </div>
+        <div class="callout">
+          实施节奏的核心约束：先锁定 Workspace 来源规则。Hilbert 是 source of truth；
+          Keystone 只保存本地投影，并始终保留 <code>id=0</code> 的 default workspace。
+          之后再让业务数据统一站到 <code>workspace_id</code> 这个边界上。
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">01</div>
+        <h2>目标模型总览</h2>
+      </div>
+      <div class="content">
+        <div class="diagram">
+          <pre>Keystone Service
+  ├─ Hilbert Service Identity       (PR-1)
+  │   └─ workspace/list-available -> local projection
+  │
+  ├─ Workspace                      (business ownership / permission boundary)
+  │   ├─ id=0 default workspace     (local-only, cloud sync disabled)
+  │   ├─ id=&lt;hilbert_workspace_id&gt;  (source=hilbert)
+  │   ├─ DataCollectors
+  │   ├─ Robots / Devices
+  │   ├─ Workstations
+  │   ├─ Orders
+  │   ├─ Batches
+  │   ├─ Tasks
+  │   └─ Episodes
+  │
+  └─ Physical Dictionaries
+      ├─ Factories / DCFactories    (physical collection sites)
+      ├─ RobotTypes / DeviceTypes
+      └─ Scenes / Subscenes         (first version: factory-scoped)</pre>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>字段</th>
+              <th>角色</th>
+              <th>不能再表达什么</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>workspace_id</code></td>
+              <td>业务归属、权限边界、前端全局上下文；<code>0</code> 是本地 default。</td>
+              <td>不能从 <code>factory_id</code> 推导，也不能把 default 自动上传到 Hilbert。</td>
+            </tr>
+            <tr>
+              <td><code>factory_id</code></td>
+              <td>物理采集地点、现场筛选维度、设备编号分组</td>
+              <td>不能再代表租户、组织、workspace 或数据可见性。</td>
+            </tr>
+            <tr>
+              <td><code>hilbert_*_id</code></td>
+              <td>后续与 Hilbert 资源同步时的外部映射</td>
+              <td>Workspace 例外：<code>workspaces.id</code> 第一阶段直接使用 Hilbert workspace ID。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">02</div>
+        <h2>实施顺序</h2>
+      </div>
+      <div class="content">
+        <div class="timeline">
+          <article class="step">
+            <div class="step-index">0</div>
+            <div class="step-body">
+              <h3 class="step-title">冻结领域映射和非目标</h3>
+              <div class="step-meta">
+                <span class="badge">文档先行</span>
+                <span class="badge warn">不改代码</span>
+              </div>
+              <p>把 Keystone 与 Hilbert 的实体对应关系写清楚，特别是哪些只是归属迁移，哪些是真正语义替换。</p>
+              <ul>
+                <li>确认 <code>organization -> Hilbert workspace projection</code>。</li>
+                <li>确认 <code>workspace_id=0 -> default local-only workspace</code>。</li>
+                <li>确认 <code>factory -> dc_factory / physical site</code>。</li>
+                <li>确认 <code>robot -> workspace-scoped device + factory dimension</code>。</li>
+                <li>标记 <code>scene/subscene</code>、<code>SOP</code>、<code>order/batch/task/episode</code> 为后续高风险域。</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="step">
+            <div class="step-index">1</div>
+            <div class="step-body">
+              <h3 class="step-title">Workspace 投影与 Default 兜底</h3>
+              <div class="step-meta">
+                <span class="badge hot">第一刀</span>
+                <span class="badge">Hilbert source of truth</span>
+              </div>
+              <p>建立 Workspace 来源规则：Keystone 不管理 Workspace，只缓存 Hilbert 可访问 Workspace，并保留本地 default。</p>
+              <ul>
+                <li><code>workspaces.id</code> 直接使用 Hilbert workspace ID。</li>
+                <li><code>workspaces.id=0</code> 是 Keystone 保留的 default workspace。</li>
+                <li>新增独立 <code>HilbertConfig</code> 和 Hilbert service identity provider。</li>
+                <li>启动时和手动触发时调用 <code>/workspace/list-available</code>，只 upsert，不删除缺失 workspace。</li>
+                <li>Workspace API 只提供 <code>GET /workspaces</code>、<code>GET /workspaces/:id</code>、<code>POST /workspaces/sync</code>。</li>
+                <li>Synapse 删除组织管理，新增全局 workspace selector 和只读状态页。</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="step">
+            <div class="step-index">2</div>
+            <div class="step-body">
+              <h3 class="step-title">业务表统一 organization_id -> workspace_id</h3>
+              <div class="step-meta">
+                <span class="badge">归属铺底</span>
+                <span class="badge warn">统计接口同步修改</span>
+              </div>
+              <p>所有业务数据统一使用非空 <code>workspace_id</code>；本地 API 接受 <code>0</code>，云同步路径拒绝 <code>0</code>。</p>
+              <ul>
+                <li><code>data_collectors.workspace_id NOT NULL DEFAULT 0</code></li>
+                <li><code>robots.workspace_id NOT NULL DEFAULT 0</code></li>
+                <li><code>orders.workspace_id NOT NULL DEFAULT 0</code></li>
+                <li><code>batches.workspace_id NOT NULL DEFAULT 0</code></li>
+                <li><code>workstations.workspace_id NOT NULL DEFAULT 0</code></li>
+                <li><code>tasks.workspace_id NOT NULL DEFAULT 0</code></li>
+                <li><code>episodes.workspace_id NOT NULL DEFAULT 0</code></li>
+                <li>所有列表、详情、统计、dashboard 删除 <code>organization_id</code> 参数和响应。</li>
+                <li>云同步资格统一校验 <code>workspace_id != 0</code>、<code>source='hilbert'</code>、<code>upload_enabled=true</code>。</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="step">
+            <div class="step-index">3</div>
+            <div class="step-body">
+              <h3 class="step-title">Factory 降级为物理维度</h3>
+              <div class="step-meta">
+                <span class="badge">保留表</span>
+                <span class="badge warn">删除层级含义</span>
+              </div>
+              <p><code>factories</code> 不再拥有 workspace，只表达采集地点、物理现场或设备编号分组。</p>
+              <ul>
+                <li>删除 <code>FactoryResponse.orgCount</code>。</li>
+                <li>删除所有 factory -> workspace 的查询、计数和 UI 展示。</li>
+                <li>保留 <code>robots.factory_id</code>、<code>scenes.factory_id</code>、<code>device_id_sequences.factory_id</code>。</li>
+                <li>文案逐步改为“采集地点”或“数采工厂”。</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="step">
+            <div class="step-index">4</div>
+            <div class="step-body">
+              <h3 class="step-title">Robot 对齐 Hilbert DCDevice</h3>
+              <div class="step-meta">
+                <span class="badge hot">设备边界</span>
+                <span class="badge">workspace + factory</span>
+              </div>
+              <p>Hilbert 的 <code>dc_device</code> 属于 workspace，因此 Keystone 的 robot 也要成为 workspace-scoped 设备。</p>
+              <ul>
+                <li><code>robots</code> 新增 <code>workspace_id</code>。</li>
+                <li>创建 robot 必填 <code>workspace_id</code> 和 <code>factory_id</code>。</li>
+                <li>robot 列表和详情支持 <code>workspace_id</code> 过滤。</li>
+                <li>workstation 创建时校验 <code>robot.workspace_id == data_collector.workspace_id</code>。</li>
+                <li><code>workstations.workspace_id</code> 从 data collector 派生，<code>factory_id</code> 从 robot 派生。</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="step">
+            <div class="step-index">5</div>
+            <div class="step-body">
+              <h3 class="step-title">Scene / Subscene 保守处理</h3>
+              <div class="step-meta">
+                <span class="badge paper">待决策域</span>
+                <span class="badge warn">暂不硬套 Hilbert</span>
+              </div>
+              <p>Hilbert 当前没有 scene/subscene 的直接等价实体，第一版先保留 Keystone 现有物理环境模板语义。</p>
+              <ul>
+                <li><code>scenes.factory_id</code> 保留。</li>
+                <li><code>subscenes.scene_id</code> 保留。</li>
+                <li>不新增 <code>scenes.workspace_id</code>。</li>
+                <li>记录后续决策：场景是工厂级模板、workspace 私有模板，还是二者同时存在。</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="step">
+            <div class="step-index">6</div>
+            <div class="step-body">
+              <h3 class="step-title">SOP / Order / Batch / Task / Episode 主链路重建</h3>
+              <div class="step-meta">
+                <span class="badge hot">高风险</span>
+                <span class="badge warn">后置</span>
+              </div>
+              <p>这一阶段不是字段改名，而是重新确认 Keystone 本地执行链路和 Hilbert 计划/产物链路的关系。</p>
+              <ul>
+                <li>先不要把 <code>order</code> 直接等同 <code>dc_plan</code>。</li>
+                <li>先不要把 <code>SOP</code> 直接等同 <code>dc_task</code>。</li>
+                <li>先确认 <code>batch/task/episode</code> 是否仍是 Keystone 本地执行概念。</li>
+                <li>可先增加 nullable 外部映射字段：<code>hilbert_plan_id</code>、<code>hilbert_raw_data_id</code>、<code>hilbert_dataset_id</code>。</li>
+              </ul>
+            </div>
+          </article>
+
+          <article class="step">
+            <div class="step-index">7</div>
+            <div class="step-body">
+              <h3 class="step-title">Hilbert 资源同步扩展</h3>
+              <div class="step-meta">
+                <span class="badge">服务身份已存在</span>
+                <span class="badge hot">跨系统同步</span>
+              </div>
+              <p>等 workspace 投影和本地业务归属稳定后，再扩展 Hilbert device、plan、raw data、dataset 等资源同步。</p>
+              <ul>
+                <li>复用 PR-1 的 Hilbert service identity provider 和内存 <code>sessionKey</code>。</li>
+                <li>同步或映射 Hilbert <code>dc_device</code>、<code>dc_plan</code>、<code>raw_data</code>、<code>dataset</code>。</li>
+                <li>设计 default workspace 数据显式补绑到 Hilbert workspace 的审计流程。</li>
+                <li>设计 Workspace 撤权 / 下线后的 <code>access_status</code> 和历史数据可见性策略。</li>
+              </ul>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">03</div>
+        <h2>推荐 PR 拆分</h2>
+      </div>
+      <div class="content">
+        <table>
+          <thead>
+            <tr>
+              <th>PR</th>
+              <th>主题</th>
+              <th>包含</th>
+              <th>不包含</th>
+              <th>完成情况</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>PR-1A</td>
+              <td>Default Workspace Foundation</td>
+              <td>
+                在现有 <code>workspaces</code> 表和 <code>workspace.go</code> 基础上改造：
+                新增 <code>id=0</code> default workspace、<code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code>；
+                API 先只保留 <code>GET /workspaces</code> 和 <code>GET /workspaces/:id</code>，返回 default。
+              </td>
+              <td>不接 Hilbert；不做 <code>/workspaces/sync</code>；不改业务表 <code>workspace_id</code>；不接 Synapse 全局 selector。</td>
+              <td>
+                <span class="badge">已完成</span>：
+                <code>workspace.go</code> 已改为只读 GET；写路由已移除；
+                V2 baseline 已加入 <code>id=0</code> default、<code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code>；
+                workspace 单测覆盖 default 返回、<code>workspace_id=0</code> 过滤和写路由不存在。
+              </td>
+            </tr>
+            <tr>
+              <td>PR-1B</td>
+              <td>Hilbert Workspace Sync Bootstrap</td>
+              <td>
+                新增独立 <code>HilbertConfig</code>、Hilbert service identity provider、临时 code/password bootstrap、
+                内存 <code>sessionKey</code>、启动同步和 <code>POST /workspaces/sync</code>；
+                调用 <code>GET /v1/console/workspace/list-available</code> 后事务化 upsert 本地 projection。
+              </td>
+              <td>
+                不同步 device/plan/raw data/dataset；不把 <code>admins/members</code> 接入 Keystone 权限；
+                不做正式 Keystone-Hilbert 鉴权；不处理 workspace 撤权策略。
+              </td>
+              <td>
+                <span class="badge hot">未完成</span>：
+                Hilbert 代码已确认登录、Bearer <code>sessionKey</code> 和 <code>list-available</code> 接口形态；
+                Keystone 尚无 <code>HilbertConfig</code>、service identity provider、workspace sync API 和事务 upsert。
+                PR-1B 的 password bootstrap 是临时 provider，后续必须替换为 Hilbert 正式 Keystone 鉴权。
+              </td>
+            </tr>
+            <tr>
+              <td>PR-1C</td>
+              <td>Synapse Workspace Selector</td>
+              <td>
+                删除组织管理入口；新增全局 Workspace Selector 和只读 Workspace 状态页；
+                default 可选但标记本地 / 不可云同步，默认优先选择可上传 Hilbert workspace。
+              </td>
+              <td>不改业务页面筛选参数；不提供 workspace 创建、编辑、删除表单；不自动迁移 default 数据。</td>
+              <td>
+                <span class="badge hot">未完成</span>：
+                后端 default workspace 的只读 GET API 已就绪；Synapse 仍需要按全局 selector / 只读状态页接入。
+              </td>
+            </tr>
+            <tr>
+              <td>PR-2</td>
+              <td>业务归属字段替换</td>
+              <td>所有 <code>organization_id -> workspace_id NOT NULL DEFAULT 0</code>，列表、统计、dashboard 同步改参。</td>
+              <td>不把 default 数据自动上传，不改 SOP/order/batch/task 的 Hilbert 语义。</td>
+              <td>
+                <span class="badge hot">未完成</span>：
+                当前业务表仍大量使用 <code>organization_id</code>；<code>robots</code> 尚无 <code>workspace_id</code>。
+              </td>
+            </tr>
+            <tr>
+              <td>PR-3</td>
+              <td>Factory 解耦</td>
+              <td>删除 <code>orgCount</code>，去掉 factory -> workspace 关系和 UI 文案。</td>
+              <td>不重命名表到 <code>dc_factories</code>，避免无收益 churn。</td>
+              <td>
+                <span class="badge warn">部分已有</span>：
+                V2 baseline 的 <code>workspaces</code> 已不含 <code>factory_id</code>；
+                但 factory 相关接口、统计和 Synapse 文案仍需按物理维度清理。
+              </td>
+            </tr>
+            <tr>
+              <td>PR-4</td>
+              <td>Robot 设备归属</td>
+              <td><code>robots.workspace_id</code>，workstation 同 workspace 校验，Synapse 设备页接 workspace selector。</td>
+              <td>不处理 Hilbert 设备同步。</td>
+              <td>
+                <span class="badge hot">未完成</span>：
+                现有 <code>robots</code> 仍以 <code>factory_id</code> 为主要现场维度，尚未 workspace-scoped。
+              </td>
+            </tr>
+            <tr>
+              <td>PR-5</td>
+              <td>主链路语义设计</td>
+              <td>SOP/order/batch/task/episode 与 Hilbert plan/raw-data/dataset 的设计、映射字段和 default 补绑策略。</td>
+              <td>不一次性替换任务派发和录制回调行为。</td>
+              <td>
+                <span class="badge hot">未完成</span>：
+                当前任务、Episode、云同步链路已有本地执行和上传实现；
+                但尚未定义 Hilbert plan/raw-data/dataset 映射和 default 显式补绑流程。
+              </td>
+            </tr>
+            <tr>
+              <td>PR-6</td>
+              <td>Hilbert 资源同步扩展</td>
+              <td>基于已有服务身份同步 device、plan、raw data、dataset，处理 workspace 撤权策略。</td>
+              <td>不回头兼容旧 organization 模型。</td>
+              <td>
+                <span class="badge hot">未完成</span>：
+                依赖 PR-1B 的 service identity provider 和 PR-5 的主链路语义设计。
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="callout">
+          结合当前代码，PR-1A 已完成：default workspace 的后端基础能力已经落地，且不依赖 Hilbert。
+          PR-1B 再接 Hilbert service identity bootstrap；PR-1C 再让 Synapse 使用新的只读 selector。
+          Robot / workstation 会牵动设备注册、Axon、任务派发，是独立风险面，不应混入 PR-1。
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">04</div>
+        <h2>PR-1 决策锁定</h2>
+      </div>
+      <div class="content">
+        <p>
+          PR-1 的目标是建立 Workspace 来源规则，而不是提供 Keystone 本地 Workspace 管理。
+          该 PR 引入 Hilbert service identity，只同步可访问 Workspace；同时创建 <code>id=0</code>
+          的 default workspace，支撑本地离线采集和后续业务归属迁移。
+        </p>
+        <div class="callout">
+          当前实现进度：PR-1A 已完成。Keystone 后端已具备 <code>id=0</code> default workspace、
+          只读 <code>GET /workspaces</code> / <code>GET /workspaces/:id</code>、以及 V2 baseline schema 支撑。
+          <code>POST /workspaces/sync</code>、Hilbert service identity bootstrap 和 Synapse selector 仍属于 PR-1B / PR-1C。
+        </div>
+
+        <h3>后端范围</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>项目</th>
+              <th>决策</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>主键</td>
+              <td><code>workspaces.id</code> 直接使用 Hilbert workspace ID</td>
+              <td><code>id=0</code> 是 Keystone 保留 default workspace；不使用本地自增 ID。</td>
+            </tr>
+            <tr>
+              <td>表结构</td>
+              <td><code>workspaces</code></td>
+              <td>替换 V2 baseline 中的 <code>organizations</code>；删除 <code>factory_id</code>、<code>slug</code>、<code>settings</code>。</td>
+            </tr>
+            <tr>
+              <td>成员字段</td>
+              <td><code>admins_str</code> / <code>members_str</code></td>
+              <td>只作为 Hilbert 投影展示；第一阶段不驱动 Keystone 本地权限，也不要求非空。</td>
+            </tr>
+            <tr>
+              <td>来源与上传资格</td>
+              <td><code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code></td>
+              <td>最终云同步资格为 <code>id != 0 && source='hilbert' && upload_enabled=true</code>。</td>
+            </tr>
+            <tr>
+              <td>同步语义</td>
+              <td>只 upsert，不删除</td>
+              <td>Hilbert 本轮未返回的 workspace 第一阶段不禁用、不软删；撤权策略后置。</td>
+            </tr>
+            <tr>
+              <td>配置</td>
+              <td>新增独立 <code>HilbertConfig</code></td>
+              <td><code>HilbertConfig</code> 成为 Hilbert endpoint、timeout 和 service identity 设置的唯一归属；<code>AuthConfig</code> 不再持有 Hilbert endpoint。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>PR-1B 临时 Bootstrap 与正式鉴权边界</h3>
+        <p>
+          Keystone 的真实身份应是 Hilbert 中被授予若干 Workspace scope 的独立服务身份。
+          由于 Hilbert 暂未提供正式 Keystone 鉴权，PR-1B 允许临时配置一个 Hilbert 管理员账号的
+          <code>code/password</code> 作为 service identity bootstrap。代码和配置使用
+          <code>service identity</code> 命名，不使用 admin 命名，避免把临时方案固化。
+        </p>
+        <div class="diagram">
+          <pre>HilbertServiceIdentityProvider
+  └─ BootstrapPasswordProvider   (PR-1B temporary)
+       ├─ GET /v1/console/nonce/generate
+       ├─ POST /v1/console/account/login
+       └─ sessionKey kept in memory only
+
+Future provider
+  ├─ app credential / token exchange
+  └─ same workspace sync service contract</pre>
+        </div>
+        <ul>
+          <li>PR-1B 不引入多模式配置；只要求代码边界不要把 password login 泄漏到 workspace sync 逻辑里。</li>
+          <li>临时 bootstrap account 应是 Hilbert system admin，或目标 workspaces 的管理员账号。</li>
+          <li>PR-1B 使用 Hilbert 当前的 <code>list-available</code> 返回值，不本地强校验 <code>admins</code> 是否包含 bootstrap account。</li>
+          <li>正式鉴权阶段应让 Hilbert 审计中能区分 Keystone service identity 和人工管理员。</li>
+        </ul>
+
+        <h3>Hilbert 接口事实</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>能力</th>
+              <th>Hilbert 接口 / 字段</th>
+              <th>Keystone 使用方式</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>获取 nonce</td>
+              <td><code>GET /v1/console/nonce/generate</code></td>
+              <td>复用现有 Hilbert password digest 加密流程。</td>
+            </tr>
+            <tr>
+              <td>登录</td>
+              <td><code>POST /v1/console/account/login</code>，返回 <code>data.sessionKey</code></td>
+              <td>service identity provider 登录后把 <code>sessionKey</code> 仅缓存在内存。</td>
+            </tr>
+            <tr>
+              <td>请求鉴权</td>
+              <td><code>Authorization: Bearer &lt;sessionKey&gt;</code></td>
+              <td>调用 Hilbert workspace API 时加 Bearer header。</td>
+            </tr>
+            <tr>
+              <td>可用 Workspace</td>
+              <td><code>GET /v1/console/workspace/list-available</code>，返回 <code>[]WorkspaceVO</code></td>
+              <td>system admin 会返回全部；普通账号返回 admins/members 可访问 workspace。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>目标表结构</h3>
+        <div class="diagram">
+          <pre>workspaces
+  ├─ id BIGINT PRIMARY KEY
+  ├─ name VARCHAR(100) NOT NULL
+  ├─ description VARCHAR(200)
+  ├─ source VARCHAR(32) NOT NULL              -- default | hilbert
+  ├─ upload_enabled BOOLEAN NOT NULL
+  ├─ admins_str VARCHAR(200)
+  ├─ members_str VARCHAR(1024)
+  ├─ last_synced_at TIMESTAMP NULL
+  ├─ hilbert_created_at TIMESTAMP NULL
+  ├─ hilbert_updated_at TIMESTAMP NULL
+  ├─ created_at TIMESTAMP
+  ├─ updated_at TIMESTAMP
+  ├─ deleted_at TIMESTAMP NULL
+  └─ id=0 reserved for default workspace</pre>
+        </div>
+
+        <h3>PR-1B 同步算法</h3>
+        <ol>
+          <li>Ensure <code>id=0</code> default workspace exists.</li>
+          <li>如果 <code>HilbertConfig</code> 的 <code>BaseURL</code>、<code>ServiceAccountCode</code>、<code>ServiceAccountPassword</code> 不完整，启动同步跳过；手动同步返回 <code>503</code>。</li>
+          <li>通过 service identity provider 登录 Hilbert，获得内存 <code>sessionKey</code>。</li>
+          <li>调用 <code>GET /v1/console/workspace/list-available</code>。</li>
+          <li>先校验全部记录：<code>id &gt; 0</code>、<code>name</code> 非空、无重复 ID。</li>
+          <li>校验通过后开启事务，upsert 全部 Hilbert workspaces。</li>
+          <li>提交事务；本轮未返回的 Hilbert workspace 不删除、不禁用。</li>
+        </ol>
+        <div class="diagram">
+          <pre>Upsert mapping
+  id                 <- Hilbert WorkspaceVO.id
+  name               <- WorkspaceVO.name
+  description        <- WorkspaceVO.description
+  source             <- "hilbert"
+  upload_enabled     <- true
+  admins_str         <- hash-wrapped normalized WorkspaceVO.admins
+  members_str        <- hash-wrapped normalized WorkspaceVO.members
+  last_synced_at     <- Keystone sync time
+  hilbert_created_at <- WorkspaceVO.createdTime
+  hilbert_updated_at <- WorkspaceVO.updatedTime</pre>
+        </div>
+        <ul>
+          <li>Hilbert 返回 <code>id=0</code> 或非法记录时，本次 sync 整体失败，不 upsert 任何记录，本地缓存保持不变。</li>
+          <li><code>admins/members</code> 继续以 hash-wrapped <code>admins_str/members_str</code> 存储，只做 trim、drop-empty、dedupe，不做严格业务校验。</li>
+          <li><code>created_at/updated_at</code> 保留 Keystone 本地投影行时间；Hilbert 原始时间写入 <code>hilbert_created_at/hilbert_updated_at</code>。</li>
+          <li><code>upload_enabled=true</code> 仅表示来自 Hilbert sync 且可进入 Keystone 云同步候选集，不保证后续 raw data / dataset 创建一定成功。</li>
+        </ul>
+
+        <h3>启动同步与失败行为</h3>
+        <ul>
+          <li>启动时只有 Hilbert service identity 三要素完整时才尝试登录和同步。</li>
+          <li>启动登录失败或 <code>list-available</code> 失败时，只记录日志并继续启动；Keystone 保持 default/cache 模式。</li>
+          <li><code>POST /api/v1/workspaces/sync</code> 必须 Keystone admin-only，且使用 Hilbert service identity，不使用调用者身份。</li>
+          <li>手动 sync 未配置、登录失败、接口失败或校验失败时返回 <code>503</code>；<code>GET /workspaces</code> 继续返回本地 projection。</li>
+          <li>PR-1B 不把 Hilbert <code>admins/members</code> 接入 Keystone 本地权限；<code>GET /workspaces</code> 仍按现有 Keystone auth 边界返回本地投影。</li>
+        </ul>
+
+        <h3>正式 Keystone-Hilbert 鉴权目标</h3>
+        <ul>
+          <li>Hilbert 为 Keystone 提供独立 service identity，不复用真人管理员账号。</li>
+          <li>Hilbert 能向 Keystone service identity 授予一个或多个 workspace scope。</li>
+          <li>Keystone 可以用非密码式 credential 获取 bearer token。</li>
+          <li>Hilbert 审计中能区分 Keystone service identity 和人工管理员。</li>
+          <li>Workspace sync 语义不变：获取 bearer token，列出 scoped workspaces，事务化 upsert 本地 projection。</li>
+        </ul>
+
+        <h3>API 决策</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>维度</th>
+              <th>PR-1 选择</th>
+              <th>理由</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>路由</td>
+              <td>只读投影 + 手动同步</td>
+              <td><code>GET /api/v1/workspaces</code>、<code>GET /api/v1/workspaces/:id</code>、<code>POST /api/v1/workspaces/sync</code>。</td>
+            </tr>
+            <tr>
+              <td>写路由</td>
+              <td>完全不注册</td>
+              <td>不提供 <code>POST /workspaces</code>、<code>PUT /workspaces/:id</code>、<code>DELETE /workspaces/:id</code>。</td>
+            </tr>
+            <tr>
+              <td>字段 shape</td>
+              <td>Keystone 响应包装 + Hilbert 投影字段</td>
+              <td>响应使用 <code>id</code>、<code>name</code>、<code>description</code>、<code>source</code>、<code>upload_enabled</code>、<code>admins</code>、<code>members</code>、<code>last_synced_at</code>。</td>
+            </tr>
+            <tr>
+              <td>分页</td>
+              <td>保持 Keystone 格式</td>
+              <td>继续使用 <code>items/total/limit/offset/hasNext/hasPrev</code>，不切 Hilbert <code>records/pageNum/pageSize</code>。</td>
+            </tr>
+            <tr>
+              <td>时间字段</td>
+              <td>保持 Keystone 风格</td>
+              <td>响应用 <code>created_at</code>、<code>updated_at</code>；不引入 <code>createdBy</code>、<code>createdTime</code>。</td>
+            </tr>
+            <tr>
+              <td>权限</td>
+              <td>同步 admin-only</td>
+              <td><code>POST /workspaces/sync</code> 只允许 Keystone admin；<code>admins/members</code> 不驱动 Keystone 权限控制。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>请求与响应形态</h3>
+        <div class="diagram">
+          <pre>GET /api/v1/workspaces
+{
+  "items": [
+    {
+      "id": "0",
+      "name": "Default Workspace",
+      "description": "Local-only fallback workspace",
+      "source": "default",
+      "upload_enabled": false,
+      "admins": [],
+      "members": [],
+      "last_synced_at": null
+    },
+    {
+      "id": "123",
+      "name": "Customer Workspace",
+      "description": "from Hilbert",
+      "source": "hilbert",
+      "upload_enabled": true,
+      "admins": ["admin01"],
+      "members": ["user01"],
+      "last_synced_at": "2026-07-07T..."
+    }
+  ],
+  "total": 2,
+  "limit": 50,
+  "offset": 0,
+  "hasNext": false,
+  "hasPrev": false
+}
+
+POST /api/v1/workspaces/sync
+{
+  "synced_count": 3,
+  "default_included": true,
+  "last_synced_at": "2026-07-07T..."
+}</pre>
+        </div>
+
+        <h3>Synapse 范围</h3>
+        <ul>
+          <li><code>src/api/organizations.js</code> 替换为 <code>src/api/workspaces.js</code>。</li>
+          <li><code>/admin/organizations</code> 替换为 <code>/admin/workspaces</code>。</li>
+          <li>删除组织管理表单，不提供 workspace 创建、编辑、删除控件。</li>
+          <li>新增全局 Workspace Selector，默认选第一个可上传 Hilbert workspace；没有 Hilbert workspace 时选择 default。</li>
+          <li>新增只读 Workspace 状态页，展示 <code>source</code>、<code>upload_enabled</code>、<code>last_synced_at</code> 和手动同步按钮。</li>
+          <li>default workspace 可选，但必须标记“本地 / 不可云同步”。</li>
+          <li>admin 登录默认跳转从 <code>/admin/factories</code> 改为 <code>/admin/workspaces</code>。</li>
+          <li><code>/admin</code> 默认重定向从 <code>/admin/factories</code> 改为 <code>/admin/workspaces</code>。</li>
+        </ul>
+
+        <h3>测试与文档</h3>
+        <ul>
+          <li>PR-1A 已新增 workspace handler 单测，覆盖 default 返回、<code>workspace_id=0</code> 过滤和写路由不存在。</li>
+          <li>PR-1B 需要继续新增 Hilbert sync upsert、缓存保留和手动 sync 失败场景测试。</li>
+          <li>运行 <code>swag init -g internal/server/server.go -o docs</code> 同步 Swagger；PR-1A 只应出现 <code>GET /workspaces</code> 和 <code>GET /workspaces/{id}</code>。</li>
+          <li>PR-1B 完成后，Swagger 中应再出现 <code>POST /workspaces/sync</code>。</li>
+          <li>Swagger 中不应出现 <code>POST /workspaces</code>、<code>PUT /workspaces/{id}</code>、<code>DELETE /workspaces/{id}</code>。</li>
+          <li>Swagger 中不应再出现 <code>/organizations</code> 和 <code>/organizations/{id}</code>。</li>
+          <li>不新增额外设计文档；PR 描述引用本文档和 Hilbert 归属文档。</li>
+        </ul>
+
+        <h3>PR-1 明确不做</h3>
+        <div class="split">
+          <div class="panel">
+            <h3>后端不做</h3>
+            <ul>
+              <li>不修改任何业务表的 <code>organization_id</code>。</li>
+              <li>不新增 <code>robots.workspace_id</code>。</li>
+              <li>不同步 Hilbert <code>dc_device</code>、<code>dc_plan</code>、<code>raw_data</code>、<code>dataset</code>。</li>
+              <li>不把 <code>admins/members</code> 接入 Keystone 本地权限模型。</li>
+              <li>不校验 admins/members 账号是否真实存在。</li>
+              <li>不处理 Hilbert workspace 撤权 / 下线策略。</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>前端不做</h3>
+            <ul>
+              <li>不改 collectors/orders/robots/tasks 页面。</li>
+              <li>不改业务筛选参数。</li>
+              <li>不保留组织管理入口。</li>
+              <li>不提供 workspace CRUD 表单。</li>
+              <li>不把 default 数据自动迁移到 Hilbert workspace。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">05</div>
+        <h2>验收标准</h2>
+      </div>
+      <div class="content">
+        <div class="split">
+          <div class="panel">
+            <h3>每个阶段必须满足</h3>
+            <ul>
+              <li>OpenAPI / Swagger 与 handler 字段一致。</li>
+              <li>Synapse API wrapper、表单、筛选、详情字段一致。</li>
+              <li>Keystone 单元测试和构建通过。</li>
+              <li>新增字段没有旧名残留在 runtime path。</li>
+              <li>default workspace 的本地可用性和云同步禁止规则有测试覆盖。</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>最终必须满足</h3>
+            <ul>
+              <li>业务数据均可按 <code>workspace_id</code> 查询。</li>
+              <li>factory 不再影响 workspace 归属。</li>
+              <li>设备不能跨 workspace 绑定数采员。</li>
+              <li>一个 Keystone 可消费多个 Hilbert workspace。</li>
+              <li><code>workspace_id=0</code> 的数据不会自动进入 Hilbert / 云同步。</li>
+            </ul>
+          </div>
+        </div>
+        <h3>PR-1 必须满足</h3>
+        <ul>
+          <li>未配置 Hilbert 时，<code>GET /workspaces</code> 返回 <code>id=0</code> 的 default workspace，且 <code>upload_enabled=false</code>。</li>
+          <li>Hilbert 同步成功后，<code>GET /workspaces</code> 返回 default 加本地缓存的 Hilbert workspaces。</li>
+          <li>Hilbert 后续失败时，<code>GET /workspaces</code> 仍返回上次缓存加 default；手动 sync 返回失败。</li>
+          <li>Swagger 不暴露 workspace 创建、更新、删除接口。</li>
+          <li>Synapse selector 展示 default，但明确标记本地和不可云同步。</li>
+        </ul>
+        <h3>本地上传与云同步验收</h3>
+        <ul>
+          <li>default workspace 下允许本地采集、Axon transfer 上传 MCAP 到 Keystone MinIO、生成本地 Episode。</li>
+          <li>cloud sync worker 和任何 Hilbert raw data / dataset 创建路径必须拒绝 <code>workspace_id=0</code>。</li>
+          <li>云同步资格统一使用 <code>workspace_id != 0 && source='hilbert' && upload_enabled=true</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">06</div>
+        <h2>明确后置的问题</h2>
+      </div>
+      <div class="content">
+        <ul>
+          <li><code>scene/subscene</code> 是否最终变成 workspace-scoped 模板。</li>
+          <li><code>SOP</code> 是否等价于 Hilbert <code>dc_task</code>，还是 Keystone 本地执行模板。</li>
+          <li><code>order</code> 是否等价于 Hilbert <code>dc_plan</code>，还是 dc_plan 的本地执行投影。</li>
+          <li><code>batch</code> 是否继续作为 Keystone 本地执行批次。</li>
+          <li><code>episode</code> 与 Hilbert <code>raw_data</code> / <code>dataset</code> 的同步边界。</li>
+          <li>Hilbert <code>admins/members</code> 是否第一时间进入 Keystone 本地权限模型。</li>
+          <li>default workspace 数据如何显式补绑到 Hilbert workspace，以及需要记录哪些审计字段。</li>
+          <li>Hilbert 不再返回某个 workspace 时，是否新增 <code>access_status</code> 和历史数据可见策略。</li>
+          <li>Workspace 撤权后，未同步数据是否继续允许云同步，还是必须暂停等待人工处理。</li>
+        </ul>
+        <div class="callout">
+          这些问题不是不重要，而是不应该挡住第一阶段的归属边界迁移。
+          等 Hilbert workspace 投影和 <code>workspace_id</code> 成为稳定边界后，再逐个替换主链路语义。
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      本文档用于 Keystone / Synapse 对齐 Hilbert 领域模型的实施排序讨论。前置参考：
+      <code>docs/designs/v2/hilbert-domain-ownership.zh.html</code>。
+    </footer>
+  </main>
+</body>
+</html>

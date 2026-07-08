@@ -5,11 +5,9 @@
 package handlers
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,37 +16,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestWorkspaceCreateListGetUpdateDelete(t *testing.T) {
+func TestWorkspaceListEnsuresDefaultWorkspace(t *testing.T) {
 	db := newTestWorkspaceDB(t)
 	defer db.Close()
 	router := newTestWorkspaceRouter(db)
-
-	createResp := postWorkspace(t, router, CreateWorkspaceRequest{
-		Name:    "  Workspace A  ",
-		Admins:  []string{" admin-a ", "admin-b"},
-		Members: []string{"member-a", " member-b "},
-	}, http.StatusCreated)
-
-	if createResp.ID == "" || createResp.Name != "Workspace A" {
-		t.Fatalf("unexpected create response: %#v", createResp)
-	}
-	if strings.Join(createResp.Admins, ",") != "admin-a,admin-b" {
-		t.Fatalf("admins=%#v", createResp.Admins)
-	}
-	if strings.Join(createResp.Members, ",") != "member-a,member-b" {
-		t.Fatalf("members=%#v", createResp.Members)
-	}
-
-	var stored struct {
-		AdminsStr  string `db:"admins_str"`
-		MembersStr string `db:"members_str"`
-	}
-	if err := db.Get(&stored, "SELECT admins_str, members_str FROM workspaces WHERE id = ?", createResp.ID); err != nil {
-		t.Fatalf("query stored workspace: %v", err)
-	}
-	if stored.AdminsStr != "#admin-a#admin-b#" || stored.MembersStr != "#member-a#member-b#" {
-		t.Fatalf("stored people=%#v", stored)
-	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces?limit=10&offset=0", nil)
 	w := httptest.NewRecorder()
@@ -56,120 +27,122 @@ func TestWorkspaceCreateListGetUpdateDelete(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", w.Code, w.Body.String())
 	}
+
 	var listResp WorkspaceListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("unmarshal list: %v", err)
 	}
-	if listResp.Total != 1 || len(listResp.Items) != 1 || listResp.Items[0].ID != createResp.ID {
+	if listResp.Total != 1 || len(listResp.Items) != 1 {
 		t.Fatalf("unexpected list response: %#v", listResp)
 	}
 
-	updateBody := `{"name":"Workspace Renamed","admins":["admin-c"],"members":[]}`
-	req = httptest.NewRequest(http.MethodPut, "/api/v1/workspaces/"+createResp.ID, strings.NewReader(updateBody))
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("update status=%d body=%s", w.Code, w.Body.String())
-	}
-	var updateResp WorkspaceResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &updateResp); err != nil {
-		t.Fatalf("unmarshal update: %v", err)
-	}
-	if updateResp.Name != "Workspace Renamed" || strings.Join(updateResp.Admins, ",") != "admin-c" || len(updateResp.Members) != 0 {
-		t.Fatalf("unexpected update response: %#v", updateResp)
-	}
+	assertDefaultWorkspaceResponse(t, listResp.Items[0])
 
-	req = httptest.NewRequest(http.MethodDelete, "/api/v1/workspaces/"+createResp.ID, nil)
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("delete status=%d body=%s", w.Code, w.Body.String())
+	var stored struct {
+		ID            int64  `db:"id"`
+		Source        string `db:"source"`
+		UploadEnabled bool   `db:"upload_enabled"`
 	}
-
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/"+createResp.ID, nil)
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("get deleted status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	if err := db.Get(&stored, "SELECT id, source, upload_enabled FROM workspaces WHERE id = 0"); err != nil {
+		t.Fatalf("query default workspace: %v", err)
+	}
+	if stored.ID != 0 || stored.Source != WorkspaceSourceDefault || stored.UploadEnabled {
+		t.Fatalf("unexpected stored default workspace: %#v", stored)
 	}
 }
 
-func TestWorkspaceValidation(t *testing.T) {
+func TestWorkspaceGetDefaultWorkspace(t *testing.T) {
+	db := newTestWorkspaceDB(t)
+	defer db.Close()
+	router := newTestWorkspaceRouter(db)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/0", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp WorkspaceResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal get: %v", err)
+	}
+	assertDefaultWorkspaceResponse(t, resp)
+}
+
+func TestWorkspaceListAllowsDefaultWorkspaceIDFilter(t *testing.T) {
+	db := newTestWorkspaceDB(t)
+	defer db.Close()
+	router := newTestWorkspaceRouter(db)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces?workspace_id=0", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var listResp WorkspaceListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("unmarshal list: %v", err)
+	}
+	if listResp.Total != 1 || len(listResp.Items) != 1 || listResp.Items[0].ID != "0" {
+		t.Fatalf("unexpected filtered list response: %#v", listResp)
+	}
+}
+
+func TestWorkspaceWriteRoutesAreNotRegistered(t *testing.T) {
 	db := newTestWorkspaceDB(t)
 	defer db.Close()
 	router := newTestWorkspaceRouter(db)
 
 	tests := []struct {
-		name       string
-		body       string
-		wantError  string
-		wantStatus int
+		method string
+		path   string
 	}{
-		{
-			name:       "missing name",
-			body:       `{"admins":["admin-a"]}`,
-			wantStatus: http.StatusBadRequest,
-			wantError:  "name is required",
-		},
-		{
-			name:       "empty admins after trim",
-			body:       `{"name":"Workspace A","admins":[" ",""]}`,
-			wantStatus: http.StatusBadRequest,
-			wantError:  "admins is required",
-		},
-		{
-			name:       "duplicate admins",
-			body:       `{"name":"Workspace A","admins":["admin-a","admin-a"]}`,
-			wantStatus: http.StatusBadRequest,
-			wantError:  "admins contains duplicate",
-		},
-		{
-			name:       "duplicate members",
-			body:       `{"name":"Workspace A","admins":["admin-a"],"members":["member-a","member-a"]}`,
-			wantStatus: http.StatusBadRequest,
-			wantError:  "members contains duplicate",
-		},
-		{
-			name:       "overlap",
-			body:       `{"name":"Workspace A","admins":["user-a"],"members":["user-a"]}`,
-			wantStatus: http.StatusBadRequest,
-			wantError:  "admins and members cannot overlap",
-		},
+		{method: http.MethodPost, path: "/api/v1/workspaces"},
+		{method: http.MethodPut, path: "/api/v1/workspaces/0"},
+		{method: http.MethodDelete, path: "/api/v1/workspaces/0"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces", strings.NewReader(tt.body))
-			req.Header.Set("Content-Type", "application/json")
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
-			if w.Code != tt.wantStatus {
-				t.Fatalf("status=%d want=%d body=%s", w.Code, tt.wantStatus, w.Body.String())
-			}
-			if !strings.Contains(w.Body.String(), tt.wantError) {
-				t.Fatalf("body=%q want error %q", w.Body.String(), tt.wantError)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
 			}
 		})
 	}
 }
 
-func TestWorkspaceNameUniqueAmongActiveRows(t *testing.T) {
-	db := newTestWorkspaceDB(t)
-	defer db.Close()
-	router := newTestWorkspaceRouter(db)
-
-	first := postWorkspace(t, router, CreateWorkspaceRequest{Name: "Workspace A", Admins: []string{"admin-a"}}, http.StatusCreated)
-	postWorkspace(t, router, CreateWorkspaceRequest{Name: "Workspace A", Admins: []string{"admin-b"}}, http.StatusBadRequest)
-
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/workspaces/"+first.ID, nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("delete status=%d body=%s", w.Code, w.Body.String())
+func assertDefaultWorkspaceResponse(t *testing.T, workspace WorkspaceResponse) {
+	t.Helper()
+	if workspace.ID != "0" {
+		t.Fatalf("id=%q want 0", workspace.ID)
 	}
-
-	postWorkspace(t, router, CreateWorkspaceRequest{Name: "Workspace A", Admins: []string{"admin-b"}}, http.StatusCreated)
+	if workspace.Name != DefaultWorkspaceName {
+		t.Fatalf("name=%q want %q", workspace.Name, DefaultWorkspaceName)
+	}
+	if workspace.Source != WorkspaceSourceDefault {
+		t.Fatalf("source=%q want %q", workspace.Source, WorkspaceSourceDefault)
+	}
+	if workspace.UploadEnabled {
+		t.Fatalf("upload_enabled=true want false")
+	}
+	if workspace.LastSyncedAt != "" {
+		t.Fatalf("last_synced_at=%q want empty", workspace.LastSyncedAt)
+	}
+	if len(workspace.Admins) != 0 || len(workspace.Members) != 0 {
+		t.Fatalf("people=%#v/%#v want empty", workspace.Admins, workspace.Members)
+	}
+	if workspace.CreatedAt == "" {
+		t.Fatalf("created_at is empty: %#v", workspace)
+	}
+	if _, err := time.Parse(time.RFC3339, workspace.CreatedAt); err != nil {
+		t.Fatalf("created_at=%q is not RFC3339: %v", workspace.CreatedAt, err)
+	}
 }
 
 func newTestWorkspaceRouter(db *sqlx.DB) *gin.Engine {
@@ -187,47 +160,21 @@ func newTestWorkspaceDB(t *testing.T) *sqlx.DB {
 	}
 	if _, err := db.Exec(`
 		CREATE TABLE workspaces (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
-			admins_str TEXT NOT NULL,
+			description TEXT,
+			source TEXT NOT NULL,
+			upload_enabled BOOLEAN NOT NULL,
+			admins_str TEXT,
 			members_str TEXT,
+			last_synced_at TIMESTAMP,
 			created_at TIMESTAMP,
 			updated_at TIMESTAMP,
 			deleted_at TIMESTAMP
 		);
-		CREATE UNIQUE INDEX idx_workspaces_name_active ON workspaces(name) WHERE deleted_at IS NULL;
 	`); err != nil {
 		db.Close()
 		t.Fatalf("create workspaces table: %v", err)
 	}
 	return db
-}
-
-func postWorkspace(t *testing.T, router *gin.Engine, body CreateWorkspaceRequest, wantStatus int) WorkspaceResponse {
-	t.Helper()
-	payload, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal workspace body: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != wantStatus {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, wantStatus, w.Body.String())
-	}
-	if wantStatus != http.StatusCreated {
-		return WorkspaceResponse{}
-	}
-	var resp WorkspaceResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal create response: %v body=%s", err, w.Body.String())
-	}
-	if resp.CreatedAt == "" {
-		t.Fatalf("created_at is empty: %#v", resp)
-	}
-	if _, err := time.Parse(time.RFC3339, resp.CreatedAt); err != nil {
-		t.Fatalf("created_at=%q is not RFC3339: %v", resp.CreatedAt, err)
-	}
-	return resp
 }

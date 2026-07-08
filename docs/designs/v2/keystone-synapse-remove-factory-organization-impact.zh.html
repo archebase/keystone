@@ -1,0 +1,595 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone / Synapse 去工厂与组织概念影响面梳理</title>
+  <style>
+    :root {
+      --bg: #1D1A2F;
+      --panel: #5F2A62;
+      --accent: #8BD450;
+      --warn: #F5C024;
+      --ink: #fff7e6;
+      --black: #05040a;
+      --line: rgba(255, 247, 230, 0.22);
+      --shadow: 10px 10px 0 #05040a;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, transparent 0 62%, rgba(139, 212, 80, 0.14) 62% 64%, transparent 64%),
+        repeating-linear-gradient(0deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 4px),
+        var(--bg);
+      font-family: "Songti SC", "STSong", "SimSun", "Noto Serif SC", serif;
+      line-height: 1.72;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        radial-gradient(circle at 20% 10%, rgba(255,255,255,0.08) 0 1px, transparent 1px),
+        radial-gradient(circle at 70% 60%, rgba(0,0,0,0.12) 0 1px, transparent 1px);
+      background-size: 9px 9px, 13px 13px;
+      mix-blend-mode: overlay;
+      opacity: 0.48;
+    }
+
+    .page {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 30px 0 72px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 520px;
+      padding: 36px;
+      border: 3px solid var(--black);
+      background:
+        linear-gradient(100deg, var(--panel) 0 47%, transparent 47%),
+        linear-gradient(168deg, transparent 0 55%, var(--accent) 55% 66%, transparent 66%),
+        var(--bg);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "SCOPE DISASSEMBLY";
+      position: absolute;
+      right: -18px;
+      bottom: 18px;
+      color: var(--black);
+      background: var(--accent);
+      border: 3px solid var(--black);
+      padding: 10px 18px;
+      font: 700 18px/1 Georgia, "Times New Roman", serif;
+      transform: skewX(-12deg);
+      letter-spacing: 0;
+    }
+
+    .kicker {
+      display: inline-block;
+      margin-bottom: 22px;
+      padding: 6px 10px;
+      border: 2px solid var(--black);
+      background: var(--warn);
+      color: var(--black);
+      font-weight: 700;
+    }
+
+    h1 {
+      width: min(860px, 100%);
+      margin: 0;
+      font-size: clamp(46px, 8vw, 112px);
+      line-height: 0.95;
+      font-weight: 900;
+      letter-spacing: 0;
+      text-shadow: 5px 5px 0 var(--black);
+    }
+
+    .hero p {
+      width: min(760px, 100%);
+      margin: 28px 0 0;
+      font-size: 20px;
+      color: var(--ink);
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-top: 34px;
+      width: min(900px, 100%);
+    }
+
+    .meta {
+      border: 2px solid var(--black);
+      background: rgba(5, 4, 10, 0.42);
+      padding: 12px;
+    }
+
+    .meta b {
+      display: block;
+      color: var(--accent);
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    .meta span {
+      display: block;
+      margin-top: 6px;
+      font-size: 15px;
+    }
+
+    section {
+      margin-top: 28px;
+      border: 3px solid var(--black);
+      background: rgba(95, 42, 98, 0.72);
+      box-shadow: 7px 7px 0 var(--black);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 88px 1fr;
+      border-bottom: 3px solid var(--black);
+      background: var(--accent);
+      color: var(--black);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      border-right: 3px solid var(--black);
+      font: 900 34px/1 Georgia, "Times New Roman", serif;
+    }
+
+    h2 {
+      margin: 0;
+      padding: 14px 18px;
+      font-size: clamp(25px, 4vw, 42px);
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    .content {
+      padding: 24px;
+    }
+
+    h3 {
+      margin: 30px 0 12px;
+      color: var(--warn);
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    h3:first-child { margin-top: 0; }
+
+    p { margin: 0 0 14px; }
+
+    ul, ol {
+      margin: 0 0 18px 1.25rem;
+      padding: 0;
+    }
+
+    li { margin: 7px 0; }
+
+    code {
+      padding: 2px 5px;
+      border: 1px solid rgba(255,247,230,0.28);
+      background: rgba(5, 4, 10, 0.45);
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      background: rgba(5, 4, 10, 0.28);
+    }
+
+    th, td {
+      border: 2px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--black);
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .callout {
+      margin: 18px 0;
+      padding: 14px 16px;
+      border: 3px solid var(--black);
+      background: var(--warn);
+      color: var(--black);
+      font-weight: 700;
+      box-shadow: 5px 5px 0 var(--black);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin: 18px 0 24px;
+      align-items: stretch;
+    }
+
+    .node {
+      border: 2px solid var(--black);
+      background: rgba(5, 4, 10, 0.48);
+      min-height: 86px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-weight: 800;
+    }
+
+    .node.hot {
+      background: var(--accent);
+      color: var(--black);
+    }
+
+    .arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--warn);
+      font: 900 32px/1 Georgia, "Times New Roman", serif;
+    }
+
+    .risk-high { color: var(--warn); font-weight: 900; }
+    .risk-mid { color: var(--accent); font-weight: 900; }
+
+    .footer {
+      margin-top: 34px;
+      padding: 18px;
+      border-left: 10px solid var(--accent);
+      background: rgba(5, 4, 10, 0.45);
+      color: rgba(255,247,230,0.9);
+    }
+
+    @media (max-width: 760px) {
+      .page { width: min(100vw - 20px, 1180px); padding-top: 12px; }
+      .hero { min-height: auto; padding: 24px 18px 82px; }
+      .meta-grid { grid-template-columns: 1fr 1fr; }
+      .section-head { grid-template-columns: 60px 1fr; }
+      .section-no { font-size: 24px; }
+      .content { padding: 18px; }
+      .diagram { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      table { font-size: 14px; }
+      th, td { padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="kicker">开发设计影响面梳理 / 先拆除，再接入 Workspace</div>
+      <h1>Keystone / Synapse 去工厂与组织概念</h1>
+      <p>
+        核心判断：工厂和组织不是孤立 CRUD，而是当前 Keystone 边缘数据模型里的归属、筛选、去范式索引和任务配置来源；要先隐藏和停止新增概念，再以 Hilbert workspace 接管数据归属，最后清理数据库字段与接口。
+      </p>
+      <div class="meta-grid">
+        <div class="meta"><b>影响系统</b><span>keystone, synapse</span></div>
+        <div class="meta"><b>未来归属</b><span>hilbert workspace</span></div>
+        <div class="meta"><b>当前风险</b><span>高：任务链路依赖字段</span></div>
+        <div class="meta"><b>建议方式</b><span>分阶段迁移</span></div>
+      </div>
+    </header>
+
+    <section>
+      <div class="section-head"><div class="section-no">01</div><h2>背景与问题</h2></div>
+      <div class="content">
+        <p>
+          现在的 Keystone / Synapse 仍保留“环境层级”：<code>factories</code> 表、<code>organizations</code> 表，以及大量 <code>factory_id</code>、<code>organization_id</code> 字段。历史设计已经经历过一次层级反转：工厂代表边缘部署的物理边界，组织代表租户；但接下来系统会引入 Hilbert 的 workspace 作为统一工作空间边界，因此工厂和组织在 Keystone / Synapse 中不再应作为一等业务概念出现。
+        </p>
+        <p>
+          Hilbert 当前 workspace 模型包含 <code>id</code>、<code>name</code>、<code>description</code>、<code>admins_str</code>、<code>members_str</code>、创建人与更新时间；前端通过全局 <code>selectedWorkspaceId</code> 作为业务页面请求参数。这个模型更接近“权限与业务归属边界”，而不是“物理工厂位置”或“组织租户”。
+        </p>
+        <div class="callout">
+          本文只分析去除 Keystone / Synapse 中工厂与组织概念的影响面，不实现代码，也不定义 Hilbert 与 Keystone 的最终认证集成协议。
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">02</div><h2>目标与非目标</h2></div>
+      <div class="content">
+        <h3>目标</h3>
+        <ul>
+          <li>移除 Synapse 后台中的工厂管理、组织管理入口、路由、页面、表单字段和筛选器。</li>
+          <li>移除 Keystone 暴露给前端的 <code>/factories</code>、<code>/organizations</code> 管理 API 及相关 handler 注册。</li>
+          <li>识别所有依赖 <code>factory_id</code>、<code>organization_id</code> 的创建、查询、展示、测试和同步链路。</li>
+          <li>给出 workspace 接管后的字段、接口、迁移和验证顺序。</li>
+        </ul>
+        <h3>非目标</h3>
+        <ul>
+          <li>不在本阶段重写 Hilbert workspace 本身的管理能力。</li>
+          <li>不立即删除所有数据库中的归属字段；任务、批次、episode、同步链路需要兼容迁移窗口。</li>
+          <li>不改变 Axon recorder / transfer 的 WebSocket 协议，除非后续明确任务配置不再需要返回 factory 名称。</li>
+          <li>不清理全部历史 Markdown 设计文档，只更新 OpenAPI、Swagger 和会误导当前开发的活跃文档。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">03</div><h2>当前耦合地图</h2></div>
+      <div class="content">
+        <div class="diagram">
+          <div class="node">Synapse<br>表单 / 筛选 / 路由</div>
+          <div class="arrow">→</div>
+          <div class="node hot">Keystone<br>factory_id / organization_id</div>
+          <div class="arrow">→</div>
+          <div class="node">任务 / 批次 / Episode<br>去范式索引</div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>层级</th><th>当前位置</th><th>耦合方式</th><th>去除影响</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>实体表</td>
+              <td><code>organizations</code>, <code>factories</code></td>
+              <td>独立 CRUD、唯一索引、软删除、名称/slug、settings。</td>
+              <td><span class="risk-high">高</span>：直接删除会破坏资源创建校验与任务配置 JOIN。</td>
+            </tr>
+            <tr>
+              <td>资源归属</td>
+              <td><code>robots.factory_id</code>, <code>scenes.factory_id</code>, <code>data_collectors.organization_id</code>, <code>inspectors.organization_id</code>, <code>workstations.factory_id/organization_id</code></td>
+              <td>创建时必填、列表筛选、详情展示、跨资源一致性校验。</td>
+              <td><span class="risk-high">高</span>：必须决定是否改为 <code>workspace_id</code> 或彻底取消归属。</td>
+            </tr>
+            <tr>
+              <td>生产单元</td>
+              <td><code>orders.organization_id</code>, <code>batches.organization_id</code>, <code>tasks.factory_id/organization_id</code>, <code>episodes.factory_id/organization_id</code></td>
+              <td>订单创建必填；批次和任务从 order/workstation 派生；dashboard 和列表用作过滤。</td>
+              <td><span class="risk-high">高</span>：需先双写或回填 <code>workspace_id</code>，再删旧字段。</td>
+            </tr>
+            <tr>
+              <td>设备注册</td>
+              <td><code>/device-registration</code>, <code>device_id_sequences.factory_id</code></td>
+              <td>请求传入 factory 名称，生成 <code>AB-Fxxxx-Txxxx-xxxxxx</code> 设备 ID。</td>
+              <td><span class="risk-high">高</span>：设备 ID 编码和序列作用域要重新设计。</td>
+            </tr>
+            <tr>
+              <td>同步与云上传</td>
+              <td><code>sync_logs.source_factory_id</code>, transfer config <code>AxonTransfer.FactoryID</code>, uploader metadata。</td>
+              <td>同步日志、云端路径或标签可能携带 factory。</td>
+              <td><span class="risk-mid">中</span>：可先保留为 legacy source 字段，后续改名。</td>
+            </tr>
+            <tr>
+              <td>前端管理</td>
+              <td><code>/admin/factories</code>, <code>/admin/organizations</code>, 默认重定向、侧边栏、RemoteSelect。</td>
+              <td>用户可创建/编辑/删除，并在其他页面选择工厂/组织。</td>
+              <td><span class="risk-mid">中</span>：可以先移除入口，但依赖表单必须同步改造。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">04</div><h2>Keystone 影响清单</h2></div>
+      <div class="content">
+        <h3>数据库与迁移</h3>
+        <table>
+          <thead>
+            <tr><th>对象</th><th>当前字段</th><th>建议处理</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>factories</code></td><td>实体表。</td><td>最终删除；过渡期只读或保留 legacy 映射。</td></tr>
+            <tr><td><code>organizations</code></td><td><code>factory_id</code>, <code>name</code>, <code>slug</code>, <code>settings</code>。</td><td>最终由 <code>workspace_id</code> 取代；不要继续开放 CRUD。</td></tr>
+            <tr><td><code>scenes</code></td><td><code>factory_id</code> 必填。</td><td>改为 <code>workspace_id</code> 或取消归属；如果场景全局共享，则删除归属过滤。</td></tr>
+            <tr><td><code>robots</code></td><td><code>factory_id</code> 必填。</td><td>如机器人属于 workspace，则加 <code>workspace_id</code>；如机器人是边缘全局资产，则取消前端必填。</td></tr>
+            <tr><td><code>data_collectors</code>, <code>inspectors</code></td><td><code>organization_id</code> 必填。</td><td>改为 <code>workspace_id</code>，并接入 Hilbert workspace 成员权限。</td></tr>
+            <tr><td><code>workstations</code></td><td><code>factory_id</code>, <code>organization_id</code> 去范式。</td><td>建议改为 <code>workspace_id</code> 去范式；从采集员或显式选择派生。</td></tr>
+            <tr><td><code>orders</code>, <code>batches</code>, <code>tasks</code>, <code>episodes</code></td><td><code>organization_id</code> / <code>factory_id</code> 用于筛选与统计。</td><td>先加 <code>workspace_id</code> 双写和回填，验证统计一致后删除旧索引。</td></tr>
+            <tr><td><code>device_id_sequences</code></td><td><code>factory_id + robot_type_id</code> 唯一。</td><td>改为 <code>workspace_id + robot_type_id</code>，或改成全局序列。</td></tr>
+            <tr><td><code>sync_logs</code></td><td><code>source_factory_id</code>。</td><td>短期保留为历史字段；新增 <code>source_workspace_id</code> 后再迁移。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>API Handler 与路由</h3>
+        <ul>
+          <li><code>internal/server/server.go</code>：移除 <code>FactoryHandler</code>、<code>OrganizationHandler</code> 初始化、字段和路由注册；确保 <code>/api/v1</code> 其他 handler 不再依赖它们。</li>
+          <li><code>internal/api/handlers/factory.go</code>、<code>organization.go</code>：停止暴露或删除管理 API；Swagger 需要重新生成。</li>
+          <li><code>scene.go</code>、<code>robot.go</code>：创建/更新当前强依赖 <code>factory_id</code> 和 factories 存在校验。</li>
+          <li><code>data_collector.go</code>、<code>inspector.go</code>：创建当前强依赖 <code>organization_id</code> 和 organizations 存在校验。</li>
+          <li><code>order.go</code>：<code>CreateOrderRequest</code> 当前要求 <code>organization_id</code>，并校验 organization 与 scene 属于同一 factory。</li>
+          <li><code>batch.go</code>、<code>task.go</code>：批次和任务从 order/workstation 派生归属字段；如果旧字段置空，会影响 dashboard、列表、episode 生成。</li>
+          <li><code>production_dashboard.go</code>：scope 支持 <code>factory_id</code>、<code>organization_id</code> 查询参数；需要改成 <code>workspace_id</code> 或只保留 workstation scope。</li>
+          <li><code>device_registration.go</code>：入参 <code>factory</code>、响应 <code>factory_id</code>、设备 ID 格式、序列表全部需要改。</li>
+        </ul>
+
+        <h3>Axon 与任务配置边界</h3>
+        <p>
+          <code>TaskConfig</code> 当前返回 <code>factory</code> 字段，<code>GetTaskConfig</code> 会 JOIN <code>factories</code> 并在缺失时返回冲突错误。若 Axon recorder 仍消费该字段，后端不能简单删除；需要先确认 recorder 端是否只展示该名称，还是用于路径、上传、回调或设备侧校验。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">05</div><h2>Synapse 影响清单</h2></div>
+      <div class="content">
+        <h3>必须删除或改向的入口</h3>
+        <ul>
+          <li><code>src/router/index.js</code>：当前 <code>/admin</code> 默认重定向到 <code>/admin/factories</code>，需要改到 dashboard、scenes、robots 或未来 workspace-aware 首页。</li>
+          <li><code>src/components/layout/AdminSidebar.vue</code>：移除“工厂管理”“组织管理”两个导航项；环境管理保留场景/子场景。</li>
+          <li><code>src/views/admin/factories/*</code>、<code>src/views/admin/organizations/*</code>：页面可删除或保留为迁移期隐藏页面；不应再作为可访问业务入口。</li>
+          <li><code>src/api/factories.js</code>、<code>src/api/organizations.js</code>：如果后端移除 API，前端也应删除调用；若保留 legacy mapping，则命名必须改成 legacy，避免继续扩散概念。</li>
+        </ul>
+
+        <h3>表单和筛选改造</h3>
+        <table>
+          <thead>
+            <tr><th>页面</th><th>当前依赖</th><th>改造方向</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>机器人</td><td><code>RobotList.vue</code>, <code>RobotDetail.vue</code> 展示/选择/筛选工厂。</td><td>去掉工厂列和筛选；创建时改为隐式 workspace 或无归属。</td></tr>
+            <tr><td>场景</td><td><code>SceneList.vue</code>, <code>SceneForm.vue</code>, <code>SceneDetail.vue</code> 选择所属工厂。</td><td>改成 workspace 归属，或改成全局场景库。</td></tr>
+            <tr><td>采集员</td><td><code>CollectorList.vue</code>, <code>CollectorForm.vue</code>, <code>CollectorDetail.vue</code> 选择/展示组织。</td><td>改成 workspace 成员或采集员与 workspace 绑定。</td></tr>
+            <tr><td>检查员</td><td><code>InspectorList.vue</code>, <code>InspectorForm.vue</code>, <code>InspectorDetail.vue</code> 选择/展示组织。</td><td>同采集员，接入 workspace 权限。</td></tr>
+            <tr><td>工位</td><td><code>WorkstationList.vue</code> 同时筛选/展示工厂和组织。</td><td>用 workspace 或采集员归属展示；避免双重归属。</td></tr>
+            <tr><td>订单</td><td><code>OrderList.vue</code>, <code>OrderForm.vue</code>, <code>OrderDetail.vue</code> 创建必选组织。</td><td>创建时发送 <code>workspace_id</code> 或由会话选中 workspace 派生。</td></tr>
+            <tr><td>批次</td><td><code>BatchList.vue</code>, <code>BatchDetail.vue</code> 按组织过滤和展示。</td><td>改为 workspace filter，或继承订单 workspace。</td></tr>
+            <tr><td>生产大屏</td><td><code>useProductionBigScreenData.js</code> 解析 scope 的 factory/organization。</td><td>改为 workspace scope，或只保留 workstation scope。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>共享适配器</h3>
+        <p>
+          <code>src/composables/remoteOptionAdapters.js</code> 中的 <code>factoryOption</code>、<code>organizationOption</code> 以及订单 option 的组织后缀都需要删除或替换为 workspace option。否则即使页面隐藏，后续新页面仍可能复用旧概念。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">06</div><h2>接口与数据模型迁移建议</h2></div>
+      <div class="content">
+        <h3>推荐目标模型</h3>
+        <p>
+          如果 workspace 是未来统一归属边界，建议 Keystone 中所有需要隔离、筛选、权限控制的业务对象统一使用 <code>workspace_id</code>。不需要归属的物理资源保持全局，不要为了替代 factory 而机械加字段。
+        </p>
+        <table>
+          <thead>
+            <tr><th>当前概念</th><th>建议替代</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>organization_id</code></td><td><code>workspace_id</code></td><td>采集员、检查员、订单、批次、任务、episode 的业务归属边界。</td></tr>
+            <tr><td><code>factory_id</code></td><td>多数情况下删除；必要处改 <code>workspace_id</code></td><td>机器人、场景是否归 workspace 需要产品确认；不要默认等价替换。</td></tr>
+            <tr><td><code>factory_name</code></td><td><code>workspace_name</code> 或不返回</td><td>任务配置和详情展示需逐项验证。</td></tr>
+            <tr><td><code>source_factory_id</code></td><td><code>source_workspace_id</code></td><td>同步日志可兼容保留历史字段。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>接口改造原则</h3>
+        <ul>
+          <li>前端业务请求统一传 <code>workspace_id</code>，或由 Keystone 从 Hilbert token / session 中解析当前 workspace。</li>
+          <li>列表接口的 <code>factory_id</code>、<code>organization_id</code> query 参数进入 deprecated 窗口，新增 <code>workspace_id</code>。</li>
+          <li>创建接口优先要求 <code>workspace_id</code>；如果 workspace 来自登录上下文，则请求体不再需要归属字段。</li>
+          <li>响应体过渡期可同时返回旧字段与新字段，但 Synapse 只能消费新字段，避免继续绑定旧概念。</li>
+          <li>Swagger 需要随 handler 注释重新生成：<code>swag init -g internal/server/server.go -o docs</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">07</div><h2>风险与关键问题</h2></div>
+      <div class="content">
+        <table>
+          <thead>
+            <tr><th>风险</th><th>表现</th><th>缓解</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="risk-high">任务链路中断</span></td>
+              <td>创建批次/任务时无法派生 factory 或 organization，导致任务配置、dashboard、episode 生成失败。</td>
+              <td>先新增 <code>workspace_id</code> 双写；验证任务创建、回调、上传、QA、同步全链路后再删除旧字段。</td>
+            </tr>
+            <tr>
+              <td><span class="risk-high">设备注册 ID 变化</span></td>
+              <td>现有设备 ID 编码含 factory ID，去掉工厂会改变序列作用域和展示格式。</td>
+              <td>单独设计设备注册协议，保留旧 ID 兼容解析；新设备使用新格式。</td>
+            </tr>
+            <tr>
+              <td><span class="risk-mid">权限边界不清</span></td>
+              <td>Keystone 当前没有完整 workspace 权限模型；只删组织会让采集员/检查员归属失效。</td>
+              <td>先定义 Keystone 如何获取 Hilbert workspace：token claim、API 校验、还是本地缓存。</td>
+            </tr>
+            <tr>
+              <td><span class="risk-mid">前端隐藏不等于移除</span></td>
+              <td>路由隐藏后，其他页面仍调用 factories / organizations API 获取下拉选项。</td>
+              <td>以 API 调用为准做清理，构建时通过 <code>rg</code> 检查旧关键词。</td>
+            </tr>
+            <tr>
+              <td><span class="risk-mid">历史数据筛选退化</span></td>
+              <td>删除旧索引后，历史任务和 episode 无 workspace 归属，统计不可筛选。</td>
+              <td>迁移脚本根据 organization/order/workstation 关系回填 workspace；无法映射的数据进入默认 workspace 或隔离队列。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>需要产品 / 架构确认的问题</h3>
+        <ol>
+          <li>Workspace 是 Keystone 本地表，还是完全来自 Hilbert 并由 Keystone 缓存？</li>
+          <li>Synapse 是否会拥有 workspace selector，还是只运行在单 workspace 上下文？</li>
+          <li>机器人、场景是 workspace 私有资源，还是边缘实例全局资源？</li>
+          <li>Axon recorder 的任务配置是否仍需要 <code>factory</code> 名称？</li>
+          <li>已有设备 ID 中的 <code>Fxxxx</code> 是否需要长期兼容和展示？</li>
+        </ol>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">08</div><h2>建议实施顺序</h2></div>
+      <div class="content">
+        <h3>Phase 0：冻结旧概念入口</h3>
+        <ul>
+          <li>Synapse 移除工厂/组织导航和默认重定向，停止新增 factory / organization。</li>
+          <li>Keystone 可先保留旧 API 但标记 deprecated，或只对内部迁移开放。</li>
+          <li>增加回归检查：前端不再出现“工厂管理”“组织管理”入口。</li>
+        </ul>
+
+        <h3>Phase 1：引入 workspace 字段与兼容层</h3>
+        <ul>
+          <li>为需要归属的 Keystone 表新增 <code>workspace_id</code> 和索引。</li>
+          <li>创建/更新接口支持 <code>workspace_id</code>，旧 <code>organization_id</code> 只做兼容映射。</li>
+          <li>Synapse 表单和筛选改为 workspace；删除 factories / organizations 下拉调用。</li>
+        </ul>
+
+        <h3>Phase 2：迁移任务链路</h3>
+        <ul>
+          <li>批次、任务、episode 生成时写入 <code>workspace_id</code>。</li>
+          <li>dashboard、统计、数据运维、同步列表全部改用 workspace scope。</li>
+          <li>设备注册单独迁移序列策略，避免与任务链路混在同一个 PR 中。</li>
+        </ul>
+
+        <h3>Phase 3：删除旧实体与字段</h3>
+        <ul>
+          <li>删除 <code>factory.go</code>、<code>organization.go</code> handler 和 Swagger 路由。</li>
+          <li>删除 Synapse 工厂/组织页面、API 文件、option adapter。</li>
+          <li>删除数据库旧字段和索引，或保留只读 legacy 字段直到历史数据归档完成。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">09</div><h2>验证清单</h2></div>
+      <div class="content">
+        <ul>
+          <li>Keystone：<code>go test -cover -race -v ./...</code>，重点关注 order、batch、task、robot、scene、collector、inspector、dashboard、device_registration 测试。</li>
+          <li>Keystone：重新生成 Swagger 后确认 <code>/factories</code>、<code>/organizations</code> 不再出现在公开 API，或明确标记 deprecated。</li>
+          <li>Synapse：<code>npm run build</code>，并手动走 admin 登录、机器人创建、场景创建、采集员创建、订单创建、批次创建、大屏。</li>
+          <li>数据迁移：抽样校验旧 <code>organization_id</code> 映射到 <code>workspace_id</code> 的订单、批次、任务、episode 数量一致。</li>
+          <li>端到端：创建订单 → 创建批次 → 生成任务 → recorder 获取 task config → 完成回调 → transfer 上传 → episode QA → dashboard 统计。</li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="footer">
+      结论：可以先从 Synapse 管理入口和 Keystone 公开 CRUD 开始“去概念化”，但不能直接删除所有 <code>factory_id</code> / <code>organization_id</code> 字段。真正的安全路径是让 <code>workspace_id</code> 接管归属和筛选，再逐步清理旧实体、旧 API、旧 UI 与历史索引。
+    </div>
+  </main>
+</body>
+</html>
