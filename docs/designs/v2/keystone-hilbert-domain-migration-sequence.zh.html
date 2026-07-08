@@ -695,9 +695,10 @@ SPDX-License-Identifier: MulanPSL-2.0
                 不做正式 Keystone-Hilbert 鉴权；不处理 workspace 撤权策略。
               </td>
               <td>
-                <span class="badge hot">未完成</span>：
-                Hilbert 代码已确认登录、Bearer <code>sessionKey</code> 和 <code>list-available</code> 接口形态；
-                Keystone 尚无 <code>HilbertConfig</code>、service identity provider、workspace sync API 和事务 upsert。
+                <span class="badge">已完成</span>：
+                Keystone 已新增 <code>HilbertConfig</code>、Hilbert service identity provider、内存
+                <code>sessionKey</code>、启动 best-effort sync、<code>POST /workspaces/sync</code>
+                和事务化 Hilbert workspace upsert。
                 PR-1B 的 password bootstrap 是临时 provider，后续必须替换为 Hilbert 正式 Keystone 鉴权。
               </td>
             </tr>
@@ -770,7 +771,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         </table>
         <div class="callout">
           结合当前代码，PR-1A 已完成：default workspace 的后端基础能力已经落地，且不依赖 Hilbert。
-          PR-1B 再接 Hilbert service identity bootstrap；PR-1C 再让 Synapse 使用新的只读 selector。
+          PR-1B 已完成 Hilbert service identity bootstrap；PR-1C 再让 Synapse 使用新的只读 selector。
           Robot / workstation 会牵动设备注册、Axon、任务派发，是独立风险面，不应混入 PR-1。
         </div>
       </div>
@@ -788,9 +789,10 @@ SPDX-License-Identifier: MulanPSL-2.0
           <a href="./keystone-workspace-pr1-decision-lock.zh.html">PR-1 Workspace 来源规则决策锁定</a>。
         </p>
         <div class="callout">
-          当前实现进度：PR-1A 已完成。Keystone 后端已具备 <code>id=0</code> default workspace、
-          只读 <code>GET /workspaces</code> / <code>GET /workspaces/:id</code>、以及 V2 baseline schema 支撑。
-          <code>POST /workspaces/sync</code>、Hilbert service identity bootstrap 和 Synapse selector 仍属于 PR-1B / PR-1C。
+          当前实现进度：PR-1A / PR-1B 已完成。Keystone 后端已具备 <code>id=0</code> default workspace、
+          只读 <code>GET /workspaces</code> / <code>GET /workspaces/:id</code>、V2 baseline schema、
+          <code>POST /workspaces/sync</code>、Hilbert service identity bootstrap 和事务 upsert 支撑。
+          Synapse selector 仍属于 PR-1C。
         </div>
         <table>
           <thead>
@@ -809,7 +811,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <tr>
               <td>PR-1B</td>
               <td>Hilbert workspace sync bootstrap：service identity provider、临时 password bootstrap、事务 upsert。</td>
-              <td><span class="badge hot">未完成</span></td>
+              <td><span class="badge">已完成</span></td>
             </tr>
             <tr>
               <td>PR-1C</td>

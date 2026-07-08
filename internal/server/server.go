@@ -59,6 +59,7 @@ type Server struct {
 	productionDashboard *handlers.ProductionDashboardHandler
 	syncHandler         *handlers.SyncHandler
 	syncWorker          *services.SyncWorker
+	workspaceSync       *services.WorkspaceSyncService
 	httpServer          *http.Server
 	transferWSServer    *http.Server
 	recorderWSServer    *http.Server
@@ -88,7 +89,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	healthHandler := handlers.NewHealthHandler(nil, nil)
 	var authHandler *handlers.AuthHandler
 	if db != nil {
-		authHandler = handlers.NewAuthHandler(db, &cfg.Auth)
+		authHandler = handlers.NewAuthHandler(db, &cfg.Auth, &cfg.Hilbert)
 	}
 	var storageHandler *handlers.StorageHandler
 	if s3Client != nil {
@@ -137,8 +138,10 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		dataOpsHandler             *handlers.DataOpsHandler
 		dataStatsHandler           *handlers.DataProductionStatisticsHandler
 		productionDashboardHandler *handlers.ProductionDashboardHandler
+		workspaceSyncService       *services.WorkspaceSyncService
 	)
 	if db != nil {
+		workspaceSyncService = services.NewWorkspaceSyncService(db, &cfg.Hilbert, nil)
 		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub, cfg.Sync.DPConfigPath)
@@ -146,7 +149,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		factoryHandler = handlers.NewFactoryHandler(db)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
-		workspaceHandler = handlers.NewWorkspaceHandler(db)
+		workspaceHandler = handlers.NewWorkspaceHandler(db, workspaceSyncService)
 		sopHandler = handlers.NewSOPHandler(db)
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
@@ -194,6 +197,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		productionDashboard: productionDashboardHandler,
 		syncHandler:         syncHandler,
 		syncWorker:          syncWorker,
+		workspaceSync:       workspaceSyncService,
 		engine:              engine,
 	}
 
@@ -400,6 +404,8 @@ func (s *Server) Start() error {
 	s.isRunning = true
 	s.shutdownMu.Unlock()
 
+	s.syncWorkspacesOnStartup()
+
 	logger.Printf("[SERVER] Starting HTTP server on %s", s.cfg.Server.BindAddr)
 	logger.Printf("[SERVER] Swagger UI: http://localhost%s/swagger/index.html", s.cfg.Server.BindAddr)
 
@@ -434,6 +440,25 @@ func (s *Server) Start() error {
 	}
 
 	return nil
+}
+
+func (s *Server) syncWorkspacesOnStartup() {
+	if s.workspaceSync == nil || !s.workspaceSync.Configured() {
+		return
+	}
+	timeout := time.Duration(s.cfg.Hilbert.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	result, err := s.workspaceSync.Sync(ctx)
+	if err != nil {
+		logger.Printf("[WORKSPACE] Startup Hilbert workspace sync failed: %v", err)
+		return
+	}
+	logger.Printf("[WORKSPACE] Startup Hilbert workspace sync completed: synced_count=%d", result.SyncedCount)
 }
 
 // Shutdown gracefully shuts down the server

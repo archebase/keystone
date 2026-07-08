@@ -414,7 +414,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <div class="panel">
             <h3>后续的连续技</h3>
             <ul>
-              <li>PR-1B 接入 Hilbert service identity bootstrap 和 workspace sync。</li>
+              <li>PR-1B 已接入 Hilbert service identity bootstrap 和 workspace sync。</li>
               <li>PR-1C 让 Synapse 使用全局 Workspace Selector 和只读状态页。</li>
               <li>PR-2 之后再迁移业务表 <code>organization_id -> workspace_id</code>。</li>
             </ul>
@@ -737,9 +737,9 @@ Future provider
         <h3>测试与文档</h3>
         <ul>
           <li>PR-1A 已新增 workspace handler 单测，覆盖 default 返回、<code>workspace_id=0</code> 过滤和写路由不存在。</li>
-          <li>PR-1B 需要继续新增 Hilbert sync upsert、缓存保留和手动 sync 失败场景测试。</li>
+          <li>PR-1B 已新增 Hilbert sync upsert、非法记录无 partial upsert、手动 sync 成功和未配置失败场景测试。</li>
           <li>PR-1A Swagger 只应出现 <code>GET /workspaces</code> 和 <code>GET /workspaces/{id}</code>。</li>
-          <li>PR-1B 完成后，Swagger 中应再出现 <code>POST /workspaces/sync</code>。</li>
+          <li>PR-1B 完成后，Swagger 中已出现 <code>POST /workspaces/sync</code>。</li>
         </ul>
       </div>
     </section>

@@ -5,12 +5,16 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
@@ -117,6 +121,73 @@ func TestWorkspaceWriteRoutesAreNotRegistered(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSyncReturnsServiceUnavailableWhenNotConfigured(t *testing.T) {
+	db := newTestWorkspaceDB(t)
+	defer db.Close()
+	router := newTestWorkspaceRouter(db)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/sync", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+}
+
+func TestWorkspaceSyncReturnsResult(t *testing.T) {
+	db := newTestWorkspaceDB(t)
+	defer db.Close()
+
+	client := &fakeWorkspaceHilbertClient{
+		loginResult: &auth.HilbertLoginResult{SessionKey: "session-key"},
+		workspaces:  []auth.HilbertWorkspace{{ID: 123, Name: "Hilbert Workspace"}},
+	}
+	syncService := services.NewWorkspaceSyncService(db, &config.HilbertConfig{
+		BaseURL:                "http://hilbert",
+		TimeoutSeconds:         2,
+		ServiceAccountCode:     "svc-keystone",
+		ServiceAccountPassword: "svc-secret",
+	}, client)
+	router := newTestWorkspaceRouter(db, syncService)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/sync", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp WorkspaceSyncResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal sync response: %v", err)
+	}
+	if resp.SyncedCount != 1 || !resp.DefaultIncluded || resp.LastSyncedAt == "" {
+		t.Fatalf("unexpected sync response: %#v", resp)
+	}
+	if client.listSessionKey != "session-key" {
+		t.Fatalf("listSessionKey=%q want session-key", client.listSessionKey)
+	}
+}
+
+type fakeWorkspaceHilbertClient struct {
+	loginResult    *auth.HilbertLoginResult
+	workspaces     []auth.HilbertWorkspace
+	listSessionKey string
+}
+
+func (f *fakeWorkspaceHilbertClient) Configured() bool {
+	return true
+}
+
+func (f *fakeWorkspaceHilbertClient) Login(_ context.Context, _ string, _ string) (*auth.HilbertLoginResult, error) {
+	return f.loginResult, nil
+}
+
+func (f *fakeWorkspaceHilbertClient) ListAvailableWorkspaces(_ context.Context, sessionKey string) ([]auth.HilbertWorkspace, error) {
+	f.listSessionKey = sessionKey
+	return f.workspaces, nil
+}
+
 func assertDefaultWorkspaceResponse(t *testing.T, workspace WorkspaceResponse) {
 	t.Helper()
 	if workspace.ID != "0" {
@@ -145,10 +216,10 @@ func assertDefaultWorkspaceResponse(t *testing.T, workspace WorkspaceResponse) {
 	}
 }
 
-func newTestWorkspaceRouter(db *sqlx.DB) *gin.Engine {
+func newTestWorkspaceRouter(db *sqlx.DB, syncService ...*services.WorkspaceSyncService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	NewWorkspaceHandler(db).RegisterRoutes(router.Group("/api/v1"))
+	NewWorkspaceHandler(db, syncService...).RegisterRoutes(router.Group("/api/v1"))
 	return router
 }
 
@@ -168,6 +239,8 @@ func newTestWorkspaceDB(t *testing.T) *sqlx.DB {
 			admins_str TEXT,
 			members_str TEXT,
 			last_synced_at TIMESTAMP,
+			hilbert_created_at TIMESTAMP,
+			hilbert_updated_at TIMESTAMP,
 			created_at TIMESTAMP,
 			updated_at TIMESTAMP,
 			deleted_at TIMESTAMP

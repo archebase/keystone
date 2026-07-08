@@ -28,8 +28,8 @@ type AuthHandler struct {
 }
 
 // NewAuthHandler constructs an AuthHandler with required dependencies.
-func NewAuthHandler(db *sqlx.DB, cfg *config.AuthConfig) *AuthHandler {
-	return &AuthHandler{db: db, cfg: cfg, hilbertClient: auth.NewHilbertClient(cfg)}
+func NewAuthHandler(db *sqlx.DB, cfg *config.AuthConfig, hilbertCfg *config.HilbertConfig) *AuthHandler {
+	return &AuthHandler{db: db, cfg: cfg, hilbertClient: auth.NewHilbertClient(hilbertCfg)}
 }
 
 // LoginRequest is the unified login request body.

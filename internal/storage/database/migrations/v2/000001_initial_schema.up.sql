@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
     admins_str VARCHAR(200),
     members_str VARCHAR(1024),
     last_synced_at TIMESTAMP NULL,
+    hilbert_created_at TIMESTAMP NULL,
+    hilbert_updated_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL,
