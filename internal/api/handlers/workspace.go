@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	DefaultWorkspaceID          int64  = 0
-	DefaultWorkspaceName        string = "Default Workspace"
-	DefaultWorkspaceDescription string = "Local-only fallback workspace"
+	defaultWorkspaceID          int64  = 0
+	defaultWorkspaceName        string = "Default Workspace"
+	defaultWorkspaceDescription string = "Local-only fallback workspace"
 
-	WorkspaceSourceDefault string = "default"
-	WorkspaceSourceHilbert string = "hilbert"
+	workspaceSourceDefault string = "default"
+	workspaceSourceHilbert string = "hilbert"
 )
 
 // WorkspaceHandler handles workspace related HTTP requests.
@@ -217,7 +217,7 @@ func (h *WorkspaceHandler) GetWorkspace(c *gin.Context) {
 
 func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 	var activeDefaultExists bool
-	if err := h.db.Get(&activeDefaultExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", DefaultWorkspaceID); err != nil {
+	if err := h.db.Get(&activeDefaultExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", defaultWorkspaceID); err != nil {
 		logger.Printf("[WORKSPACE] Failed to check default workspace: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ensure default workspace"})
 		return false
@@ -240,14 +240,14 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 			updated_at = ?
 		WHERE id = ?
 	`,
-		DefaultWorkspaceName,
-		DefaultWorkspaceDescription,
-		WorkspaceSourceDefault,
+		defaultWorkspaceName,
+		defaultWorkspaceDescription,
+		workspaceSourceDefault,
 		false,
 		sql.NullString{},
 		sql.NullString{},
 		now,
-		DefaultWorkspaceID,
+		defaultWorkspaceID,
 	)
 	if err != nil {
 		logger.Printf("[WORKSPACE] Failed to update default workspace: %v", err)
@@ -278,10 +278,10 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 			updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		DefaultWorkspaceID,
-		DefaultWorkspaceName,
-		DefaultWorkspaceDescription,
-		WorkspaceSourceDefault,
+		defaultWorkspaceID,
+		defaultWorkspaceName,
+		defaultWorkspaceDescription,
+		workspaceSourceDefault,
 		false,
 		sql.NullString{},
 		sql.NullString{},

@@ -46,7 +46,7 @@ func TestWorkspaceListEnsuresDefaultWorkspace(t *testing.T) {
 	if err := db.Get(&stored, "SELECT id, source, upload_enabled FROM workspaces WHERE id = 0"); err != nil {
 		t.Fatalf("query default workspace: %v", err)
 	}
-	if stored.ID != 0 || stored.Source != WorkspaceSourceDefault || stored.UploadEnabled {
+	if stored.ID != 0 || stored.Source != workspaceSourceDefault || stored.UploadEnabled {
 		t.Fatalf("unexpected stored default workspace: %#v", stored)
 	}
 }
@@ -122,11 +122,11 @@ func assertDefaultWorkspaceResponse(t *testing.T, workspace WorkspaceResponse) {
 	if workspace.ID != "0" {
 		t.Fatalf("id=%q want 0", workspace.ID)
 	}
-	if workspace.Name != DefaultWorkspaceName {
-		t.Fatalf("name=%q want %q", workspace.Name, DefaultWorkspaceName)
+	if workspace.Name != defaultWorkspaceName {
+		t.Fatalf("name=%q want %q", workspace.Name, defaultWorkspaceName)
 	}
-	if workspace.Source != WorkspaceSourceDefault {
-		t.Fatalf("source=%q want %q", workspace.Source, WorkspaceSourceDefault)
+	if workspace.Source != workspaceSourceDefault {
+		t.Fatalf("source=%q want %q", workspace.Source, workspaceSourceDefault)
 	}
 	if workspace.UploadEnabled {
 		t.Fatalf("upload_enabled=true want false")
