@@ -66,10 +66,11 @@ type DCPlanListResponse struct {
 
 // DCPlanSyncResponse represents a manual dc_plan sync result.
 type DCPlanSyncResponse struct {
-	WorkspaceID  int64  `json:"workspace_id"`
-	SyncedCount  int    `json:"synced_count"`
-	PageCount    int    `json:"page_count"`
-	LastSyncedAt string `json:"last_synced_at"`
+	WorkspaceID    int64                                 `json:"workspace_id"`
+	SyncedCount    int                                   `json:"synced_count"`
+	PageCount      int                                   `json:"page_count"`
+	LastSyncedAt   string                                `json:"last_synced_at"`
+	TaskGeneration *services.DCPlanTaskGenerationSummary `json:"task_generation,omitempty"`
 }
 
 type dcPlanRow struct {
@@ -240,10 +241,11 @@ func (h *DCPlanHandler) SyncWorkspaceDCPlans(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, DCPlanSyncResponse{
-		WorkspaceID:  result.WorkspaceID,
-		SyncedCount:  result.SyncedCount,
-		PageCount:    result.PageCount,
-		LastSyncedAt: result.LastSyncedAt.UTC().Format(time.RFC3339),
+		WorkspaceID:    result.WorkspaceID,
+		SyncedCount:    result.SyncedCount,
+		PageCount:      result.PageCount,
+		LastSyncedAt:   result.LastSyncedAt.UTC().Format(time.RFC3339),
+		TaskGeneration: result.TaskGeneration,
 	})
 }
 
