@@ -122,7 +122,7 @@ func (c *AuthClient) exchangeCredential(ctx context.Context, credentialBase64 st
 	client := pb.NewAuthServiceClient(conn)
 	startedAt := time.Now()
 	resp, err := client.ExchangeCredential(ctx, &pb.ExchangeCredentialRequest{
-		CredentialBase64: credentialBase64,
+		Credential: credentialBase64,
 	})
 	if err != nil {
 		timeout := timeoutDuration(ctx, startedAt, 0)
