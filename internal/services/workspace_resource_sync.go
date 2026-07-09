@@ -267,7 +267,7 @@ func upsertWorkspaceCompatFactory(ctx context.Context, tx *sqlx.Tx, workspace au
 func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, workspaceID int64, account auth.HilbertAccount, syncedAt time.Time) (bool, error) {
 	operatorID := strings.TrimSpace(account.Code)
 	if operatorID == "" {
-		return false, fmt.Errorf("Hilbert account code is empty")
+		return false, fmt.Errorf("hilbert account code is empty")
 	}
 
 	existingSource, err := activeMetadataSource(ctx, tx, "data_collectors", "operator_id", operatorID)

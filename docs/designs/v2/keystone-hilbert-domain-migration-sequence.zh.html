@@ -426,8 +426,9 @@ SPDX-License-Identifier: MulanPSL-2.0
           当前实现状态：Workspace 来源规则已经锁定，Hilbert 是 source of truth；
           Keystone 只保存本地投影，并始终保留 <code>id=0</code> 的 default workspace。
           <code>dc_plan</code> 投影、只读查询和单 Workspace 手动同步也已落地。
-          后续不要重复建设投影基础，但 PR-3 依赖 robot / data collector 主数据，
-          因此需要先补一个最小 Workspace 运营资源投影，再推进计划生成 task、上传携带计划 ID，以及旧 runtime 停用。
+          PR-2.5 已补齐 Workspace 运营资源投影，<code>dc_plan.operator</code> 和 <code>dc_plan.dc_device_id</code>
+          可解析到本地采集员和机器人。后续不要重复建设投影基础，现在应推进计划生成 task、
+          上传携带计划 ID，以及旧 runtime 停用。
         </div>
       </div>
     </section>
@@ -569,15 +570,15 @@ SPDX-License-Identifier: MulanPSL-2.0
               </div>
               <p>PR-3 不在拉取数采计划时创建设备、机器人或采集员主数据，所以必须先有最小资源投影，让 <code>dc_plan.operator</code> 和 <code>dc_plan.dc_device_id</code> 能匹配 Keystone 本地执行资源。</p>
               <ul>
-                <li>资源同步固定挂在 Workspace 同步上：启动同步和 <code>POST /workspaces/sync</code> 都先 upsert Workspace，再按 Workspace 独立事务同步资源。</li>
+                <li><span class="badge">已完成</span> 资源同步固定挂在 Workspace 同步上：启动同步和 <code>POST /workspaces/sync</code> 都先 upsert Workspace，再按 Workspace 独立事务同步资源。</li>
                 <li>采集员来源是 Hilbert <code>workspace.admins + workspace.members</code>，逐个查 <code>/v1/console/account/query</code>，只同步 <code>enabled + external_user + data_supplier</code>。</li>
                 <li>采集员写入 <code>data_collectors.operator_id = account.code</code>，<code>data_collectors.organization_id</code> 暂时承载 Hilbert workspace ID。</li>
                 <li>数采设备来自 <code>/v1/data-collection/dc-device/query?workspaceId=...</code>，写入 <code>robots.device_id = dc_device.id</code> 的十进制字符串。</li>
-                <li>同步 Hilbert <code>dc_device_type</code> 到 Keystone <code>robot_types</code>，并为每个 Hilbert Workspace 创建 / 复用一个 workspace compat factory 以满足 <code>robots.factory_id</code>。</li>
+                <li>同步 Hilbert <code>dc_device_type</code> 到 Keystone <code>robot_types</code>，并为每个 Hilbert Workspace 创建 / 复用一个 workspace compat factory 以满足 <code>robots.factory_id</code>；factory <code>slug = hilbert_workspace_&lt;workspace_id&gt;</code>，名称带 workspace ID 以避免同名 Workspace 冲突。</li>
                 <li>旧列 <code>data_collectors.organization_id</code>、<code>workstations.organization_id</code> 在清理前承载 workspace ID；对外和新代码语义称 <code>workspace_id</code>。</li>
                 <li>新建采集员和机器人默认 <code>active</code>；已存在记录只覆盖 Hilbert 权威投影字段和 metadata，不覆盖本地 <code>status</code>、<code>asset_id</code>、<code>password_hash</code> 等运营字段。</li>
                 <li>Hilbert 消失资源不自动软删；非 Hilbert robot / collector / robot type 冲突资源跳过并写入 <code>resource_sync</code> summary。</li>
-                <li>启动同步没有 HTTP response，必须输出同一套 <code>resource_sync</code> 聚合日志，便于排查资源投影失败。</li>
+                <li><code>POST /workspaces/sync</code> response 已返回 <code>resource_sync</code> summary；启动同步没有 HTTP response，必须输出同一套聚合日志，便于排查资源投影失败。</li>
                 <li>本阶段只提供 PR-3 所需的资源可解析性，不生成 task，不做 scoped admin shell，不清理旧设备管理页面。</li>
                 <li>实施细节见 <a href="./keystone-dc-plan-pr2-5-resource-projection.zh.html">PR-2.5 Workspace 运营资源最小投影</a>。</li>
               </ul>
@@ -828,10 +829,10 @@ SPDX-License-Identifier: MulanPSL-2.0
                 不清理旧设备管理 UI；不在本阶段删除 factory/robot type 兼容字段。
               </td>
               <td>
-                <span class="badge hot">未完成</span>：
-                细节已锁定，见
+                <span class="badge">已完成</span>：
+                后端已实现 Workspace resource projection，见
                 <a href="./keystone-dc-plan-pr2-5-resource-projection.zh.html">PR-2.5 实施细节文档</a>；
-                当前代码尚未实现 Workspace resource projection。
+                <code>POST /workspaces/sync</code> 已返回 <code>resource_sync</code> summary。注意：同步数采计划仍不会生成 task，生成逻辑属于 PR-3。
               </td>
             </tr>
             <tr>
@@ -935,9 +936,9 @@ SPDX-License-Identifier: MulanPSL-2.0
           </tbody>
         </table>
         <div class="callout">
-          结合当前代码，PR-1A / PR-1B / PR-1C 已完成，PR-2 后端基础也已完成。
-          下一阶段不应继续停留在计划投影层，但 PR-3 依赖采集员和设备主数据；
-          因此应先完成 PR-2.5 的最小资源投影，再进入 PR-3：让 Hilbert 数采计划生成 Keystone 本地 task。
+          结合当前代码，PR-1A / PR-1B / PR-1C 已完成，PR-2 后端基础和 PR-2.5 Workspace 资源投影也已完成。
+          下一阶段不应继续停留在计划投影或资源投影层；
+          现在应进入 PR-3：让 Hilbert 数采计划生成 Keystone 本地 task。
           order/batch 仍是现有 runtime，但不能再作为长期目标模型；Hilbert 数采计划是生产主对象，
           Keystone task 是计划拆分后的本地执行切片。
         </div>
@@ -961,7 +962,8 @@ SPDX-License-Identifier: MulanPSL-2.0
           <code>POST /workspaces/sync</code>、Hilbert service identity bootstrap 和事务 upsert 支撑。
           PR-1C 也已接入 Synapse 只读 Workspace 状态页和手动同步入口，但仍不引入全局 selector 或当前 workspace。
           PR-2 已接入 Hilbert dc_plan 查询、Keystone <code>dc_plan</code> 投影表、只读列表和单 Workspace 手动同步；
-          但 Workspace 运营资源投影、task 生成、episode 写入和上传 payload 尚未改为计划驱动。
+          PR-2.5 已在 Workspace 同步中固定投影采集员、数采设备、设备类型和 workspace compat factory；
+          但 task 生成、episode 写入和上传 payload 尚未改为计划驱动。
         </div>
         <table>
           <thead>
@@ -995,7 +997,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <tr>
               <td>PR-2.5</td>
               <td>Workspace resource projection：让 Hilbert operator / dc_device 可解析为本地 data_collector / robot。</td>
-              <td><span class="badge hot">未完成</span></td>
+              <td><span class="badge">已完成</span></td>
             </tr>
           </tbody>
         </table>
@@ -1115,7 +1117,8 @@ SPDX-License-Identifier: MulanPSL-2.0
         </ul>
         <div class="callout">
           这些问题不是不重要，而是不应该挡住数采计划成为生产主对象。
-          PR-2 已建立计划投影和字段基础；现在应先完成 PR-2.5 资源投影，再推进 PR-3 切任务生成和 PR-4 切上传协议。
+          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影；
+          现在应推进 PR-3 切任务生成和 PR-4 切上传协议。
         </div>
       </div>
     </section>
