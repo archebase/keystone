@@ -89,8 +89,6 @@ func (s *authService) ExchangeCredential(context.Context, *cloudpb.ExchangeCrede
 		AccessToken:   "keystone-poc-" + uuid.NewString(),
 		ExpiresAtUnix: expiresAt,
 		TokenType:     "Bearer",
-		KeyId:         "keystone-poc",
-		KeyPrefix:     "keystone",
 	}, nil
 }
 

@@ -4,9 +4,10 @@ package archebase.data_gateway.v1;
 
 option go_package = "archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpb";
 
-import "common.proto";
-
 service DataGatewayService {
+  // Upload RPCs are scoped exclusively by the bearer API-key principal
+  // stamped by the public interceptor. Clients never send site_id or any
+  // other owner identifier on this surface.
   rpc CreateLogicalUpload(CreateLogicalUploadRequest)
       returns (CreateLogicalUploadResponse);
   rpc GetUploadRecovery(GetUploadRecoveryRequest)
@@ -18,10 +19,78 @@ service DataGatewayService {
       returns (CompleteUploadResponse);
 }
 
+// SDK-facing object discovery and download authorization service exposed on
+// the public gRPC port.
+//
+// This service uses user access JWT authentication. Object listing returns
+// logical object IDs visible to the caller; download returns short-lived
+// presigned read operations rather than cloud credentials.
+service DataGatewayObjectService {
+  // Lists verified logical objects visible to the authenticated user.
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+  // Authorizes direct object downloads for the requested file IDs.
+  rpc RequestDownload(RequestDownloadRequest)
+      returns (RequestDownloadResponse);
+}
+
+// SDK-facing asynchronous object copy service exposed on the public gRPC port.
+//
+// This service accepts logical file IDs and persists copy jobs for background
+// workers. It never exposes source OSS bucket, object key, or source-side
+// credentials to the caller.
+service DataGatewayCopyService {
+  // Creates an asynchronous copy job for the requested file IDs.
+  rpc CreateCopyJob(CreateCopyJobRequest) returns (CreateCopyJobResponse);
+  // Returns the aggregate state of one copy job.
+  rpc GetCopyJob(GetCopyJobRequest) returns (GetCopyJobResponse);
+  // Lists item-level copy outcomes for one copy job.
+  rpc ListCopyJobItems(ListCopyJobItemsRequest)
+      returns (ListCopyJobItemsResponse);
+  // Requests cancellation of one copy job.
+  rpc CancelCopyJob(CancelCopyJobRequest) returns (CancelCopyJobResponse);
+}
+
 // SDK-facing device initialization service exposed on the dedicated init port.
+//
+// This surface intentionally does not require the upload API key because it is
+// used to provision that key for a registered device. Deployment-level network
+// controls and rate limiting are required before exposing it outside controlled
+// environments.
 service DeviceInitService {
+  // Initializes one registered device and returns the upload API key.
   rpc InitDevice(InitDeviceRequest) returns (InitDeviceResponse);
+  // Re-initializes one registered device and returns a rotated upload API key.
   rpc ReinitDevice(ReinitDeviceRequest) returns (InitDeviceResponse);
+}
+
+// Request sent by SDKs before they have an upload API key.
+message InitDeviceRequest {
+  // Bare platform-assigned device identifier provided by the operator.
+  string device_id = 1;
+  // SDK version reported for operator visibility and diagnostics.
+  string sdk_version = 2;
+  // SDK platform string, for example "ios".
+  string platform = 3;
+}
+
+// Request sent by SDKs when explicitly rotating an existing upload API key.
+// This currently mirrors InitDeviceRequest, but remains a separate message so
+// reinit-only fields can be added without changing first-time init semantics.
+message ReinitDeviceRequest {
+  // Bare platform-assigned device identifier provided by the operator.
+  string device_id = 1;
+  // SDK version reported for operator visibility and diagnostics.
+  string sdk_version = 2;
+  // SDK platform string, for example "ios".
+  string platform = 3;
+}
+
+// Response persisted by SDKs into archebase-config.json.
+message InitDeviceResponse {
+  // Opaque credential returned by auth and used for later uploads.
+  string api_key = 1;
+  // Platform-approved device tags replayed on every subsequent upload.
+  map<string, string> tags = 2;
 }
 
 // Internal-only storage service exposed by data-gateway.
@@ -30,23 +99,8 @@ service DeviceInitService {
 service InternalStorageService {
   // Generates presigned access for a single object.
   rpc PresignObject(PresignObjectRequest) returns (PresignObjectResponse);
-}
-
-message InitDeviceRequest {
-  string device_id = 1;
-  string sdk_version = 2;
-  string platform = 3;
-}
-
-message ReinitDeviceRequest {
-  string device_id = 1;
-  string sdk_version = 2;
-  string platform = 3;
-}
-
-message InitDeviceResponse {
-  string api_key = 1;
-  map<string, string> tags = 2;
+  // Reads a bounded object payload for backend-only callers.
+  rpc ReadObject(ReadObjectRequest) returns (ReadObjectResponse);
 }
 
 message UploadCredentials {
@@ -58,6 +112,8 @@ message UploadCredentials {
   string sts_security_token = 6;
   int64 sts_expire_at_unix = 7;
   int64 part_size_bytes = 8;
+  string object_store_backend = 9;
+  string object_store_region = 10;
 }
 
 enum UploadRecoveryAction {
@@ -134,10 +190,272 @@ message CompleteUploadRequest {
   map<string, string> raw_tags = 3;
   int32 completed_part_count = 4;
   string oss_object_etag = 5;
+  // Upload part size issued by data-gateway for this upload session.
+  // New SDKs echo it back so completion validation remains stable if
+  // gateway config changes between credential issuance and completion.
   int64 part_size_bytes = 6;
 }
 
 message CompleteUploadResponse {}
+
+// User-visible lifecycle state for a logical data object.
+enum DataObjectStatus {
+  DATA_OBJECT_STATUS_UNSPECIFIED = 0;
+  DATA_OBJECT_STATUS_CREATED = 1;
+  DATA_OBJECT_STATUS_UPLOADED = 2;
+  DATA_OBJECT_STATUS_VERIFIED = 3;
+  DATA_OBJECT_STATUS_BAD = 4;
+  DATA_OBJECT_STATUS_ABORTED = 5;
+  DATA_OBJECT_STATUS_INVALID = 6;
+}
+
+// Requests one page of verified logical objects visible to the authenticated user.
+message ListObjectsRequest {
+  // Maximum number of objects to return.
+  int32 page_size = 1;
+  // Opaque continuation token returned by a previous page. The token is only
+  // valid with the same filter used to obtain it.
+  string page_token = 2;
+  // Server-side filter expression. Status filters are limited to verified objects.
+  string filter = 3;
+}
+
+// One logical object visible to the authenticated user.
+message DataObject {
+  // Customer-facing object identifier. Currently equal to file_id.
+  string object_id = 1;
+  // Data Gateway file_id used by download and copy APIs.
+  string file_id = 2;
+  // Current upload lifecycle state.
+  DataObjectStatus status = 3;
+  // Object size in bytes, if known.
+  int64 size_bytes = 4;
+  // Unix seconds when the object record was created, or zero if unknown.
+  int64 created_at_unix = 6;
+  // Unix seconds when upload completed, or zero if not uploaded.
+  int64 uploaded_at_unix = 7;
+  // Unix seconds when verification completed, or zero if not verified.
+  int64 verified_at_unix = 8;
+  // Object ETag recorded during upload, if known.
+  string etag = 9;
+}
+
+// Returns one page of logical objects and pagination metadata.
+message ListObjectsResponse {
+  // Objects in page order.
+  repeated DataObject objects = 1;
+  // Opaque continuation token for the next page, or empty when exhausted.
+  string next_page_token = 2;
+}
+
+// Requests presigned read operations for file IDs.
+message RequestDownloadRequest {
+  // Non-empty file IDs. Empty or duplicate IDs are rejected by data-gateway.
+  repeated string file_ids = 1;
+}
+
+// Contains the presigned read operation for one requested file.
+message DownloadObjectLocation {
+  // File ID echoed from the request.
+  string file_id = 1;
+  // Presigned GET operation. Clients may add a Range header for ranged reads.
+  PresignedOperation read = 2;
+}
+
+// Returns presigned read operations and client download hints.
+message RequestDownloadResponse {
+  // Files in the same order as request.file_ids.
+  repeated DownloadObjectLocation files = 1;
+  // Absolute expiration time shared by returned read operations, as Unix seconds.
+  int64 expires_at_unix = 2;
+  // Client hint for deciding when to use ranged parallel download.
+  int64 large_file_threshold_bytes = 3;
+  // Client hint for ranged GET part size.
+  int64 range_part_size_bytes = 4;
+}
+
+// Requests creation of an asynchronous OSS server-side copy job.
+message CreateCopyJobRequest {
+  // Non-empty file IDs. Empty or duplicate IDs are rejected by data-gateway.
+  repeated string file_ids = 1;
+  // Destination bucket, endpoint, region, and object key template.
+  CopyDestination destination = 2;
+  // Optional caller-provided key used to make create retries idempotent.
+  string idempotency_key = 3;
+}
+
+// Describes the user-owned destination for copied objects.
+message CopyDestination {
+  // Target OSS bucket name.
+  string bucket = 1;
+  // Target OSS endpoint used by copy workers.
+  string endpoint = 2;
+  // Target OSS region. Server-side copy only supports same-region buckets.
+  string region = 3;
+  // Object key template used to render the destination object key for each
+  // copied file.
+  //
+  // Template syntax:
+  // - Empty or whitespace-only values are normalized to "{file_id}".
+  // - The only supported variable is "{file_id}".
+  // - "{file_id}" is replaced by the source file ID from the request.
+  // - All other text is treated as a literal prefix, suffix, or path segment.
+  // - Date values are not expanded by data-gateway.
+  // - Callers that want a date prefix must format it before sending the request.
+  //
+  // Examples:
+  // - "{file_id}" renders "file-a" for file ID "file-a".
+  // - "exports/{file_id}.bin" renders "exports/file-a.bin".
+  // - "exports/20260503/{file_id}" appends yyyyMMdd as part of the prefix.
+  // - For file ID "file-a", that template renders "exports/20260503/file-a".
+  // - "20260503" is caller-provided literal text.
+  //
+  // Safety rules after rendering:
+  // - The key must be non-empty and relative; it must not start with "/".
+  // - The key must not contain a ".." path segment.
+  // - The key must not contain control characters.
+  // - The rendered UTF-8 byte length must fit the OSS object key limit.
+  // - Within one CreateCopyJob request, every file ID must render to a unique key.
+  // - A fixed template such as "latest.bin" is only valid when it cannot collide.
+  string key_template = 4;
+  // Optional target cloud account identifier for auditing and diagnostics.
+  string account_id = 5;
+  // Optional KMS key ID used when writing destination objects.
+  string kms_key_id = 6;
+}
+
+// User-visible aggregate copy job state.
+enum CopyJobStatus {
+  COPY_JOB_STATUS_UNSPECIFIED = 0;
+  COPY_JOB_STATUS_QUEUED = 1;
+  COPY_JOB_STATUS_RUNNING = 2;
+  COPY_JOB_STATUS_SUCCEEDED = 3;
+  COPY_JOB_STATUS_PARTIAL_FAILED = 4;
+  COPY_JOB_STATUS_FAILED = 5;
+  COPY_JOB_STATUS_CANCELING = 6;
+  COPY_JOB_STATUS_CANCELED = 7;
+}
+
+// User-visible per-file copy item state.
+enum CopyItemStatus {
+  COPY_ITEM_STATUS_UNSPECIFIED = 0;
+  COPY_ITEM_STATUS_QUEUED = 1;
+  COPY_ITEM_STATUS_COPYING = 2;
+  COPY_ITEM_STATUS_SUCCEEDED = 3;
+  COPY_ITEM_STATUS_FAILED_TERMINAL = 4;
+  COPY_ITEM_STATUS_SKIPPED = 5;
+  COPY_ITEM_STATUS_CANCELED = 6;
+}
+
+// Returns the identity and initial state of a newly created copy job.
+message CreateCopyJobResponse {
+  // Stable job identifier used by all subsequent copy RPCs.
+  string copy_job_id = 1;
+  // Initial or reused job status.
+  CopyJobStatus status = 2;
+  // Total number of file IDs accepted into the job.
+  int32 total_items = 3;
+  // Sum of known source file sizes, in bytes.
+  int64 estimated_total_bytes = 4;
+}
+
+// Requests the aggregate state of one copy job.
+message GetCopyJobRequest {
+  // Stable copy job identifier returned by CreateCopyJob.
+  string copy_job_id = 1;
+}
+
+// Returns the aggregate state of one copy job.
+message GetCopyJobResponse {
+  // Current job view.
+  CopyJobView job = 1;
+}
+
+// User-visible aggregate state for one copy job.
+message CopyJobView {
+  // Stable copy job identifier.
+  string copy_job_id = 1;
+  // Current aggregate status.
+  CopyJobStatus status = 2;
+  // Destination selected at create time.
+  CopyDestination destination = 3;
+  // Total number of items in the job.
+  int32 total_items = 4;
+  // Number of items that finished successfully.
+  int32 completed_items = 5;
+  // Number of terminally failed items.
+  int32 failed_items = 6;
+  // Number of items skipped by overwrite policy.
+  int32 skipped_items = 7;
+  // Total source bytes planned for the job.
+  int64 total_bytes = 8;
+  // Bytes confirmed copied or skipped so far.
+  int64 copied_bytes = 9;
+  // Unix seconds when the job was created.
+  int64 created_at_unix = 10;
+  // Unix seconds when execution first started, or zero if not started.
+  int64 started_at_unix = 11;
+  // Unix seconds when the job reached a terminal state, or zero otherwise.
+  int64 finished_at_unix = 12;
+  // Terminal or job-level failure reason, if any.
+  string terminal_reason = 13;
+}
+
+// Requests item-level copy state for one job.
+message ListCopyJobItemsRequest {
+  // Stable copy job identifier returned by CreateCopyJob.
+  string copy_job_id = 1;
+  // Optional status filter. Empty means all item statuses.
+  repeated CopyItemStatus statuses = 2;
+  // Maximum number of items to return.
+  int32 page_size = 3;
+  // Opaque token returned by a previous page.
+  string page_token = 4;
+}
+
+// User-visible per-file state for one copy item.
+message CopyJobItemView {
+  // File ID requested by the user.
+  string file_id = 1;
+  // Destination object key rendered from the job key template.
+  string destination_object_key = 2;
+  // Current item status.
+  CopyItemStatus status = 3;
+  // Planned source object size, in bytes.
+  int64 source_size = 4;
+  // Bytes confirmed copied for this item.
+  int64 copied_bytes = 5;
+  // Stable machine-readable failure code, if any.
+  string error_code = 6;
+  // Redacted human-readable failure message, if any.
+  string error_message = 7;
+}
+
+// Returns one page of copy job items.
+message ListCopyJobItemsResponse {
+  // Copy items in page order.
+  repeated CopyJobItemView items = 1;
+  // Opaque token for the next page, or empty when no more pages exist.
+  string next_page_token = 2;
+  // Total number of items matching the filter.
+  int32 total_size = 3;
+}
+
+// Requests cancellation of one copy job.
+message CancelCopyJobRequest {
+  // Stable copy job identifier returned by CreateCopyJob.
+  string copy_job_id = 1;
+  // Optional operator or user reason recorded in job audit fields.
+  string reason = 2;
+}
+
+// Returns the state after a cancel request is accepted.
+message CancelCopyJobResponse {
+  // Stable copy job identifier.
+  string copy_job_id = 1;
+  // Status after cancellation was requested.
+  CopyJobStatus status = 2;
+}
 
 // Identifies an object within the configured OSS bucket.
 message StorageObject {
@@ -185,6 +503,28 @@ message PresignObjectResponse {
   PresignedOperation write = 3;
   // Absolute expiration time as Unix seconds.
   int64 expires_at_unix = 4;
+}
+
+// Requests a bounded backend-only object read.
+message ReadObjectRequest {
+  // Object to read.
+  StorageObject object = 1;
+  // Maximum number of bytes the caller is willing to receive.
+  int64 max_bytes = 2;
+  // Allowed response content types. Empty means no content-type constraint.
+  repeated string allowed_content_types = 3;
+}
+
+// Returns bytes and metadata for one backend-only object read.
+message ReadObjectResponse {
+  // Object that was read.
+  StorageObject object = 1;
+  // Full object content. The service rejects objects larger than max_bytes.
+  bytes content = 2;
+  // Object content type, if known.
+  string content_type = 3;
+  // Object entity tag, if known.
+  string etag = 4;
 }
 
 enum DataGatewayErrorCode {
