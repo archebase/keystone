@@ -27,8 +27,11 @@ import (
 const (
 	hilbertNoncePath              = "/v1/console/nonce/generate"
 	hilbertLoginPath              = "/v1/console/account/login"
+	hilbertAccountQueryPath       = "/v1/console/account/query"
 	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
 	hilbertDCPlanQueryPath        = "/v1/data-collection/dc-plan/query"
+	hilbertDCDeviceQueryPath      = "/v1/data-collection/dc-device/query"
+	hilbertDCDeviceTypeQueryPath  = "/v1/data-collection/dc-device-type/query"
 
 	hilbertNonceKeyLengthBytes = 32
 	hilbertNonceIVLengthBytes  = 12
@@ -125,6 +128,55 @@ type HilbertDCPlanPage struct {
 	Total    int64           `json:"total"`
 	PageNum  int64           `json:"pageNum"`
 	PageSize int64           `json:"pageSize"`
+}
+
+// HilbertAccountPage stores Hilbert's page wrapper for account query.
+type HilbertAccountPage struct {
+	Records  []HilbertAccount `json:"records"`
+	Total    int64            `json:"total"`
+	PageNum  int64            `json:"pageNum"`
+	PageSize int64            `json:"pageSize"`
+}
+
+// HilbertDCDevice stores one Hilbert data collection device projection.
+type HilbertDCDevice struct {
+	ID             int64      `json:"id"`
+	WorkspaceID    int64      `json:"workspaceId"`
+	Name           string     `json:"name"`
+	Description    *string    `json:"description"`
+	SN             string     `json:"sn"`
+	DCDeviceTypeID int64      `json:"dcDeviceTypeId"`
+	CreatedBy      string     `json:"createdBy"`
+	CreatedTime    time.Time  `json:"createdTime"`
+	UpdatedBy      *string    `json:"updatedBy"`
+	UpdatedTime    *time.Time `json:"updatedTime"`
+}
+
+// HilbertDCDevicePage stores Hilbert's page wrapper for dc-device query.
+type HilbertDCDevicePage struct {
+	Records  []HilbertDCDevice `json:"records"`
+	Total    int64             `json:"total"`
+	PageNum  int64             `json:"pageNum"`
+	PageSize int64             `json:"pageSize"`
+}
+
+// HilbertDCDeviceType stores one Hilbert data collection device type projection.
+type HilbertDCDeviceType struct {
+	ID          int64      `json:"id"`
+	Name        string     `json:"name"`
+	Description *string    `json:"description"`
+	CreatedBy   string     `json:"createdBy"`
+	CreatedTime time.Time  `json:"createdTime"`
+	UpdatedBy   *string    `json:"updatedBy"`
+	UpdatedTime *time.Time `json:"updatedTime"`
+}
+
+// HilbertDCDeviceTypePage stores Hilbert's page wrapper for dc-device-type query.
+type HilbertDCDeviceTypePage struct {
+	Records  []HilbertDCDeviceType `json:"records"`
+	Total    int64                 `json:"total"`
+	PageNum  int64                 `json:"pageNum"`
+	PageSize int64                 `json:"pageSize"`
 }
 
 // HilbertClient authenticates collector credentials against the Hilbert backend.
@@ -230,6 +282,112 @@ func (c *HilbertClient) QueryDCPlans(ctx context.Context, sessionKey string, wor
 		return nil, fmt.Errorf("%w: dc plan query response code %d", ErrHilbertUnavailable, resp.Code)
 	}
 	return &resp.Data, nil
+}
+
+// QueryAccountByCode fetches one Hilbert account by exact account code.
+func (c *HilbertClient) QueryAccountByCode(ctx context.Context, sessionKey string, code string) (*HilbertAccount, error) {
+	if !c.Configured() {
+		return nil, ErrHilbertUnavailable
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	code = strings.TrimSpace(code)
+	if sessionKey == "" {
+		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
+	}
+	if code == "" {
+		return nil, fmt.Errorf("%w: missing account code", ErrHilbertUnavailable)
+	}
+
+	query := url.Values{}
+	query.Set("code", code)
+	query.Set("pageNum", "1")
+	query.Set("pageSize", "1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertAccountQueryPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create account query request", ErrHilbertUnavailable)
+	}
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+
+	var resp hilbertCommonResponse[HilbertAccountPage]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: account query response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	if len(resp.Data.Records) == 0 {
+		return nil, nil
+	}
+	return &resp.Data.Records[0], nil
+}
+
+// QueryDCDevices fetches every Hilbert data collection device visible in one workspace.
+func (c *HilbertClient) QueryDCDevices(ctx context.Context, sessionKey string, workspaceID int64) (*HilbertDCDevicePage, error) {
+	if !c.Configured() {
+		return nil, ErrHilbertUnavailable
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
+	}
+	if workspaceID <= 0 {
+		return nil, fmt.Errorf("%w: invalid dc device workspace id", ErrHilbertUnavailable)
+	}
+
+	query := url.Values{}
+	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))
+	query.Set("pageNum", "1")
+	query.Set("pageSize", "-1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertDCDeviceQueryPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create dc device query request", ErrHilbertUnavailable)
+	}
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+
+	var resp hilbertCommonResponse[HilbertDCDevicePage]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: dc device query response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return &resp.Data, nil
+}
+
+// QueryDCDeviceTypeByID fetches one Hilbert data collection device type by primary key.
+func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, sessionKey string, id int64) (*HilbertDCDeviceType, error) {
+	if !c.Configured() {
+		return nil, ErrHilbertUnavailable
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
+	}
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: invalid dc device type id", ErrHilbertUnavailable)
+	}
+
+	query := url.Values{}
+	query.Set("id", strconv.FormatInt(id, 10))
+	query.Set("pageNum", "1")
+	query.Set("pageSize", "1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertDCDeviceTypeQueryPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create dc device type query request", ErrHilbertUnavailable)
+	}
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+
+	var resp hilbertCommonResponse[HilbertDCDeviceTypePage]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: dc device type query response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	if len(resp.Data.Records) == 0 {
+		return nil, nil
+	}
+	return &resp.Data.Records[0], nil
 }
 
 type hilbertCommonResponse[T any] struct {

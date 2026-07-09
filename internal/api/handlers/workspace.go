@@ -69,9 +69,10 @@ type WorkspaceListResponse struct {
 
 // WorkspaceSyncResponse represents a manual workspace sync result.
 type WorkspaceSyncResponse struct {
-	SyncedCount     int    `json:"synced_count"`
-	DefaultIncluded bool   `json:"default_included"`
-	LastSyncedAt    string `json:"last_synced_at"`
+	SyncedCount     int                                    `json:"synced_count"`
+	DefaultIncluded bool                                   `json:"default_included"`
+	LastSyncedAt    string                                 `json:"last_synced_at"`
+	ResourceSync    *services.WorkspaceResourceSyncSummary `json:"resource_sync,omitempty"`
 }
 
 // RegisterRoutes registers workspace related routes.
@@ -257,6 +258,7 @@ func (h *WorkspaceHandler) SyncWorkspaces(c *gin.Context) {
 		SyncedCount:     result.SyncedCount,
 		DefaultIncluded: result.DefaultIncluded,
 		LastSyncedAt:    result.LastSyncedAt.UTC().Format(time.RFC3339),
+		ResourceSync:    result.ResourceSync,
 	})
 }
 
