@@ -43,14 +43,13 @@ func TestWorkspaceListEnsuresDefaultWorkspace(t *testing.T) {
 	assertDefaultWorkspaceResponse(t, listResp.Items[0])
 
 	var stored struct {
-		ID            int64  `db:"id"`
-		Source        string `db:"source"`
-		UploadEnabled bool   `db:"upload_enabled"`
+		ID     int64  `db:"id"`
+		Source string `db:"source"`
 	}
-	if err := db.Get(&stored, "SELECT id, source, upload_enabled FROM workspaces WHERE id = 0"); err != nil {
+	if err := db.Get(&stored, "SELECT id, source FROM workspaces WHERE id = 0"); err != nil {
 		t.Fatalf("query default workspace: %v", err)
 	}
-	if stored.ID != 0 || stored.Source != workspaceSourceDefault || stored.UploadEnabled {
+	if stored.ID != 0 || stored.Source != workspaceSourceDefault {
 		t.Fatalf("unexpected stored default workspace: %#v", stored)
 	}
 }
@@ -199,9 +198,6 @@ func assertDefaultWorkspaceResponse(t *testing.T, workspace WorkspaceResponse) {
 	if workspace.Source != workspaceSourceDefault {
 		t.Fatalf("source=%q want %q", workspace.Source, workspaceSourceDefault)
 	}
-	if workspace.UploadEnabled {
-		t.Fatalf("upload_enabled=true want false")
-	}
 	if workspace.LastSyncedAt != "" {
 		t.Fatalf("last_synced_at=%q want empty", workspace.LastSyncedAt)
 	}
@@ -235,7 +231,6 @@ func newTestWorkspaceDB(t *testing.T) *sqlx.DB {
 			name TEXT NOT NULL,
 			description TEXT,
 			source TEXT NOT NULL,
-			upload_enabled BOOLEAN NOT NULL,
 			admins_str TEXT,
 			members_str TEXT,
 			last_synced_at TIMESTAMP,

@@ -46,16 +46,15 @@ func NewWorkspaceHandler(db *sqlx.DB, syncService ...*services.WorkspaceSyncServ
 
 // WorkspaceResponse represents a workspace in the response.
 type WorkspaceResponse struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Description   string   `json:"description,omitempty"`
-	Source        string   `json:"source"`
-	UploadEnabled bool     `json:"upload_enabled"`
-	Admins        []string `json:"admins"`
-	Members       []string `json:"members"`
-	LastSyncedAt  string   `json:"last_synced_at,omitempty"`
-	CreatedAt     string   `json:"created_at,omitempty"`
-	UpdatedAt     string   `json:"updated_at,omitempty"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	Source       string   `json:"source"`
+	Admins       []string `json:"admins"`
+	Members      []string `json:"members"`
+	LastSyncedAt string   `json:"last_synced_at,omitempty"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	UpdatedAt    string   `json:"updated_at,omitempty"`
 }
 
 // WorkspaceListResponse represents the response for listing workspaces.
@@ -84,16 +83,15 @@ func (h *WorkspaceHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // workspaceRow represents a workspace in the database.
 type workspaceRow struct {
-	ID            int64          `db:"id"`
-	Name          string         `db:"name"`
-	Description   sql.NullString `db:"description"`
-	Source        string         `db:"source"`
-	UploadEnabled bool           `db:"upload_enabled"`
-	AdminsStr     sql.NullString `db:"admins_str"`
-	MembersStr    sql.NullString `db:"members_str"`
-	LastSyncedAt  sql.NullTime   `db:"last_synced_at"`
-	CreatedAt     sql.NullTime   `db:"created_at"`
-	UpdatedAt     sql.NullTime   `db:"updated_at"`
+	ID           int64          `db:"id"`
+	Name         string         `db:"name"`
+	Description  sql.NullString `db:"description"`
+	Source       string         `db:"source"`
+	AdminsStr    sql.NullString `db:"admins_str"`
+	MembersStr   sql.NullString `db:"members_str"`
+	LastSyncedAt sql.NullTime   `db:"last_synced_at"`
+	CreatedAt    sql.NullTime   `db:"created_at"`
+	UpdatedAt    sql.NullTime   `db:"updated_at"`
 }
 
 // ListWorkspaces handles workspace listing requests.
@@ -152,7 +150,6 @@ func (h *WorkspaceHandler) ListWorkspaces(c *gin.Context) {
 			w.name,
 			w.description,
 			w.source,
-			w.upload_enabled,
 			w.admins_str,
 			w.members_str,
 			w.last_synced_at,
@@ -213,7 +210,7 @@ func (h *WorkspaceHandler) GetWorkspace(c *gin.Context) {
 
 	var workspace workspaceRow
 	if err := h.db.Get(&workspace, `
-		SELECT id, name, description, source, upload_enabled, admins_str, members_str, last_synced_at, created_at, updated_at
+		SELECT id, name, description, source, admins_str, members_str, last_synced_at, created_at, updated_at
 		FROM workspaces
 		WHERE id = ? AND deleted_at IS NULL
 	`, id); err != nil {
@@ -281,7 +278,6 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 			name = ?,
 			description = ?,
 			source = ?,
-			upload_enabled = ?,
 			admins_str = ?,
 			members_str = ?,
 			deleted_at = NULL,
@@ -291,7 +287,6 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		false,
 		sql.NullString{},
 		sql.NullString{},
 		now,
@@ -318,19 +313,17 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 			name,
 			description,
 			source,
-			upload_enabled,
 			admins_str,
 			members_str,
 			last_synced_at,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		defaultWorkspaceID,
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		false,
 		sql.NullString{},
 		sql.NullString{},
 		sql.NullTime{},
@@ -412,15 +405,14 @@ func formatWorkspaceNullableTime(value sql.NullTime) string {
 // workspaceResponseFromRow converts a workspaceRow to a WorkspaceResponse.
 func workspaceResponseFromRow(workspace workspaceRow) WorkspaceResponse {
 	return WorkspaceResponse{
-		ID:            strconv.FormatInt(workspace.ID, 10),
-		Name:          workspace.Name,
-		Description:   workspace.Description.String,
-		Source:        workspace.Source,
-		UploadEnabled: workspace.UploadEnabled,
-		Admins:        splitHashWrappedString(workspace.AdminsStr.String),
-		Members:       splitHashWrappedString(workspace.MembersStr.String),
-		LastSyncedAt:  formatWorkspaceNullableTime(workspace.LastSyncedAt),
-		CreatedAt:     formatWorkspaceNullableTime(workspace.CreatedAt),
-		UpdatedAt:     formatWorkspaceNullableTime(workspace.UpdatedAt),
+		ID:           strconv.FormatInt(workspace.ID, 10),
+		Name:         workspace.Name,
+		Description:  workspace.Description.String,
+		Source:       workspace.Source,
+		Admins:       splitHashWrappedString(workspace.AdminsStr.String),
+		Members:      splitHashWrappedString(workspace.MembersStr.String),
+		LastSyncedAt: formatWorkspaceNullableTime(workspace.LastSyncedAt),
+		CreatedAt:    formatWorkspaceNullableTime(workspace.CreatedAt),
+		UpdatedAt:    formatWorkspaceNullableTime(workspace.UpdatedAt),
 	}
 }

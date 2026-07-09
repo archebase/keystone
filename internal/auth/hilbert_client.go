@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +28,7 @@ const (
 	hilbertNoncePath              = "/v1/console/nonce/generate"
 	hilbertLoginPath              = "/v1/console/account/login"
 	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
+	hilbertDCPlanQueryPath        = "/v1/data-collection/dc-plan/query"
 
 	hilbertNonceKeyLengthBytes = 32
 	hilbertNonceIVLengthBytes  = 12
@@ -90,6 +93,38 @@ type HilbertWorkspace struct {
 	Members     []string   `json:"members"`
 	CreatedTime time.Time  `json:"createdTime"`
 	UpdatedTime *time.Time `json:"updatedTime"`
+}
+
+// HilbertDCPlan stores one Hilbert data collection plan projection.
+type HilbertDCPlan struct {
+	ID                  int64      `json:"id"`
+	WorkspaceID         int64      `json:"workspaceId"`
+	Name                string     `json:"name"`
+	Description         *string    `json:"description"`
+	DCFactoryID         int64      `json:"dcFactoryId"`
+	DCServiceProviderID int64      `json:"dcServiceProviderId"`
+	Operator            string     `json:"operator"`
+	DCProjectID         int64      `json:"dcProjectId"`
+	DCTaskID            int64      `json:"dcTaskId"`
+	DCDeviceID          int64      `json:"dcDeviceId"`
+	DCType              string     `json:"dcType"`
+	DCDate              string     `json:"dcDate"`
+	TargetCount         int64      `json:"targetCount"`
+	CurCount            int64      `json:"curCount"`
+	TargetDuration      int64      `json:"targetDuration"`
+	CurDuration         int64      `json:"curDuration"`
+	CreatedBy           string     `json:"createdBy"`
+	CreatedTime         time.Time  `json:"createdTime"`
+	UpdatedBy           *string    `json:"updatedBy"`
+	UpdatedTime         *time.Time `json:"updatedTime"`
+}
+
+// HilbertDCPlanPage stores Hilbert's page wrapper for dc-plan query.
+type HilbertDCPlanPage struct {
+	Records  []HilbertDCPlan `json:"records"`
+	Total    int64           `json:"total"`
+	PageNum  int64           `json:"pageNum"`
+	PageSize int64           `json:"pageSize"`
 }
 
 // HilbertClient authenticates collector credentials against the Hilbert backend.
@@ -162,6 +197,39 @@ func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context, sessionKey 
 		return nil, fmt.Errorf("%w: workspace list response code %d", ErrHilbertUnavailable, resp.Code)
 	}
 	return resp.Data, nil
+}
+
+// QueryDCPlans fetches one page of Hilbert data collection plans for one workspace.
+func (c *HilbertClient) QueryDCPlans(ctx context.Context, sessionKey string, workspaceID int64, pageNum int64, pageSize int64) (*HilbertDCPlanPage, error) {
+	if !c.Configured() {
+		return nil, ErrHilbertUnavailable
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
+	}
+	if workspaceID <= 0 || pageNum <= 0 || pageSize <= 0 {
+		return nil, fmt.Errorf("%w: invalid dc plan query parameters", ErrHilbertUnavailable)
+	}
+
+	query := url.Values{}
+	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))
+	query.Set("pageNum", strconv.FormatInt(pageNum, 10))
+	query.Set("pageSize", strconv.FormatInt(pageSize, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertDCPlanQueryPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create dc plan query request", ErrHilbertUnavailable)
+	}
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+
+	var resp hilbertCommonResponse[HilbertDCPlanPage]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: dc plan query response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return &resp.Data, nil
 }
 
 type hilbertCommonResponse[T any] struct {
