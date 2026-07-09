@@ -1,0 +1,718 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone PR-3 Hilbert 数采计划驱动 Task 生成</title>
+  <style>
+    :root {
+      --orange: #F47A16;
+      --blue: #1E4E9A;
+      --yellow: #FFD23F;
+      --ink: #15110D;
+      --paper: #FFF2D4;
+      --red: #D93A24;
+      --brown: #7A3E16;
+      --shadow: 8px 8px 0 var(--ink);
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background: var(--orange);
+      color: var(--ink);
+      font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", SimHei, sans-serif;
+      line-height: 1.68;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 74% 22%, var(--yellow) 0 8%, transparent 8%),
+        repeating-linear-gradient(108deg, rgba(21, 17, 13, .18) 0 3px, transparent 3px 24px),
+        var(--orange);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 20;
+      opacity: .28;
+      background:
+        radial-gradient(circle, rgba(21, 17, 13, .24) 0 1px, transparent 1px) 0 0 / 9px 9px,
+        linear-gradient(90deg, transparent 0 48%, rgba(21, 17, 13, .14) 48% 52%, transparent 52%);
+      mix-blend-mode: multiply;
+    }
+
+    a {
+      color: var(--blue);
+      font-weight: 1000;
+      text-decoration: underline;
+      text-decoration-thickness: 3px;
+    }
+
+    .page {
+      position: relative;
+      width: min(1180px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 28px 0 70px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 620px;
+      border: 6px solid var(--ink);
+      background:
+        linear-gradient(112deg, var(--paper) 0 55%, transparent 55%),
+        linear-gradient(158deg, transparent 0 65%, var(--blue) 65%),
+        var(--yellow);
+      box-shadow: 14px 14px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -24%;
+      background:
+        repeating-conic-gradient(from 6deg at 70% 42%, rgba(21, 17, 13, .22) 0 2deg, transparent 2deg 8deg);
+      opacity: .78;
+    }
+
+    .hero::after {
+      content: "PR-3 COMBO";
+      position: absolute;
+      right: -16px;
+      bottom: 34px;
+      padding: 12px 18px;
+      border: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      font: 900 22px/1 Impact, "Arial Black", sans-serif;
+      transform: skewX(-12deg) rotate(-2deg);
+      box-shadow: 7px 7px 0 var(--ink);
+      letter-spacing: 0;
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      width: min(930px, 100%);
+      padding: clamp(26px, 5vw, 62px);
+    }
+
+    .kicker {
+      display: inline-block;
+      padding: 7px 12px;
+      border: 4px solid var(--ink);
+      background: var(--yellow);
+      font-weight: 1000;
+      box-shadow: 5px 5px 0 var(--brown);
+      transform: rotate(-2deg);
+    }
+
+    h1 {
+      margin: 30px 0 18px;
+      max-width: 920px;
+      color: var(--red);
+      font-family: Impact, "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(48px, 8.2vw, 106px);
+      line-height: .94;
+      letter-spacing: 0;
+      -webkit-text-stroke: 3px var(--ink);
+      text-shadow: 7px 7px 0 var(--yellow), 12px 12px 0 var(--ink);
+      transform: skew(-4deg);
+    }
+
+    .subtitle {
+      max-width: 830px;
+      margin: 0;
+      font-size: clamp(18px, 2.1vw, 24px);
+      font-weight: 900;
+    }
+
+    .arena {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      width: min(1000px, 100%);
+      margin-top: 34px;
+    }
+
+    .signal {
+      min-height: 112px;
+      border: 4px solid var(--ink);
+      background: var(--blue);
+      color: var(--paper);
+      padding: 12px;
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .signal b {
+      display: block;
+      color: var(--yellow);
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    .signal span {
+      display: block;
+      margin-top: 8px;
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    section {
+      margin-top: 30px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      border-bottom: 5px solid var(--ink);
+      background: var(--yellow);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      border-right: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      font: 900 36px/1 Impact, "Arial Black", sans-serif;
+      -webkit-text-stroke: 1px var(--ink);
+    }
+
+    h2 {
+      margin: 0;
+      padding: 15px 18px;
+      font-size: clamp(25px, 4vw, 42px);
+      line-height: 1.12;
+      font-weight: 1000;
+      letter-spacing: 0;
+    }
+
+    .content { padding: clamp(18px, 3vw, 30px); }
+
+    h3 {
+      margin: 26px 0 10px;
+      font-size: 23px;
+      line-height: 1.22;
+      font-weight: 1000;
+    }
+
+    h3:first-child { margin-top: 0; }
+
+    p { margin: 0 0 14px; }
+
+    code {
+      padding: 1px 5px;
+      border: 2px solid var(--ink);
+      background: var(--yellow);
+      color: var(--ink);
+      font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+      font-size: .92em;
+      font-weight: 800;
+    }
+
+    pre {
+      margin: 14px 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 4px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper);
+      box-shadow: 6px 6px 0 var(--brown);
+      font: 14px/1.55 "SFMono-Regular", Consolas, "Courier New", monospace;
+    }
+
+    ul,
+    ol {
+      margin: 8px 0 16px;
+      padding-left: 24px;
+    }
+
+    li { margin: 7px 0; }
+
+    table {
+      width: 100%;
+      margin: 16px 0 22px;
+      border-collapse: collapse;
+      background: var(--paper);
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+
+    th,
+    td {
+      border: 4px solid var(--ink);
+      padding: 11px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--yellow);
+      font-weight: 1000;
+    }
+
+    .flow {
+      display: grid;
+      gap: 12px;
+      margin: 18px 0;
+    }
+
+    .flow-row {
+      display: grid;
+      grid-template-columns: 130px 1fr;
+      border: 4px solid var(--ink);
+      box-shadow: 5px 5px 0 var(--ink);
+      background: var(--paper);
+    }
+
+    .flow-key {
+      display: grid;
+      place-items: center;
+      padding: 12px;
+      border-right: 4px solid var(--ink);
+      background: var(--blue);
+      color: var(--paper);
+      font-weight: 1000;
+    }
+
+    .flow-body { padding: 13px 15px; }
+
+    .tagline {
+      display: inline-block;
+      padding: 3px 8px;
+      border: 3px solid var(--ink);
+      background: var(--yellow);
+      font-weight: 1000;
+      box-shadow: 3px 3px 0 var(--ink);
+    }
+
+    .tagline.red {
+      background: var(--red);
+      color: var(--paper);
+    }
+
+    .tagline.blue {
+      background: var(--blue);
+      color: var(--paper);
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .panel {
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 5px 5px 0 var(--ink);
+      padding: 15px;
+    }
+
+    .panel h3 { margin-top: 0; }
+
+    .callout {
+      margin: 18px 0;
+      border: 5px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 6px 6px 0 var(--ink);
+      padding: 16px;
+      font-weight: 900;
+    }
+
+    footer {
+      margin-top: 34px;
+      color: var(--ink);
+      font-weight: 800;
+    }
+
+    @media (max-width: 860px) {
+      .page { width: min(100% - 22px, 1180px); padding-top: 16px; }
+      .hero { min-height: auto; box-shadow: 8px 8px 0 var(--ink); }
+      .hero-inner { padding: 24px; }
+      .arena,
+      .split { grid-template-columns: 1fr; }
+      .section-head { grid-template-columns: 60px 1fr; }
+      .section-no { font-size: 24px; }
+      .flow-row { grid-template-columns: 1fr; }
+      .flow-key { border-right: 0; border-bottom: 4px solid var(--ink); }
+      th, td { padding: 9px; }
+      pre { font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-inner">
+        <span class="kicker">Keystone V2 / PR-3 / 2026-07-09</span>
+        <h1>数采计划<br>接管 TASK<br>生成链路</h1>
+        <p class="subtitle">
+          核心矛盾：Hilbert <code>dc_plan</code> 已经成为生产主对象，但 Keystone runtime 仍依赖
+          order/batch/task 旧链路。PR-3 要让计划同步后自动补齐本地 task，同时用兼容壳稳住现有执行路径。
+        </p>
+        <div class="arena">
+          <div class="signal"><b>触发点</b><span>同步 Workspace 的 dc_plan 后自动生成</span></div>
+          <div class="signal"><b>主事实</b><span><code>tasks.dc_plan_id</code> 是新语义来源</span></div>
+          <div class="signal"><b>兼容层</b><span>order/batch/SOP/scene 只服务旧 runtime</span></div>
+          <div class="signal"><b>失败策略</b><span>单计划 blocked 不拖垮整批同步</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">01</div>
+        <h2>背景与问题</h2>
+      </div>
+      <div class="content">
+        <p>
+          PR-2 已经把 Hilbert <code>dc_plan</code> 投影到 Keystone，并提供
+          <code>POST /workspaces/:workspace_id/dc-plans/sync</code> 与 <code>GET /dc-plans</code>。
+          但是现有任务生产仍通过本地 <code>orders</code> / <code>batches</code> 创建，
+          <code>tasks.dc_plan_id</code> 只是 schema 预留，runtime 尚未写入。
+        </p>
+        <div class="callout">
+          PR-3 的目标不是删除旧模型，而是把 Hilbert 数采计划变成 task 生成入口。
+          旧 order/batch/scene/SOP 字段继续存在，但只作为兼容壳，不能再承担业务事实来源。
+        </div>
+        <div class="flow">
+          <div class="flow-row">
+            <div class="flow-key">现状</div>
+            <div class="flow-body">dc_plan 已同步；task 仍由本地 order/batch 手动创建；Axon config 仍读取旧字段。</div>
+          </div>
+          <div class="flow-row">
+            <div class="flow-key">变化</div>
+            <div class="flow-body">每次成功同步 Hilbert 计划后，Keystone 自动按 <code>target_count</code> 补齐 tasks。</div>
+          </div>
+          <div class="flow-row">
+            <div class="flow-key">边界</div>
+            <div class="flow-body">不上传 raw data、不删除 order/batch schema、不改变 Axon 录制回调协议。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">02</div>
+        <h2>目标与非目标</h2>
+      </div>
+      <div class="content">
+        <div class="split">
+          <div class="panel">
+            <h3>目标</h3>
+            <ul>
+              <li><code>SyncWorkspaceDCPlans</code> 成功同步计划后自动生成或补齐本地 tasks。</li>
+              <li>同一计划重复同步保持幂等，只新增 <code>target_count - existing_count</code> 的缺口。</li>
+              <li>为计划创建/复用兼容 <code>order</code> 与稳定 <code>batch</code>，不破坏现有 runtime。</li>
+              <li>按 <code>operator + dc_device_id</code> 找到或自动创建 current workstation。</li>
+              <li>task list/detail/config 暴露 <code>dc_plan_id</code>、workspace 和计划元信息。</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>非目标</h3>
+            <ul>
+              <li>不在拉取数采计划时创建设备、机器人或采集员主数据。</li>
+              <li>不删除 order/batch/schema 旧字段，不重写 Axon callback 协议。</li>
+              <li>不把 <code>target_duration</code> 平均分配到单个 task。</li>
+              <li>不迁移已经存在的 task 到新工位或新配置。</li>
+              <li>不修改 <code>dc_plan.cur_count</code> / <code>cur_duration</code>，保持 Hilbert 投影语义。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">03</div>
+        <h2>方案总览</h2>
+      </div>
+      <div class="content">
+        <pre>POST /api/v1/workspaces/:workspace_id/dc-plans/sync
+  -> login Hilbert
+  -> query dc_plan pages
+  -> validate records
+  -> transaction: upsert dc_plan projections
+  -> for each returned plan:
+       transaction:
+         lock plan/order for generation
+         resolve data_collector by operator
+         resolve robot by device_id = dc_device_id
+         ensure current workstation for robot + collector
+         ensure plan compat factory / SOP / scene / subscene
+         ensure compat order + stable batch
+         create missing tasks up to target_count
+  -> return sync summary + per-plan task_generation summary</pre>
+        <p>
+          task 生成只处理本次 Hilbert 返回并成功 upsert 的计划。本地已有但本次没返回的计划不动；
+          计划校验失败时不提交 plan upsert，也不会生成 task。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">04</div>
+        <h2>关键规则</h2>
+      </div>
+      <div class="content">
+        <h3>触发与幂等</h3>
+        <ul>
+          <li>触发点固定为 <code>POST /workspaces/:workspace_id/dc-plans/sync</code>，不新增显式 generate endpoint。</li>
+          <li>每次同步后按最新 <code>target_count</code> 补齐 task，只新增缺口。</li>
+          <li><code>target_count</code> 增大时补齐新增 task；减小时不删除、不取消、不改已有 task。</li>
+          <li>existing count 统计 <code>tasks.dc_plan_id = ? AND deleted_at IS NULL</code> 的所有状态 task。</li>
+          <li>soft-deleted task 不计入 existing count。</li>
+        </ul>
+
+        <h3>工位解析</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Hilbert 字段</th>
+              <th>Keystone 映射</th>
+              <th>PR-3 行为</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>dc_plan.operator</code></td>
+              <td><code>data_collectors.operator_id</code></td>
+              <td>必须已由 Workspace 级同步创建；缺失时该 plan blocked。</td>
+            </tr>
+            <tr>
+              <td><code>dc_plan.dc_device_id</code></td>
+              <td><code>robots.device_id</code></td>
+              <td>直接按字符串匹配；PR-3 不使用 <code>robots.asset_id</code> 作为主映射。</td>
+            </tr>
+            <tr>
+              <td><code>operator + dc_device_id</code></td>
+              <td><code>workstations</code></td>
+              <td>存在同一 current workstation 时复用；都未绑定时自动创建；绑定冲突时 blocked。</td>
+            </tr>
+          </tbody>
+        </table>
+        <ul>
+          <li>PR-3 不自动创建 robot 或 data_collector。</li>
+          <li>robot / data_collector 必须是 <code>active</code>，否则 blocked <code>resource_inactive</code>。</li>
+          <li>若 robot 和 collector 都未绑定 current workstation，则自动创建 <code>status='active'</code> 的 workstation。</li>
+          <li>自动创建工位名称为 <code>hilbert_ws_&lt;operator&gt;_&lt;dc_device_id&gt;</code>，过长时截断并加短 hash。</li>
+          <li>自动创建工位要求 <code>data_collectors.organization_id = dc_plan.workspace_id</code>，不一致时 blocked <code>workspace_mismatch</code>。</li>
+          <li>自动创建工位还要求 <code>robots.metadata.hilbert_workspace_id = dc_plan.workspace_id</code>；缺失或不一致时 blocked <code>workspace_mismatch</code>。</li>
+          <li>自动创建工位的 <code>factory_id</code> 使用 <code>dc_plan.dc_factory_id</code> 对应的 plan compat factory，不使用 PR-2.5 的 workspace compat factory。</li>
+        </ul>
+
+        <h3>兼容 order / batch</h3>
+        <ul>
+          <li>每个 <code>dc_plan</code> 一个 compat order，一个稳定 compat batch。</li>
+          <li><code>orders.target_count = dc_plan.target_count</code>，每次同步跟随更新。</li>
+          <li>若 compat order 已 <code>completed</code> / <code>cancelled</code>，generation blocked <code>compat_order_closed</code>。</li>
+          <li><code>batches.batch_id = dcplan_&lt;dc_plan_id&gt;</code>，长期复用，不按同步次数创建新 batch。</li>
+          <li><code>batches.episode_count = dc_plan.target_count</code>，每次同步跟随更新。</li>
+          <li>若 compat batch 已 <code>completed</code> / <code>cancelled</code> / <code>recalled</code>，generation blocked <code>compat_batch_closed</code>。</li>
+        </ul>
+
+        <h3>兼容生产元信息</h3>
+        <ul>
+          <li>按 <code>dc_plan.dc_factory_id</code> 创建/复用 plan compat factory stub，用于 task / order / batch / scene runtime 兼容。</li>
+          <li>PR-2.5 的 workspace compat factory 只用于 <code>robots.factory_id</code> 落库；plan compat factory 与 workspace compat factory 不要求相同。</li>
+          <li>按 <code>dc_plan.dc_type</code> 创建/复用 compat SOP、scene、subscene。</li>
+          <li><code>sops.slug = hilbert_dc_plan_&lt;dc_type&gt;</code>，<code>version = 1.0.0</code>。</li>
+          <li><code>scenes.name = Hilbert &lt;dc_type&gt;</code>，<code>subscenes.name = Default</code>。</li>
+          <li>这些旧字段只满足现有 joins 和 Axon config，不再表达真实业务元信息。</li>
+        </ul>
+
+        <h3>task 内容</h3>
+        <ul>
+          <li>沿用现有 <code>newPublicTaskID()</code>，不把 plan ID 塞进 public <code>task_id</code>。</li>
+          <li><code>tasks.dc_plan_id</code> 写入 Hilbert plan ID，<code>local_dc_plan_id</code> 保持空。</li>
+          <li><code>target_duration</code> 只进入 task metadata，不平均分配，不控制 recorder 自动停止。</li>
+          <li>已存在 task 一律不迁移；新补齐 task 使用最新 plan 快照。</li>
+        </ul>
+        <pre>{
+  "source": "hilbert_dc_plan",
+  "dc_plan_id": 1001,
+  "workspace_id": 123,
+  "dc_plan_sequence": 5,
+  "target_count": 10,
+  "target_duration": 600,
+  "dc_type": "ego",
+  "dc_device_id": 456,
+  "generated_at": "2026-07-09T12:00:00Z"
+}</pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">05</div>
+        <h2>API 契约</h2>
+      </div>
+      <div class="content">
+        <h3>同步响应扩展</h3>
+        <p>
+          <code>DCPlanSyncResponse</code> 增加 <code>task_generation</code> summary。业务 blocked 仍返回 200；
+          系统级数据库错误或 Hilbert 调用失败才返回 5xx / 503。
+        </p>
+        <pre>{
+  "workspace_id": 123,
+  "synced_count": 10,
+  "page_count": 1,
+  "last_synced_at": "2026-07-09T12:00:00Z",
+  "task_generation": {
+    "enabled": true,
+    "created_count": 18,
+    "existing_count": 42,
+    "blocked_count": 2,
+    "plans": [
+      {
+        "dc_plan_id": 1001,
+        "status": "generated",
+        "target_count": 10,
+        "existing_task_count": 4,
+        "created_task_count": 6,
+        "workstation_id": 12
+      },
+      {
+        "dc_plan_id": 1002,
+        "status": "blocked",
+        "target_count": 5,
+        "existing_task_count": 0,
+        "created_task_count": 0,
+        "reason": "robot_not_found"
+      }
+    ]
+  }
+}</pre>
+
+        <h3>task 列表与详情</h3>
+        <ul>
+          <li><code>GET /tasks</code> 增加筛选：<code>workspace_id</code>、<code>dc_plan_id</code>。</li>
+          <li>task list/detail response 增加：<code>dc_plan_id</code>、<code>workspace_id</code>、<code>dc_plan_name</code>、<code>dc_type</code>、<code>dc_device_id</code>。</li>
+          <li>保留现有 <code>batch_id</code> / <code>order_id</code> 字段，不在 PR-3 删除或重命名。</li>
+        </ul>
+
+        <h3>Axon task config</h3>
+        <ul>
+          <li>保持现有 config contract，不一次性替换旧字段。</li>
+          <li>继续返回 <code>order_id</code>、<code>factory</code>、<code>scene</code>、<code>subscene</code>、<code>sop_id</code>、<code>topics</code>。</li>
+          <li>新增非破坏字段：<code>workspace_id</code>、<code>dc_plan_id</code>、<code>dc_type</code>、<code>dc_device_id</code>、<code>plan_target_count</code>、<code>plan_target_duration</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">06</div>
+        <h2>事务与错误处理</h2>
+      </div>
+      <div class="content">
+        <table>
+          <thead>
+            <tr>
+              <th>场景</th>
+              <th>处理</th>
+              <th>响应</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Hilbert 查询或 plan 校验失败</td>
+              <td>不提交 plan upsert，不生成 task。</td>
+              <td>503 或 5xx。</td>
+            </tr>
+            <tr>
+              <td>plan upsert 成功，单个 plan 缺 robot / collector</td>
+              <td>该 plan 不生成 task，其他 plan 继续。</td>
+              <td>200，plan summary 为 <code>blocked</code>。</td>
+            </tr>
+            <tr>
+              <td>robot / collector 当前绑定冲突</td>
+              <td>不自动拆绑，不生成 task。</td>
+              <td>200，reason <code>workstation_binding_conflict</code>。</td>
+            </tr>
+            <tr>
+              <td>单 plan 生成过程中 DB 写失败</td>
+              <td>回滚该 plan 的工位、compat 壳和 task 写入。</td>
+              <td>200 或 5xx，取决于错误是否可归类为业务 blocked。</td>
+            </tr>
+            <tr>
+              <td>并发同步同一 plan</td>
+              <td>generation transaction 中锁定 plan 或 compat order 行，重新计算缺口。</td>
+              <td>幂等，不超额生成。</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="callout">
+          事务边界锁定为：本次 Hilbert 返回的 plans 先整批 upsert；之后每个 plan 独立事务生成 task。
+          单计划失败不回滚整个 workspace 的 plan 投影。
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">07</div>
+        <h2>实施计划</h2>
+      </div>
+      <div class="content">
+        <ol>
+          <li>在 <code>services</code> 或 handler 内新增 plan task generation service，避免把所有逻辑塞进 <code>dc_plan.go</code>。</li>
+          <li>扩展 <code>DCPlanSyncResult</code> 和 <code>DCPlanSyncResponse</code>，返回 task generation summary。</li>
+          <li>同步 flow 中 upsert plans 后，对本次返回的 plans 逐个调用 generation。</li>
+          <li>实现 resolve collector / robot / workstation；只自动创建 workstation，不创建 robot / collector。</li>
+          <li>实现 plan compat factory、SOP、scene、subscene、order、batch ensure 逻辑。</li>
+          <li>实现 task 缺口补齐、metadata snapshot、并发锁和 target_count 变化处理。</li>
+          <li>扩展 task list/detail/config response 和筛选参数。</li>
+          <li>补 handler/service 单测：首次生成、重复幂等、target_count 增大、target_count 减小、缺资源 blocked、绑定冲突、robot workspace mismatch、并发防超额。</li>
+        </ol>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">08</div>
+        <h2>验收标准</h2>
+      </div>
+      <div class="content">
+        <ul>
+          <li>同步一个包含 10 个 target 的 plan 后，Keystone 自动生成 10 个 pending task。</li>
+          <li>重复同步同一个 plan 不新增 task。</li>
+          <li>Hilbert 将 target 从 10 调到 15 后，再同步只新增 5 个 task。</li>
+          <li>Hilbert 将 target 从 15 调到 8 后，再同步不删除 task，并在 summary 中暴露本地 existing 超过 target。</li>
+          <li>robot / collector 缺失时 plan blocked，其他 plan 正常生成。</li>
+          <li>robot + collector 存在但无 current workstation 时自动创建工位。</li>
+          <li>task list/detail 能按 <code>workspace_id</code> / <code>dc_plan_id</code> 查询并展示计划字段。</li>
+          <li>Axon <code>GET /tasks/:id/config</code> 对计划生成 task 仍返回兼容旧字段，并追加计划字段。</li>
+          <li><code>dc_plan.cur_count</code> / <code>cur_duration</code> 不因本地 task 生成被修改。</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer>
+      关联总览：<code>docs/designs/v2/keystone-hilbert-domain-migration-sequence.zh.html</code>。
+      前置实现：<code>docs/designs/v2/keystone-dc-plan-pr2-implementation.zh.html</code>。
+    </footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,622 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone PR-2.5 Workspace 运营资源最小投影</title>
+  <style>
+    :root {
+      --bg: #0F5E5C;
+      --paper: #F7E7B8;
+      --ink: #13110C;
+      --mint: #7FD6B2;
+      --red: #C93D2B;
+      --blue: #173F6D;
+      --yellow: #F4C542;
+      --shadow: 8px 8px 0 var(--ink);
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", SimHei, sans-serif;
+      line-height: 1.66;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        linear-gradient(90deg, rgba(19, 17, 12, .18) 1px, transparent 1px) 0 0 / 34px 34px,
+        linear-gradient(rgba(19, 17, 12, .14) 1px, transparent 1px) 0 0 / 34px 34px,
+        radial-gradient(circle at 84% 12%, var(--yellow) 0 8%, transparent 8%),
+        var(--bg);
+    }
+
+    a {
+      color: var(--blue);
+      font-weight: 900;
+      text-decoration: underline;
+      text-decoration-thickness: 3px;
+    }
+
+    code {
+      padding: 2px 6px;
+      border: 2px solid rgba(19, 17, 12, .2);
+      background: rgba(255, 255, 255, .42);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: .92em;
+    }
+
+    pre {
+      margin: 16px 0;
+      overflow-x: auto;
+      border: 4px solid var(--ink);
+      background: #101820;
+      color: #F5F0D8;
+      padding: 16px;
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 8px;
+      background: rgba(255, 255, 255, .26);
+    }
+
+    th,
+    td {
+      border: 3px solid var(--ink);
+      padding: 11px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--mint);
+      font-weight: 1000;
+    }
+
+    ul { margin: 12px 0 0; padding-left: 22px; }
+    li { margin: 8px 0; }
+
+    .page {
+      width: min(1160px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 28px 0 70px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 560px;
+      border: 6px solid var(--ink);
+      background:
+        linear-gradient(116deg, var(--paper) 0 58%, transparent 58%),
+        linear-gradient(156deg, transparent 0 64%, var(--red) 64%),
+        var(--mint);
+      box-shadow: 14px 14px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "PR-2.5 RESOURCE LOCK";
+      position: absolute;
+      right: -16px;
+      bottom: 30px;
+      padding: 12px 18px;
+      border: 5px solid var(--ink);
+      background: var(--blue);
+      color: var(--paper);
+      font: 900 22px/1 Impact, "Arial Black", sans-serif;
+      transform: skewX(-10deg) rotate(-2deg);
+      box-shadow: 7px 7px 0 var(--ink);
+      letter-spacing: 0;
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      width: min(920px, 100%);
+      padding: clamp(26px, 5vw, 58px);
+    }
+
+    .kicker {
+      display: inline-block;
+      padding: 7px 12px;
+      border: 4px solid var(--ink);
+      background: var(--yellow);
+      font-weight: 1000;
+      box-shadow: 5px 5px 0 rgba(19, 17, 12, .82);
+      transform: rotate(-2deg);
+    }
+
+    h1 {
+      margin: 30px 0 18px;
+      max-width: 920px;
+      color: var(--red);
+      font-family: Impact, "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(46px, 8vw, 104px);
+      line-height: .94;
+      letter-spacing: 0;
+      -webkit-text-stroke: 3px var(--ink);
+      text-shadow: 7px 7px 0 var(--yellow), 12px 12px 0 var(--ink);
+      transform: skew(-4deg);
+    }
+
+    .subtitle {
+      max-width: 820px;
+      margin: 0;
+      font-size: clamp(18px, 2.1vw, 24px);
+      font-weight: 900;
+    }
+
+    .signals {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      width: min(980px, 100%);
+      margin-top: 34px;
+    }
+
+    .signal {
+      min-height: 106px;
+      border: 4px solid var(--ink);
+      background: var(--blue);
+      color: var(--paper);
+      padding: 12px;
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .signal b {
+      display: block;
+      color: var(--yellow);
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    .signal span {
+      display: block;
+      margin-top: 8px;
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    section {
+      margin-top: 30px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      border-bottom: 5px solid var(--ink);
+      background: var(--yellow);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      border-right: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      font: 900 34px/1 Impact, "Arial Black", sans-serif;
+      -webkit-text-stroke: 1px var(--ink);
+    }
+
+    h2 {
+      margin: 0;
+      padding: 15px 18px;
+      font-size: clamp(25px, 4vw, 40px);
+      line-height: 1.12;
+      font-weight: 1000;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 22px;
+      line-height: 1.25;
+      font-weight: 1000;
+    }
+
+    h3:first-child { margin-top: 0; }
+
+    .content { padding: clamp(18px, 3vw, 30px); }
+
+    .callout {
+      margin-top: 18px;
+      border: 4px solid var(--ink);
+      background: var(--mint);
+      padding: 16px;
+      font-weight: 900;
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border: 2px solid var(--ink);
+      background: var(--paper);
+      font-size: 12px;
+      font-weight: 1000;
+      line-height: 1.2;
+    }
+
+    .badge.hot {
+      background: var(--red);
+      color: var(--paper);
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .panel {
+      border: 4px solid var(--ink);
+      background: rgba(255, 255, 255, .22);
+      padding: 16px;
+    }
+
+    @media (max-width: 820px) {
+      .hero { min-height: 0; }
+      .hero::after { position: relative; display: inline-block; right: auto; bottom: auto; margin: 0 0 18px 24px; }
+      .signals,
+      .split { grid-template-columns: 1fr; }
+      .section-head { grid-template-columns: 64px 1fr; }
+      .section-no { font-size: 28px; }
+      th,
+      td { min-width: 180px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-inner">
+        <span class="kicker">Keystone / Hilbert V2</span>
+        <h1>Workspace 运营资源最小投影</h1>
+        <p class="subtitle">
+          PR-2.5 是 PR-3 的前置 PR：在同步 Workspace 时固定同步采集员、数采设备、设备类型和兼容 factory，
+          让 Hilbert <code>dc_plan.operator</code> 与 <code>dc_plan.dc_device_id</code> 能解析成本地执行资源。
+        </p>
+        <div class="signals">
+          <div class="signal"><b>入口</b><span><code>POST /workspaces/sync</code> 和启动同步</span></div>
+          <div class="signal"><b>采集员</b><span>Workspace admins/members 中的 enabled data supplier</span></div>
+          <div class="signal"><b>设备</b><span><code>robots.device_id = dc_device.id</code> 字符串</span></div>
+          <div class="signal"><b>边界</b><span>只投影主数据，不生成 task，不改 Synapse</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">01</div>
+        <h2>目标与非目标</h2>
+      </div>
+      <div class="content">
+        <div class="split">
+          <div class="panel">
+            <h3>目标</h3>
+            <ul>
+              <li>Workspace sync 成功后，本地具备 PR-3 生成 task 所需的最小 resource projection。</li>
+              <li><code>dc_plan.operator</code> 可匹配 <code>data_collectors.operator_id</code>。</li>
+              <li><code>dc_plan.dc_device_id</code> 可匹配 <code>robots.device_id</code>。</li>
+              <li>Hilbert <code>dc_device_type</code> 可匹配 <code>robot_types.id</code>，满足现有 robot schema。</li>
+              <li>每个 Hilbert workspace 有一个 workspace compat factory，满足 <code>robots.factory_id</code> 必填约束。</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>非目标</h3>
+            <ul>
+              <li>不在拉取数采计划时创建 robot、device 或 data collector。</li>
+              <li>不生成 task，不创建 workstation；工位自动创建属于 PR-3。</li>
+              <li>不拉取 raw data / dataset，不改 Hilbert 上传协议。</li>
+              <li>不改 Synapse 页面，不做 scoped admin shell。</li>
+              <li>不自动软删 Hilbert 消失的本地资源投影。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout">
+          本文的 API 合约来自 Hilbert 后端代码：workspace list、account query、dc-device query 和 dc-device-type query 均已在代码中确认。
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">02</div>
+        <h2>Hilbert API 来源</h2>
+      </div>
+      <div class="content">
+        <table>
+          <thead>
+            <tr>
+              <th>资源</th>
+              <th>Hilbert API</th>
+              <th>关键字段 / 参数</th>
+              <th>Keystone 用途</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Workspace</td>
+              <td><code>GET /v1/console/workspace/list-available</code></td>
+              <td><code>id</code>、<code>name</code>、<code>admins</code>、<code>members</code></td>
+              <td>确定需要同步资源的 Hilbert workspace；<code>admins + members</code> 是账号 code 候选集合。</td>
+            </tr>
+            <tr>
+              <td>Account</td>
+              <td><code>GET /v1/console/account/query</code></td>
+              <td><code>code</code> 精确查；支持 <code>role</code>、<code>externalUserType</code>、<code>status</code>、<code>pageSize=-1</code></td>
+              <td>把 workspace 成员筛成 Keystone data collector。</td>
+            </tr>
+            <tr>
+              <td>DC Device</td>
+              <td><code>GET /v1/data-collection/dc-device/query</code></td>
+              <td><code>workspaceId</code>、<code>id</code>、<code>name</code>、<code>sn</code>、<code>dcDeviceTypeId</code></td>
+              <td>同步 Keystone robot 投影。</td>
+            </tr>
+            <tr>
+              <td>DC Device Type</td>
+              <td><code>GET /v1/data-collection/dc-device-type/query</code></td>
+              <td><code>id</code>、<code>name</code>、<code>description</code></td>
+              <td>同步 Keystone robot type 投影。</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Hilbert <code>dc_device.id</code> 是 <code>bigserial primary key</code>，全局唯一；<code>name</code> 和 <code>sn</code> 也有全局唯一约束。
+          因此 Keystone 不需要把 <code>workspace_id</code> 拼进 <code>robots.device_id</code>。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">03</div>
+        <h2>本地映射规则</h2>
+      </div>
+      <div class="content">
+        <h3>Data Collector</h3>
+        <p>候选来源是当前 workspace 的 <code>admins + members</code>。逐个按 <code>code</code> 查 Hilbert account，只同步满足以下条件的账号：</p>
+        <pre><code>role = external_user
+externalUserType = data_supplier
+status = enabled</code></pre>
+        <p>
+          实现可以逐个 <code>code</code> 精确查询，也可以一次拉取 <code>enabled + external_user + data_supplier</code> 后与
+          <code>admins + members</code> 求交集；两种实现的最终同步结果必须等价。
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Hilbert account</th>
+              <th>Keystone data_collectors</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>code</code></td><td><code>operator_id</code></td><td>主匹配键；active 全局唯一。</td></tr>
+            <tr><td><code>displayName</code></td><td><code>name</code></td><td>Hilbert 权威展示名。</td></tr>
+            <tr><td>workspace <code>id</code></td><td><code>organization_id</code></td><td>过渡期承载 workspace ID。</td></tr>
+            <tr><td>-</td><td><code>status = active</code></td><td>仅新建时使用；已存在记录不覆盖 status。</td></tr>
+            <tr><td>raw fields</td><td><code>metadata</code></td><td>保存 <code>source</code>、<code>hilbert_account_id</code>、<code>last_seen_at</code> 等。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Robot Type</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Hilbert dc_device_type</th>
+              <th>Keystone robot_types</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>id</code></td><td><code>id</code></td><td>直接使用 Hilbert 类型 ID。</td></tr>
+            <tr><td><code>name</code></td><td><code>name</code></td><td>同步 Hilbert 类型名。</td></tr>
+            <tr><td><code>id</code></td><td><code>model = hilbert_dc_device_type_&lt;id&gt;</code></td><td>避免依赖名称唯一语义。</td></tr>
+            <tr><td>-</td><td><code>manufacturer = Hilbert</code></td><td>标记来源。</td></tr>
+            <tr><td>-</td><td><code>ros_topics = {}</code></td><td>满足现有非空 schema。</td></tr>
+            <tr><td><code>description</code></td><td><code>capabilities</code></td><td>保存 source、type id、description 等 Hilbert projection metadata。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Robot</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Hilbert dc_device</th>
+              <th>Keystone robots</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>id</code></td><td><code>device_id = strconv.FormatInt(id, 10)</code></td><td>PR-3 用来匹配 <code>dc_plan.dc_device_id</code>。</td></tr>
+            <tr><td><code>dcDeviceTypeId</code></td><td><code>robot_type_id</code></td><td>要求已同步对应 robot type。</td></tr>
+            <tr><td>workspace compat factory</td><td><code>factory_id</code></td><td>满足旧 schema 必填；该值不表达 Hilbert <code>dc_factory_id</code>。</td></tr>
+            <tr><td>-</td><td><code>status = active</code></td><td>仅新建时使用；已存在记录不覆盖 status。</td></tr>
+            <tr><td><code>name</code></td><td><code>metadata.hilbert_dc_device_name</code></td><td>展示字段，不作为主匹配键。</td></tr>
+            <tr><td><code>sn</code></td><td><code>metadata.hilbert_dc_device_sn</code></td><td>序列号保留在 metadata。</td></tr>
+            <tr><td>raw fields</td><td><code>metadata.hilbert_raw</code></td><td>保留排障信息。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Workspace Compat Factory</h3>
+        <pre><code>factories.slug = "hilbert_workspace_&lt;workspace_id&gt;"
+factories.name = "&lt;workspace.name&gt; / Hilbert Workspace &lt;workspace_id&gt;"
+robots.factory_id = compat factory id</code></pre>
+        <p>
+          该 factory 只是 Keystone <code>robots.factory_id</code> 的旧 schema 兼容载体，不代表 Hilbert 真实存在 factory。
+          PR-3 还会按 <code>dc_plan.dc_factory_id</code> 创建 plan compat factory，用于 task / order / batch / scene runtime 兼容；
+          两类 compat factory 语义不同，不要求 ID 相同。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">04</div>
+        <h2>同步流程与事务边界</h2>
+      </div>
+      <div class="content">
+        <pre><code>WorkspaceSyncService.Sync
+  ensure default workspace
+  login Hilbert service identity
+  list available workspaces
+  validate workspace list
+  transaction: upsert all workspaces
+  for each Hilbert workspace where id &gt; 0:
+    transaction:
+      upsert workspace compat factory
+      query workspace admins/members account detail
+      upsert data_collectors
+      query dc devices by workspaceId
+      query/upsert required dc device types
+      upsert robots
+    append per-workspace resource summary</code></pre>
+        <ul>
+          <li>资源同步是 workspace sync 的固定组成部分，不加 <code>HILBERT_SYNC_RESOURCES</code> 开关。</li>
+          <li>Workspace upsert 先独立提交；resource sync 按 workspace 单独事务。</li>
+          <li>单个 workspace 资源同步失败，只写入 summary，不回滚已成功的 workspace projection。</li>
+          <li><code>workspace_id=0</code> 是 default workspace，不触发 Hilbert resource sync。</li>
+          <li>建议新增 <code>WorkspaceResourceSyncService</code>，由 <code>WorkspaceSyncService</code> 编排调用。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">05</div>
+        <h2>覆盖、冲突与消失资源</h2>
+      </div>
+      <div class="content">
+        <h3>覆盖规则</h3>
+        <ul>
+          <li>只覆盖 Hilbert 权威投影字段和 metadata。</li>
+          <li><code>data_collectors</code> 不覆盖 <code>email</code>、<code>password_hash</code>、<code>certification</code>、<code>status</code>、<code>last_login_at</code>。</li>
+          <li><code>robots</code> 不覆盖 <code>status</code> 和 <code>asset_id</code>。</li>
+          <li><code>robot_types</code> 只覆盖 Hilbert source 的类型投影；已存在的非 Hilbert source 类型不自动接管。</li>
+          <li>Hilbert source 通过 <code>model = hilbert_dc_device_type_&lt;id&gt;</code> 或 <code>capabilities.source = "hilbert"</code> 识别。</li>
+        </ul>
+
+        <h3>冲突规则</h3>
+        <ul>
+          <li>如果 <code>robots.device_id</code> 已存在且 <code>metadata.source != "hilbert"</code>，跳过并记录 <code>robot_device_id_conflict</code>。</li>
+          <li>如果 Hilbert robot projection 的 <code>metadata.hilbert_workspace_id</code> 与当前 <code>dc_device.workspaceId</code> 不一致，跳过并记录 <code>robot_workspace_conflict</code>。</li>
+          <li>如果 <code>data_collectors.operator_id</code> 已存在但不是 Hilbert projection，不覆盖本地账号，只记录冲突。</li>
+          <li>如果 <code>robot_types.id = dc_device_type.id</code> 已存在但不是 Hilbert projection，跳过该 type 和依赖它的 robot，并记录 <code>robot_type_id_conflict</code>。</li>
+          <li>理论上 Hilbert <code>dc_device.id</code> 全局唯一，不会在不同 workspace 复用；workspace conflict 是防御性校验。</li>
+        </ul>
+
+        <h3>消失资源</h3>
+        <ul>
+          <li>Hilbert 当前返回的资源：upsert，并更新 <code>metadata.last_seen_at</code>。</li>
+          <li>Hilbert 当前未返回的历史投影：保留原状，不自动 soft delete，不自动 retire。</li>
+          <li>后续如需 stale resource cleanup，应另开显式管理或清理 PR。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">06</div>
+        <h2>Response Summary</h2>
+      </div>
+      <div class="content">
+        <p>只要 workspace 主流程成功，HTTP 仍返回 200。资源局部失败通过 <code>resource_sync.workspace_results[].errors</code> 暴露。</p>
+        <pre><code>{
+  "synced_count": 3,
+  "default_included": true,
+  "last_synced_at": "2026-07-09T10:00:00Z",
+  "resource_sync": {
+    "enabled": true,
+    "collector_upserted_count": 8,
+    "collector_skipped_count": 2,
+    "robot_upserted_count": 12,
+    "robot_type_upserted_count": 4,
+    "factory_upserted_count": 3,
+    "workspace_results": [
+      {
+        "workspace_id": 101,
+        "collector_upserted_count": 3,
+        "collector_skipped_count": 1,
+        "robot_upserted_count": 5,
+        "robot_type_upserted_count": 2,
+        "factory_upserted": true,
+        "errors": [
+          {
+            "resource": "collector",
+            "external_id": "alice",
+            "code": "not_data_supplier",
+            "message": "workspace member is not an enabled data supplier"
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+        <ul>
+          <li>Hilbert login、workspace list、workspace upsert 失败仍走原有错误路径。</li>
+          <li>resource summary 必须能定位 workspace、资源类型、外部 ID、错误码和简短原因。</li>
+          <li>skipped 不等于 failed；非 data supplier、disabled、missing account 均可归入 skipped 并计数。</li>
+          <li>启动同步没有 HTTP response，必须把同一 summary 打到日志，至少包含 workspace、collector、robot、robot type、factory 的 upsert / skipped / error 计数。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <div class="section-no">07</div>
+        <h2>实现清单与测试</h2>
+      </div>
+      <div class="content">
+        <h3>实现清单</h3>
+        <ul>
+          <li>扩展 Hilbert client：account query、dc-device query、dc-device-type query。</li>
+          <li>新增 <code>WorkspaceResourceSyncService</code> 和 resource summary DTO。</li>
+          <li>扩展 <code>WorkspaceSyncService.Sync()</code>，在 workspace upsert 提交后逐 workspace 同步资源。</li>
+          <li>补齐本地 upsert SQL：workspace compat factory、data collector、robot type、robot。</li>
+          <li>更新 <code>WorkspaceSyncResponse</code>、Swagger 注释和生成后的 OpenAPI。</li>
+          <li>启动 best-effort sync 复用同一 resource summary，并输出聚合日志。</li>
+        </ul>
+
+        <h3>测试范围</h3>
+        <ul>
+          <li>workspace upsert 成功后调用 resource sync；resource sync 失败不回滚 workspace。</li>
+          <li>默认 workspace <code>id=0</code> 不触发 resource sync。</li>
+          <li>enabled external_user + data_supplier 被 upsert 为 data collector；其它成员 skipped。</li>
+          <li>dc-device-type 被 upsert 为 robot type；dc-device 被 upsert 为 robot，且 <code>device_id</code> 是 Hilbert ID 字符串。</li>
+          <li>workspace compat factory 按 workspace 创建或复用。</li>
+          <li>新建 data collector / robot 默认 <code>active</code>；已存在记录不覆盖 status。</li>
+          <li>非 Hilbert 本地 robot / data collector 冲突时 skip + error。</li>
+          <li>非 Hilbert 本地 robot type ID 冲突时 skip type 和依赖 robot，并返回 <code>robot_type_id_conflict</code>。</li>
+          <li>Hilbert 消失资源不 soft delete；upsert 不覆盖本地运营字段。</li>
+        </ul>
+        <div class="callout">
+          PR-2.5 不要求 Synapse E2E、真实 Hilbert 联调或 Docker compose integration；风险集中在映射、事务边界、冲突语义和 summary。
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

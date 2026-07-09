@@ -46,6 +46,7 @@ type WorkspaceSyncResult struct {
 	SyncedCount     int
 	DefaultIncluded bool
 	LastSyncedAt    time.Time
+	ResourceSync    *WorkspaceResourceSyncSummary
 }
 
 // WorkspaceSyncService syncs Hilbert workspace projections into Keystone.
@@ -53,6 +54,7 @@ type WorkspaceSyncService struct {
 	db            *sqlx.DB
 	cfg           *config.HilbertConfig
 	hilbertClient HilbertWorkspaceClient
+	resourceSync  *WorkspaceResourceSyncService
 }
 
 // NewWorkspaceSyncService creates a WorkspaceSyncService.
@@ -60,7 +62,11 @@ func NewWorkspaceSyncService(db *sqlx.DB, cfg *config.HilbertConfig, hilbertClie
 	if hilbertClient == nil {
 		hilbertClient = auth.NewHilbertClient(cfg)
 	}
-	return &WorkspaceSyncService{db: db, cfg: cfg, hilbertClient: hilbertClient}
+	var resourceSync *WorkspaceResourceSyncService
+	if resourceClient, ok := hilbertClient.(HilbertWorkspaceResourceClient); ok {
+		resourceSync = NewWorkspaceResourceSyncService(db, resourceClient)
+	}
+	return &WorkspaceSyncService{db: db, cfg: cfg, hilbertClient: hilbertClient, resourceSync: resourceSync}
 }
 
 // Configured reports whether startup/manual sync has the required Hilbert service identity settings.
@@ -107,10 +113,16 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 	}
 	logger.Printf("[WORKSPACE] Hilbert workspace sync upsert committed: synced_count=%d", len(workspaces))
 
+	resourceSummary := &WorkspaceResourceSyncSummary{Enabled: true, WorkspaceResults: []WorkspaceResourceSyncResult{}}
+	if s.resourceSync != nil {
+		resourceSummary = s.resourceSync.SyncWorkspaces(ctx, sessionKey, workspaces, now)
+	}
+
 	return &WorkspaceSyncResult{
 		SyncedCount:     len(workspaces),
 		DefaultIncluded: true,
 		LastSyncedAt:    now,
+		ResourceSync:    resourceSummary,
 	}, nil
 }
 

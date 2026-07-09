@@ -133,15 +133,257 @@ func TestWorkspaceSyncServiceInvalidHilbertRecordDoesNotPartiallyUpsert(t *testi
 	}
 }
 
+func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
+		workspaces: []auth.HilbertWorkspace{
+			{ID: 123, Name: "Resource Workspace", Admins: []string{"collector-a", "customer-a"}, Members: []string{"missing-a"}},
+		},
+		accounts: map[string]*auth.HilbertAccount{
+			"collector-a": {
+				ID:               7,
+				Code:             "collector-a",
+				DisplayName:      "Collector A",
+				Role:             "external_user",
+				ExternalUserType: "data_supplier",
+				Status:           "enabled",
+			},
+			"customer-a": {
+				ID:               8,
+				Code:             "customer-a",
+				DisplayName:      "Customer A",
+				Role:             "external_user",
+				ExternalUserType: "customer",
+				Status:           "enabled",
+			},
+		},
+		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{
+			123: {
+				{ID: 456, WorkspaceID: 123, Name: "Device A", SN: "SN-A", DCDeviceTypeID: 77},
+			},
+		},
+		deviceTypes: map[int64]*auth.HilbertDCDeviceType{
+			77: {ID: 77, Name: "Type 77"},
+		},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.ResourceSync == nil {
+		t.Fatalf("ResourceSync is nil")
+	}
+	if result.ResourceSync.CollectorUpsertedCount != 1 ||
+		result.ResourceSync.CollectorSkippedCount != 2 ||
+		result.ResourceSync.RobotTypeUpsertedCount != 1 ||
+		result.ResourceSync.RobotUpsertedCount != 1 ||
+		result.ResourceSync.FactoryUpsertedCount != 1 {
+		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
+	}
+
+	var collector struct {
+		OrganizationID int64  `db:"organization_id"`
+		Name           string `db:"name"`
+		Status         string `db:"status"`
+		Metadata       string `db:"metadata"`
+	}
+	if err := db.Get(&collector, `
+		SELECT organization_id, name, status, metadata
+		FROM data_collectors
+		WHERE operator_id = 'collector-a'
+	`); err != nil {
+		t.Fatalf("query collector: %v", err)
+	}
+	if collector.OrganizationID != 123 || collector.Name != "Collector A" || collector.Status != "active" || metadataSource(collector.Metadata) != "hilbert" {
+		t.Fatalf("unexpected collector: %#v", collector)
+	}
+
+	var robot struct {
+		RobotTypeID int64  `db:"robot_type_id"`
+		FactoryID   int64  `db:"factory_id"`
+		Status      string `db:"status"`
+		Metadata    string `db:"metadata"`
+	}
+	if err := db.Get(&robot, `
+		SELECT robot_type_id, factory_id, status, metadata
+		FROM robots
+		WHERE device_id = '456'
+	`); err != nil {
+		t.Fatalf("query robot: %v", err)
+	}
+	if robot.RobotTypeID != 77 || robot.FactoryID == 0 || robot.Status != "active" || metadataSource(robot.Metadata) != "hilbert" {
+		t.Fatalf("unexpected robot: %#v", robot)
+	}
+
+	var robotTypeModel string
+	if err := db.Get(&robotTypeModel, "SELECT model FROM robot_types WHERE id = 77"); err != nil {
+		t.Fatalf("query robot type: %v", err)
+	}
+	if robotTypeModel != "hilbert_dc_device_type_77" {
+		t.Fatalf("robotTypeModel=%q", robotTypeModel)
+	}
+}
+
+func TestWorkspaceSyncServiceResourceConflictDoesNotRollbackWorkspace(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`INSERT INTO robots (device_id, metadata, deleted_at) VALUES ('456', '{}', NULL)`); err != nil {
+		t.Fatalf("insert local robot: %v", err)
+	}
+
+	client := &fakeHilbertWorkspaceClient{
+		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
+		workspaces:  []auth.HilbertWorkspace{{ID: 123, Name: "Resource Workspace"}},
+		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{
+			123: {
+				{ID: 456, WorkspaceID: 123, Name: "Device A", SN: "SN-A", DCDeviceTypeID: 77},
+			},
+		},
+		deviceTypes: map[int64]*auth.HilbertDCDeviceType{
+			77: {ID: 77, Name: "Type 77"},
+		},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.ResourceSync == nil || len(result.ResourceSync.WorkspaceResults) != 1 {
+		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
+	}
+	if len(result.ResourceSync.WorkspaceResults[0].Errors) == 0 {
+		t.Fatalf("expected resource conflict in summary")
+	}
+
+	var workspaceCount int
+	if err := db.Get(&workspaceCount, "SELECT COUNT(*) FROM workspaces WHERE id = 123 AND source = ?", workspaceSourceHilbert); err != nil {
+		t.Fatalf("count workspace: %v", err)
+	}
+	if workspaceCount != 1 {
+		t.Fatalf("workspaceCount=%d want 1", workspaceCount)
+	}
+}
+
+func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
+		workspaces: []auth.HilbertWorkspace{
+			{ID: 123, Name: "Resource Workspace", Admins: []string{"collector-a"}},
+		},
+		accounts: map[string]*auth.HilbertAccount{
+			"collector-a": {
+				ID:               7,
+				Code:             "collector-a",
+				DisplayName:      "Collector A",
+				Role:             "external_user",
+				ExternalUserType: "data_supplier",
+				Status:           "enabled",
+			},
+		},
+		deviceErrByWorkspace: map[int64]error{
+			123: errors.New("hilbert device query failed"),
+		},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.ResourceSync == nil || len(result.ResourceSync.WorkspaceResults) != 1 {
+		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
+	}
+	workspaceResult := result.ResourceSync.WorkspaceResults[0]
+	if workspaceResult.CollectorUpsertedCount != 0 ||
+		workspaceResult.RobotUpsertedCount != 0 ||
+		workspaceResult.RobotTypeUpsertedCount != 0 ||
+		workspaceResult.FactoryUpserted {
+		t.Fatalf("resource summary reported rolled-back writes: %#v", workspaceResult)
+	}
+	if len(workspaceResult.Errors) == 0 || workspaceResult.Errors[0].Code != "dc_device_query_failed" {
+		t.Fatalf("expected dc device query failure: %#v", workspaceResult.Errors)
+	}
+
+	var workspaceCount int
+	if err := db.Get(&workspaceCount, "SELECT COUNT(*) FROM workspaces WHERE id = 123 AND source = ?", workspaceSourceHilbert); err != nil {
+		t.Fatalf("count workspace: %v", err)
+	}
+	if workspaceCount != 1 {
+		t.Fatalf("workspaceCount=%d want 1", workspaceCount)
+	}
+
+	var collectorCount int
+	if err := db.Get(&collectorCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id = 'collector-a'"); err != nil {
+		t.Fatalf("count collector: %v", err)
+	}
+	if collectorCount != 0 {
+		t.Fatalf("collectorCount=%d want rolled-back collector", collectorCount)
+	}
+}
+
+func TestWorkspaceSyncServiceResourceFactoriesAllowDuplicateWorkspaceNames(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
+		workspaces: []auth.HilbertWorkspace{
+			{ID: 123, Name: "Shared Name"},
+			{ID: 124, Name: "Shared Name"},
+		},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.ResourceSync == nil || result.ResourceSync.FactoryUpsertedCount != 2 {
+		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
+	}
+
+	var factories []struct {
+		Name string `db:"name"`
+		Slug string `db:"slug"`
+	}
+	if err := db.Select(&factories, `
+		SELECT name, slug
+		FROM factories
+		WHERE slug IN ('hilbert_workspace_123', 'hilbert_workspace_124')
+		ORDER BY slug
+	`); err != nil {
+		t.Fatalf("query factories: %v", err)
+	}
+	if len(factories) != 2 ||
+		factories[0].Name != "Shared Name / Hilbert Workspace 123" ||
+		factories[1].Name != "Shared Name / Hilbert Workspace 124" {
+		t.Fatalf("unexpected factories: %#v", factories)
+	}
+}
+
 type fakeHilbertWorkspaceClient struct {
-	configured     bool
-	loginResult    *auth.HilbertLoginResult
-	loginErr       error
-	workspaces     []auth.HilbertWorkspace
-	listErr        error
-	loginCode      string
-	loginPassword  string
-	listSessionKey string
+	configured           bool
+	loginResult          *auth.HilbertLoginResult
+	loginErr             error
+	workspaces           []auth.HilbertWorkspace
+	listErr              error
+	loginCode            string
+	loginPassword        string
+	listSessionKey       string
+	accounts             map[string]*auth.HilbertAccount
+	devicesByWorkspace   map[int64][]auth.HilbertDCDevice
+	deviceErrByWorkspace map[int64]error
+	deviceTypes          map[int64]*auth.HilbertDCDeviceType
 }
 
 func (f *fakeHilbertWorkspaceClient) Configured() bool {
@@ -166,6 +408,29 @@ func (f *fakeHilbertWorkspaceClient) ListAvailableWorkspaces(_ context.Context, 
 		return nil, f.listErr
 	}
 	return f.workspaces, nil
+}
+
+func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, _ string, code string) (*auth.HilbertAccount, error) {
+	account := f.accounts[code]
+	if account == nil {
+		return nil, nil
+	}
+	return account, nil
+}
+
+func (f *fakeHilbertWorkspaceClient) QueryDCDevices(_ context.Context, _ string, workspaceID int64) (*auth.HilbertDCDevicePage, error) {
+	if err := f.deviceErrByWorkspace[workspaceID]; err != nil {
+		return nil, err
+	}
+	return &auth.HilbertDCDevicePage{Records: f.devicesByWorkspace[workspaceID], PageNum: 1, PageSize: -1}, nil
+}
+
+func (f *fakeHilbertWorkspaceClient) QueryDCDeviceTypeByID(_ context.Context, _ string, id int64) (*auth.HilbertDCDeviceType, error) {
+	deviceType := f.deviceTypes[id]
+	if deviceType == nil {
+		return nil, nil
+	}
+	return deviceType, nil
 }
 
 func testWorkspaceSyncHilbertConfig() *config.HilbertConfig {
@@ -202,6 +467,59 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 	`); err != nil {
 		db.Close()
 		t.Fatalf("create workspaces table: %v", err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE factories (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT,
+			slug TEXT UNIQUE,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		)`,
+		`CREATE TABLE robot_types (
+			id INTEGER PRIMARY KEY,
+			name TEXT,
+			model TEXT,
+			manufacturer TEXT,
+			ros_topics TEXT,
+			capabilities TEXT,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		)`,
+		`CREATE TABLE robots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			robot_type_id INTEGER,
+			device_id TEXT UNIQUE,
+			factory_id INTEGER,
+			asset_id TEXT,
+			status TEXT,
+			metadata TEXT,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		)`,
+		`CREATE TABLE data_collectors (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			organization_id INTEGER,
+			name TEXT,
+			operator_id TEXT UNIQUE,
+			email TEXT,
+			password_hash TEXT,
+			last_login_at TIMESTAMP,
+			certification TEXT,
+			status TEXT,
+			metadata TEXT,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			t.Fatalf("create resource table: %v", err)
+		}
 	}
 	return db
 }
