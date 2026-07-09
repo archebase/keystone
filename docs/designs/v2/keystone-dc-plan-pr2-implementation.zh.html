@@ -1,0 +1,626 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone PR-2 Hilbert 数采计划投影实施细节</title>
+  <style>
+    :root {
+      --bg: #F47A16;
+      --paper: #FFF2D4;
+      --ink: #15110D;
+      --blue: #1E4E9A;
+      --yellow: #FFD23F;
+      --red: #D93A24;
+      --brown: #7A3E16;
+      --shadow: 9px 9px 0 var(--ink);
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", SimHei, sans-serif;
+      line-height: 1.66;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 84% 13%, var(--yellow) 0 9%, transparent 10%),
+        radial-gradient(circle at 14% 78%, rgba(255, 210, 63, 0.64) 0 7%, transparent 8%),
+        repeating-linear-gradient(105deg, rgba(21, 17, 13, 0.18) 0 3px, transparent 3px 24px),
+        var(--bg);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 10;
+      opacity: .32;
+      background:
+        radial-gradient(circle, rgba(21, 17, 13, .22) 0 1px, transparent 1px) 0 0 / 8px 8px,
+        linear-gradient(90deg, transparent 0 49%, rgba(21, 17, 13, .14) 49% 51%, transparent 51%);
+      mix-blend-mode: multiply;
+    }
+
+    .page {
+      position: relative;
+      width: min(1180px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 28px 0 64px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 620px;
+      border: 6px solid var(--ink);
+      background:
+        linear-gradient(112deg, var(--paper) 0 54%, transparent 54%),
+        linear-gradient(158deg, transparent 0 66%, var(--blue) 66%),
+        var(--yellow);
+      box-shadow: 14px 14px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -20%;
+      background:
+        repeating-conic-gradient(from 3deg at 72% 42%, rgba(21,17,13,.18) 0 2deg, transparent 2deg 8deg);
+      opacity: .75;
+    }
+
+    .hero::after {
+      content: "PR-2 SYNC BOUT";
+      position: absolute;
+      right: -18px;
+      bottom: 34px;
+      padding: 12px 18px;
+      border: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      font: 900 22px/1 Impact, "Arial Black", sans-serif;
+      transform: skewX(-11deg) rotate(-2deg);
+      box-shadow: 7px 7px 0 var(--ink);
+      letter-spacing: 0;
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      width: min(900px, 100%);
+      padding: clamp(26px, 5vw, 62px);
+    }
+
+    .kicker {
+      display: inline-block;
+      padding: 7px 12px;
+      border: 4px solid var(--ink);
+      background: var(--yellow);
+      font-weight: 1000;
+      box-shadow: 5px 5px 0 var(--brown);
+      transform: rotate(-2deg);
+    }
+
+    h1 {
+      margin: 30px 0 18px;
+      max-width: 880px;
+      color: var(--red);
+      font-family: Impact, "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(48px, 8.5vw, 112px);
+      line-height: .92;
+      letter-spacing: 0;
+      -webkit-text-stroke: 3px var(--ink);
+      text-shadow: 7px 7px 0 var(--yellow), 12px 12px 0 var(--ink);
+      transform: skew(-4deg);
+    }
+
+    .subtitle {
+      max-width: 790px;
+      margin: 0;
+      font-size: clamp(18px, 2.2vw, 24px);
+      font-weight: 900;
+    }
+
+    .arena {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      width: min(980px, 100%);
+      margin-top: 34px;
+    }
+
+    .signal {
+      min-height: 106px;
+      border: 4px solid var(--ink);
+      background: var(--blue);
+      color: var(--paper);
+      padding: 12px;
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .signal b {
+      display: block;
+      color: var(--yellow);
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    .signal span {
+      display: block;
+      margin-top: 8px;
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    section {
+      margin-top: 30px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      border-bottom: 5px solid var(--ink);
+      background: var(--yellow);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      border-right: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      font: 900 36px/1 Impact, "Arial Black", sans-serif;
+      -webkit-text-stroke: 1px var(--ink);
+    }
+
+    h2 {
+      margin: 0;
+      padding: 15px 18px;
+      font-size: clamp(25px, 4vw, 42px);
+      line-height: 1.12;
+      font-weight: 1000;
+      letter-spacing: 0;
+    }
+
+    .content { padding: clamp(18px, 3vw, 30px); }
+
+    h3 {
+      margin: 26px 0 10px;
+      font-size: 23px;
+      line-height: 1.22;
+      font-weight: 1000;
+    }
+
+    h3:first-child { margin-top: 0; }
+
+    p { margin: 0 0 14px; }
+
+    code {
+      padding: 1px 5px;
+      border: 2px solid var(--ink);
+      background: var(--yellow);
+      color: var(--ink);
+      font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+      font-size: .92em;
+      font-weight: 800;
+    }
+
+    pre {
+      margin: 14px 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 4px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper);
+      box-shadow: 6px 6px 0 var(--brown);
+      font: 14px/1.55 "SFMono-Regular", Consolas, "Courier New", monospace;
+    }
+
+    ul,
+    ol {
+      margin: 8px 0 16px;
+      padding-left: 24px;
+    }
+
+    li { margin: 7px 0; }
+
+    table {
+      width: 100%;
+      margin: 16px 0 22px;
+      border-collapse: collapse;
+      background: var(--paper);
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+
+    th,
+    td {
+      border: 4px solid var(--ink);
+      padding: 11px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--blue);
+      color: var(--paper);
+      font-size: 17px;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .panel {
+      border: 4px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 5px 5px 0 var(--ink);
+      padding: 15px;
+    }
+
+    .panel.alt {
+      background: var(--blue);
+      color: var(--paper);
+    }
+
+    .panel.alt code {
+      background: var(--paper);
+    }
+
+    .callout {
+      margin: 18px 0;
+      padding: 15px 16px;
+      border: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      box-shadow: 6px 6px 0 var(--ink);
+      font-weight: 900;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .flow div {
+      min-height: 94px;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      padding: 10px;
+      box-shadow: 4px 4px 0 var(--brown);
+      font-weight: 900;
+    }
+
+    .flow div:nth-child(odd) {
+      background: var(--yellow);
+    }
+
+    footer {
+      margin-top: 32px;
+      color: var(--ink);
+      font-weight: 800;
+    }
+
+    @media (max-width: 860px) {
+      .page { width: min(100% - 20px, 1180px); padding-top: 16px; }
+      .hero { min-height: auto; box-shadow: 8px 8px 0 var(--ink); }
+      .hero-inner { padding: 22px; }
+      .arena,
+      .split,
+      .flow { grid-template-columns: 1fr; }
+      .section-head { grid-template-columns: 58px 1fr; }
+      .section-no { font-size: 26px; }
+      th, td { padding: 9px; }
+      pre { font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-inner">
+        <span class="kicker">Keystone V2 / PR-2 / 2026-07-09</span>
+        <h1>Hilbert 数采计划投影实施细节</h1>
+        <p class="subtitle">
+          PR-2 的核心矛盾：Keystone 需要消费 Hilbert <code>dc_plan</code> 作为生产主对象，
+          但不能在这一刀里切换 task 生成、上传协议或本地计划模型。
+        </p>
+        <div class="arena">
+          <div class="signal"><b>对象</b><span><code>dc_plan</code> 只镜像 Hilbert 计划</span></div>
+          <div class="signal"><b>同步</b><span>单 Workspace 手动分页同步</span></div>
+          <div class="signal"><b>执行</b><span>task / episode 只预留字段</span></div>
+          <div class="signal"><b>前端</b><span>只读列表 + 手动同步按钮</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <div class="section-head"><div class="section-no">01</div><h2>背景与判断</h2></div>
+      <div class="content">
+        <p>
+          PR-1 已经把 Keystone 的 Workspace 来源规则切到 Hilbert 投影：Keystone 不创建、不编辑、不删除 Workspace，
+          并保留 <code>id=0</code> 的 default workspace 支撑本地采集闭环。
+        </p>
+        <p>
+          PR-2 不继续扩展 order/batch，而是把 Hilbert 数据采集计划接入 Keystone。Hilbert 代码中
+          <code>dc_plan.id</code> 是 <code>bigint</code> 主键，raw data 注册也要求 <code>workspaceId</code> 和
+          <code>dcPlanId</code> 同时存在并归属一致。
+        </p>
+        <div class="callout">
+          决策：Keystone 的 <code>dc_plan</code> 表只保存 Hilbert 计划投影，<code>dc_plan.id</code>
+          直接等于 Hilbert <code>dc_plan.id</code>；本地计划以后进入独立的 <code>local_dc_plan</code>。
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">02</div><h2>目标与非目标</h2></div>
+      <div class="content">
+        <div class="split">
+          <div class="panel">
+            <h3>本 PR 要做</h3>
+            <ul>
+              <li>新增 <code>dc_plan</code> Hilbert 投影表。</li>
+              <li>删除 <code>workspaces.upload_enabled</code>，不再控制 Workspace 级上传资格。</li>
+              <li>新增 Hilbert <code>dc-plan/query</code> client 和同步 service。</li>
+              <li>提供 <code>GET /dc-plans</code> 只读列表。</li>
+              <li>提供单 Workspace 手动同步接口。</li>
+              <li>给 <code>tasks</code> / <code>episodes</code> 预留计划字段。</li>
+              <li>Synapse 新增 <code>/admin/dc-plans</code> 只读页。</li>
+            </ul>
+          </div>
+          <div class="panel alt">
+            <h3>本 PR 不做</h3>
+            <ul>
+              <li>不创建 Keystone 本地计划。</li>
+              <li>不实现 <code>dc_plan</code> 详情 API。</li>
+              <li>不切换 order/batch task 生成 runtime。</li>
+              <li>不改上传 worker 或 Hilbert raw data payload。</li>
+              <li>不处理 robot / workstation / collector 的 workspace 归属。</li>
+              <li>不删除 order/batch、factory、scene、SOP 等旧 runtime。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">03</div><h2>数据模型</h2></div>
+      <div class="content">
+        <h3><code>dc_plan</code> Hilbert 投影表</h3>
+        <p>
+          表名、字段名和必填约束尽量跟 Hilbert 当前 <code>dc_plan</code> 对齐。
+          Keystone 只追加同步排障字段和本地投影行时间。
+        </p>
+        <pre>CREATE TABLE IF NOT EXISTS dc_plan (
+    id BIGINT PRIMARY KEY,
+    workspace_id BIGINT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    description VARCHAR(200),
+    dc_factory_id BIGINT NOT NULL,
+    dc_service_provider_id BIGINT NOT NULL,
+    operator VARCHAR(100) NOT NULL,
+    dc_project_id BIGINT NOT NULL,
+    dc_task_id BIGINT NOT NULL,
+    dc_device_id BIGINT NOT NULL,
+    dc_type VARCHAR(100) NOT NULL,
+    dc_date DATE NOT NULL,
+    target_count BIGINT NOT NULL,
+    cur_count BIGINT NOT NULL DEFAULT 0,
+    target_duration BIGINT NOT NULL,
+    cur_duration BIGINT NOT NULL DEFAULT 0,
+    created_by VARCHAR(100) NOT NULL,
+    created_time TIMESTAMP NOT NULL,
+    updated_by VARCHAR(100),
+    updated_time TIMESTAMP NULL,
+    raw_payload JSON DEFAULT NULL,
+    last_synced_at TIMESTAMP NULL,
+    sync_error TEXT,
+    local_created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    local_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP NULL,
+    INDEX idx_workspace (workspace_id),
+    INDEX idx_name (name),
+    INDEX idx_dc_type (dc_type),
+    INDEX idx_operator (operator),
+    INDEX idx_dc_date (dc_date),
+    INDEX idx_last_synced (last_synced_at),
+    INDEX idx_deleted (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;</pre>
+        <table>
+          <thead>
+            <tr><th>决策</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>id</code></td><td>直接使用 Hilbert <code>dc_plan.id</code>，不再使用本地自增映射。</td></tr>
+            <tr><td><code>name</code></td><td>Keystone 只建普通索引，不复制 Hilbert 的全局唯一约束。</td></tr>
+            <tr><td><code>source</code></td><td>不需要。<code>dc_plan</code> 天然只表示 Hilbert 投影。</td></tr>
+            <tr><td>外键</td><td>不加数据库外键，业务层校验 Workspace 存在且 <code>source='hilbert'</code>。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Task / Episode 预留字段</h3>
+        <pre>ALTER TABLE tasks
+  ADD COLUMN dc_plan_id BIGINT NULL,
+  ADD COLUMN local_dc_plan_id BIGINT NULL,
+  ADD INDEX idx_dc_plan (dc_plan_id),
+  ADD INDEX idx_local_dc_plan (local_dc_plan_id);
+
+ALTER TABLE episodes
+  ADD COLUMN dc_plan_id BIGINT NULL,
+  ADD COLUMN local_dc_plan_id BIGINT NULL,
+  ADD INDEX idx_dc_plan (dc_plan_id),
+  ADD INDEX idx_local_dc_plan (local_dc_plan_id);</pre>
+        <p>
+          PR-2 不写入这些字段，不加互斥 <code>CHECK</code>。<code>dc_plan_id</code> 指向 Hilbert 投影；
+          <code>local_dc_plan_id</code> 预留给未来 <code>local_dc_plan</code>。
+        </p>
+
+        <h3>删除 <code>workspaces.upload_enabled</code></h3>
+        <p>
+          Keystone 不再维护 Workspace 级上传资格开关。default workspace 仍不可进入 Hilbert raw data / dataset 创建路径；
+          Hilbert workspace 是否可上传由 Hilbert API 权限和计划归属校验决定。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">04</div><h2>同步流程</h2></div>
+      <div class="content">
+        <div class="flow">
+          <div>Synapse 点击同步</div>
+          <div>Keystone 校验 workspace</div>
+          <div>Hilbert 分页 query</div>
+          <div>整批校验计划</div>
+          <div>事务 upsert</div>
+        </div>
+        <h3>入口</h3>
+        <pre>POST /api/v1/workspaces/:workspace_id/dc-plans/sync</pre>
+        <h3>Workspace 校验</h3>
+        <ul>
+          <li><code>workspace_id=0</code> 直接拒绝。</li>
+          <li>本地 <code>workspaces</code> 必须存在、未删除、<code>source='hilbert'</code>。</li>
+          <li>不检查 <code>upload_enabled</code>，该字段已删除。</li>
+        </ul>
+        <h3>Hilbert 分页</h3>
+        <pre>GET /v1/data-collection/dc-plan/query?workspaceId=123&pageNum=1&pageSize=200
+GET /v1/data-collection/dc-plan/query?workspaceId=123&pageNum=2&pageSize=200</pre>
+        <ul>
+          <li>内部同步复用 Hilbert <code>pageNum/pageSize</code>。</li>
+          <li>每页 <code>pageSize=200</code>，循环直到拉完。</li>
+          <li>Keystone 本地列表 API 不暴露 Hilbert 分页格式。</li>
+        </ul>
+        <h3>原子性</h3>
+        <ul>
+          <li>任一计划非法，本次同步整体失败，不 partial upsert。</li>
+          <li>非法包括 <code>id&lt;=0</code>、<code>workspaceId</code> 不等于当前 workspace、必填字段为空或计数非法。</li>
+          <li>如果已存在同 <code>id</code> 但 <code>workspace_id</code> 不同，整体失败。</li>
+          <li>本次未返回的计划不删除、不软删。</li>
+          <li>整体失败只返回错误并打日志，不写同步日志表。</li>
+        </ul>
+        <h3>响应</h3>
+        <pre>{
+  "workspace_id": 123,
+  "synced_count": 37,
+  "page_count": 2,
+  "last_synced_at": "2026-07-09T12:34:56Z"
+}</pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">05</div><h2>Keystone API</h2></div>
+      <div class="content">
+        <h3>只读列表</h3>
+        <pre>GET /api/v1/dc-plans?workspace_id=123&amp;limit=20&amp;offset=0
+GET /api/v1/dc-plans?workspace_id=123&amp;name=ego&amp;dc_type=ego&amp;operator=alice&amp;dc_date=2026-07-09</pre>
+        <ul>
+          <li><code>workspace_id</code> 必填，不传返回 <code>400</code>。</li>
+          <li><code>name</code> 模糊搜索。</li>
+          <li><code>dc_type</code>、<code>operator</code>、<code>dc_date</code> 精确匹配。</li>
+          <li><code>dc_date</code> 使用 <code>YYYY-MM-DD</code>，非法日期返回 <code>400</code>。</li>
+          <li>返回 Keystone 标准 <code>items/total/limit/offset/hasNext/hasPrev</code> 分页包装。</li>
+          <li>记录字段使用 snake_case；ID 字段使用数字，贴近 Hilbert。</li>
+        </ul>
+        <h3>不提供的接口</h3>
+        <pre>GET    /api/v1/dc-plans/:id
+POST   /api/v1/dc-plans
+PUT    /api/v1/dc-plans/:id
+DELETE /api/v1/dc-plans/:id</pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">06</div><h2>Synapse 页面</h2></div>
+      <div class="content">
+        <p>
+          新增 <code>/admin/dc-plans</code> 独立只读页。页面顶部选择 Hilbert workspace，
+          选择后加载 Keystone 本地已有投影；用户点击同步按钮才触发 Hilbert 同步。
+        </p>
+        <table>
+          <thead>
+            <tr><th>区域</th><th>行为</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Workspace 选择</td><td>只显示 <code>source='hilbert'</code> 的 workspace，不显示 default。</td></tr>
+            <tr><td>同步按钮</td><td>调用 <code>POST /workspaces/:workspace_id/dc-plans/sync</code>，成功后刷新列表。</td></tr>
+            <tr><td>列表分页</td><td>使用 Keystone <code>limit/offset</code>，默认每页 20。</td></tr>
+            <tr><td>详情</td><td>PR-2 不做抽屉或详情页。</td></tr>
+            <tr><td>Workspace 状态页</td><td>删除 <code>upload_enabled</code> 相关列、标签和文案。</td></tr>
+          </tbody>
+        </table>
+        <h3>列表列</h3>
+        <ul>
+          <li><code>id</code></li>
+          <li><code>name</code></li>
+          <li><code>dc_type</code></li>
+          <li><code>dc_date</code></li>
+          <li><code>operator</code></li>
+          <li><code>target_count</code> / <code>cur_count</code></li>
+          <li><code>target_duration</code> / <code>cur_duration</code></li>
+          <li><code>last_synced_at</code></li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">07</div><h2>实施与验证</h2></div>
+      <div class="content">
+        <h3>实施顺序</h3>
+        <ol>
+          <li>更新 V2 baseline schema：新增 <code>dc_plan</code>，删除 <code>workspaces.upload_enabled</code>，给 task / episode 加计划字段。</li>
+          <li>调整 workspace handler、response、测试和 Synapse workspace 状态页，移除 <code>upload_enabled</code>。</li>
+          <li>新增 Hilbert dc-plan client DTO 和分页 query 方法。</li>
+          <li>新增 dc-plan sync service，完成校验、分页、事务 upsert。</li>
+          <li>新增 <code>GET /dc-plans</code> 和 sync handler。</li>
+          <li>更新 Swagger。</li>
+          <li>新增 Synapse <code>/admin/dc-plans</code> 页面和 API wrapper。</li>
+        </ol>
+        <h3>最低测试集</h3>
+        <ul>
+          <li>同步拒绝 <code>workspace_id=0</code>。</li>
+          <li>同步拒绝非 Hilbert workspace / 不存在 workspace。</li>
+          <li>Hilbert 分页同步成功，upsert 多页计划。</li>
+          <li>Hilbert 返回非法计划时整体失败且不 partial upsert。</li>
+          <li><code>GET /dc-plans</code> 必须带 <code>workspace_id</code>，并覆盖筛选。</li>
+          <li><code>workspaces.upload_enabled</code> 从响应、Swagger、测试期望和 Synapse 展示中移除。</li>
+        </ul>
+        <h3>命令</h3>
+        <pre>cd keystone
+swag init -g internal/server/server.go -o docs
+go test -run 'TestWorkspace|TestDCPlan' ./internal/api/handlers/... ./internal/services/... -v
+
+cd ../synapse
+npm run build</pre>
+      </div>
+    </section>
+
+    <footer>
+      关联文档：
+      <code>keystone-hilbert-domain-migration-sequence.zh.html</code>，
+      <code>hilbert-domain-ownership.zh.html</code>，
+      <code>keystone-workspace-pr1-decision-lock.zh.html</code>。
+    </footer>
+  </main>
+</body>
+</html>

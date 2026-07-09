@@ -56,7 +56,6 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 		Name             string         `db:"name"`
 		Description      string         `db:"description"`
 		Source           string         `db:"source"`
-		UploadEnabled    bool           `db:"upload_enabled"`
 		AdminsStr        sql.NullString `db:"admins_str"`
 		MembersStr       sql.NullString `db:"members_str"`
 		LastSyncedAt     sql.NullTime   `db:"last_synced_at"`
@@ -64,7 +63,7 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 		HilbertUpdatedAt sql.NullTime   `db:"hilbert_updated_at"`
 	}
 	if err := db.Select(&rows, `
-		SELECT id, name, description, source, upload_enabled, admins_str, members_str,
+		SELECT id, name, description, source, admins_str, members_str,
 		       last_synced_at, hilbert_created_at, hilbert_updated_at
 		FROM workspaces
 		ORDER BY id
@@ -74,14 +73,13 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows=%#v want default + one Hilbert workspace", rows)
 	}
-	if rows[0].ID != 0 || rows[0].Source != workspaceSourceDefault || rows[0].UploadEnabled {
+	if rows[0].ID != 0 || rows[0].Source != workspaceSourceDefault {
 		t.Fatalf("unexpected default row: %#v", rows[0])
 	}
 	if rows[1].ID != 123 ||
 		rows[1].Name != "Customer Workspace" ||
 		rows[1].Description != "synced from Hilbert" ||
 		rows[1].Source != workspaceSourceHilbert ||
-		!rows[1].UploadEnabled ||
 		rows[1].AdminsStr.String != "#admin-a#" ||
 		rows[1].MembersStr.String != "#member-a#member-b#" ||
 		!rows[1].LastSyncedAt.Valid ||
@@ -192,7 +190,6 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 			name TEXT NOT NULL,
 			description TEXT,
 			source TEXT NOT NULL,
-			upload_enabled BOOLEAN NOT NULL,
 			admins_str TEXT,
 			members_str TEXT,
 			last_synced_at TIMESTAMP,

@@ -121,7 +121,6 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 			name = ?,
 			description = ?,
 			source = ?,
-			upload_enabled = ?,
 			admins_str = ?,
 			members_str = ?,
 			deleted_at = NULL,
@@ -131,7 +130,6 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		false,
 		sql.NullString{},
 		sql.NullString{},
 		now,
@@ -154,19 +152,17 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 			name,
 			description,
 			source,
-			upload_enabled,
 			admins_str,
 			members_str,
 			last_synced_at,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		defaultWorkspaceID,
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		false,
 		sql.NullString{},
 		sql.NullString{},
 		sql.NullTime{},
@@ -228,7 +224,6 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 		strings.TrimSpace(workspace.Name),
 		description,
 		workspaceSourceHilbert,
-		true,
 		nullableHashWrappedString(workspace.Admins),
 		nullableHashWrappedString(workspace.Members),
 		syncedAt,
@@ -241,14 +236,13 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 	if tx.DriverName() == "sqlite" {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO workspaces (
-				id, name, description, source, upload_enabled, admins_str, members_str,
+				id, name, description, source, admins_str, members_str,
 				last_synced_at, hilbert_created_at, hilbert_updated_at, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				name = excluded.name,
 				description = excluded.description,
 				source = excluded.source,
-				upload_enabled = excluded.upload_enabled,
 				admins_str = excluded.admins_str,
 				members_str = excluded.members_str,
 				last_synced_at = excluded.last_synced_at,
@@ -262,14 +256,13 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO workspaces (
-			id, name, description, source, upload_enabled, admins_str, members_str,
+			id, name, description, source, admins_str, members_str,
 			last_synced_at, hilbert_created_at, hilbert_updated_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			name = VALUES(name),
 			description = VALUES(description),
 			source = VALUES(source),
-			upload_enabled = VALUES(upload_enabled),
 			admins_str = VALUES(admins_str),
 			members_str = VALUES(members_str),
 			last_synced_at = VALUES(last_synced_at),

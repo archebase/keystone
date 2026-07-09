@@ -50,6 +50,7 @@ type Server struct {
 	dataCollector       *handlers.DataCollectorHandler
 	station             *handlers.StationHandler
 	workspace           *handlers.WorkspaceHandler
+	dcPlan              *handlers.DCPlanHandler
 	sop                 *handlers.SOPHandler
 	scene               *handlers.SceneHandler
 	subscene            *handlers.SubsceneHandler
@@ -131,6 +132,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		dataCollectorHandler       *handlers.DataCollectorHandler
 		stationHandler             *handlers.StationHandler
 		workspaceHandler           *handlers.WorkspaceHandler
+		dcPlanHandler              *handlers.DCPlanHandler
 		sopHandler                 *handlers.SOPHandler
 		sceneHandler               *handlers.SceneHandler
 		subsceneHandler            *handlers.SubsceneHandler
@@ -139,9 +141,11 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		dataStatsHandler           *handlers.DataProductionStatisticsHandler
 		productionDashboardHandler *handlers.ProductionDashboardHandler
 		workspaceSyncService       *services.WorkspaceSyncService
+		dcPlanSyncService          *services.DCPlanSyncService
 	)
 	if db != nil {
 		workspaceSyncService = services.NewWorkspaceSyncService(db, &cfg.Hilbert, nil)
+		dcPlanSyncService = services.NewDCPlanSyncService(db, &cfg.Hilbert, nil)
 		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub, cfg.Sync.DPConfigPath)
@@ -150,6 +154,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
 		workspaceHandler = handlers.NewWorkspaceHandler(db, workspaceSyncService)
+		dcPlanHandler = handlers.NewDCPlanHandler(db, dcPlanSyncService)
 		sopHandler = handlers.NewSOPHandler(db)
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
@@ -188,6 +193,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		dataCollector:       dataCollectorHandler,
 		station:             stationHandler,
 		workspace:           workspaceHandler,
+		dcPlan:              dcPlanHandler,
 		sop:                 sopHandler,
 		scene:               sceneHandler,
 		subscene:            subsceneHandler,
@@ -309,6 +315,10 @@ func (s *Server) buildRoutes() http.Handler {
 	if s.workspace != nil {
 		adminWorkspaces := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
 		s.workspace.RegisterRoutes(adminWorkspaces)
+	}
+	if s.dcPlan != nil {
+		adminDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
+		s.dcPlan.RegisterRoutes(adminDCPlans)
 	}
 	if s.sop != nil {
 		s.sop.RegisterRoutes(v1Tasks)
