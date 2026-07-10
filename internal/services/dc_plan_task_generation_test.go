@@ -82,6 +82,30 @@ func TestDCPlanTaskGenerationHandlesTargetIncreaseAndDecrease(t *testing.T) {
 	assertTaskGenerationCount(t, db, plan.ID, 5)
 }
 
+func TestDCPlanTaskGenerationAllowsMultiplePlansForSameRobot(t *testing.T) {
+	db := newTestDCPlanTaskGenerationDB(t)
+	defer db.Close()
+	planA := testTaskGenerationPlan(1001, 123, 1)
+	planB := testTaskGenerationPlan(1002, 123, 3)
+	planB.Operator = "collector-b"
+	planB.DCType = "ego"
+	seedTaskGenerationPlan(t, db, planA)
+	seedTaskGenerationPlan(t, db, planB)
+	seedTaskGenerationResources(t, db, planA)
+	seedTaskGenerationCollector(t, db, 8, planB.WorkspaceID, "Collector B", planB.Operator)
+	service := NewDCPlanTaskGenerationService(db)
+
+	summary := service.GenerateForPlans(context.Background(), []auth.HilbertDCPlan{planA, planB}, time.Now().UTC())
+
+	if summary.CreatedCount != 4 || summary.BlockedCount != 0 || len(summary.Plans) != 2 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	assertTaskGenerationCount(t, db, planA.ID, 1)
+	assertTaskGenerationCount(t, db, planB.ID, 3)
+	assertTaskGenerationWorkstationCollector(t, db, planA.ID, "collector-a")
+	assertTaskGenerationWorkstationCollector(t, db, planB.ID, "collector-b")
+}
+
 func TestDCPlanTaskGenerationBlocksMissingResources(t *testing.T) {
 	db := newTestDCPlanTaskGenerationDB(t)
 	defer db.Close()
@@ -128,12 +152,7 @@ func seedTaskGenerationPlan(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) 
 
 func seedTaskGenerationResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
 	t.Helper()
-	if _, err := db.Exec(`
-		INSERT INTO data_collectors (id, organization_id, name, operator_id, status, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, 7, plan.WorkspaceID, "Collector A", plan.Operator, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
-		t.Fatalf("seed collector: %v", err)
-	}
+	seedTaskGenerationCollector(t, db, 7, plan.WorkspaceID, "Collector A", plan.Operator)
 	if _, err := db.Exec(`
 		INSERT INTO robot_types (id, name, model, ros_topics, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -145,6 +164,16 @@ func seedTaskGenerationResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCP
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, 9, 77, "456", 1, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("seed robot: %v", err)
+	}
+}
+
+func seedTaskGenerationCollector(t *testing.T, db *sqlx.DB, id int64, workspaceID int64, name string, operatorID string) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, organization_id, name, operator_id, status, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, workspaceID, name, operatorID, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
+		t.Fatalf("seed collector: %v", err)
 	}
 }
 
@@ -163,6 +192,23 @@ func assertTaskGenerationCount(t *testing.T, db *sqlx.DB, dcPlanID int64, want i
 	}
 	if count != want {
 		t.Fatalf("task count=%d want %d", count, want)
+	}
+}
+
+func assertTaskGenerationWorkstationCollector(t *testing.T, db *sqlx.DB, dcPlanID int64, wantOperatorID string) {
+	t.Helper()
+	var got string
+	if err := db.Get(&got, `
+		SELECT ws.collector_operator_id
+		FROM tasks t
+		JOIN workstations ws ON ws.id = t.workstation_id
+		WHERE t.dc_plan_id = ? AND t.deleted_at IS NULL
+		LIMIT 1
+	`, dcPlanID); err != nil {
+		t.Fatalf("query task workstation collector: %v", err)
+	}
+	if got != wantOperatorID {
+		t.Fatalf("collector_operator_id=%q want %q", got, wantOperatorID)
 	}
 }
 

@@ -455,7 +455,8 @@ func ensurePlanWorkstation(
 			COALESCE(robot_serial, '') AS robot_serial, COALESCE(collector_name, '') AS collector_name,
 			COALESCE(collector_operator_id, '') AS collector_operator_id
 		FROM workstations
-		WHERE robot_id = ? AND data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
+		WHERE robot_id = ? AND data_collector_id = ? AND deleted_at IS NULL
+		ORDER BY is_current DESC, id DESC
 		LIMIT 1`+forUpdateClause(tx), robot.ID, collector.ID)
 	if err == nil {
 		return ws, nil
@@ -463,9 +464,8 @@ func ensurePlanWorkstation(
 	if err != sql.ErrNoRows {
 		return ws, fmt.Errorf("workstation_query_failed")
 	}
-	if hasCurrentBinding(ctx, tx, "robot_id", robot.ID) || hasCurrentBinding(ctx, tx, "data_collector_id", collector.ID) {
-		return ws, fmt.Errorf("binding_conflict")
-	}
+	isCurrent := !hasCurrentBinding(ctx, tx, "robot_id", robot.ID) &&
+		!hasCurrentBinding(ctx, tx, "data_collector_id", collector.ID)
 
 	name := fmt.Sprintf("Hilbert Plan %d Workstation", plan.ID)
 	metadata, err := marshalMetadata(map[string]any{
@@ -483,9 +483,9 @@ func ensurePlanWorkstation(
 		INSERT INTO workstations (
 			robot_id, robot_name, robot_serial, data_collector_id, collector_name, collector_operator_id,
 			factory_id, organization_id, name, status, metadata, created_at, updated_at, is_current
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, robot.ID, robot.DeviceID, robot.DeviceID, collector.ID, collector.Name, collector.OperatorID,
-		factoryID, plan.WorkspaceID, name, "active", metadata, now, now)
+		factoryID, plan.WorkspaceID, name, "active", metadata, now, now, isCurrent)
 	if err != nil {
 		return ws, fmt.Errorf("workstation_create_failed")
 	}
