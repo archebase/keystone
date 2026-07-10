@@ -105,7 +105,7 @@ func TestRobotHandlerListRobotsIncludesDisplayLabels(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO factories (id, name, slug, deleted_at) VALUES (81, 'Factory 81', 'fac-81', NULL)`); err != nil {
 		t.Fatalf("seed factory fixture failed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO robots (id, robot_type_id, device_id, factory_id, status) VALUES (1, 51, 'label_robot', 81, 'active')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, metadata) VALUES (1, 51, 'label_robot', 81, 'active', '{"hilbert_dc_device_name":"dev01"}')`); err != nil {
 		t.Fatalf("seed robot fixture failed: %v", err)
 	}
 
@@ -128,6 +128,9 @@ func TestRobotHandlerListRobotsIncludesDisplayLabels(t *testing.T) {
 	got := resp.Items[0]
 	if got.RobotTypeModel != "Model-51" || got.RobotTypeName != "Arm Type 51" {
 		t.Fatalf("unexpected robot type labels: %#v", got)
+	}
+	if got.DeviceName != "dev01" {
+		t.Fatalf("DeviceName=%q want dev01 item=%#v", got.DeviceName, got)
 	}
 	if got.FactoryName != "Factory 81" || got.FactorySlug != "fac-81" {
 		t.Fatalf("unexpected factory labels: %#v", got)
