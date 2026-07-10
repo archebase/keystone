@@ -64,6 +64,7 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 			order_id INTEGER,
 			factory_id INTEGER,
 			sop_id INTEGER,
+			dc_plan_id INTEGER,
 			scene_name TEXT,
 			subscene_name TEXT,
 			initial_scene_layout TEXT,
@@ -101,6 +102,16 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE sops (
 			id INTEGER PRIMARY KEY,
 			slug TEXT NOT NULL,
+			deleted_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE dc_plan (
+			id INTEGER PRIMARY KEY,
+			workspace_id INTEGER,
+			name TEXT,
+			dc_type TEXT,
+			dc_device_id INTEGER,
+			target_count INTEGER,
+			target_duration INTEGER,
 			deleted_at TIMESTAMP NULL
 		)`,
 	}

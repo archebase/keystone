@@ -53,6 +53,7 @@ type RobotResponse struct {
 	RobotTypeName  string      `json:"robot_type_name,omitempty"`
 	RobotTypeModel string      `json:"robot_type_model,omitempty"`
 	DeviceID       string      `json:"device_id"`
+	DeviceName     string      `json:"device_name,omitempty"`
 	FactoryID      string      `json:"factory_id"`
 	FactoryName    string      `json:"factory_name,omitempty"`
 	FactorySlug    string      `json:"factory_slug,omitempty"`
@@ -158,6 +159,21 @@ func robotMetadataFromDB(ns sql.NullString) interface{} {
 		return nil
 	}
 	return parseJSONRaw(ns.String)
+}
+
+func robotDeviceNameFromMetadata(ns sql.NullString) string {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return ""
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(ns.String), &payload); err != nil {
+		return ""
+	}
+	name, ok := payload["hilbert_dc_device_name"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(name)
 }
 
 func normalizeAssetID(raw string) (sql.NullString, error) {
@@ -356,6 +372,7 @@ func robotResponseFromRow(r robotRow, connected bool, connectedAt string) RobotR
 		RobotTypeName:  nullString(r.RobotTypeName),
 		RobotTypeModel: nullString(r.RobotTypeModel),
 		DeviceID:       r.DeviceID,
+		DeviceName:     robotDeviceNameFromMetadata(r.Metadata),
 		FactoryID:      fmt.Sprintf("%d", r.FactoryID),
 		FactoryName:    nullString(r.FactoryName),
 		FactorySlug:    nullString(r.FactorySlug),

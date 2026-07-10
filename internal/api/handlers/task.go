@@ -7,9 +7,7 @@ package handlers
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -25,37 +23,11 @@ import (
 )
 
 func newPublicTaskID(now time.Time, seq int) (string, error) {
-	// Format: task_YYYYMMDD_HHMMSS_mmm_<seq>_<rand8>
-	// - millisecond timestamp makes it readable
-	// - seq differentiates multiple creates in same millisecond
-	// - rand suffix prevents collision across processes/hosts
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf(
-		"task_%s_%03d_%02d_%s",
-		now.UTC().Format("20060102_150405"),
-		now.UTC().Nanosecond()/1_000_000,
-		seq%100,
-		hex.EncodeToString(b),
-	), nil
+	return services.NewPublicTaskID(now, seq)
 }
 
 func newPublicBatchID(now time.Time, seq int) (string, error) {
-	// Format: batch_YYYYMMDD_HHMMSS_mmm_<seq>_<rand8>
-	// Keep it human-readable while avoiding collisions under concurrent/bulk creates.
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf(
-		"batch_%s_%03d_%02d_%s",
-		now.UTC().Format("20060102_150405"),
-		now.UTC().Nanosecond()/1_000_000,
-		seq%100,
-		hex.EncodeToString(b),
-	), nil
+	return services.NewPublicBatchID(now, seq)
 }
 
 type transferUploadHub interface {
@@ -119,6 +91,12 @@ type TaskConfig struct {
 	StartCallbackURL   string   `json:"start_callback_url"`
 	FinishCallbackURL  string   `json:"finish_callback_url"`
 	UserToken          string   `json:"user_token"`
+	WorkspaceID        *int64   `json:"workspace_id,omitempty"`
+	DCPlanID           *int64   `json:"dc_plan_id,omitempty"`
+	DCType             string   `json:"dc_type,omitempty"`
+	DCDeviceID         *int64   `json:"dc_device_id,omitempty"`
+	PlanTargetCount    *int64   `json:"plan_target_count,omitempty"`
+	PlanTargetDuration *int64   `json:"plan_target_duration,omitempty"`
 }
 
 // RegisterRoutes registers task-related routes
@@ -157,6 +135,11 @@ type TaskListItem struct {
 	Status              string  `json:"status" db:"status"`
 	ErrorMessage        *string `json:"error_message" db:"error_message"`
 	AssignedAt          *string `json:"assigned_at" db:"assigned_at"`
+	DCPlanID            *int64  `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
+	WorkspaceID         *int64  `json:"workspace_id,omitempty" db:"workspace_id"`
+	DCPlanName          *string `json:"dc_plan_name,omitempty" db:"dc_plan_name"`
+	DCType              *string `json:"dc_type,omitempty" db:"dc_type"`
+	DCDeviceID          *int64  `json:"dc_device_id,omitempty" db:"dc_device_id"`
 }
 
 // ListTasksResponse represents the response body for listing tasks.
@@ -191,6 +174,11 @@ type TaskDetailResponse struct {
 	SubsceneName     string             `json:"subscene_name" db:"subscene_name"`
 	FactoryID        *string            `json:"factory_id" db:"factory_id"`
 	OrganizationID   *int64             `json:"organization_id" db:"organization_id"`
+	DCPlanID         *int64             `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
+	WorkspaceID      *int64             `json:"workspace_id,omitempty" db:"workspace_id"`
+	DCPlanName       *string            `json:"dc_plan_name,omitempty" db:"dc_plan_name"`
+	DCType           *string            `json:"dc_type,omitempty" db:"dc_type"`
+	DCDeviceID       *int64             `json:"dc_device_id,omitempty" db:"dc_device_id"`
 	Status           string             `json:"status" db:"status"`
 	ErrorMessage     *string            `json:"error_message" db:"error_message"`
 	CreatedAt        *string            `json:"created_at" db:"created_at"`
@@ -223,6 +211,8 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	taskID := strings.TrimSpace(c.Query("task_id"))
 	workstationID := strings.TrimSpace(c.Query("workstation_id"))
 	status := strings.TrimSpace(c.Query("status"))
+	workspaceID := strings.TrimSpace(c.Query("workspace_id"))
+	dcPlanID := strings.TrimSpace(c.Query("dc_plan_id"))
 
 	limit := defaultLimit
 	if rawLimit := strings.TrimSpace(c.Query("limit")); rawLimit != "" {
@@ -250,6 +240,20 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 			return
 		}
 	}
+	if workspaceID != "" {
+		parsed, err := strconv.ParseInt(workspaceID, 10, 64)
+		if err != nil || parsed <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workspace_id format"})
+			return
+		}
+	}
+	if dcPlanID != "" {
+		parsed, err := strconv.ParseInt(dcPlanID, 10, 64)
+		if err != nil || parsed <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid dc_plan_id format"})
+			return
+		}
+	}
 
 	conditions := []string{"tasks.deleted_at IS NULL"}
 	args := make([]interface{}, 0, 6)
@@ -268,11 +272,19 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		conditions = append(conditions, "tasks.status = ?")
 		args = append(args, status)
 	}
+	if workspaceID != "" {
+		conditions = append(conditions, "dp.workspace_id = ?")
+		args = append(args, workspaceID)
+	}
+	if dcPlanID != "" {
+		conditions = append(conditions, "tasks.dc_plan_id = ?")
+		args = append(args, dcPlanID)
+	}
 
 	whereClause := strings.Join(conditions, " AND ")
 
 	var total int
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM tasks WHERE %s", whereClause)
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM tasks LEFT JOIN dc_plan dp ON dp.id = tasks.dc_plan_id AND dp.deleted_at IS NULL WHERE %s", whereClause)
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[TASK] Failed to count tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
@@ -295,9 +307,15 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		COALESCE(tasks.subscene_name, '') AS subscene_name,
 		tasks.status,
 		tasks.error_message,
-		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at
+		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at,
+		tasks.dc_plan_id AS dc_plan_id,
+		dp.workspace_id AS workspace_id,
+		dp.name AS dc_plan_name,
+		dp.dc_type AS dc_type,
+		dp.dc_device_id AS dc_device_id
 		FROM tasks
 		LEFT JOIN workstations ws ON ws.id = tasks.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = tasks.dc_plan_id AND dp.deleted_at IS NULL
 		WHERE %s
 		ORDER BY tasks.created_at DESC, tasks.id DESC
 		LIMIT ? OFFSET ?`, whereClause)
@@ -356,6 +374,11 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		COALESCE(t.subscene_name, '') AS subscene_name,
 		CASE WHEN t.factory_id IS NULL THEN NULL ELSE CAST(t.factory_id AS CHAR) END AS factory_id,
 		t.organization_id AS organization_id,
+		t.dc_plan_id AS dc_plan_id,
+		dp.workspace_id AS workspace_id,
+		dp.name AS dc_plan_name,
+		dp.dc_type AS dc_type,
+		dp.dc_device_id AS dc_device_id,
 		t.status,
 		t.error_message,
 		CASE WHEN t.created_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(t.created_at, @@session.time_zone, '+00:00'), '%Y-%m-%dT%H:%i:%sZ') END AS created_at,
@@ -365,6 +388,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		e.id AS episode_numeric_id,
 		e.episode_id AS episode_public_id
 		FROM tasks t
+		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN episodes e ON e.task_id = t.id AND e.deleted_at IS NULL
 		WHERE t.id = ? AND t.deleted_at IS NULL
 		LIMIT 1`
@@ -1060,19 +1084,25 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	}
 
 	type taskConfigRow struct {
-		TaskID        string         `db:"task_id"`
-		WorkstationID sql.NullInt64  `db:"workstation_id"`
-		RobotSerial   sql.NullString `db:"robot_serial"`
-		RobotID       sql.NullInt64  `db:"robot_id"`
-		CollectorName sql.NullString `db:"collector_name"`
-		OrderName     sql.NullString `db:"order_name"`
-		Workstation   sql.NullString `db:"workstation_name"`
-		FactoryName   sql.NullString `db:"factory_name"`
-		SceneName     sql.NullString `db:"scene_name"`
-		SubsceneName  sql.NullString `db:"subscene_name"`
-		Layout        sql.NullString `db:"initial_scene_layout"`
-		SOPSlug       sql.NullString `db:"sop_slug"`
-		ROSTopics     sql.NullString `db:"ros_topics"`
+		TaskID         string         `db:"task_id"`
+		WorkstationID  sql.NullInt64  `db:"workstation_id"`
+		RobotSerial    sql.NullString `db:"robot_serial"`
+		RobotID        sql.NullInt64  `db:"robot_id"`
+		CollectorName  sql.NullString `db:"collector_name"`
+		OrderName      sql.NullString `db:"order_name"`
+		Workstation    sql.NullString `db:"workstation_name"`
+		FactoryName    sql.NullString `db:"factory_name"`
+		SceneName      sql.NullString `db:"scene_name"`
+		SubsceneName   sql.NullString `db:"subscene_name"`
+		Layout         sql.NullString `db:"initial_scene_layout"`
+		SOPSlug        sql.NullString `db:"sop_slug"`
+		ROSTopics      sql.NullString `db:"ros_topics"`
+		WorkspaceID    sql.NullInt64  `db:"workspace_id"`
+		DCPlanID       sql.NullInt64  `db:"dc_plan_id"`
+		DCType         sql.NullString `db:"dc_type"`
+		DCDeviceID     sql.NullInt64  `db:"dc_device_id"`
+		TargetCount    sql.NullInt64  `db:"target_count"`
+		TargetDuration sql.NullInt64  `db:"target_duration"`
 	}
 
 	var row taskConfigRow
@@ -1090,7 +1120,13 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 			COALESCE(t.subscene_name, '') AS subscene_name,
 			COALESCE(t.initial_scene_layout, '') AS initial_scene_layout,
 			s.slug AS sop_slug,
-			COALESCE(rt.ros_topics, '[]') AS ros_topics
+			COALESCE(rt.ros_topics, '[]') AS ros_topics,
+			dp.workspace_id AS workspace_id,
+			t.dc_plan_id AS dc_plan_id,
+			dp.dc_type AS dc_type,
+			dp.dc_device_id AS dc_device_id,
+			dp.target_count AS target_count,
+			dp.target_duration AS target_duration
 		FROM tasks t
 		LEFT JOIN factories f ON f.id = t.factory_id AND f.deleted_at IS NULL
 		LEFT JOIN orders o ON o.id = t.order_id AND o.deleted_at IS NULL
@@ -1098,6 +1134,7 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		WHERE t.id = ? AND t.deleted_at IS NULL
 		LIMIT 1
 	`, id); err != nil {
@@ -1162,6 +1199,24 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		StartCallbackURL:   h.callbackURLs.startURL(),
 		FinishCallbackURL:  h.callbackURLs.finishURL(),
 		UserToken:          "",
+	}
+	if row.WorkspaceID.Valid {
+		taskConfig.WorkspaceID = &row.WorkspaceID.Int64
+	}
+	if row.DCPlanID.Valid {
+		taskConfig.DCPlanID = &row.DCPlanID.Int64
+	}
+	if row.DCType.Valid {
+		taskConfig.DCType = strings.TrimSpace(row.DCType.String)
+	}
+	if row.DCDeviceID.Valid {
+		taskConfig.DCDeviceID = &row.DCDeviceID.Int64
+	}
+	if row.TargetCount.Valid {
+		taskConfig.PlanTargetCount = &row.TargetCount.Int64
+	}
+	if row.TargetDuration.Valid {
+		taskConfig.PlanTargetDuration = &row.TargetDuration.Int64
 	}
 
 	c.JSON(http.StatusOK, taskConfig)

@@ -20,9 +20,6 @@ import (
 
 const (
 	hilbertMetadataSource       = "hilbert"
-	hilbertDataSupplierRole     = "external_user"
-	hilbertDataSupplierType     = "data_supplier"
-	hilbertEnabledStatus        = "enabled"
 	hilbertResourceActiveStatus = "active"
 )
 
@@ -203,11 +200,6 @@ func (s *WorkspaceResourceSyncService) syncCollectors(
 			result.addError("collector", code, "account_missing", "workspace member account was not returned")
 			continue
 		}
-		if !isHilbertDataSupplier(*account) {
-			result.CollectorSkippedCount++
-			result.addError("collector", code, "not_data_supplier", "workspace member is not an enabled data supplier")
-			continue
-		}
 		upserted, upsertErr := upsertHilbertDataCollector(ctx, tx, workspace.ID, *account, syncedAt)
 		if upsertErr != nil {
 			result.CollectorSkippedCount++
@@ -218,12 +210,6 @@ func (s *WorkspaceResourceSyncService) syncCollectors(
 			result.CollectorUpsertedCount++
 		}
 	}
-}
-
-func isHilbertDataSupplier(account auth.HilbertAccount) bool {
-	return strings.TrimSpace(account.Role) == hilbertDataSupplierRole &&
-		strings.TrimSpace(account.ExternalUserType) == hilbertDataSupplierType &&
-		strings.TrimSpace(account.Status) == hilbertEnabledStatus
 }
 
 func upsertWorkspaceCompatFactory(ctx context.Context, tx *sqlx.Tx, workspace auth.HilbertWorkspace, syncedAt time.Time) (int64, error) {
