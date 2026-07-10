@@ -178,8 +178,8 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	if result.ResourceSync == nil {
 		t.Fatalf("ResourceSync is nil")
 	}
-	if result.ResourceSync.CollectorUpsertedCount != 1 ||
-		result.ResourceSync.CollectorSkippedCount != 2 ||
+	if result.ResourceSync.CollectorUpsertedCount != 2 ||
+		result.ResourceSync.CollectorSkippedCount != 1 ||
 		result.ResourceSync.RobotTypeUpsertedCount != 1 ||
 		result.ResourceSync.RobotUpsertedCount != 1 ||
 		result.ResourceSync.FactoryUpsertedCount != 1 {
@@ -201,6 +201,13 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 	if collector.OrganizationID != 123 || collector.Name != "Collector A" || collector.Status != "active" || metadataSource(collector.Metadata) != "hilbert" {
 		t.Fatalf("unexpected collector: %#v", collector)
+	}
+	var customerCount int
+	if err := db.Get(&customerCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id = 'customer-a'"); err != nil {
+		t.Fatalf("count customer collector: %v", err)
+	}
+	if customerCount != 1 {
+		t.Fatalf("customerCount=%d want 1", customerCount)
 	}
 
 	var robot struct {
@@ -226,6 +233,61 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 	if robotTypeModel != "hilbert_dc_device_type_77" {
 		t.Fatalf("robotTypeModel=%q", robotTypeModel)
+	}
+}
+
+func TestWorkspaceSyncServiceProjectsWorkspacePeopleAsCollectors(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
+		workspaces: []auth.HilbertWorkspace{
+			{ID: 123, Name: "Resource Workspace", Admins: []string{"operator-a", "internal-a"}},
+		},
+		accounts: map[string]*auth.HilbertAccount{
+			"operator-a": {
+				ID:               7,
+				Code:             "operator-a",
+				DisplayName:      "Operator A",
+				Role:             "external_user",
+				ExternalUserType: "customer",
+				Status:           "enabled",
+			},
+			"internal-a": {
+				ID:               8,
+				Code:             "internal-a",
+				DisplayName:      "Internal A",
+				Role:             "internal_user",
+				ExternalUserType: "",
+				Status:           "disabled",
+			},
+		},
+		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{
+			123: {
+				{ID: 456, WorkspaceID: 123, Name: "Device A", SN: "SN-A", DCDeviceTypeID: 77},
+			},
+		},
+		deviceTypes: map[int64]*auth.HilbertDCDeviceType{
+			77: {ID: 77, Name: "Type 77"},
+		},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.ResourceSync.CollectorUpsertedCount != 2 || result.ResourceSync.CollectorSkippedCount != 0 {
+		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
+	}
+
+	var collectorCount int
+	if err := db.Get(&collectorCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id IN ('operator-a', 'internal-a') AND organization_id = 123"); err != nil {
+		t.Fatalf("count workspace people collectors: %v", err)
+	}
+	if collectorCount != 2 {
+		t.Fatalf("collectorCount=%d want 2", collectorCount)
 	}
 }
 

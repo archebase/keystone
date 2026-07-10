@@ -151,18 +151,6 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	hilbertAccount := hilbertResult.Account
-	if !isAllowedHilbertCollector(hilbertAccount) {
-		logger.Printf(
-			"[AUTH] Hilbert account rejected: code=%s role=%s external_user_type=%s status=%s",
-			hilbertAccount.Code,
-			hilbertAccount.Role,
-			hilbertAccount.ExternalUserType,
-			hilbertAccount.Status,
-		)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-		return
-	}
-
 	var row collectorAuthRow
 	err = h.db.Get(&row, `
 		SELECT id, name, operator_id, status
@@ -215,12 +203,6 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			Name:       row.Name,
 		},
 	})
-}
-
-func isAllowedHilbertCollector(account auth.HilbertAccount) bool {
-	return account.Role == "external_user" &&
-		account.ExternalUserType == "data_supplier" &&
-		account.Status == "enabled"
 }
 
 // Logout acknowledges logout. The client discards the token; if a valid Bearer

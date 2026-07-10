@@ -97,6 +97,36 @@ func TestAuthHandlerLoginWithHilbertSuccessRequiresLocalCollectorBinding(t *test
 	}
 }
 
+func TestAuthHandlerLoginAllowsSyncedWorkspaceMemberRegardlessHilbertType(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`INSERT INTO data_collectors (id, name, operator_id, status, deleted_at) VALUES (7, 'Workspace Member', 'dc01', 'active', NULL)`); err != nil {
+		t.Fatalf("seed collector: %v", err)
+	}
+
+	hilbert := newTestHilbertServer(t, testHilbertBehavior{
+		statusCode: http.StatusOK,
+		body:       `{"code":0,"data":{"account":{"id":9,"code":"dc01","displayName":"Workspace Member","role":"internal_user","externalUserType":"customer","status":"disabled"},"sessionKey":"hilbert-session"}}`,
+	})
+	defer hilbert.Close()
+
+	router := newTestAuthRouter(db, hilbert.URL)
+	w := performAuthLogin(router, `{"operator_id":"dc01","password":"secret"}`)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp LoginResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Role != "data_collector" || resp.Collector == nil || resp.Collector.ID != "7" {
+		t.Fatalf("unexpected login response: %#v", resp)
+	}
+}
+
 func TestAuthHandlerLoginWithHilbertBusinessFailureReturnsUnauthorized(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
