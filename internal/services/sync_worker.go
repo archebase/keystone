@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,6 +47,12 @@ type syncEnqueueRequest struct {
 type syncEpisodeUploadRow struct {
 	ID                      int64          `db:"id"`
 	EpisodeUUID             string         `db:"episode_id"`
+	DCPlanID                sql.NullInt64  `db:"dc_plan_id"`
+	LocalDCPlanID           sql.NullInt64  `db:"local_dc_plan_id"`
+	ProjectedDCPlanID       sql.NullInt64  `db:"projected_dc_plan_id"`
+	WorkspaceID             sql.NullInt64  `db:"workspace_id"`
+	DCPlanName              sql.NullString `db:"dc_plan_name"`
+	DCType                  sql.NullString `db:"dc_type"`
 	McapPath                string         `db:"mcap_path"`
 	SidecarPath             string         `db:"sidecar_path"`
 	CloudSynced             bool           `db:"cloud_synced"`
@@ -61,6 +68,46 @@ type syncEpisodeUploadRow struct {
 	DataCollectorName       sql.NullString `db:"data_collector_name"`
 	OrderName               sql.NullString `db:"order_name"`
 	BatchID                 sql.NullString `db:"batch_id"`
+}
+
+type hilbertEpisodeUploadContext struct {
+	DCPlanID    int64
+	WorkspaceID int64
+}
+
+func (c hilbertEpisodeUploadContext) clientHints() map[string]string {
+	return map[string]string{
+		"dc_plan_id":   strconv.FormatInt(c.DCPlanID, 10),
+		"workspace_id": strconv.FormatInt(c.WorkspaceID, 10),
+	}
+}
+
+func hilbertUploadContext(ep syncEpisodeUploadRow) (hilbertEpisodeUploadContext, error) {
+	if !ep.DCPlanID.Valid || ep.DCPlanID.Int64 <= 0 {
+		if ep.LocalDCPlanID.Valid && ep.LocalDCPlanID.Int64 > 0 {
+			return hilbertEpisodeUploadContext{}, newNonRetryableSyncError(
+				"episode %d has local_dc_plan_id %d but Hilbert upload requires dc_plan_id",
+				ep.ID,
+				ep.LocalDCPlanID.Int64,
+			)
+		}
+		return hilbertEpisodeUploadContext{}, newNonRetryableSyncError("episode %d missing dc_plan_id", ep.ID)
+	}
+	if !ep.ProjectedDCPlanID.Valid || ep.ProjectedDCPlanID.Int64 != ep.DCPlanID.Int64 {
+		return hilbertEpisodeUploadContext{}, newNonRetryableSyncError("dc_plan %d not found or deleted", ep.DCPlanID.Int64)
+	}
+	if !ep.WorkspaceID.Valid || ep.WorkspaceID.Int64 <= 0 {
+		workspaceID := int64(0)
+		if ep.WorkspaceID.Valid {
+			workspaceID = ep.WorkspaceID.Int64
+		}
+		return hilbertEpisodeUploadContext{}, newNonRetryableSyncError(
+			"dc_plan %d has invalid workspace_id %d",
+			ep.DCPlanID.Int64,
+			workspaceID,
+		)
+	}
+	return hilbertEpisodeUploadContext{DCPlanID: ep.DCPlanID.Int64, WorkspaceID: ep.WorkspaceID.Int64}, nil
 }
 
 // SyncProgressSnapshot is the latest in-memory progress for an active episode sync.
@@ -914,6 +961,12 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 		SELECT
 			e.id,
 			e.episode_id,
+			e.dc_plan_id,
+			e.local_dc_plan_id,
+			dp.id AS projected_dc_plan_id,
+			dp.workspace_id,
+			dp.name AS dc_plan_name,
+			dp.dc_type,
 			e.mcap_path,
 			e.sidecar_path,
 			e.cloud_synced,
@@ -930,6 +983,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 			o.name AS order_name,
 			b.batch_id AS batch_id
 		FROM episodes e
+		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN sops s ON s.id = COALESCE(e.sop_id, t.sop_id) AND s.deleted_at IS NULL
 		LEFT JOIN scenes sc ON sc.id = COALESCE(e.scene_id, t.scene_id) AND sc.deleted_at IS NULL
@@ -979,6 +1033,11 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 }
 
 func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUploadRow) (*cloud.UploadResult, error) {
+	uploadContext, err := hilbertUploadContext(ep)
+	if err != nil {
+		return nil, err
+	}
+
 	mcapKey := stripBucketPrefix(ep.McapPath)
 	if mcapKey == "" {
 		return nil, newNonRetryableSyncError("episode %d has empty mcap_path", ep.ID)
@@ -1008,6 +1067,8 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 		SidecarTags:     sidecarTags,
 		EpisodePublicID: ep.EpisodeUUID,
 		Context: dpRawTagContext{
+			DCPlanID:                uploadContext.DCPlanID,
+			WorkspaceID:             uploadContext.WorkspaceID,
 			SOPSlug:                 ep.SOPSlug,
 			SOPVersion:              ep.SOPVersion,
 			SOPDescription:          ep.SOPDescription,
@@ -1033,15 +1094,34 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 	logger.Printf("[SYNC-WORKER] Episode %d direct sync config resolved: asset_id=%s auth=%s auth_tls=%t gateway=%s gateway_tls=%t",
 		ep.ID, assetID, dpConfig.Auth.Target, dpConfig.Auth.UseTLS, dpConfig.Gateway.Target, dpConfig.Gateway.UseTLS)
 
-	return uploader.Upload(ctx, cloud.UploadRequest{
-		EpisodeID: ep.EpisodeUUID,
-		McapKey:   mcapKey,
-		AssetID:   assetID,
-		RawTags:   rawTags,
-		Progress: func(uploadedBytes int64, totalBytes int64) {
+	return uploader.Upload(ctx, directCloudUploadRequest(
+		ep,
+		mcapKey,
+		assetID,
+		rawTags,
+		uploadContext,
+		func(uploadedBytes int64, totalBytes int64) {
 			w.setEpisodeProgress(ep.ID, uploadedBytes, totalBytes)
 		},
-	})
+	))
+}
+
+func directCloudUploadRequest(
+	ep syncEpisodeUploadRow,
+	mcapKey string,
+	assetID string,
+	rawTags map[string]string,
+	uploadContext hilbertEpisodeUploadContext,
+	progress cloud.UploadProgressFunc,
+) cloud.UploadRequest {
+	return cloud.UploadRequest{
+		EpisodeID:   ep.EpisodeUUID,
+		McapKey:     mcapKey,
+		AssetID:     assetID,
+		RawTags:     rawTags,
+		ClientHints: uploadContext.clientHints(),
+		Progress:    progress,
+	}
 }
 
 func (w *SyncWorker) newDirectUploader(dpConfig *DPDeviceUploadConfig) (*cloud.Uploader, func(), error) {

@@ -699,6 +699,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			FactoryID      sql.NullInt64 `db:"factory_id"`
 			OrganizationID sql.NullInt64 `db:"organization_id"`
 			SOPID          int64         `db:"sop_id"`
+			DCPlanID       sql.NullInt64 `db:"dc_plan_id"`
+			LocalDCPlanID  sql.NullInt64 `db:"local_dc_plan_id"`
 		}
 
 		err = tx.QueryRowContext(ctx, `SELECT
@@ -710,7 +712,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			workstation_id,
 			factory_id,
 			organization_id,
-			sop_id
+			sop_id,
+			dc_plan_id,
+			local_dc_plan_id
 		FROM tasks
 		WHERE task_id = ? AND deleted_at IS NULL`, taskID).Scan(
 			&taskRow.ID,
@@ -722,6 +726,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			&taskRow.FactoryID,
 			&taskRow.OrganizationID,
 			&taskRow.SOPID,
+			&taskRow.DCPlanID,
+			&taskRow.LocalDCPlanID,
 		)
 		if err != nil {
 			return
@@ -806,6 +812,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					factory_id,
 					organization_id,
 					sop_id,
+					dc_plan_id,
+					local_dc_plan_id,
 					mcap_path,
 					sidecar_path,
 					duration_sec,
@@ -813,7 +821,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					checksum,
 					qa_status,
 					metadata
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				episodeID,
 				taskRow.ID,
 				taskRow.BatchID,
@@ -824,6 +832,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				taskRow.FactoryID,
 				taskRow.OrganizationID,
 				taskRow.SOPID,
+				taskRow.DCPlanID,
+				taskRow.LocalDCPlanID,
 				mcapPath,
 				sidecarPath,
 				durationSec,

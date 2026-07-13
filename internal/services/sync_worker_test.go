@@ -41,6 +41,128 @@ func TestStripBucketPrefix(t *testing.T) {
 	}
 }
 
+func TestHilbertUploadContextRejectsMissingDCPlanID(t *testing.T) {
+	_, err := hilbertUploadContext(syncEpisodeUploadRow{ID: 4181})
+	if err == nil {
+		t.Fatal("hilbertUploadContext() error = nil, want missing dc_plan_id")
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+	if !strings.Contains(err.Error(), "episode 4181 missing dc_plan_id") {
+		t.Fatalf("error=%q want missing dc_plan_id detail", err)
+	}
+}
+
+func TestHilbertUploadContextRejectsLocalPlanOnly(t *testing.T) {
+	_, err := hilbertUploadContext(syncEpisodeUploadRow{
+		ID:            4181,
+		LocalDCPlanID: sql.NullInt64{Int64: 27, Valid: true},
+	})
+	if err == nil {
+		t.Fatal("hilbertUploadContext() error = nil, want local plan rejection")
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+	if !strings.Contains(err.Error(), "episode 4181 has local_dc_plan_id 27 but Hilbert upload requires dc_plan_id") {
+		t.Fatalf("error=%q want local plan detail", err)
+	}
+}
+
+func TestHilbertUploadContextRejectsMissingOrDeletedProjection(t *testing.T) {
+	_, err := hilbertUploadContext(syncEpisodeUploadRow{
+		ID:       4181,
+		DCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+	})
+	if err == nil {
+		t.Fatal("hilbertUploadContext() error = nil, want missing projection rejection")
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+	if !strings.Contains(err.Error(), "dc_plan 1001 not found or deleted") {
+		t.Fatalf("error=%q want missing projection detail", err)
+	}
+}
+
+func TestHilbertUploadContextRejectsInvalidWorkspace(t *testing.T) {
+	_, err := hilbertUploadContext(syncEpisodeUploadRow{
+		ID:                4181,
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: -9, Valid: true},
+	})
+	if err == nil {
+		t.Fatal("hilbertUploadContext() error = nil, want invalid workspace rejection")
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+	if !strings.Contains(err.Error(), "dc_plan 1001 has invalid workspace_id -9") {
+		t.Fatalf("error=%q want invalid workspace detail", err)
+	}
+}
+
+func TestHilbertUploadContextReturnsValidatedIDs(t *testing.T) {
+	got, err := hilbertUploadContext(syncEpisodeUploadRow{
+		ID:                4181,
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("hilbertUploadContext() error = %v", err)
+	}
+	if got.DCPlanID != 1001 || got.WorkspaceID != 123 {
+		t.Fatalf("context=%+v want dc_plan_id=1001 workspace_id=123", got)
+	}
+}
+
+func TestHilbertUploadContextClientHintsContainPlanAndWorkspace(t *testing.T) {
+	hints := (hilbertEpisodeUploadContext{DCPlanID: 1001, WorkspaceID: 123}).clientHints()
+	if hints["dc_plan_id"] != "1001" {
+		t.Fatalf("dc_plan_id hint=%q want 1001", hints["dc_plan_id"])
+	}
+	if hints["workspace_id"] != "123" {
+		t.Fatalf("workspace_id hint=%q want 123", hints["workspace_id"])
+	}
+}
+
+func TestUploadEpisodeDirectStopsAtHilbertGuard(t *testing.T) {
+	w := &SyncWorker{}
+	_, err := w.uploadEpisodeDirect(context.Background(), syncEpisodeUploadRow{
+		ID:                4181,
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 0, Valid: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "dc_plan 1001 has invalid workspace_id 0") {
+		t.Fatalf("uploadEpisodeDirect() error=%v want Hilbert guard failure", err)
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+}
+
+func TestDirectCloudUploadRequestContainsPlanMetadata(t *testing.T) {
+	rawTags := map[string]string{"existing": "tag"}
+	req := directCloudUploadRequest(
+		syncEpisodeUploadRow{EpisodeUUID: "episode-1"},
+		"path/file.mcap",
+		"asset-1",
+		rawTags,
+		hilbertEpisodeUploadContext{DCPlanID: 1001, WorkspaceID: 123},
+		nil,
+	)
+	if req.ClientHints["dc_plan_id"] != "1001" || req.ClientHints["workspace_id"] != "123" {
+		t.Fatalf("client hints=%+v want plan/workspace ids", req.ClientHints)
+	}
+	if req.RawTags["existing"] != "tag" {
+		t.Fatalf("raw tags=%+v want original tags", req.RawTags)
+	}
+}
+
 func TestEnqueueEpisode_DeduplicatesPendingEpisode(t *testing.T) {
 	w := &SyncWorker{
 		enqueueCh:       make(chan syncEnqueueRequest, 2),

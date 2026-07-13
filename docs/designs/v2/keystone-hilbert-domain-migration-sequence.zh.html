@@ -391,7 +391,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         <p class="lede">
           本计划以新环境为前提，不考虑历史数据、不保留旧 API、不做旧字段兼容。
           当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影和 PR-3 计划驱动 task 拆分；
-          下一步重点是让 episode 和上传链路只携带计划 ID，并逐步停用旧 order/batch 与旧生产元信息 runtime。
+          下一步重点是让 episode 固化计划 ID，并让上传链路以计划 ID 和其 Workspace 归属作为业务元信息入口，逐步停用旧 order/batch 与旧生产元信息 runtime。
         </p>
         <div class="signal">
           <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3</span></div>
@@ -615,20 +615,21 @@ SPDX-License-Identifier: MulanPSL-2.0
           <article class="step">
             <div class="step-index">4</div>
             <div class="step-body">
-              <h3 class="step-title">上传只携带数采计划 ID</h3>
+              <h3 class="step-title">上传锁定数采计划与 Workspace</h3>
               <div class="step-meta">
                 <span class="badge hot">PR-4</span>
                 <span class="badge">raw data metadata</span>
               </div>
-              <p>Keystone 上传采集数据时不再向 Hilbert 重建 order/batch 元信息。只要通过 <code>dc_plan_id</code> 找到 Hilbert 计划投影，并把该投影的 <code>id</code> 作为 Hilbert <code>dcPlanId</code>，Hilbert 就能根据计划找到对应的数据元信息。</p>
+              <p>Keystone 上传采集数据时不再通过 order/batch 重建 Hilbert 业务元信息。上传前必须通过 <code>dc_plan_id</code> 找到未删除的 Hilbert 计划投影，并从该投影取得合法 <code>workspace_id</code>。</p>
               <ul>
-                <li><code>episodes</code> 创建时从 task 复制 <code>dc_plan_id</code>；<code>workspace_id</code> 先通过 <code>dc_plan.workspace_id</code> 派生。</li>
-                <li>Episode 创建路径必须实际写入或可稳定派生 <code>dc_plan_id</code>，不能只停留在 schema 预留。</li>
-                <li>云同步 payload 携带 <code>workspace_id</code>、Hilbert <code>dcPlanId</code>、本地 <code>task_id</code> 和文件制品信息。</li>
-                <li>不上传 <code>order_id</code>、<code>batch_id</code> 或本地 order/batch 元信息。</li>
-                <li>不上传本地 <code>scene_id</code> / <code>subscene_id</code>；Hilbert 根据计划 ID 解析数据元信息。</li>
-                <li>Hilbert raw data / dataset 创建路径必须拒绝 <code>workspace_id=0</code>、空 <code>dc_plan_id</code> 或找不到 <code>dc_plan</code> 投影。</li>
+                <li><code>episodes</code> 创建时从 task 复制 <code>dc_plan_id</code> 与 <code>local_dc_plan_id</code>；<code>workspace_id</code> 通过 <code>dc_plan.workspace_id</code> 派生。</li>
+                <li><code>dc_plan_id</code> 与 <code>workspace_id</code> 同时写入 data-gateway <code>raw_tags</code> 和 <code>client_hints</code>，不修改 proto。</li>
+                <li>现有 <code>order_name</code>、<code>batch_id</code>、scene/SOP 等 raw tags 暂时保留用于诊断，但不能作为 Hilbert 元信息入口或回退来源。</li>
+                <li>上传 worker 必须拒绝 <code>workspace_id=0</code>、空 <code>dc_plan_id</code>、仅有 local plan 或找不到非删除 <code>dc_plan</code> 投影。</li>
+                <li>守卫失败作为不可重试 sync failure 写入现有 <code>sync_logs</code>；自动与手动同步共用相同行为。</li>
                 <li>保留 Keystone 本地 episode、MCAP、sidecar、QA 状态，作为边缘执行和排障记录。</li>
+                <li>不处理历史 episode 回填或迁移。</li>
+                <li>实施细节见 <a href="./keystone-dc-plan-pr4-episode-upload.zh.html">PR-4 Episode 按数采计划上传</a>。</li>
               </ul>
             </div>
           </article>
@@ -861,14 +862,16 @@ SPDX-License-Identifier: MulanPSL-2.0
               <td>PR-4</td>
               <td>采集数据按计划上传</td>
               <td>
-                Episode 从 task 继承 <code>dc_plan_id</code>，并通过 <code>dc_plan.workspace_id</code> 派生 Workspace；
-                episode 创建路径实际写入或稳定派生计划字段；
-                云同步 payload 只携带数采计划 ID、本地 task ID 和文件制品信息。
+                Episode 从 task 继承 <code>dc_plan_id</code> / <code>local_dc_plan_id</code>，并通过 <code>dc_plan.workspace_id</code> 派生 Workspace；
+                <code>dc_plan_id</code> 与 <code>workspace_id</code> 同时进入上传 <code>raw_tags</code> 和 <code>client_hints</code>；
+                上传前校验计划投影与 Workspace。
               </td>
-              <td>不上传 order/batch/scene/subscene 元信息；default workspace 数据仍禁止进入 Hilbert。</td>
+              <td>不改 data-gateway proto 或 Axon 协议；旧 raw tags 仅保留诊断用途；不支持 local plan 上传；不回填历史 episode。</td>
               <td>
                 <span class="badge hot">未完成</span>：
                 当前上传链路尚未把 <code>dc_plan_id</code> 对应的 Hilbert 计划投影作为 Hilbert 元信息入口。
+                具体实现规则见
+                <a href="./keystone-dc-plan-pr4-episode-upload.zh.html">PR-4 实施细节文档</a>。
               </td>
             </tr>
             <tr>
@@ -966,7 +969,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           PR-1C 也已接入 Synapse 只读 Workspace 状态页和手动同步入口，但仍不引入全局 selector 或当前 workspace。
           PR-2 已接入 Hilbert dc_plan 查询、Keystone <code>dc_plan</code> 投影表、只读列表和单 Workspace 手动同步；
           PR-2.5 已在 Workspace 同步中固定投影采集员、数采设备、设备类型和 workspace compat factory；
-          PR-3 已把 task 生成改为计划驱动；episode 写入和上传 payload 尚未改为只依赖计划 ID。
+          PR-3 已把 task 生成改为计划驱动；episode 尚未在创建时复制计划字段，上传链路也尚未以计划投影和 Workspace 归属作为业务元信息入口。
         </div>
         <table>
           <thead>
@@ -1079,8 +1082,8 @@ SPDX-License-Identifier: MulanPSL-2.0
           <li>PR-3：同一设备被多个计划复用时，后续计划创建 plan-specific 非 current workstation，不应因为 current binding 唯一性产生 <code>binding_conflict</code>。</li>
           <li>PR-3：自动创建工位和 task 使用 <code>dc_plan.dc_factory_id</code> 对应的 plan compat factory，不使用 PR-2.5 的 workspace compat factory。</li>
           <li>PR-3：Axon 取配置、任务开始/完成回调仍能基于 Keystone task 正常工作，并在 config 中追加计划字段。</li>
-          <li>PR-4：episode 创建路径必须从 task 写入或稳定派生 <code>dc_plan_id</code>，不能只依赖 schema 预留。</li>
-          <li>PR-4：上传到 Hilbert 的 raw data / dataset 请求通过 <code>dc_plan_id</code> 找到 Hilbert 投影，再使用该投影的 <code>id</code> 作为 Hilbert <code>dcPlanId</code>，并由 <code>dc_plan.workspace_id</code> 派生 Workspace。</li>
+          <li>PR-4：episode 创建路径必须从 task 复制 <code>dc_plan_id</code> 与 <code>local_dc_plan_id</code>，不能只依赖 schema 预留，也不能留到上传时再从 task 推导。</li>
+          <li>PR-4：上传通过 <code>episodes.dc_plan_id</code> 找到非删除 Hilbert 投影，由 <code>dc_plan.workspace_id</code> 派生 Workspace，并把两个 ID 同时写入 <code>raw_tags</code> 与 <code>client_hints</code>。</li>
         </ul>
         <h3>PR-5 运营实体归属必须满足</h3>
         <ul>
@@ -1138,6 +1141,7 @@ SPDX-License-Identifier: MulanPSL-2.0
       PR-2 细节参考：<code>docs/designs/v2/keystone-dc-plan-pr2-implementation.zh.html</code>。
       PR-2.5 细节参考：<code>docs/designs/v2/keystone-dc-plan-pr2-5-resource-projection.zh.html</code>。
       PR-3 细节参考：<code>docs/designs/v2/keystone-dc-plan-pr3-task-generation.zh.html</code>。
+      PR-4 细节参考：<code>docs/designs/v2/keystone-dc-plan-pr4-episode-upload.zh.html</code>。
     </footer>
   </main>
 </body>

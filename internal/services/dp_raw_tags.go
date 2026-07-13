@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -25,6 +26,8 @@ type dpRawTagsInput struct {
 }
 
 type dpRawTagContext struct {
+	DCPlanID                int64
+	WorkspaceID             int64
 	SOPSlug                 sql.NullString
 	SOPVersion              sql.NullString
 	SOPDescription          sql.NullString
@@ -67,6 +70,12 @@ func keystoneExtraTags(input dpRawTagsInput) map[string]string {
 	tags := map[string]string{
 		"episode_id":   input.EpisodePublicID,
 		"sync_channel": "keystone_direct",
+	}
+	if input.Context.DCPlanID > 0 {
+		tags["dc_plan_id"] = strconv.FormatInt(input.Context.DCPlanID, 10)
+	}
+	if input.Context.WorkspaceID > 0 {
+		tags["workspace_id"] = strconv.FormatInt(input.Context.WorkspaceID, 10)
 	}
 	addNonEmptyTag(tags, "sop_slug", input.Context.SOPSlug)
 	addNonEmptyTag(tags, "sop_version", input.Context.SOPVersion)

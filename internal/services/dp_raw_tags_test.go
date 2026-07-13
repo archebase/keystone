@@ -27,6 +27,8 @@ func TestBuildDPDirectRawTags_MergesInDocumentedOrder(t *testing.T) {
 		},
 		EpisodePublicID: "episode-public-42",
 		Context: dpRawTagContext{
+			DCPlanID:                1001,
+			WorkspaceID:             123,
 			SOPSlug:                 sql.NullString{String: "pick-place", Valid: true},
 			SOPVersion:              sql.NullString{String: "2.1.0", Valid: true},
 			SOPDescription:          sql.NullString{String: " pick up and place object ", Valid: true},
@@ -52,6 +54,8 @@ func TestBuildDPDirectRawTags_MergesInDocumentedOrder(t *testing.T) {
 		"empty_value":                "",
 		"episode_id":                 "episode-public-42",
 		"sync_channel":               "keystone_direct",
+		"dc_plan_id":                 "1001",
+		"workspace_id":               "123",
 		"sop_slug":                   "pick-place",
 		"sop_version":                "2.1.0",
 		"sop_description":            "pick up and place object",

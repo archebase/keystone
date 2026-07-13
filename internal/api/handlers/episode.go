@@ -81,6 +81,11 @@ type episodeRow struct {
 	EpisodeID         string          `db:"episode_id"`
 	TaskID            int64           `db:"task_id"`
 	TaskPublicID      sql.NullString  `db:"task_public_id"`
+	DCPlanID          sql.NullInt64   `db:"dc_plan_id"`
+	LocalDCPlanID     sql.NullInt64   `db:"local_dc_plan_id"`
+	WorkspaceID       sql.NullInt64   `db:"workspace_id"`
+	DCPlanName        sql.NullString  `db:"dc_plan_name"`
+	DCType            sql.NullString  `db:"dc_type"`
 	SopSlug           sql.NullString  `db:"sop_slug"`
 	SopVersion        sql.NullString  `db:"sop_version"`
 	SceneName         sql.NullString  `db:"scene_name"`
@@ -110,6 +115,11 @@ type Episode struct {
 	EpisodeID         string   `json:"episode_id,omitempty"`
 	TaskID            int64    `json:"task_id"`
 	TaskPublicID      *string  `json:"task_public_id,omitempty"`
+	DCPlanID          *int64   `json:"dc_plan_id"`
+	LocalDCPlanID     *int64   `json:"local_dc_plan_id"`
+	WorkspaceID       *int64   `json:"workspace_id"`
+	DCPlanName        *string  `json:"dc_plan_name"`
+	DCType            *string  `json:"dc_type"`
 	SopSlug           *string  `json:"sop_slug"`
 	SopVersion        *string  `json:"sop_version"`
 	SceneName         *string  `json:"scene_name"`
@@ -260,6 +270,11 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.episode_id,
 			e.task_id as task_id,
 			t.task_id AS task_public_id,
+			e.dc_plan_id,
+			e.local_dc_plan_id,
+			dp.workspace_id,
+			dp.name AS dc_plan_name,
+			dp.dc_type,
 			s.slug AS sop_slug,
 			s.version AS sop_version,
 			t.scene_name AS scene_name,
@@ -282,6 +297,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.labels
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
@@ -431,6 +447,11 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			EpisodeID:         r.EpisodeID,
 			TaskID:            r.TaskID,
 			TaskPublicID:      nullableString(r.TaskPublicID),
+			DCPlanID:          nullableInt64(r.DCPlanID),
+			LocalDCPlanID:     nullableInt64(r.LocalDCPlanID),
+			WorkspaceID:       nullableInt64(r.WorkspaceID),
+			DCPlanName:        nullableString(r.DCPlanName),
+			DCType:            nullableString(r.DCType),
 			SopSlug:           nullableString(r.SopSlug),
 			SopVersion:        nullableString(r.SopVersion),
 			SceneName:         nullableString(r.SceneName),
@@ -603,6 +624,11 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.episode_id,
 			e.task_id AS task_id,
 			t.task_id AS task_public_id,
+			e.dc_plan_id,
+			e.local_dc_plan_id,
+			dp.workspace_id,
+			dp.name AS dc_plan_name,
+			dp.dc_type,
 			s.slug AS sop_slug,
 			s.version AS sop_version,
 			t.scene_name AS scene_name,
@@ -626,6 +652,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.metadata
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
@@ -651,6 +678,11 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		EpisodeID:         row.EpisodeID,
 		TaskID:            row.TaskID,
 		TaskPublicID:      nullableString(row.TaskPublicID),
+		DCPlanID:          nullableInt64(row.DCPlanID),
+		LocalDCPlanID:     nullableInt64(row.LocalDCPlanID),
+		WorkspaceID:       nullableInt64(row.WorkspaceID),
+		DCPlanName:        nullableString(row.DCPlanName),
+		DCType:            nullableString(row.DCType),
 		SopSlug:           nullableString(row.SopSlug),
 		SopVersion:        nullableString(row.SopVersion),
 		SceneName:         nullableString(row.SceneName),
