@@ -24,6 +24,11 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+const (
+	compatRobotTypeModel = "keystone_device_compat"
+	compatFactorySlug    = "keystone_workspace_compat"
+)
+
 // RobotHandler handles robot related HTTP requests.
 type RobotHandler struct {
 	db           *sqlx.DB
@@ -54,6 +59,7 @@ type RobotResponse struct {
 	RobotTypeModel string      `json:"robot_type_model,omitempty"`
 	DeviceID       string      `json:"device_id"`
 	DeviceName     string      `json:"device_name,omitempty"`
+	WorkspaceID    string      `json:"workspace_id"`
 	FactoryID      string      `json:"factory_id"`
 	FactoryName    string      `json:"factory_name,omitempty"`
 	FactorySlug    string      `json:"factory_slug,omitempty"`
@@ -104,6 +110,7 @@ type robotConnectionSnapshot map[string]string
 
 // CreateRobotRequest represents the request body for creating a robot.
 type CreateRobotRequest struct {
+	WorkspaceID string      `json:"workspace_id"`
 	RobotTypeID string      `json:"robot_type_id"`
 	DeviceID    string      `json:"device_id"`
 	FactoryID   string      `json:"factory_id"`
@@ -114,6 +121,7 @@ type CreateRobotRequest struct {
 // CreateRobotResponse represents the response for creating a robot.
 type CreateRobotResponse struct {
 	ID          string      `json:"id"`
+	WorkspaceID string      `json:"workspace_id"`
 	RobotTypeID string      `json:"robot_type_id"`
 	DeviceID    string      `json:"device_id"`
 	FactoryID   string      `json:"factory_id"`
@@ -144,6 +152,7 @@ type robotRow struct {
 	RobotTypeName  sql.NullString `db:"robot_type_name"`
 	RobotTypeModel sql.NullString `db:"robot_type_model"`
 	DeviceID       string         `db:"device_id"`
+	WorkspaceID    int64          `db:"workspace_id"`
 	FactoryID      int64          `db:"factory_id"`
 	FactoryName    sql.NullString `db:"factory_name"`
 	FactorySlug    sql.NullString `db:"factory_slug"`
@@ -242,6 +251,102 @@ func (h *RobotHandler) assetIDInUse(assetID string, excludeRobotID int64) (bool,
 	return exists, nil
 }
 
+func (h *RobotHandler) resolveCompatRobotTypeID(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		var id int64
+		err := h.db.Get(&id, "SELECT id FROM robot_types WHERE deleted_at IS NULL ORDER BY id LIMIT 1")
+		if err == nil {
+			return id, nil
+		}
+		if err != sql.ErrNoRows {
+			return 0, fmt.Errorf("no compatible robot type is available")
+		}
+		now := time.Now().UTC()
+		if h.db.DriverName() == "sqlite" {
+			_, err = h.db.Exec(`
+				INSERT INTO robot_types (name, model, ros_topics, created_at, updated_at, deleted_at)
+				VALUES (?, ?, ?, ?, ?, NULL)
+				ON CONFLICT(model) DO UPDATE SET
+					updated_at = excluded.updated_at,
+					deleted_at = NULL
+			`, "Keystone Device Compatibility", compatRobotTypeModel, "{}", now, now)
+		} else {
+			_, err = h.db.Exec(`
+				INSERT INTO robot_types (name, model, ros_topics, created_at, updated_at, deleted_at)
+				VALUES (?, ?, ?, ?, ?, NULL)
+				ON DUPLICATE KEY UPDATE
+					updated_at = VALUES(updated_at),
+					deleted_at = NULL
+			`, "Keystone Device Compatibility", compatRobotTypeModel, "{}", now, now)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("create compatible robot type: %w", err)
+		}
+		if err := h.db.Get(&id, "SELECT id FROM robot_types WHERE model = ? AND deleted_at IS NULL LIMIT 1", compatRobotTypeModel); err != nil {
+			return 0, fmt.Errorf("load compatible robot type: %w", err)
+		}
+		return id, nil
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid robot_type_id format")
+	}
+	var exists bool
+	if err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robot_types WHERE id = ? AND deleted_at IS NULL)", id); err != nil || !exists {
+		return 0, fmt.Errorf("robot_type not found")
+	}
+	return id, nil
+}
+
+func (h *RobotHandler) resolveCompatFactoryID(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		var id int64
+		err := h.db.Get(&id, "SELECT id FROM factories WHERE deleted_at IS NULL ORDER BY id LIMIT 1")
+		if err == nil {
+			return id, nil
+		}
+		if err != sql.ErrNoRows {
+			return 0, fmt.Errorf("no compatible factory is available")
+		}
+		now := time.Now().UTC()
+		if h.db.DriverName() == "sqlite" {
+			_, err = h.db.Exec(`
+				INSERT INTO factories (name, slug, created_at, updated_at, deleted_at)
+				VALUES (?, ?, ?, ?, NULL)
+				ON CONFLICT(slug) DO UPDATE SET
+					updated_at = excluded.updated_at,
+					deleted_at = NULL
+			`, "Keystone Workspace Compatibility", compatFactorySlug, now, now)
+		} else {
+			_, err = h.db.Exec(`
+				INSERT INTO factories (name, slug, created_at, updated_at, deleted_at)
+				VALUES (?, ?, ?, ?, NULL)
+				ON DUPLICATE KEY UPDATE
+					updated_at = VALUES(updated_at),
+					deleted_at = NULL
+			`, "Keystone Workspace Compatibility", compatFactorySlug, now, now)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("create compatible factory: %w", err)
+		}
+		if err := h.db.Get(&id, "SELECT id FROM factories WHERE slug = ? AND deleted_at IS NULL LIMIT 1", compatFactorySlug); err != nil {
+			return 0, fmt.Errorf("load compatible factory: %w", err)
+		}
+		return id, nil
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid factory_id format")
+	}
+	var exists bool
+	if err := h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", id); err != nil || !exists {
+		return 0, fmt.Errorf("factory not found")
+	}
+	return id, nil
+}
+
 func (h *RobotHandler) loadRobotRow(id int64) (robotRow, error) {
 	var r robotRow
 	err := h.db.Get(&r, `
@@ -249,6 +354,7 @@ func (h *RobotHandler) loadRobotRow(id int64) (robotRow, error) {
 			r.id,
 			r.robot_type_id,
 			r.device_id,
+			r.workspace_id,
 			r.factory_id,
 			r.asset_id,
 			r.status,
@@ -373,6 +479,7 @@ func robotResponseFromRow(r robotRow, connected bool, connectedAt string) RobotR
 		RobotTypeModel: nullString(r.RobotTypeModel),
 		DeviceID:       r.DeviceID,
 		DeviceName:     robotDeviceNameFromMetadata(r.Metadata),
+		WorkspaceID:    fmt.Sprintf("%d", r.WorkspaceID),
 		FactoryID:      fmt.Sprintf("%d", r.FactoryID),
 		FactoryName:    nullString(r.FactoryName),
 		FactorySlug:    nullString(r.FactorySlug),
@@ -427,13 +534,12 @@ func parseConnectedFilter(raw string) (*bool, error) {
 // ListRobots handles robot listing requests with filtering.
 //
 // @Summary      List robots
-// @Description  Lists robots with optional filtering by factory_id, status, robot_type_id, connection status, and keyword
+// @Description  Lists devices with optional Workspace, status, connection, device ID, and keyword filters
 // @Tags         robots
 // @Accept       json
 // @Produce      json
-// @Param        factory_id    query     string  false  "Filter by factory ID(s), comma-separated"
+// @Param        workspace_id  query     string  false  "Filter by Workspace ID(s), comma-separated"
 // @Param        status        query     string  false  "Filter by status(es), comma-separated (active, maintenance, retired)"
-// @Param        robot_type_id query     string  false  "Filter by robot type ID(s), comma-separated"
 // @Param        connected     query     string  false  "Filter by connection status(es), comma-separated (true/false)"
 // @Param        device_id     query     string  false  "Filter by device ID(s), comma-separated"
 // @Param        keyword       query     string  false  "Search by device ID or asset ID"
@@ -452,12 +558,7 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		return
 	}
 
-	factoryIDs, err := parsePositiveInt64List(c.Query("factory_id"), "factory_id")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	robotTypeIDs, err := parsePositiveInt64List(c.Query("robot_type_id"), "robot_type_id")
+	workspaceIDs, err := parseNonNegativeInt64List(c.Query("workspace_id"), "workspace_id")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -481,10 +582,9 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 
 	whereClause := "WHERE r.deleted_at IS NULL"
 	args := []interface{}{}
-	whereClause, args = appendInt64InFilter(whereClause, args, "r.factory_id", factoryIDs)
+	whereClause, args = appendInt64InFilter(whereClause, args, "r.workspace_id", workspaceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "r.device_id", deviceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "r.status", statuses)
-	whereClause, args = appendInt64InFilter(whereClause, args, "r.robot_type_id", robotTypeIDs)
 
 	if keyword != "" {
 		likeKeyword := "%" + keyword + "%"
@@ -525,6 +625,7 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 				rt.name AS robot_type_name,
 				rt.model AS robot_type_model,
 				r.device_id,
+				r.workspace_id,
 				r.factory_id,
 				f.name AS factory_name,
 				f.slug AS factory_slug,
@@ -677,6 +778,7 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 
 	req.RobotTypeID = strings.TrimSpace(req.RobotTypeID)
 	req.DeviceID = strings.TrimSpace(req.DeviceID)
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
 	req.FactoryID = strings.TrimSpace(req.FactoryID)
 	assetID, err := normalizeAssetID(req.AssetID)
 	if err != nil {
@@ -684,8 +786,8 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		return
 	}
 
-	if req.RobotTypeID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type_id is required"})
+	if req.WorkspaceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace_id is required"})
 		return
 	}
 
@@ -694,8 +796,14 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		return
 	}
 
-	if req.FactoryID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "factory_id is required"})
+	workspaceID, err := strconv.ParseInt(req.WorkspaceID, 10, 64)
+	if err != nil || workspaceID < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workspace_id format"})
+		return
+	}
+	var workspaceExists bool
+	if err := h.db.Get(&workspaceExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", workspaceID); err != nil || !workspaceExists {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace not found"})
 		return
 	}
 	if assetID.Valid {
@@ -715,32 +823,14 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		}
 	}
 
-	// Parse robot_type_id as numeric value
-	robotTypeID, err := strconv.ParseInt(req.RobotTypeID, 10, 64)
+	robotTypeID, err := h.resolveCompatRobotTypeID(req.RobotTypeID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid robot_type_id format"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	// Verify robot_type exists
-	var exists bool
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM robot_types WHERE id = ? AND deleted_at IS NULL)", robotTypeID)
-	if err != nil || !exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type not found"})
-		return
-	}
-
-	// Parse factory_id as direct number
-	factoryID, err := strconv.ParseInt(req.FactoryID, 10, 64)
+	factoryID, err := h.resolveCompatFactoryID(req.FactoryID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid factory_id format"})
-		return
-	}
-
-	// Verify factory exists
-	err = h.db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM factories WHERE id = ? AND deleted_at IS NULL)", factoryID)
-	if err != nil || !exists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "factory not found"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -761,15 +851,17 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 		`INSERT INTO robots (
 			robot_type_id,
 			device_id,
+			workspace_id,
 			factory_id,
 			asset_id,
 			status,
 			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		robotTypeID,
 		req.DeviceID,
+		workspaceID,
 		factoryID,
 		assetID,
 		"active",
@@ -796,6 +888,7 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 			r.id,
 			r.robot_type_id,
 			r.device_id,
+			r.workspace_id,
 			r.factory_id,
 			r.asset_id,
 			r.status,
@@ -814,6 +907,7 @@ func (h *RobotHandler) CreateRobot(c *gin.Context) {
 	resp := h.responseFromRow(row)
 	c.JSON(http.StatusCreated, CreateRobotResponse{
 		ID:          resp.ID,
+		WorkspaceID: resp.WorkspaceID,
 		RobotTypeID: resp.RobotTypeID,
 		DeviceID:    resp.DeviceID,
 		FactoryID:   resp.FactoryID,
@@ -879,6 +973,7 @@ func (h *RobotHandler) GetRobot(c *gin.Context) {
 			r.id,
 			r.robot_type_id,
 			r.device_id,
+			r.workspace_id,
 			r.factory_id,
 			r.asset_id,
 			r.status,
@@ -1143,6 +1238,7 @@ func (h *RobotHandler) UpdateRobot(c *gin.Context) {
 			r.id,
 			r.robot_type_id,
 			r.device_id,
+			r.workspace_id,
 			r.factory_id,
 			r.asset_id,
 			r.status,

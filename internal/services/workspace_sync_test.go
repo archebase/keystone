@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -504,6 +505,62 @@ func testWorkspaceSyncHilbertConfig() *config.HilbertConfig {
 	}
 }
 
+func TestWorkspaceResourceSyncRejectsCollectorWorkspaceChangeAcrossCurrentBinding(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+	for _, stmt := range []string{
+		`INSERT INTO robots (id, robot_type_id, device_id, factory_id, workspace_id, status, metadata) VALUES (1, 77, '456', 1, 60, 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO data_collectors (id, organization_id, name, operator_id, status, metadata) VALUES (1, 60, 'Collector', 'collector-a', 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO workstations (id, robot_id, data_collector_id, organization_id, is_current) VALUES (1, 1, 1, 60, TRUE)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed collector workspace change fixture: %v", err)
+		}
+	}
+	tx, err := db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	_, err = upsertHilbertDataCollector(context.Background(), tx, 61, auth.HilbertAccount{
+		ID:          7,
+		Code:        "collector-a",
+		DisplayName: "Collector A",
+	}, time.Now().UTC())
+	if err == nil || !strings.Contains(err.Error(), "another workspace") {
+		t.Fatalf("error=%v want workspace binding conflict", err)
+	}
+}
+
+func TestWorkspaceResourceSyncRejectsRobotWorkspaceChangeAcrossCurrentBinding(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+	for _, stmt := range []string{
+		`INSERT INTO robots (id, robot_type_id, device_id, factory_id, workspace_id, status, metadata) VALUES (1, 77, '456', 1, 60, 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO data_collectors (id, organization_id, name, operator_id, status, metadata) VALUES (1, 60, 'Collector', 'collector-a', 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO workstations (id, robot_id, data_collector_id, organization_id, is_current) VALUES (1, 1, 1, 60, TRUE)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed robot workspace change fixture: %v", err)
+		}
+	}
+	tx, err := db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	_, err = upsertHilbertRobot(context.Background(), tx, auth.HilbertDCDevice{
+		ID:             456,
+		WorkspaceID:    61,
+		DCDeviceTypeID: 77,
+	}, 1, time.Now().UTC())
+	if err == nil || !strings.Contains(err.Error(), "another workspace") {
+		t.Fatalf("error=%v want workspace binding conflict", err)
+	}
+}
+
 func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 
@@ -555,6 +612,7 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 			robot_type_id INTEGER,
 			device_id TEXT UNIQUE,
 			factory_id INTEGER,
+			workspace_id INTEGER,
 			asset_id TEXT,
 			status TEXT,
 			metadata TEXT,
@@ -575,6 +633,14 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 			metadata TEXT,
 			created_at TIMESTAMP,
 			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		)`,
+		`CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			robot_id INTEGER NOT NULL,
+			data_collector_id INTEGER NOT NULL,
+			organization_id INTEGER NOT NULL,
+			is_current BOOLEAN NOT NULL DEFAULT TRUE,
 			deleted_at TIMESTAMP
 		)`,
 	} {

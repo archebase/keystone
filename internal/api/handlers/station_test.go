@@ -68,7 +68,7 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 	}
 
 	r := newTestStationRouter(t, db)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/stations?device_id=device-a,device-c&collector_name=Alice&collector_operator_id=C003&factory_id=31&organization_id=60&robot_type_id=11&status=offline", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stations?device_id=device-a,device-c&collector_name=Alice&collector_operator_id=C003&workspace_id=60&status=offline", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -87,8 +87,72 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 		t.Fatalf("unexpected filtered response: %#v", resp)
 	}
 	got := resp.Items[0]
-	if got.ID != "3" || got.RobotSerial != "device-c" || got.CollectorName != "Alice" || got.CollectorOperatorID != "C003" {
+	if got.ID != "3" || got.RobotSerial != "device-c" || got.CollectorName != "Alice" || got.CollectorOperatorID != "C003" || got.WorkspaceID != "60" {
 		t.Fatalf("unexpected station item: %#v", got)
+	}
+}
+
+func TestStationHandlerCreateRejectsCrossWorkspaceBinding(t *testing.T) {
+	db := newTestStationHandlerDB(t)
+	defer db.Close()
+	for _, stmt := range []string{
+		`INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm', 'arm', NULL)`,
+		`INSERT INTO factories (id, name, deleted_at) VALUES (30, 'Factory', NULL)`,
+		`INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Workspace A', NULL), (61, 'Workspace B', NULL)`,
+		`INSERT INTO robots (id, robot_type_id, device_id, workspace_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 61, 30, 'active', NULL)`,
+		`INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed cross-workspace fixture: %v", err)
+		}
+	}
+
+	r := newTestStationRouter(t, db)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stations", strings.NewReader(`{"robot_id":"1","data_collector_id":"100"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "workspace") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStationHandlerUpdateRejectsCrossWorkspaceBinding(t *testing.T) {
+	db := newTestStationHandlerDB(t)
+	defer db.Close()
+	now := time.Now().UTC()
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm', 'arm', NULL)`},
+		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'Factory', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Workspace A', NULL), (61, 'Workspace B', NULL)`},
+		{sql: `INSERT INTO robots (id, robot_type_id, device_id, workspace_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 60, 30, 'active', NULL), (2, 10, 'device-b', 61, 30, 'active', NULL)`},
+		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
+		{
+			sql: `INSERT INTO workstations (
+				id, robot_id, robot_name, robot_serial, data_collector_id,
+				collector_name, collector_operator_id, factory_id, organization_id,
+				name, status, is_current, metadata, created_at, updated_at, deleted_at
+			) VALUES (1, 1, 'arm', 'device-a', 100, 'Alice', 'C001', 30, 60, 'ws-a', 'active', TRUE, '{}', ?, ?, NULL)`,
+			args: []any{now, now},
+		},
+	} {
+		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed cross-workspace update fixture: %v", err)
+		}
+	}
+
+	r := newTestStationRouter(t, db)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/stations/1", strings.NewReader(`{"robot_id":"2"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "workspace") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -482,6 +546,7 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			robot_type_id INTEGER NOT NULL,
 			device_id TEXT NOT NULL,
+			workspace_id INTEGER NOT NULL DEFAULT 60,
 			factory_id INTEGER NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active',
 			deleted_at TIMESTAMP NULL

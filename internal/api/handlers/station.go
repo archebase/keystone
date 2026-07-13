@@ -60,8 +60,8 @@ type StationResponse struct {
 	CollectorOperatorID string      `json:"collector_operator_id,omitempty"`
 	FactoryID           string      `json:"factory_id"`
 	FactoryName         string      `json:"factory_name,omitempty"`
-	OrganizationID      string      `json:"organization_id"`
-	OrganizationName    string      `json:"organization_name,omitempty"`
+	WorkspaceID         string      `json:"workspace_id"`
+	WorkspaceName       string      `json:"workspace_name,omitempty"`
 	Status              string      `json:"status"`
 	Name                string      `json:"name"`
 	IsCurrent           bool        `json:"is_current"`
@@ -130,6 +130,7 @@ func (h *StationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 type robotInfoRow struct {
 	ID          int64  `db:"id"`
 	DeviceID    string `db:"device_id"`
+	WorkspaceID int64  `db:"workspace_id"`
 	FactoryID   int64  `db:"factory_id"`
 	Status      string `db:"status"`
 	RobotTypeID int64  `db:"robot_type_id"`
@@ -143,11 +144,11 @@ type robotTypeInfoRow struct {
 
 // dataCollectorInfoRow represents data collector info retrieved from DB
 type dataCollectorInfoRow struct {
-	ID             int64  `db:"id"`
-	OrganizationID int64  `db:"organization_id"`
-	Name           string `db:"name"`
-	OperatorID     string `db:"operator_id"`
-	Status         string `db:"status"`
+	ID          int64  `db:"id"`
+	WorkspaceID int64  `db:"workspace_id"`
+	Name        string `db:"name"`
+	OperatorID  string `db:"operator_id"`
+	Status      string `db:"status"`
 }
 
 // CreateStation handles station creation requests.
@@ -194,7 +195,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 
 	var robotInfo robotInfoRow
 	err = h.db.Get(&robotInfo, `
-		SELECT id, device_id, factory_id, status, robot_type_id 
+		SELECT id, device_id, workspace_id, factory_id, status, robot_type_id
 		FROM robots 
 		WHERE id = ? AND deleted_at IS NULL
 	`, robotID)
@@ -224,7 +225,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 
 	var dcInfo dataCollectorInfoRow
 	err = h.db.Get(&dcInfo, `
-		SELECT id, organization_id, name, operator_id, status 
+		SELECT id, organization_id AS workspace_id, name, operator_id, status
 		FROM data_collectors 
 		WHERE id = ? AND deleted_at IS NULL
 	`, dcID)
@@ -243,10 +244,14 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector status must be active to be paired"})
 		return
 	}
+	if robotInfo.WorkspaceID != dcInfo.WorkspaceID {
+		c.JSON(http.StatusConflict, gin.H{"error": "cross-workspace station binding is not allowed"})
+		return
+	}
 
 	// Validate that the data_collector's workspace still exists.
 	var dcWorkspaceExists bool
-	if err = h.db.Get(&dcWorkspaceExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", dcInfo.OrganizationID); err != nil {
+	if err = h.db.Get(&dcWorkspaceExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", dcInfo.WorkspaceID); err != nil {
 		logger.Printf("[STATION] Failed to query workspace for data collector: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
@@ -363,7 +368,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 			dcInfo.Name,
 			dcInfo.OperatorID,
 			robotInfo.FactoryID,
-			dcInfo.OrganizationID,
+			dcInfo.WorkspaceID,
 			"offline",
 			metadataStr,
 			now,
@@ -402,10 +407,10 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 			robotType.Name,     // robot_name from robot_types.name
 			robotInfo.DeviceID, // robot_serial from device_id
 			dcInfo.ID,
-			dcInfo.Name,           // collector_name
-			dcInfo.OperatorID,     // collector_operator_id
-			robotInfo.FactoryID,   // factory_id from robot
-			dcInfo.OrganizationID, // organization_id from data_collector
+			dcInfo.Name,         // collector_name
+			dcInfo.OperatorID,   // collector_operator_id
+			robotInfo.FactoryID, // compatibility factory from robot
+			dcInfo.WorkspaceID,  // physical organization_id stores workspace ownership
 			stationName,
 			"offline",
 			true,
@@ -458,8 +463,8 @@ type stationListRow struct {
 	CollectorOperatorID string         `db:"collector_operator_id"`
 	FactoryID           int64          `db:"factory_id"`
 	FactoryName         sql.NullString `db:"factory_name"`
-	OrganizationID      int64          `db:"organization_id"`
-	OrganizationName    sql.NullString `db:"organization_name"`
+	WorkspaceID         int64          `db:"workspace_id"`
+	WorkspaceName       sql.NullString `db:"workspace_name"`
 	Name                sql.NullString `db:"name"`
 	Status              string         `db:"status"`
 	IsCurrent           bool           `db:"is_current"`
@@ -478,9 +483,9 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 	if s.FactoryName.Valid {
 		factoryName = s.FactoryName.String
 	}
-	orgName := ""
-	if s.OrganizationName.Valid {
-		orgName = s.OrganizationName.String
+	workspaceName := ""
+	if s.WorkspaceName.Valid {
+		workspaceName = s.WorkspaceName.String
 	}
 	robotTypeID := ""
 	if s.RobotTypeID.Valid {
@@ -516,8 +521,8 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 		CollectorOperatorID: s.CollectorOperatorID,
 		FactoryID:           fmt.Sprintf("%d", s.FactoryID),
 		FactoryName:         factoryName,
-		OrganizationID:      fmt.Sprintf("%d", s.OrganizationID),
-		OrganizationName:    orgName,
+		WorkspaceID:         fmt.Sprintf("%d", s.WorkspaceID),
+		WorkspaceName:       workspaceName,
 		Status:              s.Status,
 		Name:                name,
 		IsCurrent:           s.IsCurrent,
@@ -541,7 +546,7 @@ func (h *StationHandler) getStationResponseRow(stationID int64, currentOnly bool
 			r.robot_type_id, rt.model AS robot_type_model,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
 			ws.factory_id, f.name AS factory_name,
-			ws.organization_id, o.name AS organization_name,
+			ws.organization_id AS workspace_id, o.name AS workspace_name,
 			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
@@ -558,9 +563,7 @@ func (h *StationHandler) getStationResponseRow(stationID int64, currentOnly bool
 // @Description  Returns a list of all workstations with pagination
 // @Tags         stations
 // @Produce      json
-// @Param        factory_id            query string false "Filter by factory ID(s), comma-separated"
-// @Param        organization_id       query string false "Filter by organization ID(s), comma-separated"
-// @Param        robot_type_id         query string false "Filter by robot type ID(s), comma-separated"
+// @Param        workspace_id          query string false "Filter by Workspace ID(s), comma-separated"
 // @Param        device_id             query string false "Filter by robot device ID(s), comma-separated"
 // @Param        collector_name        query string false "Filter by collector name(s), comma-separated"
 // @Param        collector_operator_id query string false "Filter by collector operator ID(s), comma-separated"
@@ -581,17 +584,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		return
 	}
 
-	factoryIDs, err := parsePositiveInt64List(c.Query("factory_id"), "factory_id")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	orgIDs, err := parsePositiveInt64List(c.Query("organization_id"), "organization_id")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	robotTypeIDs, err := parsePositiveInt64List(c.Query("robot_type_id"), "robot_type_id")
+	workspaceIDs, err := parseNonNegativeInt64List(c.Query("workspace_id"), "workspace_id")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -629,9 +622,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 
 	whereClause := "WHERE ws.deleted_at IS NULL AND ws.is_current = TRUE"
 	args := []any{}
-	whereClause, args = appendInt64InFilter(whereClause, args, "ws.factory_id", factoryIDs)
-	whereClause, args = appendInt64InFilter(whereClause, args, "ws.organization_id", orgIDs)
-	whereClause, args = appendInt64InFilter(whereClause, args, "r.robot_type_id", robotTypeIDs)
+	whereClause, args = appendInt64InFilter(whereClause, args, "ws.organization_id", workspaceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "ws.status", statuses)
 	whereClause, args = appendStringInFilter(whereClause, args, "ws.robot_serial", deviceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "ws.collector_name", collectorNames)
@@ -660,7 +651,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 			r.robot_type_id, rt.model AS robot_type_model,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
 			ws.factory_id, f.name AS factory_name,
-			ws.organization_id, o.name AS organization_name,
+			ws.organization_id AS workspace_id, o.name AS workspace_name,
 			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
@@ -718,7 +709,7 @@ type StationLookupItem struct {
 	ID                  string `json:"id"`
 	RobotID             string `json:"robot_id"`
 	DataCollectorID     string `json:"data_collector_id"`
-	FactoryID           string `json:"factory_id"`
+	WorkspaceID         string `json:"workspace_id"`
 	Name                string `json:"name"`
 	Status              string `json:"status"`
 	RobotName           string `json:"robot_name,omitempty"`
@@ -801,7 +792,7 @@ func (h *StationHandler) LookupStations(c *gin.Context) {
 			data_collector_id,
 			COALESCE(collector_name, '') AS collector_name,
 			COALESCE(collector_operator_id, '') AS collector_operator_id,
-			factory_id,
+			organization_id AS workspace_id,
 			name, status,
 			deleted_at
 		FROM workstations
@@ -822,7 +813,7 @@ func (h *StationHandler) LookupStations(c *gin.Context) {
 		DataCollectorID     int64          `db:"data_collector_id"`
 		CollectorName       string         `db:"collector_name"`
 		CollectorOperatorID string         `db:"collector_operator_id"`
-		FactoryID           int64          `db:"factory_id"`
+		WorkspaceID         int64          `db:"workspace_id"`
 		Name                sql.NullString `db:"name"`
 		Status              string         `db:"status"`
 		DeletedAt           sql.NullTime   `db:"deleted_at"`
@@ -845,7 +836,7 @@ func (h *StationHandler) LookupStations(c *gin.Context) {
 			ID:                  fmt.Sprintf("%d", r.ID),
 			RobotID:             fmt.Sprintf("%d", r.RobotID),
 			DataCollectorID:     fmt.Sprintf("%d", r.DataCollectorID),
-			FactoryID:           fmt.Sprintf("%d", r.FactoryID),
+			WorkspaceID:         fmt.Sprintf("%d", r.WorkspaceID),
 			Name:                name,
 			Status:              r.Status,
 			RobotName:           strings.TrimSpace(r.RobotName),
@@ -940,7 +931,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		CollectorName       string         `db:"collector_name"`
 		CollectorOperatorID string         `db:"collector_operator_id"`
 		FactoryID           int64          `db:"factory_id"`
-		OrganizationID      int64          `db:"organization_id"`
+		WorkspaceID         int64          `db:"workspace_id"`
 		Name                sql.NullString `db:"name"`
 		Status              string         `db:"status"`
 		Metadata            sql.NullString `db:"metadata"`
@@ -956,7 +947,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			COALESCE(collector_name, '') AS collector_name,
 			COALESCE(collector_operator_id, '') AS collector_operator_id,
 			factory_id,
-			organization_id,
+			organization_id AS workspace_id,
 			name,
 			status,
 			metadata,
@@ -978,6 +969,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	effectiveRobotName := current.RobotName
 	effectiveRobotSerial := current.RobotSerial
 	effectiveFactoryID := current.FactoryID
+	effectiveRobotWorkspaceID := current.WorkspaceID
 	var robotType robotTypeInfoRow
 	var robotInfo robotInfoRow
 	if hasRobot {
@@ -989,7 +981,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			return
 		}
 		err = h.db.Get(&robotInfo, `
-			SELECT id, device_id, factory_id, status, robot_type_id
+			SELECT id, device_id, workspace_id, factory_id, status, robot_type_id
 			FROM robots
 			WHERE id = ? AND deleted_at IS NULL
 		`, newRobotID)
@@ -1035,12 +1027,13 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		effectiveRobotName = robotType.Name
 		effectiveRobotSerial = robotInfo.DeviceID
 		effectiveFactoryID = robotInfo.FactoryID
+		effectiveRobotWorkspaceID = robotInfo.WorkspaceID
 	}
 
 	effectiveDCID := current.DataCollectorID
 	effectiveCollectorName := current.CollectorName
 	effectiveCollectorOperatorID := current.CollectorOperatorID
-	effectiveOrganizationID := current.OrganizationID
+	effectiveCollectorWorkspaceID := current.WorkspaceID
 	var dcInfo dataCollectorInfoRow
 	if hasDC {
 		dcStr := strings.TrimSpace(*req.DataCollectorID)
@@ -1051,7 +1044,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			return
 		}
 		err = h.db.Get(&dcInfo, `
-			SELECT id, organization_id, name, operator_id, status
+			SELECT id, organization_id AS workspace_id, name, operator_id, status
 			FROM data_collectors
 			WHERE id = ? AND deleted_at IS NULL
 		`, newDCID)
@@ -1088,7 +1081,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			}
 		}
 		var dcWorkspaceExists bool
-		if err := h.db.Get(&dcWorkspaceExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", dcInfo.OrganizationID); err != nil {
+		if err := h.db.Get(&dcWorkspaceExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", dcInfo.WorkspaceID); err != nil {
 			logger.Printf("[STATION] Failed to query workspace for data collector: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 			return
@@ -1100,7 +1093,11 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		effectiveDCID = dcInfo.ID
 		effectiveCollectorName = dcInfo.Name
 		effectiveCollectorOperatorID = dcInfo.OperatorID
-		effectiveOrganizationID = dcInfo.OrganizationID
+		effectiveCollectorWorkspaceID = dcInfo.WorkspaceID
+	}
+	if effectiveRobotWorkspaceID != effectiveCollectorWorkspaceID {
+		c.JSON(http.StatusConflict, gin.H{"error": "cross-workspace station binding is not allowed"})
+		return
 	}
 
 	effectiveStatus := current.Status
@@ -1198,7 +1195,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 				effectiveCollectorName,
 				effectiveCollectorOperatorID,
 				effectiveFactoryID,
-				effectiveOrganizationID,
+				effectiveCollectorWorkspaceID,
 				effectiveStatus,
 				effectiveMetadata,
 				now,
@@ -1235,7 +1232,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 				effectiveCollectorName,
 				effectiveCollectorOperatorID,
 				effectiveFactoryID,
-				effectiveOrganizationID,
+				effectiveCollectorWorkspaceID,
 				current.Name,
 				effectiveStatus,
 				true,

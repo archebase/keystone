@@ -390,14 +390,14 @@ SPDX-License-Identifier: MulanPSL-2.0
         <h1>领域模型<br>迁移顺序<br>实施计划</h1>
         <p class="lede">
           本计划以新环境为前提，不考虑历史数据、不保留旧 API、不做旧字段兼容。
-          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影和 PR-3 计划驱动 task 拆分；
-          下一步重点是让 episode 固化计划 ID，并让上传链路以计划 ID 和其 Workspace 归属作为业务元信息入口，逐步停用旧 order/batch 与旧生产元信息 runtime。
+          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传和 PR-5 运营实体归属清理；
+          下一步重点是引入 Workspace Scoped Admin Shell，再逐步停用旧 order/batch 与旧生产元信息 runtime。
         </p>
         <div class="signal">
-          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3</span></div>
+          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3 / PR-4 / PR-5</span></div>
           <div class="signal-card"><b>主轴</b><span>dc_plan 是生产主对象</span></div>
-          <div class="signal-card"><b>已验收</b><span>计划同步后自动补齐 task</span></div>
-          <div class="signal-card"><b>下一步</b><span>episode 和上传计划化</span></div>
+          <div class="signal-card"><b>已验收</b><span>task、episode 和上传均锁定计划</span></div>
+          <div class="signal-card"><b>下一步</b><span>Workspace Scoped Admin Shell</span></div>
         </div>
       </div>
     </header>
@@ -429,7 +429,8 @@ SPDX-License-Identifier: MulanPSL-2.0
           PR-2.5 已补齐 Workspace 运营资源投影，<code>dc_plan.operator</code> 和 <code>dc_plan.dc_device_id</code>
           可解析到本地采集员和机器人。PR-3 已在计划同步后自动按 <code>target_count</code>
           补齐本地 task，并覆盖多计划共享设备时的工位绑定冲突场景。
-          后续不要重复建设投影和 task 拆分基础，现在应推进 episode 写入计划 ID、上传携带计划 ID，以及旧 runtime 停用。
+          PR-5 已统一数据采集员、设备和工位的 Workspace 管理语义，并拒绝跨 Workspace 绑定。
+          后续不要重复建设这些基础，现在应推进 Workspace Scoped Admin Shell，以及旧 runtime 停用。
         </div>
       </div>
     </section>
@@ -618,6 +619,7 @@ SPDX-License-Identifier: MulanPSL-2.0
               <h3 class="step-title">上传锁定数采计划与 Workspace</h3>
               <div class="step-meta">
                 <span class="badge hot">PR-4</span>
+                <span class="badge">已完成并验收</span>
                 <span class="badge">raw data metadata</span>
               </div>
               <p>Keystone 上传采集数据时不再通过 order/batch 重建 Hilbert 业务元信息。上传前必须通过 <code>dc_plan_id</code> 找到未删除的 Hilbert 计划投影，并从该投影取得合法 <code>workspace_id</code>。</p>
@@ -640,6 +642,7 @@ SPDX-License-Identifier: MulanPSL-2.0
               <h3 class="step-title">Workspace 运营实体管理与归属清理</h3>
               <div class="step-meta">
                 <span class="badge hot">PR-5</span>
+                <span class="badge">已完成并验收</span>
                 <span class="badge">operational scope</span>
               </div>
               <p>PR-2.5 只建立 PR-3 所需的最小资源可解析性。本阶段继续把设备、数据采集员和工位的管理 API、筛选、页面和旧字段语义清理到稳定的 Workspace 归属模型。</p>
@@ -868,8 +871,9 @@ SPDX-License-Identifier: MulanPSL-2.0
               </td>
               <td>不改 data-gateway proto 或 Axon 协议；旧 raw tags 仅保留诊断用途；不支持 local plan 上传；不回填历史 episode。</td>
               <td>
-                <span class="badge hot">未完成</span>：
-                当前上传链路尚未把 <code>dc_plan_id</code> 对应的 Hilbert 计划投影作为 Hilbert 元信息入口。
+                <span class="badge">已完成并验收</span>：
+                Episode 创建已复制 task 计划字段；上传 worker 已校验非删除计划投影和合法 Workspace，
+                并把 <code>dc_plan_id</code> / <code>workspace_id</code> 同时写入 <code>raw_tags</code> 与 <code>client_hints</code>。
                 具体实现规则见
                 <a href="./keystone-dc-plan-pr4-episode-upload.zh.html">PR-4 实施细节文档</a>。
               </td>
@@ -883,8 +887,10 @@ SPDX-License-Identifier: MulanPSL-2.0
               </td>
               <td>不引入登录后的 Workspace shell；不删除 order/batch；不删除旧表。</td>
               <td>
-                <span class="badge hot">未完成</span>：
-                数据采集员、设备和工位仍有旧归属 / 旧筛选依赖，尚不能稳定支撑 scoped admin。
+                <span class="badge">已完成并验收</span>：
+                数据采集员、设备和工位管理接口已统一使用 <code>workspace_id</code>；
+                设备与采集员的跨 Workspace 绑定在创建和更新时均返回冲突；
+                Synapse wrapper、筛选和表单已移除 factory / robot type 管理依赖，但尚未引入 scoped admin shell。
               </td>
             </tr>
             <tr>
@@ -942,9 +948,9 @@ SPDX-License-Identifier: MulanPSL-2.0
           </tbody>
         </table>
         <div class="callout">
-          结合当前代码，PR-1A / PR-1B / PR-1C 已完成，PR-2 后端基础、PR-2.5 Workspace 资源投影和 PR-3 计划驱动 task 拆分也已完成。
-          下一阶段不应继续停留在计划投影、资源投影或 task 拆分层；
-          现在应进入 PR-4：让 episode 创建和上传链路以 Hilbert 数采计划 ID 作为元信息入口。
+          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传和 PR-5 Workspace 运营实体归属清理均已完成。
+          下一阶段不应继续停留在资源归属和单页筛选层；
+          现在应进入 PR-6：通过路由建立 Workspace 选择目录与 Scoped Admin Shell。
           order/batch 仍是现有 runtime，但不能再作为长期目标模型；Hilbert 数采计划是生产主对象，
           Keystone task 是计划拆分后的本地执行切片。
         </div>
@@ -969,7 +975,8 @@ SPDX-License-Identifier: MulanPSL-2.0
           PR-1C 也已接入 Synapse 只读 Workspace 状态页和手动同步入口，但仍不引入全局 selector 或当前 workspace。
           PR-2 已接入 Hilbert dc_plan 查询、Keystone <code>dc_plan</code> 投影表、只读列表和单 Workspace 手动同步；
           PR-2.5 已在 Workspace 同步中固定投影采集员、数采设备、设备类型和 workspace compat factory；
-          PR-3 已把 task 生成改为计划驱动；episode 尚未在创建时复制计划字段，上传链路也尚未以计划投影和 Workspace 归属作为业务元信息入口。
+          PR-3 已把 task 生成改为计划驱动；PR-4 已让 episode 在创建时复制计划字段，并让上传链路以计划投影和 Workspace 归属作为业务元信息入口；
+          PR-5 已统一数据采集员、设备和工位的 Workspace 归属接口、筛选和页面，并补齐跨 Workspace 绑定约束。
         </div>
         <table>
           <thead>
@@ -1008,6 +1015,16 @@ SPDX-License-Identifier: MulanPSL-2.0
             <tr>
               <td>PR-3</td>
               <td>计划驱动 task 拆分：同步 Hilbert 数采计划后自动补齐 Keystone 本地执行 task。</td>
+              <td><span class="badge">已完成并验收</span></td>
+            </tr>
+            <tr>
+              <td>PR-4</td>
+              <td>Episode 按计划上传：创建时复制计划字段，上传时校验计划与 Workspace，并双写 raw tags / client hints。</td>
+              <td><span class="badge">已完成并验收</span></td>
+            </tr>
+            <tr>
+              <td>PR-5</td>
+              <td>Workspace 运营实体归属清理：统一采集员、设备和工位的 Workspace API、筛选、页面与绑定约束。</td>
               <td><span class="badge">已完成并验收</span></td>
             </tr>
           </tbody>
@@ -1073,7 +1090,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         <h3>PR-2 / PR-3 / PR-4 必须满足</h3>
         <ul>
           <li>PR-2：<code>dc_plan</code> 严格镜像 Hilbert 计划，<code>id</code> 等于 Hilbert <code>dc_plan.id</code>，支持按 <code>workspace_id</code> 只读查询和手动同步。当前后端已满足。</li>
-          <li>PR-2：<code>tasks</code> / <code>episodes</code> 已具备保存 <code>dc_plan_id</code> 与 <code>local_dc_plan_id</code> 的 schema 基础。PR-3 已让 task 写入 <code>dc_plan_id</code>；episode runtime wiring 留给 PR-4。</li>
+          <li>PR-2：<code>tasks</code> / <code>episodes</code> 已具备保存 <code>dc_plan_id</code> 与 <code>local_dc_plan_id</code> 的 schema 基础。PR-3 已让 task 写入 <code>dc_plan_id</code>；PR-4 已完成 episode runtime wiring。</li>
           <li>PR-2.5：Workspace sync 固定同步资源，不加开关；Workspace upsert 成功后，逐 Hilbert Workspace 独立事务同步采集员、数采设备、设备类型和 workspace compat factory。</li>
           <li>PR-2.5：Workspace 资源同步后，<code>dc_plan.operator</code> 能匹配 <code>data_collectors.operator_id</code>，<code>dc_plan.dc_device_id</code> 能匹配 <code>robots.device_id</code>。</li>
           <li>PR-2.5：Hilbert workspace 的 <code>admins + members</code> 都可以成为数采员投影，不再加 <code>enabled + external_user + data_supplier</code> 过滤；新建资源默认 active；Hilbert 消失资源不自动软删；冲突资源跳过并进入 response summary。</li>
@@ -1084,6 +1101,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <li>PR-3：Axon 取配置、任务开始/完成回调仍能基于 Keystone task 正常工作，并在 config 中追加计划字段。</li>
           <li>PR-4：episode 创建路径必须从 task 复制 <code>dc_plan_id</code> 与 <code>local_dc_plan_id</code>，不能只依赖 schema 预留，也不能留到上传时再从 task 推导。</li>
           <li>PR-4：上传通过 <code>episodes.dc_plan_id</code> 找到非删除 Hilbert 投影，由 <code>dc_plan.workspace_id</code> 派生 Workspace，并把两个 ID 同时写入 <code>raw_tags</code> 与 <code>client_hints</code>。</li>
+          <li>PR-5：数据采集员、设备和工位管理接口统一以 <code>workspace_id</code> 查询；跨 Workspace 绑定在创建和更新时被拒绝；Synapse 页面不再要求 factory / robot type 管理输入。</li>
         </ul>
         <h3>PR-5 运营实体归属必须满足</h3>
         <ul>
@@ -1129,8 +1147,8 @@ SPDX-License-Identifier: MulanPSL-2.0
         </ul>
         <div class="callout">
           这些问题不是不重要，而是不应该挡住数采计划成为生产主对象。
-          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分；
-          现在应推进 PR-4 切 episode 和上传协议。
+          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分，PR-4 已完成 episode 和上传计划化，PR-5 已完成 Workspace 运营实体管理与归属清理；
+          现在应推进 PR-6 Workspace Scoped Admin Shell。
         </div>
       </div>
     </section>

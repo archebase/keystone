@@ -263,6 +263,11 @@ func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, workspaceID in
 	if err == nil && existingSource != hilbertMetadataSource {
 		return false, fmt.Errorf("active data collector with operator_id %s is not a Hilbert projection", operatorID)
 	}
+	if err == nil {
+		if err := ensureCollectorWorkspaceBindingCompatible(ctx, tx, operatorID, workspaceID); err != nil {
+			return false, err
+		}
+	}
 
 	name := strings.TrimSpace(account.DisplayName)
 	if name == "" {
@@ -375,6 +380,11 @@ func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCD
 	if err == nil && existingSource != hilbertMetadataSource {
 		return false, fmt.Errorf("active robot with device_id %s is not a Hilbert projection", deviceID)
 	}
+	if err == nil {
+		if err := ensureRobotWorkspaceBindingCompatible(ctx, tx, deviceID, device.WorkspaceID); err != nil {
+			return false, err
+		}
+	}
 
 	metadata, err := marshalMetadata(map[string]any{
 		"source":                    hilbertMetadataSource,
@@ -392,29 +402,83 @@ func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCD
 
 	if tx.DriverName() == "sqlite" {
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO robots (robot_type_id, device_id, factory_id, status, metadata, created_at, updated_at, deleted_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+			INSERT INTO robots (robot_type_id, device_id, workspace_id, factory_id, status, metadata, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
 			ON CONFLICT(device_id) DO UPDATE SET
 				robot_type_id = excluded.robot_type_id,
+				workspace_id = excluded.workspace_id,
 				factory_id = excluded.factory_id,
 				metadata = excluded.metadata,
 				updated_at = excluded.updated_at,
 				deleted_at = NULL
-		`, device.DCDeviceTypeID, deviceID, factoryID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
+		`, device.DCDeviceTypeID, deviceID, device.WorkspaceID, factoryID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
 		return err == nil, err
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO robots (robot_type_id, device_id, factory_id, status, metadata, created_at, updated_at, deleted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+		INSERT INTO robots (robot_type_id, device_id, workspace_id, factory_id, status, metadata, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
 		ON DUPLICATE KEY UPDATE
 			robot_type_id = VALUES(robot_type_id),
+			workspace_id = VALUES(workspace_id),
 			factory_id = VALUES(factory_id),
 			metadata = VALUES(metadata),
 			updated_at = VALUES(updated_at),
 			deleted_at = NULL
-	`, device.DCDeviceTypeID, deviceID, factoryID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
+	`, device.DCDeviceTypeID, deviceID, device.WorkspaceID, factoryID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
 	return err == nil, err
+}
+
+func ensureCollectorWorkspaceBindingCompatible(ctx context.Context, tx *sqlx.Tx, operatorID string, workspaceID int64) error {
+	var mismatch bool
+	if err := tx.GetContext(ctx, &mismatch, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM data_collectors dc
+			INNER JOIN workstations ws
+				ON ws.data_collector_id = dc.id
+				AND ws.is_current = TRUE
+				AND ws.deleted_at IS NULL
+			INNER JOIN robots r
+				ON r.id = ws.robot_id
+				AND r.deleted_at IS NULL
+			WHERE dc.operator_id = ?
+				AND dc.deleted_at IS NULL
+				AND r.workspace_id <> ?
+		)
+	`, operatorID, workspaceID); err != nil {
+		return fmt.Errorf("check collector workspace binding: %w", err)
+	}
+	if mismatch {
+		return fmt.Errorf("current workstation binding belongs to another workspace")
+	}
+	return nil
+}
+
+func ensureRobotWorkspaceBindingCompatible(ctx context.Context, tx *sqlx.Tx, deviceID string, workspaceID int64) error {
+	var mismatch bool
+	if err := tx.GetContext(ctx, &mismatch, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM robots r
+			INNER JOIN workstations ws
+				ON ws.robot_id = r.id
+				AND ws.is_current = TRUE
+				AND ws.deleted_at IS NULL
+			INNER JOIN data_collectors dc
+				ON dc.id = ws.data_collector_id
+				AND dc.deleted_at IS NULL
+			WHERE r.device_id = ?
+				AND r.deleted_at IS NULL
+				AND dc.organization_id <> ?
+		)
+	`, deviceID, workspaceID); err != nil {
+		return fmt.Errorf("check robot workspace binding: %w", err)
+	}
+	if mismatch {
+		return fmt.Errorf("current workstation binding belongs to another workspace")
+	}
+	return nil
 }
 
 func activeMetadataSource(ctx context.Context, tx *sqlx.Tx, table string, column string, value string) (string, error) {

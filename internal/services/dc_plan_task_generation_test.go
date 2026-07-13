@@ -160,9 +160,9 @@ func seedTaskGenerationResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCP
 		t.Fatalf("seed robot type: %v", err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, 9, 77, "456", 1, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
+		INSERT INTO robots (id, robot_type_id, device_id, factory_id, workspace_id, status, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, 9, 77, "456", 1, plan.WorkspaceID, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
 }
@@ -325,6 +325,7 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			robot_type_id INTEGER NOT NULL,
 			device_id TEXT NOT NULL,
 			factory_id INTEGER NOT NULL,
+			workspace_id INTEGER NOT NULL DEFAULT 0,
 			status TEXT,
 			metadata TEXT,
 			created_at TIMESTAMP,

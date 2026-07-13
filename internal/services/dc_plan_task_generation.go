@@ -7,7 +7,6 @@ package services
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -210,17 +209,18 @@ func (s *DCPlanTaskGenerationService) generateForPlan(ctx context.Context, plan 
 }
 
 type planCollectorRow struct {
-	ID             int64          `db:"id"`
-	OrganizationID int64          `db:"organization_id"`
-	Name           string         `db:"name"`
-	OperatorID     string         `db:"operator_id"`
-	Metadata       sql.NullString `db:"metadata"`
+	ID          int64          `db:"id"`
+	WorkspaceID int64          `db:"workspace_id"`
+	Name        string         `db:"name"`
+	OperatorID  string         `db:"operator_id"`
+	Metadata    sql.NullString `db:"metadata"`
 }
 
 type planRobotRow struct {
 	ID          int64          `db:"id"`
 	RobotTypeID int64          `db:"robot_type_id"`
 	DeviceID    string         `db:"device_id"`
+	WorkspaceID int64          `db:"workspace_id"`
 	FactoryID   int64          `db:"factory_id"`
 	Metadata    sql.NullString `db:"metadata"`
 }
@@ -250,7 +250,7 @@ type planBatchRow struct {
 func resolvePlanCollector(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan) (planCollectorRow, error) {
 	var collector planCollectorRow
 	err := tx.GetContext(ctx, &collector, `
-		SELECT id, organization_id, name, operator_id, metadata
+		SELECT id, organization_id AS workspace_id, name, operator_id, metadata
 		FROM data_collectors
 		WHERE operator_id = ? AND deleted_at IS NULL
 		LIMIT 1`+forUpdateClause(tx), strings.TrimSpace(plan.Operator))
@@ -260,7 +260,7 @@ func resolvePlanCollector(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCP
 	if err != nil {
 		return collector, fmt.Errorf("collector_query_failed")
 	}
-	if collector.OrganizationID != plan.WorkspaceID {
+	if collector.WorkspaceID != plan.WorkspaceID {
 		return collector, fmt.Errorf("workspace_mismatch")
 	}
 	return collector, nil
@@ -269,7 +269,7 @@ func resolvePlanCollector(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCP
 func resolvePlanRobot(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan) (planRobotRow, error) {
 	var robot planRobotRow
 	err := tx.GetContext(ctx, &robot, `
-		SELECT id, robot_type_id, device_id, factory_id, metadata
+		SELECT id, robot_type_id, device_id, workspace_id, factory_id, metadata
 		FROM robots
 		WHERE device_id = ? AND deleted_at IS NULL
 		LIMIT 1`+forUpdateClause(tx), strconv.FormatInt(plan.DCDeviceID, 10))
@@ -279,8 +279,7 @@ func resolvePlanRobot(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan)
 	if err != nil {
 		return robot, fmt.Errorf("robot_query_failed")
 	}
-	workspaceID, ok := int64Metadata(robot.Metadata.String, "hilbert_workspace_id")
-	if !ok || workspaceID != plan.WorkspaceID {
+	if robot.WorkspaceID != plan.WorkspaceID {
 		return robot, fmt.Errorf("workspace_mismatch")
 	}
 	return robot, nil
@@ -620,34 +619,6 @@ func blockedPlanGenerationResult(plan auth.HilbertDCPlan, reason string) DCPlanT
 		Status:      dcPlanTaskGenerationStatusBlocked,
 		Reason:      reason,
 		TargetCount: plan.TargetCount,
-	}
-}
-
-func int64Metadata(raw string, key string) (int64, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, false
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return 0, false
-	}
-	value, ok := payload[key]
-	if !ok {
-		return 0, false
-	}
-	switch typed := value.(type) {
-	case float64:
-		return int64(typed), true
-	case int64:
-		return typed, true
-	case int:
-		return int64(typed), true
-	case string:
-		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
-		return parsed, err == nil
-	default:
-		return 0, false
 	}
 }
 

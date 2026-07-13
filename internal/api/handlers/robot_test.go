@@ -95,6 +95,73 @@ func TestRobotHandlerListRobots_DeviceIDSearchSemantics(t *testing.T) {
 	}
 }
 
+func TestRobotHandlerListRobotsFiltersByWorkspaceID(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+	seedRobotLookups(t, db)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, robot_type_id, device_id, factory_id, workspace_id, status)
+		VALUES (1, 10, 'device-a', 30, 123, 'active'), (2, 10, 'device-b', 30, 456, 'active')
+	`); err != nil {
+		t.Fatalf("seed robots: %v", err)
+	}
+
+	r := newTestRobotRouter(t, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/robots?workspace_id=456", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp RobotListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Items) != 1 || resp.Items[0].WorkspaceID != "456" {
+		t.Fatalf("response=%#v", resp)
+	}
+}
+
+func TestRobotHandlerCreateRobotRequiresOnlyWorkspaceAndDevice(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO workspaces (id, name, deleted_at) VALUES (123, 'Workspace A', NULL)`); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+
+	r := newTestRobotRouter(t, db)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", strings.NewReader(`{
+		"workspace_id":"123",
+		"device_id":"device-new"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp CreateRobotResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.WorkspaceID != "123" || resp.DeviceID != "device-new" {
+		t.Fatalf("response=%#v", resp)
+	}
+	var compatCount int
+	if err := db.Get(&compatCount, `
+		SELECT
+			(SELECT COUNT(*) FROM robot_types WHERE model = ? AND deleted_at IS NULL) +
+			(SELECT COUNT(*) FROM factories WHERE slug = ? AND deleted_at IS NULL)
+	`, compatRobotTypeModel, compatFactorySlug); err != nil {
+		t.Fatalf("query compatibility rows: %v", err)
+	}
+	if compatCount != 2 {
+		t.Fatalf("compatibility row count=%d want=2", compatCount)
+	}
+}
+
 func TestRobotHandlerListRobotsIncludesDisplayLabels(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()
@@ -278,6 +345,7 @@ func TestRobotHandlerAssetID_CreateValidatesDPProfileAndList(t *testing.T) {
 	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, robotDPConfigJSON("asset-1")))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
+		"workspace_id": "0",
 		"robot_type_id": "10",
 		"device_id": "local-device-1",
 		"asset_id": "  asset-1  ",
@@ -380,6 +448,7 @@ func TestRobotHandlerAssetID_UniqueAmongActiveRobots(t *testing.T) {
 	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, robotDPConfigJSON("asset-1", "deleted-asset")))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
+		"workspace_id": "0",
 		"robot_type_id": "10",
 		"device_id": "local-device-2",
 		"asset_id": "asset-1",
@@ -393,6 +462,7 @@ func TestRobotHandlerAssetID_UniqueAmongActiveRobots(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
+		"workspace_id": "0",
 		"robot_type_id": "10",
 		"device_id": "local-device-3",
 		"asset_id": "deleted-asset",
@@ -561,6 +631,7 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 		device_id TEXT NOT NULL,
 		asset_id TEXT,
 		factory_id INTEGER NOT NULL,
+		workspace_id INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL,
 		metadata TEXT,
 		created_at TIMESTAMP,
@@ -573,7 +644,10 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 	if _, err := db.Exec(`CREATE TABLE robot_types (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
-			model TEXT NOT NULL,
+			model TEXT NOT NULL UNIQUE,
+			ros_topics TEXT NOT NULL DEFAULT '{}',
+			created_at TIMESTAMP NULL,
+			updated_at TIMESTAMP NULL,
 			deleted_at TIMESTAMP NULL
 		)`); err != nil {
 		t.Fatalf("create robot type schema failed: %v", err)
@@ -581,10 +655,22 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 	if _, err := db.Exec(`CREATE TABLE factories (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
-			slug TEXT NOT NULL,
+			slug TEXT NOT NULL UNIQUE,
+			created_at TIMESTAMP NULL,
+			updated_at TIMESTAMP NULL,
 			deleted_at TIMESTAMP NULL
 		)`); err != nil {
 		t.Fatalf("create factory schema failed: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE workspaces (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			deleted_at TIMESTAMP NULL
+		)`); err != nil {
+		t.Fatalf("create workspace schema failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workspaces (id, name, deleted_at) VALUES (0, 'Default Workspace', NULL)`); err != nil {
+		t.Fatalf("seed default workspace: %v", err)
 	}
 
 	return db
