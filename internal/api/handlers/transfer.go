@@ -656,24 +656,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		return
 	}
 
-	// Resolve batch id for post-commit batch state advancement.
-	// Best-effort: failure here should not block upload acknowledgement.
-	var batchIDForAdvance int64
-	if err := tx.QueryRowContext(ctx, "SELECT batch_id FROM tasks WHERE id = ? AND deleted_at IS NULL", taskPK).Scan(&batchIDForAdvance); err != nil {
-		// #nosec G706 -- Set aside for now
-		logger.Printf("%s failed to resolve batch id (task_pk=%d): %v", transferTaskLogPrefix(dc.DeviceID, taskID), taskPK, err)
-		batchIDForAdvance = 0
-	}
-
-	// Resolve order id for post-commit order state advancement.
-	// Best-effort: failure here should not block upload acknowledgement.
-	var orderIDForAdvance int64
-	if err := tx.QueryRowContext(ctx, "SELECT order_id FROM tasks WHERE id = ? AND deleted_at IS NULL", taskPK).Scan(&orderIDForAdvance); err != nil {
-		// #nosec G706 -- Set aside for now
-		logger.Printf("%s failed to resolve order id (task_pk=%d): %v", transferTaskLogPrefix(dc.DeviceID, taskID), taskPK, err)
-		orderIDForAdvance = 0
-	}
-
 	// Check if mcap_path and sidecar_path already exist in database
 	var count int
 	err = tx.QueryRowContext(ctx,
@@ -691,8 +673,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	} else {
 		var taskRow struct {
 			ID             int64         `db:"id"`
-			BatchID        int64         `db:"batch_id"`
-			OrderID        int64         `db:"order_id"`
 			SceneID        int64         `db:"scene_id"`
 			SceneName      string        `db:"scene_name"`
 			WorkstationID  sql.NullInt64 `db:"workstation_id"`
@@ -705,8 +685,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 
 		err = tx.QueryRowContext(ctx, `SELECT
 			id,
-			batch_id,
-			order_id,
 			scene_id,
 			COALESCE(scene_name, '') AS scene_name,
 			workstation_id,
@@ -718,8 +696,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		FROM tasks
 		WHERE task_id = ? AND deleted_at IS NULL`, taskID).Scan(
 			&taskRow.ID,
-			&taskRow.BatchID,
-			&taskRow.OrderID,
 			&taskRow.SceneID,
 			&taskRow.SceneName,
 			&taskRow.WorkstationID,
@@ -734,7 +710,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		}
 
 		// Idempotency: avoid creating duplicate episodes for the same task.
-		// This keeps batches.episode_count correct even if the device retries uploads.
 		var existingEpisode struct {
 			ID        int64          `db:"id"`
 			EpisodeID string         `db:"episode_id"`
@@ -804,8 +779,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				`INSERT INTO episodes (
 					episode_id,
 					task_id,
-					batch_id,
-					order_id,
 					scene_id,
 					scene_name,
 					workstation_id,
@@ -821,11 +794,9 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					checksum,
 					qa_status,
 					metadata
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				episodeID,
 				taskRow.ID,
-				taskRow.BatchID,
-				taskRow.OrderID,
 				taskRow.SceneID,
 				taskRow.SceneName,
 				taskRow.WorkstationID,
@@ -851,17 +822,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			if dbErr != nil {
 				// #nosec G706 -- Set aside for now
 				logger.Printf("%s DB insert id read failed: %v", transferTaskLogPrefix(dc.DeviceID, taskID), dbErr)
-				return
-			}
-
-			// Write-time maintenance for batch episode_count.
-			if _, dbErr := tx.ExecContext(ctx, `
-				UPDATE batches
-				SET episode_count = episode_count + 1, updated_at = updated_at
-				WHERE id = ? AND deleted_at IS NULL
-			`, taskRow.BatchID); dbErr != nil {
-				// #nosec G706 -- Set aside for now
-				logger.Printf("%s DB update failed for batch=%d: %v", transferTaskLogPrefix(dc.DeviceID, taskID), taskRow.BatchID, dbErr)
 				return
 			}
 		}
@@ -911,13 +871,6 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		shouldAdvance := ownedTask.Status != "completed" && rowsAffected > 0
 		if shouldAdvance {
 			logger.Printf("%s task status updated: %s -> completed reason=upload_ack", transferTaskLogPrefix(dc.DeviceID, taskID), taskStatusLogValue(ownedTask.Status, "unknown"))
-		}
-		if shouldAdvance && batchIDForAdvance > 0 {
-			// Must run after the task row is terminal: tryAdvanceBatchStatus counts tasks in DB.
-			go tryAdvanceBatchStatus(h.db, batchIDForAdvance)
-		}
-		if shouldAdvance && orderIDForAdvance > 0 {
-			go tryAdvanceOrderStatus(h.db, orderIDForAdvance, h.recorderHub, h.recorderRPCTimeout)
 		}
 	}
 }
@@ -969,13 +922,6 @@ func (h *TransferHandler) onUploadFailed(ctx context.Context, dc *services.Trans
 	if rows, _ := result.RowsAffected(); rows > 0 {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("%s marked as failed due to upload_failed", transferTaskLogPrefix(dc.DeviceID, taskID))
-		// Trigger batch status advancement since the task reached a terminal state.
-		var batchID int64
-		if err := h.db.QueryRowContext(ctx,
-			"SELECT batch_id FROM tasks WHERE task_id = ? AND deleted_at IS NULL", taskID,
-		).Scan(&batchID); err == nil && batchID > 0 {
-			go tryAdvanceBatchStatus(h.db, batchID)
-		}
 	}
 }
 
@@ -1007,7 +953,7 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 	// Resolve all runnable tasks for the disconnected device via the
 	// robots → workstations → tasks join chain.
 	rows, err := db.QueryContext(ctx, `
-		SELECT t.id, t.task_id, t.batch_id, t.status
+		SELECT t.id, t.task_id, t.status
 		FROM tasks t
 		JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
@@ -1027,15 +973,14 @@ func revertRunnableTasksOnDeviceDisconnect(db *sqlx.DB, deviceID string, recorde
 	}()
 
 	type taskRef struct {
-		id      int64
-		taskID  string
-		batchID int64
-		status  string
+		id     int64
+		taskID string
+		status string
 	}
 	var toRevert []taskRef
 	for rows.Next() {
 		var ref taskRef
-		if err := rows.Scan(&ref.id, &ref.taskID, &ref.batchID, &ref.status); err != nil {
+		if err := rows.Scan(&ref.id, &ref.taskID, &ref.status); err != nil {
 			logger.Printf("%s scan error during disconnect task query: %v", deviceLogPrefix(deviceID), err)
 			continue
 		}

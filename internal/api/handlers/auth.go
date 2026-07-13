@@ -438,20 +438,22 @@ func (h *AuthHandler) MeStationEndBreak(c *gin.Context) {
 		return
 	}
 
-	var hasActiveBatch bool
-	if err := h.db.Get(&hasActiveBatch, `
+	var hasActiveTasks bool
+	if err := h.db.Get(&hasActiveTasks, `
 		SELECT EXISTS(
 			SELECT 1
-			FROM batches
-			WHERE workstation_id = ? AND status = 'active' AND deleted_at IS NULL
+			FROM tasks
+			WHERE workstation_id = ?
+				AND status IN ('ready', 'in_progress', 'uploading')
+				AND deleted_at IS NULL
 		)
 	`, wsID); err != nil {
-		logger.Printf("[AUTH] MeStationEndBreak: failed to query batches: %v", err)
+		logger.Printf("[AUTH] MeStationEndBreak: failed to query active tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
 	newStatus := "inactive"
-	if hasActiveBatch {
+	if hasActiveTasks {
 		newStatus = "active"
 	}
 	if _, err := h.db.Exec(`
@@ -471,7 +473,7 @@ func (h *AuthHandler) MeStationEndBreak(c *gin.Context) {
 }
 
 // syncWorkstationStatusOnLogin is a best-effort helper that syncs workstation
-// status to active/inactive based on whether an active batch exists.
+// status to active/inactive based on whether active tasks exist.
 func (h *AuthHandler) syncWorkstationStatusOnLogin(collectorID int64) {
 	var wsID int64
 	if err := h.db.Get(&wsID, `
@@ -485,19 +487,21 @@ func (h *AuthHandler) syncWorkstationStatusOnLogin(collectorID int64) {
 		}
 		return
 	}
-	var hasActiveBatch bool
-	if err := h.db.Get(&hasActiveBatch, `
+	var hasActiveTasks bool
+	if err := h.db.Get(&hasActiveTasks, `
 		SELECT EXISTS(
 			SELECT 1
-			FROM batches
-			WHERE workstation_id = ? AND status = 'active' AND deleted_at IS NULL
+			FROM tasks
+			WHERE workstation_id = ?
+				AND status IN ('ready', 'in_progress', 'uploading')
+				AND deleted_at IS NULL
 		)
 	`, wsID); err != nil {
-		logger.Printf("[AUTH] Failed to query active batch for workstation on login (ws=%d): %v", wsID, err)
+		logger.Printf("[AUTH] Failed to query active tasks for workstation on login (ws=%d): %v", wsID, err)
 		return
 	}
 	newStatus := "inactive"
-	if hasActiveBatch {
+	if hasActiveTasks {
 		newStatus = "active"
 	}
 	if _, err := h.db.Exec(`

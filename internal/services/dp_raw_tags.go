@@ -36,8 +36,6 @@ type dpRawTagContext struct {
 	RobotType               sql.NullString
 	DataCollectorOperatorID sql.NullString
 	DataCollectorName       sql.NullString
-	OrderName               sql.NullString
-	BatchID                 sql.NullString
 }
 
 func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
@@ -85,8 +83,6 @@ func keystoneExtraTags(input dpRawTagsInput) map[string]string {
 	addNonEmptyTag(tags, "robot_type", input.Context.RobotType)
 	addNonEmptyTag(tags, "data_collector_operator_id", input.Context.DataCollectorOperatorID)
 	addNonEmptyTag(tags, "data_collector_name", input.Context.DataCollectorName)
-	addNonEmptyTag(tags, "order_name", input.Context.OrderName)
-	addNonEmptyTag(tags, "batch_id", input.Context.BatchID)
 	return tags
 }
 

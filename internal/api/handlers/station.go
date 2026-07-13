@@ -1367,22 +1367,22 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 		return
 	}
 
-	var hasBlockingBatch bool
-	err = h.db.Get(&hasBlockingBatch, `
+	var hasBlockingTask bool
+	err = h.db.Get(&hasBlockingTask, `
 		SELECT EXISTS(
-			SELECT 1 FROM batches
+			SELECT 1 FROM tasks
 			WHERE workstation_id = ? AND deleted_at IS NULL
-			  AND status IN ('pending', 'active')
+			  AND status IN ('pending', 'ready', 'in_progress', 'uploading')
 		)
 	`, stationID)
 	if err != nil {
-		logger.Printf("[STATION] Failed to check batches for station %d: %v", stationID, err)
+		logger.Printf("[STATION] Failed to check tasks for station %d: %v", stationID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete station"})
 		return
 	}
-	if hasBlockingBatch {
+	if hasBlockingTask {
 		c.JSON(http.StatusConflict, gin.H{
-			"error": "cannot unbind station while batches are pending or active",
+			"error": "cannot unbind station while tasks are pending or active",
 		})
 		return
 	}

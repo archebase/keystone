@@ -386,18 +386,18 @@ SPDX-License-Identifier: MulanPSL-2.0
   <main class="page">
     <header class="hero">
       <div class="hero-inner">
-        <span class="kicker">Keystone V2 / Hilbert Alignment / 2026-07-10</span>
+        <span class="kicker">Keystone V2 / Hilbert Alignment / 2026-07-13</span>
         <h1>领域模型<br>迁移顺序<br>实施计划</h1>
         <p class="lede">
           本计划以新环境为前提，不考虑历史数据、不保留旧 API、不做旧字段兼容。
-          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 运营实体归属清理和 PR-6 Workspace Scoped Admin Shell；
-          下一步重点是删除旧 order/batch 主路径，再逐步停用旧生产元信息 runtime。
+          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 运营实体归属清理、PR-6 Workspace Scoped Admin Shell 和 PR-7 Order / Batch 主路径删除；
+          下一步重点是停用 factory、robot type、SOP、scene/subscene 等旧生产元信息 runtime。
         </p>
         <div class="signal">
-          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3 / PR-4 / PR-5 / PR-6</span></div>
+          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3 / PR-4 / PR-5 / PR-6 / PR-7</span></div>
           <div class="signal-card"><b>主轴</b><span>dc_plan 是生产主对象</span></div>
           <div class="signal-card"><b>已验收</b><span>task、episode 和上传均锁定计划</span></div>
-          <div class="signal-card"><b>下一步</b><span>删除 Order / Batch 主路径</span></div>
+          <div class="signal-card"><b>下一步</b><span>PR-8A 旧生产元信息 Runtime 停用</span></div>
         </div>
       </div>
     </header>
@@ -684,7 +684,7 @@ SPDX-License-Identifier: MulanPSL-2.0
               <h3 class="step-title">删除 Order / Batch 主路径</h3>
               <div class="step-meta">
                 <span class="badge">PR-7</span>
-                <span class="badge warn">破坏式清理</span>
+                <span class="badge">已完成并验收</span>
               </div>
               <p>当计划驱动 task、上传链路、scoped admin 和 Axon task runtime 都不再依赖 compat <code>orders</code> / <code>batches</code> 后，删除本地主业务路径，避免两套生产组织概念并存。本阶段只处理 order/batch，不抢先删除 factory、robot type、SOP、scene/subscene runtime。</p>
               <ul>
@@ -919,8 +919,10 @@ SPDX-License-Identifier: MulanPSL-2.0
               </td>
               <td>不处理旧表最终删除；不停用 factory、robot type、SOP、scene/subscene runtime。</td>
               <td>
-                <span class="badge hot">未完成</span>：
-                当前 order/batch 仍是本地生产组织入口。
+                <span class="badge">已完成并验收</span>：
+                Keystone 已删除 Order / Batch handler 与路由，task 生成、上传完成、工位状态、同步上传和 dashboard overview 均不再读取或写入旧关联；
+                collector 与 Axon 操作端按 <code>dc_plan_id</code> 选择和执行任务，Synapse 已删除管理页面、路由和 API wrapper；
+                Swagger 仅保留计划化 task 接口。旧 <code>orders</code> / <code>batches</code> 表作为只读观察结构暂留，task / episode 旧关联列改为可空。
               </td>
             </tr>
             <tr>
@@ -951,9 +953,9 @@ SPDX-License-Identifier: MulanPSL-2.0
           </tbody>
         </table>
         <div class="callout">
-          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 Workspace 运营实体归属清理和 PR-6 Workspace Scoped Admin Shell 均已完成。
-          下一阶段应进入 PR-7：删除 Order / Batch 主路径。
-          order/batch 仍是现有 runtime，但不能再作为长期目标模型；Hilbert 数采计划是生产主对象，
+          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 Workspace 运营实体归属清理、PR-6 Workspace Scoped Admin Shell 和 PR-7 Order / Batch 主路径删除均已完成。
+          下一阶段应进入 PR-8A：停用旧生产元信息 Runtime。
+          order/batch 已退出 runtime；Hilbert 数采计划是生产主对象，
           Keystone task 是计划拆分后的本地执行切片。
         </div>
       </div>
@@ -1149,8 +1151,8 @@ SPDX-License-Identifier: MulanPSL-2.0
         </ul>
         <div class="callout">
           这些问题不是不重要，而是不应该挡住数采计划成为生产主对象。
-          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分，PR-4 已完成 episode 和上传计划化，PR-5 已完成 Workspace 运营实体管理与归属清理，PR-6 已完成 Workspace Scoped Admin Shell；
-          现在应推进 PR-7 删除 Order / Batch 主路径。
+          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分，PR-4 已完成 episode 和上传计划化，PR-5 已完成 Workspace 运营实体管理与归属清理，PR-6 已完成 Workspace Scoped Admin Shell，PR-7 已完成 Order / Batch 主路径删除；
+          现在应推进 PR-8A 旧生产元信息 Runtime 停用。
         </div>
       </div>
     </section>

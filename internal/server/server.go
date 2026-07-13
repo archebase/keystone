@@ -42,7 +42,6 @@ type Server struct {
 	episode             *handlers.EpisodeHandler
 	qa                  *handlers.EpisodeQAHandler
 	task                *handlers.TaskHandler
-	batch               *handlers.BatchHandler
 	robotType           *handlers.RobotTypeHandler
 	robot               *handlers.RobotHandler
 	deviceRegistration  *handlers.DeviceRegistrationHandler
@@ -54,7 +53,6 @@ type Server struct {
 	sop                 *handlers.SOPHandler
 	scene               *handlers.SceneHandler
 	subscene            *handlers.SubsceneHandler
-	order               *handlers.OrderHandler
 	dataOps             *handlers.DataOpsHandler
 	dataStats           *handlers.DataProductionStatisticsHandler
 	productionDashboard *handlers.ProductionDashboardHandler
@@ -124,7 +122,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create database-dependent handlers only when DB is available
 	var (
-		batchHandler               *handlers.BatchHandler
 		robotTypeHandler           *handlers.RobotTypeHandler
 		robotHandler               *handlers.RobotHandler
 		deviceRegistrationHandler  *handlers.DeviceRegistrationHandler
@@ -136,7 +133,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sopHandler                 *handlers.SOPHandler
 		sceneHandler               *handlers.SceneHandler
 		subsceneHandler            *handlers.SubsceneHandler
-		orderHandler               *handlers.OrderHandler
 		dataOpsHandler             *handlers.DataOpsHandler
 		dataStatsHandler           *handlers.DataProductionStatisticsHandler
 		productionDashboardHandler *handlers.ProductionDashboardHandler
@@ -146,7 +142,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	if db != nil {
 		workspaceSyncService = services.NewWorkspaceSyncService(db, &cfg.Hilbert, nil)
 		dcPlanSyncService = services.NewDCPlanSyncService(db, &cfg.Hilbert, nil)
-		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
 		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub, cfg.Sync.DPConfigPath)
 		deviceRegistrationHandler = handlers.NewDeviceRegistrationHandler(db, cfg.Server.CallbackPublicBaseURL)
@@ -158,7 +153,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sopHandler = handlers.NewSOPHandler(db)
 		sceneHandler = handlers.NewSceneHandler(db)
 		subsceneHandler = handlers.NewSubsceneHandler(db)
-		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
 		dataOpsHandler = handlers.NewDataOpsHandler(db)
 		dataOpsHandler.SetBulkActionDeps(qaHandler, syncWorker)
 		if err := dataOpsHandler.InterruptActiveBulkQARuns(context.Background()); err != nil {
@@ -185,7 +179,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		episode:             episodeHandler,
 		qa:                  qaHandler,
 		task:                taskHandler,
-		batch:               batchHandler,
 		robotType:           robotTypeHandler,
 		robot:               robotHandler,
 		deviceRegistration:  deviceRegistrationHandler,
@@ -197,7 +190,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		sop:                 sopHandler,
 		scene:               sceneHandler,
 		subscene:            subsceneHandler,
-		order:               orderHandler,
 		dataOps:             dataOpsHandler,
 		dataStats:           dataStatsHandler,
 		productionDashboard: productionDashboardHandler,
@@ -284,11 +276,8 @@ func (s *Server) buildRoutes() http.Handler {
 	taskStats := v1Routes.Group("/tasks/statistics", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
 	taskStats.GET("/breakdown", s.task.GetTaskBreakdown)
 	s.task.RegisterRoutes(v1Tasks)
-	if s.batch != nil {
-		s.batch.RegisterRoutes(v1Tasks)
-		collectorBatches := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("data_collector"))
-		s.batch.RegisterCollectorRoutes(collectorBatches)
-	}
+	collectorTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("data_collector"))
+	s.task.RegisterCollectorRoutes(collectorTasks)
 	if s.robotType != nil {
 		s.robotType.RegisterRoutes(v1Tasks)
 		s.robotType.RegisterConfigTemplatePublicRoutes(v1Tasks)
@@ -328,9 +317,6 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.subscene != nil {
 		s.subscene.RegisterRoutes(v1Tasks)
-	}
-	if s.order != nil {
-		s.order.RegisterRoutes(v1Tasks)
 	}
 	if s.dataStats != nil {
 		jwtMw := middleware.JWTAuth(&s.cfg.Auth)

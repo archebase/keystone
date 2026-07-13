@@ -6,7 +6,6 @@ package services
 
 import (
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
@@ -34,7 +33,7 @@ func TestDCPlanTaskGenerationCreatesMissingTasks(t *testing.T) {
 		t.Fatalf("unexpected plan summary: %#v", summary.Plans[0])
 	}
 	assertTaskGenerationCount(t, db, plan.ID, 3)
-	assertTaskGenerationCompatBatch(t, db, plan.ID, plan.TargetCount)
+	assertTaskGenerationDoesNotWriteOrderBatch(t, db)
 }
 
 func TestDCPlanTaskGenerationIsIdempotent(t *testing.T) {
@@ -212,17 +211,16 @@ func assertTaskGenerationWorkstationCollector(t *testing.T, db *sqlx.DB, dcPlanI
 	}
 }
 
-func assertTaskGenerationCompatBatch(t *testing.T, db *sqlx.DB, dcPlanID int64, targetCount int64) {
+func assertTaskGenerationDoesNotWriteOrderBatch(t *testing.T, db *sqlx.DB) {
 	t.Helper()
-	var row struct {
-		BatchID      string `db:"batch_id"`
-		EpisodeCount int64  `db:"episode_count"`
-	}
-	if err := db.Get(&row, "SELECT batch_id, episode_count FROM batches WHERE batch_id = ?", "dcplan_"+strconv.FormatInt(dcPlanID, 10)); err != nil {
-		t.Fatalf("query compat batch: %v", err)
-	}
-	if row.EpisodeCount != targetCount {
-		t.Fatalf("episode_count=%d want %d", row.EpisodeCount, targetCount)
+	for _, table := range []string{"orders", "batches"} {
+		var count int
+		if err := db.Get(&count, "SELECT COUNT(*) FROM "+table); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count=%d want 0", table, count)
+		}
 	}
 }
 
@@ -381,8 +379,8 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			task_id TEXT NOT NULL,
-			batch_id INTEGER NOT NULL,
-			order_id INTEGER NOT NULL,
+			batch_id INTEGER,
+			order_id INTEGER,
 			sop_id INTEGER NOT NULL,
 			workstation_id INTEGER,
 			scene_id INTEGER NOT NULL,

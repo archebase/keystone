@@ -40,8 +40,10 @@ func TestUploadCompleteCopiesTaskPlanFieldsToEpisode(t *testing.T) {
 	var got struct {
 		DCPlanID      sql.NullInt64 `db:"dc_plan_id"`
 		LocalDCPlanID sql.NullInt64 `db:"local_dc_plan_id"`
+		BatchID       sql.NullInt64 `db:"batch_id"`
+		OrderID       sql.NullInt64 `db:"order_id"`
 	}
-	if err := db.Get(&got, `SELECT dc_plan_id, local_dc_plan_id FROM episodes WHERE task_id = 10`); err != nil {
+	if err := db.Get(&got, `SELECT dc_plan_id, local_dc_plan_id, batch_id, order_id FROM episodes WHERE task_id = 10`); err != nil {
 		t.Fatalf("query created episode: %v", err)
 	}
 	if !got.DCPlanID.Valid || got.DCPlanID.Int64 != 1001 {
@@ -49,6 +51,9 @@ func TestUploadCompleteCopiesTaskPlanFieldsToEpisode(t *testing.T) {
 	}
 	if !got.LocalDCPlanID.Valid || got.LocalDCPlanID.Int64 != 2001 {
 		t.Fatalf("local_dc_plan_id=%#v want 2001", got.LocalDCPlanID)
+	}
+	if got.BatchID.Valid || got.OrderID.Valid {
+		t.Fatalf("legacy order/batch fields should be null: batch=%#v order=%#v", got.BatchID, got.OrderID)
 	}
 }
 
@@ -77,8 +82,8 @@ func openTransferDCPlanTestDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			task_id TEXT NOT NULL,
 			status TEXT NOT NULL,
-			batch_id INTEGER NOT NULL,
-			order_id INTEGER NOT NULL,
+			batch_id INTEGER,
+			order_id INTEGER,
 			scene_id INTEGER NOT NULL,
 			scene_name TEXT,
 			workstation_id INTEGER,
@@ -96,8 +101,8 @@ func openTransferDCPlanTestDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			episode_id TEXT NOT NULL,
 			task_id INTEGER NOT NULL,
-			batch_id INTEGER NOT NULL,
-			order_id INTEGER NOT NULL,
+			batch_id INTEGER,
+			order_id INTEGER,
 			scene_id INTEGER NOT NULL,
 			scene_name TEXT,
 			workstation_id INTEGER,
@@ -116,12 +121,6 @@ func openTransferDCPlanTestDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
-		`CREATE TABLE batches (
-			id INTEGER PRIMARY KEY,
-			episode_count INTEGER NOT NULL DEFAULT 0,
-			updated_at TIMESTAMP NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("create transfer dc plan schema: %v", err)
@@ -137,9 +136,6 @@ func seedTransferDCPlanTask(t *testing.T, db *sqlx.DB) {
 	}
 	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id, deleted_at) VALUES (1, 1, NULL)`); err != nil {
 		t.Fatalf("seed workstation: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO batches (id, episode_count, deleted_at) VALUES (20, 0, NULL)`); err != nil {
-		t.Fatalf("seed batch: %v", err)
 	}
 	if _, err := db.Exec(`
 		INSERT INTO tasks (

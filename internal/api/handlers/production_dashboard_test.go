@@ -17,7 +17,7 @@ import (
 func TestParseProductionDashboardQueryDefaultsAndBounds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/dashboard/snapshot?workstation_id=12&factory_id=34&organization_id=56&trend_days=99&distribution_limit=999&active_limit=999&recent_limit=999&preview_limit=999&timezone_offset=%2B08:00", nil)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/overview?workstation_id=12&factory_id=34&organization_id=56&trend_days=99&recent_limit=999&preview_limit=999&timezone_offset=%2B08:00", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -30,12 +30,6 @@ func TestParseProductionDashboardQueryDefaultsAndBounds(t *testing.T) {
 	}
 	if got.TrendDays != maxDashboardTrendDays {
 		t.Fatalf("trend days = %d, want %d", got.TrendDays, maxDashboardTrendDays)
-	}
-	if got.DistributionLimit != maxDashboardDistributionLimit {
-		t.Fatalf("distribution limit = %d, want %d", got.DistributionLimit, maxDashboardDistributionLimit)
-	}
-	if got.ActiveLimit != maxDashboardActiveLimit {
-		t.Fatalf("active limit = %d, want %d", got.ActiveLimit, maxDashboardActiveLimit)
 	}
 	if got.RecentLimit != maxDashboardRecentLimit {
 		t.Fatalf("recent limit = %d, want %d", got.RecentLimit, maxDashboardRecentLimit)
@@ -52,11 +46,11 @@ func TestParseProductionDashboardQueryValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []string{
-		"/dashboard/snapshot?workstation_id=0",
-		"/dashboard/snapshot?trend_days=0",
-		"/dashboard/snapshot?recent_limit=0",
-		"/dashboard/snapshot?preview_limit=0",
-		"/dashboard/snapshot?timezone_offset=08:00",
+		"/dashboard/overview?workstation_id=0",
+		"/dashboard/overview?trend_days=0",
+		"/dashboard/overview?recent_limit=0",
+		"/dashboard/overview?preview_limit=0",
+		"/dashboard/overview?timezone_offset=08:00",
 	}
 
 	for _, target := range tests {
@@ -121,34 +115,6 @@ func TestResolveProductionDashboardScopeAllowsDisplayRole(t *testing.T) {
 	}
 	if scope.Role != "display" || scope.FactoryID != "12" {
 		t.Fatalf("unexpected display scope: %+v", scope)
-	}
-}
-
-func TestDashboardActiveBatchesQueryLimitsBeforeTaskAggregation(t *testing.T) {
-	query, args := buildDashboardActiveBatchesQuery(
-		productionDashboardScope{
-			Role:        "data_collector",
-			collectorID: 42,
-		},
-		20,
-	)
-	compact := strings.Join(strings.Fields(query), " ")
-
-	for _, want := range []string{
-		"WITH active_batches AS",
-		"WHERE b.deleted_at IS NULL AND b.status = 'active' AND ws.data_collector_id = ?",
-		"ORDER BY COALESCE(b.started_at, b.updated_at, b.created_at) DESC, b.id DESC LIMIT ?",
-		"FROM active_batches ab LEFT JOIN tasks t ON t.batch_id = ab.id AND t.deleted_at IS NULL GROUP BY ab.id",
-	} {
-		if !strings.Contains(compact, want) {
-			t.Fatalf("active batch SQL should contain %q: %s", want, compact)
-		}
-	}
-	if strings.Contains(compact, "FROM tasks WHERE deleted_at IS NULL GROUP BY batch_id") {
-		t.Fatalf("active batch SQL should not globally aggregate tasks first: %s", compact)
-	}
-	if len(args) != 2 || args[0] != int64(42) || args[1] != 20 {
-		t.Fatalf("args = %#v, want collector id then limit", args)
 	}
 }
 

@@ -37,8 +37,6 @@ func TestBuildDPDirectRawTags_MergesInDocumentedOrder(t *testing.T) {
 			RobotType:               sql.NullString{String: "Mobile Manipulator", Valid: true},
 			DataCollectorOperatorID: sql.NullString{String: "op-001", Valid: true},
 			DataCollectorName:       sql.NullString{String: "Alice", Valid: true},
-			OrderName:               sql.NullString{String: "Order A", Valid: true},
-			BatchID:                 sql.NullString{String: "batch_20260615_034848_268_00_378b4bcf", Valid: true},
 		},
 	})
 	if err != nil {
@@ -64,8 +62,6 @@ func TestBuildDPDirectRawTags_MergesInDocumentedOrder(t *testing.T) {
 		"robot_type":                 "Mobile Manipulator",
 		"data_collector_operator_id": "op-001",
 		"data_collector_name":        "Alice",
-		"order_name":                 "Order A",
-		"batch_id":                   "batch_20260615_034848_268_00_378b4bcf",
 	}
 	for key, want := range cases {
 		if got[key] != want {

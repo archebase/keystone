@@ -24,16 +24,12 @@ import (
 )
 
 const (
-	defaultDashboardTrendDays         = 7
-	maxDashboardTrendDays             = 31
-	defaultDashboardDistributionLimit = 100
-	maxDashboardDistributionLimit     = 100
-	defaultDashboardActiveLimit       = 20
-	maxDashboardActiveLimit           = 100
-	defaultDashboardRecentLimit       = 10
-	maxDashboardRecentLimit           = 50
-	defaultDashboardPreviewLimit      = 8
-	maxDashboardPreviewLimit          = 20
+	defaultDashboardTrendDays    = 7
+	maxDashboardTrendDays        = 31
+	defaultDashboardRecentLimit  = 10
+	maxDashboardRecentLimit      = 50
+	defaultDashboardPreviewLimit = 8
+	maxDashboardPreviewLimit     = 20
 )
 
 // ProductionDashboardHandler serves aggregate data for production dashboard pages.
@@ -54,21 +50,17 @@ func NewProductionDashboardHandler(db *sqlx.DB, recorderHub *services.RecorderHu
 
 // RegisterRoutes registers production dashboard aggregate routes.
 func (h *ProductionDashboardHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
-	apiV1.GET("/snapshot", h.GetSnapshot)
 	apiV1.GET("/overview", h.GetOverview)
-	apiV1.GET("/batches/:id/task-summary", h.GetBatchTaskSummary)
 }
 
 type productionDashboardQuery struct {
-	WorkstationID     string
-	FactoryID         string
-	OrganizationID    string
-	TrendDays         int
-	DistributionLimit int
-	ActiveLimit       int
-	RecentLimit       int
-	PreviewLimit      int
-	TimezoneOffset    string
+	WorkstationID  string
+	FactoryID      string
+	OrganizationID string
+	TrendDays      int
+	RecentLimit    int
+	PreviewLimit   int
+	TimezoneOffset string
 }
 
 type productionDashboardScope struct {
@@ -79,19 +71,6 @@ type productionDashboardScope struct {
 	Warning        string `json:"warning,omitempty"`
 	collectorID    int64
 	empty          bool
-}
-
-type productionDashboardSnapshotResponse struct {
-	GeneratedAt   string                     `json:"generated_at"`
-	Scope         productionDashboardScope   `json:"scope"`
-	Tasks         dashboardTaskCounts        `json:"tasks"`
-	Trend         []dashboardTrendItem       `json:"trend"`
-	Distributions dashboardDistributions     `json:"distributions"`
-	Quality       dashboardQuality           `json:"quality"`
-	System        dashboardSystemStatus      `json:"system"`
-	Stations      []dashboardStationItem     `json:"stations"`
-	ActiveBatches []dashboardActiveBatchItem `json:"active_batches"`
-	ActiveTasks   []dashboardActiveTaskItem  `json:"active_tasks"`
 }
 
 type productionDashboardOverviewResponse struct {
@@ -118,7 +97,7 @@ type dashboardOverviewSummary struct {
 	PendingTasks         int64   `json:"pending_tasks"`
 	FailedTasks          int64   `json:"failed_tasks"`
 	CancelledTasks       int64   `json:"cancelled_tasks"`
-	ActiveBatches        int64   `json:"active_batches"`
+	ActivePlans          int64   `json:"active_plans"`
 	ActiveStations       int64   `json:"active_stations"`
 	TotalStations        int64   `json:"total_stations"`
 	RobotOnlineRate      float64 `json:"robot_online_rate"`
@@ -154,17 +133,6 @@ type dashboardStatusDistributionItem struct {
 	Status string `json:"status"`
 	Label  string `json:"label"`
 	Value  int64  `json:"value"`
-}
-
-type dashboardDistributionItem struct {
-	ID    string `json:"id" db:"id"`
-	Name  string `json:"name" db:"name"`
-	Value int64  `json:"value" db:"value"`
-}
-
-type dashboardDistributions struct {
-	Scene []dashboardDistributionItem `json:"scene"`
-	SOP   []dashboardDistributionItem `json:"sop"`
 }
 
 type dashboardQuality struct {
@@ -210,12 +178,6 @@ type dashboardProductionTotals struct {
 	TotalDataSizeBytes   int64
 }
 
-type dashboardSystemStatus struct {
-	OperatingDays        int64   `json:"operating_days"`
-	TotalDataDurationSec float64 `json:"total_data_duration_sec"`
-	OnlineStations       int64   `json:"online_stations"`
-}
-
 type dashboardOverviewDevices struct {
 	Summary dashboardDeviceSummary `json:"summary"`
 }
@@ -257,32 +219,6 @@ type dashboardStationItem struct {
 	RobotName           string `json:"robot_name" db:"robot_name"`
 }
 
-type dashboardActiveBatchItem struct {
-	ID                  string `json:"id" db:"id"`
-	BatchID             string `json:"batch_id" db:"batch_id"`
-	OrderID             string `json:"order_id" db:"order_id"`
-	OrderName           string `json:"order_name" db:"order_name"`
-	SceneName           string `json:"scene_name" db:"scene_name"`
-	WorkstationID       string `json:"workstation_id" db:"workstation_id"`
-	DeviceID            string `json:"device_id" db:"device_id"`
-	CollectorOperatorID string `json:"collector_operator_id" db:"collector_operator_id"`
-	CollectorName       string `json:"collector_name" db:"collector_name"`
-	TaskCount           int64  `json:"task_count" db:"task_count"`
-	CompletedCount      int64  `json:"completed_count" db:"completed_count"`
-	FailedCount         int64  `json:"failed_count" db:"failed_count"`
-	CancelledCount      int64  `json:"cancelled_count" db:"cancelled_count"`
-}
-
-type dashboardActiveTaskItem struct {
-	ID                  string `json:"id" db:"id"`
-	SOPID               string `json:"sop_id" db:"sop_id"`
-	SOPLabel            string `json:"sop_label" db:"sop_label"`
-	SceneFull           string `json:"scene_full" db:"scene_full"`
-	DeviceID            string `json:"device_id" db:"device_id"`
-	CollectorOperatorID string `json:"collector_operator_id" db:"collector_operator_id"`
-	CollectorName       string `json:"collector_name" db:"collector_name"`
-}
-
 type dashboardRecentTaskItem struct {
 	ID          string `json:"id"`
 	TaskID      string `json:"task_id"`
@@ -291,7 +227,7 @@ type dashboardRecentTaskItem struct {
 	StatusText  string `json:"status_text"`
 	RobotName   string `json:"robot_name"`
 	StationName string `json:"station_name"`
-	BatchID     string `json:"batch_id"`
+	DCPlanID    string `json:"dc_plan_id"`
 	SceneName   string `json:"scene_name"`
 	SOPLabel    string `json:"sop_label"`
 	EpisodeID   string `json:"episode_id"`
@@ -306,7 +242,7 @@ type dashboardRecentTaskRow struct {
 	Status      string       `db:"status"`
 	RobotName   string       `db:"robot_name"`
 	StationName string       `db:"station_name"`
-	BatchID     string       `db:"batch_id"`
+	DCPlanID    string       `db:"dc_plan_id"`
 	SceneName   string       `db:"scene_name"`
 	SOPLabel    string       `db:"sop_label"`
 	EpisodeID   string       `db:"episode_id"`
@@ -346,145 +282,9 @@ type dashboardPreviewRow struct {
 	TaskID          string          `db:"task_id"`
 }
 
-type dashboardBatchTaskSummaryResponse struct {
-	BatchID string                          `json:"batch_id"`
-	Items   []dashboardBatchTaskSummaryItem `json:"items"`
-}
-
-type dashboardBatchTaskSummaryItem struct {
-	SOPID        string           `json:"sop_id" db:"sop_id"`
-	SOPLabel     string           `json:"sop_label" db:"sop_label"`
-	SceneName    string           `json:"scene_name" db:"scene_name"`
-	SubsceneName string           `json:"subscene_name" db:"subscene_name"`
-	Total        int64            `json:"total" db:"total"`
-	Statuses     map[string]int64 `json:"statuses,omitempty"`
-	Pending      int64            `json:"-" db:"pending"`
-	Ready        int64            `json:"-" db:"ready"`
-	InProgress   int64            `json:"-" db:"in_progress"`
-	Uploading    int64            `json:"-" db:"uploading"`
-	Completed    int64            `json:"-" db:"completed"`
-	Failed       int64            `json:"-" db:"failed"`
-	Cancelled    int64            `json:"-" db:"cancelled"`
-}
-
 type dashboardDB interface {
 	Get(dest interface{}, query string, args ...interface{}) error
 	Select(dest interface{}, query string, args ...interface{}) error
-}
-
-// GetSnapshot returns one aggregate snapshot for the production dashboard.
-func (h *ProductionDashboardHandler) GetSnapshot(c *gin.Context) {
-	claims := middleware.GetClaims(c)
-	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-		return
-	}
-
-	q, err := parseProductionDashboardQuery(c)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	scope, err := h.resolveProductionDashboardScope(c, claims, q)
-	if err != nil {
-		logger.Printf("[DASHBOARD] scope query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	if scope.empty {
-		c.JSON(http.StatusOK, emptyProductionDashboardSnapshot(scope))
-		return
-	}
-
-	tx, err := h.db.BeginTxx(c.Request.Context(), &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		logger.Printf("[DASHBOARD] begin read transaction failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	tasks, err := h.dashboardTaskCounts(tx, scope)
-	if err != nil {
-		logger.Printf("[DASHBOARD] task count query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	trend, err := h.dashboardTaskTrend(tx, scope, q)
-	if err != nil {
-		logger.Printf("[DASHBOARD] task trend query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	sceneDistribution, err := h.dashboardTaskDistribution(tx, scope, "scene", q.DistributionLimit)
-	if err != nil {
-		logger.Printf("[DASHBOARD] scene distribution query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	sopDistribution, err := h.dashboardTaskDistribution(tx, scope, "sop", q.DistributionLimit)
-	if err != nil {
-		logger.Printf("[DASHBOARD] sop distribution query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	quality, productionTotals, err := h.dashboardQuality(tx, scope)
-	if err != nil {
-		logger.Printf("[DASHBOARD] quality query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	stations, err := h.dashboardStations(tx, scope)
-	if err != nil {
-		logger.Printf("[DASHBOARD] stations query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	operatingDays, err := h.dashboardOperatingDays(tx, scope)
-	if err != nil {
-		logger.Printf("[DASHBOARD] operating days query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	activeBatches, err := h.dashboardActiveBatches(tx, scope, q.ActiveLimit)
-	if err != nil {
-		logger.Printf("[DASHBOARD] active batches query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-	activeTasks, err := h.dashboardActiveTasks(tx, scope, q.ActiveLimit)
-	if err != nil {
-		logger.Printf("[DASHBOARD] active tasks query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-
-	if err := tx.Commit(); err != nil {
-		logger.Printf("[DASHBOARD] commit read transaction failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard"})
-		return
-	}
-
-	c.JSON(http.StatusOK, productionDashboardSnapshotResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Scope:       scope,
-		Tasks:       tasks,
-		Trend:       trend,
-		Distributions: dashboardDistributions{
-			Scene: sceneDistribution,
-			SOP:   sopDistribution,
-		},
-		Quality: quality,
-		System: dashboardSystemStatus{
-			OperatingDays:        operatingDays,
-			TotalDataDurationSec: productionTotals.TotalDataDurationSec,
-			OnlineStations:       countOnlineDashboardStations(stations),
-		},
-		Stations:      stations,
-		ActiveBatches: activeBatches,
-		ActiveTasks:   activeTasks,
-	})
 }
 
 // GetOverview returns the production big-screen aggregate contract.
@@ -499,7 +299,6 @@ func (h *ProductionDashboardHandler) GetSnapshot(c *gin.Context) {
 // @Param        organization_id query int false "Filter by organization ID; ignored for data_collector"
 // @Param        timezone_offset query string false "Timezone offset such as +08:00"
 // @Param        trend_days query int false "Trend day count (default 7, max 31)"
-// @Param        active_limit query int false "Active batch limit (default 20, max 100)"
 // @Param        recent_limit query int false "Recent task limit (default 10, max 50)"
 // @Param        preview_limit query int false "Preview limit (default 8, max 20)"
 // @Success      200 {object} map[string]interface{} "generated_at, scope, summary, trend, task_status_distribution, quality, devices, stations, recent_tasks, previews"
@@ -581,9 +380,9 @@ func (h *ProductionDashboardHandler) GetOverview(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard overview"})
 		return
 	}
-	activeBatches, err := h.dashboardActiveBatches(tx, scope, q.ActiveLimit)
+	activePlans, err := h.dashboardActivePlanCount(tx, scope)
 	if err != nil {
-		logger.Printf("[DASHBOARD] overview active batch query failed: %v", err)
+		logger.Printf("[DASHBOARD] overview active plan query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get production dashboard overview"})
 		return
 	}
@@ -613,7 +412,7 @@ func (h *ProductionDashboardHandler) GetOverview(c *gin.Context) {
 	c.JSON(http.StatusOK, productionDashboardOverviewResponse{
 		GeneratedAt:            time.Now().UTC().Format(time.RFC3339),
 		Scope:                  scope,
-		Summary:                buildOverviewSummary(tasks, overviewTaskMetrics, todayProductionTotals, quality, productionTotals, devices, stationsOverview, len(activeBatches)),
+		Summary:                buildOverviewSummary(tasks, overviewTaskMetrics, todayProductionTotals, quality, productionTotals, devices, stationsOverview, activePlans),
 		Trend:                  trend,
 		TaskStatusDistribution: buildTaskStatusDistribution(tasks),
 		Quality: dashboardOverviewQuality{
@@ -629,96 +428,6 @@ func (h *ProductionDashboardHandler) GetOverview(c *gin.Context) {
 		Stations:    stationsOverview,
 		RecentTasks: recentTasks,
 		Previews:    previews,
-	})
-}
-
-// GetBatchTaskSummary returns task status counts grouped by SOP/scene/subscene for one batch.
-func (h *ProductionDashboardHandler) GetBatchTaskSummary(c *gin.Context) {
-	claims := middleware.GetClaims(c)
-	if claims == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-		return
-	}
-
-	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
-	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
-		return
-	}
-
-	scope, err := h.resolveProductionDashboardScope(c, claims, productionDashboardQuery{})
-	if err != nil {
-		logger.Printf("[DASHBOARD] scope query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get batch task summary"})
-		return
-	}
-	if scope.empty {
-		c.JSON(http.StatusOK, dashboardBatchTaskSummaryResponse{BatchID: strconv.FormatInt(id, 10), Items: []dashboardBatchTaskSummaryItem{}})
-		return
-	}
-
-	conditions := []string{"b.id = ?", "b.deleted_at IS NULL"}
-	args := []interface{}{id}
-	conditions, args = appendDashboardBatchScope(conditions, args, scope)
-
-	var exists int
-	if err := h.db.Get(&exists, `
-		SELECT 1
-		FROM batches b
-		LEFT JOIN workstations ws ON ws.id = b.workstation_id AND ws.deleted_at IS NULL
-		WHERE `+strings.Join(conditions, " AND ")+`
-		LIMIT 1
-	`, args...); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
-			return
-		}
-		logger.Printf("[DASHBOARD] batch scope query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get batch task summary"})
-		return
-	}
-
-	query := `
-		SELECT
-			COALESCE(CAST(t.sop_id AS CHAR), '') AS sop_id,
-			` + dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version") + ` AS sop_label,
-			COALESCE(t.scene_name, '') AS scene_name,
-			COALESCE(t.subscene_name, '') AS subscene_name,
-			COUNT(1) AS total,
-			COALESCE(SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
-			COALESCE(SUM(CASE WHEN t.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready,
-			COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
-			COALESCE(SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END), 0) AS uploading,
-			COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
-			COALESCE(SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
-			COALESCE(SUM(CASE WHEN t.status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled
-		FROM tasks t
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
-		WHERE t.batch_id = ? AND t.deleted_at IS NULL
-		GROUP BY t.sop_id, t.scene_name, t.subscene_name, s.slug, s.version
-		ORDER BY sop_label ASC, scene_name ASC, subscene_name ASC
-	`
-	items := []dashboardBatchTaskSummaryItem{}
-	if err := h.db.Select(&items, query, id); err != nil {
-		logger.Printf("[DASHBOARD] batch task summary query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get batch task summary"})
-		return
-	}
-	for i := range items {
-		items[i].Statuses = map[string]int64{
-			"pending":     items[i].Pending,
-			"ready":       items[i].Ready,
-			"in_progress": items[i].InProgress,
-			"uploading":   items[i].Uploading,
-			"completed":   items[i].Completed,
-			"failed":      items[i].Failed,
-			"cancelled":   items[i].Cancelled,
-		}
-	}
-
-	c.JSON(http.StatusOK, dashboardBatchTaskSummaryResponse{
-		BatchID: strconv.FormatInt(id, 10),
-		Items:   items,
 	})
 }
 
@@ -739,14 +448,6 @@ func parseProductionDashboardQuery(c *gin.Context) (productionDashboardQuery, er
 	if err != nil {
 		return productionDashboardQuery{}, err
 	}
-	distributionLimit, err := parseBoundedIntQuery(c, "distribution_limit", defaultDashboardDistributionLimit, 1, maxDashboardDistributionLimit)
-	if err != nil {
-		return productionDashboardQuery{}, err
-	}
-	activeLimit, err := parseBoundedIntQuery(c, "active_limit", defaultDashboardActiveLimit, 1, maxDashboardActiveLimit)
-	if err != nil {
-		return productionDashboardQuery{}, err
-	}
 	recentLimit, err := parseBoundedIntQuery(c, "recent_limit", defaultDashboardRecentLimit, 1, maxDashboardRecentLimit)
 	if err != nil {
 		return productionDashboardQuery{}, err
@@ -761,15 +462,13 @@ func parseProductionDashboardQuery(c *gin.Context) (productionDashboardQuery, er
 	}
 
 	return productionDashboardQuery{
-		WorkstationID:     workstationID,
-		FactoryID:         factoryID,
-		OrganizationID:    orgID,
-		TrendDays:         trendDays,
-		DistributionLimit: distributionLimit,
-		ActiveLimit:       activeLimit,
-		RecentLimit:       recentLimit,
-		PreviewLimit:      previewLimit,
-		TimezoneOffset:    timezoneOffset,
+		WorkstationID:  workstationID,
+		FactoryID:      factoryID,
+		OrganizationID: orgID,
+		TrendDays:      trendDays,
+		RecentLimit:    recentLimit,
+		PreviewLimit:   previewLimit,
+		TimezoneOffset: timezoneOffset,
 	}, nil
 }
 
@@ -835,21 +534,6 @@ func (h *ProductionDashboardHandler) resolveProductionDashboardScope(c *gin.Cont
 		return scope, nil
 	default:
 		return productionDashboardScope{}, fmt.Errorf("unsupported role")
-	}
-}
-
-func emptyProductionDashboardSnapshot(scope productionDashboardScope) productionDashboardSnapshotResponse {
-	return productionDashboardSnapshotResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Scope:       scope,
-		Trend:       []dashboardTrendItem{},
-		Distributions: dashboardDistributions{
-			Scene: []dashboardDistributionItem{},
-			SOP:   []dashboardDistributionItem{},
-		},
-		Stations:      []dashboardStationItem{},
-		ActiveBatches: []dashboardActiveBatchItem{},
-		ActiveTasks:   []dashboardActiveTaskItem{},
 	}
 }
 
@@ -951,55 +635,6 @@ func (h *ProductionDashboardHandler) dashboardTodayProductionTotals(db dashboard
 	}, nil
 }
 
-func (h *ProductionDashboardHandler) dashboardTaskTrend(db dashboardDB, scope productionDashboardScope, q productionDashboardQuery) ([]dashboardTrendItem, error) {
-	location := fixedZoneFromOffset(q.TimezoneOffset)
-	endLocal := time.Now().In(location).AddDate(0, 0, 1)
-	endLocal = time.Date(endLocal.Year(), endLocal.Month(), endLocal.Day(), 0, 0, 0, 0, location)
-	startLocal := endLocal.AddDate(0, 0, -q.TrendDays)
-	startUTC := startLocal.UTC()
-	endUTC := endLocal.UTC()
-
-	eventTimeExpr := "COALESCE(t.assigned_at, t.started_at, t.completed_at, t.created_at)"
-	localEventExpr := "COALESCE(CONVERT_TZ(" + eventTimeExpr + ", @@session.time_zone, ?), " + eventTimeExpr + ")"
-	conditions := []string{"t.deleted_at IS NULL", eventTimeExpr + " >= ?", eventTimeExpr + " < ?"}
-	args := []interface{}{q.TimezoneOffset, startUTC, endUTC}
-	conditions, args = appendDashboardTaskScope(conditions, args, scope)
-
-	query := `
-		SELECT
-			DATE_FORMAT(` + localEventExpr + `, '%m-%d') AS date,
-			COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
-			COALESCE(SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
-			COALESCE(SUM(CASE WHEN t.status = 'uploading' THEN 1 ELSE 0 END), 0) AS uploading,
-			COALESCE(SUM(CASE WHEN t.status IN ('pending', 'ready') THEN 1 ELSE 0 END), 0) AS pending,
-			COALESCE(SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed
-		FROM tasks t
-		WHERE ` + strings.Join(conditions, " AND ") + `
-		GROUP BY date
-		ORDER BY MIN(` + eventTimeExpr + `) ASC
-	`
-	rows := []dashboardTrendItem{}
-	if err := db.Select(&rows, query, args...); err != nil {
-		return nil, err
-	}
-
-	byDate := make(map[string]dashboardTrendItem, len(rows))
-	for _, row := range rows {
-		row.Total = row.Completed + row.InProgress + row.Uploading + row.Pending + row.Failed
-		byDate[row.Date] = row
-	}
-	items := make([]dashboardTrendItem, 0, q.TrendDays)
-	for day := startLocal; day.Before(endLocal); day = day.AddDate(0, 0, 1) {
-		label := day.Format("01-02")
-		item, ok := byDate[label]
-		if !ok {
-			item = dashboardTrendItem{Date: label}
-		}
-		items = append(items, item)
-	}
-	return items, nil
-}
-
 func (h *ProductionDashboardHandler) dashboardDataProductionTrend(db dashboardDB, scope productionDashboardScope, q productionDashboardQuery) ([]dashboardTrendItem, error) {
 	location := fixedZoneFromOffset(q.TimezoneOffset)
 	endLocal := time.Now().In(location).AddDate(0, 0, 1)
@@ -1043,36 +678,6 @@ func (h *ProductionDashboardHandler) dashboardDataProductionTrend(db dashboardDB
 		items = append(items, item)
 	}
 	return items, nil
-}
-
-func (h *ProductionDashboardHandler) dashboardTaskDistribution(db dashboardDB, scope productionDashboardScope, dimension string, limit int) ([]dashboardDistributionItem, error) {
-	idExpr := "COALESCE(CAST(t.scene_id AS CHAR), '')"
-	nameExpr := "COALESCE(NULLIF(TRIM(t.scene_name), ''), '未分类')"
-	joinSQL := ""
-	if dimension == "sop" {
-		idExpr = "COALESCE(CAST(t.sop_id AS CHAR), '')"
-		nameExpr = dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version")
-		joinSQL = "LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL"
-	}
-
-	conditions := []string{"t.deleted_at IS NULL"}
-	args := []interface{}{}
-	conditions, args = appendDashboardTaskScope(conditions, args, scope)
-	query := `
-		SELECT
-			` + idExpr + ` AS id,
-			COALESCE(NULLIF(MAX(` + nameExpr + `), ''), '未分类') AS name,
-			COUNT(1) AS value
-		FROM tasks t
-		` + joinSQL + `
-		WHERE ` + strings.Join(conditions, " AND ") + `
-		GROUP BY ` + idExpr + `
-		ORDER BY value DESC, name ASC
-		LIMIT ?
-	`
-	args = append(args, limit)
-	items := []dashboardDistributionItem{}
-	return items, db.Select(&items, query, args...)
 }
 
 func (h *ProductionDashboardHandler) dashboardQuality(db dashboardDB, scope productionDashboardScope) (dashboardQuality, dashboardProductionTotals, error) {
@@ -1168,114 +773,22 @@ func (h *ProductionDashboardHandler) dashboardDeviceConnections(db dashboardDB, 
 	return items, db.Select(&items, query, args...)
 }
 
-func (h *ProductionDashboardHandler) dashboardOperatingDays(db dashboardDB, scope productionDashboardScope) (int64, error) {
-	conditions := []string{"t.deleted_at IS NULL"}
+func (h *ProductionDashboardHandler) dashboardActivePlanCount(db dashboardDB, scope productionDashboardScope) (int64, error) {
+	conditions := []string{
+		"t.deleted_at IS NULL",
+		"t.dc_plan_id IS NOT NULL",
+		"t.status IN ('pending', 'ready', 'in_progress', 'uploading')",
+	}
 	args := []interface{}{}
 	conditions, args = appendDashboardTaskScope(conditions, args, scope)
-	query := `
-		SELECT COALESCE(TIMESTAMPDIFF(DAY, MIN(t.created_at), UTC_TIMESTAMP()) + 1, 0)
+
+	var count int64
+	err := db.Get(&count, `
+		SELECT COUNT(DISTINCT t.dc_plan_id)
 		FROM tasks t
-		WHERE ` + strings.Join(conditions, " AND ")
-	var days sql.NullInt64
-	if err := db.Get(&days, query, args...); err != nil {
-		return 0, err
-	}
-	value := nullInt64(days)
-	if value < 0 {
-		return 0, nil
-	}
-	return value, nil
-}
-
-func (h *ProductionDashboardHandler) dashboardActiveBatches(db dashboardDB, scope productionDashboardScope, limit int) ([]dashboardActiveBatchItem, error) {
-	query, args := buildDashboardActiveBatchesQuery(scope, limit)
-	items := []dashboardActiveBatchItem{}
-	return items, db.Select(&items, query, args...)
-}
-
-func buildDashboardActiveBatchesQuery(scope productionDashboardScope, limit int) (string, []interface{}) {
-	conditions := []string{"b.deleted_at IS NULL", "b.status = 'active'"}
-	args := []interface{}{}
-	conditions, args = appendDashboardBatchScope(conditions, args, scope)
-	query := `
-		WITH active_batches AS (
-			SELECT
-				b.id,
-				b.batch_id,
-				b.order_id,
-				b.workstation_id,
-				b.started_at,
-				b.updated_at,
-				b.created_at
-			FROM batches b
-			LEFT JOIN workstations ws ON ws.id = b.workstation_id AND ws.deleted_at IS NULL
-			WHERE ` + strings.Join(conditions, " AND ") + `
-			ORDER BY COALESCE(b.started_at, b.updated_at, b.created_at) DESC, b.id DESC
-			LIMIT ?
-		)
-		SELECT
-			CAST(b.id AS CHAR) AS id,
-			COALESCE(b.batch_id, '') AS batch_id,
-			COALESCE(CAST(b.order_id AS CHAR), '') AS order_id,
-			COALESCE(o.name, '') AS order_name,
-			COALESCE(sc.name, '') AS scene_name,
-			COALESCE(CAST(b.workstation_id AS CHAR), '') AS workstation_id,
-			COALESCE(ws.robot_serial, '') AS device_id,
-			COALESCE(ws.collector_operator_id, '') AS collector_operator_id,
-			COALESCE(ws.collector_name, '') AS collector_name,
-			COALESCE(tc.task_count, 0) AS task_count,
-			COALESCE(tc.completed_count, 0) AS completed_count,
-			COALESCE(tc.failed_count, 0) AS failed_count,
-			COALESCE(tc.cancelled_count, 0) AS cancelled_count
-		FROM active_batches b
-		LEFT JOIN orders o ON o.id = b.order_id AND o.deleted_at IS NULL
-		LEFT JOIN scenes sc ON sc.id = o.scene_id AND sc.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = b.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN (
-			SELECT
-				ab.id AS batch_id,
-				COUNT(t.id) AS task_count,
-				COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_count,
-				COALESCE(SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_count,
-				COALESCE(SUM(CASE WHEN t.status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled_count
-			FROM active_batches ab
-			LEFT JOIN tasks t ON t.batch_id = ab.id AND t.deleted_at IS NULL
-			GROUP BY ab.id
-		) tc ON tc.batch_id = b.id
-		ORDER BY COALESCE(b.started_at, b.updated_at, b.created_at) DESC, b.id DESC
-	`
-	args = append(args, limit)
-	return query, args
-}
-
-func (h *ProductionDashboardHandler) dashboardActiveTasks(db dashboardDB, scope productionDashboardScope, limit int) ([]dashboardActiveTaskItem, error) {
-	conditions := []string{"t.deleted_at IS NULL", "t.status = 'in_progress'"}
-	args := []interface{}{}
-	conditions, args = appendDashboardTaskScope(conditions, args, scope)
-	query := `
-		SELECT
-			COALESCE(t.task_id, CAST(t.id AS CHAR)) AS id,
-			COALESCE(CAST(t.sop_id AS CHAR), '') AS sop_id,
-			` + dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version") + ` AS sop_label,
-			CASE
-				WHEN NULLIF(TRIM(COALESCE(t.scene_name, '')), '') IS NOT NULL
-					AND NULLIF(TRIM(COALESCE(t.subscene_name, '')), '') IS NOT NULL
-					THEN CONCAT(t.scene_name, '@', t.subscene_name)
-				ELSE COALESCE(NULLIF(TRIM(t.scene_name), ''), NULLIF(TRIM(t.subscene_name), ''), '-')
-			END AS scene_full,
-			COALESCE(ws.robot_serial, '') AS device_id,
-			COALESCE(ws.collector_operator_id, '') AS collector_operator_id,
-			COALESCE(ws.collector_name, '') AS collector_name
-		FROM tasks t
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
-		WHERE ` + strings.Join(conditions, " AND ") + `
-		ORDER BY COALESCE(t.started_at, t.assigned_at, t.updated_at, t.created_at) DESC, t.id DESC
-		LIMIT ?
-	`
-	args = append(args, limit)
-	items := []dashboardActiveTaskItem{}
-	return items, db.Select(&items, query, args...)
+		WHERE `+strings.Join(conditions, " AND "), args...)
+	return count, err
 }
 
 func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope productionDashboardScope, limit int) ([]dashboardRecentTaskItem, error) {
@@ -1292,7 +805,7 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 			COALESCE(t.status, '') AS status,
 			COALESCE(ws.robot_name, ws.robot_serial, '') AS robot_name,
 			COALESCE(ws.name, CAST(ws.id AS CHAR), '') AS station_name,
-			COALESCE(b.batch_id, '') AS batch_id,
+			COALESCE(CAST(t.dc_plan_id AS CHAR), '') AS dc_plan_id,
 			COALESCE(NULLIF(t.scene_name, ''), '') AS scene_name,
 			` + dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version") + ` AS sop_label,
 			COALESCE(e.episode_id, '') AS episode_id,
@@ -1300,7 +813,6 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 			` + updatedAtExpr + ` AS updated_at
 		FROM tasks t
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
-		LEFT JOIN batches b ON b.id = t.batch_id AND b.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN (
 			SELECT task_id, MAX(id) AS latest_id
@@ -1331,7 +843,7 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 			StatusText:  dashboardTaskStatusText(row.Status),
 			RobotName:   row.RobotName,
 			StationName: row.StationName,
-			BatchID:     row.BatchID,
+			DCPlanID:    row.DCPlanID,
 			SceneName:   row.SceneName,
 			SOPLabel:    row.SOPLabel,
 			EpisodeID:   row.EpisodeID,
@@ -1423,7 +935,7 @@ func buildOverviewSummary(
 	productionTotals dashboardProductionTotals,
 	devices dashboardOverviewDevices,
 	stations dashboardOverviewStations,
-	activeBatchCount int,
+	activePlanCount int64,
 ) dashboardOverviewSummary {
 	return dashboardOverviewSummary{
 		TotalTasks:           tasks.Total,
@@ -1436,7 +948,7 @@ func buildOverviewSummary(
 		PendingTasks:         overviewTaskMetrics.Pending,
 		FailedTasks:          overviewTaskMetrics.Failed,
 		CancelledTasks:       tasks.Cancelled,
-		ActiveBatches:        int64(activeBatchCount),
+		ActivePlans:          activePlanCount,
 		ActiveStations:       stations.Summary.Active,
 		TotalStations:        stations.Summary.Total,
 		RobotOnlineRate:      devices.Summary.OnlineRate,
@@ -1618,27 +1130,6 @@ func appendDashboardRobotScope(conditions []string, args []interface{}, scope pr
 	return conditions, args
 }
 
-func appendDashboardBatchScope(conditions []string, args []interface{}, scope productionDashboardScope) ([]string, []interface{}) {
-	if scope.Role == "data_collector" {
-		conditions = append(conditions, "ws.data_collector_id = ?")
-		args = append(args, scope.collectorID)
-		return conditions, args
-	}
-	if scope.WorkstationID != "" {
-		conditions = append(conditions, "CAST(b.workstation_id AS CHAR) = ?")
-		args = append(args, scope.WorkstationID)
-	}
-	if scope.FactoryID != "" {
-		conditions = append(conditions, "CAST(ws.factory_id AS CHAR) = ?")
-		args = append(args, scope.FactoryID)
-	}
-	if scope.OrganizationID != "" {
-		conditions = append(conditions, "CAST(b.organization_id AS CHAR) = ?")
-		args = append(args, scope.OrganizationID)
-	}
-	return conditions, args
-}
-
 func dashboardSOPLabelSQL(sopIDExpr string, slugExpr string, versionExpr string) string {
 	return `CASE
 		WHEN ` + sopIDExpr + ` IS NULL THEN '未分类'
@@ -1693,16 +1184,6 @@ func dashboardTaskStatusText(status string) string {
 	default:
 		return firstNonEmpty(status, "未知")
 	}
-}
-
-func countOnlineDashboardStations(stations []dashboardStationItem) int64 {
-	var count int64
-	for _, station := range stations {
-		if station.Status == "active" {
-			count++
-		}
-	}
-	return count
 }
 
 func fixedZoneFromOffset(offset string) *time.Location {

@@ -458,7 +458,7 @@ func TestStationHandlerUpdateHistoricalStationReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestStationHandlerDeleteRejectsPendingOrActiveBatches(t *testing.T) {
+func TestStationHandlerDeleteRejectsPendingOrActiveTasks(t *testing.T) {
 	db := newTestStationHandlerDB(t)
 	defer db.Close()
 
@@ -481,7 +481,7 @@ func TestStationHandlerDeleteRejectsPendingOrActiveBatches(t *testing.T) {
 			args: []any{now, now},
 		},
 		{
-			sql:  `INSERT INTO batches (id, workstation_id, status, deleted_at) VALUES (1, 1, 'pending', NULL)`,
+			sql:  `INSERT INTO tasks (id, workstation_id, status, deleted_at) VALUES (1, 1, 'pending', NULL)`,
 			args: nil,
 		},
 	}
@@ -579,7 +579,7 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP,
 			deleted_at TIMESTAMP NULL
 		)`,
-		`CREATE TABLE batches (
+		`CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY,
 			workstation_id INTEGER NOT NULL,
 			status TEXT NOT NULL,
