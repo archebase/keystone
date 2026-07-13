@@ -72,6 +72,7 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 type dataOpsEpisodeQuery struct {
 	Pagination           PaginationParams
+	WorkspaceIDs         []int64
 	CreatedAtFrom        time.Time
 	CreatedAtTo          time.Time
 	HasCreatedAtFrom     bool
@@ -155,6 +156,7 @@ type DataOpsEpisodeListResponse struct {
 // @Produce      json
 // @Param        limit                  query     int     false  "Max results"
 // @Param        offset                 query     int     false  "Pagination offset"
+// @Param        workspace_id           query     string  false  "Comma-separated Workspace IDs"
 // @Param        created_at_from        query     string  false  "created_at >= RFC3339"
 // @Param        created_at_to          query     string  false  "created_at <= RFC3339"
 // @Param        q                      query     string  false  "Search episode/task/quality text"
@@ -246,6 +248,10 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
+	workspaceIDs, err := parseNonNegativeInt64List(c.Query("workspace_id"), "workspace_id")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
 
 	qaStatuses, err := parseStatsStringListQuery(c, "qa_status")
 	if err != nil {
@@ -290,6 +296,7 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 
 	out := dataOpsEpisodeQuery{
 		Pagination:           pagination,
+		WorkspaceIDs:         workspaceIDs,
 		Keyword:              strings.TrimSpace(c.Query("q")),
 		QAStatuses:           qaStatuses,
 		SyncStatuses:         syncStatuses,
@@ -352,6 +359,7 @@ func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 		where += " AND e.created_at <= ?"
 		args = append(args, q.CreatedAtTo)
 	}
+	where, args = appendInt64InFilter(where, args, "COALESCE(t.organization_id, ws.organization_id)", q.WorkspaceIDs)
 
 	where, args = appendStringInFilter(where, args, "e.qa_status", q.QAStatuses)
 	where, args = appendInt64InFilter(where, args, "e.scene_id", q.SceneIDs)

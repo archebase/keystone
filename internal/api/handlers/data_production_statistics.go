@@ -51,6 +51,7 @@ type dataProductionStatsQuery struct {
 	StartTime            time.Time
 	EndTime              time.Time
 	Granularity          string
+	WorkspaceIDs         []int64
 	SourceID             string
 	SceneIDs             []int64
 	RobotDeviceIDs       []string
@@ -268,6 +269,10 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 			return dataProductionStatsQuery{}, fmt.Errorf("granularity must be one of hour, day, week, month")
 		}
 	}
+	workspaceIDs, err := parseNonNegativeInt64List(c.Query("workspace_id"), "workspace_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
 
 	sceneIDs, err := parsePositiveInt64List(c.Query("scene_id"), "scene_id")
 	if err != nil {
@@ -312,6 +317,7 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 		StartTime:            startTime,
 		EndTime:              endTime,
 		Granularity:          granularity,
+		WorkspaceIDs:         workspaceIDs,
 		SourceID:             strings.TrimSpace(c.Query("source_id")),
 		SceneIDs:             sceneIDs,
 		RobotDeviceIDs:       robotDeviceIDs,
@@ -891,6 +897,7 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 		conditions = append(conditions, "source_id = ?")
 		args = append(args, q.SourceID)
 	}
+	conditions, args = appendStatsInt64InCondition(conditions, args, "workspace_id", q.WorkspaceIDs)
 	conditions, args = appendStatsInt64InCondition(conditions, args, "scene_id", q.SceneIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "robot_device_id", q.RobotDeviceIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "robot_type_id", q.RobotTypeIDs)
@@ -955,6 +962,7 @@ func productionRecordsSQL() string {
 			CONCAT('episode:', e.id) AS id,
 			COALESCE(e.episode_id, '') AS episode_id,
 			COALESCE(t.completed_at, e.created_at) AS event_time,
+			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
 			COALESCE(r.device_id, ws.robot_serial, CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR)), 'unknown') AS source_name,
 			e.scene_id AS scene_id,

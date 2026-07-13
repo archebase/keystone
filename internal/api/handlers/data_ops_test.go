@@ -24,7 +24,7 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&scene_id=1,2&sop_id=9,10&robot_type_id=3&robot_device_id=robot-001,robot-002&collector_operator_id=op001&label=recalled_batch", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&workspace_id=0&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&scene_id=1,2&sop_id=9,10&robot_type_id=3&robot_device_id=robot-001,robot-002&collector_operator_id=op001&label=recalled_batch", nil)
 
 	got, err := parseDataOpsEpisodeQuery(c)
 	if err != nil {
@@ -32,6 +32,9 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	}
 	if got.Pagination.Limit != 20 || got.Pagination.Offset != 40 {
 		t.Fatalf("unexpected pagination: %+v", got.Pagination)
+	}
+	if len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != 0 {
+		t.Fatalf("unexpected workspace ids: %#v", got.WorkspaceIDs)
 	}
 	if !got.HasCreatedAtFrom || !got.HasCreatedAtTo || got.Keyword != "ep" || got.Label != "recalled_batch" {
 		t.Fatalf("unexpected scalar filters: %+v", got)
@@ -53,6 +56,34 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	}
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
+	}
+}
+
+func TestDataOpsEpisodeWhereIncludesWorkspaceFilter(t *testing.T) {
+	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{WorkspaceIDs: []int64{0, 12}})
+	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.organization_id) IN (?,?)") {
+		t.Fatalf("workspace filter SQL should use task/workstation fallback: %s", sql)
+	}
+	if len(args) != 2 || args[0] != int64(0) || args[1] != int64(12) {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
+func TestDataOpsHilbertSyncRejectsDefaultWorkspaceScope(t *testing.T) {
+	if dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{}) {
+		t.Fatal("bulk Hilbert sync must require an explicit Workspace")
+	}
+	if dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{WorkspaceIDs: []int64{0}}) {
+		t.Fatal("default Workspace must not allow Hilbert sync")
+	}
+	if dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{WorkspaceIDs: []int64{0, 12}}) {
+		t.Fatal("mixed scope containing default Workspace must not allow Hilbert sync")
+	}
+	if dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{WorkspaceIDs: []int64{12, 13}}) {
+		t.Fatal("bulk Hilbert sync must not span multiple Workspaces")
+	}
+	if !dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{WorkspaceIDs: []int64{12}}) {
+		t.Fatal("Hilbert Workspace should allow sync")
 	}
 }
 
@@ -114,6 +145,7 @@ func TestDataOpsLatestQueriesOnlyUsePageEpisodeIDs(t *testing.T) {
 
 func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	got, err := parseDataOpsBulkEpisodeFilters(DataOpsBulkEpisodeFilters{
+		WorkspaceID:         "12",
 		CreatedAtFrom:       "2026-06-01T00:00:00Z",
 		CreatedAtTo:         "2026-06-06T00:00:00Z",
 		Keyword:             "ep",
@@ -133,6 +165,9 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	}
 	if got.Pagination.Limit != 0 || got.Pagination.Offset != 0 {
 		t.Fatalf("bulk filters should ignore pagination: %+v", got.Pagination)
+	}
+	if len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != 12 {
+		t.Fatalf("unexpected workspace ids: %#v", got.WorkspaceIDs)
 	}
 	if !got.HasCreatedAtFrom || !got.HasCreatedAtTo || got.Keyword != "ep" || got.Label != "recalled_batch" {
 		t.Fatalf("unexpected scalar filters: %+v", got)

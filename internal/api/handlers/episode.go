@@ -272,7 +272,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			t.task_id AS task_public_id,
 			e.dc_plan_id,
 			e.local_dc_plan_id,
-			dp.workspace_id,
+			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
 			dp.name AS dc_plan_name,
 			dp.dc_type,
 			s.slug AS sop_slug,
@@ -299,7 +299,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
 		WHERE e.deleted_at IS NULL
@@ -626,7 +626,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			t.task_id AS task_public_id,
 			e.dc_plan_id,
 			e.local_dc_plan_id,
-			dp.workspace_id,
+			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
 			dp.name AS dc_plan_name,
 			dp.dc_type,
 			s.slug AS sop_slug,
@@ -654,7 +654,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
 		WHERE e.id = ? AND e.deleted_at IS NULL
