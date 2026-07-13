@@ -46,11 +46,6 @@ func TestGetTaskConfigUsesConfiguredCallbackPublicBaseURL(t *testing.T) {
 	if _, ok := resp["skills"]; ok {
 		t.Fatalf("task config unexpectedly contains skills: %#v", resp["skills"])
 	}
-	for _, field := range []string{"factory", "scene", "subscene", "sop_id", "initial_scene_layout"} {
-		if _, ok := resp[field]; ok {
-			t.Fatalf("task config unexpectedly contains legacy field %q: %#v", field, resp[field])
-		}
-	}
 	if resp["workspace_id"] != float64(123) || resp["dc_plan_id"] != float64(1001) || resp["dc_type"] != "ego" {
 		t.Fatalf("unexpected plan config fields: %#v", resp)
 	}
@@ -68,13 +63,8 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			task_id TEXT NOT NULL,
 			workstation_id INTEGER,
-			factory_id INTEGER,
-			sop_id INTEGER,
 			dc_plan_id INTEGER,
 			organization_id INTEGER,
-			scene_name TEXT,
-			subscene_name TEXT,
-			initial_scene_layout TEXT,
 			metadata TEXT,
 			status TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL

@@ -58,12 +58,6 @@ type syncEpisodeUploadRow struct {
 	CloudSynced             bool           `db:"cloud_synced"`
 	Metadata                sql.NullString `db:"metadata"`
 	WorkstationID           sql.NullInt64  `db:"workstation_id"`
-	SOPSlug                 sql.NullString `db:"sop_slug"`
-	SOPVersion              sql.NullString `db:"sop_version"`
-	SOPDescription          sql.NullString `db:"sop_description"`
-	Scene                   sql.NullString `db:"scene"`
-	Subscene                sql.NullString `db:"subscene"`
-	RobotType               sql.NullString `db:"robot_type"`
 	DataCollectorOperatorID sql.NullString `db:"data_collector_operator_id"`
 	DataCollectorName       sql.NullString `db:"data_collector_name"`
 }
@@ -970,12 +964,6 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 			e.cloud_synced,
 			e.metadata,
 			e.workstation_id,
-			NULL AS sop_slug,
-			NULL AS sop_version,
-			NULL AS sop_description,
-			NULL AS scene,
-			NULL AS subscene,
-			NULL AS robot_type,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS data_collector_operator_id,
 			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS data_collector_name
 		FROM episodes e
@@ -1058,12 +1046,6 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 		Context: dpRawTagContext{
 			DCPlanID:                uploadContext.DCPlanID,
 			WorkspaceID:             uploadContext.WorkspaceID,
-			SOPSlug:                 ep.SOPSlug,
-			SOPVersion:              ep.SOPVersion,
-			SOPDescription:          ep.SOPDescription,
-			Scene:                   ep.Scene,
-			Subscene:                ep.Subscene,
-			RobotType:               ep.RobotType,
 			DataCollectorOperatorID: ep.DataCollectorOperatorID,
 			DataCollectorName:       ep.DataCollectorName,
 		},

@@ -86,114 +86,14 @@ CREATE TABLE IF NOT EXISTS dc_plan (
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS factories (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    slug VARCHAR(100) NOT NULL,
-    location VARCHAR(255),
-    timezone VARCHAR(50) DEFAULT 'UTC',
-    settings JSON DEFAULT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL,
-    _slug_unique VARCHAR(200) GENERATED ALWAYS AS (CONCAT(IFNULL(slug, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    _name_unique VARCHAR(400) GENERATED ALWAYS AS (CONCAT(IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    UNIQUE INDEX idx_slug_del (_slug_unique),
-    UNIQUE INDEX idx_name_del (_name_unique),
-    INDEX idx_deleted (deleted_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS scenes (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    factory_id BIGINT NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    initial_scene_layout_template TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL,
-    _name_unique VARCHAR(400) GENERATED ALWAYS AS (CONCAT(IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    UNIQUE INDEX idx_name_del (_name_unique),
-    INDEX idx_factory (factory_id),
-    INDEX idx_deleted (deleted_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS subscenes (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    scene_id BIGINT NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    initial_scene_layout TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL,
-    _name_unique VARCHAR(400) GENERATED ALWAYS AS (CONCAT(IFNULL(scene_id, ''), '|', IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    UNIQUE INDEX idx_name_del (_name_unique),
-    INDEX idx_scene (scene_id),
-    INDEX idx_deleted (deleted_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ============================================================
--- Procedure
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS sops (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    slug VARCHAR(100) NOT NULL,
-    description TEXT,
-    version VARCHAR(20) DEFAULT '1.0.0',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL,
-    _slug_unique VARCHAR(300) GENERATED ALWAYS AS (CONCAT(IFNULL(slug, ''), '|', IFNULL(version, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    UNIQUE INDEX idx_slug_ver_del (_slug_unique),
-    INDEX idx_deleted (deleted_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 -- ============================================================
 -- Operational Resources
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS robot_types (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    model VARCHAR(255) NOT NULL,
-    manufacturer VARCHAR(255),
-    end_effector VARCHAR(100),
-    sensor_suite JSON,
-    ros_topics JSON NOT NULL,
-    capabilities JSON,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL,
-    _model_unique VARCHAR(300) GENERATED ALWAYS AS (CONCAT(IFNULL(model, ''), '|', IFNULL(deleted_at, ''))) STORED,
-    UNIQUE INDEX idx_model_del (_model_unique),
-    INDEX idx_deleted (deleted_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS robot_type_config_templates (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    robot_type_id BIGINT NOT NULL,
-    filename VARCHAR(128) NOT NULL,
-    content MEDIUMTEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL,
-    _active_unique VARCHAR(300) GENERATED ALWAYS AS (
-        IF(deleted_at IS NULL, CONCAT(robot_type_id, '|', filename), NULL)
-    ) STORED,
-    UNIQUE INDEX idx_robot_type_config_templates_active (_active_unique),
-    INDEX idx_robot_type_config_templates_robot_type (robot_type_id),
-    INDEX idx_robot_type_config_templates_filename (filename),
-    INDEX idx_robot_type_config_templates_deleted (deleted_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 CREATE TABLE IF NOT EXISTS robots (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    robot_type_id BIGINT NULL,
     device_id VARCHAR(100) NOT NULL,
     workspace_id BIGINT NOT NULL DEFAULT 0,
-    factory_id BIGINT NULL,
     asset_id VARCHAR(100),
     status ENUM('active', 'maintenance', 'retired') DEFAULT 'active',
     metadata JSON DEFAULT NULL,
@@ -210,9 +110,7 @@ CREATE TABLE IF NOT EXISTS robots (
     ) STORED,
     UNIQUE INDEX idx_device_del (_device_unique),
     UNIQUE INDEX idx_asset_active_unique (_asset_unique),
-    INDEX idx_type (robot_type_id),
     INDEX idx_workspace (workspace_id),
-    INDEX idx_factory (factory_id),
     INDEX idx_status (status),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -246,7 +144,6 @@ CREATE TABLE IF NOT EXISTS workstations (
     data_collector_id BIGINT NOT NULL,
     collector_name VARCHAR(255) COMMENT 'Denormalized: avoids join to data_collectors',
     collector_operator_id VARCHAR(100) COMMENT 'Denormalized: avoids join to data_collectors',
-    factory_id BIGINT NULL,
     organization_id BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(255),
     status ENUM('active', 'inactive', 'break', 'offline') DEFAULT 'active',
@@ -267,24 +164,11 @@ CREATE TABLE IF NOT EXISTS workstations (
     UNIQUE INDEX idx_current_robot (_current_robot_unique),
     INDEX idx_robot (robot_id),
     INDEX idx_collector (data_collector_id),
-    INDEX idx_factory (factory_id),
     INDEX idx_organization (organization_id),
     INDEX idx_status (status),
     INDEX idx_current (is_current),
     INDEX idx_superseded_by (superseded_by),
     INDEX idx_deleted (deleted_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS device_id_sequences (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    factory_id BIGINT NOT NULL,
-    robot_type_id BIGINT NOT NULL,
-    next_sequence BIGINT NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE INDEX idx_factory_robot_type (factory_id, robot_type_id),
-    INDEX idx_factory (factory_id),
-    INDEX idx_robot_type (robot_type_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================
@@ -294,7 +178,6 @@ CREATE TABLE IF NOT EXISTS device_id_sequences (
 CREATE TABLE IF NOT EXISTS orders (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     organization_id BIGINT NOT NULL,
-    scene_id BIGINT NOT NULL,
     name VARCHAR(255) NOT NULL,
     target_count INT NOT NULL,
     priority ENUM('low', 'normal', 'high', 'urgent') DEFAULT 'normal',
@@ -307,7 +190,6 @@ CREATE TABLE IF NOT EXISTS orders (
     _name_unique VARCHAR(600) GENERATED ALWAYS AS (CONCAT(IFNULL(organization_id, ''), '|', IFNULL(name, ''), '|', IFNULL(deleted_at, ''))) STORED,
     UNIQUE INDEX idx_name_del (_name_unique),
     INDEX idx_org (organization_id),
-    INDEX idx_scene (scene_id),
     INDEX idx_status (status),
     INDEX idx_priority (priority),
     INDEX idx_created (created_at),
@@ -346,18 +228,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     task_id VARCHAR(100) NOT NULL COMMENT 'Human-readable task ID',
     batch_id BIGINT NULL,
     order_id BIGINT NULL,
-    sop_id BIGINT NULL,
     workstation_id BIGINT,
-    scene_id BIGINT NULL,
-    subscene_id BIGINT NULL,
     batch_name VARCHAR(255) COMMENT 'Denormalized: batch name for display',
-    scene_name VARCHAR(255) COMMENT 'Denormalized: scene name for display',
-    subscene_name VARCHAR(255) COMMENT 'Denormalized: subscene name for display',
-    factory_id BIGINT COMMENT 'Denormalized: from workstation.factory_id for filtering',
-    organization_id BIGINT COMMENT 'Denormalized: from factory.organization_id for filtering',
+    organization_id BIGINT COMMENT 'Workspace ownership',
     dc_plan_id BIGINT NULL,
     local_dc_plan_id BIGINT NULL,
-    initial_scene_layout TEXT,
     status ENUM('pending', 'ready', 'in_progress', 'uploading', 'completed', 'failed', 'cancelled') DEFAULT 'pending',
     version INT DEFAULT 0 COMMENT 'Optimistic locking version',
     assigned_at TIMESTAMP NULL,
@@ -376,7 +251,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     INDEX idx_batch (batch_id),
     INDEX idx_order (order_id),
     INDEX idx_workstation (workstation_id),
-    INDEX idx_factory (factory_id),
     INDEX idx_organization (organization_id),
     INDEX idx_dc_plan (dc_plan_id),
     INDEX idx_local_dc_plan (local_dc_plan_id),
@@ -394,12 +268,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     task_id BIGINT NOT NULL,
     batch_id BIGINT NULL COMMENT 'Legacy observation field',
     order_id BIGINT NULL COMMENT 'Legacy observation field',
-    scene_id BIGINT NULL COMMENT 'Legacy observation field',
-    scene_name VARCHAR(255) COMMENT 'Denormalized: from tasks.scene_name',
     workstation_id BIGINT COMMENT 'Denormalized: from tasks.workstation_id',
-    factory_id BIGINT COMMENT 'Denormalized: from tasks.factory_id',
     organization_id BIGINT COMMENT 'Denormalized: from tasks.organization_id',
-    sop_id BIGINT COMMENT 'Denormalized: from tasks.sop_id',
     dc_plan_id BIGINT NULL,
     local_dc_plan_id BIGINT NULL,
     mcap_path VARCHAR(1024) NOT NULL,
@@ -429,9 +299,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     INDEX idx_task (task_id),
     INDEX idx_batch (batch_id),
     INDEX idx_order (order_id),
-    INDEX idx_scene (scene_id),
     INDEX idx_workstation (workstation_id),
-    INDEX idx_factory (factory_id),
     INDEX idx_organization (organization_id),
     INDEX idx_dc_plan (dc_plan_id),
     INDEX idx_local_dc_plan (local_dc_plan_id),
@@ -502,7 +370,6 @@ CREATE TABLE IF NOT EXISTS api_logs (
 CREATE TABLE IF NOT EXISTS sync_logs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     episode_id BIGINT NOT NULL,
-    source_factory_id VARCHAR(100),
     source_path VARCHAR(1024),
     destination_path VARCHAR(1024),
     status ENUM('pending', 'in_progress', 'completed', 'failed') DEFAULT 'pending',

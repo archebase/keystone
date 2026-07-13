@@ -35,8 +35,6 @@ type WorkspaceResourceSyncSummary struct {
 	CollectorUpsertedCount int                           `json:"collector_upserted_count"`
 	CollectorSkippedCount  int                           `json:"collector_skipped_count"`
 	RobotUpsertedCount     int                           `json:"robot_upserted_count"`
-	RobotTypeUpsertedCount int                           `json:"robot_type_upserted_count"`
-	FactoryUpsertedCount   int                           `json:"factory_upserted_count"`
 	WorkspaceResults       []WorkspaceResourceSyncResult `json:"workspace_results"`
 }
 
@@ -46,8 +44,6 @@ type WorkspaceResourceSyncResult struct {
 	CollectorUpsertedCount int                          `json:"collector_upserted_count"`
 	CollectorSkippedCount  int                          `json:"collector_skipped_count"`
 	RobotUpsertedCount     int                          `json:"robot_upserted_count"`
-	RobotTypeUpsertedCount int                          `json:"robot_type_upserted_count"`
-	FactoryUpserted        bool                         `json:"factory_upserted"`
 	Errors                 []WorkspaceResourceSyncError `json:"errors"`
 }
 
@@ -88,21 +84,15 @@ func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, sessi
 		summary.CollectorUpsertedCount += result.CollectorUpsertedCount
 		summary.CollectorSkippedCount += result.CollectorSkippedCount
 		summary.RobotUpsertedCount += result.RobotUpsertedCount
-		summary.RobotTypeUpsertedCount += result.RobotTypeUpsertedCount
-		if result.FactoryUpserted {
-			summary.FactoryUpsertedCount++
-		}
 		summary.WorkspaceResults = append(summary.WorkspaceResults, result)
 	}
 
 	logger.Printf(
-		"[WORKSPACE] Hilbert resource sync completed: workspaces=%d collectors_upserted=%d collectors_skipped=%d robots_upserted=%d robot_types_upserted=%d factories_upserted=%d errors=%d",
+		"[WORKSPACE] Hilbert resource sync completed: workspaces=%d collectors_upserted=%d collectors_skipped=%d robots_upserted=%d errors=%d",
 		len(summary.WorkspaceResults),
 		summary.CollectorUpsertedCount,
 		summary.CollectorSkippedCount,
 		summary.RobotUpsertedCount,
-		summary.RobotTypeUpsertedCount,
-		summary.FactoryUpsertedCount,
 		summary.errorCount(),
 	)
 
@@ -389,8 +379,6 @@ func (r *WorkspaceResourceSyncResult) addError(resource string, externalID strin
 func (r *WorkspaceResourceSyncResult) discardUncommittedCounts() {
 	r.CollectorUpsertedCount = 0
 	r.RobotUpsertedCount = 0
-	r.RobotTypeUpsertedCount = 0
-	r.FactoryUpserted = false
 }
 
 func (s *WorkspaceResourceSyncSummary) errorCount() int {

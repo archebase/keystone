@@ -181,9 +181,7 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 	if result.ResourceSync.CollectorUpsertedCount != 2 ||
 		result.ResourceSync.CollectorSkippedCount != 1 ||
-		result.ResourceSync.RobotTypeUpsertedCount != 0 ||
-		result.ResourceSync.RobotUpsertedCount != 1 ||
-		result.ResourceSync.FactoryUpsertedCount != 0 {
+		result.ResourceSync.RobotUpsertedCount != 1 {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
 	}
 
@@ -212,19 +210,17 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 
 	var robot struct {
-		RobotTypeID sql.NullInt64 `db:"robot_type_id"`
-		FactoryID   sql.NullInt64 `db:"factory_id"`
-		Status      string        `db:"status"`
-		Metadata    string        `db:"metadata"`
+		Status   string `db:"status"`
+		Metadata string `db:"metadata"`
 	}
 	if err := db.Get(&robot, `
-		SELECT robot_type_id, factory_id, status, metadata
+		SELECT status, metadata
 		FROM robots
 		WHERE device_id = '456'
 	`); err != nil {
 		t.Fatalf("query robot: %v", err)
 	}
-	if robot.RobotTypeID.Valid || robot.FactoryID.Valid || robot.Status != "active" || metadataSource(robot.Metadata) != "hilbert" {
+	if robot.Status != "active" || metadataSource(robot.Metadata) != "hilbert" {
 		t.Fatalf("unexpected robot: %#v", robot)
 	}
 }
@@ -360,9 +356,7 @@ func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t
 	}
 	workspaceResult := result.ResourceSync.WorkspaceResults[0]
 	if workspaceResult.CollectorUpsertedCount != 0 ||
-		workspaceResult.RobotUpsertedCount != 0 ||
-		workspaceResult.RobotTypeUpsertedCount != 0 ||
-		workspaceResult.FactoryUpserted {
+		workspaceResult.RobotUpsertedCount != 0 {
 		t.Fatalf("resource summary reported rolled-back writes: %#v", workspaceResult)
 	}
 	if len(workspaceResult.Errors) == 0 || workspaceResult.Errors[0].Code != "dc_device_query_failed" {
@@ -403,16 +397,8 @@ func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sync() error = %v", err)
 	}
-	if result.ResourceSync == nil || result.ResourceSync.FactoryUpsertedCount != 0 {
+	if result.ResourceSync == nil {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
-	}
-
-	var factoryCount int
-	if err := db.Get(&factoryCount, "SELECT COUNT(*) FROM factories"); err != nil {
-		t.Fatalf("count factories: %v", err)
-	}
-	if factoryCount != 0 {
-		t.Fatalf("factoryCount=%d want 0", factoryCount)
 	}
 }
 
@@ -491,7 +477,7 @@ func TestWorkspaceResourceSyncRejectsCollectorWorkspaceChangeAcrossCurrentBindin
 	db := newTestWorkspaceSyncDB(t)
 	defer db.Close()
 	for _, stmt := range []string{
-		`INSERT INTO robots (id, robot_type_id, device_id, factory_id, workspace_id, status, metadata) VALUES (1, 77, '456', 1, 60, 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO robots (id, device_id, workspace_id, status, metadata) VALUES (1, '456', 60, 'active', '{"source":"hilbert"}')`,
 		`INSERT INTO data_collectors (id, organization_id, name, operator_id, status, metadata) VALUES (1, 60, 'Collector', 'collector-a', 'active', '{"source":"hilbert"}')`,
 		`INSERT INTO workstations (id, robot_id, data_collector_id, organization_id, is_current) VALUES (1, 1, 1, 60, TRUE)`,
 	} {
@@ -519,7 +505,7 @@ func TestWorkspaceResourceSyncRejectsRobotWorkspaceChangeAcrossCurrentBinding(t 
 	db := newTestWorkspaceSyncDB(t)
 	defer db.Close()
 	for _, stmt := range []string{
-		`INSERT INTO robots (id, robot_type_id, device_id, factory_id, workspace_id, status, metadata) VALUES (1, 77, '456', 1, 60, 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO robots (id, device_id, workspace_id, status, metadata) VALUES (1, '456', 60, 'active', '{"source":"hilbert"}')`,
 		`INSERT INTO data_collectors (id, organization_id, name, operator_id, status, metadata) VALUES (1, 60, 'Collector', 'collector-a', 'active', '{"source":"hilbert"}')`,
 		`INSERT INTO workstations (id, robot_id, data_collector_id, organization_id, is_current) VALUES (1, 1, 1, 60, TRUE)`,
 	} {
@@ -570,30 +556,9 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 		t.Fatalf("create workspaces table: %v", err)
 	}
 	for _, stmt := range []string{
-		`CREATE TABLE factories (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT,
-			slug TEXT UNIQUE,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		)`,
-		`CREATE TABLE robot_types (
-			id INTEGER PRIMARY KEY,
-			name TEXT,
-			model TEXT,
-			manufacturer TEXT,
-			ros_topics TEXT,
-			capabilities TEXT,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		)`,
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			robot_type_id INTEGER,
 			device_id TEXT UNIQUE,
-			factory_id INTEGER,
 			workspace_id INTEGER,
 			asset_id TEXT,
 			status TEXT,

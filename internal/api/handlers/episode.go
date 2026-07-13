@@ -86,10 +86,6 @@ type episodeRow struct {
 	WorkspaceID       sql.NullInt64   `db:"workspace_id"`
 	DCPlanName        sql.NullString  `db:"dc_plan_name"`
 	DCType            sql.NullString  `db:"dc_type"`
-	SopSlug           sql.NullString  `db:"sop_slug"`
-	SopVersion        sql.NullString  `db:"sop_version"`
-	SceneName         sql.NullString  `db:"scene_name"`
-	SubsceneName      sql.NullString  `db:"subscene_name"`
 	RobotDeviceID     sql.NullString  `db:"robot_device_id"`
 	CollectorOperator sql.NullString  `db:"collector_operator_id"`
 	McapPath          string          `db:"mcap_path"`
@@ -120,10 +116,6 @@ type Episode struct {
 	WorkspaceID       *int64   `json:"workspace_id"`
 	DCPlanName        *string  `json:"dc_plan_name"`
 	DCType            *string  `json:"dc_type"`
-	SopSlug           *string  `json:"sop_slug"`
-	SopVersion        *string  `json:"sop_version"`
-	SceneName         *string  `json:"scene_name"`
-	SubsceneName      *string  `json:"subscene_name"`
 	RobotDeviceID     *string  `json:"robot_device_id"`
 	CollectorOperator *string  `json:"collector_operator_id"`
 	McapPath          string   `json:"mcap_path"`
@@ -219,11 +211,10 @@ func episodeLabelsFromDB(ns sql.NullString) []string {
 // ListEpisodes returns a list of episodes with filtering and pagination
 //
 // @Summary      List episodes
-// @Description  Returns a list of episodes with optional filtering by task_id, scene_id, qa_status, auto_approved, cloud_processed, cloud_synced, robot_device_id, collector_operator_id, and created_at range
+// @Description  Returns a list of episodes with optional filtering by task_id, qa_status, auto_approved, cloud_processed, cloud_synced, robot_device_id, collector_operator_id, and created_at range
 // @Tags         episodes
 // @Produce      json
 // @Param        task_id                query     string  false  "Filter by task numeric id (or legacy public task_id string)"
-// @Param        scene_id               query     int     false  "Filter by task scene_id (numeric)"
 // @Param        qa_status              query     string  false  "Filter by QA status"
 // @Param        auto_approved          query     bool    false  "Filter by auto-approval status"
 // @Param        cloud_processed        query     bool    false  "Filter by cloud processing status"
@@ -245,7 +236,6 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	cloudSynced := c.Query("cloud_synced")
 	collectorOperatorID := c.Query("collector_operator_id")
 	robotDeviceID := c.Query("robot_device_id")
-	sceneID := c.Query("scene_id")
 	createdAtFrom := strings.TrimSpace(c.Query("created_at_from"))
 	createdAtTo := strings.TrimSpace(c.Query("created_at_to"))
 
@@ -274,11 +264,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.local_dc_plan_id,
 			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
 			dp.name AS dc_plan_name,
-			dp.dc_type,
-			NULL AS sop_slug,
-			NULL AS sop_version,
-			NULL AS scene_name,
-			NULL AS subscene_name,
+				dp.dc_type,
 			r.device_id AS robot_device_id,
 			dc.operator_id AS collector_operator_id,
 			e.mcap_path,
@@ -327,15 +313,6 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			countQuery += " AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = e.task_id AND t.task_id = ? AND t.deleted_at IS NULL)"
 			args = append(args, taskID)
 			argsCount = append(argsCount, taskID)
-		}
-	}
-
-	if sceneID != "" {
-		if parsed, err := strconv.ParseInt(sceneID, 10, 64); err == nil {
-			query += " AND e.scene_id = ?"
-			countQuery += " AND e.scene_id = ?"
-			args = append(args, parsed)
-			argsCount = append(argsCount, parsed)
 		}
 	}
 
@@ -451,10 +428,6 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			WorkspaceID:       nullableInt64(r.WorkspaceID),
 			DCPlanName:        nullableString(r.DCPlanName),
 			DCType:            nullableString(r.DCType),
-			SopSlug:           nullableString(r.SopSlug),
-			SopVersion:        nullableString(r.SopVersion),
-			SceneName:         nullableString(r.SceneName),
-			SubsceneName:      nullableString(r.SubsceneName),
 			RobotDeviceID:     nullableString(r.RobotDeviceID),
 			CollectorOperator: nullableString(r.CollectorOperator),
 			McapPath:          r.McapPath,
@@ -627,11 +600,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.local_dc_plan_id,
 			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
 			dp.name AS dc_plan_name,
-			dp.dc_type,
-			NULL AS sop_slug,
-			NULL AS sop_version,
-			NULL AS scene_name,
-			NULL AS subscene_name,
+				dp.dc_type,
 			r.device_id AS robot_device_id,
 			dc.operator_id AS collector_operator_id,
 			e.mcap_path,
@@ -681,10 +650,6 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		WorkspaceID:       nullableInt64(row.WorkspaceID),
 		DCPlanName:        nullableString(row.DCPlanName),
 		DCType:            nullableString(row.DCType),
-		SopSlug:           nullableString(row.SopSlug),
-		SopVersion:        nullableString(row.SopVersion),
-		SceneName:         nullableString(row.SceneName),
-		SubsceneName:      nullableString(row.SubsceneName),
 		RobotDeviceID:     nullableString(row.RobotDeviceID),
 		CollectorOperator: nullableString(row.CollectorOperator),
 		McapPath:          row.McapPath,

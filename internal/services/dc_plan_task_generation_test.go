@@ -222,30 +222,15 @@ func assertTaskGenerationDoesNotWriteOrderBatch(t *testing.T, db *sqlx.DB) {
 
 func assertTaskGenerationDoesNotWriteLegacyProductionMetadata(t *testing.T, db *sqlx.DB) {
 	t.Helper()
-	for _, table := range []string{"factories", "sops", "scenes", "subscenes", "robot_types"} {
-		var count int
-		if err := db.Get(&count, "SELECT COUNT(*) FROM "+table); err != nil {
-			t.Fatalf("count %s: %v", table, err)
-		}
-		if count != 0 {
-			t.Fatalf("%s count=%d want 0", table, count)
-		}
-	}
 	var task struct {
-		LegacyCount int    `db:"legacy_count"`
-		Metadata    string `db:"metadata"`
+		Metadata string `db:"metadata"`
 	}
 	if err := db.Get(&task, `
-		SELECT
-			CASE WHEN sop_id IS NULL AND scene_id IS NULL AND subscene_id IS NULL AND factory_id IS NULL THEN 0 ELSE 1 END AS legacy_count,
-			metadata
+		SELECT metadata
 		FROM tasks
 		LIMIT 1
 	`); err != nil {
 		t.Fatalf("query generated task: %v", err)
-	}
-	if task.LegacyCount != 0 {
-		t.Fatalf("generated task contains legacy production metadata")
 	}
 	for _, value := range []string{`"workspace_id":123`, `"dc_plan_id":1001`, `"execution_config"`} {
 		if !strings.Contains(task.Metadata, value) {
@@ -289,45 +274,6 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			local_updated_at TIMESTAMP,
 			deleted_at TIMESTAMP
 		);
-		CREATE TABLE factories (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
-			slug TEXT NOT NULL UNIQUE,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		);
-		CREATE TABLE sops (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			slug TEXT NOT NULL,
-			description TEXT,
-			version TEXT NOT NULL,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP,
-			UNIQUE(slug, version)
-		);
-		CREATE TABLE scenes (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			factory_id INTEGER,
-			name TEXT NOT NULL UNIQUE,
-			description TEXT,
-			initial_scene_layout_template TEXT,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		);
-		CREATE TABLE subscenes (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			scene_id INTEGER NOT NULL,
-			name TEXT NOT NULL,
-			description TEXT,
-			initial_scene_layout TEXT,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP,
-			UNIQUE(scene_id, name)
-		);
 		CREATE TABLE data_collectors (
 			id INTEGER PRIMARY KEY,
 			organization_id INTEGER NOT NULL,
@@ -339,20 +285,9 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP,
 			deleted_at TIMESTAMP
 		);
-		CREATE TABLE robot_types (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			model TEXT NOT NULL,
-			ros_topics TEXT NOT NULL,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		);
 		CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
-			robot_type_id INTEGER,
 			device_id TEXT NOT NULL,
-			factory_id INTEGER,
 			workspace_id INTEGER NOT NULL DEFAULT 0,
 			status TEXT,
 			metadata TEXT,
@@ -368,7 +303,6 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			data_collector_id INTEGER NOT NULL,
 			collector_name TEXT,
 			collector_operator_id TEXT,
-			factory_id INTEGER,
 			organization_id INTEGER NOT NULL,
 			name TEXT,
 			status TEXT,
@@ -381,7 +315,6 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		CREATE TABLE orders (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			organization_id INTEGER NOT NULL,
-			scene_id INTEGER NOT NULL,
 			name TEXT NOT NULL,
 			target_count INTEGER NOT NULL,
 			priority TEXT,
@@ -411,18 +344,11 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			task_id TEXT NOT NULL,
 			batch_id INTEGER,
 			order_id INTEGER,
-				sop_id INTEGER,
 			workstation_id INTEGER,
-				scene_id INTEGER,
-				subscene_id INTEGER,
 			batch_name TEXT,
-			scene_name TEXT,
-			subscene_name TEXT,
-			factory_id INTEGER,
 			organization_id INTEGER,
 			dc_plan_id INTEGER,
 			local_dc_plan_id INTEGER,
-			initial_scene_layout TEXT,
 			status TEXT,
 			assigned_at TIMESTAMP,
 			metadata TEXT,

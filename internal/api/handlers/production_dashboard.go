@@ -55,7 +55,6 @@ func (h *ProductionDashboardHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 type productionDashboardQuery struct {
 	WorkstationID  string
-	FactoryID      string
 	OrganizationID string
 	TrendDays      int
 	RecentLimit    int
@@ -66,7 +65,6 @@ type productionDashboardQuery struct {
 type productionDashboardScope struct {
 	Role           string `json:"role"`
 	WorkstationID  string `json:"workstation_id,omitempty"`
-	FactoryID      string `json:"factory_id,omitempty"`
 	OrganizationID string `json:"organization_id,omitempty"`
 	Warning        string `json:"warning,omitempty"`
 	collectorID    int64
@@ -228,8 +226,6 @@ type dashboardRecentTaskItem struct {
 	RobotName   string `json:"robot_name"`
 	StationName string `json:"station_name"`
 	DCPlanID    string `json:"dc_plan_id"`
-	SceneName   string `json:"scene_name"`
-	SOPLabel    string `json:"sop_label"`
 	EpisodeID   string `json:"episode_id"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
@@ -243,8 +239,6 @@ type dashboardRecentTaskRow struct {
 	RobotName   string       `db:"robot_name"`
 	StationName string       `db:"station_name"`
 	DCPlanID    string       `db:"dc_plan_id"`
-	SceneName   string       `db:"scene_name"`
-	SOPLabel    string       `db:"sop_label"`
 	EpisodeID   string       `db:"episode_id"`
 	CreatedAt   sql.NullTime `db:"created_at"`
 	UpdatedAt   sql.NullTime `db:"updated_at"`
@@ -252,9 +246,8 @@ type dashboardRecentTaskRow struct {
 
 type dashboardPreviewItem struct {
 	ID              string  `json:"id"`
-	SceneName       string  `json:"scene_name"`
-	SOPLabel        string  `json:"sop_label"`
-	DeviceType      string  `json:"device_type"`
+	DCPlanName      string  `json:"dc_plan_name"`
+	DCType          string  `json:"dc_type"`
 	DeviceID        string  `json:"device_id"`
 	StationName     string  `json:"station_name"`
 	Status          string  `json:"status"`
@@ -269,9 +262,8 @@ type dashboardPreviewItem struct {
 
 type dashboardPreviewRow struct {
 	ID              string          `db:"id"`
-	SceneName       string          `db:"scene_name"`
-	SOPLabel        string          `db:"sop_label"`
-	DeviceType      string          `db:"device_type"`
+	DCPlanName      string          `db:"dc_plan_name"`
+	DCType          string          `db:"dc_type"`
 	DeviceID        string          `db:"device_id"`
 	StationName     string          `db:"station_name"`
 	Status          string          `db:"status"`
@@ -497,7 +489,6 @@ func (h *ProductionDashboardHandler) resolveProductionDashboardScope(c *gin.Cont
 	scope := productionDashboardScope{
 		Role:           claims.Role,
 		WorkstationID:  q.WorkstationID,
-		FactoryID:      "",
 		OrganizationID: q.OrganizationID,
 		collectorID:    claims.CollectorID,
 	}
@@ -798,8 +789,6 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 			COALESCE(ws.robot_name, ws.robot_serial, '') AS robot_name,
 			COALESCE(ws.name, CAST(ws.id AS CHAR), '') AS station_name,
 			COALESCE(CAST(t.dc_plan_id AS CHAR), '') AS dc_plan_id,
-			'' AS scene_name,
-			'' AS sop_label,
 			COALESCE(e.episode_id, '') AS episode_id,
 			t.created_at AS created_at,
 			` + updatedAtExpr + ` AS updated_at
@@ -836,8 +825,6 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 			RobotName:   row.RobotName,
 			StationName: row.StationName,
 			DCPlanID:    row.DCPlanID,
-			SceneName:   row.SceneName,
-			SOPLabel:    row.SOPLabel,
 			EpisodeID:   row.EpisodeID,
 			CreatedAt:   formatNullableTime(row.CreatedAt),
 			UpdatedAt:   formatNullableTime(row.UpdatedAt),
@@ -861,9 +848,8 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 	query := `
 		SELECT
 			CAST(e.id AS CHAR) AS id,
-			COALESCE(NULLIF(dp.name, ''), NULLIF(t.task_id, ''), '') AS scene_name,
-			COALESCE(NULLIF(dp.dc_type, ''), '') AS sop_label,
-			'' AS device_type,
+			COALESCE(NULLIF(dp.name, ''), NULLIF(t.task_id, ''), '') AS dc_plan_name,
+			COALESCE(NULLIF(dp.dc_type, ''), '') AS dc_type,
 			COALESCE(ws.robot_serial, r.device_id, '') AS device_id,
 			COALESCE(ws.name, CAST(ws.id AS CHAR), '') AS station_name,
 			COALESCE(NULLIF(t.status, ''), e.qa_status, '') AS status,
@@ -891,9 +877,8 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 	for _, row := range rows {
 		items = append(items, dashboardPreviewItem{
 			ID:              row.ID,
-			SceneName:       row.SceneName,
-			SOPLabel:        row.SOPLabel,
-			DeviceType:      row.DeviceType,
+			DCPlanName:      row.DCPlanName,
+			DCType:          row.DCType,
 			DeviceID:        row.DeviceID,
 			StationName:     row.StationName,
 			Status:          row.Status,

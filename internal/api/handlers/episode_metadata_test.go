@@ -187,17 +187,8 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY,
 			task_id TEXT,
-			sop_id INTEGER,
 			organization_id INTEGER,
 			workstation_id INTEGER,
-			scene_name TEXT,
-			subscene_name TEXT,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE sops (
-			id INTEGER PRIMARY KEY,
-			slug TEXT,
-			version TEXT,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE workstations (
@@ -236,8 +227,8 @@ func seedEpisodeMetadataTestRow(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	metadata := `{"asset_id":"asset-1","recorder":{"recording":{"recorder_version":"axon_recorder 0.5.0"},"writer_health":{"state":"warning","writer_stall_state":"normal","writer_stall_suspected":false,"writer_partial_failures":0,"writer_queue_overflows":0,"error":null}}}`
 	if _, err := db.Exec(`
-		INSERT INTO tasks (id, task_id, sop_id, organization_id, workstation_id, scene_name, subscene_name, deleted_at)
-		VALUES (10, 'task-public-1', NULL, 123, NULL, 'scene', 'subscene', NULL)
+		INSERT INTO tasks (id, task_id, organization_id, workstation_id, deleted_at)
+		VALUES (10, 'task-public-1', 123, NULL, NULL)
 	`); err != nil {
 		t.Fatalf("seed task: %v", err)
 	}

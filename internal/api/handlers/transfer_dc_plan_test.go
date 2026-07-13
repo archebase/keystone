@@ -84,12 +84,8 @@ func openTransferDCPlanTestDB(t *testing.T) *sqlx.DB {
 			status TEXT NOT NULL,
 			batch_id INTEGER,
 			order_id INTEGER,
-			scene_id INTEGER,
-			scene_name TEXT,
 			workstation_id INTEGER,
-			factory_id INTEGER,
 			organization_id INTEGER,
-			sop_id INTEGER NOT NULL,
 			dc_plan_id INTEGER,
 			local_dc_plan_id INTEGER,
 			completed_at TIMESTAMP NULL,
@@ -103,12 +99,8 @@ func openTransferDCPlanTestDB(t *testing.T) *sqlx.DB {
 			task_id INTEGER NOT NULL,
 			batch_id INTEGER,
 			order_id INTEGER,
-			scene_id INTEGER,
-			scene_name TEXT,
 			workstation_id INTEGER,
-			factory_id INTEGER,
 			organization_id INTEGER,
-			sop_id INTEGER,
 			dc_plan_id INTEGER,
 			local_dc_plan_id INTEGER,
 			mcap_path TEXT NOT NULL,
@@ -139,10 +131,10 @@ func seedTransferDCPlanTask(t *testing.T, db *sqlx.DB) {
 	}
 	if _, err := db.Exec(`
 		INSERT INTO tasks (
-			id, task_id, status, batch_id, order_id, scene_id, scene_name,
-			workstation_id, factory_id, organization_id, sop_id,
+			id, task_id, status, batch_id, order_id,
+			workstation_id, organization_id,
 			dc_plan_id, local_dc_plan_id, deleted_at
-		) VALUES (10, 'task-plan-1', 'completed', 20, 30, 40, 'scene', 1, 50, 60, 70, 1001, 2001, NULL)
+		) VALUES (10, 'task-plan-1', 'completed', 20, 30, 1, 60, 1001, 2001, NULL)
 	`); err != nil {
 		t.Fatalf("seed task: %v", err)
 	}

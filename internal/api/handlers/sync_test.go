@@ -317,7 +317,6 @@ func setupSyncHandlerTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE sync_logs (
 			id INTEGER PRIMARY KEY,
 			episode_id INTEGER NOT NULL,
-			source_factory_id TEXT,
 			source_path TEXT,
 			destination_path TEXT,
 			status TEXT,

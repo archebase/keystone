@@ -53,11 +53,8 @@ type dataProductionStatsQuery struct {
 	Granularity          string
 	WorkspaceIDs         []int64
 	SourceID             string
-	SceneIDs             []int64
 	RobotDeviceIDs       []string
-	RobotTypeIDs         []string
 	CollectorOperatorIDs []string
-	SOPIDs               []string
 	QAStatuses           []string
 	CloudSyncedValues    []bool
 	DataType             string
@@ -147,17 +144,11 @@ type dataProductionDetailItem struct {
 	Time                string `json:"time" db:"time"`
 	SourceID            string `json:"source_id" db:"source_id"`
 	SourceName          string `json:"source_name" db:"source_name"`
-	SceneID             string `json:"scene_id" db:"scene_id"`
-	SceneName           string `json:"scene_name" db:"scene_name"`
 	RobotDeviceID       string `json:"robot_device_id" db:"robot_device_id"`
-	RobotTypeID         string `json:"robot_type_id" db:"robot_type_id"`
-	RobotTypeName       string `json:"robot_type_name" db:"robot_type_name"`
 	CollectorOperatorID string `json:"collector_operator_id" db:"collector_operator_id"`
 	CollectorName       string `json:"collector_name" db:"collector_name"`
 	TaskID              string `json:"task_id" db:"task_id"`
 	TaskName            string `json:"task_name" db:"task_name"`
-	SOPID               string `json:"sop_id" db:"sop_id"`
-	SOP                 string `json:"sop" db:"sop"`
 	DataType            string `json:"data_type" db:"data_type"`
 	Status              string `json:"status" db:"status"`
 	QAStatus            string `json:"qa_status" db:"qa_status"`
@@ -668,18 +659,12 @@ func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) s
 			DATE_FORMAT(COALESCE(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), event_time), '%%Y-%%m-%%dT%%H:%%i:%%sZ') AS time,
 			source_id,
 			source_name,
-			scene_id,
-			scene_name,
-			robot_device_id,
-			robot_type_id,
-			robot_type_name,
-			collector_operator_id,
+				robot_device_id,
+				collector_operator_id,
 			collector_name,
 			task_id,
 			task_name,
-			sop_id,
-			sop,
-			data_type,
+				data_type,
 			status,
 			qa_status,
 			COALESCE(cloud_synced, FALSE) AS cloud_synced,
@@ -712,12 +697,10 @@ func (h *DataProductionStatisticsHandler) ExportCSV(c *gin.Context) {
 		SELECT
 			episode_id AS id,
 			DATE_FORMAT(COALESCE(CONVERT_TZ(event_time, @@session.time_zone, ?), event_time), '%%Y-%%m-%%d %%H:%%i:%%s') AS time,
-			robot_device_id,
-			robot_type_name,
-			collector_operator_id,
+				robot_device_id,
+				collector_operator_id,
 			collector_name,
-			task_id,
-			sop,
+				task_id,
 			duration_ms,
 			size_bytes
 		FROM (%s) p
@@ -738,18 +721,16 @@ func (h *DataProductionStatisticsHandler) ExportCSV(c *gin.Context) {
 
 	writer := csv.NewWriter(c.Writer)
 	_ = writer.Write([]string{
-		"id", "time", "设备ID", "设备型号", "数采员工号", "数采员姓名", "task_id", "sop", "时长", "大小",
+		"id", "time", "设备ID", "数采员工号", "数采员姓名", "task_id", "时长", "大小",
 	})
 	for _, item := range items {
 		_ = writer.Write([]string{
 			item.ID,
 			item.Time,
 			item.RobotDeviceID,
-			item.RobotTypeName,
 			item.CollectorOperatorID,
 			item.CollectorName,
 			item.TaskID,
-			item.SOP,
 			formatExportDuration(item.DurationMs),
 			formatExportSize(item.SizeBytes),
 		})
@@ -946,17 +927,11 @@ func productionRecordsSQL() string {
 			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
 			COALESCE(r.device_id, ws.robot_serial, CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR)), 'unknown') AS source_name,
-			'' AS scene_id,
-			'' AS scene_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
-			'' AS robot_type_id,
-			'' AS robot_type_name,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
 			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_id,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_name,
-			'' AS sop_id,
-			'' AS sop,
 			'episode' AS data_type,
 			'success' AS status,
 			COALESCE(e.qa_status, '') AS qa_status,

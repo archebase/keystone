@@ -390,14 +390,13 @@ SPDX-License-Identifier: MulanPSL-2.0
         <h1>领域模型<br>迁移顺序<br>实施计划</h1>
         <p class="lede">
           本计划以新环境为前提，不考虑历史数据、不保留旧 API、不做旧字段兼容。
-          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除和 PR-8A 旧生产元信息 Runtime 停用；
-          下一步重点是删除旧表、旧路由、Swagger、Synapse 页面和适配代码。
+          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除、PR-8A 旧生产元信息 Runtime 停用和 PR-8B 最终清理。
         </p>
         <div class="signal">
-          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3 / PR-4 / PR-5 / PR-6 / PR-7 / PR-8A</span></div>
+          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3 / PR-4 / PR-5 / PR-6 / PR-7 / PR-8A / PR-8B</span></div>
           <div class="signal-card"><b>主轴</b><span>dc_plan 是生产主对象</span></div>
           <div class="signal-card"><b>已验收</b><span>task、episode 和上传均锁定计划</span></div>
-          <div class="signal-card"><b>下一步</b><span>PR-8B 旧表 / Swagger / Synapse 清理</span></div>
+          <div class="signal-card"><b>清理结果</b><span>旧表、旧 API、旧 UI 和 Axon 兼容层已删除</span></div>
         </div>
       </div>
     </header>
@@ -723,14 +722,14 @@ SPDX-License-Identifier: MulanPSL-2.0
               <h3 class="step-title">旧表 / Swagger / Synapse 清理</h3>
               <div class="step-meta">
                 <span class="badge">PR-8B</span>
-                <span class="badge warn">schema cleanup</span>
+                <span class="badge">已完成并验收</span>
               </div>
               <p>runtime 已停用后，再删除旧表、路由、Swagger、Synapse API wrapper、旧页面和 option adapter。</p>
               <ul>
                 <li>删除 <code>factories</code>、<code>robot_types</code>、<code>sops</code>、<code>scenes</code>、<code>subscenes</code> 的旧管理入口和 API。</li>
                 <li>删除相关 Swagger 路由、Synapse 页面、API wrapper、option adapter 和菜单项。</li>
                 <li>删除旧字段、旧索引和旧测试夹具中的 factory、robot type、SOP、scene/subscene 依赖。</li>
-                <li>设计 Workspace 撤权 / 下线后的 <code>access_status</code> 和历史数据可见性策略。</li>
+                <li>Axon 注册仅接受 Hilbert <code>device_id</code>；删除 factory / robot type 参数、模板下载和 <code>refresh</code> 兼容路径。</li>
               </ul>
             </div>
           </article>
@@ -947,17 +946,18 @@ SPDX-License-Identifier: MulanPSL-2.0
               <td>
                 删除旧表、旧路由、Swagger、Synapse API wrapper、旧页面、option adapter、旧字段和旧测试夹具。
               </td>
-              <td>不改变 dc_plan -> task -> episode 主链路语义。</td>
+              <td>不改变 dc_plan -> task -> episode 主链路语义；不处理历史数据迁移和 Workspace 撤权策略。</td>
               <td>
-                <span class="badge hot">未完成</span>：
-                依赖 PR-8A 完成 runtime 停用后再执行。
+                <span class="badge">已完成并验收</span>：
+                Keystone baseline schema、handler、路由、Swagger 和测试夹具已删除旧生产元信息；
+                Synapse 已删除旧页面、API wrapper、筛选、option adapter 和响应兼容；
+                Axon 已删除 factory / robot type 注册兼容、远端模板下载和 config refresh，运行配置改为本地维护。
               </td>
             </tr>
           </tbody>
         </table>
         <div class="callout">
-          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 Workspace 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除和 PR-8A 旧生产元信息 Runtime 停用均已完成。
-          下一阶段应进入 PR-8B：删除旧表、旧 API、Swagger、Synapse 页面和适配代码。
+          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 Workspace 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除、PR-8A Runtime 停用和 PR-8B 最终清理均已完成。
           order/batch 及旧生产元信息已退出 runtime；Hilbert 数采计划是生产主对象，
           Keystone task 是计划拆分后的本地执行切片。
         </div>
@@ -983,7 +983,8 @@ SPDX-License-Identifier: MulanPSL-2.0
           PR-2 已接入 Hilbert dc_plan 查询、Keystone <code>dc_plan</code> 投影表、只读列表和单 Workspace 手动同步；
           PR-2.5 已在 Workspace 同步中固定投影采集员、数采设备、设备类型和 workspace compat factory；
           PR-3 已把 task 生成改为计划驱动；PR-4 已让 episode 在创建时复制计划字段，并让上传链路以计划投影和 Workspace 归属作为业务元信息入口；
-          PR-5 已统一数据采集员、设备和工位的 Workspace 归属接口、筛选和页面，并补齐跨 Workspace 绑定约束。
+          PR-5 已统一数据采集员、设备和工位的 Workspace 归属接口、筛选和页面，并补齐跨 Workspace 绑定约束；
+          PR-6 至 PR-8B 已完成 scoped admin、Order / Batch 主路径删除、旧生产元信息 runtime 停用和最终物理清理。
         </div>
         <table>
           <thead>
@@ -1032,6 +1033,26 @@ SPDX-License-Identifier: MulanPSL-2.0
             <tr>
               <td>PR-5</td>
               <td>Workspace 运营实体归属清理：统一采集员、设备和工位的 Workspace API、筛选、页面与绑定约束。</td>
+              <td><span class="badge">已完成并验收</span></td>
+            </tr>
+            <tr>
+              <td>PR-6</td>
+              <td>Workspace Scoped Admin Shell：管理端导航和资源视图锁定 Workspace scope。</td>
+              <td><span class="badge">已完成并验收</span></td>
+            </tr>
+            <tr>
+              <td>PR-7</td>
+              <td>删除 Order / Batch 主路径：task 和 episode 运行链路只使用计划、Workspace 和工位。</td>
+              <td><span class="badge">已完成并验收</span></td>
+            </tr>
+            <tr>
+              <td>PR-8A</td>
+              <td>旧生产元信息 Runtime 停用：factory、robot type、SOP、scene/subscene 不再参与运行时查询与配置。</td>
+              <td><span class="badge">已完成并验收</span></td>
+            </tr>
+            <tr>
+              <td>PR-8B</td>
+              <td>最终清理：删除旧表、旧 API、Swagger、Synapse 页面与适配、Axon 注册和模板兼容。</td>
               <td><span class="badge">已完成并验收</span></td>
             </tr>
           </tbody>
@@ -1143,9 +1164,6 @@ SPDX-License-Identifier: MulanPSL-2.0
       <div class="content">
         <ul>
           <li>Hilbert 数采计划除现有单 Workspace 手动同步外，是否还需要启动同步、主动轮询、webhook，或三者并存。</li>
-          <li>Keystone 旧 <code>sops</code> 数据和 UI 是直接删除，还是短期隐藏为只读历史配置。</li>
-          <li>Keystone 旧 <code>scenes</code> / <code>subscenes</code> 数据和 UI 是直接删除，还是短期隐藏为只读历史配置。</li>
-          <li>Keystone 旧 <code>robot_types</code> / <code>device_types</code> 数据和 UI 是直接删除，还是短期隐藏为只读历史配置。</li>
           <li>计划撤销或关闭后，未执行 task 是否取消，已完成 episode 是否仍允许上传。</li>
           <li><code>episode</code> 与 Hilbert <code>raw_data</code> / <code>dataset</code> 的同步边界。</li>
           <li>default workspace 数据如何显式补绑到 Hilbert workspace，以及需要记录哪些审计字段。</li>
@@ -1154,8 +1172,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         </ul>
         <div class="callout">
           这些问题不是不重要，而是不应该挡住数采计划成为生产主对象。
-          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分，PR-4 已完成 episode 和上传计划化，PR-5 已完成 Workspace 运营实体管理与归属清理，PR-6 已完成 Workspace Scoped Admin Shell，PR-7 已完成 Order / Batch 主路径删除，PR-8A 已完成旧生产元信息 Runtime 停用；
-          现在应推进 PR-8B 旧表 / Swagger / Synapse 清理。
+          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分，PR-4 已完成 episode 和上传计划化，PR-5 已完成 Workspace 运营实体管理与归属清理，PR-6 已完成 Workspace Scoped Admin Shell，PR-7 已完成 Order / Batch 主路径删除，PR-8A 已完成旧生产元信息 Runtime 停用，PR-8B 已完成旧表、旧 API、旧 UI 与 Axon 兼容层清理。
         </div>
       </div>
     </section>

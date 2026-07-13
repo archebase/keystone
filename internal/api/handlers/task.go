@@ -138,14 +138,9 @@ var validTaskStatuses = map[string]struct{}{
 type TaskListItem struct {
 	ID                  int64   `json:"id" db:"id"`
 	TaskID              string  `json:"task_id" db:"task_id"`
-	SOPID               string  `json:"sop_id,omitempty" db:"sop_id"`
 	WorkstationID       *string `json:"workstation_id" db:"workstation_id"`
 	RobotDeviceID       *string `json:"robot_device_id" db:"robot_device_id"`
 	CollectorOperatorID *string `json:"collector_operator_id" db:"collector_operator_id"`
-	SceneID             string  `json:"scene_id,omitempty" db:"scene_id"`
-	SceneName           string  `json:"scene_name,omitempty" db:"scene_name"`
-	SubsceneID          string  `json:"subscene_id,omitempty" db:"subscene_id"`
-	SubsceneName        string  `json:"subscene_name,omitempty" db:"subscene_name"`
 	Status              string  `json:"status" db:"status"`
 	ErrorMessage        *string `json:"error_message" db:"error_message"`
 	AssignedAt          *string `json:"assigned_at" db:"assigned_at"`
@@ -177,13 +172,7 @@ type TaskEpisodeDetail struct {
 type TaskDetailResponse struct {
 	ID               int64              `json:"id" db:"id"`
 	TaskID           string             `json:"task_id" db:"task_id"`
-	SOPID            string             `json:"sop_id,omitempty" db:"sop_id"`
 	WorkstationID    *string            `json:"workstation_id" db:"workstation_id"`
-	SceneID          string             `json:"scene_id,omitempty" db:"scene_id"`
-	SceneName        string             `json:"scene_name,omitempty" db:"scene_name"`
-	SubsceneID       string             `json:"subscene_id,omitempty" db:"subscene_id"`
-	SubsceneName     string             `json:"subscene_name,omitempty" db:"subscene_name"`
-	FactoryID        *string            `json:"factory_id,omitempty" db:"factory_id"`
 	OrganizationID   *int64             `json:"organization_id" db:"organization_id"`
 	DCPlanID         *int64             `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
 	WorkspaceID      *int64             `json:"workspace_id,omitempty" db:"workspace_id"`
@@ -306,14 +295,9 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	listQuery := fmt.Sprintf(`SELECT
 		tasks.id AS id,
 		tasks.task_id AS task_id,
-		'' AS sop_id,
 		CASE WHEN tasks.workstation_id IS NULL THEN NULL ELSE CAST(tasks.workstation_id AS CHAR) END AS workstation_id,
 		NULLIF(TRIM(COALESCE(ws.robot_serial, '')), '') AS robot_device_id,
 		NULLIF(TRIM(COALESCE(ws.collector_operator_id, '')), '') AS collector_operator_id,
-		'' AS scene_id,
-		'' AS scene_name,
-		'' AS subscene_id,
-		'' AS subscene_name,
 		tasks.status,
 		tasks.error_message,
 		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at,
@@ -533,13 +517,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 	query := `SELECT
 		t.id AS id,
 		t.task_id AS task_id,
-		'' AS sop_id,
 		CASE WHEN t.workstation_id IS NULL THEN NULL ELSE CAST(t.workstation_id AS CHAR) END AS workstation_id,
-		'' AS scene_id,
-		'' AS scene_name,
-		'' AS subscene_id,
-		'' AS subscene_name,
-		NULL AS factory_id,
 		t.organization_id AS organization_id,
 		t.dc_plan_id AS dc_plan_id,
 		COALESCE(t.organization_id, ws.organization_id) AS workspace_id,

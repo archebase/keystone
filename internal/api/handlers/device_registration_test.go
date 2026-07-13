@@ -39,25 +39,6 @@ func TestDeviceRegistrationHandlerRegisterDevice_MissingDeviceID(t *testing.T) {
 	}
 }
 
-func TestDeviceRegistrationHandlerRegisterDevice_RejectsLegacyFactoryRobotType(t *testing.T) {
-	db := newTestDeviceRegistrationDB(t)
-	defer db.Close()
-	seedDeviceRegistrationFixtures(t, db)
-
-	router := newTestDeviceRegistrationRouter(t, db)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/devices/register", bytes.NewBufferString(`{"factory":"上海一厂","robot_type":"搬运机器人"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "device_id is required") {
-		t.Fatalf("unexpected error response: %s", w.Body.String())
-	}
-}
-
 func TestDeviceRegistrationHandlerRegisterDevice_UnknownDevice(t *testing.T) {
 	db := newTestDeviceRegistrationDB(t)
 	defer db.Close()
@@ -333,8 +314,8 @@ func TestDeviceRegistrationHandlerRotateWSClientAuthToken_RobotNotFound(t *testi
 	defer db.Close()
 	seedDeviceRegistrationFixtures(t, db)
 	if _, err := db.Exec(`
-		INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at)
-		VALUES (99, 12, 'deleted-device', 3, 'active', '2026-01-01T00:00:00Z')
+		INSERT INTO robots (id, device_id, status, deleted_at)
+		VALUES (99, 'deleted-device', 'active', '2026-01-01T00:00:00Z')
 	`); err != nil {
 		t.Fatalf("seed deleted robot: %v", err)
 	}
@@ -362,8 +343,8 @@ func TestDeviceRegistrationHandlerRotateWSClientAuthToken_RobotNotActive(t *test
 	defer db.Close()
 	seedDeviceRegistrationFixtures(t, db)
 	if _, err := db.Exec(`
-		INSERT INTO robots (id, robot_type_id, device_id, factory_id, status)
-		VALUES (88, 12, 'maintenance-device', 3, 'maintenance')
+		INSERT INTO robots (id, device_id, status)
+		VALUES (88, 'maintenance-device', 'maintenance')
 	`); err != nil {
 		t.Fatalf("seed maintenance robot: %v", err)
 	}
@@ -463,9 +444,7 @@ func newTestDeviceRegistrationDB(t *testing.T) *sqlx.DB {
 	schema := []string{
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			robot_type_id INTEGER,
 			device_id TEXT NOT NULL UNIQUE,
-			factory_id INTEGER,
 			workspace_id INTEGER NOT NULL DEFAULT 0,
 			asset_id TEXT,
 			status TEXT,

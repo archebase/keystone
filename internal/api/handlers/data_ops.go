@@ -80,9 +80,6 @@ type dataOpsEpisodeQuery struct {
 	Keyword              string
 	QAStatuses           []string
 	SyncStatuses         []string
-	SceneIDs             []int64
-	SOPIDs               []int64
-	RobotTypeIDs         []int64
 	RobotDeviceIDs       []string
 	CollectorOperatorIDs []string
 	Label                string
@@ -93,12 +90,6 @@ type dataOpsEpisodeRow struct {
 	EpisodeID           string          `db:"episode_id"`
 	TaskID              int64           `db:"task_id"`
 	TaskPublicID        sql.NullString  `db:"task_public_id"`
-	SOPID               sql.NullInt64   `db:"sop_id"`
-	SOP                 sql.NullString  `db:"sop"`
-	SceneID             sql.NullInt64   `db:"scene_id"`
-	SceneName           sql.NullString  `db:"scene_name"`
-	RobotTypeID         sql.NullInt64   `db:"robot_type_id"`
-	RobotType           sql.NullString  `db:"robot_type"`
 	RobotDeviceID       sql.NullString  `db:"robot_device_id"`
 	CollectorOperatorID sql.NullString  `db:"collector_operator_id"`
 	CollectorName       sql.NullString  `db:"collector_name"`
@@ -117,12 +108,6 @@ type DataOpsEpisodeItemResponse struct {
 	EpisodeID           string                        `json:"episode_id"`
 	TaskID              int64                         `json:"task_id"`
 	TaskPublicID        *string                       `json:"task_public_id,omitempty"`
-	SOPID               *int64                        `json:"sop_id,omitempty"`
-	SOP                 *string                       `json:"sop,omitempty"`
-	SceneID             *int64                        `json:"scene_id,omitempty"`
-	SceneName           *string                       `json:"scene_name,omitempty"`
-	RobotTypeID         *int64                        `json:"robot_type_id,omitempty"`
-	RobotType           *string                       `json:"robot_type,omitempty"`
 	RobotDeviceID       *string                       `json:"robot_device_id,omitempty"`
 	CollectorOperatorID *string                       `json:"collector_operator_id,omitempty"`
 	CollectorName       *string                       `json:"collector_name,omitempty"`
@@ -411,16 +396,10 @@ func dataOpsEpisodeListSQL(fromSQL string, where string) string {
 			e.episode_id,
 			e.task_id,
 			t.task_id AS task_public_id,
-			NULL AS sop_id,
-			NULL AS sop,
-			NULL AS scene_id,
-			NULL AS scene_name,
-			NULL AS robot_type_id,
-			NULL AS robot_type,
-				COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, '')) AS robot_device_id,
-				COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS collector_operator_id,
-				COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS collector_name,
-				COALESCE(e.qa_status, '') AS qa_status,
+			COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, '')) AS robot_device_id,
+			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS collector_operator_id,
+			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS collector_name,
+			COALESCE(e.qa_status, '') AS qa_status,
 			e.quality_flag,
 			e.cloud_synced,
 			e.duration_sec,
@@ -497,8 +476,7 @@ func dataOpsLatestSyncLogsSQL(episodeIDs []int64) (string, []interface{}) {
 			sl.id,
 			sl.episode_id,
 			e.episode_id AS episode_public_id,
-			sl.source_factory_id,
-			sl.source_path,
+				sl.source_path,
 			sl.destination_path,
 			sl.status,
 			sl.bytes_transferred,
@@ -535,12 +513,6 @@ func dataOpsEpisodeItemFromRow(row dataOpsEpisodeRow) DataOpsEpisodeItemResponse
 		EpisodeID:           row.EpisodeID,
 		TaskID:              row.TaskID,
 		TaskPublicID:        nullableString(row.TaskPublicID),
-		SOPID:               nullableInt64(row.SOPID),
-		SOP:                 nullableString(row.SOP),
-		SceneID:             nullableInt64(row.SceneID),
-		SceneName:           nullableString(row.SceneName),
-		RobotTypeID:         nullableInt64(row.RobotTypeID),
-		RobotType:           nullableString(row.RobotType),
 		RobotDeviceID:       nullableString(row.RobotDeviceID),
 		CollectorOperatorID: nullableString(row.CollectorOperatorID),
 		CollectorName:       nullableString(row.CollectorName),

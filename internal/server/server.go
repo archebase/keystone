@@ -42,17 +42,12 @@ type Server struct {
 	episode             *handlers.EpisodeHandler
 	qa                  *handlers.EpisodeQAHandler
 	task                *handlers.TaskHandler
-	robotType           *handlers.RobotTypeHandler
 	robot               *handlers.RobotHandler
 	deviceRegistration  *handlers.DeviceRegistrationHandler
-	factory             *handlers.FactoryHandler
 	dataCollector       *handlers.DataCollectorHandler
 	station             *handlers.StationHandler
 	workspace           *handlers.WorkspaceHandler
 	dcPlan              *handlers.DCPlanHandler
-	sop                 *handlers.SOPHandler
-	scene               *handlers.SceneHandler
-	subscene            *handlers.SubsceneHandler
 	dataOps             *handlers.DataOpsHandler
 	dataStats           *handlers.DataProductionStatisticsHandler
 	productionDashboard *handlers.ProductionDashboardHandler
@@ -122,17 +117,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create database-dependent handlers only when DB is available
 	var (
-		robotTypeHandler           *handlers.RobotTypeHandler
 		robotHandler               *handlers.RobotHandler
 		deviceRegistrationHandler  *handlers.DeviceRegistrationHandler
-		factoryHandler             *handlers.FactoryHandler
 		dataCollectorHandler       *handlers.DataCollectorHandler
 		stationHandler             *handlers.StationHandler
 		workspaceHandler           *handlers.WorkspaceHandler
 		dcPlanHandler              *handlers.DCPlanHandler
-		sopHandler                 *handlers.SOPHandler
-		sceneHandler               *handlers.SceneHandler
-		subsceneHandler            *handlers.SubsceneHandler
 		dataOpsHandler             *handlers.DataOpsHandler
 		dataStatsHandler           *handlers.DataProductionStatisticsHandler
 		productionDashboardHandler *handlers.ProductionDashboardHandler
@@ -142,17 +132,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	if db != nil {
 		workspaceSyncService = services.NewWorkspaceSyncService(db, &cfg.Hilbert, nil)
 		dcPlanSyncService = services.NewDCPlanSyncService(db, &cfg.Hilbert, nil)
-		robotTypeHandler = handlers.NewRobotTypeHandler(db)
 		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub, cfg.Sync.DPConfigPath)
 		deviceRegistrationHandler = handlers.NewDeviceRegistrationHandler(db, cfg.Server.CallbackPublicBaseURL)
-		factoryHandler = handlers.NewFactoryHandler(db)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
 		workspaceHandler = handlers.NewWorkspaceHandler(db, workspaceSyncService)
 		dcPlanHandler = handlers.NewDCPlanHandler(db, dcPlanSyncService)
-		sopHandler = handlers.NewSOPHandler(db)
-		sceneHandler = handlers.NewSceneHandler(db)
-		subsceneHandler = handlers.NewSubsceneHandler(db)
 		dataOpsHandler = handlers.NewDataOpsHandler(db)
 		dataOpsHandler.SetBulkActionDeps(qaHandler, syncWorker)
 		if err := dataOpsHandler.InterruptActiveBulkQARuns(context.Background()); err != nil {
@@ -179,17 +164,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		episode:             episodeHandler,
 		qa:                  qaHandler,
 		task:                taskHandler,
-		robotType:           robotTypeHandler,
 		robot:               robotHandler,
 		deviceRegistration:  deviceRegistrationHandler,
-		factory:             factoryHandler,
 		dataCollector:       dataCollectorHandler,
 		station:             stationHandler,
 		workspace:           workspaceHandler,
 		dcPlan:              dcPlanHandler,
-		sop:                 sopHandler,
-		scene:               sceneHandler,
-		subscene:            subsceneHandler,
 		dataOps:             dataOpsHandler,
 		dataStats:           dataStatsHandler,
 		productionDashboard: productionDashboardHandler,
@@ -278,12 +258,6 @@ func (s *Server) buildRoutes() http.Handler {
 	s.task.RegisterRoutes(v1Tasks)
 	collectorTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("data_collector"))
 	s.task.RegisterCollectorRoutes(collectorTasks)
-	if s.robotType != nil {
-		s.robotType.RegisterRoutes(v1Tasks)
-		s.robotType.RegisterConfigTemplatePublicRoutes(v1Tasks)
-		adminRobotTypes := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
-		s.robotType.RegisterConfigTemplateAdminRoutes(adminRobotTypes)
-	}
 	if s.robot != nil {
 		s.robot.RegisterRoutes(v1Tasks)
 	}
@@ -291,9 +265,6 @@ func (s *Server) buildRoutes() http.Handler {
 		s.deviceRegistration.RegisterRoutes(v1Tasks)
 		adminDeviceCredentials := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
 		s.deviceRegistration.RegisterAdminRoutes(adminDeviceCredentials)
-	}
-	if s.factory != nil {
-		s.factory.RegisterRoutes(v1Tasks)
 	}
 	if s.dataCollector != nil {
 		s.dataCollector.RegisterRoutes(v1Tasks)
@@ -308,15 +279,6 @@ func (s *Server) buildRoutes() http.Handler {
 	if s.dcPlan != nil {
 		adminDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
 		s.dcPlan.RegisterRoutes(adminDCPlans)
-	}
-	if s.sop != nil {
-		s.sop.RegisterRoutes(v1Tasks)
-	}
-	if s.scene != nil {
-		s.scene.RegisterRoutes(v1Tasks)
-	}
-	if s.subscene != nil {
-		s.subscene.RegisterRoutes(v1Tasks)
 	}
 	if s.dataStats != nil {
 		jwtMw := middleware.JWTAuth(&s.cfg.Auth)

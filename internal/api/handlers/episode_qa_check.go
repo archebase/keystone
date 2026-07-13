@@ -97,7 +97,6 @@ type EpisodeQAEpisodeResponse struct {
 	EpisodeID     string                        `json:"episode_id"`
 	TaskID        int64                         `json:"task_id"`
 	TaskPublicID  *string                       `json:"task_public_id,omitempty"`
-	RobotType     *string                       `json:"robot_type,omitempty"`
 	QAStatus      string                        `json:"qa_status"`
 	QualityFlag   *string                       `json:"quality_flag,omitempty"`
 	CreatedAt     string                        `json:"created_at"`
@@ -160,7 +159,6 @@ type episodeQAListRow struct {
 	EpisodeID            string          `db:"episode_id"`
 	TaskID               int64           `db:"task_id"`
 	TaskPublicID         sql.NullString  `db:"task_public_id"`
-	RobotType            sql.NullString  `db:"robot_type"`
 	QAStatus             string          `db:"qa_status"`
 	QualityFlag          sql.NullString  `db:"quality_flag"`
 	CreatedAt            time.Time       `db:"created_at"`
@@ -291,7 +289,6 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 			e.episode_id,
 			e.task_id,
 			t.task_id AS task_public_id,
-			'' AS robot_type,
 			COALESCE(e.qa_status, '') AS qa_status,
 			e.quality_flag,
 			e.created_at,
@@ -332,7 +329,6 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 			EpisodeID:    row.EpisodeID,
 			TaskID:       row.TaskID,
 			TaskPublicID: nullableString(row.TaskPublicID),
-			RobotType:    nullableString(row.RobotType),
 			QAStatus:     row.QAStatus,
 			QualityFlag:  nullableString(row.QualityFlag),
 			CreatedAt:    row.CreatedAt.UTC().Format(time.RFC3339),

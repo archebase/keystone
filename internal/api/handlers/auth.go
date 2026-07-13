@@ -290,7 +290,6 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	`, claims.CollectorID)
 	var workstationID *string
 	var robotID *string
-	var robotType gin.H
 	if err != nil {
 		if err != sql.ErrNoRows {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
@@ -310,7 +309,6 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		"role":           claims.Role,
 		"workstation_id": workstationID,
 		"robot_id":       robotID,
-		"robot_type":     robotType,
 	})
 }
 

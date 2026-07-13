@@ -27,37 +27,33 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO robot_types (id, model, deleted_at) VALUES (10, 'arm-v1', NULL)`},
-		{sql: `INSERT INTO robot_types (id, model, deleted_at) VALUES (11, 'arm-v2', NULL)`},
-		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (31, 'F2', NULL)`},
 		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
 		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (61, 'Org B', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, deleted_at) VALUES (1, 10, 'device-a', 30, NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, deleted_at) VALUES (2, 10, 'device-b', 30, NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, deleted_at) VALUES (3, 11, 'device-c', 31, NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, deleted_at) VALUES (1, 'device-a', 60, NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, deleted_at) VALUES (2, 'device-b', 61, NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, deleted_at) VALUES (3, 'device-c', 60, NULL)`},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
+				collector_name, collector_operator_id, organization_id,
 				name, status, metadata, created_at, updated_at, deleted_at
-			) VALUES (1, 1, 'arm-v1', 'device-a', 100, 'Alice', 'C001', 30, 60, 'ws-a', 'active', '{}', ?, ?, NULL)`,
+			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'active', '{}', ?, ?, NULL)`,
 			args: []any{now, now},
 		},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
+				collector_name, collector_operator_id, organization_id,
 				name, status, metadata, created_at, updated_at, deleted_at
-			) VALUES (2, 2, 'arm-v1', 'device-b', 101, 'Bob', 'C002', 30, 61, 'ws-b', 'inactive', '{}', ?, ?, NULL)`,
+			) VALUES (2, 2, 'device-b', 'device-b', 101, 'Bob', 'C002', 61, 'ws-b', 'inactive', '{}', ?, ?, NULL)`,
 			args: []any{now, now},
 		},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
+				collector_name, collector_operator_id, organization_id,
 				name, status, metadata, created_at, updated_at, deleted_at
-			) VALUES (3, 3, 'arm-v2', 'device-c', 102, 'Alice', 'C003', 31, 60, 'ws-c', 'offline', '{}', ?, ?, NULL)`,
+			) VALUES (3, 3, 'device-c', 'device-c', 102, 'Alice', 'C003', 60, 'ws-c', 'offline', '{}', ?, ?, NULL)`,
 			args: []any{now, now},
 		},
 	}
@@ -96,10 +92,8 @@ func TestStationHandlerCreateRejectsCrossWorkspaceBinding(t *testing.T) {
 	db := newTestStationHandlerDB(t)
 	defer db.Close()
 	for _, stmt := range []string{
-		`INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm', 'arm', NULL)`,
-		`INSERT INTO factories (id, name, deleted_at) VALUES (30, 'Factory', NULL)`,
 		`INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Workspace A', NULL), (61, 'Workspace B', NULL)`,
-		`INSERT INTO robots (id, robot_type_id, device_id, workspace_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 61, 30, 'active', NULL)`,
+		`INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES (1, 'device-a', 61, 'active', NULL)`,
 		`INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
@@ -118,218 +112,55 @@ func TestStationHandlerCreateRejectsCrossWorkspaceBinding(t *testing.T) {
 	}
 }
 
-func TestStationHandlerUpdateRejectsCrossWorkspaceBinding(t *testing.T) {
+func TestStationHandlerUpdateUsesCurrentWorkspaceFields(t *testing.T) {
 	db := newTestStationHandlerDB(t)
 	defer db.Close()
+
 	now := time.Now().UTC()
 	for _, stmt := range []struct {
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm', 'arm', NULL)`},
-		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'Factory', NULL)`},
-		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Workspace A', NULL), (61, 'Workspace B', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, workspace_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 60, 30, 'active', NULL), (2, 10, 'device-b', 61, 30, 'active', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Workspace A', NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES (1, 'device-a', 60, 'active', NULL)`},
 		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
+				collector_name, collector_operator_id, organization_id,
 				name, status, is_current, metadata, created_at, updated_at, deleted_at
-			) VALUES (1, 1, 'arm', 'device-a', 100, 'Alice', 'C001', 30, 60, 'ws-a', 'active', TRUE, '{}', ?, ?, NULL)`,
+			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'offline', TRUE, '{}', ?, ?, NULL)`,
 			args: []any{now, now},
 		},
 	} {
 		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
-			t.Fatalf("seed cross-workspace update fixture: %v", err)
+			t.Fatalf("seed update fixture: %v", err)
 		}
 	}
 
 	r := newTestStationRouter(t, db)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/stations/1", strings.NewReader(`{"robot_id":"2"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/stations/1", strings.NewReader(`{
+		"robot_id":"1",
+		"data_collector_id":"100",
+		"status":"active",
+		"metadata":{"mode":"current"}
+	}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
-}
-
-func TestStationHandlerUpdateStationCreatesNewBindingVersion(t *testing.T) {
-	db := newTestStationHandlerDB(t)
-	defer db.Close()
-
-	now := time.Now().UTC()
-	stmts := []struct {
-		sql  string
-		args []any
-	}{
-		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
-		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (11, 'arm-v2', 'arm-v2', NULL)`},
-		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
-		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (2, 11, 'device-b', 30, 'active', NULL)`},
-		{
-			sql: `INSERT INTO workstations (
-				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
-				name, status, is_current, metadata, created_at, updated_at, deleted_at
-			) VALUES (1, 1, 'arm-v1', 'device-a', 100, 'Alice', 'C001', 30, 60, 'ws-a', 'active', TRUE, '{}', ?, ?, NULL)`,
-			args: []any{now, now},
-		},
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
-			t.Fatalf("seed station fixture failed: %v", err)
-		}
-	}
-
-	r := newTestStationRouter(t, db)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/stations/1", strings.NewReader(`{"robot_id":"2"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
-	}
-	return
-
 	var updated StationResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil {
-		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+		t.Fatalf("unmarshal update response: %v", err)
 	}
-	if updated.ID == "1" || updated.RobotID != "2" || updated.RobotSerial != "device-b" || !updated.IsCurrent {
+	if updated.WorkspaceID != "60" || updated.Status != "active" || updated.RobotSerial != "device-a" {
 		t.Fatalf("unexpected update response: %#v", updated)
 	}
-
-	var old struct {
-		IsCurrent    bool          `db:"is_current"`
-		SupersededBy sql.NullInt64 `db:"superseded_by"`
-	}
-	if err := db.Get(&old, "SELECT is_current, superseded_by FROM workstations WHERE id = 1"); err != nil {
-		t.Fatalf("query old workstation: %v", err)
-	}
-	if old.IsCurrent || !old.SupersededBy.Valid {
-		t.Fatalf("old workstation was not superseded: %#v", old)
-	}
-
-	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/stations", nil)
-	listW := httptest.NewRecorder()
-	r.ServeHTTP(listW, listReq)
-	if listW.Code != http.StatusOK {
-		t.Fatalf("list status=%d body=%s", listW.Code, listW.Body.String())
-	}
-	var listResp struct {
-		Items []StationResponse `json:"items"`
-		Total int               `json:"total"`
-	}
-	if err := json.Unmarshal(listW.Body.Bytes(), &listResp); err != nil {
-		t.Fatalf("unmarshal list response: %v body=%s", err, listW.Body.String())
-	}
-	if listResp.Total != 1 || len(listResp.Items) != 1 || listResp.Items[0].ID != updated.ID {
-		t.Fatalf("list should include only current binding: %#v", listResp)
-	}
-}
-
-func TestStationHandlerUpdateStationReusesHistoricalBindingVersion(t *testing.T) {
-	db := newTestStationHandlerDB(t)
-	defer db.Close()
-
-	now := time.Now().UTC()
-	stmts := []struct {
-		sql  string
-		args []any
-	}{
-		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
-		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (11, 'arm-v2', 'arm-v2', NULL)`},
-		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
-		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (2, 11, 'device-b', 30, 'active', NULL)`},
-		{
-			sql: `INSERT INTO workstations (
-				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
-				name, status, is_current, metadata, created_at, updated_at, deleted_at
-			) VALUES (1, 1, 'arm-v1', 'device-a', 100, 'Alice', 'C001', 30, 60, 'ws-a', 'active', TRUE, '{}', ?, ?, NULL)`,
-			args: []any{now, now},
-		},
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
-			t.Fatalf("seed station fixture failed: %v", err)
-		}
-	}
-
-	r := newTestStationRouter(t, db)
-
-	toRobotBReq := httptest.NewRequest(http.MethodPut, "/api/v1/stations/1", strings.NewReader(`{"robot_id":"2"}`))
-	toRobotBReq.Header.Set("Content-Type", "application/json")
-	toRobotBW := httptest.NewRecorder()
-	r.ServeHTTP(toRobotBW, toRobotBReq)
-	if toRobotBW.Code != http.StatusNotFound {
-		t.Fatalf("switch to robot B status=%d body=%s", toRobotBW.Code, toRobotBW.Body.String())
-	}
-	return
-
-	var robotBStation StationResponse
-	if err := json.Unmarshal(toRobotBW.Body.Bytes(), &robotBStation); err != nil {
-		t.Fatalf("unmarshal robot B response: %v body=%s", err, toRobotBW.Body.String())
-	}
-	if robotBStation.ID == "1" || robotBStation.RobotID != "2" || !robotBStation.IsCurrent {
-		t.Fatalf("unexpected robot B response: %#v", robotBStation)
-	}
-
-	toRobotAReq := httptest.NewRequest(http.MethodPut, "/api/v1/stations/"+robotBStation.ID, strings.NewReader(`{"robot_id":"1","status":"inactive","metadata":{"phase":"back"}}`))
-	toRobotAReq.Header.Set("Content-Type", "application/json")
-	toRobotAW := httptest.NewRecorder()
-	r.ServeHTTP(toRobotAW, toRobotAReq)
-	if toRobotAW.Code != http.StatusOK {
-		t.Fatalf("switch back to robot A status=%d body=%s", toRobotAW.Code, toRobotAW.Body.String())
-	}
-
-	var robotAStation StationResponse
-	if err := json.Unmarshal(toRobotAW.Body.Bytes(), &robotAStation); err != nil {
-		t.Fatalf("unmarshal robot A response: %v body=%s", err, toRobotAW.Body.String())
-	}
-	if robotAStation.ID != "1" || robotAStation.RobotID != "1" || robotAStation.RobotSerial != "device-a" || !robotAStation.IsCurrent {
-		t.Fatalf("historical robot A binding was not reused: %#v", robotAStation)
-	}
-	if robotAStation.Status != "inactive" {
-		t.Fatalf("reused station status was not refreshed: %#v", robotAStation)
-	}
-
-	var robotBRow struct {
-		IsCurrent    bool          `db:"is_current"`
-		SupersededBy sql.NullInt64 `db:"superseded_by"`
-	}
-	if err := db.Get(&robotBRow, "SELECT is_current, superseded_by FROM workstations WHERE id = ?", robotBStation.ID); err != nil {
-		t.Fatalf("query robot B workstation: %v", err)
-	}
-	if robotBRow.IsCurrent || !robotBRow.SupersededBy.Valid || robotBRow.SupersededBy.Int64 != 1 {
-		t.Fatalf("robot B workstation was not superseded by reused robot A binding: %#v", robotBRow)
-	}
-
-	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/stations", nil)
-	listW := httptest.NewRecorder()
-	r.ServeHTTP(listW, listReq)
-	if listW.Code != http.StatusOK {
-		t.Fatalf("list status=%d body=%s", listW.Code, listW.Body.String())
-	}
-	var listResp struct {
-		Items []StationResponse `json:"items"`
-		Total int               `json:"total"`
-	}
-	if err := json.Unmarshal(listW.Body.Bytes(), &listResp); err != nil {
-		t.Fatalf("unmarshal list response: %v body=%s", err, listW.Body.String())
-	}
-	if listResp.Total != 1 || len(listResp.Items) != 1 || listResp.Items[0].ID != "1" {
-		t.Fatalf("list should include only the reused current binding: %#v", listResp)
+	if got, ok := updated.Metadata.(map[string]interface{})["mode"].(string); !ok || got != "current" {
+		t.Fatalf("metadata not updated: %#v", updated.Metadata)
 	}
 }
 
@@ -342,17 +173,15 @@ func TestStationHandlerDeleteUnbindsAndCreateReusesHistoricalBinding(t *testing.
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
-		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
 		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES (1, 'device-a', 60, 'active', NULL)`},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
+				collector_name, collector_operator_id, organization_id,
 				name, status, is_current, metadata, created_at, updated_at, deleted_at
-			) VALUES (1, 1, 'arm-v1', 'device-a', 100, 'Alice', 'C001', 30, 60, 'ws-a', 'active', TRUE, '{"old":true}', ?, ?, NULL)`,
+			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'active', TRUE, '{"old":true}', ?, ?, NULL)`,
 			args: []any{now, now},
 		},
 	}
@@ -420,46 +249,6 @@ func TestStationHandlerDeleteUnbindsAndCreateReusesHistoricalBinding(t *testing.
 	}
 }
 
-func TestStationHandlerUpdateHistoricalStationReturnsNotFound(t *testing.T) {
-	db := newTestStationHandlerDB(t)
-	defer db.Close()
-
-	now := time.Now().UTC()
-	stmts := []struct {
-		sql  string
-		args []any
-	}{
-		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
-		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
-		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
-		{
-			sql: `INSERT INTO workstations (
-				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
-				name, status, is_current, superseded_at, metadata, created_at, updated_at, deleted_at
-			) VALUES (1, 1, 'arm-v1', 'device-a', 100, 'Alice', 'C001', 30, 60, 'ws-a', 'active', FALSE, ?, '{}', ?, ?, NULL)`,
-			args: []any{now, now, now},
-		},
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
-			t.Fatalf("seed station fixture failed: %v", err)
-		}
-	}
-
-	r := newTestStationRouter(t, db)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/stations/1", strings.NewReader(`{"status":"offline"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
-	}
-}
-
 func TestStationHandlerDeleteRejectsPendingOrActiveTasks(t *testing.T) {
 	db := newTestStationHandlerDB(t)
 	defer db.Close()
@@ -469,17 +258,15 @@ func TestStationHandlerDeleteRejectsPendingOrActiveTasks(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'arm-v1', 'arm-v1', NULL)`},
-		{sql: `INSERT INTO factories (id, name, deleted_at) VALUES (30, 'F1', NULL)`},
-		{sql: `INSERT INTO workspaces (id, factory_id, name, deleted_at) VALUES (60, 30, 'Org A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
 		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, deleted_at) VALUES (1, 10, 'device-a', 30, 'active', NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES (1, 'device-a', 60, 'active', NULL)`},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, factory_id, organization_id,
+				collector_name, collector_operator_id, organization_id,
 				name, status, is_current, metadata, created_at, updated_at, deleted_at
-			) VALUES (1, 1, 'arm-v1', 'device-a', 100, 'Alice', 'C001', 30, 60, 'ws-a', 'active', TRUE, '{}', ?, ?, NULL)`,
+			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'active', TRUE, '{}', ?, ?, NULL)`,
 			args: []any{now, now},
 		},
 		{
@@ -527,29 +314,15 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 	}
 
 	schema := []string{
-		`CREATE TABLE robot_types (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE factories (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
 		`CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY,
-			factory_id INTEGER NOT NULL DEFAULT 30,
 			name TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
-			robot_type_id INTEGER NOT NULL,
 			device_id TEXT NOT NULL,
 			workspace_id INTEGER NOT NULL DEFAULT 60,
-			factory_id INTEGER NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active',
 			deleted_at TIMESTAMP NULL
 		)`,
@@ -569,7 +342,6 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 			data_collector_id INTEGER NOT NULL,
 			collector_name TEXT,
 			collector_operator_id TEXT,
-			factory_id INTEGER NOT NULL,
 			organization_id INTEGER NOT NULL,
 			name TEXT,
 			status TEXT NOT NULL,

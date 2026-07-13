@@ -20,7 +20,7 @@ import (
 func TestParseDataProductionStatsQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&workspace_id=0&source_id=12&scene_id=34,35&robot_type_id=7,8&sop_id=9,10&qa_status=approved,failed&cloud_synced=false&data_type=episode&task_id=task_1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&workspace_id=0&source_id=12&qa_status=approved,failed&cloud_synced=false&data_type=episode&task_id=task_1", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -33,9 +33,6 @@ func TestParseDataProductionStatsQuery(t *testing.T) {
 	}
 	if len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != 0 {
 		t.Fatalf("unexpected workspace ids: %#v", got.WorkspaceIDs)
-	}
-	if len(got.SceneIDs) != 0 || len(got.RobotTypeIDs) != 0 || len(got.SOPIDs) != 0 {
-		t.Fatalf("legacy production filters should be ignored: %+v", got)
 	}
 	if strings.Join(got.QAStatuses, ",") != "approved,failed" {
 		t.Fatalf("unexpected list filters: %+v", got)
@@ -71,13 +68,11 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 	}
 }
 
-func TestDataProductionDetailsSQLSelectsSOPFields(t *testing.T) {
+func TestDataProductionDetailsSQLSelectsCurrentFields(t *testing.T) {
 	querySQL := dataProductionDetailsSQL("SELECT 1", "time", "DESC")
 	for _, want := range []string{
 		"COALESCE(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), event_time)",
 		"collector_name",
-		"sop_id",
-		"sop,",
 		"qa_status",
 		"cloud_synced",
 	} {
@@ -111,7 +106,6 @@ func TestFilteredProductionRecordsSQLIncludesEpisodeFilters(t *testing.T) {
 		StartTime:         mustParseStatsTimeForTest(t, "2026-05-01T00:00:00Z"),
 		EndTime:           mustParseStatsTimeForTest(t, "2026-05-02T00:00:00Z"),
 		WorkspaceIDs:      []int64{0},
-		SceneIDs:          []int64{34},
 		QAStatuses:        []string{"failed"},
 		CloudSyncedValues: []bool{cloudSynced},
 	})

@@ -67,8 +67,6 @@ func newTaskCompleteTestDB(t *testing.T) *sqlx.DB {
 			task_id TEXT NOT NULL,
 			dc_plan_id INTEGER,
 			workstation_id INTEGER,
-			sop_id INTEGER,
-			subscene_id INTEGER,
 			status TEXT NOT NULL,
 			assigned_at TIMESTAMP NULL,
 			started_at TIMESTAMP NULL,
@@ -78,12 +76,12 @@ func newTaskCompleteTestDB(t *testing.T) *sqlx.DB {
 		)`,
 		`INSERT INTO workstations (id, data_collector_id, is_current) VALUES (1, 100, TRUE), (2, 101, TRUE)`,
 		`INSERT INTO dc_plan (id) VALUES (10), (11)`,
-		`INSERT INTO tasks (id, task_id, dc_plan_id, workstation_id, sop_id, subscene_id, status) VALUES
-			(1, 'task-1', 10, 1, 20, 30, 'pending'),
-			(2, 'task-2', 10, 1, 20, 30, 'pending'),
-			(3, 'task-other-workstation', 10, 2, 20, 30, 'pending'),
-			(4, 'task-other-plan', 11, 1, 20, 30, 'pending'),
-			(5, 'task-other-group', 10, 1, 20, 31, 'pending')`,
+		`INSERT INTO tasks (id, task_id, dc_plan_id, workstation_id, status) VALUES
+			(1, 'task-1', 10, 1, 'pending'),
+			(2, 'task-2', 10, 1, 'pending'),
+			(3, 'task-other-workstation', 10, 2, 'pending'),
+			(4, 'task-other-plan', 11, 1, 'pending'),
+			(5, 'task-3', 10, 1, 'pending')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

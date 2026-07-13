@@ -28,12 +28,6 @@ type dpRawTagsInput struct {
 type dpRawTagContext struct {
 	DCPlanID                int64
 	WorkspaceID             int64
-	SOPSlug                 sql.NullString
-	SOPVersion              sql.NullString
-	SOPDescription          sql.NullString
-	Scene                   sql.NullString
-	Subscene                sql.NullString
-	RobotType               sql.NullString
 	DataCollectorOperatorID sql.NullString
 	DataCollectorName       sql.NullString
 }
@@ -75,12 +69,6 @@ func keystoneExtraTags(input dpRawTagsInput) map[string]string {
 	if input.Context.WorkspaceID > 0 {
 		tags["workspace_id"] = strconv.FormatInt(input.Context.WorkspaceID, 10)
 	}
-	addNonEmptyTag(tags, "sop_slug", input.Context.SOPSlug)
-	addNonEmptyTag(tags, "sop_version", input.Context.SOPVersion)
-	addNonEmptyTag(tags, "sop_description", input.Context.SOPDescription)
-	addNonEmptyTag(tags, "scene", input.Context.Scene)
-	addNonEmptyTag(tags, "subscene", input.Context.Subscene)
-	addNonEmptyTag(tags, "robot_type", input.Context.RobotType)
 	addNonEmptyTag(tags, "data_collector_operator_id", input.Context.DataCollectorOperatorID)
 	addNonEmptyTag(tags, "data_collector_name", input.Context.DataCollectorName)
 	return tags

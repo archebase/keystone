@@ -17,7 +17,7 @@ import (
 func TestParseProductionDashboardQueryDefaultsAndBounds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/dashboard/overview?workstation_id=12&factory_id=34&organization_id=56&trend_days=99&recent_limit=999&preview_limit=999&timezone_offset=%2B08:00", nil)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/overview?workstation_id=12&organization_id=56&trend_days=99&recent_limit=999&preview_limit=999&timezone_offset=%2B08:00", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -25,7 +25,7 @@ func TestParseProductionDashboardQueryDefaultsAndBounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseProductionDashboardQuery returned error: %v", err)
 	}
-	if got.WorkstationID != "12" || got.FactoryID != "" || got.OrganizationID != "56" {
+	if got.WorkstationID != "12" || got.OrganizationID != "56" {
 		t.Fatalf("unexpected scope filters: %+v", got)
 	}
 	if got.TrendDays != maxDashboardTrendDays {
@@ -71,7 +71,6 @@ func TestDashboardTaskScopeUsesCollectorAssignment(t *testing.T) {
 		productionDashboardScope{
 			Role:           "data_collector",
 			WorkstationID:  "99",
-			FactoryID:      "88",
 			OrganizationID: "77",
 			collectorID:    42,
 		},
@@ -81,7 +80,7 @@ func TestDashboardTaskScopeUsesCollectorAssignment(t *testing.T) {
 	if !strings.Contains(joined, "ws_scope.data_collector_id = ?") {
 		t.Fatalf("collector task scope should filter by collector assignment: %s", joined)
 	}
-	if strings.Contains(joined, "CAST(t.workstation_id AS CHAR)") || strings.Contains(joined, "CAST(t.factory_id AS CHAR)") {
+	if strings.Contains(joined, "CAST(t.workstation_id AS CHAR)") {
 		t.Fatalf("collector task scope should ignore caller-supplied admin filters: %s", joined)
 	}
 	if len(args) != 1 || args[0] != int64(42) {
@@ -93,14 +92,14 @@ func TestResolveProductionDashboardScopeAllowsDisplayRole(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/dashboard/overview?factory_id=12", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/dashboard/overview", nil)
 	h := &ProductionDashboardHandler{}
 
-	scope, err := h.resolveProductionDashboardScope(c, &auth.Claims{Role: "display"}, productionDashboardQuery{FactoryID: "12"})
+	scope, err := h.resolveProductionDashboardScope(c, &auth.Claims{Role: "display"}, productionDashboardQuery{})
 	if err != nil {
 		t.Fatalf("resolveProductionDashboardScope returned error: %v", err)
 	}
-	if scope.Role != "display" || scope.FactoryID != "" {
+	if scope.Role != "display" {
 		t.Fatalf("unexpected display scope: %+v", scope)
 	}
 }
