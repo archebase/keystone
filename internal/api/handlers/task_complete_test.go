@@ -31,7 +31,7 @@ func TestTaskHandlerCompleteTasksScopesToCurrentWorkstationAndPlanGroup(t *testi
 		handler.CompleteTasks(c)
 	})
 
-	body := bytes.NewBufferString(`{"dc_plan_id":10,"sop_id":20,"subscene_id":30,"quantity":2}`)
+	body := bytes.NewBufferString(`{"dc_plan_id":10,"quantity":2}`)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/tasks/complete", body))
 
@@ -46,10 +46,10 @@ func TestTaskHandlerCompleteTasksScopesToCurrentWorkstationAndPlanGroup(t *testi
 		t.Fatalf("unexpected response: %#v", response)
 	}
 
-	assertTaskStatusCount(t, db, "dc_plan_id = 10 AND workstation_id = 1 AND sop_id = 20 AND subscene_id = 30", "completed", 2)
+	assertTaskStatusCount(t, db, "dc_plan_id = 10 AND workstation_id = 1", "completed", 2)
 	assertTaskStatusCount(t, db, "dc_plan_id = 10 AND workstation_id = 2", "pending", 1)
 	assertTaskStatusCount(t, db, "dc_plan_id = 11 AND workstation_id = 1", "pending", 1)
-	assertTaskStatusCount(t, db, "dc_plan_id = 10 AND workstation_id = 1 AND subscene_id = 31", "pending", 1)
+	assertTaskStatusCount(t, db, "dc_plan_id = 10 AND workstation_id = 1", "pending", 1)
 }
 
 func newTaskCompleteTestDB(t *testing.T) *sqlx.DB {

@@ -54,13 +54,13 @@ func NewRobotHandler(db *sqlx.DB, recorderHub *services.RecorderHub, transferHub
 // RobotResponse represents a robot in the response.
 type RobotResponse struct {
 	ID             string      `json:"id"`
-	RobotTypeID    string      `json:"robot_type_id"`
+	RobotTypeID    string      `json:"robot_type_id,omitempty"`
 	RobotTypeName  string      `json:"robot_type_name,omitempty"`
 	RobotTypeModel string      `json:"robot_type_model,omitempty"`
 	DeviceID       string      `json:"device_id"`
 	DeviceName     string      `json:"device_name,omitempty"`
 	WorkspaceID    string      `json:"workspace_id"`
-	FactoryID      string      `json:"factory_id"`
+	FactoryID      string      `json:"factory_id,omitempty"`
 	FactoryName    string      `json:"factory_name,omitempty"`
 	FactorySlug    string      `json:"factory_slug,omitempty"`
 	AssetID        string      `json:"asset_id,omitempty"`
@@ -135,25 +135,22 @@ type CreateRobotResponse struct {
 // RegisterRoutes registers robot related routes.
 func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robots", h.ListRobots)
-	apiV1.POST("/robots", h.CreateRobot)
 	apiV1.GET("/robots/cloud-asset-options", h.ListCloudAssetOptions)
 	apiV1.GET("/devices/:device_id/connection", h.GetDeviceConnection)
 	apiV1.GET("/robots/:id", h.GetRobot)
-	apiV1.PUT("/robots/:id", h.UpdateRobot)
 	apiV1.PUT("/robots/:id/cloud-asset", h.BindCloudAsset)
 	apiV1.DELETE("/robots/:id/cloud-asset", h.UnbindCloudAsset)
-	apiV1.DELETE("/robots/:id", h.DeleteRobot)
 }
 
 // robotRow represents a robot in the database
 type robotRow struct {
 	ID             int64          `db:"id"`
-	RobotTypeID    int64          `db:"robot_type_id"`
+	RobotTypeID    sql.NullInt64  `db:"robot_type_id"`
 	RobotTypeName  sql.NullString `db:"robot_type_name"`
 	RobotTypeModel sql.NullString `db:"robot_type_model"`
 	DeviceID       string         `db:"device_id"`
 	WorkspaceID    int64          `db:"workspace_id"`
-	FactoryID      int64          `db:"factory_id"`
+	FactoryID      sql.NullInt64  `db:"factory_id"`
 	FactoryName    sql.NullString `db:"factory_name"`
 	FactorySlug    sql.NullString `db:"factory_slug"`
 	AssetID        sql.NullString `db:"asset_id"`
@@ -474,13 +471,13 @@ func robotResponseFromRow(r robotRow, connected bool, connectedAt string) RobotR
 	}
 	return RobotResponse{
 		ID:             fmt.Sprintf("%d", r.ID),
-		RobotTypeID:    fmt.Sprintf("%d", r.RobotTypeID),
+		RobotTypeID:    nullableInt64String(r.RobotTypeID),
 		RobotTypeName:  nullString(r.RobotTypeName),
 		RobotTypeModel: nullString(r.RobotTypeModel),
 		DeviceID:       r.DeviceID,
 		DeviceName:     robotDeviceNameFromMetadata(r.Metadata),
 		WorkspaceID:    fmt.Sprintf("%d", r.WorkspaceID),
-		FactoryID:      fmt.Sprintf("%d", r.FactoryID),
+		FactoryID:      nullableInt64String(r.FactoryID),
 		FactoryName:    nullString(r.FactoryName),
 		FactorySlug:    nullString(r.FactorySlug),
 		AssetID:        assetID,
@@ -491,6 +488,13 @@ func robotResponseFromRow(r robotRow, connected bool, connectedAt string) RobotR
 		Connected:      connected,
 		ConnectedAt:    connectedAt,
 	}
+}
+
+func nullableInt64String(value sql.NullInt64) string {
+	if !value.Valid {
+		return ""
+	}
+	return strconv.FormatInt(value.Int64, 10)
 }
 
 func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
@@ -622,21 +626,19 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		SELECT 
 				r.id,
 				r.robot_type_id,
-				rt.name AS robot_type_name,
-				rt.model AS robot_type_model,
+				NULL AS robot_type_name,
+				NULL AS robot_type_model,
 				r.device_id,
 				r.workspace_id,
 				r.factory_id,
-				f.name AS factory_name,
-				f.slug AS factory_slug,
+				NULL AS factory_name,
+				NULL AS factory_slug,
 				r.asset_id,
 				r.status,
 				r.metadata,
 				r.created_at,
 				r.updated_at
 			FROM robots r
-			LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-			LEFT JOIN factories f ON f.id = r.factory_id AND f.deleted_at IS NULL
 				` + whereClause + `
 				` + orderClause + `
 				LIMIT ? OFFSET ?

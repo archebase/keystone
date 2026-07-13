@@ -75,10 +75,7 @@ type UpdateSubsceneRequest struct {
 // RegisterRoutes registers subscene related routes.
 func (h *SubsceneHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/subscenes", h.ListSubscenes)
-	apiV1.POST("/subscenes", h.CreateSubscene)
 	apiV1.GET("/subscenes/:id", h.GetSubscene)
-	apiV1.PUT("/subscenes/:id", h.UpdateSubscene)
-	apiV1.DELETE("/subscenes/:id", h.DeleteSubscene)
 }
 
 // subsceneRow represents a subscene in the database

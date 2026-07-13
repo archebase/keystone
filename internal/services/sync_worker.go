@@ -970,23 +970,18 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 			e.cloud_synced,
 			e.metadata,
 			e.workstation_id,
-			s.slug AS sop_slug,
-			s.version AS sop_version,
-			s.description AS sop_description,
-			COALESCE(NULLIF(e.scene_name, ''), NULLIF(t.scene_name, ''), NULLIF(sc.name, '')) AS scene,
-			COALESCE(NULLIF(t.subscene_name, ''), NULLIF(ss.name, '')) AS subscene,
-			COALESCE(NULLIF(rt.name, ''), NULLIF(rt.model, ''), NULLIF(ws.robot_name, '')) AS robot_type,
+			NULL AS sop_slug,
+			NULL AS sop_version,
+			NULL AS sop_description,
+			NULL AS scene,
+			NULL AS subscene,
+			NULL AS robot_type,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS data_collector_operator_id,
 			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS data_collector_name
 		FROM episodes e
 		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = COALESCE(e.sop_id, t.sop_id) AND s.deleted_at IS NULL
-		LEFT JOIN scenes sc ON sc.id = COALESCE(e.scene_id, t.scene_id) AND sc.deleted_at IS NULL
-		LEFT JOIN subscenes ss ON ss.id = t.subscene_id AND ss.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
 		WHERE e.id = ? AND e.deleted_at IS NULL
 	`, episodeID)

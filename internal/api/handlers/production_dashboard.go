@@ -295,7 +295,6 @@ type dashboardDB interface {
 // @Accept       json
 // @Produce      json
 // @Param        workstation_id query int false "Filter by workstation ID; ignored for data_collector"
-// @Param        factory_id query int false "Filter by factory ID; ignored for data_collector"
 // @Param        organization_id query int false "Filter by organization ID; ignored for data_collector"
 // @Param        timezone_offset query string false "Timezone offset such as +08:00"
 // @Param        trend_days query int false "Trend day count (default 7, max 31)"
@@ -436,10 +435,6 @@ func parseProductionDashboardQuery(c *gin.Context) (productionDashboardQuery, er
 	if err != nil {
 		return productionDashboardQuery{}, err
 	}
-	factoryID, err := parseOptionalPositiveIDQuery(c, "factory_id")
-	if err != nil {
-		return productionDashboardQuery{}, err
-	}
 	orgID, err := parseOptionalPositiveIDQuery(c, "organization_id")
 	if err != nil {
 		return productionDashboardQuery{}, err
@@ -463,7 +458,6 @@ func parseProductionDashboardQuery(c *gin.Context) (productionDashboardQuery, er
 
 	return productionDashboardQuery{
 		WorkstationID:  workstationID,
-		FactoryID:      factoryID,
 		OrganizationID: orgID,
 		TrendDays:      trendDays,
 		RecentLimit:    recentLimit,
@@ -503,7 +497,7 @@ func (h *ProductionDashboardHandler) resolveProductionDashboardScope(c *gin.Cont
 	scope := productionDashboardScope{
 		Role:           claims.Role,
 		WorkstationID:  q.WorkstationID,
-		FactoryID:      q.FactoryID,
+		FactoryID:      "",
 		OrganizationID: q.OrganizationID,
 		collectorID:    claims.CollectorID,
 	}
@@ -529,7 +523,6 @@ func (h *ProductionDashboardHandler) resolveProductionDashboardScope(c *gin.Cont
 			return productionDashboardScope{}, err
 		}
 		scope.WorkstationID = workstationID
-		scope.FactoryID = ""
 		scope.OrganizationID = ""
 		return scope, nil
 	default:
@@ -795,24 +788,23 @@ func (h *ProductionDashboardHandler) dashboardRecentTasks(db dashboardDB, scope 
 	conditions := []string{"t.deleted_at IS NULL"}
 	args := []interface{}{}
 	conditions, args = appendDashboardTaskScope(conditions, args, scope)
-	taskNameExpr := dashboardTaskNameSQL("t.scene_name", "t.subscene_name", "t.sop_id", "s.slug", "s.version")
 	updatedAtExpr := dashboardRecentTaskUpdatedAtSQL("t")
 	query := `
 		SELECT
 			CAST(t.id AS CHAR) AS id,
 			COALESCE(NULLIF(t.task_id, ''), CAST(t.id AS CHAR)) AS task_id,
-			` + taskNameExpr + ` AS task_name,
+			COALESCE(NULLIF(dp.name, ''), NULLIF(t.task_id, ''), CAST(t.id AS CHAR)) AS task_name,
 			COALESCE(t.status, '') AS status,
 			COALESCE(ws.robot_name, ws.robot_serial, '') AS robot_name,
 			COALESCE(ws.name, CAST(ws.id AS CHAR), '') AS station_name,
 			COALESCE(CAST(t.dc_plan_id AS CHAR), '') AS dc_plan_id,
-			COALESCE(NULLIF(t.scene_name, ''), '') AS scene_name,
-			` + dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version") + ` AS sop_label,
+			'' AS scene_name,
+			'' AS sop_label,
 			COALESCE(e.episode_id, '') AS episode_id,
 			t.created_at AS created_at,
 			` + updatedAtExpr + ` AS updated_at
 		FROM tasks t
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN (
 			SELECT task_id, MAX(id) AS latest_id
@@ -866,13 +858,12 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 	conditions := []string{"e.deleted_at IS NULL"}
 	args := []interface{}{}
 	conditions, args = appendDashboardEpisodeScope(conditions, args, scope)
-	sceneNameExpr := dashboardTaskNameSQL("t.scene_name", "t.subscene_name", "t.sop_id", "s.slug", "s.version")
 	query := `
 		SELECT
 			CAST(e.id AS CHAR) AS id,
-			` + sceneNameExpr + ` AS scene_name,
-			` + dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version") + ` AS sop_label,
-			COALESCE(NULLIF(rt.name, ''), NULLIF(rt.model, ''), NULLIF(ws.robot_name, ''), '') AS device_type,
+			COALESCE(NULLIF(dp.name, ''), NULLIF(t.task_id, ''), '') AS scene_name,
+			COALESCE(NULLIF(dp.dc_type, ''), '') AS sop_label,
+			'' AS device_type,
 			COALESCE(ws.robot_serial, r.device_id, '') AS device_id,
 			COALESCE(ws.name, CAST(ws.id AS CHAR), '') AS station_name,
 			COALESCE(NULLIF(t.status, ''), e.qa_status, '') AS status,
@@ -883,10 +874,9 @@ func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope pro
 			COALESCE(NULLIF(t.task_id, ''), CAST(t.id AS CHAR), '') AS task_id
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		WHERE ` + strings.Join(conditions, " AND ") + `
 		ORDER BY e.created_at DESC, e.id DESC
 		LIMIT ?
@@ -1036,10 +1026,6 @@ func appendDashboardTaskScope(conditions []string, args []interface{}, scope pro
 		conditions = append(conditions, "CAST(t.workstation_id AS CHAR) = ?")
 		args = append(args, scope.WorkstationID)
 	}
-	if scope.FactoryID != "" {
-		conditions = append(conditions, "CAST(t.factory_id AS CHAR) = ?")
-		args = append(args, scope.FactoryID)
-	}
 	if scope.OrganizationID != "" {
 		conditions = append(conditions, "CAST(t.organization_id AS CHAR) = ?")
 		args = append(args, scope.OrganizationID)
@@ -1062,10 +1048,6 @@ func appendDashboardEpisodeScope(conditions []string, args []interface{}, scope 
 		conditions = append(conditions, "CAST(e.workstation_id AS CHAR) = ?")
 		args = append(args, scope.WorkstationID)
 	}
-	if scope.FactoryID != "" {
-		conditions = append(conditions, "CAST(e.factory_id AS CHAR) = ?")
-		args = append(args, scope.FactoryID)
-	}
 	if scope.OrganizationID != "" {
 		conditions = append(conditions, "CAST(e.organization_id AS CHAR) = ?")
 		args = append(args, scope.OrganizationID)
@@ -1082,10 +1064,6 @@ func appendDashboardStationScope(conditions []string, args []interface{}, scope 
 	if scope.WorkstationID != "" {
 		conditions = append(conditions, "CAST(ws.id AS CHAR) = ?")
 		args = append(args, scope.WorkstationID)
-	}
-	if scope.FactoryID != "" {
-		conditions = append(conditions, "CAST(ws.factory_id AS CHAR) = ?")
-		args = append(args, scope.FactoryID)
 	}
 	if scope.OrganizationID != "" {
 		conditions = append(conditions, "CAST(ws.organization_id AS CHAR) = ?")
@@ -1114,10 +1092,6 @@ func appendDashboardRobotScope(conditions []string, args []interface{}, scope pr
 		)`)
 		args = append(args, scope.WorkstationID)
 	}
-	if scope.FactoryID != "" {
-		conditions = append(conditions, "CAST(r.factory_id AS CHAR) = ?")
-		args = append(args, scope.FactoryID)
-	}
 	if scope.OrganizationID != "" {
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM workstations ws_scope
@@ -1128,26 +1102,6 @@ func appendDashboardRobotScope(conditions []string, args []interface{}, scope pr
 		args = append(args, scope.OrganizationID)
 	}
 	return conditions, args
-}
-
-func dashboardSOPLabelSQL(sopIDExpr string, slugExpr string, versionExpr string) string {
-	return `CASE
-		WHEN ` + sopIDExpr + ` IS NULL THEN '未分类'
-		WHEN NULLIF(` + slugExpr + `, '') IS NULL THEN CONCAT('SOP #', CAST(` + sopIDExpr + ` AS CHAR))
-		WHEN NULLIF(` + versionExpr + `, '') IS NULL THEN ` + slugExpr + `
-		ELSE CONCAT(` + slugExpr + `, '@', ` + versionExpr + `)
-	END`
-}
-
-func dashboardTaskNameSQL(sceneExpr string, subsceneExpr string, sopIDExpr string, slugExpr string, versionExpr string) string {
-	return `CASE
-		WHEN NULLIF(TRIM(COALESCE(` + sceneExpr + `, '')), '') IS NOT NULL
-			AND NULLIF(TRIM(COALESCE(` + subsceneExpr + `, '')), '') IS NOT NULL
-			THEN CONCAT(` + sceneExpr + `, ' / ', ` + subsceneExpr + `)
-		WHEN NULLIF(TRIM(COALESCE(` + sceneExpr + `, '')), '') IS NOT NULL THEN ` + sceneExpr + `
-		WHEN NULLIF(TRIM(COALESCE(` + subsceneExpr + `, '')), '') IS NOT NULL THEN ` + subsceneExpr + `
-		ELSE ` + dashboardSOPLabelSQL(sopIDExpr, slugExpr, versionExpr) + `
-	END`
 }
 
 func dashboardStationStatusText(status string) string {

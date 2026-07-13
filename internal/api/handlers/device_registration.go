@@ -20,10 +20,8 @@ import (
 )
 
 var (
-	errRegistrationFactoryNotFound   = errors.New("factory not found")
-	errRegistrationRobotTypeNotFound = errors.New("robot_type not found")
-	errRegistrationRobotNotFound     = errors.New("robot not found")
-	errRegistrationRobotNotActive    = errors.New("robot is not active")
+	errRegistrationRobotNotFound  = errors.New("robot not found")
+	errRegistrationRobotNotActive = errors.New("robot is not active")
 )
 
 // DeviceRegistrationHandler handles install-time device registration requests.
@@ -42,18 +40,14 @@ func NewDeviceRegistrationHandler(db *sqlx.DB, callbackPublicBaseURL string) *De
 
 // DeviceRegistrationRequest represents the request body for device registration.
 type DeviceRegistrationRequest struct {
-	Factory   string `json:"factory"`
-	RobotType string `json:"robot_type"`
+	DeviceID string `json:"device_id"`
 }
 
 // DeviceRegistrationResponse represents a successful device registration.
 type DeviceRegistrationResponse struct {
 	DeviceID          string            `json:"device_id"`
-	Factory           string            `json:"factory"`
-	FactoryID         string            `json:"factory_id"`
-	RobotType         string            `json:"robot_type"`
-	RobotTypeID       string            `json:"robot_type_id"`
 	RobotID           string            `json:"robot_id"`
+	WorkspaceID       int64             `json:"workspace_id"`
 	WSClientAuthToken string            `json:"ws_client_auth_token"`
 	CallbackAllowlist CallbackAllowlist `json:"callback_allowlist"`
 }
@@ -64,16 +58,6 @@ type RotateWSClientAuthTokenResponse struct {
 	RobotID           string `json:"robot_id"`
 	WSClientAuthToken string `json:"ws_client_auth_token"`
 	RotatedAt         string `json:"rotated_at"`
-}
-
-type deviceRegistrationFactoryRow struct {
-	ID   int64  `db:"id"`
-	Name string `db:"name"`
-}
-
-type deviceRegistrationRobotTypeRow struct {
-	ID    int64  `db:"id"`
-	Model string `db:"model"`
 }
 
 // RegisterRoutes registers device registration routes.
@@ -89,7 +73,7 @@ func (h *DeviceRegistrationHandler) RegisterAdminRoutes(apiV1 *gin.RouterGroup) 
 // RegisterDevice handles install-time robot device registration.
 //
 // @Summary      Register device
-// @Description  Registers one robot device by existing factory name and robot type model
+// @Description  Issues a recorder credential for an existing Hilbert device projection
 // @Tags         devices
 // @Accept       json
 // @Produce      json
@@ -106,25 +90,19 @@ func (h *DeviceRegistrationHandler) RegisterDevice(c *gin.Context) {
 		return
 	}
 
-	factory := strings.TrimSpace(req.Factory)
-	if factory == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "factory is required"})
+	deviceID := strings.TrimSpace(req.DeviceID)
+	if deviceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "device_id is required"})
 		return
 	}
 
-	robotType := strings.TrimSpace(req.RobotType)
-	if robotType == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "robot_type is required"})
-		return
-	}
-
-	resp, err := h.registerDevice(factory, robotType)
+	resp, err := h.registerDevice(deviceID)
 	if err != nil {
 		switch {
-		case errors.Is(err, errRegistrationFactoryNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "factory not found"})
-		case errors.Is(err, errRegistrationRobotTypeNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "robot_type not found"})
+		case errors.Is(err, errRegistrationRobotNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
+		case errors.Is(err, errRegistrationRobotNotActive):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "device is not active"})
 		default:
 			logger.Printf("[DEVICE] Failed to register device: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register device"})
@@ -171,79 +149,52 @@ func (h *DeviceRegistrationHandler) RotateWSClientAuthToken(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-func (h *DeviceRegistrationHandler) registerDevice(factoryName, robotTypeModel string) (DeviceRegistrationResponse, error) {
+func (h *DeviceRegistrationHandler) registerDevice(deviceID string) (DeviceRegistrationResponse, error) {
 	tx, err := h.db.Beginx()
 	if err != nil {
 		return DeviceRegistrationResponse{}, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // Safe after successful Commit.
 
-	var factory deviceRegistrationFactoryRow
-	if err := tx.Get(&factory, `
-		SELECT id, name
-		FROM factories
-		WHERE name = ? AND deleted_at IS NULL
-	`, factoryName); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return DeviceRegistrationResponse{}, errRegistrationFactoryNotFound
-		}
-		return DeviceRegistrationResponse{}, fmt.Errorf("query factory: %w", err)
+	type registrationRobotRow struct {
+		ID          int64  `db:"id"`
+		DeviceID    string `db:"device_id"`
+		WorkspaceID int64  `db:"workspace_id"`
+		Status      string `db:"status"`
 	}
-
-	var robotType deviceRegistrationRobotTypeRow
-	if err := tx.Get(&robotType, `
-		SELECT id, model
-		FROM robot_types
-		WHERE model = ? AND deleted_at IS NULL
-	`, robotTypeModel); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return DeviceRegistrationResponse{}, errRegistrationRobotTypeNotFound
-		}
-		return DeviceRegistrationResponse{}, fmt.Errorf("query robot type: %w", err)
+	query := `
+		SELECT id, device_id, workspace_id, status
+		FROM robots
+		WHERE device_id = ? AND deleted_at IS NULL
+		LIMIT 1
+	`
+	if tx.DriverName() != "sqlite" {
+		query += " FOR UPDATE"
 	}
-
-	sequence, err := allocateDeviceIDSequence(tx, factory.ID, robotType.ID)
-	if err != nil {
-		return DeviceRegistrationResponse{}, fmt.Errorf("allocate device id sequence: %w", err)
+	var robot registrationRobotRow
+	if err := tx.Get(&robot, query, deviceID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DeviceRegistrationResponse{}, errRegistrationRobotNotFound
+		}
+		return DeviceRegistrationResponse{}, fmt.Errorf("query robot: %w", err)
+	}
+	if robot.Status != "active" {
+		return DeviceRegistrationResponse{}, errRegistrationRobotNotActive
 	}
 
 	now := time.Now().UTC()
-	deviceID := formatRegisteredDeviceID(factory.ID, robotType.ID, sequence)
-	result, err := tx.Exec(`
-		INSERT INTO robots (
-			robot_type_id,
-			device_id,
-			factory_id,
-			asset_id,
-			status,
-			metadata,
-			created_at,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		robotType.ID,
-		deviceID,
-		factory.ID,
-		sql.NullString{},
-		"active",
-		sql.NullString{String: "{}", Valid: true},
-		now,
-		now,
-	)
-	if err != nil {
-		return DeviceRegistrationResponse{}, fmt.Errorf("insert robot: %w", err)
-	}
-
-	robotID, err := result.LastInsertId()
-	if err != nil {
-		return DeviceRegistrationResponse{}, fmt.Errorf("get inserted robot id: %w", err)
-	}
-
 	wsClientAuthToken, err := generateWSClientAuthToken()
 	if err != nil {
 		return DeviceRegistrationResponse{}, fmt.Errorf("generate ws client auth token: %w", err)
 	}
-	if err := insertWSClientAuthToken(tx, robotID, wsClientAuthToken, now); err != nil {
+	if _, err := tx.Exec(`
+		UPDATE ws_client_auth_tokens
+		SET revoked_at = ?, last_rotated_at = ?
+		WHERE robot_id = ? AND revoked_at IS NULL
+	`, now, now, robot.ID); err != nil {
+		return DeviceRegistrationResponse{}, fmt.Errorf("revoke active ws client auth tokens: %w", err)
+	}
+	if err := insertWSClientAuthToken(tx, robot.ID, wsClientAuthToken, now); err != nil {
 		return DeviceRegistrationResponse{}, err
 	}
 
@@ -252,12 +203,9 @@ func (h *DeviceRegistrationHandler) registerDevice(factoryName, robotTypeModel s
 	}
 
 	return DeviceRegistrationResponse{
-		DeviceID:          deviceID,
-		Factory:           factory.Name,
-		FactoryID:         strconv.FormatInt(factory.ID, 10),
-		RobotType:         robotType.Model,
-		RobotTypeID:       strconv.FormatInt(robotType.ID, 10),
-		RobotID:           strconv.FormatInt(robotID, 10),
+		DeviceID:          robot.DeviceID,
+		RobotID:           strconv.FormatInt(robot.ID, 10),
+		WorkspaceID:       robot.WorkspaceID,
 		WSClientAuthToken: wsClientAuthToken,
 		CallbackAllowlist: h.callbackURLs.allowlist(),
 	}, nil
@@ -324,85 +272,4 @@ func (h *DeviceRegistrationHandler) rotateWSClientAuthToken(robotID int64) (Rota
 		WSClientAuthToken: token,
 		RotatedAt:         rotatedAt.Format(time.RFC3339),
 	}, nil
-}
-
-func allocateDeviceIDSequence(tx *sqlx.Tx, factoryID, robotTypeID int64) (int64, error) {
-	if tx.DriverName() == "sqlite" {
-		return allocateDeviceIDSequenceSQLite(tx, factoryID, robotTypeID)
-	}
-	return allocateDeviceIDSequenceMySQL(tx, factoryID, robotTypeID)
-}
-
-func allocateDeviceIDSequenceMySQL(tx *sqlx.Tx, factoryID, robotTypeID int64) (int64, error) {
-	if _, err := tx.Exec(`
-		INSERT INTO device_id_sequences (factory_id, robot_type_id, next_sequence)
-		VALUES (?, ?, 1)
-		ON DUPLICATE KEY UPDATE updated_at = updated_at
-	`, factoryID, robotTypeID); err != nil {
-		return 0, fmt.Errorf("initialize sequence row: %w", err)
-	}
-
-	var sequence int64
-	if err := tx.Get(&sequence, `
-		SELECT next_sequence
-		FROM device_id_sequences
-		WHERE factory_id = ? AND robot_type_id = ?
-		FOR UPDATE
-	`, factoryID, robotTypeID); err != nil {
-		return 0, fmt.Errorf("lock sequence row: %w", err)
-	}
-	if sequence < 1 {
-		return 0, fmt.Errorf("invalid next_sequence %d", sequence)
-	}
-
-	if _, err := tx.Exec(`
-		UPDATE device_id_sequences
-		SET next_sequence = next_sequence + 1
-		WHERE factory_id = ? AND robot_type_id = ?
-	`, factoryID, robotTypeID); err != nil {
-		return 0, fmt.Errorf("increment sequence row: %w", err)
-	}
-
-	return sequence, nil
-}
-
-func allocateDeviceIDSequenceSQLite(tx *sqlx.Tx, factoryID, robotTypeID int64) (int64, error) {
-	if _, err := tx.Exec(`
-		INSERT OR IGNORE INTO device_id_sequences (
-			factory_id,
-			robot_type_id,
-			next_sequence,
-			created_at,
-			updated_at
-		) VALUES (?, ?, 1, ?, ?)
-	`, factoryID, robotTypeID, time.Now().UTC(), time.Now().UTC()); err != nil {
-		return 0, fmt.Errorf("initialize sequence row: %w", err)
-	}
-
-	var sequence int64
-	if err := tx.Get(&sequence, `
-		SELECT next_sequence
-		FROM device_id_sequences
-		WHERE factory_id = ? AND robot_type_id = ?
-	`, factoryID, robotTypeID); err != nil {
-		return 0, fmt.Errorf("select sequence row: %w", err)
-	}
-	if sequence < 1 {
-		return 0, fmt.Errorf("invalid next_sequence %d", sequence)
-	}
-
-	if _, err := tx.Exec(`
-		UPDATE device_id_sequences
-		SET next_sequence = next_sequence + 1,
-			updated_at = ?
-		WHERE factory_id = ? AND robot_type_id = ?
-	`, time.Now().UTC(), factoryID, robotTypeID); err != nil {
-		return 0, fmt.Errorf("increment sequence row: %w", err)
-	}
-
-	return sequence, nil
-}
-
-func formatRegisteredDeviceID(factoryID, robotTypeID, sequence int64) string {
-	return fmt.Sprintf("AB-F%04d-T%04d-%06d", factoryID, robotTypeID, sequence)
 }

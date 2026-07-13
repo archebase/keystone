@@ -390,14 +390,14 @@ SPDX-License-Identifier: MulanPSL-2.0
         <h1>领域模型<br>迁移顺序<br>实施计划</h1>
         <p class="lede">
           本计划以新环境为前提，不考虑历史数据、不保留旧 API、不做旧字段兼容。
-          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 运营实体归属清理、PR-6 Workspace Scoped Admin Shell 和 PR-7 Order / Batch 主路径删除；
-          下一步重点是停用 factory、robot type、SOP、scene/subscene 等旧生产元信息 runtime。
+          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除和 PR-8A 旧生产元信息 Runtime 停用；
+          下一步重点是删除旧表、旧路由、Swagger、Synapse 页面和适配代码。
         </p>
         <div class="signal">
-          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3 / PR-4 / PR-5 / PR-6 / PR-7</span></div>
+          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3 / PR-4 / PR-5 / PR-6 / PR-7 / PR-8A</span></div>
           <div class="signal-card"><b>主轴</b><span>dc_plan 是生产主对象</span></div>
           <div class="signal-card"><b>已验收</b><span>task、episode 和上传均锁定计划</span></div>
-          <div class="signal-card"><b>下一步</b><span>PR-8A 旧生产元信息 Runtime 停用</span></div>
+          <div class="signal-card"><b>下一步</b><span>PR-8B 旧表 / Swagger / Synapse 清理</span></div>
         </div>
       </div>
     </header>
@@ -704,7 +704,7 @@ SPDX-License-Identifier: MulanPSL-2.0
               <h3 class="step-title">旧生产元信息 Runtime 停用</h3>
               <div class="step-meta">
                 <span class="badge">PR-8A</span>
-                <span class="badge warn">stop using old concepts</span>
+                <span class="badge">已完成并验收</span>
               </div>
               <p>先从 runtime 路径停用 factory、robot type、SOP、scene/subscene，避免一次性删表导致任务配置、统计或设备注册断裂。</p>
               <ul>
@@ -934,8 +934,11 @@ SPDX-License-Identifier: MulanPSL-2.0
               </td>
               <td>不删除旧表和旧 API 文件；只隐藏或停用 runtime 使用。</td>
               <td>
-                <span class="badge hot">未完成</span>：
-                factory、robot type、SOP、scene/subscene 仍散落在任务配置、统计、设备注册和 UI 中。
+                <span class="badge">已完成并验收</span>：
+                task 生成将计划执行配置快照写入 <code>tasks.metadata.execution_config</code>，任务配置、episode 创建、统计和 dashboard 不再拼接旧生产元信息；
+                设备注册按 Hilbert <code>device_id</code> 绑定已有投影并轮换凭据，Axon 新注册不再下载 robot type 模板；
+                云上传继续携带 <code>dc_plan_id</code>、<code>workspace_id</code> 和 sidecar raw tags，但不再从旧 SOP、scene/subscene、robot type 表补全标签；
+                Synapse 已隐藏旧管理入口、筛选项和分组维度，旧写路由在 Keystone 停用，旧表与清理文件留给 PR-8B。
               </td>
             </tr>
             <tr>
@@ -953,9 +956,9 @@ SPDX-License-Identifier: MulanPSL-2.0
           </tbody>
         </table>
         <div class="callout">
-          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 Workspace 运营实体归属清理、PR-6 Workspace Scoped Admin Shell 和 PR-7 Order / Batch 主路径删除均已完成。
-          下一阶段应进入 PR-8A：停用旧生产元信息 Runtime。
-          order/batch 已退出 runtime；Hilbert 数采计划是生产主对象，
+          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 Workspace 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除和 PR-8A 旧生产元信息 Runtime 停用均已完成。
+          下一阶段应进入 PR-8B：删除旧表、旧 API、Swagger、Synapse 页面和适配代码。
+          order/batch 及旧生产元信息已退出 runtime；Hilbert 数采计划是生产主对象，
           Keystone task 是计划拆分后的本地执行切片。
         </div>
       </div>
@@ -1151,8 +1154,8 @@ SPDX-License-Identifier: MulanPSL-2.0
         </ul>
         <div class="callout">
           这些问题不是不重要，而是不应该挡住数采计划成为生产主对象。
-          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分，PR-4 已完成 episode 和上传计划化，PR-5 已完成 Workspace 运营实体管理与归属清理，PR-6 已完成 Workspace Scoped Admin Shell，PR-7 已完成 Order / Batch 主路径删除；
-          现在应推进 PR-8A 旧生产元信息 Runtime 停用。
+          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分，PR-4 已完成 episode 和上传计划化，PR-5 已完成 Workspace 运营实体管理与归属清理，PR-6 已完成 Workspace Scoped Admin Shell，PR-7 已完成 Order / Batch 主路径删除，PR-8A 已完成旧生产元信息 Runtime 停用；
+          现在应推进 PR-8B 旧表 / Swagger / Synapse 清理。
         </div>
       </div>
     </section>

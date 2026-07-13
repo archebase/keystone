@@ -45,14 +45,8 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	if strings.Join(got.SyncStatuses, ",") != "not_started,failed" {
 		t.Fatalf("unexpected sync statuses: %#v", got.SyncStatuses)
 	}
-	if len(got.SceneIDs) != 2 || got.SceneIDs[0] != 1 || got.SceneIDs[1] != 2 {
-		t.Fatalf("unexpected scene ids: %#v", got.SceneIDs)
-	}
-	if len(got.SOPIDs) != 2 || got.SOPIDs[0] != 9 || got.SOPIDs[1] != 10 {
-		t.Fatalf("unexpected sop ids: %#v", got.SOPIDs)
-	}
-	if len(got.RobotTypeIDs) != 1 || got.RobotTypeIDs[0] != 3 {
-		t.Fatalf("unexpected robot type ids: %#v", got.RobotTypeIDs)
+	if len(got.SceneIDs) != 0 || len(got.SOPIDs) != 0 || len(got.RobotTypeIDs) != 0 {
+		t.Fatalf("legacy production filters should be ignored: %+v", got)
 	}
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
@@ -87,27 +81,21 @@ func TestDataOpsHilbertSyncRejectsDefaultWorkspaceScope(t *testing.T) {
 	}
 }
 
-func TestDataOpsEpisodeWhereIncludesSOPFilter(t *testing.T) {
+func TestDataOpsEpisodeWhereIgnoresLegacyProductionFilters(t *testing.T) {
 	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{SOPIDs: []int64{9, 10}})
-	if !strings.Contains(sql, "COALESCE(e.sop_id, t.sop_id) IN (?,?)") {
-		t.Fatalf("SOP filter SQL should use episode/task SOP fallback: %s", sql)
+	if strings.Contains(sql, "sop_id") {
+		t.Fatalf("legacy SOP filter should not affect SQL: %s", sql)
 	}
-	if len(args) != 2 || args[0] != int64(9) || args[1] != int64(10) {
+	if len(args) != 0 {
 		t.Fatalf("unexpected args: %#v", args)
 	}
 }
 
-func TestDataOpsEpisodeListSQLIncludesSOPColumns(t *testing.T) {
+func TestDataOpsEpisodeListSQLDoesNotJoinLegacyProductionMetadata(t *testing.T) {
 	sql := dataOpsEpisodeListSQL(dataOpsEpisodeBaseFromSQL(), " WHERE e.deleted_at IS NULL")
-	for _, want := range []string{
-		"COALESCE(e.sop_id, t.sop_id) AS sop_id",
-		"LEFT JOIN sops s ON s.id = COALESCE(e.sop_id, t.sop_id)",
-		"CONCAT('SOP #', CAST(COALESCE(e.sop_id, t.sop_id) AS CHAR))",
-		"ELSE CONCAT(s.slug, ' @ ', s.version)",
-		"COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS collector_name",
-	} {
-		if !strings.Contains(sql, want) {
-			t.Fatalf("data ops SQL should include %q: %s", want, sql)
+	for _, legacy := range []string{"LEFT JOIN sops", "LEFT JOIN scenes", "LEFT JOIN robot_types"} {
+		if strings.Contains(sql, legacy) {
+			t.Fatalf("data ops SQL should not include %q: %s", legacy, sql)
 		}
 	}
 }
@@ -151,9 +139,6 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 		Keyword:             "ep",
 		QAStatus:            "failed,pending_qa",
 		SyncStatus:          "not_started,failed",
-		SceneID:             "1,2",
-		SOPID:               "9,10",
-		RobotTypeID:         "3",
 		RobotDeviceID:       "robot-001,robot-002",
 		CollectorOperatorID: "op001",
 		Label:               "recalled_batch",
@@ -178,14 +163,8 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	if strings.Join(got.SyncStatuses, ",") != "not_started,failed" {
 		t.Fatalf("unexpected sync statuses: %#v", got.SyncStatuses)
 	}
-	if len(got.SceneIDs) != 2 || got.SceneIDs[0] != 1 || got.SceneIDs[1] != 2 {
-		t.Fatalf("unexpected scene ids: %#v", got.SceneIDs)
-	}
-	if len(got.SOPIDs) != 2 || got.SOPIDs[0] != 9 || got.SOPIDs[1] != 10 {
-		t.Fatalf("unexpected sop ids: %#v", got.SOPIDs)
-	}
-	if len(got.RobotTypeIDs) != 1 || got.RobotTypeIDs[0] != 3 {
-		t.Fatalf("unexpected robot type ids: %#v", got.RobotTypeIDs)
+	if len(got.SceneIDs) != 0 || len(got.SOPIDs) != 0 || len(got.RobotTypeIDs) != 0 {
+		t.Fatalf("legacy production metadata filters should be ignored: %+v", got)
 	}
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
@@ -194,14 +173,10 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 
 func TestParseDataOpsBulkEpisodeFiltersDoesNotCapMultiValueCount(t *testing.T) {
 	got, err := parseDataOpsBulkEpisodeFilters(DataOpsBulkEpisodeFilters{
-		SceneID:       joinedNumberList(maxMultiValueFilterItems + 1),
 		RobotDeviceID: joinedStringList("robot-", maxMultiValueFilterItems+1),
 	})
 	if err != nil {
 		t.Fatalf("parseDataOpsBulkEpisodeFilters returned error: %v", err)
-	}
-	if len(got.SceneIDs) != maxMultiValueFilterItems+1 {
-		t.Fatalf("scene id count = %d, want %d", len(got.SceneIDs), maxMultiValueFilterItems+1)
 	}
 	if len(got.RobotDeviceIDs) != maxMultiValueFilterItems+1 {
 		t.Fatalf("robot device id count = %d, want %d", len(got.RobotDeviceIDs), maxMultiValueFilterItems+1)

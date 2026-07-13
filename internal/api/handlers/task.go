@@ -8,6 +8,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -74,12 +75,8 @@ type TaskConfig struct {
 	TaskID             string   `json:"task_id"`
 	DeviceID           string   `json:"device_id"`
 	DataCollectorID    string   `json:"data_collector_id"`
-	Factory            string   `json:"factory"`
-	Scene              string   `json:"scene"`
 	WorkstationID      string   `json:"workstation_id"`
-	Subscene           string   `json:"subscene"`
-	InitialSceneLayout string   `json:"initial_scene_layout"`
-	SOPID              string   `json:"sop_id"`
+	OperatorName       string   `json:"operator_name,omitempty"`
 	Topics             []string `json:"topics"`
 	StartCallbackURL   string   `json:"start_callback_url"`
 	FinishCallbackURL  string   `json:"finish_callback_url"`
@@ -107,10 +104,8 @@ func (h *TaskHandler) RegisterCollectorRoutes(apiV1 *gin.RouterGroup) {
 
 // CompleteTasksRequest identifies pending tasks to complete for the current workstation.
 type CompleteTasksRequest struct {
-	DCPlanID   int64 `json:"dc_plan_id" binding:"required"`
-	SOPID      int64 `json:"sop_id" binding:"required"`
-	SubsceneID int64 `json:"subscene_id" binding:"required"`
-	Quantity   int   `json:"quantity" binding:"required"`
+	DCPlanID int64 `json:"dc_plan_id" binding:"required"`
+	Quantity int   `json:"quantity" binding:"required"`
 }
 
 // CompletedTask describes one task completed by an external-device workflow.
@@ -143,14 +138,14 @@ var validTaskStatuses = map[string]struct{}{
 type TaskListItem struct {
 	ID                  int64   `json:"id" db:"id"`
 	TaskID              string  `json:"task_id" db:"task_id"`
-	SOPID               string  `json:"sop_id" db:"sop_id"`
+	SOPID               string  `json:"sop_id,omitempty" db:"sop_id"`
 	WorkstationID       *string `json:"workstation_id" db:"workstation_id"`
 	RobotDeviceID       *string `json:"robot_device_id" db:"robot_device_id"`
 	CollectorOperatorID *string `json:"collector_operator_id" db:"collector_operator_id"`
-	SceneID             string  `json:"scene_id" db:"scene_id"`
-	SceneName           string  `json:"scene_name" db:"scene_name"`
-	SubsceneID          string  `json:"subscene_id" db:"subscene_id"`
-	SubsceneName        string  `json:"subscene_name" db:"subscene_name"`
+	SceneID             string  `json:"scene_id,omitempty" db:"scene_id"`
+	SceneName           string  `json:"scene_name,omitempty" db:"scene_name"`
+	SubsceneID          string  `json:"subscene_id,omitempty" db:"subscene_id"`
+	SubsceneName        string  `json:"subscene_name,omitempty" db:"subscene_name"`
 	Status              string  `json:"status" db:"status"`
 	ErrorMessage        *string `json:"error_message" db:"error_message"`
 	AssignedAt          *string `json:"assigned_at" db:"assigned_at"`
@@ -182,13 +177,13 @@ type TaskEpisodeDetail struct {
 type TaskDetailResponse struct {
 	ID               int64              `json:"id" db:"id"`
 	TaskID           string             `json:"task_id" db:"task_id"`
-	SOPID            string             `json:"sop_id" db:"sop_id"`
+	SOPID            string             `json:"sop_id,omitempty" db:"sop_id"`
 	WorkstationID    *string            `json:"workstation_id" db:"workstation_id"`
-	SceneID          string             `json:"scene_id" db:"scene_id"`
-	SceneName        string             `json:"scene_name" db:"scene_name"`
-	SubsceneID       string             `json:"subscene_id" db:"subscene_id"`
-	SubsceneName     string             `json:"subscene_name" db:"subscene_name"`
-	FactoryID        *string            `json:"factory_id" db:"factory_id"`
+	SceneID          string             `json:"scene_id,omitempty" db:"scene_id"`
+	SceneName        string             `json:"scene_name,omitempty" db:"scene_name"`
+	SubsceneID       string             `json:"subscene_id,omitempty" db:"subscene_id"`
+	SubsceneName     string             `json:"subscene_name,omitempty" db:"subscene_name"`
+	FactoryID        *string            `json:"factory_id,omitempty" db:"factory_id"`
 	OrganizationID   *int64             `json:"organization_id" db:"organization_id"`
 	DCPlanID         *int64             `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
 	WorkspaceID      *int64             `json:"workspace_id,omitempty" db:"workspace_id"`
@@ -311,14 +306,14 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	listQuery := fmt.Sprintf(`SELECT
 		tasks.id AS id,
 		tasks.task_id AS task_id,
-		CAST(tasks.sop_id AS CHAR) AS sop_id,
+		'' AS sop_id,
 		CASE WHEN tasks.workstation_id IS NULL THEN NULL ELSE CAST(tasks.workstation_id AS CHAR) END AS workstation_id,
 		NULLIF(TRIM(COALESCE(ws.robot_serial, '')), '') AS robot_device_id,
 		NULLIF(TRIM(COALESCE(ws.collector_operator_id, '')), '') AS collector_operator_id,
-		CAST(tasks.scene_id AS CHAR) AS scene_id,
-		COALESCE(tasks.scene_name, '') AS scene_name,
-		CAST(tasks.subscene_id AS CHAR) AS subscene_id,
-		COALESCE(tasks.subscene_name, '') AS subscene_name,
+		'' AS scene_id,
+		'' AS scene_name,
+		'' AS subscene_id,
+		'' AS subscene_name,
 		tasks.status,
 		tasks.error_message,
 		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at,
@@ -386,7 +381,7 @@ func (h *TaskHandler) CompleteTasks(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	if req.DCPlanID <= 0 || req.SOPID <= 0 || req.SubsceneID <= 0 {
+	if req.DCPlanID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task group"})
 		return
 	}
@@ -450,12 +445,10 @@ func (h *TaskHandler) CompleteTasks(c *gin.Context) {
 		FROM tasks
 		WHERE dc_plan_id = ?
 			AND workstation_id = ?
-			AND sop_id = ?
-			AND subscene_id = ?
 			AND status = 'pending'
 			AND deleted_at IS NULL
 		ORDER BY assigned_at ASC, id ASC
-		LIMIT ?`+lockClause, req.DCPlanID, workstationID, req.SOPID, req.SubsceneID, req.Quantity); err != nil {
+		LIMIT ?`+lockClause, req.DCPlanID, workstationID, req.Quantity); err != nil {
 		logger.Printf("[TASK] complete tasks pending query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
 		return
@@ -540,13 +533,13 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 	query := `SELECT
 		t.id AS id,
 		t.task_id AS task_id,
-		CAST(t.sop_id AS CHAR) AS sop_id,
+		'' AS sop_id,
 		CASE WHEN t.workstation_id IS NULL THEN NULL ELSE CAST(t.workstation_id AS CHAR) END AS workstation_id,
-		CAST(t.scene_id AS CHAR) AS scene_id,
-		COALESCE(t.scene_name, '') AS scene_name,
-		CAST(t.subscene_id AS CHAR) AS subscene_id,
-		COALESCE(t.subscene_name, '') AS subscene_name,
-		CASE WHEN t.factory_id IS NULL THEN NULL ELSE CAST(t.factory_id AS CHAR) END AS factory_id,
+		'' AS scene_id,
+		'' AS scene_name,
+		'' AS subscene_id,
+		'' AS subscene_name,
+		NULL AS factory_id,
 		t.organization_id AS organization_id,
 		t.dc_plan_id AS dc_plan_id,
 		COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
@@ -968,15 +961,10 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		TaskID         string         `db:"task_id"`
 		WorkstationID  sql.NullInt64  `db:"workstation_id"`
 		RobotSerial    sql.NullString `db:"robot_serial"`
-		RobotID        sql.NullInt64  `db:"robot_id"`
 		CollectorName  sql.NullString `db:"collector_name"`
 		Workstation    sql.NullString `db:"workstation_name"`
-		FactoryName    sql.NullString `db:"factory_name"`
-		SceneName      sql.NullString `db:"scene_name"`
-		SubsceneName   sql.NullString `db:"subscene_name"`
-		Layout         sql.NullString `db:"initial_scene_layout"`
-		SOPSlug        sql.NullString `db:"sop_slug"`
-		ROSTopics      sql.NullString `db:"ros_topics"`
+		OperatorName   sql.NullString `db:"operator_name"`
+		Metadata       sql.NullString `db:"metadata"`
 		WorkspaceID    sql.NullInt64  `db:"workspace_id"`
 		DCPlanID       sql.NullInt64  `db:"dc_plan_id"`
 		DCType         sql.NullString `db:"dc_type"`
@@ -991,15 +979,10 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 			t.task_id AS task_id,
 			t.workstation_id AS workstation_id,
 			ws.robot_serial AS robot_serial,
-			ws.robot_id AS robot_id,
 			COALESCE(ws.collector_name, '') AS collector_name,
 			COALESCE(ws.name, '') AS workstation_name,
-			COALESCE(f.name, '') AS factory_name,
-			COALESCE(t.scene_name, '') AS scene_name,
-			COALESCE(t.subscene_name, '') AS subscene_name,
-			COALESCE(t.initial_scene_layout, '') AS initial_scene_layout,
-			s.slug AS sop_slug,
-			COALESCE(rt.ros_topics, '[]') AS ros_topics,
+			dp.operator AS operator_name,
+			t.metadata AS metadata,
 			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
 			t.dc_plan_id AS dc_plan_id,
 			dp.dc_type AS dc_type,
@@ -1007,11 +990,7 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 			dp.target_count AS target_count,
 			dp.target_duration AS target_duration
 		FROM tasks t
-		LEFT JOIN factories f ON f.id = t.factory_id AND f.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		WHERE t.id = ? AND t.deleted_at IS NULL
 		LIMIT 1
@@ -1033,10 +1012,6 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Workstation %d has no robot_serial", row.WorkstationID.Int64)})
 		return
 	}
-	if !row.RobotID.Valid || row.RobotID.Int64 <= 0 {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Workstation %d has no robot_id", row.WorkstationID.Int64)})
-		return
-	}
 	if strings.TrimSpace(row.CollectorName.String) == "" {
 		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Workstation %d has no collector_name", row.WorkstationID.Int64)})
 		return
@@ -1045,33 +1020,18 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Workstation %d has no name", row.WorkstationID.Int64)})
 		return
 	}
-	if strings.TrimSpace(row.FactoryName.String) == "" {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": "Task factory_id not found"})
-		return
-	}
-	if !row.ROSTopics.Valid || strings.TrimSpace(row.ROSTopics.String) == "" {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Robot %d has no robot_type ros_topics", row.RobotID.Int64)})
-		return
-	}
-	if !row.SOPSlug.Valid || strings.TrimSpace(row.SOPSlug.String) == "" {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": "Task sop_id not found"})
-		return
-	}
+	executionConfig := taskExecutionConfigFromMetadata(row.Metadata.String)
 
 	taskConfig := TaskConfig{
-		TaskID:             row.TaskID,
-		DeviceID:           strings.TrimSpace(row.RobotSerial.String),
-		DataCollectorID:    strings.TrimSpace(row.CollectorName.String),
-		Factory:            strings.TrimSpace(row.FactoryName.String),
-		Scene:              strings.TrimSpace(row.SceneName.String),
-		WorkstationID:      strings.TrimSpace(row.Workstation.String),
-		Subscene:           strings.TrimSpace(row.SubsceneName.String),
-		InitialSceneLayout: strings.TrimSpace(row.Layout.String),
-		SOPID:              strings.TrimSpace(row.SOPSlug.String),
-		Topics:             parseJSONArray(row.ROSTopics.String),
-		StartCallbackURL:   h.callbackURLs.startURL(),
-		FinishCallbackURL:  h.callbackURLs.finishURL(),
-		UserToken:          "",
+		TaskID:            row.TaskID,
+		DeviceID:          strings.TrimSpace(row.RobotSerial.String),
+		DataCollectorID:   strings.TrimSpace(row.CollectorName.String),
+		WorkstationID:     strings.TrimSpace(row.Workstation.String),
+		OperatorName:      strings.TrimSpace(row.OperatorName.String),
+		Topics:            executionConfig.Topics,
+		StartCallbackURL:  h.callbackURLs.startURL(),
+		FinishCallbackURL: h.callbackURLs.finishURL(),
+		UserToken:         "",
 	}
 	if row.WorkspaceID.Valid {
 		taskConfig.WorkspaceID = &row.WorkspaceID.Int64
@@ -1093,4 +1053,25 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, taskConfig)
+}
+
+type taskExecutionConfig struct {
+	Topics []string `json:"topics"`
+}
+
+func taskExecutionConfigFromMetadata(raw string) taskExecutionConfig {
+	config := taskExecutionConfig{Topics: []string{}}
+	if strings.TrimSpace(raw) == "" {
+		return config
+	}
+	var metadata struct {
+		ExecutionConfig taskExecutionConfig `json:"execution_config"`
+	}
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return config
+	}
+	if metadata.ExecutionConfig.Topics != nil {
+		config.Topics = metadata.ExecutionConfig.Topics
+	}
+	return config
 }

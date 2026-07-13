@@ -25,7 +25,7 @@ func TestParseProductionDashboardQueryDefaultsAndBounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseProductionDashboardQuery returned error: %v", err)
 	}
-	if got.WorkstationID != "12" || got.FactoryID != "34" || got.OrganizationID != "56" {
+	if got.WorkstationID != "12" || got.FactoryID != "" || got.OrganizationID != "56" {
 		t.Fatalf("unexpected scope filters: %+v", got)
 	}
 	if got.TrendDays != maxDashboardTrendDays {
@@ -61,19 +61,6 @@ func TestParseProductionDashboardQueryValidation(t *testing.T) {
 				t.Fatalf("expected validation error")
 			}
 		})
-	}
-}
-
-func TestDashboardSOPLabelSQL(t *testing.T) {
-	got := dashboardSOPLabelSQL("t.sop_id", "s.slug", "s.version")
-	for _, want := range []string{
-		"WHEN t.sop_id IS NULL THEN '未分类'",
-		"CONCAT('SOP #', CAST(t.sop_id AS CHAR))",
-		"ELSE CONCAT(s.slug, '@', s.version)",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("SOP label SQL should contain %q: %s", want, got)
-		}
 	}
 }
 
@@ -113,7 +100,7 @@ func TestResolveProductionDashboardScopeAllowsDisplayRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveProductionDashboardScope returned error: %v", err)
 	}
-	if scope.Role != "display" || scope.FactoryID != "12" {
+	if scope.Role != "display" || scope.FactoryID != "" {
 		t.Fatalf("unexpected display scope: %+v", scope)
 	}
 }

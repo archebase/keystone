@@ -70,10 +70,7 @@ type CreateFactoryResponse struct {
 // RegisterRoutes registers factory related routes.
 func (h *FactoryHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/factories", h.ListFactories)
-	apiV1.POST("/factories", h.CreateFactory)
 	apiV1.GET("/factories/:id", h.GetFactory)
-	apiV1.PUT("/factories/:id", h.UpdateFactory)
-	apiV1.DELETE("/factories/:id", h.DeleteFactory)
 }
 
 // factoryRow represents a factory in the database

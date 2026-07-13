@@ -58,7 +58,7 @@ type StationResponse struct {
 	DataCollectorID     string      `json:"data_collector_id"`
 	CollectorName       string      `json:"collector_name,omitempty"`
 	CollectorOperatorID string      `json:"collector_operator_id,omitempty"`
-	FactoryID           string      `json:"factory_id"`
+	FactoryID           string      `json:"factory_id,omitempty"`
 	FactoryName         string      `json:"factory_name,omitempty"`
 	WorkspaceID         string      `json:"workspace_id"`
 	WorkspaceName       string      `json:"workspace_name,omitempty"`
@@ -122,7 +122,6 @@ func (h *StationHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/stations", h.CreateStation)
 	apiV1.GET("/stations", h.ListStations)
 	apiV1.GET("/stations/:id", h.GetStation)
-	apiV1.PUT("/stations/:id", h.UpdateStation)
 	apiV1.DELETE("/stations/:id", h.DeleteStation)
 }
 
@@ -136,7 +135,6 @@ type robotInfoRow struct {
 	RobotTypeID int64  `db:"robot_type_id"`
 }
 
-// robotTypeInfoRow represents robot type info
 type robotTypeInfoRow struct {
 	ID   int64  `db:"id"`
 	Name string `db:"name"`
@@ -195,7 +193,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 
 	var robotInfo robotInfoRow
 	err = h.db.Get(&robotInfo, `
-		SELECT id, device_id, workspace_id, factory_id, status, robot_type_id
+		SELECT id, device_id, workspace_id, status
 		FROM robots 
 		WHERE id = ? AND deleted_at IS NULL
 	`, robotID)
@@ -300,15 +298,6 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		return
 	}
 
-	// Get robot type name for denormalization
-	var robotType robotTypeInfoRow
-	err = h.db.Get(&robotType, "SELECT id, name FROM robot_types WHERE id = ?", robotInfo.RobotTypeID)
-	if err != nil {
-		logger.Printf("[STATION] Failed to get robot type: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
-		return
-	}
-
 	now := time.Now().UTC()
 
 	metadataStr := sql.NullString{String: "{}", Valid: true}
@@ -353,7 +342,6 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 				robot_serial = ?,
 				collector_name = ?,
 				collector_operator_id = ?,
-				factory_id = ?,
 				organization_id = ?,
 				status = ?,
 				is_current = TRUE,
@@ -363,11 +351,10 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 				updated_at = ?
 			WHERE id = ? AND is_current = FALSE AND deleted_at IS NULL
 		`,
-			robotType.Name,
+			robotInfo.DeviceID,
 			robotInfo.DeviceID,
 			dcInfo.Name,
 			dcInfo.OperatorID,
-			robotInfo.FactoryID,
 			dcInfo.WorkspaceID,
 			"offline",
 			metadataStr,
@@ -393,7 +380,6 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 				data_collector_id,
 				collector_name,
 				collector_operator_id,
-				factory_id,
 				organization_id,
 				name,
 				status,
@@ -401,16 +387,15 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 				metadata,
 				created_at,
 				updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			robotInfo.ID,
-			robotType.Name,     // robot_name from robot_types.name
+			robotInfo.DeviceID,
 			robotInfo.DeviceID, // robot_serial from device_id
 			dcInfo.ID,
-			dcInfo.Name,         // collector_name
-			dcInfo.OperatorID,   // collector_operator_id
-			robotInfo.FactoryID, // compatibility factory from robot
-			dcInfo.WorkspaceID,  // physical organization_id stores workspace ownership
+			dcInfo.Name,        // collector_name
+			dcInfo.OperatorID,  // collector_operator_id
+			dcInfo.WorkspaceID, // physical organization_id stores workspace ownership
 			stationName,
 			"offline",
 			true,
@@ -461,7 +446,7 @@ type stationListRow struct {
 	DataCollectorID     int64          `db:"data_collector_id"`
 	CollectorName       string         `db:"collector_name"`
 	CollectorOperatorID string         `db:"collector_operator_id"`
-	FactoryID           int64          `db:"factory_id"`
+	FactoryID           sql.NullInt64  `db:"factory_id"`
 	FactoryName         sql.NullString `db:"factory_name"`
 	WorkspaceID         int64          `db:"workspace_id"`
 	WorkspaceName       sql.NullString `db:"workspace_name"`
@@ -519,7 +504,7 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 		DataCollectorID:     fmt.Sprintf("%d", s.DataCollectorID),
 		CollectorName:       s.CollectorName,
 		CollectorOperatorID: s.CollectorOperatorID,
-		FactoryID:           fmt.Sprintf("%d", s.FactoryID),
+		FactoryID:           nullableInt64String(s.FactoryID),
 		FactoryName:         factoryName,
 		WorkspaceID:         fmt.Sprintf("%d", s.WorkspaceID),
 		WorkspaceName:       workspaceName,
@@ -543,15 +528,13 @@ func (h *StationHandler) getStationResponseRow(stationID int64, currentOnly bool
 	err := h.db.Get(&station, `
 		SELECT
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
-			r.robot_type_id, rt.model AS robot_type_model,
+			NULL AS robot_type_id, NULL AS robot_type_model,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
-			ws.factory_id, f.name AS factory_name,
+			NULL AS factory_id, NULL AS factory_name,
 			ws.organization_id AS workspace_id, o.name AS workspace_name,
 			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
 		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		`+where, stationID)
 	return station, err
@@ -633,8 +616,6 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		SELECT COUNT(*)
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
 		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		` + whereClause
 	var total int
@@ -648,15 +629,13 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 	query := `
 		SELECT 
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
-			r.robot_type_id, rt.model AS robot_type_model,
+			NULL AS robot_type_id, NULL AS robot_type_model,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
-			ws.factory_id, f.name AS factory_name,
+			NULL AS factory_id, NULL AS factory_name,
 			ws.organization_id AS workspace_id, o.name AS workspace_name,
 			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		INNER JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		INNER JOIN factories f ON f.id = ws.factory_id AND f.deleted_at IS NULL
 		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
 		` + whereClause + `
 	`

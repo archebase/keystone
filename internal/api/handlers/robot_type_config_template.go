@@ -74,8 +74,6 @@ func (h *RobotTypeHandler) RegisterConfigTemplatePublicRoutes(apiV1 *gin.RouterG
 func (h *RobotTypeHandler) RegisterConfigTemplateAdminRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robot_types/:id/config_templates", h.ListRobotTypeConfigTemplates)
 	apiV1.GET("/robot_types/:id/config_templates/:filename", h.GetRobotTypeConfigTemplate)
-	apiV1.PUT("/robot_types/:id/config_templates/:filename", h.UpsertRobotTypeConfigTemplate)
-	apiV1.DELETE("/robot_types/:id/config_templates/:filename", h.DeleteRobotTypeConfigTemplate)
 }
 
 // GetRobotTypeConfig returns the raw template content for Axon/Synapse consumers.

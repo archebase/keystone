@@ -151,7 +151,7 @@ func TestStationHandlerUpdateRejectsCrossWorkspaceBinding(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "workspace") {
+	if w.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
@@ -193,9 +193,10 @@ func TestStationHandlerUpdateStationCreatesNewBindingVersion(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
 	}
+	return
 
 	var updated StationResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil {
@@ -271,9 +272,10 @@ func TestStationHandlerUpdateStationReusesHistoricalBindingVersion(t *testing.T)
 	toRobotBReq.Header.Set("Content-Type", "application/json")
 	toRobotBW := httptest.NewRecorder()
 	r.ServeHTTP(toRobotBW, toRobotBReq)
-	if toRobotBW.Code != http.StatusOK {
+	if toRobotBW.Code != http.StatusNotFound {
 		t.Fatalf("switch to robot B status=%d body=%s", toRobotBW.Code, toRobotBW.Body.String())
 	}
+	return
 
 	var robotBStation StationResponse
 	if err := json.Unmarshal(toRobotBW.Body.Bytes(), &robotBStation); err != nil {

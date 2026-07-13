@@ -673,35 +673,23 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	} else {
 		var taskRow struct {
 			ID             int64         `db:"id"`
-			SceneID        int64         `db:"scene_id"`
-			SceneName      string        `db:"scene_name"`
 			WorkstationID  sql.NullInt64 `db:"workstation_id"`
-			FactoryID      sql.NullInt64 `db:"factory_id"`
 			OrganizationID sql.NullInt64 `db:"organization_id"`
-			SOPID          int64         `db:"sop_id"`
 			DCPlanID       sql.NullInt64 `db:"dc_plan_id"`
 			LocalDCPlanID  sql.NullInt64 `db:"local_dc_plan_id"`
 		}
 
 		err = tx.QueryRowContext(ctx, `SELECT
 			id,
-			scene_id,
-			COALESCE(scene_name, '') AS scene_name,
 			workstation_id,
-			factory_id,
 			organization_id,
-			sop_id,
 			dc_plan_id,
 			local_dc_plan_id
 		FROM tasks
 		WHERE task_id = ? AND deleted_at IS NULL`, taskID).Scan(
 			&taskRow.ID,
-			&taskRow.SceneID,
-			&taskRow.SceneName,
 			&taskRow.WorkstationID,
-			&taskRow.FactoryID,
 			&taskRow.OrganizationID,
-			&taskRow.SOPID,
 			&taskRow.DCPlanID,
 			&taskRow.LocalDCPlanID,
 		)
@@ -779,12 +767,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				`INSERT INTO episodes (
 					episode_id,
 					task_id,
-					scene_id,
-					scene_name,
 					workstation_id,
-					factory_id,
 					organization_id,
-					sop_id,
 					dc_plan_id,
 					local_dc_plan_id,
 					mcap_path,
@@ -794,15 +778,11 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					checksum,
 					qa_status,
 					metadata
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				episodeID,
 				taskRow.ID,
-				taskRow.SceneID,
-				taskRow.SceneName,
 				taskRow.WorkstationID,
-				taskRow.FactoryID,
 				taskRow.OrganizationID,
-				taskRow.SOPID,
 				taskRow.DCPlanID,
 				taskRow.LocalDCPlanID,
 				mcapPath,

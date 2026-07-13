@@ -16,7 +16,7 @@ import (
 func TestParseTaskBreakdownQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/tasks/statistics/breakdown?dimension=sop&workstation_id=12&status=completed&start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tasks/statistics/breakdown?dimension=dc_plan&workstation_id=12&status=completed&start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -24,7 +24,7 @@ func TestParseTaskBreakdownQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseTaskBreakdownQuery returned error: %v", err)
 	}
-	if got.Dimension != "sop" || got.WorkstationID != "12" || got.Status != "completed" || got.StartTime == nil || got.EndTime == nil {
+	if got.Dimension != "dc_plan" || got.WorkstationID != "12" || got.Status != "completed" || got.StartTime == nil || got.EndTime == nil {
 		t.Fatalf("unexpected query: %+v", got)
 	}
 }
@@ -35,8 +35,8 @@ func TestTaskBreakdownExpressionsSupportsDashboardDimensions(t *testing.T) {
 		wantID    string
 		wantName  string
 	}{
-		{dimension: "scene", wantID: "tasks.scene_id", wantName: "场景 #"},
-		{dimension: "sop", wantID: "tasks.sop_id", wantName: "SOP #"},
+		{dimension: "dc_plan", wantID: "tasks.dc_plan_id", wantName: "dp.name"},
+		{dimension: "dc_type", wantID: "dp.dc_type", wantName: "dp.dc_type"},
 	}
 
 	for _, tt := range tests {
@@ -57,11 +57,11 @@ func TestTaskBreakdownExpressionsSupportsDashboardDimensions(t *testing.T) {
 
 func TestTaskBreakdownSQLGroupsByDimensionExpression(t *testing.T) {
 	baseSQL := taskBreakdownBaseSQL("tasks.deleted_at IS NULL")
-	countSQL := taskBreakdownCountSQL("tasks.scene_id", baseSQL)
-	querySQL := taskBreakdownSQL("tasks.scene_id", "tasks.scene_name", baseSQL)
+	countSQL := taskBreakdownCountSQL("tasks.dc_plan_id", baseSQL)
+	querySQL := taskBreakdownSQL("tasks.dc_plan_id", "dp.name", baseSQL)
 
 	for _, sql := range []string{countSQL, querySQL} {
-		if !strings.Contains(sql, "GROUP BY tasks.scene_id") {
+		if !strings.Contains(sql, "GROUP BY tasks.dc_plan_id") {
 			t.Fatalf("breakdown SQL should group by dimension expression: %s", sql)
 		}
 	}

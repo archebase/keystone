@@ -73,10 +73,7 @@ type UpdateSOPRequest struct {
 // RegisterRoutes registers SOP related routes.
 func (h *SOPHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/sops", h.ListSOPs)
-	apiV1.POST("/sops", h.CreateSOP)
 	apiV1.GET("/sops/:id", h.GetSOP)
-	apiV1.PUT("/sops/:id", h.UpdateSOP)
-	apiV1.DELETE("/sops/:id", h.DeleteSOP)
 }
 
 // sopRow represents an SOP in the database

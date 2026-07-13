@@ -6,6 +6,7 @@ package services
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ func TestDCPlanTaskGenerationCreatesMissingTasks(t *testing.T) {
 	}
 	assertTaskGenerationCount(t, db, plan.ID, 3)
 	assertTaskGenerationDoesNotWriteOrderBatch(t, db)
+	assertTaskGenerationDoesNotWriteLegacyProductionMetadata(t, db)
 }
 
 func TestDCPlanTaskGenerationIsIdempotent(t *testing.T) {
@@ -153,15 +155,9 @@ func seedTaskGenerationResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCP
 	t.Helper()
 	seedTaskGenerationCollector(t, db, 7, plan.WorkspaceID, "Collector A", plan.Operator)
 	if _, err := db.Exec(`
-		INSERT INTO robot_types (id, name, model, ros_topics, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, 77, "Type A", "hilbert_dc_device_type_77", `["/camera"]`, time.Now().UTC(), time.Now().UTC()); err != nil {
-		t.Fatalf("seed robot type: %v", err)
-	}
-	if _, err := db.Exec(`
-		INSERT INTO robots (id, robot_type_id, device_id, factory_id, workspace_id, status, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, 9, 77, "456", 1, plan.WorkspaceID, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
+		INSERT INTO robots (id, device_id, workspace_id, status, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, 9, "456", plan.WorkspaceID, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
 }
@@ -224,6 +220,40 @@ func assertTaskGenerationDoesNotWriteOrderBatch(t *testing.T, db *sqlx.DB) {
 	}
 }
 
+func assertTaskGenerationDoesNotWriteLegacyProductionMetadata(t *testing.T, db *sqlx.DB) {
+	t.Helper()
+	for _, table := range []string{"factories", "sops", "scenes", "subscenes", "robot_types"} {
+		var count int
+		if err := db.Get(&count, "SELECT COUNT(*) FROM "+table); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count=%d want 0", table, count)
+		}
+	}
+	var task struct {
+		LegacyCount int    `db:"legacy_count"`
+		Metadata    string `db:"metadata"`
+	}
+	if err := db.Get(&task, `
+		SELECT
+			CASE WHEN sop_id IS NULL AND scene_id IS NULL AND subscene_id IS NULL AND factory_id IS NULL THEN 0 ELSE 1 END AS legacy_count,
+			metadata
+		FROM tasks
+		LIMIT 1
+	`); err != nil {
+		t.Fatalf("query generated task: %v", err)
+	}
+	if task.LegacyCount != 0 {
+		t.Fatalf("generated task contains legacy production metadata")
+	}
+	for _, value := range []string{`"workspace_id":123`, `"dc_plan_id":1001`, `"execution_config"`} {
+		if !strings.Contains(task.Metadata, value) {
+			t.Fatalf("task metadata %q missing %q", task.Metadata, value)
+		}
+	}
+}
+
 func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 	db, err := sqlx.Open("sqlite", ":memory:")
@@ -279,7 +309,7 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		);
 		CREATE TABLE scenes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			factory_id INTEGER NOT NULL,
+			factory_id INTEGER,
 			name TEXT NOT NULL UNIQUE,
 			description TEXT,
 			initial_scene_layout_template TEXT,
@@ -320,9 +350,9 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		);
 		CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
-			robot_type_id INTEGER NOT NULL,
+			robot_type_id INTEGER,
 			device_id TEXT NOT NULL,
-			factory_id INTEGER NOT NULL,
+			factory_id INTEGER,
 			workspace_id INTEGER NOT NULL DEFAULT 0,
 			status TEXT,
 			metadata TEXT,
@@ -338,7 +368,7 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			data_collector_id INTEGER NOT NULL,
 			collector_name TEXT,
 			collector_operator_id TEXT,
-			factory_id INTEGER NOT NULL,
+			factory_id INTEGER,
 			organization_id INTEGER NOT NULL,
 			name TEXT,
 			status TEXT,
@@ -381,10 +411,10 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			task_id TEXT NOT NULL,
 			batch_id INTEGER,
 			order_id INTEGER,
-			sop_id INTEGER NOT NULL,
+				sop_id INTEGER,
 			workstation_id INTEGER,
-			scene_id INTEGER NOT NULL,
-			subscene_id INTEGER NOT NULL,
+				scene_id INTEGER,
+				subscene_id INTEGER,
 			batch_name TEXT,
 			scene_name TEXT,
 			subscene_name TEXT,

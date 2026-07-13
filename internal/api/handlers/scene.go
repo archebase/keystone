@@ -76,10 +76,7 @@ type UpdateSceneRequest struct {
 // RegisterRoutes registers scene related routes.
 func (h *SceneHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/scenes", h.ListScenes)
-	apiV1.POST("/scenes", h.CreateScene)
 	apiV1.GET("/scenes/:id", h.GetScene)
-	apiV1.PUT("/scenes/:id", h.UpdateScene)
-	apiV1.DELETE("/scenes/:id", h.DeleteScene)
 }
 
 // sceneRow represents a scene in the database

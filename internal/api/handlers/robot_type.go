@@ -67,10 +67,7 @@ type RobotTypeListResponse struct {
 // RegisterRoutes registers robot type related routes.
 func (h *RobotTypeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robot_types", h.ListRobotTypes)
-	apiV1.POST("/robot_types", h.CreateRobotType)
 	apiV1.GET("/robot_types/:id", h.GetRobotType)
-	apiV1.PUT("/robot_types/:id", h.UpdateRobotType)
-	apiV1.DELETE("/robot_types/:id", h.DeleteRobotType)
 }
 
 // robotTypeRow represents a robot type in the database

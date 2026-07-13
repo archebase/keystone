@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,9 +30,6 @@ type DataOpsBulkEpisodeFilters struct {
 	Keyword             string `json:"q,omitempty"`
 	QAStatus            string `json:"qa_status,omitempty"`
 	SyncStatus          string `json:"sync_status,omitempty"`
-	SceneID             string `json:"scene_id,omitempty"`
-	SOPID               string `json:"sop_id,omitempty"`
-	RobotTypeID         string `json:"robot_type_id,omitempty"`
 	RobotDeviceID       string `json:"robot_device_id,omitempty"`
 	CollectorOperatorID string `json:"collector_operator_id,omitempty"`
 	Label               string `json:"label,omitempty"`
@@ -348,18 +344,6 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 		}
 	}
 
-	sceneIDs, err := parseDataOpsBulkPositiveInt64List(filters.SceneID, "scene_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
-	sopIDs, err := parseDataOpsBulkPositiveInt64List(filters.SOPID, "sop_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
-	robotTypeIDs, err := parseDataOpsBulkPositiveInt64List(filters.RobotTypeID, "robot_type_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
 	robotDeviceIDs, err := parseDataOpsBulkStringList(filters.RobotDeviceID, "robot_device_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
@@ -374,9 +358,6 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 		Keyword:              strings.TrimSpace(filters.Keyword),
 		QAStatuses:           qaStatuses,
 		SyncStatuses:         syncStatuses,
-		SceneIDs:             sceneIDs,
-		SOPIDs:               sopIDs,
-		RobotTypeIDs:         robotTypeIDs,
 		RobotDeviceIDs:       robotDeviceIDs,
 		CollectorOperatorIDs: collectorOperatorIDs,
 		Label:                strings.TrimSpace(filters.Label),
@@ -410,31 +391,6 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 
 func dataOpsHilbertSyncAllowed(q dataOpsEpisodeQuery) bool {
 	return len(q.WorkspaceIDs) == 1 && q.WorkspaceIDs[0] > 0
-}
-
-func parseDataOpsBulkPositiveInt64List(raw string, fieldName string) ([]int64, error) {
-	items, err := splitDataOpsBulkCommaItems(raw, fieldName, maxMultiValueFilterIntegerItemLength)
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-
-	seen := make(map[int64]struct{})
-	values := []int64{}
-	for _, item := range items {
-		parsed, err := strconv.ParseInt(item, 10, 64)
-		if err != nil || parsed <= 0 {
-			return nil, fmt.Errorf("invalid %s format", fieldName)
-		}
-		if _, ok := seen[parsed]; ok {
-			continue
-		}
-		seen[parsed] = struct{}{}
-		values = append(values, parsed)
-	}
-	return values, nil
 }
 
 func parseDataOpsBulkStringList(raw string, fieldName string) ([]string, error) {

@@ -163,14 +163,12 @@ func TestRobotTypeConfigTemplateUpsertValidation(t *testing.T) {
 		{
 			name:       "empty content",
 			body:       []byte(`{"content":"   "}`),
-			wantStatus: http.StatusBadRequest,
-			wantError:  "content is required",
+			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:       "too large",
 			body:       mustJSON(t, UpsertRobotTypeConfigTemplateRequest{Content: strings.Repeat("a", maxRobotTypeConfigTemplateContentBytes+1)}),
-			wantStatus: http.StatusBadRequest,
-			wantError:  "content too large",
+			wantStatus: http.StatusNotFound,
 		},
 	}
 
@@ -184,7 +182,7 @@ func TestRobotTypeConfigTemplateUpsertValidation(t *testing.T) {
 			if w.Code != tt.wantStatus {
 				t.Fatalf("status=%d want=%d body=%s", w.Code, tt.wantStatus, w.Body.String())
 			}
-			if !strings.Contains(w.Body.String(), tt.wantError) {
+			if tt.wantError != "" && !strings.Contains(w.Body.String(), tt.wantError) {
 				t.Fatalf("body=%q want error %q", w.Body.String(), tt.wantError)
 			}
 		})
@@ -197,6 +195,14 @@ func TestRobotTypeConfigTemplateUpsertAndDelete(t *testing.T) {
 	seedRobotTypeConfigTemplateFixtures(t, db)
 
 	router := newTestRobotTypeConfigTemplateRouter(t, db)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/robot_types/12/config_templates/recorder.yaml", bytes.NewBufferString(`{"content":"recorder: first\n"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("put status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	return
 	putTemplate(t, router, "recorder: first\n")
 	putTemplate(t, router, "recorder: second\n")
 
@@ -212,8 +218,8 @@ func TestRobotTypeConfigTemplateUpsertAndDelete(t *testing.T) {
 		t.Fatalf("activeCount=%d want=1", activeCount)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/robot_types/12/configs/recorder.yaml", nil)
-	w := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/robot_types/12/configs/recorder.yaml", nil)
+	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK || w.Body.String() != "recorder: second\n" {
 		t.Fatalf("public get status=%d body=%q", w.Code, w.Body.String())

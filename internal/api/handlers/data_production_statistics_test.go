@@ -34,10 +34,10 @@ func TestParseDataProductionStatsQuery(t *testing.T) {
 	if len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != 0 {
 		t.Fatalf("unexpected workspace ids: %#v", got.WorkspaceIDs)
 	}
-	if len(got.SceneIDs) != 2 || got.SceneIDs[0] != 34 || got.SceneIDs[1] != 35 {
-		t.Fatalf("unexpected scene ids: %#v", got.SceneIDs)
+	if len(got.SceneIDs) != 0 || len(got.RobotTypeIDs) != 0 || len(got.SOPIDs) != 0 {
+		t.Fatalf("legacy production filters should be ignored: %+v", got)
 	}
-	if strings.Join(got.RobotTypeIDs, ",") != "7,8" || strings.Join(got.SOPIDs, ",") != "9,10" || strings.Join(got.QAStatuses, ",") != "approved,failed" {
+	if strings.Join(got.QAStatuses, ",") != "approved,failed" {
 		t.Fatalf("unexpected list filters: %+v", got)
 	}
 	if len(got.CloudSyncedValues) != 1 || got.CloudSyncedValues[0] {
@@ -56,7 +56,7 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 	if strings.Contains(sql, "t.status IN ('failed', 'cancelled')") || strings.Contains(sql, "t.status IN ('ready', 'in_progress')") {
 		t.Fatalf("production records SQL should not include task status fallback records: %s", sql)
 	}
-	for _, want := range []string{"e.scene_id AS scene_id", "COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced"} {
+	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("production records SQL should include %q: %s", want, sql)
 		}
@@ -64,12 +64,7 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.organization_id) AS workspace_id") {
 		t.Fatalf("production records SQL should expose workspace scope: %s", sql)
 	}
-	for _, want := range []string{
-		"ws.id = COALESCE(e.workstation_id, t.workstation_id)",
-		"COALESCE(CAST(e.sop_id AS CHAR), CAST(t.sop_id AS CHAR), '') AS sop_id",
-		"s.id = COALESCE(e.sop_id, t.sop_id)",
-		"CONCAT('SOP #', CAST(COALESCE(e.sop_id, t.sop_id) AS CHAR))",
-	} {
+	for _, want := range []string{"ws.id = COALESCE(e.workstation_id, t.workstation_id)"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("production records SQL should prefer episode SOP with task fallback %q: %s", want, sql)
 		}
@@ -120,13 +115,13 @@ func TestFilteredProductionRecordsSQLIncludesEpisodeFilters(t *testing.T) {
 		QAStatuses:        []string{"failed"},
 		CloudSyncedValues: []bool{cloudSynced},
 	})
-	for _, want := range []string{"workspace_id IN (?)", "scene_id IN (?)", "qa_status IN (?)", "cloud_synced = ?"} {
+	for _, want := range []string{"workspace_id IN (?)", "qa_status IN (?)", "cloud_synced = ?"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("filtered SQL should include %q: %s", want, query)
 		}
 	}
-	if len(args) != 6 {
-		t.Fatalf("arg count = %d, want 6: %#v", len(args), args)
+	if len(args) != 5 {
+		t.Fatalf("arg count = %d, want 5: %#v", len(args), args)
 	}
 }
 
@@ -172,8 +167,8 @@ func TestStatsBreakdownExpressionsSupportsEpisodeDimensions(t *testing.T) {
 		wantID    string
 		wantName  string
 	}{
-		{dimension: "scene", wantID: "scene_id", wantName: "scene_name"},
-		{dimension: "sop", wantID: "sop_id", wantName: "sop"},
+		{dimension: "robot_device", wantID: "robot_device_id", wantName: "robot_device_id"},
+		{dimension: "collector", wantID: "collector_operator_id", wantName: "collector_operator_id"},
 		{dimension: "qa_status", wantID: "qa_status", wantName: "WHEN 'pending_qa' THEN '待质检'"},
 		{dimension: "cloud_synced", wantID: "CASE WHEN cloud_synced THEN 'true' ELSE 'false' END", wantName: "CASE WHEN cloud_synced THEN '已同步' ELSE '未同步' END"},
 	}
@@ -212,10 +207,6 @@ func TestParseDataProductionStatsQueryRejectsInvalidInputs(t *testing.T) {
 		{
 			name: "bad granularity",
 			path: "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=minute",
-		},
-		{
-			name: "bad scene",
-			path: "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&scene_id=bad",
 		},
 		{
 			name: "bad qa status",

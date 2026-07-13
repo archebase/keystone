@@ -181,9 +181,9 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 	if result.ResourceSync.CollectorUpsertedCount != 2 ||
 		result.ResourceSync.CollectorSkippedCount != 1 ||
-		result.ResourceSync.RobotTypeUpsertedCount != 1 ||
+		result.ResourceSync.RobotTypeUpsertedCount != 0 ||
 		result.ResourceSync.RobotUpsertedCount != 1 ||
-		result.ResourceSync.FactoryUpsertedCount != 1 {
+		result.ResourceSync.FactoryUpsertedCount != 0 {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
 	}
 
@@ -212,10 +212,10 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 
 	var robot struct {
-		RobotTypeID int64  `db:"robot_type_id"`
-		FactoryID   int64  `db:"factory_id"`
-		Status      string `db:"status"`
-		Metadata    string `db:"metadata"`
+		RobotTypeID sql.NullInt64 `db:"robot_type_id"`
+		FactoryID   sql.NullInt64 `db:"factory_id"`
+		Status      string        `db:"status"`
+		Metadata    string        `db:"metadata"`
 	}
 	if err := db.Get(&robot, `
 		SELECT robot_type_id, factory_id, status, metadata
@@ -224,16 +224,8 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("query robot: %v", err)
 	}
-	if robot.RobotTypeID != 77 || robot.FactoryID == 0 || robot.Status != "active" || metadataSource(robot.Metadata) != "hilbert" {
+	if robot.RobotTypeID.Valid || robot.FactoryID.Valid || robot.Status != "active" || metadataSource(robot.Metadata) != "hilbert" {
 		t.Fatalf("unexpected robot: %#v", robot)
-	}
-
-	var robotTypeModel string
-	if err := db.Get(&robotTypeModel, "SELECT model FROM robot_types WHERE id = 77"); err != nil {
-		t.Fatalf("query robot type: %v", err)
-	}
-	if robotTypeModel != "hilbert_dc_device_type_77" {
-		t.Fatalf("robotTypeModel=%q", robotTypeModel)
 	}
 }
 
@@ -394,7 +386,7 @@ func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t
 	}
 }
 
-func TestWorkspaceSyncServiceResourceFactoriesAllowDuplicateWorkspaceNames(t *testing.T) {
+func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 	db := newTestWorkspaceSyncDB(t)
 	defer db.Close()
 
@@ -411,26 +403,16 @@ func TestWorkspaceSyncServiceResourceFactoriesAllowDuplicateWorkspaceNames(t *te
 	if err != nil {
 		t.Fatalf("Sync() error = %v", err)
 	}
-	if result.ResourceSync == nil || result.ResourceSync.FactoryUpsertedCount != 2 {
+	if result.ResourceSync == nil || result.ResourceSync.FactoryUpsertedCount != 0 {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
 	}
 
-	var factories []struct {
-		Name string `db:"name"`
-		Slug string `db:"slug"`
+	var factoryCount int
+	if err := db.Get(&factoryCount, "SELECT COUNT(*) FROM factories"); err != nil {
+		t.Fatalf("count factories: %v", err)
 	}
-	if err := db.Select(&factories, `
-		SELECT name, slug
-		FROM factories
-		WHERE slug IN ('hilbert_workspace_123', 'hilbert_workspace_124')
-		ORDER BY slug
-	`); err != nil {
-		t.Fatalf("query factories: %v", err)
-	}
-	if len(factories) != 2 ||
-		factories[0].Name != "Shared Name / Hilbert Workspace 123" ||
-		factories[1].Name != "Shared Name / Hilbert Workspace 124" {
-		t.Fatalf("unexpected factories: %#v", factories)
+	if factoryCount != 0 {
+		t.Fatalf("factoryCount=%d want 0", factoryCount)
 	}
 }
 
@@ -555,7 +537,7 @@ func TestWorkspaceResourceSyncRejectsRobotWorkspaceChangeAcrossCurrentBinding(t 
 		ID:             456,
 		WorkspaceID:    61,
 		DCDeviceTypeID: 77,
-	}, 1, time.Now().UTC())
+	}, time.Now().UTC())
 	if err == nil || !strings.Contains(err.Error(), "another workspace") {
 		t.Fatalf("error=%v want workspace binding conflict", err)
 	}

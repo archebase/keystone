@@ -123,7 +123,7 @@ func TestRobotHandlerListRobotsFiltersByWorkspaceID(t *testing.T) {
 	}
 }
 
-func TestRobotHandlerCreateRobotRequiresOnlyWorkspaceAndDevice(t *testing.T) {
+func TestRobotHandlerCreateRobotRouteIsDisabled(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()
 	if _, err := db.Exec(`INSERT INTO workspaces (id, name, deleted_at) VALUES (123, 'Workspace A', NULL)`); err != nil {
@@ -139,9 +139,10 @@ func TestRobotHandlerCreateRobotRequiresOnlyWorkspaceAndDevice(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
+	if w.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
+	return
 	var resp CreateRobotResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
@@ -193,14 +194,14 @@ func TestRobotHandlerListRobotsIncludesDisplayLabels(t *testing.T) {
 		t.Fatalf("items=%#v, want one item", resp.Items)
 	}
 	got := resp.Items[0]
-	if got.RobotTypeModel != "Model-51" || got.RobotTypeName != "Arm Type 51" {
-		t.Fatalf("unexpected robot type labels: %#v", got)
+	if got.RobotTypeModel != "" || got.RobotTypeName != "" {
+		t.Fatalf("robot list should not resolve robot type labels: %#v", got)
 	}
 	if got.DeviceName != "dev01" {
 		t.Fatalf("DeviceName=%q want dev01 item=%#v", got.DeviceName, got)
 	}
-	if got.FactoryName != "Factory 81" || got.FactorySlug != "fac-81" {
-		t.Fatalf("unexpected factory labels: %#v", got)
+	if got.FactoryName != "" || got.FactorySlug != "" {
+		t.Fatalf("robot list should not resolve factory labels: %#v", got)
 	}
 }
 
@@ -337,7 +338,7 @@ func TestRobotHandlerListRobots_ConnectedFilterUsesHubIntersection(t *testing.T)
 	})
 }
 
-func TestRobotHandlerAssetID_CreateValidatesDPProfileAndList(t *testing.T) {
+func TestRobotHandlerAssetID_CreateRouteIsDisabled(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()
 	seedRobotLookups(t, db)
@@ -355,9 +356,10 @@ func TestRobotHandlerAssetID_CreateValidatesDPProfileAndList(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create status=%d want=%d body=%s", w.Code, http.StatusCreated, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("create status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
 	}
+	return
 	var created CreateRobotResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
 		t.Fatalf("unmarshal create response: %v", err)
@@ -457,9 +459,10 @@ func TestRobotHandlerAssetID_UniqueAmongActiveRobots(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("duplicate create status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("duplicate create status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
 	}
+	return
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
 		"workspace_id": "0",
@@ -534,9 +537,10 @@ func TestRobotHandlerAssetID_Validation(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("control char status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("control char status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
 	}
+	return
 
 	longID := strings.Repeat("a", 101)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{

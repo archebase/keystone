@@ -242,7 +242,6 @@ func (h *EpisodeQAHandler) requireBearerJWT(c *gin.Context) bool {
 // @Tags         qa
 // @Produce      json
 // @Param        status      query     string  false  "QA status filter: all, pending_qa, qa_running, approved, failed"
-// @Param        robot_type  query     string  false  "Robot type name or model"
 // @Param        q           query     string  false  "Search episode/task/quality text"
 // @Param        page        query     int     false  "Page number, default 1"
 // @Param        page_size   query     int     false  "Page size, default 20"
@@ -272,14 +271,11 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 		return
 	}
 
-	where, args := buildQAEpisodeListWhere(statuses, c.Query("robot_type"), c.Query("q"))
+	where, args := buildQAEpisodeListWhere(statuses, c.Query("q"))
 	countQuery := `
 		SELECT COUNT(1)
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 	` + where
 
 	var total int
@@ -295,7 +291,7 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 			e.episode_id,
 			e.task_id,
 			t.task_id AS task_public_id,
-			COALESCE(rt.name, rt.model, '') AS robot_type,
+			'' AS robot_type,
 			COALESCE(e.qa_status, '') AS qa_status,
 			e.quality_flag,
 			e.created_at,
@@ -308,9 +304,6 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 			qc.checked_at AS latest_check_checked_at
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN qa_checks qc ON qc.id = (
 			SELECT qc2.id
 			FROM qa_checks qc2
@@ -1085,7 +1078,7 @@ func qaEpisodeStatusFilter(raw string) ([]string, error) {
 	return out, nil
 }
 
-func buildQAEpisodeListWhere(statuses []string, robotType, keyword string) (string, []interface{}) {
+func buildQAEpisodeListWhere(statuses []string, keyword string) (string, []interface{}) {
 	where := " WHERE e.deleted_at IS NULL"
 	args := []interface{}{}
 
@@ -1096,12 +1089,6 @@ func buildQAEpisodeListWhere(statuses []string, robotType, keyword string) (stri
 			args = append(args, status)
 		}
 		where += " AND e.qa_status IN (" + strings.Join(placeholders, ",") + ")"
-	}
-
-	rt := strings.TrimSpace(robotType)
-	if rt != "" {
-		where += " AND (rt.name = ? OR rt.model = ?)"
-		args = append(args, rt, rt)
 	}
 
 	q := strings.TrimSpace(keyword)
