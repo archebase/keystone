@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS robots (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     device_id VARCHAR(100) NOT NULL,
     workspace_id BIGINT NOT NULL DEFAULT 0,
+    device_type_id BIGINT,
+    device_type VARCHAR(255),
     asset_id VARCHAR(100),
     status ENUM('active', 'maintenance', 'retired') DEFAULT 'active',
     auth_epoch BIGINT NOT NULL DEFAULT 1,
@@ -112,6 +114,7 @@ CREATE TABLE IF NOT EXISTS robots (
     UNIQUE INDEX idx_device_del (_device_unique),
     UNIQUE INDEX idx_asset_active_unique (_asset_unique),
     INDEX idx_workspace (workspace_id),
+    INDEX idx_device_type_id (device_type_id),
     INDEX idx_status (status),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

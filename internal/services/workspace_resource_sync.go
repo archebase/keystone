@@ -27,6 +27,7 @@ const (
 type HilbertWorkspaceResourceClient interface {
 	QueryAccountByCode(ctx context.Context, code string) (*auth.HilbertAccount, error)
 	QueryDCDevices(ctx context.Context, workspaceID int64) (*auth.HilbertDCDevicePage, error)
+	QueryDCDeviceTypeByID(ctx context.Context, id int64) (*auth.HilbertDCDeviceType, error)
 }
 
 // WorkspaceResourceSyncSummary summarizes a workspace resource sync run.
@@ -118,7 +119,12 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(ctx context.Context, worksp
 		return result
 	}
 	for _, device := range devicesPage.Records {
-		upserted, robotErr := upsertHilbertRobot(ctx, tx, device, syncedAt)
+		deviceType, typeErr := s.resolveDeviceType(ctx, device.DCDeviceTypeID)
+		if typeErr != nil {
+			result.addError("robot", strconv.FormatInt(device.ID, 10), "dc_device_type_query_failed", typeErr.Error())
+			continue
+		}
+		upserted, robotErr := upsertHilbertRobot(ctx, tx, device, deviceType, syncedAt)
 		if robotErr != nil {
 			result.addError("robot", strconv.FormatInt(device.ID, 10), "robot_upsert_failed", robotErr.Error())
 			continue
@@ -133,6 +139,13 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(ctx context.Context, worksp
 		result.discardUncommittedCounts()
 	}
 	return result
+}
+
+func (s *WorkspaceResourceSyncService) resolveDeviceType(ctx context.Context, deviceTypeID int64) (*auth.HilbertDCDeviceType, error) {
+	if deviceTypeID <= 0 {
+		return nil, nil
+	}
+	return s.hilbertClient.QueryDCDeviceTypeByID(ctx, deviceTypeID)
 }
 
 func (s *WorkspaceResourceSyncService) syncCollectors(
@@ -221,8 +234,12 @@ func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, account auth.H
 	return err == nil, err
 }
 
-func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCDevice, syncedAt time.Time) (bool, error) {
+func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCDevice, deviceType *auth.HilbertDCDeviceType, syncedAt time.Time) (bool, error) {
 	deviceID := strconv.FormatInt(device.ID, 10)
+	deviceTypeName := ""
+	if deviceType != nil {
+		deviceTypeName = strings.TrimSpace(deviceType.Name)
+	}
 	existingSource, err := activeMetadataSource(ctx, tx, "robots", "device_id", deviceID)
 	if err != nil && err != sql.ErrNoRows {
 		return false, err
@@ -243,6 +260,7 @@ func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCD
 		"hilbert_dc_device_name":    strings.TrimSpace(device.Name),
 		"hilbert_dc_device_sn":      strings.TrimSpace(device.SN),
 		"hilbert_dc_device_type_id": device.DCDeviceTypeID,
+		"hilbert_dc_device_type":    deviceTypeName,
 		"last_seen_at":              syncedAt.Format(time.RFC3339),
 		"hilbert_raw":               device,
 	})
@@ -252,27 +270,46 @@ func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCD
 
 	if tx.DriverName() == "sqlite" {
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO robots (device_id, workspace_id, status, metadata, created_at, updated_at, deleted_at)
-			VALUES (?, ?, ?, ?, ?, ?, NULL)
+			INSERT INTO robots (device_id, workspace_id, device_type_id, device_type, status, metadata, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
 			ON CONFLICT(device_id) DO UPDATE SET
 				workspace_id = excluded.workspace_id,
+				device_type_id = excluded.device_type_id,
+				device_type = excluded.device_type,
 				metadata = excluded.metadata,
 				updated_at = excluded.updated_at,
 				deleted_at = NULL
-		`, deviceID, device.WorkspaceID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
+		`, deviceID, device.WorkspaceID, nullablePositiveInt64(device.DCDeviceTypeID), nullableString(deviceTypeName), hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
 		return err == nil, err
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO robots (device_id, workspace_id, status, metadata, created_at, updated_at, deleted_at)
-		VALUES (?, ?, ?, ?, ?, ?, NULL)
+		INSERT INTO robots (device_id, workspace_id, device_type_id, device_type, status, metadata, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
 		ON DUPLICATE KEY UPDATE
 			workspace_id = VALUES(workspace_id),
+			device_type_id = VALUES(device_type_id),
+			device_type = VALUES(device_type),
 			metadata = VALUES(metadata),
 			updated_at = VALUES(updated_at),
 			deleted_at = NULL
-	`, deviceID, device.WorkspaceID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
+	`, deviceID, device.WorkspaceID, nullablePositiveInt64(device.DCDeviceTypeID), nullableString(deviceTypeName), hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
 	return err == nil, err
+}
+
+func nullablePositiveInt64(value int64) sql.NullInt64 {
+	if value <= 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: value, Valid: true}
+}
+
+func nullableString(value string) sql.NullString {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value, Valid: true}
 }
 
 func ensureRobotWorkspaceBindingCompatible(ctx context.Context, tx *sqlx.Tx, deviceID string, workspaceID int64) error {

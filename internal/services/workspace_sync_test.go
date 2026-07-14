@@ -203,17 +203,24 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 
 	var robot struct {
-		Status   string `db:"status"`
-		Metadata string `db:"metadata"`
+		Status       string         `db:"status"`
+		DeviceTypeID sql.NullInt64  `db:"device_type_id"`
+		DeviceType   sql.NullString `db:"device_type"`
+		Metadata     string         `db:"metadata"`
 	}
 	if err := db.Get(&robot, `
-		SELECT status, metadata
+		SELECT status, device_type_id, device_type, metadata
 		FROM robots
 		WHERE device_id = '456'
 	`); err != nil {
 		t.Fatalf("query robot: %v", err)
 	}
-	if robot.Status != "active" || metadataSource(robot.Metadata) != "hilbert" {
+	if robot.Status != "active" ||
+		!robot.DeviceTypeID.Valid ||
+		robot.DeviceTypeID.Int64 != 77 ||
+		!robot.DeviceType.Valid ||
+		robot.DeviceType.String != "Type 77" ||
+		metadataSource(robot.Metadata) != "hilbert" {
 		t.Fatalf("unexpected robot: %#v", robot)
 	}
 }
@@ -501,7 +508,7 @@ func TestWorkspaceResourceSyncRejectsRobotWorkspaceChangeAcrossCurrentBinding(t 
 		ID:             456,
 		WorkspaceID:    61,
 		DCDeviceTypeID: 77,
-	}, time.Now().UTC())
+	}, &auth.HilbertDCDeviceType{ID: 77, Name: "Type 77"}, time.Now().UTC())
 	if err == nil || !strings.Contains(err.Error(), "another workspace") {
 		t.Fatalf("error=%v want workspace binding conflict", err)
 	}
@@ -538,6 +545,8 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			device_id TEXT UNIQUE,
 			workspace_id INTEGER,
+			device_type_id INTEGER,
+			device_type TEXT,
 			asset_id TEXT,
 			status TEXT,
 			metadata TEXT,

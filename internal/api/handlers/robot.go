@@ -39,16 +39,18 @@ func NewRobotHandler(db *sqlx.DB, recorderHub *services.RecorderHub, transferHub
 
 // RobotResponse represents a robot in the response.
 type RobotResponse struct {
-	ID          string      `json:"id"`
-	DeviceID    string      `json:"device_id"`
-	DeviceName  string      `json:"device_name,omitempty"`
-	WorkspaceID string      `json:"workspace_id"`
-	Status      string      `json:"status"`
-	Metadata    interface{} `json:"metadata,omitempty"`
-	CreatedAt   string      `json:"created_at,omitempty"`
-	UpdatedAt   string      `json:"updated_at,omitempty"`
-	Connected   bool        `json:"connected"`
-	ConnectedAt string      `json:"connected_at,omitempty"`
+	ID           string      `json:"id"`
+	DeviceID     string      `json:"device_id"`
+	DeviceName   string      `json:"device_name,omitempty"`
+	DeviceTypeID string      `json:"device_type_id,omitempty"`
+	DeviceType   string      `json:"device_type,omitempty"`
+	WorkspaceID  string      `json:"workspace_id"`
+	Status       string      `json:"status"`
+	Metadata     interface{} `json:"metadata,omitempty"`
+	CreatedAt    string      `json:"created_at,omitempty"`
+	UpdatedAt    string      `json:"updated_at,omitempty"`
+	Connected    bool        `json:"connected"`
+	ConnectedAt  string      `json:"connected_at,omitempty"`
 }
 
 // RobotListResponse represents the response for listing robots.
@@ -81,13 +83,15 @@ func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // robotRow represents a robot in the database
 type robotRow struct {
-	ID          int64          `db:"id"`
-	DeviceID    string         `db:"device_id"`
-	WorkspaceID int64          `db:"workspace_id"`
-	Status      string         `db:"status"`
-	Metadata    sql.NullString `db:"metadata"`
-	CreatedAt   sql.NullTime   `db:"created_at"`
-	UpdatedAt   sql.NullTime   `db:"updated_at"`
+	ID           int64          `db:"id"`
+	DeviceID     string         `db:"device_id"`
+	DeviceTypeID sql.NullInt64  `db:"device_type_id"`
+	DeviceType   sql.NullString `db:"device_type"`
+	WorkspaceID  int64          `db:"workspace_id"`
+	Status       string         `db:"status"`
+	Metadata     sql.NullString `db:"metadata"`
+	CreatedAt    sql.NullTime   `db:"created_at"`
+	UpdatedAt    sql.NullTime   `db:"updated_at"`
 }
 
 func robotMetadataFromDB(ns sql.NullString) interface{} {
@@ -118,6 +122,8 @@ func (h *RobotHandler) loadRobotRow(id int64) (robotRow, error) {
 			SELECT
 				r.id,
 				r.device_id,
+				r.device_type_id,
+				r.device_type,
 				r.workspace_id,
 				r.status,
 				r.metadata,
@@ -231,17 +237,26 @@ func robotResponseFromRow(r robotRow, connected bool, connectedAt string) RobotR
 		updatedAt = r.UpdatedAt.Time.UTC().Format(time.RFC3339)
 	}
 	return RobotResponse{
-		ID:          fmt.Sprintf("%d", r.ID),
-		DeviceID:    r.DeviceID,
-		DeviceName:  robotDeviceNameFromMetadata(r.Metadata),
-		WorkspaceID: fmt.Sprintf("%d", r.WorkspaceID),
-		Status:      r.Status,
-		Metadata:    robotMetadataFromDB(r.Metadata),
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
-		Connected:   connected,
-		ConnectedAt: connectedAt,
+		ID:           fmt.Sprintf("%d", r.ID),
+		DeviceID:     r.DeviceID,
+		DeviceName:   robotDeviceNameFromMetadata(r.Metadata),
+		DeviceTypeID: robotDeviceTypeIDFromDB(r.DeviceTypeID),
+		DeviceType:   strings.TrimSpace(r.DeviceType.String),
+		WorkspaceID:  fmt.Sprintf("%d", r.WorkspaceID),
+		Status:       r.Status,
+		Metadata:     robotMetadataFromDB(r.Metadata),
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+		Connected:    connected,
+		ConnectedAt:  connectedAt,
 	}
+}
+
+func robotDeviceTypeIDFromDB(ns sql.NullInt64) string {
+	if !ns.Valid || ns.Int64 <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(ns.Int64, 10)
 }
 
 func (h *RobotHandler) responseFromRow(r robotRow) RobotResponse {
@@ -373,6 +388,8 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		SELECT 
 			r.id,
 			r.device_id,
+			r.device_type_id,
+			r.device_type,
 			r.workspace_id,
 			r.status,
 			r.metadata,
@@ -454,6 +471,8 @@ func (h *RobotHandler) GetRobot(c *gin.Context) {
 		SELECT 
 			r.id,
 			r.device_id,
+			r.device_type_id,
+			r.device_type,
 			r.workspace_id,
 			r.status,
 			r.metadata,

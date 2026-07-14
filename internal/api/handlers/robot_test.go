@@ -125,11 +125,11 @@ func TestRobotHandlerListRobotsFiltersByWorkspaceID(t *testing.T) {
 	}
 }
 
-func TestRobotHandlerListRobotsIncludesProjectedDeviceName(t *testing.T) {
+func TestRobotHandlerListRobotsIncludesProjectedDeviceNameAndType(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()
 
-	if _, err := db.Exec(`INSERT INTO robots (id, device_id, status, metadata) VALUES (1, 'label_robot', 'active', '{"hilbert_dc_device_name":"dev01"}')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, device_type_id, device_type, status, metadata) VALUES (1, 'label_robot', 77, 'Type 77', 'active', '{"hilbert_dc_device_name":"dev01"}')`); err != nil {
 		t.Fatalf("seed robot fixture failed: %v", err)
 	}
 
@@ -152,6 +152,9 @@ func TestRobotHandlerListRobotsIncludesProjectedDeviceName(t *testing.T) {
 	got := resp.Items[0]
 	if got.DeviceName != "dev01" {
 		t.Fatalf("DeviceName=%q want dev01 item=%#v", got.DeviceName, got)
+	}
+	if got.DeviceTypeID != "77" || got.DeviceType != "Type 77" {
+		t.Fatalf("device type = (%q, %q), want (77, Type 77) item=%#v", got.DeviceTypeID, got.DeviceType, got)
 	}
 }
 
@@ -331,6 +334,8 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 	schema := `CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
 			device_id TEXT NOT NULL,
+			device_type_id INTEGER,
+			device_type TEXT,
 			asset_id TEXT,
 			workspace_id INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL,
