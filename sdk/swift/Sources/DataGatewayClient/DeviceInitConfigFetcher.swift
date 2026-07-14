@@ -21,27 +21,28 @@ package enum DeviceInitConfigFetcher {
         platform: String
     ) async throws -> ArchebaseConfig {
         do {
-            let response = switch mode {
+            switch mode {
             case .initDevice:
                 guard let deviceAuthToken = deviceAuthToken?.trimmingCharacters(in: .whitespacesAndNewlines), !deviceAuthToken.isEmpty else {
                     throw DataGatewayClientError.invalidConfiguration("device_auth_token is required for device initialization")
                 }
-                try await transport.initDevice(
+                let response = try await transport.initDevice(
                     deviceID: deviceID,
                     deviceAuthToken: deviceAuthToken,
                     sdkVersion: sdkVersion,
                     platform: platform
                 )
+                return try ArchebaseConfig(apiKey: response.apiKey, tags: response.tags)
             case .reinitDevice:
-                try await transport.reinitDevice(
+                let response = try await transport.reinitDevice(
                     deviceID: deviceID,
                     deviceAuthToken: deviceAuthToken ?? "",
                     authorizationHeader: authorizationHeader,
                     sdkVersion: sdkVersion,
                     platform: platform
                 )
+                return try ArchebaseConfig(apiKey: response.apiKey, tags: response.tags)
             }
-            return try ArchebaseConfig(apiKey: response.apiKey, tags: response.tags)
         } catch let error as DataGatewayClientError {
             throw error
         } catch {
