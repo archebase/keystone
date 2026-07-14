@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 import Testing
 
@@ -73,7 +76,7 @@ import GRPCCore
         fileSize: 128,
         rawTags: ["scene": "robot"],
         completedPartCount: 3,
-        ossObjectEtag: "\"etag-1\"",
+        objectEtag: "\"etag-1\"",
         partSizeBytes: 64 * 1024 * 1024,
         authorizationHeader: "Bearer token-1"
     )
@@ -125,6 +128,7 @@ import GRPCCore
 
     let response = try await transport.initDevice(
         deviceID: "260427-000001",
+        deviceAuthToken: "kda_v1_test-token",
         sdkVersion: "1.2.3",
         platform: "ios"
     )
@@ -138,17 +142,19 @@ import GRPCCore
             method: "InitDevice",
             metadata: ["authorization": []],
             timeout: .seconds(6),
-            requestSummary: "260427-000001:1.2.3:ios"
+            requestSummary: "260427-000001:token=true:1.2.3:ios"
         ),
     ])
 }
 
-@Test func deviceInitTransportBuildsReinitRequestWithoutAuthorization() async throws {
+@Test func deviceInitTransportBuildsReinitRequestWithAuthorization() async throws {
     let stub = DeviceInitServiceClientStub()
     let transport = DeviceInitServiceClientTransport(client: stub, requestTimeout: .seconds(6))
 
     let response = try await transport.reinitDevice(
         deviceID: "260427-000001",
+        deviceAuthToken: "kda_v1_test-token",
+        authorizationHeader: "Bearer device-jwt",
         sdkVersion: "1.2.3",
         platform: "ios"
     )
@@ -160,9 +166,9 @@ import GRPCCore
     #expect(invocations == [
         InvocationRecord(
             method: "ReinitDevice",
-            metadata: ["authorization": []],
+            metadata: ["authorization": ["Bearer device-jwt"]],
             timeout: .seconds(6),
-            requestSummary: "260427-000001:1.2.3:ios"
+            requestSummary: "260427-000001:token=true:1.2.3:ios"
         ),
     ])
 }
@@ -320,7 +326,7 @@ private actor GatewayServiceClientStub: Archebase_DataGateway_V1_DataGatewayServ
         options: CallOptions,
         onResponse handleResponse: @Sendable @escaping (ClientResponse<Archebase_DataGateway_V1_CompleteUploadResponse>) async throws -> Result
     ) async throws -> Result where Result : Sendable {
-        let summary = "\(request.message.uploadID):\(request.message.fileSize):\(request.message.completedPartCount):\(request.message.ossObjectEtag):\(request.message.partSizeBytes)"
+        let summary = "\(request.message.uploadID):\(request.message.fileSize):\(request.message.completedPartCount):\(request.message.objectEtag):\(request.message.partSizeBytes)"
         self.record(method: "CompleteUpload", metadata: request.metadata, timeout: options.timeout, requestSummary: summary)
 
         return try await handleResponse(ClientResponse(message: Archebase_DataGateway_V1_CompleteUploadResponse()))
@@ -414,7 +420,7 @@ private actor DeviceInitServiceClientStub: Archebase_DataGateway_V1_DeviceInitSe
                     ("authorization", Array(request.metadata[stringValues: "authorization"])),
                 ]),
                 timeout: options.timeout,
-                requestSummary: "\(request.message.deviceID):\(request.message.sdkVersion):\(request.message.platform)"
+                requestSummary: "\(request.message.deviceID):token=\(!request.message.deviceAuthToken.isEmpty):\(request.message.sdkVersion):\(request.message.platform)"
             )
         )
 
@@ -438,7 +444,7 @@ private actor DeviceInitServiceClientStub: Archebase_DataGateway_V1_DeviceInitSe
                     ("authorization", Array(request.metadata[stringValues: "authorization"])),
                 ]),
                 timeout: options.timeout,
-                requestSummary: "\(request.message.deviceID):\(request.message.sdkVersion):\(request.message.platform)"
+                requestSummary: "\(request.message.deviceID):token=\(!request.message.deviceAuthToken.isEmpty):\(request.message.sdkVersion):\(request.message.platform)"
             )
         )
 

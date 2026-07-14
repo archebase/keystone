@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 import Testing
 
@@ -76,7 +79,7 @@ private func makePersistedUploadState() -> PersistedUploadState {
         restartCount: 2,
         multipartUploadID: "multipart-1",
         bucket: "bucket-1",
-        endpoint: "https://oss-cn-shanghai.aliyuncs.com",
+        endpoint: "https://tos-cn-beijing.volces.com",
         objectKey: "objects/demo.bin",
         fileURLBookmarkData: Data([0xCA, 0xFE]),
         managedFileURL: URL(fileURLWithPath: "/tmp/managed/demo.bin"),

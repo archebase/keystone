@@ -5,7 +5,7 @@
 // Package cloudpb contains generated gRPC/protobuf bindings for the
 // ArcheBase data-platform cloud API.
 //
-// Proto source files are in the proto/ subdirectory. To regenerate the Go
+// Proto source files are in the repository canonical proto directory. To regenerate the Go
 // bindings after modifying a .proto file, run from the keystone/ directory:
 //
 //	make proto
@@ -22,4 +22,4 @@
 // protoc v5.x must also be available on PATH.
 package cloudpb
 
-//go:generate protoc -I proto --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative common.proto auth.proto data_gateway.proto
+//go:generate protoc -I ../../../proto/archebase/data_gateway/v1 --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative common.proto auth.proto data_gateway.proto

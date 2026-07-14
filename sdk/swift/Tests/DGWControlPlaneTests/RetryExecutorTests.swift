@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 import Testing
 
@@ -299,7 +302,7 @@ private actor MockGatewayClient: GatewayControlPlaneClientProtocol {
         fileSize: Int64,
         rawTags: [String : String],
         completedPartCount: Int32,
-        ossObjectEtag: String,
+        objectEtag: String,
         partSizeBytes: Int64,
         authorizationHeader: String
     ) async throws -> Archebase_DataGateway_V1_CompleteUploadResponse {

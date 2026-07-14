@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 
 /// Shared helper for protected temporary writes followed by an atomic move or replace.

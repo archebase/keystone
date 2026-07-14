@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWAuth
 import DGWControlPlane
 import DGWProto
@@ -182,31 +185,31 @@ struct LocalStackHarnessTests {
     #expect(script.contains(#"for key in "$AUTH_ENDPOINT_KEY" "$GATEWAY_ENDPOINT_KEY" "$INIT_ENDPOINT_KEY"; do"#))
 }
 
-@Test func aliyunEnvironmentContractValidatesPresenceOfCredentials() {
-    let environment = AliyunOSSTestEnvironment(environment: [:])
+@Test func tosEnvironmentContractValidatesPresenceOfCredentials() {
+    let environment = TOSTestEnvironment(environment: [:])
 
-    let error = #expect(throws: AliyunOSSHarnessError.self) {
+    let error = #expect(throws: TOSHarnessError.self) {
         try environment.validate()
     }
 
-    #expect(error == .missingEnvironmentVariable("DGW_OSS_TEST_ENDPOINT"))
+    #expect(error == .missingEnvironmentVariable("DGW_TOS_TEST_ENDPOINT"))
 }
 
-@Test func aliyunEnvironmentContractAcceptsCompleteConfiguration() throws {
-    let environment = AliyunOSSTestEnvironment(environment: [
-        "DGW_OSS_TEST_ENDPOINT": "https://oss-cn-shanghai.aliyuncs.com",
-        "DGW_OSS_TEST_BUCKET": "bucket-1",
-        "DGW_OSS_TEST_ACCESS_KEY_ID": "ak",
-        "DGW_OSS_TEST_ACCESS_KEY_SECRET": "sk",
-        "DGW_OSS_TEST_SECURITY_TOKEN": "token",
-        "DGW_OSS_TEST_OBJECT_PREFIX": "swift-tests/run-1",
+@Test func tosEnvironmentContractAcceptsCompleteConfiguration() throws {
+    let environment = TOSTestEnvironment(environment: [
+        "DGW_TOS_TEST_ENDPOINT": "https://tos-cn-beijing.volces.com",
+        "DGW_TOS_TEST_BUCKET": "bucket-1",
+        "DGW_TOS_TEST_ACCESS_KEY_ID": "ak",
+        "DGW_TOS_TEST_ACCESS_KEY_SECRET": "sk",
+        "DGW_TOS_TEST_SECURITY_TOKEN": "token",
+        "DGW_TOS_TEST_OBJECT_PREFIX": "swift-tests/run-1",
     ])
 
     try environment.validate()
 }
 
-@Test func aliyunEnvironmentBuildsRemoteClientConfig() throws {
-    let config = try AliyunOSSTestEnvironment(environment: [
+@Test func tosEnvironmentBuildsRemoteClientConfig() throws {
+    let config = try TOSTestEnvironment(environment: [
         "DGW_REAL_AUTH_ENDPOINT": "http://example-auth:50051",
         "DGW_REAL_GATEWAY_ENDPOINT": "http://example-gateway:50053",
         "DGW_REAL_CREDENTIAL_BASE64": "credential-base64",
@@ -221,8 +224,8 @@ struct LocalStackHarnessTests {
     #expect(config.tls == .plaintext)
 }
 
-@Test func aliyunEnvironmentAppliesRemoteRequestTimeoutOverride() throws {
-    let config = try AliyunOSSTestEnvironment(environment: [
+@Test func tosEnvironmentAppliesRemoteRequestTimeoutOverride() throws {
+    let config = try TOSTestEnvironment(environment: [
         "DGW_REAL_AUTH_ENDPOINT": "http://example-auth:50051",
         "DGW_REAL_GATEWAY_ENDPOINT": "http://example-gateway:50053",
         "DGW_REAL_CREDENTIAL_BASE64": "credential-base64",
@@ -232,43 +235,43 @@ struct LocalStackHarnessTests {
     #expect(config.requestTimeout == .seconds(120))
 }
 
-@Test func aliyunEnvironmentRemoteConfigRequiresCredentialBeforeEndpointOverrides() {
-    let environment = AliyunOSSTestEnvironment(environment: [:])
+@Test func tosEnvironmentRemoteConfigRequiresCredentialBeforeEndpointOverrides() {
+    let environment = TOSTestEnvironment(environment: [:])
 
-    let error = #expect(throws: AliyunOSSHarnessError.self) {
+    let error = #expect(throws: TOSHarnessError.self) {
         try environment.makeRemoteClientConfig()
     }
 
     #expect(error == .missingEnvironmentVariable("DGW_REAL_CREDENTIAL_BASE64"))
 }
 
-@Test func aliyunEnvironmentNormalizesSingleSlashRemoteURLs() throws {
-    let config = try AliyunOSSTestEnvironment(environment: [
+@Test func tosEnvironmentNormalizesSingleSlashRemoteURLs() throws {
+    let config = try TOSTestEnvironment(environment: [
         "DGW_REAL_AUTH_ENDPOINT": "http:/example-auth:50051",
         "DGW_REAL_GATEWAY_ENDPOINT": "http:/example-gateway:50053",
         "DGW_REAL_CREDENTIAL_BASE64": "credential-base64",
         "DGW_REAL_PERSIST_ROOT": "/tmp/swift-dgw-real-tests",
         "DGW_REAL_TLS_MODE": "plaintext",
-        "DGW_OSS_TEST_ENDPOINT": "https://oss-cn-shanghai.aliyuncs.com",
-        "DGW_OSS_TEST_BUCKET": "archebase",
-        "DGW_OSS_TEST_ACCESS_KEY_ID": "ak",
-        "DGW_OSS_TEST_ACCESS_KEY_SECRET": "sk",
-        "DGW_OSS_TEST_SECURITY_TOKEN": "token",
-        "DGW_OSS_TEST_OBJECT_PREFIX": "dev/1",
+        "DGW_TOS_TEST_ENDPOINT": "https://tos-cn-beijing.volces.com",
+        "DGW_TOS_TEST_BUCKET": "archebase",
+        "DGW_TOS_TEST_ACCESS_KEY_ID": "ak",
+        "DGW_TOS_TEST_ACCESS_KEY_SECRET": "sk",
+        "DGW_TOS_TEST_SECURITY_TOKEN": "token",
+        "DGW_TOS_TEST_OBJECT_PREFIX": "dev/1",
     ]).makeRemoteClientConfig()
 
     #expect(config.authEndpoint == URL(string: "http://example-auth:50051")!)
     #expect(config.gatewayEndpoint == URL(string: "http://example-gateway:50053")!)
 }
 
-@Test func aliyunEnvironmentProvidesRemoteUploadExpectation() throws {
-    let expectation = try AliyunOSSTestEnvironment(environment: [
-        "DGW_OSS_TEST_ENDPOINT": "https://oss-cn-shanghai.aliyuncs.com",
-        "DGW_OSS_TEST_BUCKET": "archebase",
-        "DGW_OSS_TEST_ACCESS_KEY_ID": "ak",
-        "DGW_OSS_TEST_ACCESS_KEY_SECRET": "sk",
-        "DGW_OSS_TEST_SECURITY_TOKEN": "token",
-        "DGW_OSS_TEST_OBJECT_PREFIX": "dev/1",
+@Test func tosEnvironmentProvidesRemoteUploadExpectation() throws {
+    let expectation = try TOSTestEnvironment(environment: [
+        "DGW_TOS_TEST_ENDPOINT": "https://tos-cn-beijing.volces.com",
+        "DGW_TOS_TEST_BUCKET": "archebase",
+        "DGW_TOS_TEST_ACCESS_KEY_ID": "ak",
+        "DGW_TOS_TEST_ACCESS_KEY_SECRET": "sk",
+        "DGW_TOS_TEST_SECURITY_TOKEN": "token",
+        "DGW_TOS_TEST_OBJECT_PREFIX": "dev/1",
     ]).remoteUploadExpectation()
 
     #expect(expectation.bucket == "archebase")
@@ -414,7 +417,7 @@ struct LocalStackHarnessTests {
 @Test(
     .enabled(if: publicDNSIntegrationEnabled && realRuntimeIntegrationEnabled)
 ) func publicPathCanExchangeForBearerToken() async throws {
-    let environment = AliyunOSSTestEnvironment()
+    let environment = TOSTestEnvironment()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "public-auth")
     let harness = try makeRealGatewayHarness(clientConfig: clientConfig)
     let response = try await harness.gatewayClient.createLogicalUpload(clientHints: ["suite": "public-dns"], restartFromUploadID: nil)
@@ -425,13 +428,13 @@ struct LocalStackHarnessTests {
 @Test(
     .enabled(if: publicDNSIntegrationEnabled && realRuntimeIntegrationEnabled)
 ) func publicPathRuntimeBootstrapAndControlPlaneFlow() async throws {
-    try await realAliyunRuntimeUploadFlow()
+    try await realTOSRuntimeUploadFlow()
 }
 
 @Test(
     .enabled(if: publicDNSIntegrationEnabled && realDeviceInitIntegrationEnabled)
 ) func publicPathDeviceInitThenUploadFlow() async throws {
-    try await realAliyunDeviceInitReinitAndFromConfigUploadFlow()
+    try await realTOSDeviceInitReinitAndFromConfigUploadFlow()
 }
 
 @Test(
@@ -447,7 +450,7 @@ struct LocalStackHarnessTests {
         platform: "ios-simulator"
     )
 
-    let config = try await initializer.initDevice(deviceID: initConfig.deviceID)
+    let config = try await initializer.initDevice(deviceID: initConfig.deviceID, deviceAuthToken: "kda_v1_test-token")
 
     #expect(!config.apiKey.isEmpty)
     #expect(try await ArchebaseConfigStore(configURL: configURL).load() == config)
@@ -467,7 +470,7 @@ struct LocalStackHarnessTests {
     )
 
     let error = await #expect(throws: DataGatewayClientError.self) {
-        _ = try await initializer.initDevice(deviceID: unboundDeviceID)
+        _ = try await initializer.initDevice(deviceID: unboundDeviceID, deviceAuthToken: "kda_v1_test-token")
     }
 
     guard case .gatewayFailed(_, let detailCode, _) = error else {
@@ -490,7 +493,7 @@ struct LocalStackHarnessTests {
     )
 
     let error = await #expect(throws: DataGatewayClientError.self) {
-        _ = try await initializer.initDevice(deviceID: "00000000-0000-0000-0000-000000000000")
+        _ = try await initializer.initDevice(deviceID: "00000000-0000-0000-0000-000000000000", deviceAuthToken: "kda_v1_test-token")
     }
 
     guard case .gatewayFailed(_, let detailCode, _) = error else {
@@ -513,7 +516,7 @@ struct LocalStackHarnessTests {
         sdkVersion: "local-integration",
         platform: "ios-simulator"
     )
-    _ = try await initializer.initDevice(deviceID: initConfig.deviceID)
+    _ = try await initializer.initDevice(deviceID: initConfig.deviceID, deviceAuthToken: "kda_v1_test-token")
 
     let client = try await DataGatewayClient.testFromArchebaseConfig(
         authEndpoint: clientConfig.authEndpoint,
@@ -540,8 +543,8 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realRuntimeIntegrationEnabled)
-) func realAliyunRuntimeUploadFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSRuntimeUploadFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let expectation = try environment.remoteUploadExpectation()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "runtime")
@@ -549,9 +552,9 @@ struct LocalStackHarnessTests {
     let client = try DataGatewayClient(config: clientConfig)
 
     let fileURL = clientConfig.persistRootURL
-        .appendingPathComponent("aliyun-real-runtime-\(UUID().uuidString)")
+        .appendingPathComponent("tos-real-runtime-\(UUID().uuidString)")
         .appendingPathExtension("bin")
-    let payload = Data("aliyun-real-runtime-payload-\(UUID().uuidString)".utf8)
+    let payload = Data("tos-real-runtime-payload-\(UUID().uuidString)".utf8)
     try FileManager.default.createDirectory(at: clientConfig.persistRootURL, withIntermediateDirectories: true)
     try payload.write(to: fileURL)
     defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -559,9 +562,9 @@ struct LocalStackHarnessTests {
     let result = try await client.upload(
         UploadRequest(
             fileURL: fileURL,
-            clientHints: ["suite": "aliyun-real", "mode": "swift-e2e"],
-            rawTags: ["suite": "aliyun-real", "runtime": "macos"],
-            displayName: "aliyun-real-runtime"
+            clientHints: ["suite": "tos-real", "mode": "swift-e2e"],
+            rawTags: ["suite": "tos-real", "runtime": "macos"],
+            displayName: "tos-real-runtime"
         )
     )
 
@@ -579,22 +582,22 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realObjectListingIntegrationEnabled)
-) func realAliyunListObjectsFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSListObjectsFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "list-objects")
     defer { try? FileManager.default.removeItem(at: clientConfig.persistRootURL) }
     let client = try DataGatewayClient(config: clientConfig)
     let runID = "swift-list-\(UUID().uuidString)"
-    let payload = Data("aliyun-real-list-objects-payload-\(runID)".utf8)
-    let fileURL = try writeRealPayload(payload, under: clientConfig.persistRootURL, name: "aliyun-real-list-objects")
+    let payload = Data("tos-real-list-objects-payload-\(runID)".utf8)
+    let fileURL = try writeRealPayload(payload, under: clientConfig.persistRootURL, name: "tos-real-list-objects")
 
     let upload = try await client.upload(
         UploadRequest(
             fileURL: fileURL,
-            clientHints: ["suite": "aliyun-real", "mode": "list-objects"],
-            rawTags: ["suite": "aliyun-real", "runtime": "list-objects", "object_list_run": runID],
-            displayName: "aliyun-real-list-objects"
+            clientHints: ["suite": "tos-real", "mode": "list-objects"],
+            rawTags: ["suite": "tos-real", "runtime": "list-objects", "object_list_run": runID],
+            displayName: "tos-real-list-objects"
         )
     )
 
@@ -614,23 +617,23 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realRuntimeIntegrationEnabled)
-) func realAliyunUploadEventsFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSUploadEventsFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let expectation = try environment.remoteUploadExpectation()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "events")
     defer { try? FileManager.default.removeItem(at: clientConfig.persistRootURL) }
     let client = try DataGatewayClient(config: clientConfig)
-    let payload = Data("aliyun-real-events-payload-\(UUID().uuidString)".utf8)
-    let fileURL = try writeRealPayload(payload, under: clientConfig.persistRootURL, name: "aliyun-real-events")
+    let payload = Data("tos-real-events-payload-\(UUID().uuidString)".utf8)
+    let fileURL = try writeRealPayload(payload, under: clientConfig.persistRootURL, name: "tos-real-events")
 
     var events: [UploadEvent] = []
     for try await event in await client.uploadEvents(
         UploadRequest(
             fileURL: fileURL,
-            clientHints: ["suite": "aliyun-real", "mode": "events"],
-            rawTags: ["suite": "aliyun-real", "runtime": "events"],
-            displayName: "aliyun-real-events"
+            clientHints: ["suite": "tos-real", "mode": "events"],
+            rawTags: ["suite": "tos-real", "runtime": "events"],
+            displayName: "tos-real-events"
         )
     ) {
         events.append(event)
@@ -639,7 +642,7 @@ struct LocalStackHarnessTests {
     assertPutObjectUploadEvents(events)
 
     guard let result = completedUploadResult(from: events) else {
-        Issue.record("real Aliyun uploadEvents did not end with completed: \(events)")
+        Issue.record("real TOS uploadEvents did not end with completed: \(events)")
         return
     }
     #expect(result.fileSize == UInt64(payload.count))
@@ -651,23 +654,23 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realRuntimeIntegrationEnabled)
-) func realAliyunExactPartSizeUploadEventsFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSExactPartSizeUploadEventsFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let expectation = try environment.remoteUploadExpectation()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "exact-part-size")
     defer { try? FileManager.default.removeItem(at: clientConfig.persistRootURL) }
     let client = try DataGatewayClient(config: clientConfig)
     let size = realPartSizePayloadSizeBytes()
-    let fileURL = try writeRealPayload(Data(repeating: 0x45, count: size), under: clientConfig.persistRootURL, name: "aliyun-real-exact-part-size")
+    let fileURL = try writeRealPayload(Data(repeating: 0x45, count: size), under: clientConfig.persistRootURL, name: "tos-real-exact-part-size")
 
     var events: [UploadEvent] = []
     for try await event in await client.uploadEvents(
         UploadRequest(
             fileURL: fileURL,
-            clientHints: ["suite": "aliyun-real", "mode": "exact-part-size"],
-            rawTags: ["suite": "aliyun-real", "runtime": "exact-part-size"],
-            displayName: "aliyun-real-exact-part-size"
+            clientHints: ["suite": "tos-real", "mode": "exact-part-size"],
+            rawTags: ["suite": "tos-real", "runtime": "exact-part-size"],
+            displayName: "tos-real-exact-part-size"
         )
     ) {
         events.append(event)
@@ -684,23 +687,23 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realRuntimeIntegrationEnabled)
-) func realAliyunMultipartUploadEventsFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSMultipartUploadEventsFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let expectation = try environment.remoteUploadExpectation()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "multipart")
     defer { try? FileManager.default.removeItem(at: clientConfig.persistRootURL) }
     let client = try DataGatewayClient(config: clientConfig)
     let size = realMultipartPayloadSizeBytes()
-    let fileURL = try writeRealPayload(Data(repeating: 0x5A, count: size), under: clientConfig.persistRootURL, name: "aliyun-real-multipart")
+    let fileURL = try writeRealPayload(Data(repeating: 0x5A, count: size), under: clientConfig.persistRootURL, name: "tos-real-multipart")
 
     var events: [UploadEvent] = []
     for try await event in await client.uploadEvents(
         UploadRequest(
             fileURL: fileURL,
-            clientHints: ["suite": "aliyun-real", "mode": "multipart"],
-            rawTags: ["suite": "aliyun-real", "runtime": "multipart"],
-            displayName: "aliyun-real-multipart"
+            clientHints: ["suite": "tos-real", "mode": "multipart"],
+            rawTags: ["suite": "tos-real", "runtime": "multipart"],
+            displayName: "tos-real-multipart"
         )
     ) {
         events.append(event)
@@ -720,8 +723,8 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realRuntimeIntegrationEnabled)
-) func realAliyunConfigStoreFromConfigAndUploadFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSConfigStoreFromConfigAndUploadFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let expectation = try environment.remoteUploadExpectation()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "from-config")
@@ -729,18 +732,17 @@ struct LocalStackHarnessTests {
     let configURL = clientConfig.persistRootURL.appendingPathComponent("archebase-config.json")
     let store = ArchebaseConfigStore(configURL: configURL)
 
-    let initialConfig = try ArchebaseConfig(apiKey: clientConfig.credentialBase64, tags: ["device": "aliyun-config"])
+    let initialConfig = try ArchebaseConfig(apiKey: clientConfig.credentialBase64, tags: ["device": "tos-config"])
     try initialConfig.validate()
-    let decodedInitialConfig = try ArchebaseConfig.decodeValidated(from: initialConfig.prettyJSONData())
     #expect(!(await store.exists()))
-    try await store.initialize(decodedInitialConfig)
+    try await store.initialize(initialConfig)
     #expect(await store.exists())
     #expect(await store.resolvedConfigURL() == configURL.standardizedFileURL)
-    #expect(try await store.load() == decodedInitialConfig)
+    #expect(try await store.load() == initialConfig)
 
     let replacedConfig = try ArchebaseConfig(
         apiKey: clientConfig.credentialBase64,
-        tags: ["device": "aliyun-config", "flow": "from-config"]
+        tags: ["device": "tos-config", "flow": "from-config"]
     )
     try await store.replaceForReinit(replacedConfig)
     #expect(try await store.load() == replacedConfig)
@@ -753,13 +755,13 @@ struct LocalStackHarnessTests {
         tls: clientConfig.tls
     )
     let fileURL = try writeRealPayload(
-        Data("aliyun-real-from-config-payload-\(UUID().uuidString)".utf8),
+        Data("tos-real-from-config-payload-\(UUID().uuidString)".utf8),
         under: clientConfig.persistRootURL,
-        name: "aliyun-real-from-config"
+        name: "tos-real-from-config"
     )
 
     let result = try await client.upload(
-        UploadRequest(fileURL: fileURL, clientHints: ["suite": "aliyun-real"], rawTags: ["runtime": "from-config"], displayName: "from-config")
+        UploadRequest(fileURL: fileURL, clientHints: ["suite": "tos-real"], rawTags: ["runtime": "from-config"], displayName: "from-config")
     )
 
     #expect(result.bucket == expectation.bucket)
@@ -770,8 +772,8 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realRuntimeIntegrationEnabled)
-) func realAliyunResumeUploadFromPendingSnapshotFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSResumeUploadFromPendingSnapshotFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let expectation = try environment.remoteUploadExpectation()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "resume")
@@ -780,7 +782,7 @@ struct LocalStackHarnessTests {
     let state = try await seedActiveRealUploadSnapshot(
         clientConfig: clientConfig,
         gatewayClient: harness.gatewayClient,
-        payload: Data("aliyun-real-resume-payload-\(UUID().uuidString)".utf8),
+        payload: Data("tos-real-resume-payload-\(UUID().uuidString)".utf8),
         label: "resume"
     )
     let client = try DataGatewayClient(config: clientConfig)
@@ -802,8 +804,8 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realRuntimeIntegrationEnabled)
-) func realAliyunAbortAndDeleteLocalSnapshotFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSAbortAndDeleteLocalSnapshotFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "abort-delete")
     defer { try? FileManager.default.removeItem(at: clientConfig.persistRootURL) }
@@ -813,7 +815,7 @@ struct LocalStackHarnessTests {
     let abortState = try await seedActiveRealUploadSnapshot(
         clientConfig: clientConfig,
         gatewayClient: harness.gatewayClient,
-        payload: Data("aliyun-real-abort-payload-\(UUID().uuidString)".utf8),
+        payload: Data("tos-real-abort-payload-\(UUID().uuidString)".utf8),
         label: "abort"
     )
     #expect(try await client.listPendingUploads().contains(where: { $0.logicalUploadID == abortState.logicalUploadID }))
@@ -823,7 +825,7 @@ struct LocalStackHarnessTests {
     let deleteState = try await seedActiveRealUploadSnapshot(
         clientConfig: clientConfig,
         gatewayClient: harness.gatewayClient,
-        payload: Data("aliyun-real-delete-local-payload-\(UUID().uuidString)".utf8),
+        payload: Data("tos-real-delete-local-payload-\(UUID().uuidString)".utf8),
         label: "delete-local"
     )
     #expect(try await client.listPendingUploads().contains(where: { $0.logicalUploadID == deleteState.logicalUploadID }))
@@ -839,8 +841,8 @@ struct LocalStackHarnessTests {
 
 @Test(
     .enabled(if: realDeviceInitIntegrationEnabled)
-) func realAliyunDeviceInitReinitAndFromConfigUploadFlow() async throws {
-    let environment = AliyunOSSTestEnvironment()
+) func realTOSDeviceInitReinitAndFromConfigUploadFlow() async throws {
+    let environment = TOSTestEnvironment()
     try environment.validate()
     let expectation = try environment.remoteUploadExpectation()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "device-init")
@@ -871,12 +873,12 @@ struct LocalStackHarnessTests {
         endpointsURL: paths.endpointsURL
     )
     let fileURL = try writeRealPayload(
-        Data("aliyun-real-device-init-payload-\(UUID().uuidString)".utf8),
+        Data("tos-real-device-init-payload-\(UUID().uuidString)".utf8),
         under: paths.persistRootURL,
-        name: "aliyun-real-device-init"
+        name: "tos-real-device-init"
     )
     let result = try await client.upload(
-        UploadRequest(fileURL: fileURL, clientHints: ["suite": "aliyun-real-device-init"], rawTags: ["runtime": "device-init"], displayName: "device-init")
+        UploadRequest(fileURL: fileURL, clientHints: ["suite": "tos-real-device-init"], rawTags: ["runtime": "device-init"], displayName: "device-init")
     )
 
     #expect(result.bucket == expectation.bucket)
@@ -903,7 +905,7 @@ private func uniqueRealClientConfig(from config: DataGatewayClientConfig, label:
     var copy = config
     let originalPersistRoot = config.persistRootURL
     copy.persistRootURL = config.persistRootURL
-        .appendingPathComponent("aliyun-real-\(label)-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("tos-real-\(label)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: copy.persistRootURL, withIntermediateDirectories: true)
     let originalEndpointsURL = originalPersistRoot.appendingPathComponent(ArchebasePublicEndpoints.endpointsFileName)
     if FileManager.default.fileExists(atPath: originalEndpointsURL.path) {
@@ -1083,7 +1085,7 @@ private func realUserAuthorizationHeader() throws -> String {
         }
         return "Bearer \(token)"
     }
-    throw AliyunOSSHarnessError.missingEnvironmentVariable("DGW_REAL_USER_AUTHORIZATION_HEADER")
+    throw TOSHarnessError.missingEnvironmentVariable("DGW_REAL_USER_AUTHORIZATION_HEADER")
 }
 
 private func makeRealGatewayHarness(clientConfig: DataGatewayClientConfig) throws -> RealGatewayHarness {
@@ -1129,7 +1131,7 @@ private func seedActiveRealUploadSnapshot(
     payload: Data,
     label: String
 ) async throws -> PersistedUploadState {
-    let sourceURL = try writeRealPayload(payload, under: clientConfig.persistRootURL, name: "aliyun-real-\(label)-source")
+    let sourceURL = try writeRealPayload(payload, under: clientConfig.persistRootURL, name: "tos-real-\(label)-source")
     let fileCoordinator = FileStagingCoordinator(
         stagingRoot: clientConfig.persistRootURL
             .appendingPathComponent("data-gateway-client", isDirectory: true)
@@ -1137,9 +1139,9 @@ private func seedActiveRealUploadSnapshot(
     )
     let request = UploadRequest(
         fileURL: sourceURL,
-        clientHints: ["suite": "aliyun-real", "mode": label],
-        rawTags: ["suite": "aliyun-real", "runtime": label],
-        displayName: "aliyun-real-\(label)"
+        clientHints: ["suite": "tos-real", "mode": label],
+        rawTags: ["suite": "tos-real", "runtime": label],
+        displayName: "tos-real-\(label)"
     )
     let prepared = try fileCoordinator.prepare(
         request: request,
@@ -1181,7 +1183,7 @@ private func seedActiveRealUploadSnapshot(
 
 private func requiredValueFromEnvironment(_ key: String) throws -> String {
     guard let value = ProcessInfo.processInfo.environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-        throw AliyunOSSHarnessError.missingEnvironmentVariable(key)
+        throw TOSHarnessError.missingEnvironmentVariable(key)
     }
     return value
 }

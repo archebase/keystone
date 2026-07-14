@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import Foundation
 
@@ -91,26 +94,36 @@ public actor UploadStateStore {
     private let fileManager: FileManager
     private let jsonCodec: JSONCodec
     private let clock: any UploadStateStoreClock
+    private let persistenceEnabled: Bool
 
     public init(
         persistRoot: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        persistenceEnabled: Bool = true
     ) {
-        self.init(persistRoot: persistRoot, fileManager: fileManager, clock: SystemUploadStateStoreClock())
+        self.init(
+            persistRoot: persistRoot,
+            fileManager: fileManager,
+            clock: SystemUploadStateStoreClock(),
+            persistenceEnabled: persistenceEnabled
+        )
     }
 
     public init(
         persistRoot: URL,
         fileManager: FileManager,
-        clock: any UploadStateStoreClock
+        clock: any UploadStateStoreClock,
+        persistenceEnabled: Bool = true
     ) {
         self.persistRoot = persistRoot
         self.fileManager = fileManager
         self.jsonCodec = JSONCodec()
         self.clock = clock
+        self.persistenceEnabled = persistenceEnabled
     }
 
     public func saveActive(_ state: PersistedUploadState) throws {
+        guard self.persistenceEnabled else { return }
         try self.ensureLayout()
         try self.removeSnapshotIfPresent(logicalUploadID: state.logicalUploadID, in: .terminal)
         try self.removeSnapshotIfPresent(logicalUploadID: state.logicalUploadID, in: .completed)
@@ -119,6 +132,7 @@ public actor UploadStateStore {
     }
 
     public func moveToTerminal(_ state: PersistedUploadState) throws {
+        guard self.persistenceEnabled else { return }
         try self.ensureLayout()
         try self.removeSnapshotIfPresent(logicalUploadID: state.logicalUploadID, in: .active)
         try self.removeSnapshotIfPresent(logicalUploadID: state.logicalUploadID, in: .completed)
@@ -127,6 +141,7 @@ public actor UploadStateStore {
     }
 
     public func moveToCompleted(_ state: PersistedUploadState) throws {
+        guard self.persistenceEnabled else { return }
         try self.ensureLayout()
         try self.removeSnapshotIfPresent(logicalUploadID: state.logicalUploadID, in: .active)
         try self.removeSnapshotIfPresent(logicalUploadID: state.logicalUploadID, in: .terminal)
@@ -135,6 +150,7 @@ public actor UploadStateStore {
     }
 
     public func loadSnapshot(logicalUploadID: String) throws -> PersistedUploadState? {
+        guard self.persistenceEnabled else { return nil }
         try self.ensureLayout()
         for namespace in SnapshotNamespace.allCases {
             if let state = try self.loadSnapshot(logicalUploadID: logicalUploadID, namespace: namespace) {
@@ -145,11 +161,13 @@ public actor UploadStateStore {
     }
 
     public func loadActiveSnapshot(logicalUploadID: String) throws -> PersistedUploadState? {
+        guard self.persistenceEnabled else { return nil }
         try self.ensureLayout()
         return try self.loadSnapshot(logicalUploadID: logicalUploadID, namespace: .active)
     }
 
     public func listPendingUploads() throws -> [PendingUploadInfo] {
+        guard self.persistenceEnabled else { return [] }
         try self.ensureLayout()
         let activeDirectory = self.snapshotDirectory(for: .active)
         let urls = try self.fileManager.contentsOfDirectory(
@@ -166,6 +184,7 @@ public actor UploadStateStore {
     }
 
     public func findByFileURL(_ fileURL: URL) throws -> PersistedUploadState? {
+        guard self.persistenceEnabled else { return nil }
         try self.ensureLayout()
         let index = try self.readIndex()
         guard let logicalUploadID = index.entries[self.indexKey(for: fileURL)] else {
@@ -180,6 +199,7 @@ public actor UploadStateStore {
     }
 
     public func deleteLocalSnapshot(logicalUploadID: String) throws {
+        guard self.persistenceEnabled else { return }
         try self.ensureLayout()
         let state = try self.loadSnapshot(logicalUploadID: logicalUploadID)
         try self.removeSnapshotIfPresent(logicalUploadID: logicalUploadID, in: .active)
@@ -191,6 +211,7 @@ public actor UploadStateStore {
     }
 
     public func performGarbageCollection(retentionPolicy: SnapshotRetentionPolicy) async throws {
+        guard self.persistenceEnabled else { return }
         try self.ensureLayout()
         let now = await self.clock.now()
 

@@ -16,7 +16,7 @@ type fixedSTSProvider struct {
 	expiration time.Time
 }
 
-func (p fixedSTSProvider) AssumeRole(context.Context) (stsCredentials, error) {
+func (p fixedSTSProvider) AssumeRole(context.Context, stsScope) (stsCredentials, error) {
 	return stsCredentials{
 		AccessKeyID:     "ak",
 		AccessKeySecret: "sk",
@@ -28,13 +28,16 @@ func (p fixedSTSProvider) AssumeRole(context.Context) (stsCredentials, error) {
 func TestGatewayCreateReissueCompleteFlow(t *testing.T) {
 	expiration := time.Unix(2200, 0).UTC()
 	cfg := Config{
-		OSSBucket:         "bucket-1",
-		OSSPublicEndpoint: "https://oss-cn-shanghai.aliyuncs.com",
-		OSSKeyPrefix:      "ego-portal-lite",
-		UploadPartSize:    8 * 1024 * 1024,
+		TOSBucket:      "bucket-1",
+		TOSEndpoint:    "https://tos-cn-beijing.volces.com",
+		TOSRegion:      "cn-beijing",
+		TOSKeyPrefix:   "device-uploads",
+		UploadPartSize: 8 * 1024 * 1024,
 	}
 	service := newGatewayService(cfg, fixedSTSProvider{expiration: expiration}, newSessionStore())
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		DeviceID: "robot-1", WorkspaceID: 10, AuthEpoch: 1,
+	})
 
 	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
 		ClientHints: map[string]string{
@@ -81,7 +84,7 @@ func TestGatewayCreateReissueCompleteFlow(t *testing.T) {
 		UploadId:           created.GetUploadId(),
 		FileSize:           1024,
 		CompletedPartCount: 1,
-		OssObjectEtag:      "etag-1",
+		ObjectEtag:         "etag-1",
 		RawTags: map[string]string{
 			"capture_id": "capture-1",
 			"task_id":    "task-1",

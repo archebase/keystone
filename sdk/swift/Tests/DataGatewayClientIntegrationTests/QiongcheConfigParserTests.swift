@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 import Testing
 
@@ -7,10 +10,12 @@ import Testing
     let parsed = try QiongcheConfigParser.parse(validQiongcheConfig(deviceID: " robot-001 "))
 
     #expect(parsed.deviceID == "robot-001")
+    #expect(parsed.deviceAuthToken == "kda_v1_test-token")
     #expect(parsed.resolvedEndpoints.auth == URL(string: "http://auth.example.com:50051")!)
     #expect(parsed.resolvedEndpoints.gateway == URL(string: "http://gateway.example.com:50053")!)
     #expect(parsed.resolvedEndpoints.deviceInit == URL(string: "https://init.example.com:443")!)
     #expect(!parsed.normalizedEndpointsJSONString.contains("device_id"))
+    #expect(!parsed.normalizedEndpointsJSONString.contains("device_auth_token"))
     #expect(throws: Never.self) {
         try ArchebasePublicEndpoints.decodeEndpoints(parsed.normalizedEndpointsJSONData)
     }
@@ -22,7 +27,8 @@ import Testing
       "deviceInit": { "port": 443, "host": "init.example.com", "scheme": "https" },
       "gateway": { "host": "gateway.example.com", "scheme": "http", "port": 50053 },
       "auth": { "port": 50051, "scheme": "http", "host": "auth.example.com" },
-      "device_id": "robot-001"
+      "device_id": "robot-001",
+      "device_auth_token": "kda_v1_test-token"
     }
     """
 
@@ -48,6 +54,7 @@ import Testing
     let error = #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
@@ -62,6 +69,8 @@ import Testing
     let configString = """
     {
       "device_id": "robot-001",
+
+      "device_auth_token": "kda_v1_test-token",
       "auth": { "scheme": "grpc", "host": "auth.example.com", "port": 50051 },
       "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
       "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
@@ -94,6 +103,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot\\u0007001",
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
@@ -109,6 +120,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot-001",
+
+          "device_auth_token": "kda_v1_test-token",
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
         }
@@ -123,6 +136,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot-001",
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
         }
@@ -133,6 +148,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot-001",
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 }
         }
@@ -145,6 +162,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": 1001,
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
@@ -160,6 +179,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot-001",
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "grpc", "host": "auth.example.com", "port": 50051 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
@@ -171,6 +192,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot-001",
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "   ", "port": 50051 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
@@ -182,6 +205,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot-001",
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 65536 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
@@ -195,6 +220,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot-001",
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 },
@@ -211,6 +238,8 @@ import Testing
         try QiongcheConfigParser.parse("""
         {
           "device_id": "robot-001",
+
+          "device_auth_token": "kda_v1_test-token",
           "auth": { "schema": "http", "host": "auth.example.com", "port": 50051 },
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
           "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }
@@ -225,6 +254,8 @@ func validQiongcheConfig(deviceID: String = "robot-001", authHost: String = "aut
     """
     {
       "device_id": "\(deviceID)",
+
+      "device_auth_token": "kda_v1_test-token",
       "auth": { "scheme": "http", "host": "\(authHost)", "port": 50051 },
       "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
       "deviceInit": { "scheme": "https", "host": "init.example.com", "port": 443 }

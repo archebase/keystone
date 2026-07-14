@@ -1,4 +1,7 @@
-import AlibabaCloudOSS
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
+import Crypto
 import DGWControlPlane
 import DGWProto
 import Foundation
@@ -27,6 +30,8 @@ package struct OssUploadContext: Sendable, Equatable {
     package let bucket: String
     package let endpoint: String
     package let objectKey: String
+    package let backend: String
+    package let region: String
     package let partSizeBytes: Int64
     package let credentials: OssTemporaryCredentials
     package let credentialRefreshCount: Int32
@@ -40,12 +45,16 @@ package struct OssUploadContext: Sendable, Equatable {
         partSizeBytes: Int64,
         credentials: OssTemporaryCredentials,
         credentialRefreshCount: Int32 = 0,
-        sessionExpireAt: Date? = nil
+        sessionExpireAt: Date? = nil,
+        backend: String = "volcengine_tos",
+        region: String = "cn-beijing"
     ) {
         self.uploadID = uploadID
         self.bucket = bucket
         self.endpoint = endpoint
         self.objectKey = objectKey
+        self.backend = backend
+        self.region = region
         self.partSizeBytes = partSizeBytes
         self.credentials = credentials
         self.credentialRefreshCount = credentialRefreshCount
@@ -350,7 +359,121 @@ package struct OssHeadObjectOutput: Sendable, Equatable {
     }
 }
 
-package protocol AlibabaOSSSDKClientProtocol: Sendable {
+package protocol RequestModel {
+    var headers: [String: String] { get set }
+    mutating func addHeader(_ name: String, _ value: String)
+}
+
+package extension RequestModel {
+    mutating func addHeader(_ name: String, _ value: String) {
+        self.headers[name] = value
+    }
+}
+
+package enum ByteStream: @unchecked Sendable {
+    case data(Data)
+    case file(URL)
+    case stream(InputStream)
+
+    fileprivate func materialize() throws -> Data {
+        switch self {
+        case .data(let data):
+            return data
+        case .file(let url):
+            return try Data(contentsOf: url, options: .mappedIfSafe)
+        case .stream(let stream):
+            stream.open()
+            defer { stream.close() }
+            var result = Data()
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count < 0 {
+                    throw stream.streamError ?? OssOperationError.unexpected("failed to read upload stream")
+                }
+                if count == 0 {
+                    break
+                }
+                result.append(contentsOf: buffer.prefix(count))
+            }
+            return result
+        }
+    }
+}
+
+package struct InitiateMultipartUploadRequest: Sendable, RequestModel {
+    package let bucket: String
+    package let key: String
+    package var headers: [String: String] = [:]
+}
+
+package struct UploadPartRequest: @unchecked Sendable, RequestModel {
+    package let bucket: String
+    package let key: String
+    package let partNumber: Int
+    package let uploadId: String
+    package let body: ByteStream
+    package var headers: [String: String] = [:]
+}
+
+package struct PutObjectRequest: @unchecked Sendable, RequestModel {
+    package let bucket: String
+    package let key: String
+    package let body: ByteStream
+    package var headers: [String: String] = [:]
+}
+
+package struct UploadPart: Sendable, Equatable {
+    package let etag: String
+    package let partNumber: Int
+}
+
+package struct CompleteMultipartUpload: Sendable, Equatable {
+    package let parts: [UploadPart]
+}
+
+package struct CompleteMultipartUploadRequest: Sendable, RequestModel {
+    package let bucket: String
+    package let key: String
+    package let uploadId: String
+    package let completeMultipartUpload: CompleteMultipartUpload
+    package var headers: [String: String] = [:]
+}
+
+package struct AbortMultipartUploadRequest: Sendable, RequestModel {
+    package let bucket: String
+    package let key: String
+    package let uploadId: String
+    package var headers: [String: String] = [:]
+}
+
+package struct ListPartsRequest: Sendable, RequestModel {
+    package let bucket: String
+    package let key: String
+    package let uploadId: String
+    package var headers: [String: String] = [:]
+}
+
+package struct HeadObjectRequest: Sendable, RequestModel {
+    package let bucket: String
+    package let key: String
+    package var headers: [String: String] = [:]
+}
+
+package struct ClientError: Error, Sendable {
+    package let code: String
+    package let message: String
+}
+
+package struct ServerError: Error, Sendable {
+    package let statusCode: Int
+    package let code: String
+    package let message: String
+    package let requestId: String
+    package let ec: String
+}
+
+package protocol TOSHTTPClientProtocol: Sendable {
     func initiateMultipartUpload(
         _ request: InitiateMultipartUploadRequest
     ) async throws -> OssInitiateMultipartUploadOutput
@@ -380,76 +503,163 @@ package protocol AlibabaOSSSDKClientProtocol: Sendable {
     ) async throws -> OssHeadObjectOutput
 }
 
-package struct AlibabaOSSSDKClientAdapter: AlibabaOSSSDKClientProtocol {
-    private let client: Client
+package struct TOSHTTPClientAdapter: TOSHTTPClientProtocol {
+    private let configuration: OssMultipartClientConfiguration
+    private let session: URLSession
 
-    package init(client: Client) {
-        self.client = client
+    package init(configuration: OssMultipartClientConfiguration, session: URLSession = .shared) {
+        self.configuration = configuration
+        self.session = session
     }
 
     package func initiateMultipartUpload(
         _ request: InitiateMultipartUploadRequest
     ) async throws -> OssInitiateMultipartUploadOutput {
-        let result = try await self.client.initiateMultipartUpload(request)
-        return OssInitiateMultipartUploadOutput(uploadID: result.uploadId)
+        let (data, _) = try await self.send(method: "POST", key: request.key, query: ["uploads": ""], headers: request.headers)
+        return OssInitiateMultipartUploadOutput(uploadID: Self.xmlValues(data)["UploadId"] ?? Self.xmlValues(data)["UploadID"])
     }
 
     package func uploadPart(
         _ request: UploadPartRequest
     ) async throws -> OssUploadPartOutput {
-        let result = try await self.client.uploadPart(request)
-        return OssUploadPartOutput(etag: result.etag)
+        let (_, response) = try await self.send(
+            method: "PUT",
+            key: request.key,
+            query: ["partNumber": String(request.partNumber), "uploadId": request.uploadId],
+            headers: request.headers,
+            body: try request.body.materialize()
+        )
+        return OssUploadPartOutput(etag: response.value(forHTTPHeaderField: "ETag"))
     }
 
     package func putObject(
         _ request: PutObjectRequest
     ) async throws -> OssPutObjectOutput {
-        let result = try await self.client.putObject(request)
-        return OssPutObjectOutput(etag: result.etag)
+        let (_, response) = try await self.send(
+            method: "PUT",
+            key: request.key,
+            query: [:],
+            headers: request.headers,
+            body: try request.body.materialize()
+        )
+        return OssPutObjectOutput(etag: response.value(forHTTPHeaderField: "ETag"))
     }
 
     package func completeMultipartUpload(
         _ request: CompleteMultipartUploadRequest
     ) async throws -> OssCompleteMultipartUploadOutput {
-        let result = try await self.client.completeMultipartUpload(request)
-        return OssCompleteMultipartUploadOutput(etag: result.etag)
+        let body = Self.completeBody(request.completeMultipartUpload.parts)
+        let (data, response) = try await self.send(
+            method: "POST",
+            key: request.key,
+            query: ["uploadId": request.uploadId],
+            headers: ["Content-Type": "application/xml"],
+            body: body
+        )
+        return OssCompleteMultipartUploadOutput(
+            etag: response.value(forHTTPHeaderField: "ETag") ?? Self.xmlValues(data)["ETag"]
+        )
     }
 
     package func abortMultipartUpload(
         _ request: AbortMultipartUploadRequest
     ) async throws {
-        _ = try await self.client.abortMultipartUpload(request)
+        _ = try await self.send(method: "DELETE", key: request.key, query: ["uploadId": request.uploadId], headers: request.headers)
     }
 
     package func listPartsPages(
         _ request: ListPartsRequest
     ) async throws -> [OssListPartsPage] {
         var pages: [OssListPartsPage] = []
-        for try await page in self.client.listPartsPaginator(request) {
-            pages.append(
-                OssListPartsPage(
-                    isTruncated: page.isTruncated ?? false,
-                    nextPartNumberMarker: page.nextPartNumberMarker,
-                    parts: (page.parts ?? []).map {
-                        OssListedPart(
-                            partNumber: $0.partNumber,
-                            etag: $0.etag,
-                            size: $0.size.map(Int64.init),
-                            lastModified: $0.lastModified,
-                            hashCRC64: $0.hashCrc64
-                        )
-                    }
-                )
-            )
-        }
+        var marker: String?
+        repeat {
+            var query = ["uploadId": request.uploadId]
+            if let marker { query["part-number-marker"] = marker }
+            let (data, _) = try await self.send(method: "GET", key: request.key, query: query, headers: request.headers)
+            let parsed = TOSListPartsXMLParser.parse(data)
+            pages.append(parsed.page)
+            marker = parsed.page.isTruncated ? parsed.nextMarker : nil
+        } while marker != nil
         return pages
     }
 
     package func headObject(
         _ request: HeadObjectRequest
     ) async throws -> OssHeadObjectOutput {
-        let result = try await self.client.headObject(request)
-        return OssHeadObjectOutput(etag: result.etag)
+        let (_, response) = try await self.send(method: "HEAD", key: request.key, query: [:], headers: request.headers)
+        return OssHeadObjectOutput(etag: response.value(forHTTPHeaderField: "ETag"))
+    }
+
+    private func send(
+        method: String,
+        key: String,
+        query: [String: String],
+        headers: [String: String],
+        body: Data = Data()
+    ) async throws -> (Data, HTTPURLResponse) {
+        let url = try self.objectURL(key: key, query: query)
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.httpBody = body.isEmpty ? nil : body
+        if let timeout = self.configuration.requestTimeout?.timeInterval {
+            request.timeoutInterval = timeout
+        }
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        try TOSV4Signer.sign(
+            request: &request,
+            region: self.configuration.region ?? "",
+            credentials: self.configuration.credentials,
+            payload: body
+        )
+
+        let (data, rawResponse) = try await self.session.data(for: request)
+        guard let response = rawResponse as? HTTPURLResponse else {
+            throw OssOperationError.invalidResponse("TOS response was not HTTP")
+        }
+        guard (200 ..< 300).contains(response.statusCode) else {
+            let values = Self.xmlValues(data)
+            throw ServerError(
+                statusCode: response.statusCode,
+                code: values["Code"] ?? "TOSHTTPError",
+                message: values["Message"] ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode),
+                requestId: values["RequestId"] ?? response.value(forHTTPHeaderField: "x-tos-request-id") ?? "",
+                ec: values["EC"] ?? ""
+            )
+        }
+        return (data, response)
+    }
+
+    private func objectURL(key: String, query: [String: String]) throws -> URL {
+        guard var components = URLComponents(string: self.configuration.endpoint), let host = components.host else {
+            throw OssOperationError.invalidConfiguration("TOS endpoint is invalid")
+        }
+        let encodedKey = key.split(separator: "/", omittingEmptySubsequences: false)
+            .map { String($0).addingPercentEncoding(withAllowedCharacters: .tosPathSegment) ?? String($0) }
+            .joined(separator: "/")
+        if self.configuration.usePathStyle {
+            components.percentEncodedPath = "/\(self.configuration.bucket)/\(encodedKey)"
+        } else {
+            components.host = "\(self.configuration.bucket).\(host)"
+            components.percentEncodedPath = "/\(encodedKey)"
+        }
+        components.percentEncodedQuery = query.sorted(by: { $0.key < $1.key }).map {
+            "\($0.key.tosQueryEncoded)=\($0.value.tosQueryEncoded)"
+        }.joined(separator: "&")
+        guard let url = components.url else {
+            throw OssOperationError.invalidConfiguration("TOS object URL is invalid")
+        }
+        return url
+    }
+
+    private static func completeBody(_ parts: [UploadPart]) -> Data {
+        let content = parts.sorted(by: { $0.partNumber < $1.partNumber }).map {
+            "<Part><PartNumber>\($0.partNumber)</PartNumber><ETag>\($0.etag.xmlEscaped)</ETag></Part>"
+        }.joined()
+        return Data("<CompleteMultipartUpload>\(content)</CompleteMultipartUpload>".utf8)
+    }
+
+    private static func xmlValues(_ data: Data) -> [String: String] {
+        TOSFlatXMLParser.parse(data)
     }
 }
 
@@ -459,7 +669,7 @@ package protocol OssMultipartClientFactoryProtocol: Sendable {
     ) throws -> any OssMultipartClientProtocol
 }
 
-package struct AlibabaOSSSDKClientFactory: OssMultipartClientFactoryProtocol {
+package struct TOSHTTPClientFactory: OssMultipartClientFactoryProtocol {
     package init() {}
 
     package func makeMultipartClient(
@@ -473,54 +683,210 @@ package struct AlibabaOSSSDKClientFactory: OssMultipartClientFactoryProtocol {
 
     package func makeSDKClient(
         configuration: OssMultipartClientConfiguration
-    ) throws -> any AlibabaOSSSDKClientProtocol {
+    ) throws -> any TOSHTTPClientProtocol {
         try Self.validate(configuration)
 
-        let credentials = Credentials(
-            accessKeyId: configuration.credentials.accessKeyID,
-            accessKeySecret: configuration.credentials.accessKeySecret,
-            securityToken: configuration.credentials.securityToken,
-            expiration: configuration.credentials.expiration
-        )
-        let provider = StaticCredentialsProvider(credentials)
-
-        let clientConfiguration = Configuration.default()
-            .withEndpoint(configuration.endpoint)
-            .withCredentialsProvider(provider)
-
-        if let region = configuration.region?.nilIfBlank {
-            clientConfiguration.withRegion(region)
-        }
-        if let requestTimeout = configuration.requestTimeout {
-            clientConfiguration.withTimeoutIntervalForRequest(requestTimeout.timeInterval)
-        }
-        if let retryMaxAttempts = configuration.retryMaxAttempts {
-            clientConfiguration.withRetryMaxAttempts(retryMaxAttempts)
-        }
-        if configuration.usePathStyle {
-            clientConfiguration.withUsePathStyle(true)
-        }
-        clientConfiguration.withTLSVerify(configuration.enableTLSVerify)
-
-        return AlibabaOSSSDKClientAdapter(client: Client(clientConfiguration))
+        return TOSHTTPClientAdapter(configuration: configuration)
     }
 
     package static func validate(_ configuration: OssMultipartClientConfiguration) throws {
         guard configuration.bucket.nilIfBlank != nil else {
-            throw OssOperationError.invalidConfiguration("OSS bucket must not be empty")
+            throw OssOperationError.invalidConfiguration("TOS bucket must not be empty")
         }
         guard configuration.endpoint.nilIfBlank != nil else {
-            throw OssOperationError.invalidConfiguration("OSS endpoint must not be empty")
+            throw OssOperationError.invalidConfiguration("TOS endpoint must not be empty")
+        }
+        guard URL(string: configuration.endpoint)?.scheme?.lowercased() == "https" else {
+            throw OssOperationError.invalidConfiguration("TOS endpoint must use https")
+        }
+        guard configuration.region?.nilIfBlank != nil else {
+            throw OssOperationError.invalidConfiguration("TOS region must not be empty")
         }
         guard configuration.credentials.accessKeyID.nilIfBlank != nil else {
-            throw OssOperationError.invalidConfiguration("OSS access key id must not be empty")
+            throw OssOperationError.invalidConfiguration("TOS access key id must not be empty")
         }
         guard configuration.credentials.accessKeySecret.nilIfBlank != nil else {
-            throw OssOperationError.invalidConfiguration("OSS access key secret must not be empty")
+            throw OssOperationError.invalidConfiguration("TOS access key secret must not be empty")
+        }
+        guard configuration.credentials.securityToken?.nilIfBlank != nil else {
+            throw OssOperationError.invalidConfiguration("TOS security token must not be empty")
+        }
+        guard configuration.enableTLSVerify else {
+            throw OssOperationError.invalidConfiguration("TOS TLS verification cannot be disabled")
         }
         if let retryMaxAttempts = configuration.retryMaxAttempts, retryMaxAttempts < 1 {
-            throw OssOperationError.invalidConfiguration("OSS retry max attempts must be greater than 0")
+            throw OssOperationError.invalidConfiguration("TOS retry max attempts must be greater than 0")
         }
+    }
+}
+
+package enum TOSV4Signer {
+    private static let algorithm = "TOS4-HMAC-SHA256"
+    private static let service = "tos"
+
+    package static func sign(
+        request: inout URLRequest,
+        region: String,
+        credentials: OssTemporaryCredentials,
+        payload: Data,
+        now: Date = Date()
+    ) throws {
+        guard let host = request.url?.host, !region.isEmpty else {
+            throw OssOperationError.invalidConfiguration("TOS signing requires host and region")
+        }
+        let date = self.timestamp(now)
+        let shortDate = String(date.prefix(8))
+        let payloadHash = self.sha256Hex(payload)
+        request.setValue(host, forHTTPHeaderField: "Host")
+        request.setValue(date, forHTTPHeaderField: "x-tos-date")
+        request.setValue(payloadHash, forHTTPHeaderField: "x-tos-content-sha256")
+        if let token = credentials.securityToken?.nilIfBlank {
+            request.setValue(token, forHTTPHeaderField: "x-tos-security-token")
+        }
+
+        let signedHeaderNames = ["host", "x-tos-content-sha256", "x-tos-date", "x-tos-security-token"]
+            .filter { request.value(forHTTPHeaderField: $0) != nil }
+            .sorted()
+        let canonicalHeaders = signedHeaderNames.map {
+            "\($0):\((request.value(forHTTPHeaderField: $0) ?? "").trimmingCharacters(in: .whitespacesAndNewlines))\n"
+        }.joined()
+        let signedHeaders = signedHeaderNames.joined(separator: ";")
+        let canonicalRequest = [
+            request.httpMethod ?? "GET",
+            request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.percentEncodedPath }?.nonEmpty ?? "/",
+            request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.percentEncodedQuery } ?? "",
+            canonicalHeaders,
+            signedHeaders,
+            payloadHash,
+        ].joined(separator: "\n")
+        let scope = "\(shortDate)/\(region)/\(self.service)/request"
+        let stringToSign = [
+            self.algorithm,
+            date,
+            scope,
+            self.sha256Hex(Data(canonicalRequest.utf8)),
+        ].joined(separator: "\n")
+
+        let dateKey = self.hmac(Data(shortDate.utf8), key: Data("TOS4\(credentials.accessKeySecret)".utf8))
+        let regionKey = self.hmac(Data(region.utf8), key: dateKey)
+        let serviceKey = self.hmac(Data(self.service.utf8), key: regionKey)
+        let signingKey = self.hmac(Data("request".utf8), key: serviceKey)
+        let signature = self.hmac(Data(stringToSign.utf8), key: signingKey).hexString
+        request.setValue(
+            "\(self.algorithm) Credential=\(credentials.accessKeyID)/\(scope), SignedHeaders=\(signedHeaders), Signature=\(signature)",
+            forHTTPHeaderField: "Authorization"
+        )
+    }
+
+    private static func timestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        return formatter.string(from: date)
+    }
+
+    private static func sha256Hex(_ data: Data) -> String {
+        Data(SHA256.hash(data: data)).hexString
+    }
+
+    private static func hmac(_ data: Data, key: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: key)))
+    }
+}
+
+private final class TOSFlatXMLParser: NSObject, XMLParserDelegate {
+    private var currentElement = ""
+    private var buffer = ""
+    private var values: [String: String] = [:]
+
+    static func parse(_ data: Data) -> [String: String] {
+        let delegate = TOSFlatXMLParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        _ = parser.parse()
+        return delegate.values
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?, attributes attributeDict: [String: String] = [:]) {
+        self.currentElement = elementName
+        self.buffer = ""
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        self.buffer += string
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
+        let value = self.buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty {
+            self.values[elementName] = value
+        }
+        self.currentElement = ""
+        self.buffer = ""
+    }
+}
+
+private final class TOSListPartsXMLParser: NSObject, XMLParserDelegate {
+    private var currentElement = ""
+    private var buffer = ""
+    private var inPart = false
+    private var currentPart: [String: String] = [:]
+    private var parts: [OssListedPart] = []
+    private var values: [String: String] = [:]
+
+    static func parse(_ data: Data) -> (page: OssListPartsPage, nextMarker: String?) {
+        let delegate = TOSListPartsXMLParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        _ = parser.parse()
+        let truncated = delegate.values["IsTruncated"]?.lowercased() == "true"
+        return (
+            OssListPartsPage(
+                isTruncated: truncated,
+                nextPartNumberMarker: delegate.values["NextPartNumberMarker"].flatMap(Int.init),
+                parts: delegate.parts
+            ),
+            delegate.values["NextPartNumberMarker"]
+        )
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?, attributes attributeDict: [String: String] = [:]) {
+        self.currentElement = elementName
+        self.buffer = ""
+        if elementName == "Part" {
+            self.inPart = true
+            self.currentPart = [:]
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        self.buffer += string
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
+        let value = self.buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if elementName == "Part" {
+            self.parts.append(
+                OssListedPart(
+                    partNumber: self.currentPart["PartNumber"].flatMap(Int.init),
+                    etag: self.currentPart["ETag"],
+                    size: self.currentPart["Size"].flatMap(Int64.init),
+                    lastModified: self.currentPart["LastModified"].flatMap { ISO8601DateFormatter().date(from: $0) },
+                    hashCRC64: self.currentPart["HashCrc64ecma"]
+                )
+            )
+            self.inPart = false
+        } else if !value.isEmpty {
+            if self.inPart {
+                self.currentPart[elementName] = value
+            } else {
+                self.values[elementName] = value
+            }
+        }
+        self.currentElement = ""
+        self.buffer = ""
     }
 }
 
@@ -828,13 +1194,13 @@ package protocol OssMultipartClientProtocol: Sendable {
 
 package struct OssMultipartClient: OssMultipartClientProtocol {
     private let configuration: OssMultipartClientConfiguration
-    private let sdkClient: any AlibabaOSSSDKClientProtocol
+    private let sdkClient: any TOSHTTPClientProtocol
 
     package init(
         configuration: OssMultipartClientConfiguration,
-        sdkClient: any AlibabaOSSSDKClientProtocol
+        sdkClient: any TOSHTTPClientProtocol
     ) throws {
-        try AlibabaOSSSDKClientFactory.validate(configuration)
+        try TOSHTTPClientFactory.validate(configuration)
         self.configuration = configuration
         self.sdkClient = sdkClient
     }
@@ -1313,6 +1679,12 @@ package actor OssUploadSession {
         guard credentials.objectKey == context.objectKey else {
             throw OssOperationError.invalidResponse("ReissueUploadCredentials returned a different objectKey")
         }
+        guard credentials.objectStoreBackend == context.backend else {
+            throw OssOperationError.invalidResponse("ReissueUploadCredentials returned a different objectStoreBackend")
+        }
+        guard credentials.objectStoreRegion == context.region else {
+            throw OssOperationError.invalidResponse("ReissueUploadCredentials returned a different objectStoreRegion")
+        }
         guard credentials.partSizeBytes == context.partSizeBytes else {
             throw OssOperationError.invalidResponse("ReissueUploadCredentials returned a different partSizeBytes")
         }
@@ -1325,7 +1697,9 @@ package actor OssUploadSession {
             partSizeBytes: context.partSizeBytes,
             credentials: try Self.makeTemporaryCredentials(from: credentials),
             credentialRefreshCount: context.credentialRefreshCount + 1,
-            sessionExpireAt: context.sessionExpireAt
+            sessionExpireAt: context.sessionExpireAt,
+            backend: context.backend,
+            region: context.region
         )
     }
 
@@ -1340,7 +1714,7 @@ package actor OssUploadSession {
         OssMultipartClientConfiguration(
             bucket: context.bucket,
             endpoint: context.endpoint,
-            region: regionResolver(context.endpoint),
+            region: context.region,
             credentials: context.credentials,
             requestTimeout: requestTimeout,
             retryMaxAttempts: retryMaxAttempts,
@@ -1355,6 +1729,12 @@ package actor OssUploadSession {
         sessionExpireAtUnix: Int64? = nil,
         credentialRefreshCount: Int32 = 0
     ) throws -> OssUploadContext {
+        guard credentials.objectStoreBackend == "volcengine_tos" else {
+            throw OssOperationError.invalidResponse("UploadCredentials object_store_backend must be volcengine_tos")
+        }
+        guard let region = credentials.objectStoreRegion.nilIfBlank else {
+            throw OssOperationError.invalidResponse("UploadCredentials missing object_store_region")
+        }
         let temporaryCredentials = try Self.makeTemporaryCredentials(from: credentials)
         return OssUploadContext(
             uploadID: uploadID,
@@ -1364,7 +1744,9 @@ package actor OssUploadSession {
             partSizeBytes: credentials.partSizeBytes,
             credentials: temporaryCredentials,
             credentialRefreshCount: credentialRefreshCount,
-            sessionExpireAt: sessionExpireAtUnix.flatMap { Self.makeDate(fromUnix: $0) }
+            sessionExpireAt: sessionExpireAtUnix.flatMap { Self.makeDate(fromUnix: $0) },
+            backend: credentials.objectStoreBackend,
+            region: region
         )
     }
 
@@ -1404,19 +1786,7 @@ package actor OssUploadSession {
 }
 
 private func defaultOssRegionResolver(endpoint: String) -> String? {
-    guard let host = URL(string: endpoint)?.host ?? URL(string: "https://\(endpoint)")?.host else {
-        return nil
-    }
-
-    let segments = host.split(separator: ".")
-    guard let first = segments.first else {
-        return nil
-    }
-
-    if first.hasPrefix("oss-") {
-        return String(first.dropFirst(4))
-    }
-    return nil
+    nil
 }
 
 private extension Duration {
@@ -1430,5 +1800,32 @@ private extension String {
     var nilIfBlank: String? {
         let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var nonEmpty: String? {
+        self.isEmpty ? nil : self
+    }
+
+    var tosQueryEncoded: String {
+        self.addingPercentEncoding(withAllowedCharacters: .tosQuery) ?? self
+    }
+
+    var xmlEscaped: String {
+        self.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
+}
+
+private extension CharacterSet {
+    static let tosPathSegment = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    static let tosQuery = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+}
+
+private extension Data {
+    var hexString: String {
+        self.map { String(format: "%02x", $0) }.joined()
     }
 }

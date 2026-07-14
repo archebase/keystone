@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Combine
 import DataGatewayClient
 import DGWControlPlane
@@ -176,6 +179,7 @@ final class QiongcheDemoViewModel: ObservableObject {
     static let sampleConfigString = """
     {
       "device_id": "robot-001",
+      "device_auth_token": "kda_v1_replace-with-admin-issued-token",
       "auth": { "scheme": "http", "host": "localhost", "port": 50051 },
       "gateway": { "scheme": "http", "host": "localhost", "port": 50053 },
       "deviceInit": { "scheme": "http", "host": "localhost", "port": 50057 }

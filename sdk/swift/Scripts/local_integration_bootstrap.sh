@@ -44,7 +44,7 @@ Usage: Scripts/local_integration_bootstrap.sh [--start-stack] [--run-tests] [--p
 
 Options:
   --start-stack      Build and deploy the local Rust stack before bootstrapping credentials.
-  --run-tests        Run `DATA_GATEWAY_CLIENT_USE_MOCK_OSS=1 DGW_LOCAL_RUNTIME_INTEGRATION=1 swift test --filter LocalStackHarnessTests` after exporting env.
+  --run-tests        Run `DATA_GATEWAY_CLIENT_USE_MOCK_OBJECT_STORE=1 DGW_LOCAL_RUNTIME_INTEGRATION=1 swift test --filter LocalStackHarnessTests` after exporting env.
   --print-env-only   Only print the resolved export commands and skip HTTP bootstrap.
   -h, --help         Show this help.
 
@@ -82,7 +82,7 @@ Environment overrides:
 Notes:
   - The script uses the HTTP admin gateway when DGW_LOCAL_GATEWAY_HTTP_BASE points at data-platform-gateway.
   - When DGW_LOCAL_GATEWAY_HTTP_BASE points at data-gateway or is unavailable, the script falls back to grpcurl against AdminAuthService and DeviceManagementService.
-  - The local stack should run with DATA_GATEWAY_USE_MOCK_STS=true so CreateLogicalUpload/ReissueUploadCredentials do not require real Aliyun STS.
+  - The local stack should run with KEYSTONE_DGW_MOCK_STS=true so CreateLogicalUpload/ReissueUploadCredentials do not require real Volcengine STS.
 EOF
 }
 
@@ -425,7 +425,7 @@ export DATA_PLATFORM_ROOT='${DATA_PLATFORM_ROOT}'
 
 # test command
 cd '${PACKAGE_DIR}'
-DATA_GATEWAY_CLIENT_USE_MOCK_OSS=1 DGW_LOCAL_RUNTIME_INTEGRATION=1 swift test --filter LocalStackHarnessTests
+DATA_GATEWAY_CLIENT_USE_MOCK_OBJECT_STORE=1 DGW_LOCAL_RUNTIME_INTEGRATION=1 swift test --filter LocalStackHarnessTests
 EOF
 
   if [[ $RUN_TESTS -eq 1 ]]; then
@@ -456,7 +456,7 @@ EOF
     export DGW_LOCAL_BOOTSTRAP_API_KEY_NAME="$BOOTSTRAP_API_KEY_NAME"
     export DGW_LOCAL_BOOTSTRAP_API_KEY_STATUS="$BOOTSTRAP_API_KEY_STATUS"
     export DGW_LOCAL_BOOTSTRAP_CSRF_ORIGIN="$BOOTSTRAP_CSRF_ORIGIN"
-    DATA_GATEWAY_CLIENT_USE_MOCK_OSS=1 DGW_LOCAL_RUNTIME_INTEGRATION=1 swift test --filter LocalStackHarnessTests --package-path "${PACKAGE_DIR}"
+    DATA_GATEWAY_CLIENT_USE_MOCK_OBJECT_STORE=1 DGW_LOCAL_RUNTIME_INTEGRATION=1 swift test --filter LocalStackHarnessTests --package-path "${PACKAGE_DIR}"
   fi
 }
 

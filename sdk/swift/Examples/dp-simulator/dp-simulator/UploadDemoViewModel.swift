@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Combine
 import DataGatewayClient
 import DGWControlPlane
@@ -560,17 +563,17 @@ final class UploadDemoViewModel: ObservableObject {
     {
       "auth": {
         "scheme": "http",
-        "host": "nlb-bz7li0ks67z1i7ii00.cn-shanghai.nlb.aliyuncsslb.com",
+        "host": "nlb-bz7li0ks67z1i7ii00.cn-shanghai.nlb.toscsslb.com",
         "port": 50051
       },
       "gateway": {
         "scheme": "http",
-        "host": "nlb-bz7li0ks67z1i7ii00.cn-shanghai.nlb.aliyuncsslb.com",
+        "host": "nlb-bz7li0ks67z1i7ii00.cn-shanghai.nlb.toscsslb.com",
         "port": 50053
       },
       "deviceInit": {
         "scheme": "http",
-        "host": "nlb-bz7li0ks67z1i7ii00.cn-shanghai.nlb.aliyuncsslb.com",
+        "host": "nlb-bz7li0ks67z1i7ii00.cn-shanghai.nlb.toscsslb.com",
         "port": 50057
       }
     }

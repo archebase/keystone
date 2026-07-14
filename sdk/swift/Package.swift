@@ -1,4 +1,7 @@
 // swift-tools-version: 6.1
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import PackageDescription
 
 let package = Package(
@@ -20,7 +23,6 @@ let package = Package(
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.1.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.1.0"),
-        .package(url: "https://github.com/aliyun/alibabacloud-oss-swift-sdk-v2.git", from: "0.1.1"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.0"),
         .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "6.1.3"),
     ],
@@ -55,7 +57,6 @@ let package = Package(
             dependencies: [
                 "DGWControlPlane",
                 "DGWProto",
-                .product(name: "AlibabaCloudOSS", package: "alibabacloud-oss-swift-sdk-v2"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
@@ -81,6 +82,7 @@ let package = Package(
                 "DGWProto",
                 "DGWStore",
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
         .testTarget(
@@ -114,7 +116,6 @@ let package = Package(
                 "DGWOss",
                 "DGWControlPlane",
                 "DGWProto",
-                .product(name: "AlibabaCloudOSS", package: "alibabacloud-oss-swift-sdk-v2"),
                 .product(name: "Testing", package: "swift-testing"),
             ]
         ),

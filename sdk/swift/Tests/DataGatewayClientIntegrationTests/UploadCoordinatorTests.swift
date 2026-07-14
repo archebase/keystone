@@ -1,4 +1,6 @@
-@preconcurrency import AlibabaCloudOSS
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWOss
 import DGWControlPlane
 import DGWProto
@@ -307,13 +309,13 @@ import Testing
         fileSize: Int64(result.fileSize),
         rawTags: completedRawTags,
         completedPartCount: 1,
-        ossObjectEtag: result.ossObjectETag,
+        objectEtag: result.ossObjectETag,
         partSizeBytes: 12
     )
 
     #expect(await gatewayClient.completeInvocations() == [
-        CompleteInvocation(uploadID: "upload-idempotent", fileSize: 12, rawTags: completedRawTags, completedPartCount: 1, ossObjectEtag: "\"etag-object\"", partSizeBytes: 12),
-        CompleteInvocation(uploadID: "upload-idempotent", fileSize: 12, rawTags: completedRawTags, completedPartCount: 1, ossObjectEtag: "\"etag-object\"", partSizeBytes: 12),
+        CompleteInvocation(uploadID: "upload-idempotent", fileSize: 12, rawTags: completedRawTags, completedPartCount: 1, objectEtag: "\"etag-object\"", partSizeBytes: 12),
+        CompleteInvocation(uploadID: "upload-idempotent", fileSize: 12, rawTags: completedRawTags, completedPartCount: 1, objectEtag: "\"etag-object\"", partSizeBytes: 12),
     ])
     #expect(await ossSession.initiateCalls() == 0)
     #expect(await ossSession.putObjectCalls() == [payload.count])
@@ -452,7 +454,7 @@ import Testing
             fileSize: Int64(payload.count),
             rawTags: ["scene": "robot"],
             completedPartCount: 1,
-            ossObjectEtag: "\"etag-object\"",
+            objectEtag: "\"etag-object\"",
             partSizeBytes: 64 * 1024 * 1024
         ),
     ])
@@ -648,7 +650,7 @@ import Testing
             fileSize: 24,
             rawTags: sourceFileNameRawTags(fileName: "demo-multipart.bin"),
             completedPartCount: 3,
-            ossObjectEtag: "\"etag-multipart-object\"",
+            objectEtag: "\"etag-multipart-object\"",
             partSizeBytes: 8
         ),
     ])
@@ -959,7 +961,7 @@ import Testing
             fileSize: 24,
             rawTags: ["scene": "robot"],
             completedPartCount: 3,
-            ossObjectEtag: "\"etag-resume-object\"",
+            objectEtag: "\"etag-resume-object\"",
             partSizeBytes: 8
         ),
     ])
@@ -1335,7 +1337,7 @@ import Testing
 
     var completeOnly = makeContinueRecoveryResponse(currentUploadID: "upload-complete-only")
     completeOnly.nextAction = .completeOnly
-    completeOnly.ossObjectEtag = "\"etag-expected\""
+    completeOnly.objectEtag = "\"etag-expected\""
     #expect(
         UploadCoordinator.decideResumeAction(state: state, recovery: completeOnly) == .completeOnly(
             uploadID: "upload-complete-only",
@@ -1566,7 +1568,7 @@ import Testing
 
     var recovery = makeContinueRecoveryResponse(currentUploadID: "upload-complete-only", completedPartCount: 2)
     recovery.nextAction = .completeOnly
-    recovery.ossObjectEtag = "\"etag-head-match\""
+    recovery.objectEtag = "\"etag-head-match\""
 
     let gatewayClient = MockUploadCoordinatorGatewayClient(
         createResponse: makeCreateLogicalUploadResponse(),
@@ -1612,7 +1614,7 @@ import Testing
             fileSize: 16,
             rawTags: ["scene": "robot"],
             completedPartCount: 2,
-            ossObjectEtag: "\"etag-head-match\"",
+            objectEtag: "\"etag-head-match\"",
             partSizeBytes: 8
         ),
     ])
@@ -1637,7 +1639,7 @@ import Testing
 
     var recovery = makeContinueRecoveryResponse(currentUploadID: "upload-complete-missing", completedPartCount: 0)
     recovery.nextAction = .completeOnly
-    recovery.ossObjectEtag = "\"etag-expected\""
+    recovery.objectEtag = "\"etag-expected\""
 
     let gatewayClient = MockUploadCoordinatorGatewayClient(
         createResponse: makeCreateLogicalUploadResponse(),
@@ -1699,7 +1701,7 @@ import Testing
 
     var recovery = makeContinueRecoveryResponse(currentUploadID: "upload-complete-mismatch", completedPartCount: 0)
     recovery.nextAction = .completeOnly
-    recovery.ossObjectEtag = "\"etag-expected\""
+    recovery.objectEtag = "\"etag-expected\""
 
     let gatewayClient = MockUploadCoordinatorGatewayClient(
         createResponse: makeCreateLogicalUploadResponse(),
@@ -1810,7 +1812,7 @@ import Testing
             fileSize: Int64(payload.count),
             rawTags: ["scene": "robot"],
             completedPartCount: 1,
-            ossObjectEtag: "\"etag-put\"",
+            objectEtag: "\"etag-put\"",
             partSizeBytes: 8
         ),
     ])
@@ -1885,7 +1887,7 @@ import Testing
             fileSize: Int64(payload.count),
             rawTags: ["scene": "robot"],
             completedPartCount: 1,
-            ossObjectEtag: "\"etag-restarted\"",
+            objectEtag: "\"etag-restarted\"",
             partSizeBytes: 8
         ),
     ])
@@ -2385,7 +2387,7 @@ private actor MockUploadCoordinatorGatewayClient: UploadCoordinatorGatewayClient
         fileSize: Int64,
         rawTags: [String : String],
         completedPartCount: Int32,
-        ossObjectEtag: String,
+        objectEtag: String,
         partSizeBytes: Int64
     ) async throws -> Archebase_DataGateway_V1_CompleteUploadResponse {
         self.completeCalls.append(
@@ -2394,7 +2396,7 @@ private actor MockUploadCoordinatorGatewayClient: UploadCoordinatorGatewayClient
                 fileSize: fileSize,
                 rawTags: rawTags,
                 completedPartCount: completedPartCount,
-                ossObjectEtag: ossObjectEtag,
+                objectEtag: objectEtag,
                 partSizeBytes: partSizeBytes
             )
         )
@@ -2687,7 +2689,7 @@ private struct CompleteInvocation: Equatable, Sendable {
     let fileSize: Int64
     let rawTags: [String: String]
     let completedPartCount: Int32
-    let ossObjectEtag: String
+    let objectEtag: String
     let partSizeBytes: Int64
 }
 
@@ -2810,7 +2812,7 @@ private func makeContinueRecoveryResponse(
     response.logicalUploadStatus = .active
     response.currentUploadID = currentUploadID
     response.bucket = "bucket-1"
-    response.endpoint = "https://oss-cn-shanghai.aliyuncs.com"
+    response.endpoint = "https://tos-cn-beijing.volces.com"
     response.objectKey = "objects/resume.bin"
     response.canRefreshCredentials = true
     response.restartAllowed = true
@@ -2835,7 +2837,7 @@ private func makeReissueResponse(
 private func makeCoordinatorUploadCredentials(
     expireAtUnix: Int64,
     tokenSuffix: String,
-    endpoint: String = "https://oss-cn-shanghai.aliyuncs.com",
+    endpoint: String = "https://tos-cn-beijing.volces.com",
     bucket: String = "bucket-1",
     objectKey: String = "objects/demo.bin",
     partSizeBytes: Int64 = 64 * 1024 * 1024
@@ -2849,6 +2851,8 @@ private func makeCoordinatorUploadCredentials(
     credentials.stsSecurityToken = "token-\(tokenSuffix)"
     credentials.stsExpireAtUnix = expireAtUnix
     credentials.partSizeBytes = partSizeBytes
+    credentials.objectStoreBackend = "volcengine_tos"
+    credentials.objectStoreRegion = "cn-beijing"
     return credentials
 }
 
@@ -2892,7 +2896,7 @@ private func makePersistedResumeState(
         restartCount: storedRestartCount,
         multipartUploadID: multipartUploadID,
         bucket: "bucket-1",
-        endpoint: "https://oss-cn-shanghai.aliyuncs.com",
+        endpoint: "https://tos-cn-beijing.volces.com",
         objectKey: "objects/resume.bin",
         fileURLBookmarkData: nil,
         managedFileURL: managedFileURL,

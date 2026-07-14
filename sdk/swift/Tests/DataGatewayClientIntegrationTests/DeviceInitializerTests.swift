@@ -1,6 +1,10 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 import Testing
 
+import DGWAuth
 import DGWControlPlane
 import DGWProto
 import DGWStore
@@ -14,7 +18,7 @@ import DGWStore
     let initializer = try ArchebaseDeviceInitializer(configStore: store, initTransport: transport)
 
     let error = await #expect(throws: DataGatewayClientError.self) {
-        _ = try await initializer.initDevice(deviceID: "260427-000001")
+        _ = try await initializer.initDevice(deviceID: "260427-000001", deviceAuthToken: "kda_v1_test-token")
     }
 
     #expect(error == .alreadyInitialized(configURL: configURL.standardizedFileURL))
@@ -32,7 +36,7 @@ import DGWStore
         platform: "ios-simulator"
     )
 
-    let config = try await initializer.initDevice(deviceID: "260427-000001")
+    let config = try await initializer.initDevice(deviceID: "260427-000001", deviceAuthToken: "kda_v1_test-token")
 
     let expected = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])
     #expect(config == expected)
@@ -41,6 +45,7 @@ import DGWStore
         DeviceInitRequestRecord(
             method: .initDevice,
             deviceID: "260427-000001",
+            deviceAuthToken: "kda_v1_test-token",
             sdkVersion: "1.2.3",
             platform: "ios-simulator"
         ),
@@ -61,7 +66,7 @@ import DGWStore
     let initializer = try ArchebaseDeviceInitializer(configStore: store, initTransport: transport)
 
     let error = await #expect(throws: DataGatewayClientError.self) {
-        _ = try await initializer.initDevice(deviceID: "260427-000001")
+        _ = try await initializer.initDevice(deviceID: "260427-000001", deviceAuthToken: "kda_v1_test-token")
     }
 
     #expect(error == .gatewayFailed(
@@ -77,7 +82,10 @@ import DGWStore
     let transport = RecordingDeviceInitTransport(response: .success(response(apiKey: "credential-new")))
     let initializer = try ArchebaseDeviceInitializer(configStore: store, initTransport: transport)
 
-    let config = try await initializer.reinitDevice(deviceID: "260427-000001")
+    let config = try await initializer.reinitDevice(
+        deviceID: "260427-000001",
+        recoveryDeviceAuthToken: "kda_v1_recovery-token"
+    )
 
     #expect(config == (try ArchebaseConfig(apiKey: "credential-new", tags: [:])))
     #expect(try await store.load() == config)
@@ -89,7 +97,11 @@ import DGWStore
     let store = ArchebaseConfigStore(configURL: configURL)
     try await store.initialize(ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "old"]))
     let transport = RecordingDeviceInitTransport(response: .success(response(apiKey: "credential-v2", tags: ["device": "new"])))
-    let initializer = try ArchebaseDeviceInitializer(configStore: store, initTransport: transport)
+    let initializer = try ArchebaseDeviceInitializer(
+        configStore: store,
+        initTransport: transport,
+        authTransport: StaticDeviceCredentialExchangeTransport()
+    )
 
     let config = try await initializer.reinitDevice(deviceID: "260427-000001")
 
@@ -111,7 +123,11 @@ import DGWStore
             )
         )
     )
-    let initializer = try ArchebaseDeviceInitializer(configStore: store, initTransport: transport)
+    let initializer = try ArchebaseDeviceInitializer(
+        configStore: store,
+        initTransport: transport,
+        authTransport: StaticDeviceCredentialExchangeTransport()
+    )
 
     let error = await #expect(throws: DataGatewayClientError.self) {
         _ = try await initializer.reinitDevice(deviceID: "260427-000001")
@@ -133,6 +149,7 @@ private enum DeviceInitRequestMethod: Sendable, Equatable {
 private struct DeviceInitRequestRecord: Sendable, Equatable {
     let method: DeviceInitRequestMethod
     let deviceID: String
+    let deviceAuthToken: String
     let sdkVersion: String
     let platform: String
 }
@@ -147,24 +164,40 @@ private actor RecordingDeviceInitTransport: DeviceInitTransport {
 
     func initDevice(
         deviceID: String,
+        deviceAuthToken: String,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse {
-        self.records.append(DeviceInitRequestRecord(method: .initDevice, deviceID: deviceID, sdkVersion: sdkVersion, platform: platform))
+        self.records.append(DeviceInitRequestRecord(method: .initDevice, deviceID: deviceID, deviceAuthToken: deviceAuthToken, sdkVersion: sdkVersion, platform: platform))
         return try self.response.get()
     }
 
     func reinitDevice(
         deviceID: String,
+        deviceAuthToken: String,
+        authorizationHeader: String?,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse {
-        self.records.append(DeviceInitRequestRecord(method: .reinitDevice, deviceID: deviceID, sdkVersion: sdkVersion, platform: platform))
+        self.records.append(DeviceInitRequestRecord(method: .reinitDevice, deviceID: deviceID, deviceAuthToken: deviceAuthToken, sdkVersion: sdkVersion, platform: platform))
         return try self.response.get()
     }
 
     func requests() -> [DeviceInitRequestRecord] {
         self.records
+    }
+}
+
+private struct StaticDeviceCredentialExchangeTransport: CredentialExchangeTransport {
+    func exchangeCredential(
+        credentialBase64: String,
+        timeout: Duration
+    ) async throws -> Archebase_Auth_V1_ExchangeCredentialResponse {
+        var response = Archebase_Auth_V1_ExchangeCredentialResponse()
+        response.accessToken = "device-jwt"
+        response.tokenType = "Bearer"
+        response.expiresAtUnix = Int64(Date().addingTimeInterval(900).timeIntervalSince1970)
+        return response
     }
 }
 

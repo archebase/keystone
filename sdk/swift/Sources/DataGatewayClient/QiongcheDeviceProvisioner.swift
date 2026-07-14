@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import DGWStore
 import Foundation
@@ -5,6 +8,7 @@ import Foundation
 package protocol QiongcheDeviceProvisioning: Sendable {
     func initDevice(
         deviceID: String,
+        deviceAuthToken: String,
         deviceInitEndpoint: URL,
         tls: TLSMode,
         timeout: Duration
@@ -39,6 +43,7 @@ package struct DefaultQiongcheDeviceProvisioner: QiongcheDeviceProvisioning {
 
     package func initDevice(
         deviceID: String,
+        deviceAuthToken: String,
         deviceInitEndpoint: URL,
         tls: TLSMode,
         timeout: Duration
@@ -50,23 +55,15 @@ package struct DefaultQiongcheDeviceProvisioner: QiongcheDeviceProvisioning {
             transport.shutdown()
         }
 
-        do {
-            return try await DeviceInitConfigFetcher.fetch(
-                mode: .initDevice,
-                deviceID: deviceID,
-                transport: transport.serviceClient,
-                sdkVersion: DataGatewayClientModule.version,
-                platform: "ios"
-            )
-        } catch let error as DataGatewayClientError where error.isDeviceAlreadyInitialized {
-            return try await DeviceInitConfigFetcher.fetch(
-                mode: .reinitDevice,
-                deviceID: deviceID,
-                transport: transport.serviceClient,
-                sdkVersion: DataGatewayClientModule.version,
-                platform: "ios"
-            )
-        }
+        return try await DeviceInitConfigFetcher.fetch(
+            mode: .initDevice,
+            deviceID: deviceID,
+            deviceAuthToken: deviceAuthToken,
+            authorizationHeader: nil,
+            transport: transport.serviceClient,
+            sdkVersion: DataGatewayClientModule.version,
+            platform: "ios"
+        )
     }
 
     private static func makeDefaultTransport(
@@ -92,19 +89,5 @@ package struct DefaultQiongcheDeviceProvisioner: QiongcheDeviceProvisioning {
                 managedTransport.shutdown()
             }
         )
-    }
-}
-
-private extension DataGatewayClientError {
-    var isDeviceAlreadyInitialized: Bool {
-        guard case .gatewayFailed(let statusCode, let detailCode, let message) = self else {
-            return false
-        }
-        if detailCode == DeviceInitGatewayDetailCode.alreadyInitialized {
-            return true
-        }
-        return statusCode == 9
-            && message.localizedCaseInsensitiveContains("already")
-            && message.localizedCaseInsensitiveContains("initialized")
     }
 }

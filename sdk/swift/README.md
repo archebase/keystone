@@ -58,13 +58,13 @@ DGWStore
 
 ### 4.2 Package.swift 接入
 
-本 repo 根目录就是标准 SwiftPM package 根目录，`Package.swift` 位于 `data-sdk/Package.swift`。宿主 App 可以直接通过 Git URL 或本地 path 依赖本 repo。
+Keystone 仓库根目录是标准 SwiftPM package 根目录，`Package.swift` 位于 `keystone/Package.swift`。宿主 App 应固定 Keystone revision，通过同一个 Git URL 获取后端与 SDK 对应版本。
 
 远端包示例：
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/archebase/data-sdk.git", from: "0.1.4")
+    .package(url: "https://github.com/archebase/keystone.git", revision: "<keystone-revision>")
 ]
 ```
 
@@ -72,20 +72,20 @@ dependencies: [
 
 ```swift
 dependencies: [
-    .package(path: "../data-sdk")
+    .package(path: "../keystone")
 ]
 ```
 
-target 依赖示例。`package` 参数使用 SwiftPM package identity；Git URL 和上面的本地 path 示例通常解析为 `data-sdk`。
+target 依赖示例。`package` 参数使用 SwiftPM package identity `keystone`。
 
 ```swift
 targets: [
     .target(
         name: "YourAppCore",
         dependencies: [
-            .product(name: "DataGatewayClient", package: "data-sdk"),
-            .product(name: "DGWControlPlane", package: "data-sdk"),
-            .product(name: "DGWStore", package: "data-sdk")
+            .product(name: "DataGatewayClient", package: "keystone"),
+            .product(name: "DGWControlPlane", package: "keystone"),
+            .product(name: "DGWStore", package: "keystone")
         ]
     )
 ]
@@ -110,14 +110,12 @@ iOS App 推荐使用配置文件驱动方式接入。
 
 1. App 计算 App 私有容器内的 `endpointsURL`、`configURL` 和 `persistRootURL`。
 2. App 从可信渠道获取 endpoint JSON，调用 `DataGatewayClient.initialize(endpointsJSON:endpointsURL:)` 写入 `archebase-endpoints.json`。
-3. App 首次启动或进入设备绑定页时，让 operator 输入平台提供的 `deviceID`。
-4. 调用 `ArchebaseDeviceInitializer.initDevice(deviceID:)`。
-5. SDK 将初始化结果写入 App 私有目录下的 `archebase-config.json`。
+3. App 从可信安装配置读取平台提供的 `deviceID` 和管理员签发的 `device_auth_token`。
+4. 调用 `ArchebaseDeviceInitializer.initDevice(deviceID:deviceAuthToken:)`。
+5. SDK 将 API Key 写入 Keychain，并在 `archebase-config.json` 中只保存 Keychain 引用和 tags。
 6. App 调用 `DataGatewayClient.fromArchebaseConfig(...)` 创建上传客户端。
 7. 用户选择文件后，App 调用 `uploadEvents(_:)` 或 `upload(_:)` 上传。
-8. App 每次启动后调用 `listPendingUploads()`，为用户展示可恢复任务。
-9. 用户确认恢复时调用 `resumeUpload(logicalUploadID:)`。
-10. 用户放弃上传时调用 `abortUpload(logicalUploadID:)`。
+8. App 被终止后不恢复旧 multipart；用户再次上传时创建新的 logical upload。
 
 如果接入方已经通过其他安全渠道直接向 App 下发 `API Key`，也可以跳过设备初始化，直接使用 `DataGatewayClientConfig.recommended(...)` 创建客户端。生产 App 通常优先使用设备初始化方式。
 
@@ -133,7 +131,7 @@ try await qiongcheSDK.saveConfigAndInit(configString: configStringFromTrustedCha
 let ready = await qiongcheSDK.isReadyToUpload()
 ```
 
-`saveConfigAndInit(configString:)` 接收穹彻可信渠道下发的完整配置字符串，完成设备初始化并写入本地文件。设备尚未 initialized 时会调用远端 `InitDevice`；设备已 initialized 时会在收到 `DATA_GATEWAY_DEVICE_ALREADY_INITIALIZED` 后静默改调远端 `ReinitDevice`，拿到新凭证后再覆盖本地配置。`isReadyToUpload()` 用于上传前判断本地配置和服务连通性是否满足创建上传客户端的条件。
+`saveConfigAndInit(configString:)` 接收穹彻可信渠道下发的完整配置字符串并调用远端 `InitDevice`。它不会在失败时静默改调 `ReinitDevice`；重置必须由显式运维流程触发。`isReadyToUpload()` 用于上传前判断本地配置和服务连通性是否满足创建上传客户端的条件。
 
 穹彻封装不提供 `reinit`、`reset` 或 `replaceConfig` 入口。需要更新配置时，继续调用 `saveConfigAndInit(configString:)`；该方法会在远端 init 或 reinit 成功后覆盖本地 endpoint、设备配置和穹彻 state。
 
@@ -153,11 +151,12 @@ let client = try await DataGatewayClient.fromArchebaseConfig(
 )
 ```
 
-穹彻配置字符串是 UTF-8 JSON，顶层只接受 `auth`、`gateway`、`deviceInit` 和 `device_id`：
+穹彻配置字符串是 UTF-8 JSON，顶层只接受 `auth`、`gateway`、`deviceInit`、`device_id` 和 `device_auth_token`：
 
 ```json
 {
   "device_id": "robot-001",
+  "device_auth_token": "kda_v1_<管理员签发值>",
   "auth": { "scheme": "http", "host": "localhost", "port": 50051 },
   "gateway": { "scheme": "http", "host": "localhost", "port": 50053 },
   "deviceInit": { "scheme": "http", "host": "localhost", "port": 50057 }
@@ -169,17 +168,18 @@ let client = try await DataGatewayClient.fromArchebaseConfig(
 | 字段 | 说明 |
 |---|---|
 | `device_id` | 必填，trim 后不能为空，不能包含控制字符；只写入穹彻 state，不写入 endpoint 文件。 |
+| `device_auth_token` | 必填，只用于首次初始化请求；不写入 endpoint、状态文件或日志。 |
 | `auth` | 认证服务 endpoint，只接受 `scheme`、`host`、`port`。 |
 | `gateway` | 上传网关 endpoint，只接受 `scheme`、`host`、`port`。 |
 | `deviceInit` | 设备初始化 endpoint，只接受 `scheme`、`host`、`port`。 |
 
 `saveConfigAndInit(configString:)` 的覆盖规则：
 
-1. 先解析配置并使用本次 `deviceInit` endpoint 调远端 init；如果服务端提示已 initialized，则内部改调远端 reinit。
-2. 远端 init 或 reinit 成功后，覆盖写入 `archebase-endpoints.json`、`archebase-config.json` 和 `qiongche-sdk-state.json`。
+1. 先解析配置并使用本次 `deviceInit` endpoint 调远端 init；任何失败都直接返回。
+2. 远端 init 成功后，覆盖写入 `archebase-endpoints.json`、`archebase-config.json` 和 `qiongche-sdk-state.json`。
 3. 本地已有 endpoint、设备配置或 state 时，不因为内容不同报错。
 4. 远端 init 和必要的 reinit 失败时，不覆盖本地已有 endpoint、设备配置或 state。
-5. endpoint 文件只保存 `auth`、`gateway`、`deviceInit`，不会保存 `device_id`。
+5. endpoint 文件只保存 `auth`、`gateway`、`deviceInit`，不会保存 `device_id` 或 `device_auth_token`。
 
 `isReadyToUpload()` 的判断范围：
 
@@ -213,8 +213,8 @@ do {
 
 安全注意事项：
 
-1. 不要把完整 `configString`、`api_key`、access token、STS secret 或带签名 query 的 URL 写入日志、埋点、剪贴板或可导出的诊断文件。
-2. App UI 不应展示 `archebase-config.json` 中的 `api_key`。
+1. 不要把完整 `configString`、device auth token、API Key、access token、STS secret 或带签名 query 的 URL 写入日志、埋点、剪贴板或可导出的诊断文件。
+2. API Key 只保存在 Keychain；`archebase-config.json` 不包含明文凭证。
 3. `configString` 只能来自可信渠道；再次提交会切换本机 endpoint、设备配置和穹彻 state。
 4. 排查问题时优先记录短错误摘要、文件是否存在、ready 结果和时间，不记录敏感字段值。
 
@@ -251,7 +251,7 @@ let configURL = archebaseRoot.appendingPathComponent("archebase-config.json")
 let persistRootURL = archebaseRoot.appendingPathComponent("Uploads", isDirectory: true)
 ```
 
-`archebase-endpoints.json` 和 `archebase-config.json` 都应放在 App 私有容器内。`archebase-config.json` 包含上传凭证，两个文件都不要放入 App bundle、共享容器、剪贴板、日志、埋点或用户可导出的诊断文件中。SDK 在 iOS 上写入这些文件时会使用系统文件保护选项。
+`archebase-endpoints.json` 和 `archebase-config.json` 都应放在 App 私有容器内。API Key 保存在 Keychain；配置文件只保存凭证引用和 tags。两个文件都不要放入 App bundle、共享容器、剪贴板、日志、埋点或用户可导出的诊断文件中。
 
 ## 7. 设备初始化
 
@@ -265,18 +265,21 @@ let initializer = try ArchebaseDeviceInitializer(
     )
 )
 
-let deviceConfig = try await initializer.initDevice(deviceID: "260427-000001")
+let deviceConfig = try await initializer.initDevice(
+    deviceID: "260427-000001",
+    deviceAuthToken: "kda_v1_<管理员签发值>"
+)
 
 print(deviceConfig.tags)
 ```
 
-`initDevice(deviceID:)` 的行为：
+`initDevice(deviceID:deviceAuthToken:)` 的行为：
 
 1. 从 `archebase-endpoints.json` 读取 `deviceInit` endpoint。
 2. 本地没有 `archebase-config.json` 时，调用远端 `DeviceInitService.InitDevice` 请求设备配置并写入本地文件。
 3. 本地已经存在配置文件时，抛出 `DataGatewayClientError.alreadyInitialized(configURL:)`。
 4. 如果服务端返回 `DATA_GATEWAY_DEVICE_ALREADY_INITIALIZED`，错误会以 `DataGatewayClientError.gatewayFailed` 向上暴露，不会自动 fallback 到 reinit。
-5. 写入成功后返回 `ArchebaseConfig`，其中包含 `API Key` 和设备 tags。
+5. 写入成功后返回运行时 `ArchebaseConfig`；API Key 进入 Keychain，磁盘 JSON 不包含明文。
 
 如果 `archebase-endpoints.json` 不存在，构造 `ArchebaseDeviceInitializer(config:)` 时会抛出 `DataGatewayClientError.endpointsNotInitialized(endpointsURL:)`。App 应先获取 endpoint JSON，调用 `DataGatewayClient.initialize(endpointsJSON:endpointsURL:)`，成功后重试设备初始化。
 
@@ -295,7 +298,7 @@ let newDeviceConfig = try await initializer.reinitDevice(deviceID: "260427-00000
 3. 如果服务端返回 `DATA_GATEWAY_DEVICE_NOT_INITIALIZED`，错误会以 `DataGatewayClientError.gatewayFailed` 向上暴露，不会自动 fallback 到 init。
 4. 重新初始化会轮换上传凭证，旧配置中的凭证会失效。
 
-已经开始且仍在本地快照中的上传，会继续使用创建上传时保存的 tags 和恢复状态。重新初始化只影响后续新建的上传客户端和新上传。
+App 终止后不会恢复旧 multipart。重新初始化只影响后续新建的上传客户端和新上传。
 
 建议将重新初始化放在设置页或运维入口中，不要在普通上传失败时自动调用。普通上传失败应优先根据错误类型提示用户重试、恢复上传或联系支持。
 
@@ -305,7 +308,7 @@ SDK 写入的配置文件格式如下：
 
 ```json
 {
-  "api_key": "<API Key>",
+  "credential_store": "keychain",
   "tags": {
     "device": "robot-1"
   }
@@ -316,7 +319,7 @@ SDK 写入的配置文件格式如下：
 
 | 字段 | 说明 |
 |---|---|
-| `api_key` | 上传凭证。App 不应展示、记录或主动解析该值。 |
+| `credential_store` | 固定为 `keychain`；API Key 本身不写入 JSON。 |
 | `tags` | 与设备相关的标签。SDK 会自动合并到每次上传的 `rawTags` 中。 |
 
 tags 约束：
@@ -383,9 +386,9 @@ archebase-endpoints.json
 
 ```json
 {
-  "auth": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.aliyuncsslb.com", "port": 50051 },
-  "gateway": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.aliyuncsslb.com", "port": 50053 },
-  "deviceInit": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.aliyuncsslb.com", "port": 50057 }
+  "auth": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.toscsslb.com", "port": 50051 },
+  "gateway": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.toscsslb.com", "port": 50053 },
+  "deviceInit": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.toscsslb.com", "port": 50057 }
 }
 ```
 
@@ -404,7 +407,7 @@ archebase-endpoints.json
 SwiftPM 命令行构建示例：
 
 ```bash
-cd data-sdk
+cd keystone
 swift build
 swift test
 ```
@@ -890,7 +893,10 @@ actor GatewayUploadService {
                 endpointsURL: self.endpointsURL
             )
         )
-        _ = try await initializer.initDevice(deviceID: deviceID)
+        _ = try await initializer.initDevice(
+            deviceID: deviceID,
+            deviceAuthToken: deviceAuthTokenFromSecureInstallationConfig
+        )
         self.client = try await self.makeClient()
     }
 
@@ -996,8 +1002,8 @@ public struct DeviceInitClientConfig: Sendable {
 
 public actor ArchebaseDeviceInitializer {
     public init(config: DeviceInitClientConfig) throws
-    public func initDevice(deviceID: String) async throws -> ArchebaseConfig
-    public func reinitDevice(deviceID: String) async throws -> ArchebaseConfig
+    public func initDevice(deviceID: String, deviceAuthToken: String) async throws -> ArchebaseConfig
+    public func reinitDevice(deviceID: String, recoveryDeviceAuthToken: String? = nil) async throws -> ArchebaseConfig
 }
 
 public struct ArchebaseConfig: Codable, Sendable, Equatable {

@@ -226,12 +226,12 @@ run_tests() {
   export DGW_REAL_CREDENTIAL_BASE64="${DGW_LOCAL_CREDENTIAL_BASE64:-${DGW_REAL_CREDENTIAL_BASE64:-}}"
   export DGW_REAL_DEVICE_ID="${DGW_LOCAL_DEVICE_ID:-${DGW_REAL_DEVICE_ID:-}}"
   export DGW_REAL_PERSIST_ROOT="${DGW_LOCAL_PERSIST_ROOT:-${DGW_REAL_PERSIST_ROOT:-$(mktemp -d /tmp/swift-dgw-public-dns.XXXXXX)}}"
-  export DGW_OSS_TEST_ENDPOINT="${DGW_OSS_TEST_ENDPOINT:-https://oss-cn-shanghai.aliyuncs.com}"
-  export DGW_OSS_TEST_BUCKET="${DGW_OSS_TEST_BUCKET:-public-dns-placeholder}"
-  export DGW_OSS_TEST_ACCESS_KEY_ID="${DGW_OSS_TEST_ACCESS_KEY_ID:-placeholder}"
-  export DGW_OSS_TEST_ACCESS_KEY_SECRET="${DGW_OSS_TEST_ACCESS_KEY_SECRET:-placeholder}"
-  export DGW_OSS_TEST_SECURITY_TOKEN="${DGW_OSS_TEST_SECURITY_TOKEN:-placeholder}"
-  export DGW_OSS_TEST_OBJECT_PREFIX="${DGW_OSS_TEST_OBJECT_PREFIX:-swift-public-dns}"
+  export DGW_TOS_TEST_ENDPOINT="${DGW_TOS_TEST_ENDPOINT:-https://tos-cn-beijing.volces.com}"
+  export DGW_TOS_TEST_BUCKET="${DGW_TOS_TEST_BUCKET:-public-dns-placeholder}"
+  export DGW_TOS_TEST_ACCESS_KEY_ID="${DGW_TOS_TEST_ACCESS_KEY_ID:-placeholder}"
+  export DGW_TOS_TEST_ACCESS_KEY_SECRET="${DGW_TOS_TEST_ACCESS_KEY_SECRET:-placeholder}"
+  export DGW_TOS_TEST_SECURITY_TOKEN="${DGW_TOS_TEST_SECURITY_TOKEN:-placeholder}"
+  export DGW_TOS_TEST_OBJECT_PREFIX="${DGW_TOS_TEST_OBJECT_PREFIX:-swift-public-dns}"
   (cd "$SDK_DIR" && swift test --filter LocalStackHarnessTests)
 }
 

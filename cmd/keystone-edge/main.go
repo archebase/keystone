@@ -138,7 +138,7 @@ func main() {
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}
-	dgwCompatServer, err := dgwcompat.StartFromEnv()
+	dgwCompatServer, err := dgwcompat.StartFromEnv(db.DB)
 	if err != nil {
 		logger.Fatalf("[DGW_COMPAT] Failed to start compatibility server: %v", err)
 	}

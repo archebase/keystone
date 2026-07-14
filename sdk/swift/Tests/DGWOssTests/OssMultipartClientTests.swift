@@ -1,4 +1,6 @@
-@preconcurrency @testable import AlibabaCloudOSS
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import DGWProto
 import Foundation
@@ -6,8 +8,31 @@ import Testing
 
 @testable import DGWOss
 
+@Test func tosV4SignerUsesProtocolRegionAndTemporaryToken() throws {
+    var request = URLRequest(url: URL(string: "https://bucket.tos-cn-beijing.volces.com/path/file.mcap?uploadId=upload-1")!)
+    request.httpMethod = "PUT"
+    try TOSV4Signer.sign(
+        request: &request,
+        region: "cn-beijing",
+        credentials: OssTemporaryCredentials(
+            accessKeyID: "temp-ak",
+            accessKeySecret: "temp-sk",
+            securityToken: "temp-token",
+            expiration: nil
+        ),
+        payload: Data("payload".utf8),
+        now: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+
+    let authorization = try #require(request.value(forHTTPHeaderField: "Authorization"))
+    #expect(authorization.hasPrefix("TOS4-HMAC-SHA256 Credential=temp-ak/"))
+    #expect(authorization.contains("/cn-beijing/tos/request"))
+    #expect(request.value(forHTTPHeaderField: "x-tos-security-token") == "temp-token")
+    #expect(request.value(forHTTPHeaderField: "x-tos-content-sha256")?.count == 64)
+}
+
 @Test func ossMultipartClientBuildsExpectedSDKRequests() async throws {
-    let sdkClient = MockAlibabaOSSSDKClient(
+    let sdkClient = MockTOSHTTPClient(
         initiateValue: OssInitiateMultipartUploadOutput(uploadID: "upload-1"),
         uploadPartValue: OssUploadPartOutput(etag: "\"etag-1\""),
         completeValue: OssCompleteMultipartUploadOutput(etag: "\"etag-complete\""),
@@ -100,7 +125,7 @@ import Testing
 }
 
 @Test func ossMultipartClientMapsResponses() async throws {
-    let sdkClient = MockAlibabaOSSSDKClient(
+    let sdkClient = MockTOSHTTPClient(
         initiateValue: OssInitiateMultipartUploadOutput(uploadID: "upload-1"),
         uploadPartValue: OssUploadPartOutput(etag: "\"etag-1\""),
         completeValue: OssCompleteMultipartUploadOutput(etag: "\"etag-complete\""),
@@ -180,7 +205,7 @@ import Testing
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let fileURL = root.appendingPathComponent("body.bin")
     try Data("put-body".utf8).write(to: fileURL)
-    let sdkClient = MockAlibabaOSSSDKClient(
+    let sdkClient = MockTOSHTTPClient(
         initiateValue: OssInitiateMultipartUploadOutput(uploadID: "upload-1"),
         uploadPartValue: OssUploadPartOutput(etag: "\"etag-1\""),
         completeValue: OssCompleteMultipartUploadOutput(etag: "\"etag-complete\""),
@@ -212,7 +237,7 @@ import Testing
 }
 
 @Test func listPartsMergesPaginatorPagesInOrder() async throws {
-    let sdkClient = MockAlibabaOSSSDKClient(
+    let sdkClient = MockTOSHTTPClient(
         initiateValue: OssInitiateMultipartUploadOutput(uploadID: nil),
         uploadPartValue: OssUploadPartOutput(etag: nil),
         completeValue: OssCompleteMultipartUploadOutput(etag: nil),
@@ -239,7 +264,7 @@ import Testing
 }
 
 @Test func putObjectMissingETagFailsInvalidResponse() async throws {
-    let sdkClient = MockAlibabaOSSSDKClient(
+    let sdkClient = MockTOSHTTPClient(
         initiateValue: OssInitiateMultipartUploadOutput(uploadID: nil),
         uploadPartValue: OssUploadPartOutput(etag: nil),
         putValue: OssPutObjectOutput(etag: nil),
@@ -257,7 +282,7 @@ import Testing
 }
 
 @Test func putObjectURLErrorClassifiesAsRetriableTransportFailure() async throws {
-    let sdkClient = MockAlibabaOSSSDKClient(
+    let sdkClient = MockTOSHTTPClient(
         initiateValue: OssInitiateMultipartUploadOutput(uploadID: nil),
         uploadPartValue: OssUploadPartOutput(etag: nil),
         putError: URLError(.timedOut),
@@ -327,7 +352,7 @@ import Testing
 
     let refreshedContext = await session.uploadContext()
     #expect(refreshedContext.bucket == "bucket-1")
-    #expect(refreshedContext.endpoint == "https://oss-cn-shanghai.aliyuncs.com")
+    #expect(refreshedContext.endpoint == "https://tos-cn-beijing.volces.com")
     #expect(refreshedContext.objectKey == "objects/demo.bin")
     #expect(refreshedContext.partSizeBytes == 64 * 1024 * 1024)
     #expect(refreshedContext.credentialRefreshCount == 1)
@@ -548,7 +573,7 @@ import Testing
     #expect(await provider.requestedUploadIDs().isEmpty)
 }
 
-private actor MockAlibabaOSSSDKClient: AlibabaOSSSDKClientProtocol {
+private actor MockTOSHTTPClient: TOSHTTPClientProtocol {
     private let initiateValue: OssInitiateMultipartUploadOutput
     private let uploadPartValue: OssUploadPartOutput
     private let putValue: OssPutObjectOutput
@@ -961,7 +986,8 @@ private actor FailableDataPlaneOperation<Value: Sendable> {
 private func makeConfiguration() -> OssMultipartClientConfiguration {
     OssMultipartClientConfiguration(
         bucket: "bucket-1",
-        endpoint: "https://oss-cn-shanghai.aliyuncs.com",
+        endpoint: "https://tos-cn-beijing.volces.com",
+        region: "cn-beijing",
         credentials: OssTemporaryCredentials(
             accessKeyID: "ak",
             accessKeySecret: "sk",
@@ -976,7 +1002,7 @@ private func makeConfiguration() -> OssMultipartClientConfiguration {
 private func makeUploadCredentials(
     expireAtUnix: Int64,
     tokenSuffix: String,
-    endpoint: String = "https://oss-cn-shanghai.aliyuncs.com",
+    endpoint: String = "https://tos-cn-beijing.volces.com",
     bucket: String = "bucket-1",
     objectKey: String = "objects/demo.bin",
     partSizeBytes: Int64 = 64 * 1024 * 1024
@@ -990,6 +1016,8 @@ private func makeUploadCredentials(
     credentials.stsSecurityToken = "token-\(tokenSuffix)"
     credentials.stsExpireAtUnix = expireAtUnix
     credentials.partSizeBytes = partSizeBytes
+    credentials.objectStoreBackend = "volcengine_tos"
+    credentials.objectStoreRegion = "cn-beijing"
     return credentials
 }
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import Foundation
 import Testing
@@ -23,7 +26,10 @@ import Testing
     try await store.initialize(config)
 
     #expect(try await store.load() == config)
-    #expect(try String(contentsOf: configURL, encoding: .utf8).contains("\"api_key\""))
+    let persisted = try String(contentsOf: configURL, encoding: .utf8)
+    #expect(persisted.contains("\"credential_store\""))
+    #expect(!persisted.contains("credential-v1"))
+    #expect(!persisted.contains("api_key"))
 }
 
 @Test func initializeRejectsWhenFileExists() async throws {
@@ -140,7 +146,9 @@ import Testing
     try await store.initialize(config)
 
     let data = try Data(contentsOf: configURL)
-    #expect(try ArchebaseConfig.decodeValidated(from: data) == config)
+    let persisted = try ArchebaseConfig.decodePersisted(from: data)
+    #expect(persisted.tags == config.tags)
+    #expect(persisted.apiKey.isEmpty)
 }
 
 private func temporaryConfigURL() throws -> URL {

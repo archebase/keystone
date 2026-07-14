@@ -191,6 +191,8 @@ public struct Archebase_Auth_V1_ExchangeCredentialRequest: Sendable {
 
   public var credential: String = String()
 
+  public var deviceID: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1498,7 +1500,7 @@ extension Archebase_Auth_V1_AuthErrorCode: SwiftProtobuf._ProtoNameProviding {
 
 extension Archebase_Auth_V1_ExchangeCredentialRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExchangeCredentialRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}credential\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}credential\0\u{3}device_id\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1507,6 +1509,7 @@ extension Archebase_Auth_V1_ExchangeCredentialRequest: SwiftProtobuf.Message, Sw
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.credential) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.deviceID) }()
       default: break
       }
     }
@@ -1516,11 +1519,15 @@ extension Archebase_Auth_V1_ExchangeCredentialRequest: SwiftProtobuf.Message, Sw
     if !self.credential.isEmpty {
       try visitor.visitSingularStringField(value: self.credential, fieldNumber: 1)
     }
+    if !self.deviceID.isEmpty {
+      try visitor.visitSingularStringField(value: self.deviceID, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Archebase_Auth_V1_ExchangeCredentialRequest, rhs: Archebase_Auth_V1_ExchangeCredentialRequest) -> Bool {
     if lhs.credential != rhs.credential {return false}
+    if lhs.deviceID != rhs.deviceID {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

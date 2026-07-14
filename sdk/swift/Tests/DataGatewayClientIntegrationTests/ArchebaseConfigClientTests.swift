@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import DGWOss
 import DGWProto
@@ -276,13 +279,15 @@ private actor RecordingGatewayClient: UploadCoordinatorGatewayClient {
     ) async throws -> Archebase_DataGateway_V1_CreateLogicalUploadResponse {
         var credentials = Archebase_DataGateway_V1_UploadCredentials()
         credentials.bucket = "bucket"
-        credentials.endpoint = "https://oss.example.com"
+        credentials.endpoint = "https://tos-cn-beijing.volces.com"
         credentials.objectKey = "objects/upload-1"
         credentials.stsAccessKeyID = "ak"
         credentials.stsAccessKeySecret = "sk"
         credentials.stsSecurityToken = "token"
         credentials.stsExpireAtUnix = Int64(Date().addingTimeInterval(3600).timeIntervalSince1970)
         credentials.partSizeBytes = 1024
+        credentials.objectStoreBackend = "volcengine_tos"
+        credentials.objectStoreRegion = "cn-beijing"
 
         var response = Archebase_DataGateway_V1_CreateLogicalUploadResponse()
         response.logicalUploadID = "logical-1"
@@ -308,7 +313,7 @@ private actor RecordingGatewayClient: UploadCoordinatorGatewayClient {
         fileSize: Int64,
         rawTags: [String : String],
         completedPartCount: Int32,
-        ossObjectEtag: String,
+        objectEtag: String,
         partSizeBytes: Int64
     ) async throws -> Archebase_DataGateway_V1_CompleteUploadResponse {
         self.completedRawTags = rawTags

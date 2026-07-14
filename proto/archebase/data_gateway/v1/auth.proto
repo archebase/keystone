@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 syntax = "proto3";
 
 package archebase.auth.v1;
@@ -84,6 +87,7 @@ service UserAuthService {
 
 message ExchangeCredentialRequest {
   string credential = 1;
+  string device_id = 2;
 }
 
 message ExchangeCredentialResponse {

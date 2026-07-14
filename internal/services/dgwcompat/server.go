@@ -12,6 +12,7 @@ import (
 
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
 	"archebase.com/keystone-edge/internal/logger"
+	"github.com/jmoiron/sqlx"
 	"google.golang.org/grpc"
 )
 
@@ -22,7 +23,7 @@ type Server struct {
 }
 
 // StartFromEnv starts the compatibility server if KEYSTONE_DGW_COMPAT_ENABLED is truthy.
-func StartFromEnv() (*Server, error) {
+func StartFromEnv(db *sqlx.DB) (*Server, error) {
 	cfg, err := LoadConfigFromEnv()
 	if err != nil {
 		return nil, err
@@ -31,22 +32,29 @@ func StartFromEnv() (*Server, error) {
 		logger.Println("[DGW_COMPAT] Compatibility server disabled")
 		return nil, nil
 	}
-	return Start(cfg)
+	return Start(cfg, db)
 }
 
 // Start starts all compatibility gRPC listeners.
-func Start(cfg Config) (*Server, error) {
-	sts := newSTSProvider(cfg)
+func Start(cfg Config, db *sqlx.DB) (*Server, error) {
+	if db == nil {
+		return nil, fmt.Errorf("dgw compatibility server requires database")
+	}
+	sts, err := newSTSProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
 	sessions := newSessionStore()
+	identity := newDeviceIdentityService(db, cfg)
 
 	auth := grpc.NewServer()
-	cloudpb.RegisterAuthServiceServer(auth, &authService{})
+	cloudpb.RegisterAuthServiceServer(auth, &authService{identity: identity})
 
-	gateway := grpc.NewServer()
+	gateway := grpc.NewServer(grpc.UnaryInterceptor(deviceUnaryAuthInterceptor(db, cfg)))
 	cloudpb.RegisterDataGatewayServiceServer(gateway, newGatewayService(cfg, sts, sessions))
 
 	deviceInit := grpc.NewServer()
-	cloudpb.RegisterDeviceInitServiceServer(deviceInit, &deviceInitService{apiKey: cfg.DeviceAPIKey})
+	cloudpb.RegisterDeviceInitServiceServer(deviceInit, &deviceInitService{identity: identity})
 
 	started := &Server{cfg: cfg}
 	if err := started.serve("auth", cfg.AuthAddr, auth); err != nil {
@@ -61,8 +69,8 @@ func Start(cfg Config) (*Server, error) {
 		started.Stop(context.Background())
 		return nil, err
 	}
-	logger.Printf("[DGW_COMPAT] Started compatibility gRPC servers auth=%s gateway=%s device_init=%s bucket=%s endpoint=%s mock_sts=%t",
-		cfg.AuthAddr, cfg.GatewayAddr, cfg.DeviceInitAddr, cfg.OSSBucket, cfg.OSSPublicEndpoint, cfg.MockSTS)
+	logger.Printf("[DGW_COMPAT] Started compatibility gRPC servers auth=%s gateway=%s device_init=%s backend=volcengine_tos bucket=%s endpoint=%s region=%s mock_sts=%t",
+		cfg.AuthAddr, cfg.GatewayAddr, cfg.DeviceInitAddr, cfg.TOSBucket, cfg.TOSEndpoint, cfg.TOSRegion, cfg.MockSTS)
 	return started, nil
 }
 

@@ -1,6 +1,11 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 syntax = "proto3";
 
 package archebase.data_gateway.v1;
+
+option go_package = "archebase.com/keystone-edge/internal/cloud/cloudpb;cloudpb";
 
 service DataGatewayService {
   // Upload RPCs are scoped exclusively by the bearer API-key principal
@@ -69,6 +74,8 @@ message InitDeviceRequest {
   string sdk_version = 2;
   // SDK platform string, for example "ios".
   string platform = 3;
+  // Administrator-issued device auth token with one-time SDK initialization permission.
+  string device_auth_token = 4;
 }
 
 // Request sent by SDKs when explicitly rotating an existing upload API key.
@@ -81,6 +88,8 @@ message ReinitDeviceRequest {
   string sdk_version = 2;
   // SDK platform string, for example "ios".
   string platform = 3;
+  // Required only for administrator-authorized credential recovery.
+  string device_auth_token = 4;
 }
 
 // Response persisted by SDKs into archebase-config.json.
@@ -159,7 +168,7 @@ message GetUploadRecoveryResponse {
   int64 session_expire_at_unix = 11;
   UploadRecoveryAction next_action = 12;
   int32 completed_part_count = 13;
-  string oss_object_etag = 14;
+  string object_etag = 14;
 }
 
 message ReissueUploadCredentialsRequest {
@@ -187,7 +196,7 @@ message CompleteUploadRequest {
   int64 file_size = 2;
   map<string, string> raw_tags = 3;
   int32 completed_part_count = 4;
-  string oss_object_etag = 5;
+  string object_etag = 5;
   // Upload part size issued by data-gateway for this upload session.
   // New SDKs echo it back so completion validation remains stable if
   // gateway config changes between credential issuance and completion.

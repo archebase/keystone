@@ -406,6 +406,9 @@ public struct Archebase_DataGateway_V1_InitDeviceRequest: Sendable {
   /// SDK platform string, for example "ios".
   public var platform: String = String()
 
+  /// Administrator-issued device auth token with one-time SDK initialization permission.
+  public var deviceAuthToken: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -427,6 +430,9 @@ public struct Archebase_DataGateway_V1_ReinitDeviceRequest: Sendable {
 
   /// SDK platform string, for example "ios".
   public var platform: String = String()
+
+  /// Required only for administrator-authorized credential recovery.
+  public var deviceAuthToken: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -562,7 +568,7 @@ public struct Archebase_DataGateway_V1_GetUploadRecoveryResponse: Sendable {
 
   public var completedPartCount: Int32 = 0
 
-  public var ossObjectEtag: String = String()
+  public var objectEtag: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -647,7 +653,7 @@ public struct Archebase_DataGateway_V1_CompleteUploadRequest: Sendable {
 
   public var completedPartCount: Int32 = 0
 
-  public var ossObjectEtag: String = String()
+  public var objectEtag: String = String()
 
   /// Upload part size issued by data-gateway for this upload session.
   /// New SDKs echo it back so completion validation remains stable if
@@ -1360,7 +1366,7 @@ extension Archebase_DataGateway_V1_DataGatewayErrorCode: SwiftProtobuf._ProtoNam
 
 extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".InitDeviceRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0\u{3}sdk_version\0\u{1}platform\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0\u{3}sdk_version\0\u{1}platform\0\u{3}device_auth_token\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1371,6 +1377,7 @@ extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, Swi
       case 1: try { try decoder.decodeSingularStringField(value: &self.deviceID) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.sdkVersion) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.platform) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.deviceAuthToken) }()
       default: break
       }
     }
@@ -1385,6 +1392,9 @@ extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, Swi
     }
     if !self.platform.isEmpty {
       try visitor.visitSingularStringField(value: self.platform, fieldNumber: 3)
+    }
+    if !self.deviceAuthToken.isEmpty {
+      try visitor.visitSingularStringField(value: self.deviceAuthToken, fieldNumber: 4)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -1393,6 +1403,7 @@ extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, Swi
     if lhs.deviceID != rhs.deviceID {return false}
     if lhs.sdkVersion != rhs.sdkVersion {return false}
     if lhs.platform != rhs.platform {return false}
+    if lhs.deviceAuthToken != rhs.deviceAuthToken {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -1400,7 +1411,7 @@ extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, Swi
 
 extension Archebase_DataGateway_V1_ReinitDeviceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ReinitDeviceRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0\u{3}sdk_version\0\u{1}platform\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0\u{3}sdk_version\0\u{1}platform\0\u{3}device_auth_token\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1411,6 +1422,7 @@ extension Archebase_DataGateway_V1_ReinitDeviceRequest: SwiftProtobuf.Message, S
       case 1: try { try decoder.decodeSingularStringField(value: &self.deviceID) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.sdkVersion) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.platform) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.deviceAuthToken) }()
       default: break
       }
     }
@@ -1426,6 +1438,9 @@ extension Archebase_DataGateway_V1_ReinitDeviceRequest: SwiftProtobuf.Message, S
     if !self.platform.isEmpty {
       try visitor.visitSingularStringField(value: self.platform, fieldNumber: 3)
     }
+    if !self.deviceAuthToken.isEmpty {
+      try visitor.visitSingularStringField(value: self.deviceAuthToken, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1433,6 +1448,7 @@ extension Archebase_DataGateway_V1_ReinitDeviceRequest: SwiftProtobuf.Message, S
     if lhs.deviceID != rhs.deviceID {return false}
     if lhs.sdkVersion != rhs.sdkVersion {return false}
     if lhs.platform != rhs.platform {return false}
+    if lhs.deviceAuthToken != rhs.deviceAuthToken {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -1680,7 +1696,7 @@ extension Archebase_DataGateway_V1_GetUploadRecoveryResponse: SwiftProtobuf.Mess
       case 11: try { try decoder.decodeSingularInt64Field(value: &self.sessionExpireAtUnix) }()
       case 12: try { try decoder.decodeSingularEnumField(value: &self.nextAction) }()
       case 13: try { try decoder.decodeSingularInt32Field(value: &self.completedPartCount) }()
-      case 14: try { try decoder.decodeSingularStringField(value: &self.ossObjectEtag) }()
+      case 14: try { try decoder.decodeSingularStringField(value: &self.objectEtag) }()
       default: break
       }
     }
@@ -1726,8 +1742,8 @@ extension Archebase_DataGateway_V1_GetUploadRecoveryResponse: SwiftProtobuf.Mess
     if self.completedPartCount != 0 {
       try visitor.visitSingularInt32Field(value: self.completedPartCount, fieldNumber: 13)
     }
-    if !self.ossObjectEtag.isEmpty {
-      try visitor.visitSingularStringField(value: self.ossObjectEtag, fieldNumber: 14)
+    if !self.objectEtag.isEmpty {
+      try visitor.visitSingularStringField(value: self.objectEtag, fieldNumber: 14)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -1746,7 +1762,7 @@ extension Archebase_DataGateway_V1_GetUploadRecoveryResponse: SwiftProtobuf.Mess
     if lhs.sessionExpireAtUnix != rhs.sessionExpireAtUnix {return false}
     if lhs.nextAction != rhs.nextAction {return false}
     if lhs.completedPartCount != rhs.completedPartCount {return false}
-    if lhs.ossObjectEtag != rhs.ossObjectEtag {return false}
+    if lhs.objectEtag != rhs.objectEtag {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -1910,7 +1926,7 @@ extension Archebase_DataGateway_V1_CompleteUploadRequest: SwiftProtobuf.Message,
       case 2: try { try decoder.decodeSingularInt64Field(value: &self.fileSize) }()
       case 3: try { try decoder.decodeMapField(fieldType: SwiftProtobuf._ProtobufMap<SwiftProtobuf.ProtobufString,SwiftProtobuf.ProtobufString>.self, value: &self.rawTags) }()
       case 4: try { try decoder.decodeSingularInt32Field(value: &self.completedPartCount) }()
-      case 5: try { try decoder.decodeSingularStringField(value: &self.ossObjectEtag) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.objectEtag) }()
       case 6: try { try decoder.decodeSingularInt64Field(value: &self.partSizeBytes) }()
       default: break
       }
@@ -1930,8 +1946,8 @@ extension Archebase_DataGateway_V1_CompleteUploadRequest: SwiftProtobuf.Message,
     if self.completedPartCount != 0 {
       try visitor.visitSingularInt32Field(value: self.completedPartCount, fieldNumber: 4)
     }
-    if !self.ossObjectEtag.isEmpty {
-      try visitor.visitSingularStringField(value: self.ossObjectEtag, fieldNumber: 5)
+    if !self.objectEtag.isEmpty {
+      try visitor.visitSingularStringField(value: self.objectEtag, fieldNumber: 5)
     }
     if self.partSizeBytes != 0 {
       try visitor.visitSingularInt64Field(value: self.partSizeBytes, fieldNumber: 6)
@@ -1944,7 +1960,7 @@ extension Archebase_DataGateway_V1_CompleteUploadRequest: SwiftProtobuf.Message,
     if lhs.fileSize != rhs.fileSize {return false}
     if lhs.rawTags != rhs.rawTags {return false}
     if lhs.completedPartCount != rhs.completedPartCount {return false}
-    if lhs.ossObjectEtag != rhs.ossObjectEtag {return false}
+    if lhs.objectEtag != rhs.objectEtag {return false}
     if lhs.partSizeBytes != rhs.partSizeBytes {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true

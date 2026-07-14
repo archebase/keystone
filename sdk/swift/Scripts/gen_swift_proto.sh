@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROTO_ROOT="$PACKAGE_ROOT/protos"
+REPO_ROOT="$(cd "$PACKAGE_ROOT/../.." && pwd)"
+PROTO_ROOT="$REPO_ROOT/proto/archebase/data_gateway/v1"
 OUT_DIR="$PACKAGE_ROOT/Sources/DGWProto/Generated"
 TOOL_BIN="$PACKAGE_ROOT/.local/toolchains/swift-proto/bin"
 

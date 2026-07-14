@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 
 import DGWAuth
@@ -223,12 +226,15 @@ package struct ControlPlaneClientFactory: Sendable {
 package protocol DeviceInitTransport: Sendable {
     func initDevice(
         deviceID: String,
+        deviceAuthToken: String,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse
 
     func reinitDevice(
         deviceID: String,
+        deviceAuthToken: String,
+        authorizationHeader: String?,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse
@@ -245,6 +251,7 @@ package final class DeviceInitServiceClientTransport<Client: Archebase_DataGatew
 
     package func initDevice(
         deviceID: String,
+        deviceAuthToken: String,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse {
@@ -252,6 +259,7 @@ package final class DeviceInitServiceClientTransport<Client: Archebase_DataGatew
         request.deviceID = deviceID
         request.sdkVersion = sdkVersion
         request.platform = platform
+        request.deviceAuthToken = deviceAuthToken
 
         let options = self.optionsBuilder.make(authorizationHeader: nil)
         let response: ClientResponse<Archebase_DataGateway_V1_InitDeviceResponse> = try await self.client.initDevice(
@@ -266,6 +274,8 @@ package final class DeviceInitServiceClientTransport<Client: Archebase_DataGatew
 
     package func reinitDevice(
         deviceID: String,
+        deviceAuthToken: String,
+        authorizationHeader: String?,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse {
@@ -273,8 +283,9 @@ package final class DeviceInitServiceClientTransport<Client: Archebase_DataGatew
         request.deviceID = deviceID
         request.sdkVersion = sdkVersion
         request.platform = platform
+        request.deviceAuthToken = deviceAuthToken
 
-        let options = self.optionsBuilder.make(authorizationHeader: nil)
+        let options = self.optionsBuilder.make(authorizationHeader: authorizationHeader)
         let response: ClientResponse<Archebase_DataGateway_V1_InitDeviceResponse> = try await self.client.reinitDevice(
             request,
             metadata: options.metadata,
@@ -314,7 +325,7 @@ package protocol GatewayControlPlaneClientProtocol: Sendable {
         fileSize: Int64,
         rawTags: [String: String],
         completedPartCount: Int32,
-        ossObjectEtag: String,
+        objectEtag: String,
         partSizeBytes: Int64,
         authorizationHeader: String
     ) async throws -> Archebase_DataGateway_V1_CompleteUploadResponse
@@ -413,7 +424,7 @@ package final class GatewayControlPlaneClient<Client: Archebase_DataGateway_V1_D
         fileSize: Int64,
         rawTags: [String: String],
         completedPartCount: Int32,
-        ossObjectEtag: String,
+        objectEtag: String,
         partSizeBytes: Int64,
         authorizationHeader: String
     ) async throws -> Archebase_DataGateway_V1_CompleteUploadResponse {
@@ -422,7 +433,7 @@ package final class GatewayControlPlaneClient<Client: Archebase_DataGateway_V1_D
         request.fileSize = fileSize
         request.rawTags = rawTags
         request.completedPartCount = completedPartCount
-        request.ossObjectEtag = ossObjectEtag
+        request.objectEtag = objectEtag
         request.partSizeBytes = partSizeBytes
 
         let options = self.optionsBuilder.make(authorizationHeader: authorizationHeader)

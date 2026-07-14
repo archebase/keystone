@@ -31,7 +31,12 @@ const (
 	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
 	hilbertDCPlanQueryPath        = "/v1/data-collection/dc-plan/query"
 	hilbertDCDeviceQueryPath      = "/v1/data-collection/dc-device/query"
+	hilbertDCDeviceGetKeyPath     = "/v1/data-collection/dc-device/get-api-key"
+	hilbertDCDeviceGeneratePath   = "/v1/data-collection/dc-device/generate-api-key"
+	hilbertDCDeviceDeletePath     = "/v1/data-collection/dc-device/delete-api-key"
+	hilbertDCDeviceValidatePath   = "/v1/data-collection/dc-device/validate"
 	hilbertDCDeviceTypeQueryPath  = "/v1/data-collection/dc-device-type/query"
+	hilbertNonceConsumePath       = "/v1/console/nonce/consume"
 
 	hilbertNonceKeyLengthBytes = 32
 	hilbertNonceIVLengthBytes  = 12
@@ -177,6 +182,11 @@ type HilbertDCDeviceTypePage struct {
 	Total    int64                 `json:"total"`
 	PageNum  int64                 `json:"pageNum"`
 	PageSize int64                 `json:"pageSize"`
+}
+
+type hilbertDCDeviceAPIKey struct {
+	NonceID      int64  `json:"nonceId"`
+	CipherAPIKey string `json:"cipherApiKey"`
 }
 
 // HilbertClient authenticates collector credentials against the Hilbert backend.
@@ -390,6 +400,126 @@ func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, sessionKey st
 	return &resp.Data.Records[0], nil
 }
 
+// GetDCDeviceAPIKey fetches and decrypts the existing Hilbert device API key.
+func (c *HilbertClient) GetDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) (string, error) {
+	query := url.Values{}
+	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))
+	query.Set("id", strconv.FormatInt(deviceID, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertDCDeviceGetKeyPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: create device API key request", ErrHilbertUnavailable)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(sessionKey))
+	return c.readDeviceAPIKeyResponse(ctx, sessionKey, req)
+}
+
+// GenerateDCDeviceAPIKey creates and decrypts a Hilbert device API key.
+func (c *HilbertClient) GenerateDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) (string, error) {
+	req, err := c.hilbertJSONRequest(ctx, http.MethodPost, hilbertDCDeviceGeneratePath, sessionKey, map[string]int64{
+		"workspaceId": workspaceID,
+		"id":          deviceID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return c.readDeviceAPIKeyResponse(ctx, sessionKey, req)
+}
+
+// DeleteDCDeviceAPIKey removes the Hilbert device API key.
+func (c *HilbertClient) DeleteDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) error {
+	req, err := c.hilbertJSONRequest(ctx, http.MethodPost, hilbertDCDeviceDeletePath, sessionKey, map[string]int64{
+		"workspaceId": workspaceID,
+		"id":          deviceID,
+	})
+	if err != nil {
+		return err
+	}
+	var resp hilbertCommonResponse[bool]
+	if err := c.doJSON(req, &resp); err != nil {
+		return err
+	}
+	if resp.Code != 0 {
+		return fmt.Errorf("%w: delete device API key response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return nil
+}
+
+// ValidateDCDeviceAPIKey validates a plaintext key through Hilbert's nonce transport.
+func (c *HilbertClient) ValidateDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64, apiKey string) (bool, error) {
+	nonceRecord, err := c.generateNonce(ctx)
+	if err != nil {
+		return false, err
+	}
+	cipherAPIKey, err := EncryptHilbertNonceValue(apiKey, nonceRecord.RandomKey)
+	if err != nil {
+		return false, fmt.Errorf("%w: encrypt device API key", ErrHilbertUnavailable)
+	}
+	req, err := c.hilbertJSONRequest(ctx, http.MethodPost, hilbertDCDeviceValidatePath, sessionKey, map[string]any{
+		"workspaceId":  workspaceID,
+		"id":           deviceID,
+		"nonceId":      nonceRecord.ID,
+		"cipherApiKey": cipherAPIKey,
+	})
+	if err != nil {
+		return false, err
+	}
+	var resp hilbertCommonResponse[bool]
+	if err := c.doJSON(req, &resp); err != nil {
+		return false, err
+	}
+	if resp.Code != 0 {
+		return false, fmt.Errorf("%w: validate device API key response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return resp.Data, nil
+}
+
+func (c *HilbertClient) readDeviceAPIKeyResponse(ctx context.Context, sessionKey string, req *http.Request) (string, error) {
+	var resp hilbertCommonResponse[hilbertDCDeviceAPIKey]
+	if err := c.doJSON(req, &resp); err != nil {
+		return "", err
+	}
+	if resp.Code != 0 || resp.Data.NonceID <= 0 || strings.TrimSpace(resp.Data.CipherAPIKey) == "" {
+		return "", fmt.Errorf("%w: device API key response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	nonceRecord, err := c.consumeNonce(ctx, sessionKey, resp.Data.NonceID)
+	if err != nil {
+		return "", err
+	}
+	return DecryptHilbertNonceValue(resp.Data.CipherAPIKey, nonceRecord.RandomKey)
+}
+
+func (c *HilbertClient) consumeNonce(ctx context.Context, sessionKey string, nonceID int64) (*hilbertNonceData, error) {
+	query := url.Values{}
+	query.Set("id", strconv.FormatInt(nonceID, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertNonceConsumePath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create nonce consume request", ErrHilbertUnavailable)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(sessionKey))
+	var resp hilbertCommonResponse[*hilbertNonceData]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 || resp.Data == nil {
+		return nil, fmt.Errorf("%w: nonce consume response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return resp.Data, nil
+}
+
+func (c *HilbertClient) hilbertJSONRequest(ctx context.Context, method, path, sessionKey string, body any) (*http.Request, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode Hilbert request", ErrHilbertUnavailable)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("%w: create Hilbert request", ErrHilbertUnavailable)
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(sessionKey))
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
 type hilbertCommonResponse[T any] struct {
 	Code int `json:"code"`
 	Data T   `json:"data"`
@@ -479,7 +609,11 @@ func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
 func encryptHilbertPasswordDigest(password string, encodedMaterial string) (string, error) {
 	digest := sha256.Sum256([]byte(password))
 	plainDigest := hex.EncodeToString(digest[:])
+	return EncryptHilbertNonceValue(plainDigest, encodedMaterial)
+}
 
+// EncryptHilbertNonceValue encrypts one plaintext value with Hilbert nonce material.
+func EncryptHilbertNonceValue(plainText string, encodedMaterial string) (string, error) {
 	material, err := base64.StdEncoding.DecodeString(encodedMaterial)
 	if err != nil {
 		return "", fmt.Errorf("decode nonce material: %w", err)
@@ -497,6 +631,34 @@ func encryptHilbertPasswordDigest(password string, encodedMaterial string) (stri
 		return "", fmt.Errorf("create aes-gcm cipher: %w", err)
 	}
 
-	cipherText := aesGCM.Seal(nil, material[hilbertNonceKeyLengthBytes:], []byte(plainDigest), nil)
+	cipherText := aesGCM.Seal(nil, material[hilbertNonceKeyLengthBytes:], []byte(plainText), nil)
 	return base64.StdEncoding.EncodeToString(cipherText), nil
+}
+
+// DecryptHilbertNonceValue decrypts one Hilbert nonce-encrypted value.
+func DecryptHilbertNonceValue(encodedCipherText string, encodedMaterial string) (string, error) {
+	material, err := base64.StdEncoding.DecodeString(encodedMaterial)
+	if err != nil {
+		return "", fmt.Errorf("decode nonce material: %w", err)
+	}
+	if len(material) != hilbertNonceLengthBytes {
+		return "", fmt.Errorf("nonce material length must be %d bytes", hilbertNonceLengthBytes)
+	}
+	cipherText, err := base64.StdEncoding.DecodeString(encodedCipherText)
+	if err != nil {
+		return "", fmt.Errorf("decode cipher text: %w", err)
+	}
+	block, err := aes.NewCipher(material[:hilbertNonceKeyLengthBytes])
+	if err != nil {
+		return "", fmt.Errorf("create aes cipher: %w", err)
+	}
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("create aes-gcm cipher: %w", err)
+	}
+	plainText, err := aesGCM.Open(nil, material[hilbertNonceKeyLengthBytes:], cipherText, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt cipher text: %w", err)
+	}
+	return string(plainText), nil
 }

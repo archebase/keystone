@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWOss
 import Foundation
 
@@ -165,8 +168,8 @@ package struct LocalStackTestEnvironment: Sendable {
     }
 }
 
-/// Errors raised while validating the Aliyun OSS test harness environment.
-package enum AliyunOSSHarnessError: Error, Sendable, Equatable {
+/// Errors raised while validating the TOS test harness environment.
+package enum TOSHarnessError: Error, Sendable, Equatable {
     case missingEnvironmentVariable(String)
     case invalidEnvironmentVariable(String)
 }
@@ -182,26 +185,26 @@ package struct RemoteUploadExpectation: Sendable, Equatable {
     }
 }
 
-/// Environment reader used by real Aliyun OSS integration tests.
-package struct AliyunOSSTestEnvironment: Sendable {
+/// Environment reader used by real TOS integration tests.
+package struct TOSTestEnvironment: Sendable {
     package var environment: [String: String]
 
     package init(environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.environment = environment
     }
 
-    /// Validates that all required Aliyun OSS integration variables are present.
+    /// Validates that all required TOS integration variables are present.
     package func validate() throws {
         for key in [
-            "DGW_OSS_TEST_ENDPOINT",
-            "DGW_OSS_TEST_BUCKET",
-            "DGW_OSS_TEST_ACCESS_KEY_ID",
-            "DGW_OSS_TEST_ACCESS_KEY_SECRET",
-            "DGW_OSS_TEST_SECURITY_TOKEN",
-            "DGW_OSS_TEST_OBJECT_PREFIX",
+            "DGW_TOS_TEST_ENDPOINT",
+            "DGW_TOS_TEST_BUCKET",
+            "DGW_TOS_TEST_ACCESS_KEY_ID",
+            "DGW_TOS_TEST_ACCESS_KEY_SECRET",
+            "DGW_TOS_TEST_SECURITY_TOKEN",
+            "DGW_TOS_TEST_OBJECT_PREFIX",
         ] {
             guard let value = self.environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-                throw AliyunOSSHarnessError.missingEnvironmentVariable(key)
+                throw TOSHarnessError.missingEnvironmentVariable(key)
             }
         }
     }
@@ -209,8 +212,8 @@ package struct AliyunOSSTestEnvironment: Sendable {
     /// Returns the expected bucket/prefix for remote upload assertions.
     package func remoteUploadExpectation() throws -> RemoteUploadExpectation {
         RemoteUploadExpectation(
-            bucket: try self.requiredValue(for: "DGW_OSS_TEST_BUCKET"),
-            objectPrefix: try self.requiredValue(for: "DGW_OSS_TEST_OBJECT_PREFIX")
+            bucket: try self.requiredValue(for: "DGW_TOS_TEST_BUCKET"),
+            objectPrefix: try self.requiredValue(for: "DGW_TOS_TEST_OBJECT_PREFIX")
         )
     }
 
@@ -277,14 +280,14 @@ package struct AliyunOSSTestEnvironment: Sendable {
             return nil
         }
         guard let seconds = Int64(value), seconds > 0 else {
-            throw AliyunOSSHarnessError.invalidEnvironmentVariable("DGW_REAL_REQUEST_TIMEOUT_SECONDS")
+            throw TOSHarnessError.invalidEnvironmentVariable("DGW_REAL_REQUEST_TIMEOUT_SECONDS")
         }
         return seconds
     }
 
     private func requiredValue(for key: String) throws -> String {
         guard let value = self.environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            throw AliyunOSSHarnessError.missingEnvironmentVariable(key)
+            throw TOSHarnessError.missingEnvironmentVariable(key)
         }
         return value
     }

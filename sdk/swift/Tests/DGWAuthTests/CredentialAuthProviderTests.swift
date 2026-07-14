@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 import Testing
 
@@ -198,6 +201,51 @@ private actor MockCredentialExchangeTransport: CredentialExchangeTransport {
     let header = try await provider.authorizationHeader()
 
     #expect(header == "Bearer token-exact")
+}
+
+@Test func concurrentAuthorizationRequestsShareOneDeviceCredentialExchange() async throws {
+    let clock = TestClock(now: Date(timeIntervalSince1970: 1_000))
+    let transport = DelayedDeviceCredentialExchangeTransport()
+    let provider = CredentialAuthProvider(
+        credentialBase64: "device-api-key",
+        deviceID: "101",
+        refreshBefore: .seconds(60),
+        requestTimeout: .seconds(5),
+        transport: transport,
+        clock: clock
+    )
+
+    async let first = provider.authorizationHeader()
+    async let second = provider.authorizationHeader()
+    let headers = try await [first, second]
+
+    #expect(headers == ["Bearer shared-token", "Bearer shared-token"])
+    #expect(await transport.deviceIDs() == ["101"])
+}
+
+private actor DelayedDeviceCredentialExchangeTransport: DeviceCredentialExchangeTransport {
+    private var recordedDeviceIDs: [String] = []
+
+    func exchangeCredential(
+        credentialBase64: String,
+        timeout: Duration
+    ) async throws -> Archebase_Auth_V1_ExchangeCredentialResponse {
+        throw MockCredentialExchangeTransport.Failure.message("device exchange required")
+    }
+
+    func exchangeDeviceCredential(
+        deviceID: String,
+        credentialBase64: String,
+        timeout: Duration
+    ) async throws -> Archebase_Auth_V1_ExchangeCredentialResponse {
+        self.recordedDeviceIDs.append(deviceID)
+        try await Task.sleep(for: .milliseconds(20))
+        return makeResponse(accessToken: "shared-token", expiresAtUnix: 2_000)
+    }
+
+    func deviceIDs() -> [String] {
+        self.recordedDeviceIDs
+    }
 }
 
 private func makeResponse(

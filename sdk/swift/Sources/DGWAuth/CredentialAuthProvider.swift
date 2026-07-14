@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 
 import DGWProto
@@ -7,6 +10,14 @@ private let authStatusDetailsMetadataKey = "grpc-status-details-bin"
 
 package protocol CredentialExchangeTransport: Sendable {
     func exchangeCredential(
+        credentialBase64: String,
+        timeout: Duration
+    ) async throws -> Archebase_Auth_V1_ExchangeCredentialResponse
+}
+
+package protocol DeviceCredentialExchangeTransport: CredentialExchangeTransport {
+    func exchangeDeviceCredential(
+        deviceID: String,
         credentialBase64: String,
         timeout: Duration
     ) async throws -> Archebase_Auth_V1_ExchangeCredentialResponse
@@ -75,25 +86,50 @@ package struct AuthServiceClientTransport<Client: Archebase_Auth_V1_AuthService.
 
         return try response.message
     }
+
+    package func exchangeDeviceCredential(
+        deviceID: String,
+        credentialBase64: String,
+        timeout: Duration
+    ) async throws -> Archebase_Auth_V1_ExchangeCredentialResponse {
+        var request = Archebase_Auth_V1_ExchangeCredentialRequest()
+        request.credential = credentialBase64
+        request.deviceID = deviceID
+
+        var options = CallOptions.defaults
+        options.timeout = timeout
+        let response: ClientResponse<Archebase_Auth_V1_ExchangeCredentialResponse> = try await self.client.exchangeCredential(
+            request,
+            options: options,
+            onResponse: { response in response }
+        )
+        return try response.message
+    }
 }
+
+extension AuthServiceClientTransport: DeviceCredentialExchangeTransport {}
 
 package actor CredentialAuthProvider {
     private let credentialBase64: String
+    private let deviceID: String?
     private let refreshBefore: Duration
     private let requestTimeout: Duration
     private let transport: any CredentialExchangeTransport
     private let clock: any CredentialAuthProviderClock
 
     private var cachedToken: AuthAccessToken?
+    private var refreshTask: Task<AuthAccessToken, Error>?
 
     package init(
         credentialBase64: String,
+        deviceID: String? = nil,
         refreshBefore: Duration,
         requestTimeout: Duration,
         transport: any CredentialExchangeTransport,
         clock: any CredentialAuthProviderClock = SystemCredentialAuthProviderClock()
     ) {
         self.credentialBase64 = credentialBase64
+        self.deviceID = deviceID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.refreshBefore = refreshBefore
         self.requestTimeout = requestTimeout
         self.transport = transport
@@ -115,20 +151,44 @@ package actor CredentialAuthProvider {
     }
 
     package func refreshToken() async throws -> AuthAccessToken {
+        if let refreshTask {
+            return try await refreshTask.value
+        }
         let credentialBase64 = self.credentialBase64.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !credentialBase64.isEmpty else {
             throw CredentialAuthProviderError.invalidCredential("credential_base64 must not be empty")
         }
 
+        let transport = self.transport
+        let requestTimeout = self.requestTimeout
+        let deviceID = self.deviceID
+        let task = Task<AuthAccessToken, Error> {
+            let response: Archebase_Auth_V1_ExchangeCredentialResponse
+            if let deviceTransport = transport as? any DeviceCredentialExchangeTransport {
+                guard let deviceID, !deviceID.isEmpty else {
+                    throw CredentialAuthProviderError.invalidCredential("device_id must not be empty")
+                }
+                response = try await deviceTransport.exchangeDeviceCredential(
+                    deviceID: deviceID,
+                    credentialBase64: credentialBase64,
+                    timeout: requestTimeout
+                )
+            } else {
+                response = try await transport.exchangeCredential(
+                    credentialBase64: credentialBase64,
+                    timeout: requestTimeout
+                )
+            }
+            return try Self.makeToken(from: response)
+        }
+        self.refreshTask = task
         do {
-            let response = try await self.transport.exchangeCredential(
-                credentialBase64: credentialBase64,
-                timeout: self.requestTimeout
-            )
-            let token = try self.makeToken(from: response)
+            let token = try await task.value
+            self.refreshTask = nil
             self.cachedToken = token
             return token
         } catch {
+            self.refreshTask = nil
             self.cachedToken = nil
             throw Self.mapError(error)
         }
@@ -142,7 +202,7 @@ package actor CredentialAuthProvider {
         token.expiresAt.timeIntervalSince(now) <= self.refreshBefore.timeInterval
     }
 
-    private func makeToken(
+    private static func makeToken(
         from response: Archebase_Auth_V1_ExchangeCredentialResponse
     ) throws -> AuthAccessToken {
         guard response.tokenType.caseInsensitiveCompare("Bearer") == .orderedSame else {

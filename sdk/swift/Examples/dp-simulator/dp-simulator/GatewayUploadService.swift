@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DataGatewayClient
 import DGWControlPlane
 import DGWStore
@@ -83,9 +86,14 @@ actor GatewayUploadService {
 
     func initializeDevice(deviceID: String) async throws -> [String: String] {
         let initializer = try self.makeDeviceInitializer()
+        guard let deviceAuthToken = ProcessInfo.processInfo.environment["DGW_DEVICE_AUTH_TOKEN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !deviceAuthToken.isEmpty
+        else {
+            throw DataGatewayClientError.invalidConfiguration("DGW_DEVICE_AUTH_TOKEN is required")
+        }
         let config: ArchebaseConfig
         do {
-            config = try await initializer.initDevice(deviceID: deviceID)
+            config = try await initializer.initDevice(deviceID: deviceID, deviceAuthToken: deviceAuthToken)
         } catch let error as DataGatewayClientError {
             switch error {
             case .alreadyInitialized:

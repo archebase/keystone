@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS robots (
     workspace_id BIGINT NOT NULL DEFAULT 0,
     asset_id VARCHAR(100),
     status ENUM('active', 'maintenance', 'retired') DEFAULT 'active',
+    auth_epoch BIGINT NOT NULL DEFAULT 1,
     metadata JSON DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -414,11 +415,19 @@ CREATE TABLE IF NOT EXISTS ws_client_auth_tokens (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     robot_id BIGINT NOT NULL,
     token_hash CHAR(64) NOT NULL,
-    token_version VARCHAR(16) NOT NULL DEFAULT 'kws_v1',
+    token_version ENUM('kda_v1') NOT NULL DEFAULT 'kda_v1',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_rotated_at TIMESTAMP NULL,
     last_used_at TIMESTAMP NULL,
+    sdk_initialized_at TIMESTAMP NULL,
+    recovery_requested_at TIMESTAMP NULL,
+    recovery_stage ENUM('none', 'authorized', 'epoch_incremented', 'deleted', 'generated', 'completed') NOT NULL DEFAULT 'none',
+    recovery_completed_at TIMESTAMP NULL,
     revoked_at TIMESTAMP NULL,
+    _active_robot_id BIGINT GENERATED ALWAYS AS (
+        CASE WHEN revoked_at IS NULL THEN robot_id ELSE NULL END
+    ) STORED,
     UNIQUE INDEX idx_ws_client_token_hash (token_hash),
+    UNIQUE INDEX idx_ws_client_active_robot (_active_robot_id),
     INDEX idx_ws_client_robot_active (robot_id, revoked_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

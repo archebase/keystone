@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Crypto
 import DGWAuth
 import DGWControlPlane
@@ -427,6 +430,7 @@ package enum RawTagsMerger {
 public actor ArchebaseDeviceInitializer {
     private let configStore: ArchebaseConfigStore
     private let initTransport: any DeviceInitTransport
+    private let authTransport: (any CredentialExchangeTransport)?
     private let runtimeResources: DeviceInitRuntimeResources?
     private let sdkVersion: String
     private let platform: String
@@ -439,6 +443,8 @@ public actor ArchebaseDeviceInitializer {
         try self.init(
             config: resolvedConfig,
             initEndpoint: endpoints.deviceInit,
+            authEndpoint: endpoints.auth,
+            authTLS: endpoints.authTLS,
             sdkVersion: DataGatewayClientModule.version,
             platform: "ios"
         )
@@ -447,6 +453,8 @@ public actor ArchebaseDeviceInitializer {
     package init(
         config: DeviceInitClientConfig,
         initEndpoint: URL,
+        authEndpoint: URL? = nil,
+        authTLS: TLSMode? = nil,
         sdkVersion: String = DataGatewayClientModule.version,
         platform: String = "ios"
     ) throws {
@@ -465,10 +473,30 @@ public actor ArchebaseDeviceInitializer {
             )
         )
         let managedTransport = try factory.makeDeviceInitTransport()
+        var managedAuthTransport: ManagedControlPlaneServiceClient<any CredentialExchangeTransport>?
+        if let authEndpoint {
+            let resolvedAuthTLS = authTLS ?? Self.tlsMode(for: authEndpoint)
+            let authSecurity: ControlPlaneTransportSecurity = switch resolvedAuthTLS {
+            case .plaintext: .plaintext
+            case .tls: .tls
+            }
+            let authFactory = ControlPlaneClientFactory(
+                configuration: ControlPlaneTransportConfiguration(
+                    endpoint: authEndpoint,
+                    security: authSecurity,
+                    requestTimeout: config.requestTimeout
+                )
+            )
+            managedAuthTransport = try authFactory.makeAuthTransport()
+        }
         try self.init(
             configStore: ArchebaseConfigStore(configURL: config.configURL),
             initTransport: managedTransport.serviceClient,
-            runtimeResources: DeviceInitRuntimeResources(initTransport: managedTransport),
+            authTransport: managedAuthTransport?.serviceClient,
+            runtimeResources: DeviceInitRuntimeResources(
+                initTransport: managedTransport,
+                authTransport: managedAuthTransport
+            ),
             sdkVersion: sdkVersion,
             platform: platform
         )
@@ -481,23 +509,25 @@ public actor ArchebaseDeviceInitializer {
     package init(
         configStore: ArchebaseConfigStore,
         initTransport: any DeviceInitTransport,
+        authTransport: (any CredentialExchangeTransport)? = nil,
         runtimeResources: DeviceInitRuntimeResources? = nil,
         sdkVersion: String = DataGatewayClientModule.version,
         platform: String = "ios"
     ) throws {
         self.configStore = configStore
         self.initTransport = initTransport
+        self.authTransport = authTransport
         self.runtimeResources = runtimeResources
         self.sdkVersion = sdkVersion
         self.platform = platform
     }
 
     /// Initializes a device when no local configuration exists.
-    public func initDevice(deviceID: String) async throws -> ArchebaseConfig {
+    public func initDevice(deviceID: String, deviceAuthToken: String) async throws -> ArchebaseConfig {
         if await self.configStore.exists() {
             throw DataGatewayClientError.alreadyInitialized(configURL: await self.configStore.resolvedConfigURL())
         }
-        let config = try await self.remoteConfig(deviceID: deviceID, mode: .initDevice)
+        let config = try await self.remoteConfig(deviceID: deviceID, deviceAuthToken: deviceAuthToken, mode: .initDevice)
         try await self.configStore.initialize(config)
         return config
     }
@@ -505,16 +535,45 @@ public actor ArchebaseDeviceInitializer {
     /// Reinitializes a device by rotating the remote credential and writing the local configuration.
     ///
     /// This can recover a missing local config after a prior remote init succeeded but local persistence did not complete.
-    public func reinitDevice(deviceID: String) async throws -> ArchebaseConfig {
-        let config = try await self.remoteConfig(deviceID: deviceID, mode: .reinitDevice)
+    public func reinitDevice(deviceID: String, recoveryDeviceAuthToken: String? = nil) async throws -> ArchebaseConfig {
+        let authorizationHeader: String?
+        if recoveryDeviceAuthToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            authorizationHeader = nil
+        } else {
+            guard let authTransport = self.authTransport else {
+                throw DataGatewayClientError.invalidConfiguration("auth endpoint is required for device reinitialization")
+            }
+            let current = try await self.configStore.load()
+            let provider = CredentialAuthProvider(
+                credentialBase64: current.apiKey,
+                deviceID: deviceID,
+                refreshBefore: .seconds(30),
+                requestTimeout: .seconds(10),
+                transport: authTransport
+            )
+            authorizationHeader = try await provider.authorizationHeader()
+        }
+        let config = try await self.remoteConfig(
+            deviceID: deviceID,
+            deviceAuthToken: recoveryDeviceAuthToken,
+            authorizationHeader: authorizationHeader,
+            mode: .reinitDevice
+        )
         try await self.configStore.replaceOrInitialize(config)
         return config
     }
 
-    private func remoteConfig(deviceID: String, mode: DeviceInitRemoteMode) async throws -> ArchebaseConfig {
+    private func remoteConfig(
+        deviceID: String,
+        deviceAuthToken: String?,
+        authorizationHeader: String? = nil,
+        mode: DeviceInitRemoteMode
+    ) async throws -> ArchebaseConfig {
         try await DeviceInitConfigFetcher.fetch(
             mode: mode,
             deviceID: deviceID,
+            deviceAuthToken: deviceAuthToken,
+            authorizationHeader: authorizationHeader,
             transport: self.initTransport,
             sdkVersion: self.sdkVersion,
             platform: self.platform
@@ -524,9 +583,14 @@ public actor ArchebaseDeviceInitializer {
 
 package final class DeviceInitRuntimeResources: @unchecked Sendable {
     private let initTransport: ManagedControlPlaneServiceClient<any DeviceInitTransport>
+    private let authTransport: ManagedControlPlaneServiceClient<any CredentialExchangeTransport>?
 
-    package init(initTransport: ManagedControlPlaneServiceClient<any DeviceInitTransport>) {
+    package init(
+        initTransport: ManagedControlPlaneServiceClient<any DeviceInitTransport>,
+        authTransport: ManagedControlPlaneServiceClient<any CredentialExchangeTransport>? = nil
+    ) {
         self.initTransport = initTransport
+        self.authTransport = authTransport
     }
 }
 
@@ -1166,7 +1230,7 @@ package protocol UploadCoordinatorGatewayClient: Sendable {
         fileSize: Int64,
         rawTags: [String: String],
         completedPartCount: Int32,
-        ossObjectEtag: String,
+        objectEtag: String,
         partSizeBytes: Int64
     ) async throws -> Archebase_DataGateway_V1_CompleteUploadResponse
 }
@@ -1832,7 +1896,7 @@ public actor UploadCoordinator {
             fileSize: Int64(state.fileSize),
             rawTags: state.rawTags,
             completedPartCount: uploadCompletion.completedPartCount,
-            ossObjectEtag: uploadCompletion.ossObjectETag,
+            objectEtag: uploadCompletion.ossObjectETag,
             partSizeBytes: Int64(state.partSizeBytes)
         )
 
@@ -1959,7 +2023,7 @@ public actor UploadCoordinator {
         case .completeOnly:
             return .completeOnly(
                 uploadID: uploadID,
-                expectedObjectETag: recovery.ossObjectEtag.nilIfBlank
+                expectedObjectETag: recovery.objectEtag.nilIfBlank
             )
         case .restart:
             return .restartUpload(previousUploadID: uploadID)
@@ -2059,6 +2123,7 @@ public actor DataGatewayClient {
         let authTransport = try authFactory.makeAuthTransport()
         let authProvider = CredentialAuthProvider(
             credentialBase64: config.credentialBase64,
+            deviceID: configTags["device_id"] ?? configTags["device"],
             refreshBefore: config.authRefreshBefore,
             requestTimeout: config.requestTimeout,
             transport: authTransport.serviceClient
@@ -2087,7 +2152,7 @@ public actor DataGatewayClient {
             retryPolicy: config.retryPolicy.controlPlane.controlPlaneValue
         )
 
-        let stateStore = UploadStateStore(persistRoot: config.persistRootURL)
+        let stateStore = UploadStateStore(persistRoot: config.persistRootURL, persistenceEnabled: false)
         let fileCoordinator = FileStagingCoordinator(
             stagingRoot: config.persistRootURL
                 .appendingPathComponent("data-gateway-client", isDirectory: true)
@@ -2099,7 +2164,7 @@ public actor DataGatewayClient {
             stateStore: stateStore,
             fileCoordinator: fileCoordinator,
             ossClientFactory: { uploadContext in
-                if Self.useMockOssFromEnvironment() {
+                if Self.useMockObjectStoreFromEnvironment() {
                     return LocalStackMockMultipartSession(uploadID: uploadContext.uploadID)
                 }
                 return try OssUploadSession(
@@ -2110,7 +2175,7 @@ public actor DataGatewayClient {
                     ),
                     dataPlaneRetryPolicy: config.retryPolicy.dataPlane.controlPlaneValue,
                     requestTimeout: config.requestTimeout,
-                    clientFactory: AlibabaOSSSDKClientFactory(),
+                    clientFactory: TOSHTTPClientFactory(),
                     credentialsProvider: retryingGateway
                 )
             },
@@ -2130,8 +2195,8 @@ public actor DataGatewayClient {
         self.configTags = configTags
     }
 
-    private static func useMockOssFromEnvironment() -> Bool {
-        guard let rawValue = ProcessInfo.processInfo.environment["DATA_GATEWAY_CLIENT_USE_MOCK_OSS"] else {
+    private static func useMockObjectStoreFromEnvironment() -> Bool {
+        guard let rawValue = ProcessInfo.processInfo.environment["DATA_GATEWAY_CLIENT_USE_MOCK_OBJECT_STORE"] else {
             return false
         }
         switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
@@ -2345,14 +2410,14 @@ package struct AnyUploadCoordinatorGatewayClient: UploadCoordinatorGatewayClient
                 throw ControlPlaneErrorMapper.map(error)
             }
         }
-        self.completeUploadHandler = { uploadID, fileSize, rawTags, completedPartCount, ossObjectEtag, partSizeBytes in
+        self.completeUploadHandler = { uploadID, fileSize, rawTags, completedPartCount, objectEtag, partSizeBytes in
             do {
                 return try await retryingClient.completeUpload(
                     uploadID: uploadID,
                     fileSize: fileSize,
                     rawTags: rawTags,
                     completedPartCount: completedPartCount,
-                    ossObjectEtag: ossObjectEtag,
+                    objectEtag: objectEtag,
                     partSizeBytes: partSizeBytes
                 )
             } catch {
@@ -2392,10 +2457,10 @@ package struct AnyUploadCoordinatorGatewayClient: UploadCoordinatorGatewayClient
         fileSize: Int64,
         rawTags: [String : String],
         completedPartCount: Int32,
-        ossObjectEtag: String,
+        objectEtag: String,
         partSizeBytes: Int64
     ) async throws -> Archebase_DataGateway_V1_CompleteUploadResponse {
-        try await self.completeUploadHandler(uploadID, fileSize, rawTags, completedPartCount, ossObjectEtag, partSizeBytes)
+        try await self.completeUploadHandler(uploadID, fileSize, rawTags, completedPartCount, objectEtag, partSizeBytes)
     }
 }
 

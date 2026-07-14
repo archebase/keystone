@@ -7,6 +7,7 @@ package dgwcompat
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,9 @@ import (
 type uploadSession struct {
 	LogicalUploadID        string
 	UploadID               string
+	DeviceID               string
+	WorkspaceID            int64
+	AuthEpoch              int64
 	Bucket                 string
 	Endpoint               string
 	ObjectKey              string
@@ -28,7 +32,7 @@ type uploadSession struct {
 	CompletedAt            time.Time
 	Aborted                bool
 	CompletedPartCount     int32
-	OSSObjectETag          string
+	ObjectETag             string
 	FileSize               int64
 	CredentialRefreshCount int32
 	LastSTSExpireAt        time.Time
@@ -79,48 +83,6 @@ func (s *sessionStore) update(uploadID string, update func(*uploadSession)) (*up
 	return session, true
 }
 
-type authService struct {
-	cloudpb.UnimplementedAuthServiceServer
-}
-
-func (s *authService) ExchangeCredential(context.Context, *cloudpb.ExchangeCredentialRequest) (*cloudpb.ExchangeCredentialResponse, error) {
-	expiresAt := time.Now().UTC().Add(time.Hour).Unix()
-	return &cloudpb.ExchangeCredentialResponse{
-		AccessToken:   "keystone-poc-" + uuid.NewString(),
-		ExpiresAtUnix: expiresAt,
-		TokenType:     "Bearer",
-	}, nil
-}
-
-type deviceInitService struct {
-	cloudpb.UnimplementedDeviceInitServiceServer
-	apiKey string
-}
-
-func (s *deviceInitService) InitDevice(_ context.Context, req *cloudpb.InitDeviceRequest) (*cloudpb.InitDeviceResponse, error) {
-	return s.response(req.GetDeviceId(), req.GetPlatform()), nil
-}
-
-func (s *deviceInitService) ReinitDevice(_ context.Context, req *cloudpb.ReinitDeviceRequest) (*cloudpb.InitDeviceResponse, error) {
-	return s.response(req.GetDeviceId(), req.GetPlatform()), nil
-}
-
-func (s *deviceInitService) response(deviceID, platform string) *cloudpb.InitDeviceResponse {
-	tags := map[string]string{
-		"source": "ego_portal_lite",
-	}
-	if deviceID != "" {
-		tags["device_id"] = deviceID
-	}
-	if platform != "" {
-		tags["platform"] = platform
-	}
-	return &cloudpb.InitDeviceResponse{
-		ApiKey: s.apiKey,
-		Tags:   tags,
-	}
-}
-
 type gatewayService struct {
 	cloudpb.UnimplementedDataGatewayServiceServer
 	cfg      Config
@@ -139,19 +101,34 @@ func newGatewayService(cfg Config, sts stsProvider, sessions *sessionStore) *gat
 }
 
 func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.CreateLogicalUploadRequest) (*cloudpb.CreateLogicalUploadResponse, error) {
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	logicalUploadID := uuid.NewString()
 	uploadID := uuid.NewString()
 	hints := cloneMap(req.GetClientHints())
-	objectKey := buildObjectKey(s.cfg.OSSKeyPrefix, hints, uploadID)
-	creds, err := s.sts.AssumeRole(ctx)
+	if hinted := strings.TrimSpace(hints["device_id"]); hinted != "" && hinted != principal.DeviceID {
+		return nil, status.Error(codes.PermissionDenied, "client device hint does not match authenticated device")
+	}
+	if hinted := strings.TrimSpace(hints["workspace_id"]); hinted != "" && hinted != fmt.Sprintf("%d", principal.WorkspaceID) {
+		return nil, status.Error(codes.PermissionDenied, "client workspace hint does not match authenticated device")
+	}
+	hints["device_id"] = principal.DeviceID
+	hints["workspace_id"] = fmt.Sprintf("%d", principal.WorkspaceID)
+	objectKey := buildObjectKey(s.cfg.TOSKeyPrefix, hints, uploadID)
+	creds, err := s.sts.AssumeRole(ctx, stsScope{Bucket: s.cfg.TOSBucket, ObjectKey: objectKey})
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "assume role: %v", err)
 	}
 	session := &uploadSession{
 		LogicalUploadID: logicalUploadID,
 		UploadID:        uploadID,
-		Bucket:          s.cfg.OSSBucket,
-		Endpoint:        s.cfg.OSSPublicEndpoint,
+		DeviceID:        principal.DeviceID,
+		WorkspaceID:     principal.WorkspaceID,
+		AuthEpoch:       principal.AuthEpoch,
+		Bucket:          s.cfg.TOSBucket,
+		Endpoint:        s.cfg.TOSEndpoint,
 		ObjectKey:       objectKey,
 		ClientHints:     hints,
 		CreatedAt:       s.now(),
@@ -159,7 +136,7 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	}
 	s.sessions.put(session)
 	logger.Printf("[DGW_COMPAT] CreateLogicalUpload upload_id=%s logical_upload_id=%s bucket=%s object_key=%s capture_id=%s task_id=%s device_id=%s",
-		uploadID, logicalUploadID, s.cfg.OSSBucket, objectKey, hints["capture_id"], hints["task_id"], hints["device_id"])
+		uploadID, logicalUploadID, s.cfg.TOSBucket, objectKey, hints["capture_id"], hints["task_id"], hints["device_id"])
 	return &cloudpb.CreateLogicalUploadResponse{
 		LogicalUploadId: logicalUploadID,
 		UploadId:        uploadID,
@@ -167,10 +144,13 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	}, nil
 }
 
-func (s *gatewayService) GetUploadRecovery(_ context.Context, req *cloudpb.GetUploadRecoveryRequest) (*cloudpb.GetUploadRecoveryResponse, error) {
+func (s *gatewayService) GetUploadRecovery(ctx context.Context, req *cloudpb.GetUploadRecoveryRequest) (*cloudpb.GetUploadRecoveryResponse, error) {
 	session, ok := s.sessions.getByLogical(req.GetLogicalUploadId())
 	if !ok {
 		return nil, status.Error(codes.NotFound, "logical upload not found")
+	}
+	if err := authorizeUploadSession(ctx, session); err != nil {
+		return nil, err
 	}
 	statusValue := cloudpb.LogicalUploadStatus_LOGICAL_UPLOAD_STATUS_ACTIVE
 	nextAction := cloudpb.UploadRecoveryAction_UPLOAD_RECOVERY_ACTION_CONTINUE
@@ -198,7 +178,7 @@ func (s *gatewayService) GetUploadRecovery(_ context.Context, req *cloudpb.GetUp
 		SessionExpireAtUnix:    session.LastSTSExpireAt.Unix(),
 		NextAction:             nextAction,
 		CompletedPartCount:     session.CompletedPartCount,
-		OssObjectEtag:          session.OSSObjectETag,
+		ObjectEtag:             session.ObjectETag,
 	}, nil
 }
 
@@ -207,7 +187,10 @@ func (s *gatewayService) ReissueUploadCredentials(ctx context.Context, req *clou
 	if !ok {
 		return nil, status.Error(codes.NotFound, "upload not found")
 	}
-	creds, err := s.sts.AssumeRole(ctx)
+	if err := authorizeUploadSession(ctx, session); err != nil {
+		return nil, err
+	}
+	creds, err := s.sts.AssumeRole(ctx, stsScope{Bucket: session.Bucket, ObjectKey: session.ObjectKey})
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "assume role: %v", err)
 	}
@@ -227,10 +210,13 @@ func (s *gatewayService) ReissueUploadCredentials(ctx context.Context, req *clou
 	}, nil
 }
 
-func (s *gatewayService) AbortUpload(_ context.Context, req *cloudpb.AbortUploadRequest) (*cloudpb.AbortUploadResponse, error) {
+func (s *gatewayService) AbortUpload(ctx context.Context, req *cloudpb.AbortUploadRequest) (*cloudpb.AbortUploadResponse, error) {
 	session, ok := s.sessions.getByLogical(req.GetLogicalUploadId())
 	if !ok {
 		return nil, status.Error(codes.NotFound, "logical upload not found")
+	}
+	if err := authorizeUploadSession(ctx, session); err != nil {
+		return nil, err
 	}
 	updated, ok := s.sessions.update(session.UploadID, func(current *uploadSession) {
 		current.Aborted = true
@@ -246,12 +232,19 @@ func (s *gatewayService) AbortUpload(_ context.Context, req *cloudpb.AbortUpload
 	}, nil
 }
 
-func (s *gatewayService) CompleteUpload(_ context.Context, req *cloudpb.CompleteUploadRequest) (*cloudpb.CompleteUploadResponse, error) {
+func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.CompleteUploadRequest) (*cloudpb.CompleteUploadResponse, error) {
+	session, ok := s.sessions.getByUpload(req.GetUploadId())
+	if !ok {
+		return nil, status.Error(codes.NotFound, "upload not found")
+	}
+	if err := authorizeUploadSession(ctx, session); err != nil {
+		return nil, err
+	}
 	updated, ok := s.sessions.update(req.GetUploadId(), func(current *uploadSession) {
 		current.CompletedAt = s.now()
 		current.FileSize = req.GetFileSize()
 		current.CompletedPartCount = req.GetCompletedPartCount()
-		current.OSSObjectETag = req.GetOssObjectEtag()
+		current.ObjectETag = req.GetObjectEtag()
 	})
 	if !ok {
 		return nil, status.Error(codes.NotFound, "upload not found")
@@ -264,7 +257,7 @@ func (s *gatewayService) CompleteUpload(_ context.Context, req *cloudpb.Complete
 		updated.ObjectKey,
 		req.GetFileSize(),
 		req.GetCompletedPartCount(),
-		req.GetOssObjectEtag(),
+		req.GetObjectEtag(),
 		updated.ClientHints["capture_id"],
 		updated.ClientHints["task_id"],
 		updated.ClientHints["device_id"],
@@ -273,6 +266,17 @@ func (s *gatewayService) CompleteUpload(_ context.Context, req *cloudpb.Complete
 		rawTags["device_id"],
 	)
 	return &cloudpb.CompleteUploadResponse{}, nil
+}
+
+func authorizeUploadSession(ctx context.Context, session *uploadSession) error {
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	if session.DeviceID != principal.DeviceID || session.WorkspaceID != principal.WorkspaceID || session.AuthEpoch != principal.AuthEpoch {
+		return status.Error(codes.PermissionDenied, "upload session belongs to another device principal")
+	}
+	return nil
 }
 
 func (s *gatewayService) uploadCredentials(session *uploadSession, creds stsCredentials) *cloudpb.UploadCredentials {
@@ -285,6 +289,8 @@ func (s *gatewayService) uploadCredentials(session *uploadSession, creds stsCred
 		StsSecurityToken:   creds.SecurityToken,
 		StsExpireAtUnix:    creds.Expiration.Unix(),
 		PartSizeBytes:      s.cfg.UploadPartSize,
+		ObjectStoreBackend: "volcengine_tos",
+		ObjectStoreRegion:  s.cfg.TOSRegion,
 	}
 }
 
@@ -300,5 +306,5 @@ func cloneMap(in map[string]string) map[string]string {
 }
 
 func (s *gatewayService) String() string {
-	return fmt.Sprintf("dgwcompat gateway bucket=%s endpoint=%s", s.cfg.OSSBucket, s.cfg.OSSPublicEndpoint)
+	return fmt.Sprintf("dgwcompat gateway backend=volcengine_tos bucket=%s endpoint=%s region=%s", s.cfg.TOSBucket, s.cfg.TOSEndpoint, s.cfg.TOSRegion)
 }

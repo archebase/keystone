@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import Foundation
 
@@ -8,20 +11,39 @@ private let archebaseConfigMaxTagValueBytes = 2048
 /// Device initialization configuration persisted in `archebase-config.json`.
 public struct ArchebaseConfig: Codable, Sendable, Equatable {
     /// Upload credential returned by data-gateway device initialization.
-    public var apiKey: String
+    public var apiKey: String = ""
     /// Platform-managed device tags merged into upload raw tags.
     public var tags: [String: String]
 
     enum CodingKeys: String, CodingKey {
-        case apiKey = "api_key"
+        case credentialStore = "credential_store"
         case tags
     }
+
+    private static let keychainCredentialStore = "keychain"
 
     /// Creates one validated Archebase device configuration value.
     public init(apiKey: String, tags: [String: String]) throws {
         self.apiKey = apiKey
         self.tags = tags
         try self.validate()
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let credentialStore = try container.decode(String.self, forKey: .credentialStore)
+        guard credentialStore == Self.keychainCredentialStore else {
+            throw DataGatewayClientError.invalidConfiguration("credential_store must be keychain")
+        }
+        self.tags = try container.decode([String: String].self, forKey: .tags)
+        try Self.validateTags(self.tags, fieldName: "tags")
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        try self.validate()
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.keychainCredentialStore, forKey: .credentialStore)
+        try container.encode(self.tags, forKey: .tags)
     }
 
     /// Validates local configuration content before it is trusted by the SDK.
@@ -39,9 +61,8 @@ public struct ArchebaseConfig: Codable, Sendable, Equatable {
     }
 
     /// Decodes and validates an Archebase configuration from JSON bytes.
-    public static func decodeValidated(from data: Data) throws -> ArchebaseConfig {
+    package static func decodePersisted(from data: Data) throws -> ArchebaseConfig {
         let config = try Self.decoder.decode(ArchebaseConfig.self, from: data)
-        try config.validate()
         return config
     }
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Foundation
 
 import DGWAuth
@@ -335,7 +338,7 @@ package final class AuthenticatedGatewayControlPlaneClient<
         fileSize: Int64,
         rawTags: [String: String],
         completedPartCount: Int32,
-        ossObjectEtag: String,
+        objectEtag: String,
         partSizeBytes: Int64
     ) async throws -> Archebase_DataGateway_V1_CompleteUploadResponse {
         try await self.retryExecutor.execute(policy: self.retryPolicy, refreshAuthorization: self.refreshAuthorization) {
@@ -345,7 +348,7 @@ package final class AuthenticatedGatewayControlPlaneClient<
                 fileSize: fileSize,
                 rawTags: rawTags,
                 completedPartCount: completedPartCount,
-                ossObjectEtag: ossObjectEtag,
+                objectEtag: objectEtag,
                 partSizeBytes: partSizeBytes,
                 authorizationHeader: header
             )

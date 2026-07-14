@@ -276,13 +276,13 @@ for key in ("EnvironmentVariables", "TestingEnvironmentVariables"):
     variables[f"{prefix}_PERSIST_ROOT"] = persist_root
 
 for extra_key in (
-    "DGW_OSS_TEST_ENDPOINT",
-    "DGW_OSS_TEST_BUCKET",
-    "DGW_OSS_TEST_ACCESS_KEY_ID",
-    "DGW_OSS_TEST_ACCESS_KEY_SECRET",
-    "DGW_OSS_TEST_SECURITY_TOKEN",
-    "DGW_OSS_TEST_OBJECT_PREFIX",
-    "DATA_GATEWAY_CLIENT_USE_MOCK_OSS",
+    "DGW_TOS_TEST_ENDPOINT",
+    "DGW_TOS_TEST_BUCKET",
+    "DGW_TOS_TEST_ACCESS_KEY_ID",
+    "DGW_TOS_TEST_ACCESS_KEY_SECRET",
+    "DGW_TOS_TEST_SECURITY_TOKEN",
+    "DGW_TOS_TEST_OBJECT_PREFIX",
+    "DATA_GATEWAY_CLIENT_USE_MOCK_OBJECT_STORE",
     f"{prefix}_TLS_MODE",
     f"{prefix}_DEVICE_INIT_INTEGRATION",
 ):
@@ -325,13 +325,13 @@ for key in ("EnvironmentVariables", "TestingEnvironmentVariables"):
     variables["DGW_REAL_DEVICE_ID"] = device_id
     variables["DGW_REAL_CREDENTIAL_BASE64"] = credential
     variables["DGW_REAL_PERSIST_ROOT"] = persist_root
-    variables["DATA_GATEWAY_CLIENT_USE_MOCK_OSS"] = "1"
-    variables["DGW_OSS_TEST_ENDPOINT"] = "https://oss-cn-shanghai.aliyuncs.com"
-    variables["DGW_OSS_TEST_BUCKET"] = "public-dns-placeholder"
-    variables["DGW_OSS_TEST_ACCESS_KEY_ID"] = "placeholder"
-    variables["DGW_OSS_TEST_ACCESS_KEY_SECRET"] = "placeholder"
-    variables["DGW_OSS_TEST_SECURITY_TOKEN"] = "placeholder"
-    variables["DGW_OSS_TEST_OBJECT_PREFIX"] = "swift-public-dns"
+    variables["DATA_GATEWAY_CLIENT_USE_MOCK_OBJECT_STORE"] = "1"
+    variables["DGW_TOS_TEST_ENDPOINT"] = "https://tos-cn-beijing.volces.com"
+    variables["DGW_TOS_TEST_BUCKET"] = "public-dns-placeholder"
+    variables["DGW_TOS_TEST_ACCESS_KEY_ID"] = "placeholder"
+    variables["DGW_TOS_TEST_ACCESS_KEY_SECRET"] = "placeholder"
+    variables["DGW_TOS_TEST_SECURITY_TOKEN"] = "placeholder"
+    variables["DGW_TOS_TEST_OBJECT_PREFIX"] = "swift-public-dns"
 
 target["TestTimeoutsEnabled"] = True
 target["DefaultTestExecutionTimeAllowance"] = int(default_timeout)

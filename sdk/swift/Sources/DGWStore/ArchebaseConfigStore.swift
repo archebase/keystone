@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import Foundation
 
@@ -5,11 +8,23 @@ import Foundation
 public actor ArchebaseConfigStore {
     private let configURL: URL
     private let fileManager: FileManager
+    private let credentialStore: any DeviceCredentialStoring
 
     /// Creates a store bound to one configuration file URL.
     public init(configURL: URL, fileManager: FileManager = .default) {
         self.configURL = configURL.standardizedFileURL
         self.fileManager = fileManager
+        self.credentialStore = KeychainDeviceCredentialStore()
+    }
+
+    package init(
+        configURL: URL,
+        fileManager: FileManager = .default,
+        credentialStore: any DeviceCredentialStoring
+    ) {
+        self.configURL = configURL.standardizedFileURL
+        self.fileManager = fileManager
+        self.credentialStore = credentialStore
     }
 
     /// Returns whether the configuration file currently exists.
@@ -28,7 +43,9 @@ public actor ArchebaseConfigStore {
             throw DataGatewayClientError.notInitialized(configURL: self.configURL)
         }
         do {
-            return try ArchebaseConfig.decodeValidated(from: Data(contentsOf: self.configURL))
+            let persisted = try ArchebaseConfig.decodePersisted(from: Data(contentsOf: self.configURL))
+            let apiKey = try self.credentialStore.load(account: self.credentialAccount)
+            return try ArchebaseConfig(apiKey: apiKey, tags: persisted.tags)
         } catch let error as DataGatewayClientError {
             throw error
         } catch {
@@ -60,7 +77,9 @@ public actor ArchebaseConfigStore {
 
     private func write(_ config: ArchebaseConfig, replacingExisting: Bool) throws {
         let data = try config.prettyJSONData()
+        let previousCredential = try? self.credentialStore.load(account: self.credentialAccount)
         do {
+            try self.credentialStore.save(config.apiKey, account: self.credentialAccount)
             try AtomicFileWriter.write(data, to: self.configURL, fileManager: self.fileManager) { temporaryURL, destination, fileManager in
                 if replacingExisting {
                     try AtomicFileWriter.replaceOrMoveTemporaryItem(temporaryURL, to: destination, fileManager: fileManager)
@@ -80,9 +99,23 @@ public actor ArchebaseConfigStore {
                 throw DataGatewayClientError.persistenceFailed("archebase config verification failed after write")
             }
         } catch let error as DataGatewayClientError {
+            self.restoreCredential(previousCredential)
             throw error
         } catch {
+            self.restoreCredential(previousCredential)
             throw DataGatewayClientError.persistenceFailed("failed to write archebase config: \(error.localizedDescription)")
+        }
+    }
+
+    private var credentialAccount: String {
+        self.configURL.path
+    }
+
+    private func restoreCredential(_ credential: String?) {
+        if let credential {
+            try? self.credentialStore.save(credential, account: self.credentialAccount)
+        } else {
+            try? self.credentialStore.delete(account: self.credentialAccount)
         }
     }
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import DGWStore
 import Foundation
@@ -87,6 +90,7 @@ public actor QiongcheDataGatewaySDK {
         let parsed = try QiongcheConfigParser.parse(configString)
         let remoteConfig = try await self.deviceProvisioner.initDevice(
             deviceID: parsed.deviceID,
+            deviceAuthToken: parsed.deviceAuthToken,
             deviceInitEndpoint: parsed.resolvedEndpoints.deviceInit,
             tls: parsed.resolvedEndpoints.deviceInitTLS,
             timeout: self.deviceInitTimeout

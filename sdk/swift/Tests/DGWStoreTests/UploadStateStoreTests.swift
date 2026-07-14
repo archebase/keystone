@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import Foundation
 import Testing
@@ -186,7 +189,7 @@ private struct StoreSandbox {
             restartCount: 1,
             multipartUploadID: "multipart-\(logicalUploadID)",
             bucket: "bucket-1",
-            endpoint: "https://oss-cn-shanghai.aliyuncs.com",
+            endpoint: "https://tos-cn-beijing.volces.com",
             objectKey: "objects/\(logicalUploadID).bin",
             fileURLBookmarkData: nil,
             managedFileURL: self.root.appendingPathComponent("managed/\(logicalUploadID).bin"),

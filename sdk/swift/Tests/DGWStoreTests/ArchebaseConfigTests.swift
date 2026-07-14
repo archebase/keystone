@@ -1,25 +1,29 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import DGWControlPlane
 import Foundation
 import Testing
 
 @testable import DGWStore
 
-@Test func archebaseConfigDecodesPlanExampleJSON() throws {
-    let json = Data(#"{"api_key":"credential-v1","tags":{"key1":"value1","key2":"value2"}}"#.utf8)
+@Test func archebaseConfigDecodesKeychainReferenceJSON() throws {
+    let json = Data(#"{"credential_store":"keychain","tags":{"key1":"value1","key2":"value2"}}"#.utf8)
 
-    let config = try ArchebaseConfig.decodeValidated(from: json)
+    let config = try ArchebaseConfig.decodePersisted(from: json)
 
-    #expect(config.apiKey == "credential-v1")
+    #expect(config.apiKey.isEmpty)
     #expect(config.tags == ["key1": "value1", "key2": "value2"])
 }
 
-@Test func archebaseConfigEncodesSnakeCaseAPIKey() throws {
+@Test func archebaseConfigDoesNotEncodeAPIKey() throws {
     let config = try ArchebaseConfig(apiKey: "credential-v1", tags: ["tag": "value"])
 
     let json = String(data: try config.prettyJSONData(), encoding: .utf8) ?? ""
 
-    #expect(json.contains("\"api_key\""))
-    #expect(!json.contains("apiKey"))
+    #expect(json.contains("\"credential_store\" : \"keychain\""))
+    #expect(!json.contains("credential-v1"))
+    #expect(!json.contains("api_key"))
 }
 
 @Test func archebaseConfigRejectsEmptyAPIKey() {
@@ -31,10 +35,10 @@ import Testing
 }
 
 @Test func archebaseConfigRejectsMissingTags() {
-    let json = Data(#"{"api_key":"credential-v1"}"#.utf8)
+    let json = Data(#"{"credential_store":"keychain"}"#.utf8)
 
     #expect(throws: DecodingError.self) {
-        _ = try ArchebaseConfig.decodeValidated(from: json)
+        _ = try ArchebaseConfig.decodePersisted(from: json)
     }
 }
 

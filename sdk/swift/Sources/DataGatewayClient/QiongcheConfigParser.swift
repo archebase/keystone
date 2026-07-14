@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 import Crypto
 import DGWControlPlane
 import Foundation
@@ -8,6 +11,7 @@ public enum QiongcheSDKError: Error, Sendable, Equatable {
 
 package struct QiongcheBootstrapConfig: Sendable, Equatable {
     package let deviceID: String
+    package let deviceAuthToken: String
     package let normalizedEndpointsJSONData: Data
     package let resolvedEndpoints: ArchebasePublicEndpoints.Resolved
 
@@ -21,7 +25,7 @@ package struct QiongcheBootstrapConfig: Sendable, Equatable {
 }
 
 package enum QiongcheConfigParser {
-    private static let allowedTopLevelFields: Set<String> = ["auth", "gateway", "deviceInit", "device_id"]
+    private static let allowedTopLevelFields: Set<String> = ["auth", "gateway", "deviceInit", "device_id", "device_auth_token"]
 
     package static func parse(_ configString: String) throws -> QiongcheBootstrapConfig {
         guard !configString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -47,6 +51,7 @@ package enum QiongcheConfigParser {
         }
 
         let deviceID = try Self.parseDeviceID(topLevel["device_id"])
+        let deviceAuthToken = try Self.parseDeviceAuthToken(topLevel["device_auth_token"])
         let endpointsData = try Self.endpointsData(from: topLevel)
 
         do {
@@ -54,6 +59,7 @@ package enum QiongcheConfigParser {
             let resolved = try ArchebasePublicEndpoints.decodeEndpoints(normalizedData)
             return QiongcheBootstrapConfig(
                 deviceID: deviceID,
+                deviceAuthToken: deviceAuthToken,
                 normalizedEndpointsJSONData: normalizedData,
                 resolvedEndpoints: resolved
             )
@@ -62,6 +68,17 @@ package enum QiongcheConfigParser {
         } catch {
             throw QiongcheSDKError.invalidConfigString("endpoint configuration is invalid")
         }
+    }
+
+    private static func parseDeviceAuthToken(_ value: Any?) throws -> String {
+        guard let rawToken = value as? String else {
+            throw QiongcheSDKError.invalidConfigString("device_auth_token is required")
+        }
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.hasPrefix("kda_v1_"), !token.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else {
+            throw QiongcheSDKError.invalidConfigString("device_auth_token is invalid")
+        }
+        return token
     }
 
     private static func parseDeviceID(_ value: Any?) throws -> String {

@@ -2,15 +2,6 @@
   "originHash" : "dcceab5a796629740a4c2e6abe30c4a3c6d01bc09516730ba0881239f9c7caa3",
   "pins" : [
     {
-      "identity" : "alibabacloud-oss-swift-sdk-v2",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/aliyun/alibabacloud-oss-swift-sdk-v2.git",
-      "state" : {
-        "revision" : "f9583dda9ea06e7e592739446e983507497a8094",
-        "version" : "0.2.0"
-      }
-    },
-    {
       "identity" : "grpc-swift-2",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/grpc/grpc-swift-2.git",
