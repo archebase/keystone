@@ -132,7 +132,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	if db != nil {
 		workspaceSyncService = services.NewWorkspaceSyncService(db, &cfg.Hilbert, nil)
 		dcPlanSyncService = services.NewDCPlanSyncService(db, &cfg.Hilbert, nil)
-		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub, cfg.Sync.DPConfigPath)
+		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub)
 		deviceRegistrationHandler = handlers.NewDeviceRegistrationHandler(db, cfg.Server.CallbackPublicBaseURL)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
