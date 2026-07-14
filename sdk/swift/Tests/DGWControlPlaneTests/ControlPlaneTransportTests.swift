@@ -127,7 +127,7 @@ import GRPCCore
     let transport = DeviceInitServiceClientTransport(client: stub, requestTimeout: .seconds(6))
 
     let response = try await transport.initDevice(
-        deviceID: "260427-000001",
+        deviceName: "Device 001",
         deviceAuthToken: "kda_v1_test-token",
         sdkVersion: "1.2.3",
         platform: "ios"
@@ -142,7 +142,7 @@ import GRPCCore
             method: "InitDevice",
             metadata: ["authorization": []],
             timeout: .seconds(6),
-            requestSummary: "260427-000001:token=true:1.2.3:ios"
+            requestSummary: "Device 001:token=true:1.2.3:ios"
         ),
     ])
 }
@@ -420,7 +420,7 @@ private actor DeviceInitServiceClientStub: Archebase_DataGateway_V1_DeviceInitSe
                     ("authorization", Array(request.metadata[stringValues: "authorization"])),
                 ]),
                 timeout: options.timeout,
-                requestSummary: "\(request.message.deviceID):token=\(!request.message.deviceAuthToken.isEmpty):\(request.message.sdkVersion):\(request.message.platform)"
+                requestSummary: "\(request.message.deviceName):token=\(!request.message.deviceAuthToken.isEmpty):\(request.message.sdkVersion):\(request.message.platform)"
             )
         )
 

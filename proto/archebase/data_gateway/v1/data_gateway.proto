@@ -68,7 +68,9 @@ service DeviceInitService {
 
 // Request sent by SDKs before they have an upload API key.
 message InitDeviceRequest {
-  // Bare platform-assigned device identifier provided by the operator.
+  // Resolved platform device identifier. First-time SDK initialization does
+  // not accept this from users; the server resolves it from device_name and
+  // device_auth_token.
   string device_id = 1;
   // SDK version reported for operator visibility and diagnostics.
   string sdk_version = 2;
@@ -76,6 +78,8 @@ message InitDeviceRequest {
   string platform = 3;
   // Administrator-issued device auth token with one-time SDK initialization permission.
   string device_auth_token = 4;
+  // Human-readable device name shown in Synapse and entered by the operator.
+  string device_name = 5;
 }
 
 // Request sent by SDKs when explicitly rotating an existing upload API key.

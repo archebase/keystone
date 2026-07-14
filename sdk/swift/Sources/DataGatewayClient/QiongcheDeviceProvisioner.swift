@@ -7,7 +7,7 @@ import Foundation
 
 package protocol QiongcheDeviceProvisioning: Sendable {
     func initDevice(
-        deviceID: String,
+        deviceName: String,
         deviceAuthToken: String,
         deviceInitEndpoint: URL,
         tls: TLSMode,
@@ -42,7 +42,7 @@ package struct DefaultQiongcheDeviceProvisioner: QiongcheDeviceProvisioning {
     }
 
     package func initDevice(
-        deviceID: String,
+        deviceName: String,
         deviceAuthToken: String,
         deviceInitEndpoint: URL,
         tls: TLSMode,
@@ -57,7 +57,7 @@ package struct DefaultQiongcheDeviceProvisioner: QiongcheDeviceProvisioning {
 
         return try await DeviceInitConfigFetcher.fetch(
             mode: .initDevice,
-            deviceID: deviceID,
+            deviceName: deviceName,
             deviceAuthToken: deviceAuthToken,
             authorizationHeader: nil,
             transport: transport.serviceClient,

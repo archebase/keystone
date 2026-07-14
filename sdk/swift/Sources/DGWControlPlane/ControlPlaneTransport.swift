@@ -225,7 +225,7 @@ package struct ControlPlaneClientFactory: Sendable {
 
 package protocol DeviceInitTransport: Sendable {
     func initDevice(
-        deviceID: String,
+        deviceName: String,
         deviceAuthToken: String,
         sdkVersion: String,
         platform: String
@@ -250,13 +250,13 @@ package final class DeviceInitServiceClientTransport<Client: Archebase_DataGatew
     }
 
     package func initDevice(
-        deviceID: String,
+        deviceName: String,
         deviceAuthToken: String,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse {
         var request = Archebase_DataGateway_V1_InitDeviceRequest()
-        request.deviceID = deviceID
+        request.deviceName = deviceName
         request.sdkVersion = sdkVersion
         request.platform = platform
         request.deviceAuthToken = deviceAuthToken

@@ -446,7 +446,9 @@ func (DataGatewayErrorCode) EnumDescriptor() ([]byte, []int) {
 // Request sent by SDKs before they have an upload API key.
 type InitDeviceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Bare platform-assigned device identifier provided by the operator.
+	// Resolved platform device identifier. First-time SDK initialization does
+	// not accept this from users; the server resolves it from device_name and
+	// device_auth_token.
 	DeviceId string `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
 	// SDK version reported for operator visibility and diagnostics.
 	SdkVersion string `protobuf:"bytes,2,opt,name=sdk_version,json=sdkVersion,proto3" json:"sdk_version,omitempty"`
@@ -454,8 +456,10 @@ type InitDeviceRequest struct {
 	Platform string `protobuf:"bytes,3,opt,name=platform,proto3" json:"platform,omitempty"`
 	// Administrator-issued device auth token with one-time SDK initialization permission.
 	DeviceAuthToken string `protobuf:"bytes,4,opt,name=device_auth_token,json=deviceAuthToken,proto3" json:"device_auth_token,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Human-readable device name shown in Synapse and entered by the operator.
+	DeviceName    string `protobuf:"bytes,5,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *InitDeviceRequest) Reset() {
@@ -512,6 +516,13 @@ func (x *InitDeviceRequest) GetPlatform() string {
 func (x *InitDeviceRequest) GetDeviceAuthToken() string {
 	if x != nil {
 		return x.DeviceAuthToken
+	}
+	return ""
+}
+
+func (x *InitDeviceRequest) GetDeviceName() string {
+	if x != nil {
+		return x.DeviceName
 	}
 	return ""
 }
@@ -3042,13 +3053,15 @@ var File_data_gateway_proto protoreflect.FileDescriptor
 
 const file_data_gateway_proto_rawDesc = "" +
 	"\n" +
-	"\x12data_gateway.proto\x12\x19archebase.data_gateway.v1\"\x99\x01\n" +
+	"\x12data_gateway.proto\x12\x19archebase.data_gateway.v1\"\xba\x01\n" +
 	"\x11InitDeviceRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1f\n" +
 	"\vsdk_version\x18\x02 \x01(\tR\n" +
 	"sdkVersion\x12\x1a\n" +
 	"\bplatform\x18\x03 \x01(\tR\bplatform\x12*\n" +
-	"\x11device_auth_token\x18\x04 \x01(\tR\x0fdeviceAuthToken\"\x9b\x01\n" +
+	"\x11device_auth_token\x18\x04 \x01(\tR\x0fdeviceAuthToken\x12\x1f\n" +
+	"\vdevice_name\x18\x05 \x01(\tR\n" +
+	"deviceName\"\x9b\x01\n" +
 	"\x13ReinitDeviceRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1f\n" +
 	"\vsdk_version\x18\x02 \x01(\tR\n" +

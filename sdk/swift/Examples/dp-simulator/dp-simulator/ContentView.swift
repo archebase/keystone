@@ -160,7 +160,7 @@ private struct DeviceSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "Device", systemImage: "iphone")
 
-            TextField("Device ID", text: $viewModel.deviceID)
+            TextField("Device Name", text: $viewModel.deviceID)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)

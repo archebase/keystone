@@ -89,12 +89,13 @@ public actor QiongcheDataGatewaySDK {
     public func saveConfigAndInit(configString: String) async throws {
         let parsed = try QiongcheConfigParser.parse(configString)
         let remoteConfig = try await self.deviceProvisioner.initDevice(
-            deviceID: parsed.deviceID,
+            deviceName: parsed.deviceName,
             deviceAuthToken: parsed.deviceAuthToken,
             deviceInitEndpoint: parsed.resolvedEndpoints.deviceInit,
             tls: parsed.resolvedEndpoints.deviceInitTLS,
             timeout: self.deviceInitTimeout
         )
+        let resolvedDeviceID = try Self.resolvedDeviceID(from: remoteConfig)
 
         // A successful remote init/reinit can invalidate the previous credential.
         // Keep readiness false until endpoints, config, and state all commit again.
@@ -109,11 +110,19 @@ public actor QiongcheDataGatewaySDK {
 
         let now = await self.clock.now()
         let state = try QiongcheSDKState(
-            deviceID: parsed.deviceID,
+            deviceID: resolvedDeviceID,
             endpointsSHA256: parsed.endpointsSHA256Hex,
             initializedAtUnix: Int64(now.timeIntervalSince1970)
         )
         try await self.localPersister.replaceState(state, stateURL: self.paths.stateURL)
+    }
+
+    private static func resolvedDeviceID(from config: ArchebaseConfig) throws -> String {
+        guard let deviceID = config.tags["device_id"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !deviceID.isEmpty else {
+            throw DataGatewayClientError.invalidConfiguration("device_id is missing from device initialization response")
+        }
+        return deviceID
     }
 
     public func isReadyToUpload() async -> Bool {

@@ -59,7 +59,7 @@ func TestDeviceInitConsumesSDKPermissionOnce(t *testing.T) {
 	token := seedDeviceAuthToken(t, db, false)
 	identity := testDeviceIdentity(db, &fakeHilbertDeviceClient{apiKey: "device-api-key"})
 	service := &deviceInitService{identity: identity}
-	req := &cloudpb.InitDeviceRequest{DeviceId: "101", DeviceAuthToken: token, Platform: "ios"}
+	req := &cloudpb.InitDeviceRequest{DeviceName: "Device 101", DeviceAuthToken: token, Platform: "ios"}
 
 	response, err := service.InitDevice(context.Background(), req)
 	if err != nil {
@@ -71,6 +71,22 @@ func TestDeviceInitConsumesSDKPermissionOnce(t *testing.T) {
 	_, err = service.InitDevice(context.Background(), req)
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("second InitDevice() code = %v, want Unauthenticated", status.Code(err))
+	}
+}
+
+func TestDeviceInitRejectsMismatchedDeviceName(t *testing.T) {
+	db := newDeviceAuthTestDB(t)
+	token := seedDeviceAuthToken(t, db, false)
+	identity := testDeviceIdentity(db, &fakeHilbertDeviceClient{apiKey: "device-api-key"})
+	service := &deviceInitService{identity: identity}
+
+	_, err := service.InitDevice(context.Background(), &cloudpb.InitDeviceRequest{
+		DeviceName:      "Wrong Device",
+		DeviceAuthToken: token,
+		Platform:        "ios",
+	})
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("InitDevice() code = %v, want Unauthenticated", status.Code(err))
 	}
 }
 
@@ -200,7 +216,8 @@ func newDeviceAuthTestDB(t *testing.T) *sqlx.DB {
 	for _, statement := range []string{
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY, device_id TEXT NOT NULL, workspace_id INTEGER NOT NULL,
-			status TEXT NOT NULL, auth_epoch INTEGER NOT NULL, updated_at TIMESTAMP, deleted_at TIMESTAMP NULL
+			status TEXT NOT NULL, auth_epoch INTEGER NOT NULL, metadata TEXT,
+			updated_at TIMESTAMP, deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE ws_client_auth_tokens (
 			id INTEGER PRIMARY KEY AUTOINCREMENT, robot_id INTEGER NOT NULL, token_hash TEXT NOT NULL,
@@ -209,7 +226,7 @@ func newDeviceAuthTestDB(t *testing.T) *sqlx.DB {
 			recovery_stage TEXT NOT NULL DEFAULT 'none', recovery_completed_at TIMESTAMP NULL,
 			revoked_at TIMESTAMP NULL
 		)`,
-		`INSERT INTO robots (id, device_id, workspace_id, status, auth_epoch) VALUES (1, '101', 10, 'active', 1)`,
+		`INSERT INTO robots (id, device_id, workspace_id, status, auth_epoch, metadata) VALUES (1, '101', 10, 'active', 1, '{"hilbert_dc_device_name":"Device 101"}')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("create fixture: %v\nquery=%s", err, statement)

@@ -93,7 +93,7 @@ actor GatewayUploadService {
         }
         let config: ArchebaseConfig
         do {
-            config = try await initializer.initDevice(deviceID: deviceID, deviceAuthToken: deviceAuthToken)
+            config = try await initializer.initDevice(deviceName: deviceID, deviceAuthToken: deviceAuthToken)
         } catch let error as DataGatewayClientError {
             switch error {
             case .alreadyInitialized:

@@ -13,7 +13,8 @@ package enum DeviceInitRemoteMode: Sendable {
 package enum DeviceInitConfigFetcher {
     package static func fetch(
         mode: DeviceInitRemoteMode,
-        deviceID: String,
+        deviceID: String = "",
+        deviceName: String? = nil,
         deviceAuthToken: String?,
         authorizationHeader: String? = nil,
         transport: any DeviceInitTransport,
@@ -23,11 +24,14 @@ package enum DeviceInitConfigFetcher {
         do {
             switch mode {
             case .initDevice:
+                guard let deviceName = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines), !deviceName.isEmpty else {
+                    throw DataGatewayClientError.invalidConfiguration("device_name is required for device initialization")
+                }
                 guard let deviceAuthToken = deviceAuthToken?.trimmingCharacters(in: .whitespacesAndNewlines), !deviceAuthToken.isEmpty else {
                     throw DataGatewayClientError.invalidConfiguration("device_auth_token is required for device initialization")
                 }
                 let response = try await transport.initDevice(
-                    deviceID: deviceID,
+                    deviceName: deviceName,
                     deviceAuthToken: deviceAuthToken,
                     sdkVersion: sdkVersion,
                     platform: platform

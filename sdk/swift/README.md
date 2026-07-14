@@ -110,8 +110,8 @@ iOS App 推荐使用配置文件驱动方式接入。
 
 1. App 计算 App 私有容器内的 `endpointsURL`、`configURL` 和 `persistRootURL`。
 2. App 从可信渠道获取 endpoint JSON，调用 `DataGatewayClient.initialize(endpointsJSON:endpointsURL:)` 写入 `archebase-endpoints.json`。
-3. App 从可信安装配置读取平台提供的 `deviceID` 和管理员签发的 `device_auth_token`。
-4. 调用 `ArchebaseDeviceInitializer.initDevice(deviceID:deviceAuthToken:)`。
+3. App 从可信安装配置读取设备名称和管理员签发的 `device_auth_token`。
+4. 调用 `ArchebaseDeviceInitializer.initDevice(deviceName:deviceAuthToken:)`。
 5. SDK 将 API Key 写入 Keychain，并在 `archebase-config.json` 中只保存 Keychain 引用和 tags。
 6. App 调用 `DataGatewayClient.fromArchebaseConfig(...)` 创建上传客户端。
 7. 用户选择文件后，App 调用 `uploadEvents(_:)` 或 `upload(_:)` 上传。
@@ -266,14 +266,14 @@ let initializer = try ArchebaseDeviceInitializer(
 )
 
 let deviceConfig = try await initializer.initDevice(
-    deviceID: "260427-000001",
+    deviceName: "Device 001",
     deviceAuthToken: "kda_v1_<管理员签发值>"
 )
 
 print(deviceConfig.tags)
 ```
 
-`initDevice(deviceID:deviceAuthToken:)` 的行为：
+`initDevice(deviceName:deviceAuthToken:)` 的行为：
 
 1. 从 `archebase-endpoints.json` 读取 `deviceInit` endpoint。
 2. 本地没有 `archebase-config.json` 时，调用远端 `DeviceInitService.InitDevice` 请求设备配置并写入本地文件。
@@ -1002,7 +1002,7 @@ public struct DeviceInitClientConfig: Sendable {
 
 public actor ArchebaseDeviceInitializer {
     public init(config: DeviceInitClientConfig) throws
-    public func initDevice(deviceID: String, deviceAuthToken: String) async throws -> ArchebaseConfig
+    public func initDevice(deviceName: String, deviceAuthToken: String) async throws -> ArchebaseConfig
     public func reinitDevice(deviceID: String, recoveryDeviceAuthToken: String? = nil) async throws -> ArchebaseConfig
 }
 

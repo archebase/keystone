@@ -7,14 +7,14 @@ import Testing
 @testable import DataGatewayClient
 
 @Test func qiongcheConfigParserParsesValidConfig() throws {
-    let parsed = try QiongcheConfigParser.parse(validQiongcheConfig(deviceID: " robot-001 "))
+    let parsed = try QiongcheConfigParser.parse(validQiongcheConfig(deviceName: " robot-001 "))
 
-    #expect(parsed.deviceID == "robot-001")
+    #expect(parsed.deviceName == "robot-001")
     #expect(parsed.deviceAuthToken == "kda_v1_test-token")
     #expect(parsed.resolvedEndpoints.auth == URL(string: "http://auth.example.com:50051")!)
     #expect(parsed.resolvedEndpoints.gateway == URL(string: "http://gateway.example.com:50053")!)
     #expect(parsed.resolvedEndpoints.deviceInit == URL(string: "https://init.example.com:443")!)
-    #expect(!parsed.normalizedEndpointsJSONString.contains("device_id"))
+    #expect(!parsed.normalizedEndpointsJSONString.contains("device_name"))
     #expect(!parsed.normalizedEndpointsJSONString.contains("device_auth_token"))
     #expect(throws: Never.self) {
         try ArchebasePublicEndpoints.decodeEndpoints(parsed.normalizedEndpointsJSONData)
@@ -27,7 +27,7 @@ import Testing
       "deviceInit": { "port": 443, "host": "init.example.com", "scheme": "https" },
       "gateway": { "host": "gateway.example.com", "scheme": "http", "port": 50053 },
       "auth": { "port": 50051, "scheme": "http", "host": "auth.example.com" },
-      "device_id": "robot-001",
+      "device_name": "robot-001",
       "device_auth_token": "kda_v1_test-token"
     }
     """
@@ -62,13 +62,13 @@ import Testing
         """)
     }
 
-    #expect(error == .invalidConfigString("device_id is required"))
+    #expect(error == .invalidConfigString("device_name is required"))
 }
 
 @Test func qiongcheConfigParserInvalidConfigUsesQiongcheSDKErrorWithoutEchoingConfig() {
     let configString = """
     {
-      "device_id": "robot-001",
+      "device_name": "robot-001",
 
       "device_auth_token": "kda_v1_test-token",
       "auth": { "scheme": "grpc", "host": "auth.example.com", "port": 50051 },
@@ -92,17 +92,17 @@ import Testing
 
 @Test func qiongcheConfigParserRejectsEmptyDeviceID() {
     let error = #expect(throws: QiongcheSDKError.self) {
-        try QiongcheConfigParser.parse(validQiongcheConfig(deviceID: "   "))
+        try QiongcheConfigParser.parse(validQiongcheConfig(deviceName: "   "))
     }
 
-    #expect(error == .invalidConfigString("device_id must not be empty"))
+    #expect(error == .invalidConfigString("device_name must not be empty"))
 }
 
 @Test func qiongcheConfigParserRejectsControlCharacterDeviceID() {
     let error = #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot\\u0007001",
+          "device_name": "robot\\u0007001",
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
@@ -112,14 +112,14 @@ import Testing
         """)
     }
 
-    #expect(error == .invalidConfigString("device_id contains unsupported control characters"))
+    #expect(error == .invalidConfigString("device_name contains unsupported control characters"))
 }
 
 @Test func qiongcheConfigParserRejectsMissingEndpoint() {
     let error = #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot-001",
+          "device_name": "robot-001",
 
           "device_auth_token": "kda_v1_test-token",
           "gateway": { "scheme": "http", "host": "gateway.example.com", "port": 50053 },
@@ -135,7 +135,7 @@ import Testing
     #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot-001",
+          "device_name": "robot-001",
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
@@ -147,7 +147,7 @@ import Testing
     #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot-001",
+          "device_name": "robot-001",
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
@@ -161,7 +161,7 @@ import Testing
     let error = #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": 1001,
+          "device_name": 1001,
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
@@ -171,14 +171,14 @@ import Testing
         """)
     }
 
-    #expect(error == .invalidConfigString("device_id is required"))
+    #expect(error == .invalidConfigString("device_name is required"))
 }
 
 @Test func qiongcheConfigParserRejectsInvalidEndpointSchemeHostAndPort() {
     #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot-001",
+          "device_name": "robot-001",
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "grpc", "host": "auth.example.com", "port": 50051 },
@@ -191,7 +191,7 @@ import Testing
     #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot-001",
+          "device_name": "robot-001",
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "   ", "port": 50051 },
@@ -204,7 +204,7 @@ import Testing
     #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot-001",
+          "device_name": "robot-001",
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 65536 },
@@ -219,7 +219,7 @@ import Testing
     let error = #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot-001",
+          "device_name": "robot-001",
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "scheme": "http", "host": "auth.example.com", "port": 50051 },
@@ -237,7 +237,7 @@ import Testing
     let error = #expect(throws: QiongcheSDKError.self) {
         try QiongcheConfigParser.parse("""
         {
-          "device_id": "robot-001",
+          "device_name": "robot-001",
 
           "device_auth_token": "kda_v1_test-token",
           "auth": { "schema": "http", "host": "auth.example.com", "port": 50051 },
@@ -250,10 +250,10 @@ import Testing
     #expect(error == .invalidConfigString("auth.schema is not supported; use scheme"))
 }
 
-func validQiongcheConfig(deviceID: String = "robot-001", authHost: String = "auth.example.com") -> String {
+func validQiongcheConfig(deviceName: String = "robot-001", authHost: String = "auth.example.com") -> String {
     """
     {
-      "device_id": "\(deviceID)",
+      "device_name": "\(deviceName)",
 
       "device_auth_token": "kda_v1_test-token",
       "auth": { "scheme": "http", "host": "\(authHost)", "port": 50051 },

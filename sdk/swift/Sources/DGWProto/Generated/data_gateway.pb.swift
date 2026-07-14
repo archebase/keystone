@@ -397,7 +397,9 @@ public struct Archebase_DataGateway_V1_InitDeviceRequest: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Bare platform-assigned device identifier provided by the operator.
+  /// Resolved platform device identifier. First-time SDK initialization does
+  /// not accept this from users; the server resolves it from device_name and
+  /// device_auth_token.
   public var deviceID: String = String()
 
   /// SDK version reported for operator visibility and diagnostics.
@@ -408,6 +410,9 @@ public struct Archebase_DataGateway_V1_InitDeviceRequest: Sendable {
 
   /// Administrator-issued device auth token with one-time SDK initialization permission.
   public var deviceAuthToken: String = String()
+
+  /// Human-readable device name shown in Synapse and entered by the operator.
+  public var deviceName: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -1366,7 +1371,7 @@ extension Archebase_DataGateway_V1_DataGatewayErrorCode: SwiftProtobuf._ProtoNam
 
 extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".InitDeviceRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0\u{3}sdk_version\0\u{1}platform\0\u{3}device_auth_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0\u{3}sdk_version\0\u{1}platform\0\u{3}device_auth_token\0\u{3}device_name\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1378,6 +1383,7 @@ extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, Swi
       case 2: try { try decoder.decodeSingularStringField(value: &self.sdkVersion) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.platform) }()
       case 4: try { try decoder.decodeSingularStringField(value: &self.deviceAuthToken) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.deviceName) }()
       default: break
       }
     }
@@ -1396,6 +1402,9 @@ extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, Swi
     if !self.deviceAuthToken.isEmpty {
       try visitor.visitSingularStringField(value: self.deviceAuthToken, fieldNumber: 4)
     }
+    if !self.deviceName.isEmpty {
+      try visitor.visitSingularStringField(value: self.deviceName, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1404,6 +1413,7 @@ extension Archebase_DataGateway_V1_InitDeviceRequest: SwiftProtobuf.Message, Swi
     if lhs.sdkVersion != rhs.sdkVersion {return false}
     if lhs.platform != rhs.platform {return false}
     if lhs.deviceAuthToken != rhs.deviceAuthToken {return false}
+    if lhs.deviceName != rhs.deviceName {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -523,11 +523,11 @@ public actor ArchebaseDeviceInitializer {
     }
 
     /// Initializes a device when no local configuration exists.
-    public func initDevice(deviceID: String, deviceAuthToken: String) async throws -> ArchebaseConfig {
+    public func initDevice(deviceName: String, deviceAuthToken: String) async throws -> ArchebaseConfig {
         if await self.configStore.exists() {
             throw DataGatewayClientError.alreadyInitialized(configURL: await self.configStore.resolvedConfigURL())
         }
-        let config = try await self.remoteConfig(deviceID: deviceID, deviceAuthToken: deviceAuthToken, mode: .initDevice)
+        let config = try await self.remoteConfig(deviceID: "", deviceName: deviceName, deviceAuthToken: deviceAuthToken, mode: .initDevice)
         try await self.configStore.initialize(config)
         return config
     }
@@ -565,6 +565,7 @@ public actor ArchebaseDeviceInitializer {
 
     private func remoteConfig(
         deviceID: String,
+        deviceName: String? = nil,
         deviceAuthToken: String?,
         authorizationHeader: String? = nil,
         mode: DeviceInitRemoteMode
@@ -572,6 +573,7 @@ public actor ArchebaseDeviceInitializer {
         try await DeviceInitConfigFetcher.fetch(
             mode: mode,
             deviceID: deviceID,
+            deviceName: deviceName,
             deviceAuthToken: deviceAuthToken,
             authorizationHeader: authorizationHeader,
             transport: self.initTransport,

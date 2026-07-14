@@ -39,7 +39,7 @@ import Testing
     let paths = try QiongcheSDKPaths(rootURL: qiongcheTemporaryRoot())
     let store = QiongcheSDKStateStore(stateURL: paths.stateURL)
     let state = try QiongcheSDKState(
-        deviceID: "robot-001",
+        deviceID: "101",
         endpointsSHA256: String(repeating: "a", count: 64),
         initializedAtUnix: 1_778_840_000
     )
@@ -57,12 +57,12 @@ import Testing
     let paths = try QiongcheSDKPaths(rootURL: qiongcheTemporaryRoot())
     let store = QiongcheSDKStateStore(stateURL: paths.stateURL)
     let old = try QiongcheSDKState(
-        deviceID: "robot-old",
+        deviceID: "101",
         endpointsSHA256: String(repeating: "a", count: 64),
         initializedAtUnix: 1
     )
     let new = try QiongcheSDKState(
-        deviceID: "robot-new",
+        deviceID: "102",
         endpointsSHA256: String(repeating: "b", count: 64),
         initializedAtUnix: 2
     )
@@ -84,7 +84,7 @@ import Testing
     }
 
     let replacement = try QiongcheSDKState(
-        deviceID: "robot-001",
+        deviceID: "101",
         endpointsSHA256: String(repeating: "c", count: 64),
         initializedAtUnix: 3
     )
@@ -100,7 +100,7 @@ import Testing
     let endpoint = URL(string: "https://init.example.com:443")!
 
     let config = try await provisioner.initDevice(
-        deviceID: "robot-001",
+        deviceName: "Device 001",
         deviceAuthToken: "kda_v1_test-token",
         deviceInitEndpoint: endpoint,
         tls: .tls,
@@ -110,7 +110,7 @@ import Testing
     #expect(config == (try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])))
     let records = await provisioner.records()
     #expect(records == [
-        .init(deviceID: "robot-001", endpoint: endpoint, tls: .tls, timeout: .seconds(7)),
+        .init(deviceName: "Device 001", endpoint: endpoint, tls: .tls, timeout: .seconds(7)),
     ])
 }
 
@@ -130,7 +130,7 @@ import Testing
     })
 
     let config = try await provisioner.initDevice(
-        deviceID: "robot-001",
+        deviceName: "Device 001",
         deviceAuthToken: "kda_v1_test-token",
         deviceInitEndpoint: URL(string: "https://init.example.com:443")!,
         tls: .tls,
@@ -161,7 +161,7 @@ import Testing
     )
 
     await #expect(throws: DataGatewayClientError.self) {
-        try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceID: "robot-001"))
+        try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceName: "robot-001"))
     }
 
     #expect(await transport.methods() == [.initDevice])
@@ -188,7 +188,7 @@ import Testing
     )
 
     await #expect(throws: DataGatewayClientError.self) {
-        try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceID: "robot-002"))
+        try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceName: "robot-002"))
     }
 
     #expect(await transport.methods() == [.initDevice])
@@ -215,7 +215,7 @@ import Testing
 @Test func qiongcheSaveConfigAndInitFirstCallWritesEndpointsConfigAndState() async throws {
     let root = try qiongcheTemporaryRoot()
     let paths = try QiongcheSDKPaths(rootURL: root)
-    let remoteConfig = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])
+    let remoteConfig = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device_id": "101", "device": "robot"])
     let provisioner = RecordingQiongcheDeviceProvisioner(result: remoteConfig)
     let sdk = try QiongcheDataGatewaySDK(
         rootURL: root,
@@ -223,21 +223,21 @@ import Testing
         clock: FixedQiongcheSDKClock(date: Date(timeIntervalSince1970: 1_778_840_000))
     )
 
-    try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceID: "robot-001"))
+    try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceName: "Device 001"))
 
     let endpoints = try ArchebasePublicEndpoints.load(endpointsURL: paths.endpointsURL)
     #expect(endpoints.auth == URL(string: "http://auth.example.com:50051")!)
     #expect(try await ArchebaseConfigStore(configURL: paths.configURL).load() == remoteConfig)
     let state = try QiongcheSDKStateStore(stateURL: paths.stateURL).load()
-    let parsed = try QiongcheConfigParser.parse(validQiongcheConfig(deviceID: "robot-001"))
-    #expect(state.deviceID == "robot-001")
+    let parsed = try QiongcheConfigParser.parse(validQiongcheConfig(deviceName: "Device 001"))
+    #expect(state.deviceID == "101")
     #expect(state.endpointsSHA256 == parsed.endpointsSHA256Hex)
     #expect(state.initializedAtUnix == 1_778_840_000)
 
     let records = await provisioner.records()
     #expect(records == [
         .init(
-            deviceID: "robot-001",
+            deviceName: "Device 001",
             endpoint: URL(string: "https://init.example.com:443")!,
             tls: .tls,
             timeout: .seconds(10)
@@ -249,18 +249,18 @@ import Testing
     let root = try qiongcheTemporaryRoot()
     let paths = try QiongcheSDKPaths(rootURL: root)
     try ArchebasePublicEndpoints.replace(
-        endpointsJSON: validQiongcheConfig(deviceID: "robot-old", authHost: "old-auth.example.com"),
+        endpointsJSON: validQiongcheConfig(deviceName: "robot-old", authHost: "old-auth.example.com"),
         endpointsURL: paths.endpointsURL
     )
     try await ArchebaseConfigStore(configURL: paths.configURL)
-        .replaceOrInitialize(try ArchebaseConfig(apiKey: "credential-old", tags: ["device": "old"]))
+        .replaceOrInitialize(try ArchebaseConfig(apiKey: "credential-old", tags: ["device_id": "100", "device": "old"]))
     try QiongcheSDKStateStore(stateURL: paths.stateURL).replace(try QiongcheSDKState(
-        deviceID: "robot-old",
+        deviceID: "100",
         endpointsSHA256: String(repeating: "a", count: 64),
         initializedAtUnix: 1
     ))
 
-    let remoteConfig = try ArchebaseConfig(apiKey: "credential-new", tags: ["device": "new"])
+    let remoteConfig = try ArchebaseConfig(apiKey: "credential-new", tags: ["device_id": "101", "device": "new"])
     let sdk = try QiongcheDataGatewaySDK(
         rootURL: root,
         deviceProvisioner: RecordingQiongcheDeviceProvisioner(result: remoteConfig),
@@ -268,21 +268,21 @@ import Testing
     )
 
     try await sdk.saveConfigAndInit(
-        configString: validQiongcheConfig(deviceID: "robot-new", authHost: "new-auth.example.com")
+        configString: validQiongcheConfig(deviceName: "robot-new", authHost: "new-auth.example.com")
     )
 
     let endpoints = try ArchebasePublicEndpoints.load(endpointsURL: paths.endpointsURL)
     #expect(endpoints.auth == URL(string: "http://new-auth.example.com:50051")!)
     #expect(try await ArchebaseConfigStore(configURL: paths.configURL).load() == remoteConfig)
     let state = try QiongcheSDKStateStore(stateURL: paths.stateURL).load()
-    #expect(state.deviceID == "robot-new")
+    #expect(state.deviceID == "101")
     #expect(state.initializedAtUnix == 2)
 }
 
 @Test func qiongcheSaveConfigAndInitRepeatedSameConfigCallsRemoteEachTime() async throws {
     let root = try qiongcheTemporaryRoot()
     let provisioner = RecordingQiongcheDeviceProvisioner(
-        result: try ArchebaseConfig(apiKey: "credential-v1", tags: [:])
+        result: try ArchebaseConfig(apiKey: "credential-v1", tags: ["device_id": "101"])
     )
     let sdk = try QiongcheDataGatewaySDK(
         rootURL: root,
@@ -290,8 +290,8 @@ import Testing
         clock: FixedQiongcheSDKClock(date: Date(timeIntervalSince1970: 1))
     )
 
-    try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceID: "robot-001"))
-    try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceID: "robot-001"))
+    try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceName: "robot-001"))
+    try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceName: "robot-001"))
 
     #expect(await provisioner.records().count == 2)
 }
@@ -301,18 +301,18 @@ import Testing
     let paths = try QiongcheSDKPaths(rootURL: root)
     try ArchebasePublicEndpoints.replace(endpointsJSON: validQiongcheConfig(), endpointsURL: paths.endpointsURL)
     try QiongcheSDKStateStore(stateURL: paths.stateURL).replace(try QiongcheSDKState(
-        deviceID: "robot-001",
+        deviceID: "101",
         endpointsSHA256: String(repeating: "d", count: 64),
         initializedAtUnix: 1
     ))
-    let remoteConfig = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "rebuilt"])
+    let remoteConfig = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device_id": "101", "device": "rebuilt"])
     let sdk = try QiongcheDataGatewaySDK(
         rootURL: root,
         deviceProvisioner: RecordingQiongcheDeviceProvisioner(result: remoteConfig),
         clock: FixedQiongcheSDKClock(date: Date(timeIntervalSince1970: 2))
     )
 
-    try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceID: "robot-001"))
+    try await sdk.saveConfigAndInit(configString: validQiongcheConfig(deviceName: "robot-001"))
 
     #expect(try await ArchebaseConfigStore(configURL: paths.configURL).load() == remoteConfig)
     #expect(try QiongcheSDKStateStore(stateURL: paths.stateURL).load().initializedAtUnix == 2)
@@ -321,10 +321,10 @@ import Testing
 @Test func qiongcheSaveConfigAndInitKeepsOldFilesWhenRemoteInitFails() async throws {
     let root = try qiongcheTemporaryRoot()
     let paths = try QiongcheSDKPaths(rootURL: root)
-    let oldConfigString = validQiongcheConfig(deviceID: "robot-old", authHost: "old-auth.example.com")
-    let oldRemoteConfig = try ArchebaseConfig(apiKey: "credential-old", tags: ["device": "old"])
+    let oldConfigString = validQiongcheConfig(deviceName: "robot-old", authHost: "old-auth.example.com")
+    let oldRemoteConfig = try ArchebaseConfig(apiKey: "credential-old", tags: ["device_id": "100", "device": "old"])
     let oldState = try QiongcheSDKState(
-        deviceID: "robot-old",
+        deviceID: "100",
         endpointsSHA256: String(repeating: "a", count: 64),
         initializedAtUnix: 1
     )
@@ -342,7 +342,7 @@ import Testing
 
     await #expect(throws: DataGatewayClientError.self) {
         try await sdk.saveConfigAndInit(
-            configString: validQiongcheConfig(deviceID: "robot-new", authHost: "new-auth.example.com")
+            configString: validQiongcheConfig(deviceName: "robot-new", authHost: "new-auth.example.com")
         )
     }
 
@@ -354,7 +354,7 @@ import Testing
 
 @Test func qiongcheSaveConfigAndInitPropagatesEndpointPersistenceFailure() async throws {
     let provisioner = RecordingQiongcheDeviceProvisioner(
-        result: try ArchebaseConfig(apiKey: "credential-v1", tags: [:])
+        result: try ArchebaseConfig(apiKey: "credential-v1", tags: ["device_id": "101"])
     )
     let persister = RecordingQiongcheLocalPersister(failures: [.endpoints])
     let sdk = try QiongcheDataGatewaySDK(
@@ -377,7 +377,7 @@ import Testing
     let sdk = try QiongcheDataGatewaySDK(
         rootURL: qiongcheTemporaryRoot(),
         deviceProvisioner: RecordingQiongcheDeviceProvisioner(
-            result: try ArchebaseConfig(apiKey: "credential-v1", tags: [:])
+            result: try ArchebaseConfig(apiKey: "credential-v1", tags: ["device_id": "101"])
         ),
         localPersister: persister,
         clock: FixedQiongcheSDKClock(date: Date(timeIntervalSince1970: 1))
@@ -392,7 +392,7 @@ import Testing
 
 @Test func qiongcheSaveConfigAndInitCanRecoverAfterStatePersistenceFailure() async throws {
     let provisioner = RecordingQiongcheDeviceProvisioner(
-        result: try ArchebaseConfig(apiKey: "credential-v1", tags: [:])
+        result: try ArchebaseConfig(apiKey: "credential-v1", tags: ["device_id": "101"])
     )
     let persister = RecordingQiongcheLocalPersister(failures: [.state])
     let sdk = try QiongcheDataGatewaySDK(
@@ -415,13 +415,13 @@ import Testing
 @Test func qiongcheSaveConfigAndInitInvalidatesReadyStateAfterRemoteSuccessWhenLocalPersistenceFailsAndRecovers() async throws {
     let root = try qiongcheTemporaryRoot()
     let paths = try QiongcheSDKPaths(rootURL: root)
-    let oldConfigString = validQiongcheConfig(deviceID: "robot-001", authHost: "old-auth.example.com")
+    let oldConfigString = validQiongcheConfig(deviceName: "robot-001", authHost: "old-auth.example.com")
     try await writeQiongcheReadyFiles(
         rootURL: root,
         configString: oldConfigString,
         remoteConfig: try ArchebaseConfig(apiKey: "credential-old", tags: ["device": "old"])
     )
-    let newConfigString = validQiongcheConfig(deviceID: "robot-001", authHost: "new-auth.example.com")
+    let newConfigString = validQiongcheConfig(deviceName: "robot-001", authHost: "new-auth.example.com")
     let recoveredConfig = try ArchebaseConfig(apiKey: "credential-v3", tags: ["device": "recovered"])
     let provisioner = SequencedQiongcheDeviceProvisioner(configs: [
         try ArchebaseConfig(apiKey: "credential-v2", tags: ["device": "rotated"]),
@@ -450,7 +450,7 @@ import Testing
     #expect(try await ArchebaseConfigStore(configURL: paths.configURL).load() == recoveredConfig)
     let parsed = try QiongcheConfigParser.parse(newConfigString)
     let state = try QiongcheSDKStateStore(stateURL: paths.stateURL).load()
-    #expect(state.deviceID == "robot-001")
+    #expect(state.deviceID == "101")
     #expect(state.endpointsSHA256 == parsed.endpointsSHA256Hex)
     #expect(await sdk.isReadyToUpload())
     #expect(await provisioner.records().count == 2)
@@ -580,7 +580,7 @@ import Testing
         rootURL: root,
         readinessTimeout: Duration(secondsComponent: 0, attosecondsComponent: 10_000_000_000_000_000),
         deviceProvisioner: RecordingQiongcheDeviceProvisioner(
-            result: try ArchebaseConfig(apiKey: "credential-v1", tags: [:])
+            result: try ArchebaseConfig(apiKey: "credential-v1", tags: ["device_id": "101"])
         ),
         readinessProbe: TimeoutQiongcheProbe(),
         clock: FixedQiongcheSDKClock(date: Date(timeIntervalSince1970: 1))
@@ -605,11 +605,12 @@ private func writeQiongcheReadyFiles(
 ) async throws {
     let paths = try QiongcheSDKPaths(rootURL: rootURL)
     let parsed = try QiongcheConfigParser.parse(configString)
+    let resolvedDeviceID = remoteConfig?.tags["device_id"] ?? "101"
     try ArchebasePublicEndpoints.replace(endpointsJSON: configString, endpointsURL: paths.endpointsURL)
     try await ArchebaseConfigStore(configURL: paths.configURL)
-        .replaceOrInitialize(remoteConfig ?? (try ArchebaseConfig(apiKey: "credential-v1", tags: [:])))
+        .replaceOrInitialize(remoteConfig ?? (try ArchebaseConfig(apiKey: "credential-v1", tags: ["device_id": resolvedDeviceID])))
     try QiongcheSDKStateStore(stateURL: paths.stateURL).replace(try QiongcheSDKState(
-        deviceID: parsed.deviceID,
+        deviceID: resolvedDeviceID,
         endpointsSHA256: parsed.endpointsSHA256Hex,
         initializedAtUnix: initializedAtUnix
     ))
@@ -649,12 +650,12 @@ private actor SequencedDeviceInitTransport: DeviceInitTransport {
     }
 
     func initDevice(
-        deviceID: String,
+        deviceName: String,
         deviceAuthToken: String,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse {
-        _ = (deviceID, sdkVersion, platform)
+        _ = (deviceName, sdkVersion, platform)
         return try self.next(method: .initDevice)
     }
 
@@ -689,7 +690,7 @@ private actor SequencedDeviceInitTransport: DeviceInitTransport {
 
 private func deviceInitResponse(
     apiKey: String,
-    tags: [String: String] = [:]
+    tags: [String: String] = ["device_id": "101"]
 ) -> Archebase_DataGateway_V1_InitDeviceResponse {
     var response = Archebase_DataGateway_V1_InitDeviceResponse()
     response.apiKey = apiKey
@@ -699,7 +700,7 @@ private func deviceInitResponse(
 
 private actor RecordingQiongcheDeviceProvisioner: QiongcheDeviceProvisioning {
     struct Record: Equatable {
-        var deviceID: String
+        var deviceName: String
         var endpoint: URL
         var tls: TLSMode
         var timeout: Duration
@@ -722,13 +723,13 @@ private actor RecordingQiongcheDeviceProvisioner: QiongcheDeviceProvisioning {
     }
 
     func initDevice(
-        deviceID: String,
+        deviceName: String,
         deviceAuthToken: String,
         deviceInitEndpoint: URL,
         tls: TLSMode,
         timeout: Duration
     ) async throws -> ArchebaseConfig {
-        self.recorded.append(.init(deviceID: deviceID, endpoint: deviceInitEndpoint, tls: tls, timeout: timeout))
+        self.recorded.append(.init(deviceName: deviceName, endpoint: deviceInitEndpoint, tls: tls, timeout: timeout))
         switch self.outcome {
         case .success(let config):
             return config
@@ -751,13 +752,13 @@ private actor SequencedQiongcheDeviceProvisioner: QiongcheDeviceProvisioning {
     }
 
     func initDevice(
-        deviceID: String,
+        deviceName: String,
         deviceAuthToken: String,
         deviceInitEndpoint: URL,
         tls: TLSMode,
         timeout: Duration
     ) async throws -> ArchebaseConfig {
-        self.recorded.append(.init(deviceID: deviceID, endpoint: deviceInitEndpoint, tls: tls, timeout: timeout))
+        self.recorded.append(.init(deviceName: deviceName, endpoint: deviceInitEndpoint, tls: tls, timeout: timeout))
         guard !self.configs.isEmpty else {
             throw DataGatewayClientError.invalidConfiguration("qiongche provisioner test config missing")
         }

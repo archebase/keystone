@@ -450,7 +450,7 @@ struct LocalStackHarnessTests {
         platform: "ios-simulator"
     )
 
-    let config = try await initializer.initDevice(deviceID: initConfig.deviceID, deviceAuthToken: "kda_v1_test-token")
+    let config = try await initializer.initDevice(deviceName: initConfig.deviceID, deviceAuthToken: "kda_v1_test-token")
 
     #expect(!config.apiKey.isEmpty)
     #expect(try await ArchebaseConfigStore(configURL: configURL).load() == config)
@@ -470,7 +470,7 @@ struct LocalStackHarnessTests {
     )
 
     let error = await #expect(throws: DataGatewayClientError.self) {
-        _ = try await initializer.initDevice(deviceID: unboundDeviceID, deviceAuthToken: "kda_v1_test-token")
+        _ = try await initializer.initDevice(deviceName: unboundDeviceID, deviceAuthToken: "kda_v1_test-token")
     }
 
     guard case .gatewayFailed(_, let detailCode, _) = error else {
@@ -493,7 +493,7 @@ struct LocalStackHarnessTests {
     )
 
     let error = await #expect(throws: DataGatewayClientError.self) {
-        _ = try await initializer.initDevice(deviceID: "00000000-0000-0000-0000-000000000000", deviceAuthToken: "kda_v1_test-token")
+        _ = try await initializer.initDevice(deviceName: "00000000-0000-0000-0000-000000000000", deviceAuthToken: "kda_v1_test-token")
     }
 
     guard case .gatewayFailed(_, let detailCode, _) = error else {
@@ -516,7 +516,7 @@ struct LocalStackHarnessTests {
         sdkVersion: "local-integration",
         platform: "ios-simulator"
     )
-    _ = try await initializer.initDevice(deviceID: initConfig.deviceID, deviceAuthToken: "kda_v1_test-token")
+    _ = try await initializer.initDevice(deviceName: initConfig.deviceID, deviceAuthToken: "kda_v1_test-token")
 
     let client = try await DataGatewayClient.testFromArchebaseConfig(
         authEndpoint: clientConfig.authEndpoint,
@@ -847,9 +847,10 @@ struct LocalStackHarnessTests {
     let expectation = try environment.remoteUploadExpectation()
     let clientConfig = try uniqueRealClientConfig(from: environment.makeRemoteClientConfig(), label: "device-init")
     defer { try? FileManager.default.removeItem(at: clientConfig.persistRootURL) }
-    let deviceID = try requiredValueFromEnvironment("DGW_REAL_DEVICE_ID")
+    let deviceName = try requiredValueFromEnvironment("DGW_REAL_DEVICE_NAME")
+    let deviceAuthToken = try requiredValueFromEnvironment("DGW_REAL_DEVICE_AUTH_TOKEN")
     let paths = try QiongcheSDKPaths(rootURL: clientConfig.persistRootURL)
-    let configString = try realQiongcheConfigString(deviceID: deviceID, clientConfig: clientConfig)
+    let configString = try realQiongcheConfigString(deviceName: deviceName, deviceAuthToken: deviceAuthToken, clientConfig: clientConfig)
     let qiongcheSDK = try QiongcheDataGatewaySDK(
         rootURL: clientConfig.persistRootURL,
         deviceInitTimeout: clientConfig.requestTimeout,
@@ -859,6 +860,7 @@ struct LocalStackHarnessTests {
     try await qiongcheSDK.saveConfigAndInit(configString: configString)
     let initializedConfig = try await ArchebaseConfigStore(configURL: paths.configURL).load()
     #expect(!initializedConfig.apiKey.isEmpty)
+    let deviceID = try #require(initializedConfig.tags["device_id"])
     #expect(try QiongcheSDKStateStore(stateURL: paths.stateURL).load().deviceID == deviceID)
 
     try await qiongcheSDK.saveConfigAndInit(configString: configString)
@@ -942,11 +944,13 @@ private func assertNoStagingDataCopies(under persistRoot: URL) throws {
 }
 
 private func realQiongcheConfigString(
-    deviceID: String,
+    deviceName: String,
+    deviceAuthToken: String,
     clientConfig: DataGatewayClientConfig
 ) throws -> String {
     let object: [String: Any] = [
-        "device_id": deviceID,
+        "device_name": deviceName,
+        "device_auth_token": deviceAuthToken,
         "auth": try endpointJSONObject(clientConfig.authEndpoint),
         "gateway": try endpointJSONObject(clientConfig.gatewayEndpoint),
         "deviceInit": try endpointJSONObject(realDeviceInitEndpoint(clientConfig: clientConfig)),

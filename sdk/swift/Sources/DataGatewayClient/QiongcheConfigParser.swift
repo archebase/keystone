@@ -10,7 +10,7 @@ public enum QiongcheSDKError: Error, Sendable, Equatable {
 }
 
 package struct QiongcheBootstrapConfig: Sendable, Equatable {
-    package let deviceID: String
+    package let deviceName: String
     package let deviceAuthToken: String
     package let normalizedEndpointsJSONData: Data
     package let resolvedEndpoints: ArchebasePublicEndpoints.Resolved
@@ -25,7 +25,7 @@ package struct QiongcheBootstrapConfig: Sendable, Equatable {
 }
 
 package enum QiongcheConfigParser {
-    private static let allowedTopLevelFields: Set<String> = ["auth", "gateway", "deviceInit", "device_id", "device_auth_token"]
+    private static let allowedTopLevelFields: Set<String> = ["auth", "gateway", "deviceInit", "device_name", "device_auth_token"]
 
     package static func parse(_ configString: String) throws -> QiongcheBootstrapConfig {
         guard !configString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -50,7 +50,7 @@ package enum QiongcheConfigParser {
             throw QiongcheSDKError.invalidConfigString("unsupported top-level field '\(unsupportedField)'")
         }
 
-        let deviceID = try Self.parseDeviceID(topLevel["device_id"])
+        let deviceName = try Self.parseDeviceName(topLevel["device_name"])
         let deviceAuthToken = try Self.parseDeviceAuthToken(topLevel["device_auth_token"])
         let endpointsData = try Self.endpointsData(from: topLevel)
 
@@ -58,7 +58,7 @@ package enum QiongcheConfigParser {
             let normalizedData = try ArchebasePublicEndpoints.normalizedJSONData(from: endpointsData)
             let resolved = try ArchebasePublicEndpoints.decodeEndpoints(normalizedData)
             return QiongcheBootstrapConfig(
-                deviceID: deviceID,
+                deviceName: deviceName,
                 deviceAuthToken: deviceAuthToken,
                 normalizedEndpointsJSONData: normalizedData,
                 resolvedEndpoints: resolved
@@ -81,21 +81,21 @@ package enum QiongcheConfigParser {
         return token
     }
 
-    private static func parseDeviceID(_ value: Any?) throws -> String {
-        guard let rawDeviceID = value as? String else {
-            throw QiongcheSDKError.invalidConfigString("device_id is required")
+    private static func parseDeviceName(_ value: Any?) throws -> String {
+        guard let rawDeviceName = value as? String else {
+            throw QiongcheSDKError.invalidConfigString("device_name is required")
         }
 
-        let deviceID = rawDeviceID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !deviceID.isEmpty else {
-            throw QiongcheSDKError.invalidConfigString("device_id must not be empty")
+        let deviceName = rawDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !deviceName.isEmpty else {
+            throw QiongcheSDKError.invalidConfigString("device_name must not be empty")
         }
 
-        guard !deviceID.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else {
-            throw QiongcheSDKError.invalidConfigString("device_id contains unsupported control characters")
+        guard !deviceName.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else {
+            throw QiongcheSDKError.invalidConfigString("device_name contains unsupported control characters")
         }
 
-        return deviceID
+        return deviceName
     }
 
     private static func endpointsData(from topLevel: [String: Any]) throws -> Data {

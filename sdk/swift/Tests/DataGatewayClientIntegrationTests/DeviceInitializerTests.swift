@@ -18,7 +18,7 @@ import DGWStore
     let initializer = try ArchebaseDeviceInitializer(configStore: store, initTransport: transport)
 
     let error = await #expect(throws: DataGatewayClientError.self) {
-        _ = try await initializer.initDevice(deviceID: "260427-000001", deviceAuthToken: "kda_v1_test-token")
+        _ = try await initializer.initDevice(deviceName: "Device 001", deviceAuthToken: "kda_v1_test-token")
     }
 
     #expect(error == .alreadyInitialized(configURL: configURL.standardizedFileURL))
@@ -36,7 +36,7 @@ import DGWStore
         platform: "ios-simulator"
     )
 
-    let config = try await initializer.initDevice(deviceID: "260427-000001", deviceAuthToken: "kda_v1_test-token")
+    let config = try await initializer.initDevice(deviceName: "Device 001", deviceAuthToken: "kda_v1_test-token")
 
     let expected = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])
     #expect(config == expected)
@@ -44,7 +44,7 @@ import DGWStore
     #expect(await transport.requests() == [
         DeviceInitRequestRecord(
             method: .initDevice,
-            deviceID: "260427-000001",
+            deviceName: "Device 001",
             deviceAuthToken: "kda_v1_test-token",
             sdkVersion: "1.2.3",
             platform: "ios-simulator"
@@ -66,7 +66,7 @@ import DGWStore
     let initializer = try ArchebaseDeviceInitializer(configStore: store, initTransport: transport)
 
     let error = await #expect(throws: DataGatewayClientError.self) {
-        _ = try await initializer.initDevice(deviceID: "260427-000001", deviceAuthToken: "kda_v1_test-token")
+        _ = try await initializer.initDevice(deviceName: "Device 001", deviceAuthToken: "kda_v1_test-token")
     }
 
     #expect(error == .gatewayFailed(
@@ -148,7 +148,7 @@ private enum DeviceInitRequestMethod: Sendable, Equatable {
 
 private struct DeviceInitRequestRecord: Sendable, Equatable {
     let method: DeviceInitRequestMethod
-    let deviceID: String
+    let deviceName: String
     let deviceAuthToken: String
     let sdkVersion: String
     let platform: String
@@ -163,12 +163,12 @@ private actor RecordingDeviceInitTransport: DeviceInitTransport {
     }
 
     func initDevice(
-        deviceID: String,
+        deviceName: String,
         deviceAuthToken: String,
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse {
-        self.records.append(DeviceInitRequestRecord(method: .initDevice, deviceID: deviceID, deviceAuthToken: deviceAuthToken, sdkVersion: sdkVersion, platform: platform))
+        self.records.append(DeviceInitRequestRecord(method: .initDevice, deviceName: deviceName, deviceAuthToken: deviceAuthToken, sdkVersion: sdkVersion, platform: platform))
         return try self.response.get()
     }
 
@@ -179,7 +179,7 @@ private actor RecordingDeviceInitTransport: DeviceInitTransport {
         sdkVersion: String,
         platform: String
     ) async throws -> Archebase_DataGateway_V1_InitDeviceResponse {
-        self.records.append(DeviceInitRequestRecord(method: .reinitDevice, deviceID: deviceID, deviceAuthToken: deviceAuthToken, sdkVersion: sdkVersion, platform: platform))
+        self.records.append(DeviceInitRequestRecord(method: .reinitDevice, deviceName: deviceID, deviceAuthToken: deviceAuthToken, sdkVersion: sdkVersion, platform: platform))
         return try self.response.get()
     }
 

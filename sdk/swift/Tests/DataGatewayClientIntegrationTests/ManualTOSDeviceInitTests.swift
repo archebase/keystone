@@ -8,7 +8,7 @@ import Testing
 
 private let manualTOSDeviceInitEnabled = {
     let environment = ProcessInfo.processInfo.environment
-    return environment["DGW_MANUAL_DEVICE_ID"]?.isEmpty == false
+    return environment["DGW_MANUAL_DEVICE_NAME"]?.isEmpty == false
         && environment["DGW_MANUAL_INIT_ENDPOINT"]?.isEmpty == false
         && environment["DGW_MANUAL_CONFIG_URL"]?.isEmpty == false
 }()
@@ -19,7 +19,7 @@ struct ManualTOSDeviceInitTests {
         .enabled(if: manualTOSDeviceInitEnabled)
     ) func manualTOSDeviceInitOnce() async throws {
         let environment = ProcessInfo.processInfo.environment
-        let deviceID = try requiredEnvironment("DGW_MANUAL_DEVICE_ID", environment: environment)
+        let deviceName = try requiredEnvironment("DGW_MANUAL_DEVICE_NAME", environment: environment)
         let endpoint = try requiredURL("DGW_MANUAL_INIT_ENDPOINT", environment: environment)
         let configPath = try requiredEnvironment("DGW_MANUAL_CONFIG_URL", environment: environment)
         let configURL = URL(fileURLWithPath: configPath)
@@ -36,7 +36,7 @@ struct ManualTOSDeviceInitTests {
             platform: "macos-codex"
         )
 
-        let config = try await initializer.initDevice(deviceID: deviceID, deviceAuthToken: "kda_v1_test-token")
+        let config = try await initializer.initDevice(deviceName: deviceName, deviceAuthToken: "kda_v1_test-token")
         #expect(!config.apiKey.isEmpty)
         print("MANUAL_DEVICE_INIT_CONFIG_URL=\(configURL.standardizedFileURL.path)")
         print("MANUAL_DEVICE_INIT_TAG_KEYS=\(config.tags.keys.sorted().joined(separator: ","))")

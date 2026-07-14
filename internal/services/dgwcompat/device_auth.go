@@ -7,6 +7,7 @@ package dgwcompat
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -126,15 +127,12 @@ type deviceInitService struct {
 }
 
 func (s *deviceInitService) InitDevice(ctx context.Context, req *cloudpb.InitDeviceRequest) (*cloudpb.InitDeviceResponse, error) {
-	deviceID := strings.TrimSpace(req.GetDeviceId())
+	deviceName := strings.TrimSpace(req.GetDeviceName())
 	token := strings.TrimSpace(req.GetDeviceAuthToken())
-	if deviceID == "" || token == "" {
-		return nil, status.Error(codes.InvalidArgument, "device_id and device_auth_token are required")
+	if deviceName == "" || token == "" {
+		return nil, status.Error(codes.InvalidArgument, "device_name and device_auth_token are required")
 	}
-	if _, err := parseHilbertDeviceID(deviceID); err != nil {
-		return nil, status.Error(codes.InvalidArgument, "device_id must be a positive decimal integer")
-	}
-	principal, tokenID, err := s.identity.authorizeSDKInit(ctx, deviceID, token)
+	principal, tokenID, err := s.identity.authorizeSDKInit(ctx, deviceName, token)
 	if err != nil {
 		return nil, err
 	}
@@ -261,25 +259,44 @@ func (s *deviceIdentityService) lookupActiveDevice(ctx context.Context, deviceID
 	return principal, nil
 }
 
-func (s *deviceIdentityService) authorizeSDKInit(ctx context.Context, deviceID, token string) (devicePrincipal, int64, error) {
+func (s *deviceIdentityService) authorizeSDKInit(ctx context.Context, deviceName, token string) (devicePrincipal, int64, error) {
 	var row struct {
-		TokenID int64 `db:"token_id"`
+		TokenID  int64          `db:"token_id"`
+		Metadata sql.NullString `db:"metadata"`
 		devicePrincipal
 	}
 	if err := s.db.GetContext(ctx, &row, `
-		SELECT t.id AS token_id, r.id AS robot_id, r.device_id, r.workspace_id, r.auth_epoch
+		SELECT t.id AS token_id, r.id AS robot_id, r.device_id, r.workspace_id, r.auth_epoch, r.metadata
 		FROM ws_client_auth_tokens t
 		INNER JOIN robots r ON r.id = t.robot_id
-		WHERE r.device_id = ? AND t.token_hash = ? AND t.revoked_at IS NULL
+		WHERE t.token_hash = ? AND t.revoked_at IS NULL
 			AND t.sdk_initialized_at IS NULL AND r.status = 'active' AND r.deleted_at IS NULL
 		LIMIT 1
-	`, strings.TrimSpace(deviceID), services.HashDeviceAuthToken(token)); err != nil {
+	`, services.HashDeviceAuthToken(token)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return devicePrincipal{}, 0, status.Error(codes.Unauthenticated, "invalid or consumed device auth token")
 		}
 		return devicePrincipal{}, 0, status.Error(codes.Unavailable, "device initialization unavailable")
 	}
+	if deviceNameFromRobotMetadata(row.Metadata) != strings.TrimSpace(deviceName) {
+		return devicePrincipal{}, 0, status.Error(codes.Unauthenticated, "device name does not match device auth token")
+	}
 	return row.devicePrincipal, row.TokenID, nil
+}
+
+func deviceNameFromRobotMetadata(ns sql.NullString) string {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return ""
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(ns.String), &payload); err != nil {
+		return ""
+	}
+	name, ok := payload["hilbert_dc_device_name"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(name)
 }
 
 func (s *deviceIdentityService) authorizeRecovery(ctx context.Context, deviceID, token string) (devicePrincipal, int64, string, error) {
