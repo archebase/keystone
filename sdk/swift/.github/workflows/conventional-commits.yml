@@ -1,0 +1,35 @@
+name: Conventional Commits
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+# Auto-cancel in-progress PR runs when a new commit / edit arrives on the
+# same PR. `cancel-in-progress` is scoped to pull_request events so any
+# future push / workflow_dispatch runs keep their "run to completion"
+# semantics. For non-PR events the group falls back to `github.run_id`
+# (unique per run) so those runs are isolated from each other and from
+# any PR group — without that, `workflow_dispatch` replays on the same
+# ref would serialize (and intermediate pending runs would be cancelled)
+# under the default `cancel-in-progress: false` semantics.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-title-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate pull request title
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            chore

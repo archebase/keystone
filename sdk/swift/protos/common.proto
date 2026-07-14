@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package archebase.common.v1;
+
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+}
