@@ -43,7 +43,7 @@ type Config struct {
 func LoadConfigFromEnv() (Config, error) {
 	cfg := Config{
 		Enabled:          getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false),
-		GRPCAddr:         getEnv("KEYSTONE_DGW_GRPC_ADDR", getEnv("KEYSTONE_DGW_GATEWAY_ADDR", ":50053")),
+		GRPCAddr:         getEnv("KEYSTONE_DGW_GRPC_ADDR", ":50053"),
 		TOSBucket:        strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET")),
 		TOSEndpoint:      strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT")),
 		TOSRegion:        strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION")),
