@@ -17,6 +17,37 @@ package struct SystemQiongcheSDKClock: QiongcheSDKClock {
     }
 }
 
+public struct QiongcheUploadReadinessReport: Sendable, Equatable {
+    public let ready: Bool
+    public let stateLoaded: Bool
+    public let endpointsLoaded: Bool
+    public let endpointsHashMatches: Bool?
+    public let configLoaded: Bool
+    public let authReachable: Bool?
+    public let gatewayReachable: Bool?
+    public let failure: String?
+
+    public init(
+        ready: Bool,
+        stateLoaded: Bool,
+        endpointsLoaded: Bool,
+        endpointsHashMatches: Bool?,
+        configLoaded: Bool,
+        authReachable: Bool?,
+        gatewayReachable: Bool?,
+        failure: String?
+    ) {
+        self.ready = ready
+        self.stateLoaded = stateLoaded
+        self.endpointsLoaded = endpointsLoaded
+        self.endpointsHashMatches = endpointsHashMatches
+        self.configLoaded = configLoaded
+        self.authReachable = authReachable
+        self.gatewayReachable = gatewayReachable
+        self.failure = failure
+    }
+}
+
 package protocol QiongcheLocalPersisting: Sendable {
     func replaceEndpoints(endpointsJSON: String, endpointsURL: URL) async throws
     func replaceConfig(_ config: ArchebaseConfig, configURL: URL) async throws
@@ -126,15 +157,38 @@ public actor QiongcheDataGatewaySDK {
     }
 
     public func isReadyToUpload() async -> Bool {
+        await self.uploadReadinessReport().ready
+    }
+
+    public func uploadReadinessReport() async -> QiongcheUploadReadinessReport {
         guard let readinessProbe = self.readinessProbe else {
-            return false
+            return QiongcheUploadReadinessReport(
+                ready: false,
+                stateLoaded: false,
+                endpointsLoaded: false,
+                endpointsHashMatches: nil,
+                configLoaded: false,
+                authReachable: nil,
+                gatewayReachable: nil,
+                failure: "readiness_probe_unavailable"
+            )
         }
 
         do {
             let state = try self.stateStore.load()
             let endpointsData = try Data(contentsOf: self.paths.endpointsURL)
-            guard state.endpointsSHA256 == QiongcheConfigParser.sha256Hex(endpointsData) else {
-                return false
+            let endpointsHashMatches = state.endpointsSHA256 == QiongcheConfigParser.sha256Hex(endpointsData)
+            guard endpointsHashMatches else {
+                return QiongcheUploadReadinessReport(
+                    ready: false,
+                    stateLoaded: true,
+                    endpointsLoaded: true,
+                    endpointsHashMatches: false,
+                    configLoaded: false,
+                    authReachable: nil,
+                    gatewayReachable: nil,
+                    failure: "endpoints_hash_mismatch"
+                )
             }
             _ = try await ArchebaseConfigStore(configURL: self.paths.configURL).load()
             let endpoints = try ArchebasePublicEndpoints.load(endpointsURL: self.paths.endpointsURL)
@@ -152,9 +206,77 @@ public actor QiongcheDataGatewaySDK {
 
             let auth = await authReachable
             let gateway = await gatewayReachable
-            return auth && gateway
+            return QiongcheUploadReadinessReport(
+                ready: auth && gateway,
+                stateLoaded: true,
+                endpointsLoaded: true,
+                endpointsHashMatches: true,
+                configLoaded: true,
+                authReachable: auth,
+                gatewayReachable: gateway,
+                failure: auth && gateway ? nil : "endpoint_unreachable"
+            )
         } catch {
-            return false
+            return QiongcheUploadReadinessReport(
+                ready: false,
+                stateLoaded: self.fileExists(self.paths.stateURL),
+                endpointsLoaded: self.fileExists(self.paths.endpointsURL),
+                endpointsHashMatches: nil,
+                configLoaded: false,
+                authReachable: nil,
+                gatewayReachable: nil,
+                failure: Self.readinessFailureDescription(error)
+            )
+        }
+    }
+
+    private func fileExists(_ url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private static func readinessFailureDescription(_ error: any Error) -> String {
+        if let dataGatewayError = error as? DataGatewayClientError {
+            return "data_gateway_error_\(Self.dataGatewayErrorCode(dataGatewayError))"
+        }
+        return "unexpected_error_\(String(describing: type(of: error)))"
+    }
+
+    private static func dataGatewayErrorCode(_ error: DataGatewayClientError) -> String {
+        switch error {
+        case .authenticationFailed(let code, _):
+            return "authentication_failed_\(code ?? "unknown")"
+        case .gatewayFailed(let statusCode, let detailCode, _):
+            return "gateway_failed_\(statusCode)_\(detailCode ?? "unknown")"
+        case .invalidConfiguration:
+            return "invalid_configuration"
+        case .alreadyInitialized:
+            return "already_initialized"
+        case .notInitialized:
+            return "not_initialized"
+        case .endpointsAlreadyInitialized:
+            return "endpoints_already_initialized"
+        case .endpointsNotInitialized:
+            return "endpoints_not_initialized"
+        case .invalidLocalFile:
+            return "invalid_local_file"
+        case .zeroByteFile:
+            return "zero_byte_file"
+        case .ossFailed(let httpStatus, let ossCode, _):
+            return "oss_failed_\(httpStatus.map(String.init) ?? "unknown")_\(ossCode ?? "unknown")"
+        case .persistenceFailed:
+            return "persistence_failed"
+        case .rawTagConflict(let key):
+            return "raw_tag_conflict_\(key)"
+        case .uploadRestartExceeded:
+            return "upload_restart_exceeded"
+        case .resumeNotPossible:
+            return "resume_not_possible"
+        case .integrityCheckFailed:
+            return "integrity_check_failed"
+        case .retryExhausted:
+            return "retry_exhausted"
+        case .cancelled:
+            return "cancelled"
         }
     }
 }

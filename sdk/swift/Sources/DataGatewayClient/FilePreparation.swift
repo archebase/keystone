@@ -1334,10 +1334,15 @@ public actor UploadCoordinator {
             uploadID: createResponse.uploadID,
             credentials: createResponse.credentials
         )
-        let ossSession = try self.dependencies.ossClientFactory(uploadContext)
-        await self.emitLog(operation: "upload", uploadID: createResponse.uploadID, logicalUploadID: createResponse.logicalUploadID, phase: "session_created", message: "created logical upload")
-
         var uploadState = persistedState
+        let ossSession = try self.dependencies.ossClientFactory(uploadContext)
+        await self.emitLog(
+            operation: "upload",
+            uploadID: createResponse.uploadID,
+            logicalUploadID: createResponse.logicalUploadID,
+            phase: "session_created",
+            message: Self.objectStoreLogMessage("created logical upload", state: uploadState)
+        )
         let uploadCompletion: DataPlaneUploadCompletion
         if Self.shouldUseSingleObjectUpload(fileSize: uploadState.fileSize, partSizeBytes: uploadState.partSizeBytes) {
             uploadCompletion = try await self.uploadSingleObject(
@@ -1702,6 +1707,7 @@ public actor UploadCoordinator {
         let bodySize = state.fileSize
         let uploadID = state.uploadID
         let totalBytes = state.fileSize
+        let failureLogState = state
         let upload = try await self.dependencies.fileCoordinator.accessPreparedFile(
             fileURL: state.managedFileURL,
             bookmarkData: state.fileURLBookmarkData
@@ -1719,7 +1725,19 @@ public actor UploadCoordinator {
             await onEvent?(.uploadingPart(partNumber: 1, sentBytes: bodySize, totalBytes: totalBytes))
             await self.emitMetric("upload_part", dimensions: ["upload_id": uploadID, "part_number": "1"])
 
-            let descriptor = try await session.putObject(body: body)
+            let descriptor: UploadedPartDescriptor
+            do {
+                descriptor = try await session.putObject(body: body)
+            } catch {
+                await self.emitDataPlaneFailureLog(
+                    operation: "putObject",
+                    state: failureLogState,
+                    partNumber: 1,
+                    bodySize: bodySize,
+                    error: error
+                )
+                throw error
+            }
             return (descriptor, checksum.hex)
         }
         let descriptor = upload.0
@@ -1752,7 +1770,16 @@ public actor UploadCoordinator {
             multipartUploadID = existingMultipartUploadID
         } else {
             await onEvent?(.initiatingMultipart(uploadID: state.uploadID))
-            multipartUploadID = try await session.initiateMultipartUpload()
+            do {
+                multipartUploadID = try await session.initiateMultipartUpload()
+            } catch {
+                await self.emitDataPlaneFailureLog(
+                    operation: "initiateMultipartUpload",
+                    state: state,
+                    error: error
+                )
+                throw error
+            }
             state.multipartUploadID = multipartUploadID
             state.phase = .multipartInitiated
             state.updatedAt = await self.dependencies.clock.now()
@@ -1788,6 +1815,7 @@ public actor UploadCoordinator {
             try await self.refreshUploadSessionIfNeeded(session: session, state: &state, onEvent: onEvent)
             await onEvent?(.uploadingPart(partNumber: partNumber, sentBytes: currentPartSize, totalBytes: state.fileSize))
             await self.emitMetric("upload_part", dimensions: ["upload_id": state.uploadID, "part_number": String(partNumber)])
+            let failureLogState = state
 
             let upload = try await self.dependencies.fileCoordinator.accessPreparedFile(
                 fileURL: state.managedFileURL,
@@ -1799,20 +1827,33 @@ public actor UploadCoordinator {
                     length: currentPartSize
                 )
                 let fileCoordinator = self.dependencies.fileCoordinator
-                let descriptor = try await session.uploadPart(
-                    multipartUploadID: multipartUploadID,
-                    partNumber: partNumber,
-                    body: .stream(
-                        sizeBytes: try Self.int64Size(currentPartSize),
-                        contentMD5Base64: checksum.base64
-                    ) {
-                        try fileCoordinator.inputStream(
-                            from: accessibleFileURL,
-                            offset: offsetStart,
-                            length: currentPartSize
-                        )
-                    }
-                )
+                let descriptor: UploadedPartDescriptor
+                do {
+                    descriptor = try await session.uploadPart(
+                        multipartUploadID: multipartUploadID,
+                        partNumber: partNumber,
+                        body: .stream(
+                            sizeBytes: try Self.int64Size(currentPartSize),
+                            contentMD5Base64: checksum.base64
+                        ) {
+                            try fileCoordinator.inputStream(
+                                from: accessibleFileURL,
+                                offset: offsetStart,
+                                length: currentPartSize
+                            )
+                        }
+                    )
+                } catch {
+                    await self.emitDataPlaneFailureLog(
+                        operation: "uploadPart",
+                        state: failureLogState,
+                        multipartUploadID: multipartUploadID,
+                        partNumber: partNumber,
+                        bodySize: currentPartSize,
+                        error: error
+                    )
+                    throw error
+                }
                 return (descriptor, checksum.hex)
             }
             let descriptor = upload.0
@@ -1834,10 +1875,21 @@ public actor UploadCoordinator {
         uploadedDescriptors.sort(by: { $0.partNumber < $1.partNumber })
         try await self.refreshUploadSessionIfNeeded(session: session, state: &state, onEvent: onEvent)
         await onEvent?(.completingMultipart(uploadID: state.uploadID))
-        let ossObjectETag = try await session.completeMultipartUpload(
-            multipartUploadID: multipartUploadID,
-            parts: uploadedDescriptors
-        )
+        let ossObjectETag: String
+        do {
+            ossObjectETag = try await session.completeMultipartUpload(
+                multipartUploadID: multipartUploadID,
+                parts: uploadedDescriptors
+            )
+        } catch {
+            await self.emitDataPlaneFailureLog(
+                operation: "completeMultipartUpload",
+                state: state,
+                multipartUploadID: multipartUploadID,
+                error: error
+            )
+            throw error
+        }
 
         state.phase = .multipartCompleted
         state.updatedAt = await self.dependencies.clock.now()
@@ -1961,11 +2013,114 @@ public actor UploadCoordinator {
         )
     }
 
+    private func emitDataPlaneFailureLog(
+        operation: String,
+        state: PersistedUploadState,
+        multipartUploadID: String? = nil,
+        partNumber: Int? = nil,
+        bodySize: UInt64? = nil,
+        error: any Error
+    ) async {
+        let mapped = OSSDataPlaneErrorMapper.mapToClientError(error)
+        let statusCode: Int?
+        let detailCode: String?
+        switch mapped {
+        case .ossFailed(let httpStatus, let ossCode, _):
+            statusCode = httpStatus
+            detailCode = ossCode
+        case .gatewayFailed(let code, let detail, _):
+            statusCode = code
+            detailCode = detail
+        case .authenticationFailed(let code, _):
+            statusCode = nil
+            detailCode = code
+        default:
+            statusCode = nil
+            detailCode = nil
+        }
+
+        await self.emitLog(
+            operation: "upload_data_plane",
+            uploadID: state.uploadID,
+            logicalUploadID: state.logicalUploadID,
+            phase: "failed",
+            statusCode: statusCode,
+            detailCode: detailCode,
+            message: Self.objectStoreLogMessage(
+                "operation=\(operation) multipartUploadID=\(multipartUploadID ?? "nil") partNumber=\(partNumber.map(String.init) ?? "nil") bodySize=\(bodySize.map(String.init) ?? "nil") error=\(Self.describeForLog(mapped))",
+                state: state
+            )
+        )
+    }
+
     private func emitMetric(_ name: String, dimensions: [String: String]) async {
         guard let onMetric = self.dependencies.observability.onMetric else {
             return
         }
         await onMetric(name, dimensions)
+    }
+
+    private static func objectStoreLogMessage(_ prefix: String, state: PersistedUploadState) -> String {
+        [
+            prefix,
+            "bucket=\(state.bucket)",
+            "endpoint=\(state.endpoint)",
+            "objectKey=\(state.objectKey)",
+            "fileSize=\(state.fileSize)",
+            "partSizeBytes=\(state.partSizeBytes)",
+            "phase=\(state.phase.rawValue)",
+        ].joined(separator: " ")
+    }
+
+    private static func describeForLog(_ error: DataGatewayClientError) -> String {
+        switch error {
+        case .ossFailed(let httpStatus, let ossCode, let message):
+            return [
+                httpStatus.map { "OSS_HTTP_\($0)" },
+                ossCode,
+                message,
+            ].compactMap { $0?.nilIfBlank }.joined(separator: "_")
+        case .gatewayFailed(let statusCode, let detailCode, let message):
+            return [
+                "gateway_status_\(statusCode)",
+                detailCode,
+                message,
+            ].compactMap { $0?.nilIfBlank }.joined(separator: "_")
+        case .authenticationFailed(let code, let message):
+            return [
+                "authentication_failed",
+                code,
+                message,
+            ].compactMap { $0?.nilIfBlank }.joined(separator: "_")
+        case .invalidConfiguration(let message):
+            return "invalid_configuration_\(message)"
+        case .invalidLocalFile(let message):
+            return "invalid_local_file_\(message)"
+        case .resumeNotPossible(let message):
+            return "resume_not_possible_\(message)"
+        case .retryExhausted(let lastError):
+            return "retry_exhausted_\(lastError)"
+        case .integrityCheckFailed(let message):
+            return "integrity_check_failed_\(message)"
+        case .persistenceFailed(let message):
+            return "persistence_failed_\(message)"
+        case .rawTagConflict(let key):
+            return "raw_tag_conflict_\(key)"
+        case .alreadyInitialized(let configURL):
+            return "already_initialized_\(configURL.path)"
+        case .notInitialized(let configURL):
+            return "not_initialized_\(configURL.path)"
+        case .endpointsAlreadyInitialized(let endpointsURL):
+            return "endpoints_already_initialized_\(endpointsURL.path)"
+        case .endpointsNotInitialized(let endpointsURL):
+            return "endpoints_not_initialized_\(endpointsURL.path)"
+        case .zeroByteFile:
+            return "zero_byte_file"
+        case .uploadRestartExceeded:
+            return "upload_restart_exceeded"
+        case .cancelled:
+            return "cancelled"
+        }
     }
 
     package static func redactSensitiveContent(in message: String) -> String {

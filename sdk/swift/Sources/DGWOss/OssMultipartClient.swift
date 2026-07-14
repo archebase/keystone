@@ -516,7 +516,8 @@ package struct TOSHTTPClientAdapter: TOSHTTPClientProtocol {
         _ request: InitiateMultipartUploadRequest
     ) async throws -> OssInitiateMultipartUploadOutput {
         let (data, _) = try await self.send(method: "POST", key: request.key, query: ["uploads": ""], headers: request.headers)
-        return OssInitiateMultipartUploadOutput(uploadID: Self.xmlValues(data)["UploadId"] ?? Self.xmlValues(data)["UploadID"])
+        let values = Self.responseValues(data)
+        return OssInitiateMultipartUploadOutput(uploadID: values["UploadId"] ?? values["UploadID"])
     }
 
     package func uploadPart(
@@ -553,11 +554,11 @@ package struct TOSHTTPClientAdapter: TOSHTTPClientProtocol {
             method: "POST",
             key: request.key,
             query: ["uploadId": request.uploadId],
-            headers: ["Content-Type": "application/xml"],
+            headers: ["Content-Type": "application/json"],
             body: body
         )
         return OssCompleteMultipartUploadOutput(
-            etag: response.value(forHTTPHeaderField: "ETag") ?? Self.xmlValues(data)["ETag"]
+            etag: response.value(forHTTPHeaderField: "ETag") ?? Self.responseValues(data)["ETag"]
         )
     }
 
@@ -617,7 +618,7 @@ package struct TOSHTTPClientAdapter: TOSHTTPClientProtocol {
             throw OssOperationError.invalidResponse("TOS response was not HTTP")
         }
         guard (200 ..< 300).contains(response.statusCode) else {
-            let values = Self.xmlValues(data)
+            let values = Self.responseValues(data)
             throw ServerError(
                 statusCode: response.statusCode,
                 code: values["Code"] ?? "TOSHTTPError",
@@ -651,15 +652,27 @@ package struct TOSHTTPClientAdapter: TOSHTTPClientProtocol {
         return url
     }
 
-    private static func completeBody(_ parts: [UploadPart]) -> Data {
-        let content = parts.sorted(by: { $0.partNumber < $1.partNumber }).map {
-            "<Part><PartNumber>\($0.partNumber)</PartNumber><ETag>\($0.etag.xmlEscaped)</ETag></Part>"
-        }.joined()
-        return Data("<CompleteMultipartUpload>\(content)</CompleteMultipartUpload>".utf8)
+    package static func completeBody(_ parts: [UploadPart]) -> Data {
+        let payload = TOSCompleteMultipartUploadPayload(
+            Parts: parts
+                .sorted(by: { $0.partNumber < $1.partNumber })
+                .map { TOSCompleteMultipartUploadPart(PartNumber: $0.partNumber, ETag: $0.etag) }
+        )
+        return (try? JSONEncoder().encode(payload)) ?? Data(#"{"Parts":[]}"#.utf8)
     }
 
-    private static func xmlValues(_ data: Data) -> [String: String] {
-        TOSFlatXMLParser.parse(data)
+    package static func responseValues(_ data: Data) -> [String: String] {
+        let jsonValues = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if let jsonValues {
+            return jsonValues.reduce(into: [:]) { result, entry in
+                if let value = entry.value as? String {
+                    result[entry.key] = value
+                } else if let value = entry.value as? CustomStringConvertible {
+                    result[entry.key] = value.description
+                }
+            }
+        }
+        return TOSFlatXMLParser.parse(data)
     }
 }
 
@@ -767,7 +780,7 @@ package enum TOSV4Signer {
             self.sha256Hex(Data(canonicalRequest.utf8)),
         ].joined(separator: "\n")
 
-        let dateKey = self.hmac(Data(shortDate.utf8), key: Data("TOS4\(credentials.accessKeySecret)".utf8))
+        let dateKey = self.hmac(Data(shortDate.utf8), key: Data(credentials.accessKeySecret.utf8))
         let regionKey = self.hmac(Data(region.utf8), key: dateKey)
         let serviceKey = self.hmac(Data(self.service.utf8), key: regionKey)
         let signingKey = self.hmac(Data("request".utf8), key: serviceKey)
@@ -888,6 +901,15 @@ private final class TOSListPartsXMLParser: NSObject, XMLParserDelegate {
         self.currentElement = ""
         self.buffer = ""
     }
+}
+
+private struct TOSCompleteMultipartUploadPayload: Encodable {
+    let Parts: [TOSCompleteMultipartUploadPart]
+}
+
+private struct TOSCompleteMultipartUploadPart: Encodable {
+    let PartNumber: Int
+    let ETag: String
 }
 
 package enum OSSDataPlaneErrorMapper {

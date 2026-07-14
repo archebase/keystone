@@ -27,8 +27,35 @@ import Testing
     let authorization = try #require(request.value(forHTTPHeaderField: "Authorization"))
     #expect(authorization.hasPrefix("TOS4-HMAC-SHA256 Credential=temp-ak/"))
     #expect(authorization.contains("/cn-beijing/tos/request"))
+    #expect(authorization.contains("Signature=900950d54505a63de3c308bd8ba2279d552e44ba6926b14bbc5fb910beee9d9f"))
     #expect(request.value(forHTTPHeaderField: "x-tos-security-token") == "temp-token")
     #expect(request.value(forHTTPHeaderField: "x-tos-content-sha256")?.count == 64)
+}
+
+@Test func tosResponseValuesParseJSONInitiateMultipartUploadResponse() throws {
+    let body = Data("""
+    {"Bucket":"bucket-1","Key":"objects/demo.bin","UploadId":"multipart-json-1"}
+    """.utf8)
+
+    let values = TOSHTTPClientAdapter.responseValues(body)
+
+    #expect(values["UploadId"] == "multipart-json-1")
+    #expect(values["Bucket"] == "bucket-1")
+}
+
+@Test func tosCompleteMultipartUploadBodyUsesTOSJSONShape() throws {
+    let body = TOSHTTPClientAdapter.completeBody([
+        UploadPart(etag: "\"etag-2\"", partNumber: 2),
+        UploadPart(etag: "\"etag-1\"", partNumber: 1),
+    ])
+    let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    let parts = try #require(object["Parts"] as? [[String: Any]])
+
+    #expect(parts.count == 2)
+    #expect(parts[0]["PartNumber"] as? Int == 1)
+    #expect(parts[0]["ETag"] as? String == "\"etag-1\"")
+    #expect(parts[1]["PartNumber"] as? Int == 2)
+    #expect(parts[1]["ETag"] as? String == "\"etag-2\"")
 }
 
 @Test func ossMultipartClientBuildsExpectedSDKRequests() async throws {
