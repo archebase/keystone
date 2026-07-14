@@ -17,9 +17,7 @@ import (
 type Config struct {
 	Enabled bool
 
-	AuthAddr       string
-	GatewayAddr    string
-	DeviceInitAddr string
+	GRPCAddr string
 
 	TOSBucket      string
 	TOSEndpoint    string
@@ -45,9 +43,7 @@ type Config struct {
 func LoadConfigFromEnv() (Config, error) {
 	cfg := Config{
 		Enabled:         getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false),
-		AuthAddr:        getEnv("KEYSTONE_DGW_AUTH_ADDR", ":50051"),
-		GatewayAddr:     getEnv("KEYSTONE_DGW_GATEWAY_ADDR", ":50053"),
-		DeviceInitAddr:  getEnv("KEYSTONE_DGW_DEVICE_INIT_ADDR", ":50057"),
+		GRPCAddr:        getEnv("KEYSTONE_DGW_GRPC_ADDR", getEnv("KEYSTONE_DGW_GATEWAY_ADDR", ":50053")),
 		TOSBucket:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET")),
 		TOSEndpoint:     strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT")),
 		TOSRegion:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION")),
@@ -76,8 +72,8 @@ func (c Config) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	if strings.TrimSpace(c.AuthAddr) == "" || strings.TrimSpace(c.GatewayAddr) == "" || strings.TrimSpace(c.DeviceInitAddr) == "" {
-		return fmt.Errorf("KEYSTONE_DGW auth, gateway and device init addresses must not be empty")
+	if strings.TrimSpace(c.GRPCAddr) == "" {
+		return fmt.Errorf("KEYSTONE_DGW_GRPC_ADDR must not be empty")
 	}
 	if c.TOSBucket == "" {
 		return fmt.Errorf("KEYSTONE_DGW_TOS_BUCKET is required when compatibility server is enabled")

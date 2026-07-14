@@ -157,9 +157,9 @@ let client = try await DataGatewayClient.fromArchebaseConfig(
 {
   "device_id": "robot-001",
   "device_auth_token": "kda_v1_<管理员签发值>",
-  "auth": { "scheme": "http", "host": "localhost", "port": 50051 },
+  "auth": { "scheme": "http", "host": "localhost", "port": 50053 },
   "gateway": { "scheme": "http", "host": "localhost", "port": 50053 },
-  "deviceInit": { "scheme": "http", "host": "localhost", "port": 50057 }
+  "deviceInit": { "scheme": "http", "host": "localhost", "port": 50053 }
 }
 ```
 
@@ -386,9 +386,9 @@ archebase-endpoints.json
 
 ```json
 {
-  "auth": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.toscsslb.com", "port": 50051 },
+  "auth": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.toscsslb.com", "port": 50053 },
   "gateway": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.toscsslb.com", "port": 50053 },
-  "deviceInit": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.toscsslb.com", "port": 50057 }
+  "deviceInit": { "scheme": "http", "host": "nlb-example.cn-shanghai.nlb.toscsslb.com", "port": 50053 }
 }
 ```
 

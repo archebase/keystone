@@ -91,6 +91,21 @@ func deviceUnaryAuthInterceptor(db *sqlx.DB, cfg Config) grpc.UnaryServerInterce
 	}
 }
 
+func unifiedUnaryAuthInterceptor(db *sqlx.DB, cfg Config) grpc.UnaryServerInterceptor {
+	deviceAuth := deviceUnaryAuthInterceptor(db, cfg)
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		switch {
+		case strings.HasPrefix(info.FullMethod, "/archebase.data_gateway.v1.DataGatewayService/"):
+			return deviceAuth(ctx, req, info, handler)
+		case strings.HasPrefix(info.FullMethod, "/archebase.auth.v1.AuthService/"),
+			strings.HasPrefix(info.FullMethod, "/archebase.data_gateway.v1.DeviceInitService/"):
+			return handler(ctx, req)
+		default:
+			return nil, status.Error(codes.PermissionDenied, "gRPC service is not exposed by the compatibility server")
+		}
+	}
+}
+
 func authenticateDeviceContext(ctx context.Context, db *sqlx.DB, cfg Config) (devicePrincipal, error) {
 	values := metadata.ValueFromIncomingContext(ctx, "authorization")
 	if len(values) != 1 {

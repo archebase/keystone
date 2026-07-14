@@ -629,7 +629,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <tbody>
             <tr>
               <td>目标</td>
-              <td>Keystone 监听 data-sdk 需要的三个 gRPC 端口：<code>50051</code>、<code>50053</code>、<code>50057</code>。</td>
+              <td>Keystone 在单个 <code>50053</code> 端口注册 data-sdk 需要的三个 gRPC service。</td>
             </tr>
             <tr>
               <td>目标</td>
@@ -666,16 +666,16 @@ SPDX-License-Identifier: MulanPSL-2.0
       </div>
       <div class="content">
         <div class="flow" aria-label="上传流程">
-          <div class="step"><b>InitDevice</b><span>App 通过 50057 初始化设备，Keystone 返回 dummy api_key 和 tags。</span></div>
-          <div class="step"><b>Exchange</b><span>SDK 通过 50051 换 token，Keystone 直接放行。</span></div>
+          <div class="step"><b>InitDevice</b><span>App 通过 50053 初始化设备，Keystone 返回 dummy api_key 和 tags。</span></div>
+          <div class="step"><b>Exchange</b><span>SDK 通过 50053 换 token，Keystone 直接放行。</span></div>
           <div class="step"><b>Create</b><span>SDK 通过 50053 创建 logical upload，Keystone 生成 object key。</span></div>
           <div class="step"><b>STS</b><span>Keystone AssumeRole，返回 OSS 临时凭证。</span></div>
           <div class="step"><b>Complete</b><span>iOS 直传 OSS 后回调 Keystone 完成上传。</span></div>
         </div>
 
         <pre><code>ego-portal-lite
-  -> DeviceInitService.InitDevice        :50057
-  -> AuthService.ExchangeCredential      :50051
+  -> DeviceInitService.InitDevice        :50053
+  -> AuthService.ExchangeCredential      :50053
   -> DataGatewayService.CreateLogicalUpload :50053
   -> AlibabaCloudOSS multipart/put object
   -> DataGatewayService.CompleteUpload   :50053</code></pre>
@@ -754,13 +754,13 @@ SPDX-License-Identifier: MulanPSL-2.0
       <div class="content">
         <div class="grid">
           <div class="tile">
-            <h3>AuthService :50051</h3>
+            <h3>AuthService :50053</h3>
             <div>
               <p><code>ExchangeCredential</code> 接受任意 credential，返回非空 access token、token type、过期时间。</p>
             </div>
           </div>
           <div class="tile">
-            <h3>DeviceInitService :50057</h3>
+            <h3>DeviceInitService :50053</h3>
             <div>
               <p><code>InitDevice</code> 和 <code>ReinitDevice</code> 都返回 dummy api_key。tags 至少包含 <code>device_id</code> 和 <code>source</code>。</p>
             </div>
@@ -802,9 +802,7 @@ SPDX-License-Identifier: MulanPSL-2.0
       </div>
       <div class="content">
         <pre><code>KEYSTONE_DGW_COMPAT_ENABLED=true
-KEYSTONE_DGW_AUTH_ADDR=:50051
-KEYSTONE_DGW_GATEWAY_ADDR=:50053
-KEYSTONE_DGW_DEVICE_INIT_ADDR=:50057
+KEYSTONE_DGW_GRPC_ADDR=:50053
 
 KEYSTONE_DGW_OSS_BUCKET=archebase-keystone-poc
 KEYSTONE_DGW_OSS_PUBLIC_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com

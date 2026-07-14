@@ -564,7 +564,7 @@ final class UploadDemoViewModel: ObservableObject {
       "auth": {
         "scheme": "http",
         "host": "nlb-bz7li0ks67z1i7ii00.cn-shanghai.nlb.toscsslb.com",
-        "port": 50051
+        "port": 50053
       },
       "gateway": {
         "scheme": "http",
@@ -574,7 +574,7 @@ final class UploadDemoViewModel: ObservableObject {
       "deviceInit": {
         "scheme": "http",
         "host": "nlb-bz7li0ks67z1i7ii00.cn-shanghai.nlb.toscsslb.com",
-        "port": 50057
+        "port": 50053
       }
     }
     """

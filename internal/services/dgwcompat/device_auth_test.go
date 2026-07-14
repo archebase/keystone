@@ -14,6 +14,7 @@ import (
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
 	"archebase.com/keystone-edge/internal/services"
 	"github.com/jmoiron/sqlx"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -117,6 +118,33 @@ func TestExchangeCredentialRejectsInvalidAPIKey(t *testing.T) {
 	})
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
+	}
+}
+
+func TestUnifiedInterceptorRoutesAuthenticationByService(t *testing.T) {
+	interceptor := unifiedUnaryAuthInterceptor(nil, Config{})
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
+
+	for _, fullMethod := range []string{
+		cloudpb.AuthService_ExchangeCredential_FullMethodName,
+		cloudpb.DeviceInitService_InitDevice_FullMethodName,
+	} {
+		response, err := interceptor(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: fullMethod}, handler)
+		if err != nil || response != "ok" {
+			t.Fatalf("method %s response=%v error=%v, want handler result", fullMethod, response, err)
+		}
+	}
+
+	_, err := interceptor(context.Background(), nil, &grpc.UnaryServerInfo{
+		FullMethod: cloudpb.DataGatewayService_CreateLogicalUpload_FullMethodName,
+	}, handler)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("gateway method code=%v, want Unauthenticated", status.Code(err))
+	}
+
+	_, err = interceptor(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/unknown.Service/Call"}, handler)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("unknown method code=%v, want PermissionDenied", status.Code(err))
 	}
 }
 
