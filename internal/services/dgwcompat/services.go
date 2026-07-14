@@ -138,8 +138,23 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 		return nil, err
 	}
 	objectKey := buildObjectKey(s.cfg.TOSKeyPrefix, hints, uploadID)
+	logger.Printf("[DGW_COMPAT] CreateLogicalUpload assume_role upload_id=%s logical_upload_id=%s bucket=%s object_key=%s endpoint=%s region=%s part_size=%d capture_id=%s task_id=%s device_id=%s workspace_id=%s",
+		uploadID,
+		logicalUploadID,
+		s.cfg.TOSBucket,
+		objectKey,
+		s.cfg.TOSEndpoint,
+		s.cfg.TOSRegion,
+		s.cfg.UploadPartSize,
+		hints["capture_id"],
+		hints["task_id"],
+		hints["device_id"],
+		hints["workspace_id"],
+	)
 	creds, err := s.sts.AssumeRole(ctx, stsScope{Bucket: s.cfg.TOSBucket, ObjectKey: objectKey})
 	if err != nil {
+		logger.Printf("[DGW_COMPAT] CreateLogicalUpload assume_role_failed upload_id=%s logical_upload_id=%s bucket=%s object_key=%s error=%v",
+			uploadID, logicalUploadID, s.cfg.TOSBucket, objectKey, err)
 		return nil, status.Errorf(codes.Unavailable, "assume role: %v", err)
 	}
 	session := &uploadSession{
@@ -163,8 +178,17 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 		LastSTSExpireAt: creds.Expiration,
 	}
 	s.sessions.put(session)
-	logger.Printf("[DGW_COMPAT] CreateLogicalUpload upload_id=%s logical_upload_id=%s bucket=%s object_key=%s capture_id=%s task_id=%s device_id=%s",
-		uploadID, logicalUploadID, s.cfg.TOSBucket, objectKey, hints["capture_id"], hints["task_id"], hints["device_id"])
+	logger.Printf("[DGW_COMPAT] CreateLogicalUpload issued upload_id=%s logical_upload_id=%s bucket=%s object_key=%s sts_expires_at=%s sts_ttl_seconds=%d capture_id=%s task_id=%s device_id=%s",
+		uploadID,
+		logicalUploadID,
+		s.cfg.TOSBucket,
+		objectKey,
+		creds.Expiration.Format(time.RFC3339),
+		int(time.Until(creds.Expiration).Seconds()),
+		hints["capture_id"],
+		hints["task_id"],
+		hints["device_id"],
+	)
 	return &cloudpb.CreateLogicalUploadResponse{
 		LogicalUploadId: logicalUploadID,
 		UploadId:        uploadID,
@@ -175,9 +199,12 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 func (s *gatewayService) GetUploadRecovery(ctx context.Context, req *cloudpb.GetUploadRecoveryRequest) (*cloudpb.GetUploadRecoveryResponse, error) {
 	session, ok := s.sessions.getByLogical(req.GetLogicalUploadId())
 	if !ok {
+		logger.Printf("[DGW_COMPAT] GetUploadRecovery missing logical_upload_id=%s", req.GetLogicalUploadId())
 		return nil, status.Error(codes.NotFound, "logical upload not found")
 	}
 	if err := authorizeUploadSession(ctx, session); err != nil {
+		logger.Printf("[DGW_COMPAT] GetUploadRecovery denied upload_id=%s logical_upload_id=%s device_id=%s workspace_id=%d error=%v",
+			session.UploadID, session.LogicalUploadID, session.DeviceID, session.WorkspaceID, err)
 		return nil, err
 	}
 	statusValue := cloudpb.LogicalUploadStatus_LOGICAL_UPLOAD_STATUS_ACTIVE
@@ -192,6 +219,19 @@ func (s *gatewayService) GetUploadRecovery(ctx context.Context, req *cloudpb.Get
 		statusValue = cloudpb.LogicalUploadStatus_LOGICAL_UPLOAD_STATUS_COMPLETED
 		nextAction = cloudpb.UploadRecoveryAction_UPLOAD_RECOVERY_ACTION_COMPLETE_ONLY
 	}
+	logger.Printf("[DGW_COMPAT] GetUploadRecovery upload_id=%s logical_upload_id=%s status=%s next_action=%s aborted=%t completed=%t refresh_count=%d completed_parts=%d object_etag=%s bucket=%s object_key=%s",
+		session.UploadID,
+		session.LogicalUploadID,
+		statusValue.String(),
+		nextAction.String(),
+		session.Aborted,
+		!session.CompletedAt.IsZero(),
+		session.CredentialRefreshCount,
+		session.CompletedPartCount,
+		session.ObjectETag,
+		session.Bucket,
+		session.ObjectKey,
+	)
 	return &cloudpb.GetUploadRecoveryResponse{
 		LogicalUploadId:        session.LogicalUploadID,
 		LogicalUploadStatus:    statusValue,
@@ -216,10 +256,16 @@ func (s *gatewayService) ReissueUploadCredentials(ctx context.Context, req *clou
 		return nil, status.Error(codes.NotFound, "upload not found")
 	}
 	if err := authorizeUploadSession(ctx, session); err != nil {
+		logger.Printf("[DGW_COMPAT] ReissueUploadCredentials denied upload_id=%s logical_upload_id=%s device_id=%s workspace_id=%d error=%v",
+			session.UploadID, session.LogicalUploadID, session.DeviceID, session.WorkspaceID, err)
 		return nil, err
 	}
+	logger.Printf("[DGW_COMPAT] ReissueUploadCredentials assume_role upload_id=%s logical_upload_id=%s bucket=%s object_key=%s refresh_count=%d",
+		session.UploadID, session.LogicalUploadID, session.Bucket, session.ObjectKey, session.CredentialRefreshCount)
 	creds, err := s.sts.AssumeRole(ctx, stsScope{Bucket: session.Bucket, ObjectKey: session.ObjectKey})
 	if err != nil {
+		logger.Printf("[DGW_COMPAT] ReissueUploadCredentials assume_role_failed upload_id=%s logical_upload_id=%s bucket=%s object_key=%s error=%v",
+			session.UploadID, session.LogicalUploadID, session.Bucket, session.ObjectKey, err)
 		return nil, status.Errorf(codes.Unavailable, "assume role: %v", err)
 	}
 	updated, ok := s.sessions.update(session.UploadID, func(current *uploadSession) {
@@ -229,8 +275,13 @@ func (s *gatewayService) ReissueUploadCredentials(ctx context.Context, req *clou
 	if !ok {
 		return nil, status.Error(codes.NotFound, "upload not found")
 	}
-	logger.Printf("[DGW_COMPAT] ReissueUploadCredentials upload_id=%s logical_upload_id=%s refresh_count=%d",
-		updated.UploadID, updated.LogicalUploadID, updated.CredentialRefreshCount)
+	logger.Printf("[DGW_COMPAT] ReissueUploadCredentials issued upload_id=%s logical_upload_id=%s refresh_count=%d sts_expires_at=%s sts_ttl_seconds=%d",
+		updated.UploadID,
+		updated.LogicalUploadID,
+		updated.CredentialRefreshCount,
+		creds.Expiration.Format(time.RFC3339),
+		int(time.Until(creds.Expiration).Seconds()),
+	)
 	return &cloudpb.ReissueUploadCredentialsResponse{
 		LogicalUploadId: updated.LogicalUploadID,
 		UploadId:        updated.UploadID,
@@ -244,6 +295,8 @@ func (s *gatewayService) AbortUpload(ctx context.Context, req *cloudpb.AbortUplo
 		return nil, status.Error(codes.NotFound, "logical upload not found")
 	}
 	if err := authorizeUploadSession(ctx, session); err != nil {
+		logger.Printf("[DGW_COMPAT] AbortUpload denied upload_id=%s logical_upload_id=%s device_id=%s workspace_id=%d reason=%q error=%v",
+			session.UploadID, session.LogicalUploadID, session.DeviceID, session.WorkspaceID, req.GetReason(), err)
 		return nil, err
 	}
 	updated, ok := s.sessions.update(session.UploadID, func(current *uploadSession) {
@@ -266,6 +319,8 @@ func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.Comple
 		return nil, status.Error(codes.NotFound, "upload not found")
 	}
 	if err := authorizeUploadSession(ctx, session); err != nil {
+		logger.Printf("[DGW_COMPAT] CompleteUpload denied upload_id=%s logical_upload_id=%s device_id=%s workspace_id=%d error=%v",
+			session.UploadID, session.LogicalUploadID, session.DeviceID, session.WorkspaceID, err)
 		return nil, err
 	}
 	episodeID, episodePK, err := s.completeBusinessUpload(ctx, session, req)

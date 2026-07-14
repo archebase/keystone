@@ -6,12 +6,15 @@ package dgwcompat
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
 	"github.com/volcengine/volcengine-go-sdk/volcengine"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/credentials"
@@ -91,6 +94,8 @@ func (p *volcengineSTSProvider) AssumeRole(ctx context.Context, scope stsScope) 
 		durationSeconds = 900
 	}
 	sessionName := fmt.Sprintf("keystone-device-upload-%d", time.Now().UTC().Unix())
+	logger.Printf("[DGW_COMPAT] STS AssumeRole start role_trn=%s session_name=%s bucket=%s object_key=%s duration_seconds=%d policy_sha256=%s policy_bytes=%d",
+		p.roleTRN, sessionName, scope.Bucket, scope.ObjectKey, durationSeconds, sha256Hex(policy), len(policy))
 	output, err := p.client.AssumeRoleWithContext(ctx, (&sts.AssumeRoleInput{}).
 		SetDurationSeconds(durationSeconds).
 		SetPolicy(policy).
@@ -99,8 +104,12 @@ func (p *volcengineSTSProvider) AssumeRole(ctx context.Context, scope stsScope) 
 	if err != nil {
 		var sdkErr volcengineerr.Error
 		if errors.As(err, &sdkErr) {
+			logger.Printf("[DGW_COMPAT] STS AssumeRole failed role_trn=%s bucket=%s object_key=%s error_code=%s",
+				p.roleTRN, scope.Bucket, scope.ObjectKey, sdkErr.Code())
 			return stsCredentials{}, fmt.Errorf("volcengine STS AssumeRole failed: %s", sdkErr.Code())
 		}
+		logger.Printf("[DGW_COMPAT] STS AssumeRole failed role_trn=%s bucket=%s object_key=%s",
+			p.roleTRN, scope.Bucket, scope.ObjectKey)
 		return stsCredentials{}, fmt.Errorf("volcengine STS AssumeRole failed")
 	}
 	if output == nil || output.Credentials == nil {
@@ -123,7 +132,31 @@ func (p *volcengineSTSProvider) AssumeRole(ctx context.Context, scope stsScope) 
 	if result.AccessKeyID == "" || result.AccessKeySecret == "" || result.SecurityToken == "" {
 		return stsCredentials{}, fmt.Errorf("volcengine STS response contains empty credentials")
 	}
+	logger.Printf("[DGW_COMPAT] STS AssumeRole success role_trn=%s bucket=%s object_key=%s expires_at=%s ttl_seconds=%d access_key_suffix=%s",
+		p.roleTRN,
+		scope.Bucket,
+		scope.ObjectKey,
+		result.Expiration.Format(time.RFC3339),
+		int(time.Until(result.Expiration).Seconds()),
+		suffix(result.AccessKeyID, 6),
+	)
 	return result, nil
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func suffix(value string, n int) string {
+	value = strings.TrimSpace(value)
+	if n <= 0 || value == "" {
+		return ""
+	}
+	if len(value) <= n {
+		return value
+	}
+	return value[len(value)-n:]
 }
 
 func tosUploadPolicy(scope stsScope) (string, error) {
