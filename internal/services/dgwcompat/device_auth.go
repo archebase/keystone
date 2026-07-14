@@ -23,11 +23,10 @@ import (
 )
 
 type hilbertDeviceClient interface {
-	Login(ctx context.Context, code string, password string) (*keystoneauth.HilbertLoginResult, error)
-	GetDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) (string, error)
-	GenerateDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) (string, error)
-	DeleteDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) error
-	ValidateDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64, apiKey string) (bool, error)
+	GetDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) (string, error)
+	GenerateDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) (string, error)
+	DeleteDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) error
+	ValidateDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64, apiKey string) (bool, error)
 }
 
 type deviceIdentityService struct {
@@ -42,24 +41,13 @@ func newDeviceIdentityService(db *sqlx.DB, cfg Config) *deviceIdentityService {
 		db:  db,
 		cfg: cfg,
 		hilbert: keystoneauth.NewHilbertClient(&config.HilbertConfig{
-			BaseURL:                cfg.HilbertBaseURL,
-			TimeoutSeconds:         5,
-			ServiceAccountCode:     cfg.HilbertCode,
-			ServiceAccountPassword: cfg.HilbertPassword,
+			BaseURL:        cfg.HilbertBaseURL,
+			TimeoutSeconds: 5,
+			AccessKey:      cfg.HilbertAccessKey,
+			SecretKey:      cfg.HilbertSecretKey,
 		}),
 		now: func() time.Time { return time.Now().UTC() },
 	}
-}
-
-func (s *deviceIdentityService) loginHilbert(ctx context.Context) (string, error) {
-	login, err := s.hilbert.Login(ctx, s.cfg.HilbertCode, s.cfg.HilbertPassword)
-	if err != nil {
-		return "", fmt.Errorf("hilbert service login: %w", err)
-	}
-	if login == nil || strings.TrimSpace(login.SessionKey()) == "" {
-		return "", fmt.Errorf("hilbert service login returned no session")
-	}
-	return login.SessionKey(), nil
 }
 
 func (s *deviceIdentityService) provisionAPIKey(ctx context.Context, principal devicePrincipal) (string, error) {
@@ -67,19 +55,15 @@ func (s *deviceIdentityService) provisionAPIKey(ctx context.Context, principal d
 	if err != nil {
 		return "", err
 	}
-	sessionKey, err := s.loginHilbert(ctx)
-	if err != nil {
-		return "", err
-	}
-	apiKey, getErr := s.hilbert.GetDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID)
+	apiKey, getErr := s.hilbert.GetDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID)
 	if getErr == nil && apiKey != "" {
 		return apiKey, nil
 	}
-	apiKey, generateErr := s.hilbert.GenerateDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID)
+	apiKey, generateErr := s.hilbert.GenerateDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID)
 	if generateErr == nil && apiKey != "" {
 		return apiKey, nil
 	}
-	apiKey, retryErr := s.hilbert.GetDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID)
+	apiKey, retryErr := s.hilbert.GetDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID)
 	if retryErr != nil {
 		return "", fmt.Errorf("get/generate Hilbert device API key: get=%v generate=%v retry=%w", getErr, generateErr, retryErr)
 	}
@@ -113,11 +97,7 @@ func (s *authService) ExchangeCredential(ctx context.Context, req *cloudpb.Excha
 	if err != nil {
 		return nil, err
 	}
-	sessionKey, err := s.identity.loginHilbert(ctx)
-	if err != nil {
-		return nil, status.Error(codes.Unavailable, "device authentication unavailable")
-	}
-	valid, err := s.identity.hilbert.ValidateDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID, credential)
+	valid, err := s.identity.hilbert.ValidateDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID, credential)
 	if err != nil {
 		return nil, status.Error(codes.Unavailable, "device authentication unavailable")
 	}
@@ -225,12 +205,8 @@ func (s *deviceInitService) recoverDevice(ctx context.Context, req *cloudpb.Rein
 		}
 		stage = "epoch_incremented"
 	}
-	sessionKey, err := s.identity.loginHilbert(ctx)
-	if err != nil {
-		return nil, status.Error(codes.Unavailable, "device recovery unavailable")
-	}
 	if stage == "epoch_incremented" {
-		if err := s.identity.hilbert.DeleteDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID); err != nil {
+		if err := s.identity.hilbert.DeleteDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID); err != nil {
 			return nil, status.Error(codes.Unavailable, "device recovery delete incomplete")
 		}
 		if err := s.identity.setRecoveryStage(ctx, tokenID, "deleted", false); err != nil {
@@ -240,9 +216,9 @@ func (s *deviceInitService) recoverDevice(ctx context.Context, req *cloudpb.Rein
 	}
 	var apiKey string
 	if stage == "deleted" {
-		apiKey, err = s.identity.hilbert.GenerateDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID)
+		apiKey, err = s.identity.hilbert.GenerateDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID)
 		if err != nil {
-			apiKey, err = s.identity.hilbert.GetDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID)
+			apiKey, err = s.identity.hilbert.GetDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID)
 		}
 		if err != nil {
 			return nil, status.Error(codes.Unavailable, "device recovery generate incomplete")
@@ -254,7 +230,7 @@ func (s *deviceInitService) recoverDevice(ctx context.Context, req *cloudpb.Rein
 	}
 	if stage == "generated" || stage == "completed" {
 		if apiKey == "" {
-			apiKey, err = s.identity.hilbert.GetDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID)
+			apiKey, err = s.identity.hilbert.GetDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID)
 			if err != nil {
 				return nil, status.Error(codes.Unavailable, "device recovery lookup incomplete")
 			}
@@ -351,18 +327,14 @@ func (s *deviceIdentityService) resetHilbertAPIKey(ctx context.Context, principa
 	if err != nil {
 		return "", err
 	}
-	sessionKey, err := s.loginHilbert(ctx)
-	if err != nil {
+	if err := s.hilbert.DeleteDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID); err != nil {
 		return "", err
 	}
-	if err := s.hilbert.DeleteDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID); err != nil {
-		return "", err
-	}
-	apiKey, err := s.hilbert.GenerateDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID)
+	apiKey, err := s.hilbert.GenerateDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID)
 	if err == nil {
 		return apiKey, nil
 	}
-	return s.hilbert.GetDCDeviceAPIKey(ctx, sessionKey, principal.WorkspaceID, hilbertDeviceID)
+	return s.hilbert.GetDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID)
 }
 
 func initDeviceResponse(principal devicePrincipal, apiKey, platform string) *cloudpb.InitDeviceResponse {

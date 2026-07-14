@@ -44,7 +44,6 @@ func TestDCPlanSyncServiceSyncsPagedPlans(t *testing.T) {
 	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
 
 	client := &fakeHilbertDCPlanClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		pages: []*auth.HilbertDCPlanPage{
 			{Records: []auth.HilbertDCPlan{testHilbertDCPlan(1001, 123, "Plan A")}, Total: 2, PageNum: 1, PageSize: dcPlanSyncPageSize},
 			{Records: []auth.HilbertDCPlan{testHilbertDCPlan(1002, 123, "Plan B")}, Total: 2, PageNum: 2, PageSize: dcPlanSyncPageSize},
@@ -58,9 +57,6 @@ func TestDCPlanSyncServiceSyncsPagedPlans(t *testing.T) {
 	}
 	if result.WorkspaceID != 123 || result.SyncedCount != 2 || result.PageCount != 2 || result.LastSyncedAt.IsZero() {
 		t.Fatalf("unexpected result: %#v", result)
-	}
-	if client.loginCode != "svc-keystone" || client.loginPassword != "svc-secret" {
-		t.Fatalf("unexpected login args: %#v", client)
 	}
 	if len(client.queries) != 2 || client.queries[0].pageNum != 1 || client.queries[1].pageNum != 2 {
 		t.Fatalf("unexpected page queries: %#v", client.queries)
@@ -87,7 +83,6 @@ func TestDCPlanSyncServiceInvalidPlanDoesNotPartiallyUpsert(t *testing.T) {
 	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
 
 	client := &fakeHilbertDCPlanClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		pages: []*auth.HilbertDCPlanPage{
 			{
 				Records: []auth.HilbertDCPlan{
@@ -123,7 +118,6 @@ func TestDCPlanSyncServiceRejectsPlanIDOwnedByAnotherWorkspace(t *testing.T) {
 	seedDCPlanRow(t, db, testHilbertDCPlan(1001, 456, "Existing Plan"))
 
 	client := &fakeHilbertDCPlanClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		pages: []*auth.HilbertDCPlanPage{
 			{Records: []auth.HilbertDCPlan{testHilbertDCPlan(1001, 123, "Incoming Plan")}, Total: 1, PageNum: 1, PageSize: dcPlanSyncPageSize},
 		},
@@ -150,7 +144,6 @@ func TestDCPlanSyncServiceDoesNotDeleteMissingPlans(t *testing.T) {
 	seedDCPlanRow(t, db, testHilbertDCPlan(1001, 123, "Existing Plan"))
 
 	client := &fakeHilbertDCPlanClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		pages: []*auth.HilbertDCPlanPage{
 			{Records: []auth.HilbertDCPlan{testHilbertDCPlan(1002, 123, "Incoming Plan")}, Total: 1, PageNum: 1, PageSize: dcPlanSyncPageSize},
 		},
@@ -171,41 +164,31 @@ func TestDCPlanSyncServiceDoesNotDeleteMissingPlans(t *testing.T) {
 }
 
 type dcPlanQueryCall struct {
-	sessionKey  string
 	workspaceID int64
 	pageNum     int64
 	pageSize    int64
 }
 
 type fakeHilbertDCPlanClient struct {
-	configured    bool
-	loginResult   *auth.HilbertLoginResult
-	loginErr      error
-	pages         []*auth.HilbertDCPlanPage
-	queryErr      error
-	loginCode     string
-	loginPassword string
-	queries       []dcPlanQueryCall
+	configured bool
+	pages      []*auth.HilbertDCPlanPage
+	queryErr   error
+	queries    []dcPlanQueryCall
 }
 
 func (f *fakeHilbertDCPlanClient) Configured() bool {
 	if f.configured {
 		return true
 	}
-	return f.loginResult != nil || len(f.pages) > 0 || f.loginErr != nil || f.queryErr != nil
+	return len(f.pages) > 0 || f.queryErr != nil
 }
 
-func (f *fakeHilbertDCPlanClient) Login(_ context.Context, code string, password string) (*auth.HilbertLoginResult, error) {
-	f.loginCode = code
-	f.loginPassword = password
-	if f.loginErr != nil {
-		return nil, f.loginErr
-	}
-	return f.loginResult, nil
+func (f *fakeHilbertDCPlanClient) ServiceAuthConfigured() bool {
+	return f.Configured()
 }
 
-func (f *fakeHilbertDCPlanClient) QueryDCPlans(_ context.Context, sessionKey string, workspaceID int64, pageNum int64, pageSize int64) (*auth.HilbertDCPlanPage, error) {
-	f.queries = append(f.queries, dcPlanQueryCall{sessionKey: sessionKey, workspaceID: workspaceID, pageNum: pageNum, pageSize: pageSize})
+func (f *fakeHilbertDCPlanClient) QueryDCPlans(_ context.Context, workspaceID int64, pageNum int64, pageSize int64) (*auth.HilbertDCPlanPage, error) {
+	f.queries = append(f.queries, dcPlanQueryCall{workspaceID: workspaceID, pageNum: pageNum, pageSize: pageSize})
 	if f.queryErr != nil {
 		return nil, f.queryErr
 	}
@@ -269,10 +252,10 @@ func seedDCPlanRow(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
 
 func testDCPlanSyncHilbertConfig() *config.HilbertConfig {
 	return &config.HilbertConfig{
-		BaseURL:                "http://hilbert",
-		TimeoutSeconds:         2,
-		ServiceAccountCode:     "svc-keystone",
-		ServiceAccountPassword: "svc-secret",
+		BaseURL:        "http://hilbert",
+		TimeoutSeconds: 2,
+		AccessKey:      "hilbert-ak",
+		SecretKey:      "hilbert-sk",
 	}
 }
 

@@ -33,8 +33,8 @@ var (
 // HilbertDCPlanClient captures the Hilbert calls dc plan sync needs.
 type HilbertDCPlanClient interface {
 	Configured() bool
-	Login(ctx context.Context, code string, password string) (*auth.HilbertLoginResult, error)
-	QueryDCPlans(ctx context.Context, sessionKey string, workspaceID int64, pageNum int64, pageSize int64) (*auth.HilbertDCPlanPage, error)
+	ServiceAuthConfigured() bool
+	QueryDCPlans(ctx context.Context, workspaceID int64, pageNum int64, pageSize int64) (*auth.HilbertDCPlanPage, error)
 }
 
 // DCPlanSyncResult summarizes one Hilbert dc plan sync run.
@@ -67,9 +67,7 @@ func (s *DCPlanSyncService) Configured() bool {
 	if s == nil || s.db == nil || s.cfg == nil || s.hilbertClient == nil || !s.hilbertClient.Configured() {
 		return false
 	}
-	return strings.TrimSpace(s.cfg.BaseURL) != "" &&
-		strings.TrimSpace(s.cfg.ServiceAccountCode) != "" &&
-		strings.TrimSpace(s.cfg.ServiceAccountPassword) != ""
+	return strings.TrimSpace(s.cfg.BaseURL) != "" && s.hilbertClient.ServiceAuthConfigured()
 }
 
 // SyncWorkspace logs into Hilbert, fetches one workspace's dc plans, validates every record, and transactionally upserts them.
@@ -81,16 +79,7 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 		return nil, err
 	}
 
-	loginResult, err := s.hilbertClient.Login(ctx, s.cfg.ServiceAccountCode, s.cfg.ServiceAccountPassword)
-	if err != nil {
-		return nil, fmt.Errorf("%w: login hilbert: %v", ErrDCPlanSyncFailed, err)
-	}
-	sessionKey := loginResult.SessionKey()
-	if strings.TrimSpace(sessionKey) == "" {
-		return nil, fmt.Errorf("%w: login hilbert: missing session key", ErrDCPlanSyncFailed)
-	}
-
-	plans, pageCount, err := s.fetchAllPlans(ctx, sessionKey, workspaceID)
+	plans, pageCount, err := s.fetchAllPlans(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -131,11 +120,11 @@ func (s *DCPlanSyncService) requireHilbertWorkspace(ctx context.Context, workspa
 	return nil
 }
 
-func (s *DCPlanSyncService) fetchAllPlans(ctx context.Context, sessionKey string, workspaceID int64) ([]auth.HilbertDCPlan, int, error) {
+func (s *DCPlanSyncService) fetchAllPlans(ctx context.Context, workspaceID int64) ([]auth.HilbertDCPlan, int, error) {
 	plans := []auth.HilbertDCPlan{}
 	pageCount := 0
 	for pageNum := int64(1); ; pageNum++ {
-		page, err := s.hilbertClient.QueryDCPlans(ctx, sessionKey, workspaceID, pageNum, dcPlanSyncPageSize)
+		page, err := s.hilbertClient.QueryDCPlans(ctx, workspaceID, pageNum, dcPlanSyncPageSize)
 		if err != nil {
 			return nil, pageCount, fmt.Errorf("%w: query dc plans: %v", ErrDCPlanSyncFailed, err)
 		}

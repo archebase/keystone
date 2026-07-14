@@ -32,34 +32,34 @@ type Config struct {
 	AccessKeySecret string
 	MockSTS         bool
 
-	DeviceJWTSecret string // #nosec G117 -- JWT signing secret is loaded from environment
-	DeviceJWTTTL    time.Duration
-	HilbertBaseURL  string
-	HilbertCode     string
-	HilbertPassword string // #nosec G117 -- service password is loaded from environment
+	DeviceJWTSecret  string // #nosec G117 -- JWT signing secret is loaded from environment
+	DeviceJWTTTL     time.Duration
+	HilbertBaseURL   string
+	HilbertAccessKey string // #nosec G101 -- Hilbert AK is loaded from environment
+	HilbertSecretKey string // #nosec G101 -- Hilbert SK is loaded from environment
 }
 
 // LoadConfigFromEnv loads dgw compatibility settings without touching Keystone's global config.
 func LoadConfigFromEnv() (Config, error) {
 	cfg := Config{
-		Enabled:         getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false),
-		GRPCAddr:        getEnv("KEYSTONE_DGW_GRPC_ADDR", getEnv("KEYSTONE_DGW_GATEWAY_ADDR", ":50053")),
-		TOSBucket:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET")),
-		TOSEndpoint:     strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT")),
-		TOSRegion:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION")),
-		TOSKeyPrefix:    getEnv("KEYSTONE_DGW_TOS_KEY_PREFIX", "device-uploads"),
-		UploadPartSize:  getEnvInt64("KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES", 8*1024*1024),
-		STSRoleTRN:      strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN")),
-		STSSessionTTL:   time.Duration(getEnvInt64("KEYSTONE_DGW_STS_SESSION_TTL_SECONDS", 3600)) * time.Second,
-		STSEndpoint:     strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT")),
-		AccessKeyID:     strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID")),
-		AccessKeySecret: strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET")),
-		MockSTS:         getEnvBool("KEYSTONE_DGW_MOCK_STS", false),
-		DeviceJWTSecret: strings.TrimSpace(os.Getenv("KEYSTONE_JWT_SECRET")),
-		DeviceJWTTTL:    time.Duration(getEnvInt64("KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS", 900)) * time.Second,
-		HilbertBaseURL:  strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_BASE_URL")),
-		HilbertCode:     strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE")),
-		HilbertPassword: strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD")),
+		Enabled:          getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false),
+		GRPCAddr:         getEnv("KEYSTONE_DGW_GRPC_ADDR", getEnv("KEYSTONE_DGW_GATEWAY_ADDR", ":50053")),
+		TOSBucket:        strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET")),
+		TOSEndpoint:      strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT")),
+		TOSRegion:        strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION")),
+		TOSKeyPrefix:     getEnv("KEYSTONE_DGW_TOS_KEY_PREFIX", "device-uploads"),
+		UploadPartSize:   getEnvInt64("KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES", 8*1024*1024),
+		STSRoleTRN:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN")),
+		STSSessionTTL:    time.Duration(getEnvInt64("KEYSTONE_DGW_STS_SESSION_TTL_SECONDS", 3600)) * time.Second,
+		STSEndpoint:      strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT")),
+		AccessKeyID:      strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID")),
+		AccessKeySecret:  strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET")),
+		MockSTS:          getEnvBool("KEYSTONE_DGW_MOCK_STS", false),
+		DeviceJWTSecret:  strings.TrimSpace(os.Getenv("KEYSTONE_JWT_SECRET")),
+		DeviceJWTTTL:     time.Duration(getEnvInt64("KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS", 900)) * time.Second,
+		HilbertBaseURL:   strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_BASE_URL")),
+		HilbertAccessKey: strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_ACCESS_KEY")),
+		HilbertSecretKey: strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_SECRET_KEY")),
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -87,8 +87,8 @@ func (c Config) Validate() error {
 	if c.DeviceJWTSecret == "" || c.DeviceJWTTTL <= 0 {
 		return fmt.Errorf("KEYSTONE_JWT_SECRET and a positive KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS are required")
 	}
-	if c.HilbertBaseURL == "" || c.HilbertCode == "" || c.HilbertPassword == "" {
-		return fmt.Errorf("KEYSTONE_HILBERT_BASE_URL and service account credentials are required")
+	if c.HilbertBaseURL == "" || c.HilbertAccessKey == "" || c.HilbertSecretKey == "" {
+		return fmt.Errorf("KEYSTONE_HILBERT_BASE_URL, KEYSTONE_HILBERT_ACCESS_KEY and KEYSTONE_HILBERT_SECRET_KEY are required")
 	}
 	if c.MockSTS {
 		return nil

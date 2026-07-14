@@ -15,20 +15,20 @@ import (
 func TestLoad(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                             os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_MYSQL_HOST":                       os.Getenv("KEYSTONE_MYSQL_HOST"),
-		"KEYSTONE_MYSQL_PASSWORD":                   os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":                 os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":                 os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_FACTORY_ID":                       os.Getenv("KEYSTONE_FACTORY_ID"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":           os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
-		"KEYSTONE_SYNC_DP_CONFIG":                   os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
-		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":         os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
-		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED":       os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
-		"KEYSTONE_HILBERT_BASE_URL":                 os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
-		"KEYSTONE_HILBERT_TIMEOUT_SECONDS":          os.Getenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS"),
-		"KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE":     os.Getenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE"),
-		"KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD": os.Getenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD"),
+		"KEYSTONE_MODE":                       os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_MYSQL_HOST":                 os.Getenv("KEYSTONE_MYSQL_HOST"),
+		"KEYSTONE_MYSQL_PASSWORD":             os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":           os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":           os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_FACTORY_ID":                 os.Getenv("KEYSTONE_FACTORY_ID"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":     os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_SYNC_DP_CONFIG":             os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
+		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":   os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
+		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED": os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
+		"KEYSTONE_HILBERT_BASE_URL":           os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
+		"KEYSTONE_HILBERT_TIMEOUT_SECONDS":    os.Getenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS"),
+		"KEYSTONE_HILBERT_ACCESS_KEY":         os.Getenv("KEYSTONE_HILBERT_ACCESS_KEY"),
+		"KEYSTONE_HILBERT_SECRET_KEY":         os.Getenv("KEYSTONE_HILBERT_SECRET_KEY"),
 	}
 	defer func() {
 		// Restore original environment variables
@@ -47,8 +47,8 @@ func TestLoad(t *testing.T) {
 	os.Unsetenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED")
 	os.Unsetenv("KEYSTONE_HILBERT_BASE_URL")
 	os.Unsetenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS")
-	os.Unsetenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE")
-	os.Unsetenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD")
+	os.Unsetenv("KEYSTONE_HILBERT_ACCESS_KEY")
+	os.Unsetenv("KEYSTONE_HILBERT_SECRET_KEY")
 	os.Setenv("KEYSTONE_MYSQL_PASSWORD", "test-password")
 	os.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "test-access-key")
 	os.Setenv("KEYSTONE_MINIO_SECRET_KEY", "test-secret-key")
@@ -97,8 +97,8 @@ func TestLoad(t *testing.T) {
 	if cfg.AxonRecorder.AuthEnabled {
 		t.Error("Load().AxonRecorder.AuthEnabled should default to false")
 	}
-	if cfg.Hilbert.BaseURL != "" || cfg.Hilbert.TimeoutSeconds != 5 || cfg.Hilbert.ServiceAccountCode != "" || cfg.Hilbert.ServiceAccountPassword != "" {
-		t.Errorf("Load().Hilbert default = %+v, want empty endpoint/service identity and timeout 5", cfg.Hilbert)
+	if cfg.Hilbert.BaseURL != "" || cfg.Hilbert.TimeoutSeconds != 5 || cfg.Hilbert.AccessKey != "" || cfg.Hilbert.SecretKey != "" {
+		t.Errorf("Load().Hilbert default = %+v, want empty endpoint/AK/SK and timeout 5", cfg.Hilbert)
 	}
 
 	// Verify QA configuration
@@ -127,21 +127,21 @@ func TestLoad(t *testing.T) {
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                             os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_BIND_ADDR":                        os.Getenv("KEYSTONE_BIND_ADDR"),
-		"KEYSTONE_MYSQL_PASSWORD":                   os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":                 os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":                 os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_QA_MAX_WORKERS":                   os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
-		"KEYSTONE_MAX_MEMORY_MB":                    os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
-		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN":          os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":           os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
-		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":         os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
-		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED":       os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
-		"KEYSTONE_HILBERT_BASE_URL":                 os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
-		"KEYSTONE_HILBERT_TIMEOUT_SECONDS":          os.Getenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS"),
-		"KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE":     os.Getenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE"),
-		"KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD": os.Getenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD"),
+		"KEYSTONE_MODE":                       os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_BIND_ADDR":                  os.Getenv("KEYSTONE_BIND_ADDR"),
+		"KEYSTONE_MYSQL_PASSWORD":             os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":           os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":           os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_QA_MAX_WORKERS":             os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
+		"KEYSTONE_MAX_MEMORY_MB":              os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
+		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN":    os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":     os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":   os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
+		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED": os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
+		"KEYSTONE_HILBERT_BASE_URL":           os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
+		"KEYSTONE_HILBERT_TIMEOUT_SECONDS":    os.Getenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS"),
+		"KEYSTONE_HILBERT_ACCESS_KEY":         os.Getenv("KEYSTONE_HILBERT_ACCESS_KEY"),
+		"KEYSTONE_HILBERT_SECRET_KEY":         os.Getenv("KEYSTONE_HILBERT_SECRET_KEY"),
 	}
 	defer func() {
 		for k, v := range originalEnv {
@@ -167,8 +167,8 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Setenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED", "true")
 	os.Setenv("KEYSTONE_HILBERT_BASE_URL", "https://hilbert.example.test")
 	os.Setenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS", "9")
-	os.Setenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE", "svc-keystone")
-	os.Setenv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD", "svc-secret")
+	os.Setenv("KEYSTONE_HILBERT_ACCESS_KEY", "hilbert-ak")
+	os.Setenv("KEYSTONE_HILBERT_SECRET_KEY", "hilbert-sk")
 
 	cfg, err := Load()
 	if err != nil {
@@ -202,8 +202,8 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	}
 	if cfg.Hilbert.BaseURL != "https://hilbert.example.test" ||
 		cfg.Hilbert.TimeoutSeconds != 9 ||
-		cfg.Hilbert.ServiceAccountCode != "svc-keystone" ||
-		cfg.Hilbert.ServiceAccountPassword != "svc-secret" {
+		cfg.Hilbert.AccessKey != "hilbert-ak" ||
+		cfg.Hilbert.SecretKey != "hilbert-sk" {
 		t.Errorf("Load().Hilbert = %+v, want custom Hilbert config", cfg.Hilbert)
 	}
 }

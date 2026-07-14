@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	keystoneauth "archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
 	"archebase.com/keystone-edge/internal/services"
 	"github.com/jmoiron/sqlx"
@@ -31,18 +30,14 @@ type fakeHilbertDeviceClient struct {
 	generateCalls int
 }
 
-func (f *fakeHilbertDeviceClient) Login(context.Context, string, string) (*keystoneauth.HilbertLoginResult, error) {
-	return keystoneauth.NewHilbertLoginResult(keystoneauth.HilbertAccount{Code: "svc"}, "session"), nil
-}
-
-func (f *fakeHilbertDeviceClient) GetDCDeviceAPIKey(context.Context, string, int64, int64) (string, error) {
+func (f *fakeHilbertDeviceClient) GetDCDeviceAPIKey(context.Context, int64, int64) (string, error) {
 	if f.getErr != nil {
 		return "", f.getErr
 	}
 	return f.apiKey, nil
 }
 
-func (f *fakeHilbertDeviceClient) GenerateDCDeviceAPIKey(context.Context, string, int64, int64) (string, error) {
+func (f *fakeHilbertDeviceClient) GenerateDCDeviceAPIKey(context.Context, int64, int64) (string, error) {
 	f.generateCalls++
 	if f.generateErr != nil {
 		return "", f.generateErr
@@ -50,12 +45,12 @@ func (f *fakeHilbertDeviceClient) GenerateDCDeviceAPIKey(context.Context, string
 	return f.apiKey, nil
 }
 
-func (f *fakeHilbertDeviceClient) DeleteDCDeviceAPIKey(context.Context, string, int64, int64) error {
+func (f *fakeHilbertDeviceClient) DeleteDCDeviceAPIKey(context.Context, int64, int64) error {
 	f.deleteCalls++
 	return f.deleteErr
 }
 
-func (f *fakeHilbertDeviceClient) ValidateDCDeviceAPIKey(context.Context, string, int64, int64, string) (bool, error) {
+func (f *fakeHilbertDeviceClient) ValidateDCDeviceAPIKey(context.Context, int64, int64, string) (bool, error) {
 	return f.validate, nil
 }
 
@@ -185,10 +180,10 @@ func testDeviceIdentity(db *sqlx.DB, hilbert hilbertDeviceClient) *deviceIdentit
 	return &deviceIdentityService{
 		db: db,
 		cfg: Config{
-			DeviceJWTSecret: "test-device-secret-at-least-32-bytes",
-			DeviceJWTTTL:    15 * time.Minute,
-			HilbertCode:     "svc",
-			HilbertPassword: "secret",
+			DeviceJWTSecret:  "test-device-secret-at-least-32-bytes",
+			DeviceJWTTTL:     15 * time.Minute,
+			HilbertAccessKey: "hilbert-ak",
+			HilbertSecretKey: "hilbert-sk",
 		},
 		hilbert: hilbert,
 		now:     func() time.Time { return time.Now().UTC() },

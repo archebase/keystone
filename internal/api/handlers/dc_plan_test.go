@@ -93,7 +93,6 @@ func TestDCPlanSyncReturnsResult(t *testing.T) {
 	defer db.Close()
 	seedDCPlanHandlerWorkspace(t, db, 123, workspaceSourceHilbert)
 	service := services.NewDCPlanSyncService(db, testDCPlanHandlerHilbertConfig(), &fakeDCPlanHandlerHilbertClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		pages: []*auth.HilbertDCPlanPage{
 			{Records: []auth.HilbertDCPlan{testDCPlanHandlerHilbertPlan(2001, 123)}, Total: 1, PageNum: 1, PageSize: 200},
 		},
@@ -117,20 +116,19 @@ func TestDCPlanSyncReturnsResult(t *testing.T) {
 }
 
 type fakeDCPlanHandlerHilbertClient struct {
-	configured  bool
-	loginResult *auth.HilbertLoginResult
-	pages       []*auth.HilbertDCPlanPage
+	configured bool
+	pages      []*auth.HilbertDCPlanPage
 }
 
 func (f *fakeDCPlanHandlerHilbertClient) Configured() bool {
-	return f.configured || f.loginResult != nil || len(f.pages) > 0
+	return f.configured || len(f.pages) > 0
 }
 
-func (f *fakeDCPlanHandlerHilbertClient) Login(_ context.Context, _ string, _ string) (*auth.HilbertLoginResult, error) {
-	return f.loginResult, nil
+func (f *fakeDCPlanHandlerHilbertClient) ServiceAuthConfigured() bool {
+	return f.Configured()
 }
 
-func (f *fakeDCPlanHandlerHilbertClient) QueryDCPlans(_ context.Context, _ string, _ int64, pageNum int64, _ int64) (*auth.HilbertDCPlanPage, error) {
+func (f *fakeDCPlanHandlerHilbertClient) QueryDCPlans(_ context.Context, _ int64, pageNum int64, _ int64) (*auth.HilbertDCPlanPage, error) {
 	index := int(pageNum - 1)
 	if index < 0 || index >= len(f.pages) {
 		return &auth.HilbertDCPlanPage{}, nil
@@ -147,10 +145,10 @@ func newTestDCPlanRouter(db *sqlx.DB, syncService *services.DCPlanSyncService) *
 
 func testDCPlanHandlerHilbertConfig() *config.HilbertConfig {
 	return &config.HilbertConfig{
-		BaseURL:                "http://hilbert",
-		TimeoutSeconds:         2,
-		ServiceAccountCode:     "svc-keystone",
-		ServiceAccountPassword: "svc-secret",
+		BaseURL:        "http://hilbert",
+		TimeoutSeconds: 2,
+		AccessKey:      "hilbert-ak",
+		SecretKey:      "hilbert-sk",
 	}
 }
 

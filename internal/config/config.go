@@ -152,12 +152,12 @@ type AuthConfig struct {
 	DashboardDisplayToken string // #nosec G101 -- optional long-lived dashboard display token loaded from env
 }
 
-// HilbertConfig owns Hilbert endpoint and Keystone service identity bootstrap settings.
+// HilbertConfig owns Hilbert endpoint and Keystone service identity settings.
 type HilbertConfig struct {
-	BaseURL                string
-	TimeoutSeconds         int
-	ServiceAccountCode     string // #nosec G101 -- bootstrap account loaded from env
-	ServiceAccountPassword string // #nosec G101 -- bootstrap password loaded from env; never logged
+	BaseURL        string
+	TimeoutSeconds int
+	AccessKey      string `json:"-"` // #nosec G101 -- Hilbert AK loaded from env; never logged
+	SecretKey      string `json:"-"` // #nosec G101 -- Hilbert SK loaded from env; never logged
 }
 
 // Load loads configuration from environment variables and defaults
@@ -229,10 +229,10 @@ func Load() (*Config, error) {
 			DashboardDisplayToken: getEnv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", ""),
 		},
 		Hilbert: HilbertConfig{
-			BaseURL:                getEnv("KEYSTONE_HILBERT_BASE_URL", ""),
-			TimeoutSeconds:         getEnvInt("KEYSTONE_HILBERT_TIMEOUT_SECONDS", 5),
-			ServiceAccountCode:     getEnv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE", ""),
-			ServiceAccountPassword: getEnv("KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD", ""),
+			BaseURL:        getEnv("KEYSTONE_HILBERT_BASE_URL", ""),
+			TimeoutSeconds: getEnvInt("KEYSTONE_HILBERT_TIMEOUT_SECONDS", 5),
+			AccessKey:      getEnv("KEYSTONE_HILBERT_ACCESS_KEY", ""),
+			SecretKey:      getEnv("KEYSTONE_HILBERT_SECRET_KEY", ""),
 		},
 		Features: FeaturesConfig{
 			StrataEnabled:  false,
@@ -302,8 +302,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("KEYSTONE_ADMIN_USERNAME and KEYSTONE_ADMIN_PASSWORD must both be set or both be empty")
 	}
 	c.Hilbert.BaseURL = strings.TrimRight(strings.TrimSpace(c.Hilbert.BaseURL), "/")
-	c.Hilbert.ServiceAccountCode = strings.TrimSpace(c.Hilbert.ServiceAccountCode)
-	c.Hilbert.ServiceAccountPassword = strings.TrimSpace(c.Hilbert.ServiceAccountPassword)
+	c.Hilbert.AccessKey = strings.TrimSpace(c.Hilbert.AccessKey)
+	c.Hilbert.SecretKey = strings.TrimSpace(c.Hilbert.SecretKey)
 	if c.Hilbert.TimeoutSeconds <= 0 {
 		c.Hilbert.TimeoutSeconds = 5
 	}

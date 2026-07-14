@@ -25,8 +25,8 @@ const (
 
 // HilbertWorkspaceResourceClient captures Hilbert resource calls workspace resource sync needs.
 type HilbertWorkspaceResourceClient interface {
-	QueryAccountByCode(ctx context.Context, sessionKey string, code string) (*auth.HilbertAccount, error)
-	QueryDCDevices(ctx context.Context, sessionKey string, workspaceID int64) (*auth.HilbertDCDevicePage, error)
+	QueryAccountByCode(ctx context.Context, code string) (*auth.HilbertAccount, error)
+	QueryDCDevices(ctx context.Context, workspaceID int64) (*auth.HilbertDCDevicePage, error)
 }
 
 // WorkspaceResourceSyncSummary summarizes a workspace resource sync run.
@@ -67,7 +67,7 @@ func NewWorkspaceResourceSyncService(db *sqlx.DB, hilbertClient HilbertWorkspace
 }
 
 // SyncWorkspaces syncs resources for every Hilbert workspace and isolates failures per workspace.
-func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, sessionKey string, workspaces []auth.HilbertWorkspace, syncedAt time.Time) *WorkspaceResourceSyncSummary {
+func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, workspaces []auth.HilbertWorkspace, syncedAt time.Time) *WorkspaceResourceSyncSummary {
 	summary := &WorkspaceResourceSyncSummary{
 		Enabled:          true,
 		WorkspaceResults: []WorkspaceResourceSyncResult{},
@@ -80,7 +80,7 @@ func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, sessi
 		if workspace.ID <= defaultWorkspaceID {
 			continue
 		}
-		result := s.syncWorkspace(ctx, sessionKey, workspace, syncedAt)
+		result := s.syncWorkspace(ctx, workspace, syncedAt)
 		summary.CollectorUpsertedCount += result.CollectorUpsertedCount
 		summary.CollectorSkippedCount += result.CollectorSkippedCount
 		summary.RobotUpsertedCount += result.RobotUpsertedCount
@@ -99,7 +99,7 @@ func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, sessi
 	return summary
 }
 
-func (s *WorkspaceResourceSyncService) syncWorkspace(ctx context.Context, sessionKey string, workspace auth.HilbertWorkspace, syncedAt time.Time) WorkspaceResourceSyncResult {
+func (s *WorkspaceResourceSyncService) syncWorkspace(ctx context.Context, workspace auth.HilbertWorkspace, syncedAt time.Time) WorkspaceResourceSyncResult {
 	result := WorkspaceResourceSyncResult{WorkspaceID: workspace.ID, Errors: []WorkspaceResourceSyncError{}}
 
 	tx, err := s.db.BeginTxx(ctx, nil)
@@ -109,9 +109,9 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(ctx context.Context, sessio
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	s.syncCollectors(ctx, tx, sessionKey, workspace, syncedAt, &result)
+	s.syncCollectors(ctx, tx, workspace, syncedAt, &result)
 
-	devicesPage, err := s.hilbertClient.QueryDCDevices(ctx, sessionKey, workspace.ID)
+	devicesPage, err := s.hilbertClient.QueryDCDevices(ctx, workspace.ID)
 	if err != nil {
 		result.addError("robot", strconv.FormatInt(workspace.ID, 10), "dc_device_query_failed", err.Error())
 		result.discardUncommittedCounts()
@@ -138,13 +138,12 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(ctx context.Context, sessio
 func (s *WorkspaceResourceSyncService) syncCollectors(
 	ctx context.Context,
 	tx *sqlx.Tx,
-	sessionKey string,
 	workspace auth.HilbertWorkspace,
 	syncedAt time.Time,
 	result *WorkspaceResourceSyncResult,
 ) {
 	for _, code := range normalizeWorkspacePeople(append(workspace.Admins, workspace.Members...)) {
-		account, err := s.hilbertClient.QueryAccountByCode(ctx, sessionKey, code)
+		account, err := s.hilbertClient.QueryAccountByCode(ctx, code)
 		if err != nil {
 			result.CollectorSkippedCount++
 			result.addError("collector", code, "account_query_failed", err.Error())

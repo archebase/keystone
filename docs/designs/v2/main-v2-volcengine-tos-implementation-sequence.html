@@ -870,7 +870,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <h2>目标链路</h2>
         </div>
         <div class="reading">
-          <p>设备长期身份由 Hilbert 管理，Keystone 负责注册编排、短期设备会话和 TOS 授权。Swift SDK 与 Go 后端进入同一个仓库；设备不直接访问 Hilbert，也不持有 Hilbert 服务账号或火山云长期凭证。</p>
+          <p>设备长期身份由 Hilbert 管理，Keystone 负责注册编排、短期设备会话和 TOS 授权。Swift SDK 与 Go 后端进入同一个仓库；设备不直接访问 Hilbert，也不持有 Hilbert AK/SK 或火山云长期凭证。</p>
         </div>
         <div class="flow" aria-label="目标上传流程">
           <div class="flow-step">
@@ -894,7 +894,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <span><span class="mono">sdk/swift</span> 直接执行 PutObject 或 multipart，并在内存中跟踪分片状态。</span>
           </div>
         </div>
-        <div class="warning">密钥边界：设备 API Key 允许进入 Swift SDK，但必须保存在 Keychain；Hilbert 服务账号密钥与火山云长期 AK/SK 永远不得下发。TOS STS 必须限制到目标 bucket 的指定 object-key prefix。</div>
+        <div class="warning">密钥边界：设备 API Key 允许进入 Swift SDK，但必须保存在 Keychain；Hilbert AK/SK 与火山云长期 AK/SK 永远不得下发。TOS STS 必须限制到目标 bucket 的指定 object-key prefix。</div>
       </div>
     </section>
 
@@ -1073,7 +1073,7 @@ CreateLogicalUpload(Bearer JWT)
                 <li>为 InitDevice 增加 <span class="mono">device_auth_token</span>，为 ExchangeCredential 增加 <span class="mono">device_id</span>。</li>
                 <li>定义 JWT 的 device ID、workspace ID、auth epoch、iat、exp、jti 和 token type。</li>
                 <li>JWT 默认有效期不超过 15 分钟；Reinit 开始时递增 auth epoch，使旧 JWT 立即失效。</li>
-                <li>明确 API Key 只进入 Keychain；服务账号密钥、nonce random key、JWT、STS 均禁止写日志。</li>
+                <li>明确 API Key 只进入 Keychain；Hilbert SK、nonce random key、JWT、STS 均禁止写日志。</li>
               </ul>
               <ul class="file-list">
                 <li>keystone/proto/archebase/data_gateway/v1/device_init.proto</li>
@@ -1096,7 +1096,7 @@ CreateLogicalUpload(Bearer JWT)
               <strong>Keystone：接通 Hilbert 设备认证</strong>
               <p>删除现有静态 API Key 和随机假 token 实现，使用 Hilbert 现有 query、get/generate、delete、nonce 与 validate API 建立真实身份链路。</p>
               <ul>
-                <li>为 Keystone 配置专用 Hilbert 机器账号，并限制到所管理的 workspace。</li>
+                <li>为 Keystone 配置专用 Hilbert AK/SK，并限制到所管理的 workspace。</li>
                 <li>InitDevice 先校验 device ID、auth token 哈希、active 状态和未消费的 SDK 初始化权，再执行 Query → Get/Generate。</li>
                 <li>ExchangeCredential 使用 nonce 加密后调用 <span class="mono">dc-device/validate</span>，成功才签发 JWT。</li>
                 <li>ReinitDevice 正常要求有效 JWT；凭证丢失时由管理员轮换 device auth token 并开启一次 recovery，再执行可续跑的 Delete → Generate。</li>
@@ -1260,7 +1260,7 @@ CreateLogicalUpload(Bearer JWT)
               <strong>main-v2 全新生产部署</strong>
               <p>创建生产 TOS 资源，部署 Keystone，再发布依赖 Keystone Swift package 的设备应用。不存在旧上传会话时，不需要迁移脚本或兼容开关。</p>
               <ul>
-                <li>配置 Keystone 专用 Hilbert 机器账号、workspace 权限、调用超时和告警。</li>
+                <li>配置 Keystone 专用 Hilbert AK/SK、workspace 权限、调用超时和告警。</li>
                 <li>将 device auth token 签发收口到管理员接口，部署初始化/恢复状态迁移和 JWT 签名密钥。</li>
                 <li>创建生产 bucket、受限 IAM 角色、STS 调用身份和未完成 multipart 生命周期清理规则。</li>
                 <li>注入 TOS 环境变量并启动 Keystone。</li>
@@ -1289,7 +1289,7 @@ CreateLogicalUpload(Bearer JWT)
           <article class="repo-pane">
             <h3>Keystone / 控制面</h3>
             <ul>
-              <li>持有 Hilbert 专用机器账号并调用 <span class="mono">dc-device</span> API。</li>
+              <li>持有 Hilbert 专用 AK/SK 并调用 <span class="mono">dc-device</span> API。</li>
               <li>管理员签发并轮换 device auth token，分别管理 WebSocket 使用权、SDK 初始化权和恢复授权。</li>
               <li>验证设备 API Key，签发 JWT，并通过 auth epoch 撤销旧会话。</li>
               <li>持有长期火山云凭证。</li>

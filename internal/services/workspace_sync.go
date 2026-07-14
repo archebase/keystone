@@ -37,8 +37,8 @@ var (
 // HilbertWorkspaceClient captures the Hilbert calls workspace sync needs.
 type HilbertWorkspaceClient interface {
 	Configured() bool
-	Login(ctx context.Context, code string, password string) (*auth.HilbertLoginResult, error)
-	ListAvailableWorkspaces(ctx context.Context, sessionKey string) ([]auth.HilbertWorkspace, error)
+	ServiceAuthConfigured() bool
+	ListAvailableWorkspaces(ctx context.Context) ([]auth.HilbertWorkspace, error)
 }
 
 // WorkspaceSyncResult summarizes one Hilbert workspace sync run.
@@ -74,9 +74,7 @@ func (s *WorkspaceSyncService) Configured() bool {
 	if s == nil || s.db == nil || s.cfg == nil || s.hilbertClient == nil || !s.hilbertClient.Configured() {
 		return false
 	}
-	return strings.TrimSpace(s.cfg.BaseURL) != "" &&
-		strings.TrimSpace(s.cfg.ServiceAccountCode) != "" &&
-		strings.TrimSpace(s.cfg.ServiceAccountPassword) != ""
+	return strings.TrimSpace(s.cfg.BaseURL) != "" && s.hilbertClient.ServiceAuthConfigured()
 }
 
 // Sync logs into Hilbert, fetches available workspaces, validates every record, and transactionally upserts them.
@@ -90,16 +88,8 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 		return nil, fmt.Errorf("%w: ensure default workspace: %v", ErrWorkspaceSyncFailed, err)
 	}
 
-	loginResult, err := s.hilbertClient.Login(ctx, s.cfg.ServiceAccountCode, s.cfg.ServiceAccountPassword)
-	if err != nil {
-		return nil, fmt.Errorf("%w: login hilbert: %v", ErrWorkspaceSyncFailed, err)
-	}
-	sessionKey := loginResult.SessionKey()
-	if strings.TrimSpace(sessionKey) == "" {
-		return nil, fmt.Errorf("%w: login hilbert: missing session key", ErrWorkspaceSyncFailed)
-	}
-	logger.Printf("[WORKSPACE] Hilbert service identity login succeeded: code=%s", s.cfg.ServiceAccountCode)
-	workspaces, err := s.hilbertClient.ListAvailableWorkspaces(ctx, sessionKey)
+	logger.Printf("[WORKSPACE] Hilbert Digest service auth configured")
+	workspaces, err := s.hilbertClient.ListAvailableWorkspaces(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list hilbert workspaces: %v", ErrWorkspaceSyncFailed, err)
 	}
@@ -115,7 +105,7 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 
 	resourceSummary := &WorkspaceResourceSyncSummary{Enabled: true, WorkspaceResults: []WorkspaceResourceSyncResult{}}
 	if s.resourceSync != nil {
-		resourceSummary = s.resourceSync.SyncWorkspaces(ctx, sessionKey, workspaces, now)
+		resourceSummary = s.resourceSync.SyncWorkspaces(ctx, workspaces, now)
 	}
 
 	return &WorkspaceSyncResult{

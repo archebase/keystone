@@ -192,29 +192,40 @@ type hilbertDCDeviceAPIKey struct {
 // HilbertClient authenticates collector credentials against the Hilbert backend.
 type HilbertClient struct {
 	baseURL    string
+	accessKey  string
+	secretKey  string
 	httpClient *http.Client
+	now        func() time.Time
 }
 
 // NewHilbertClient creates a Hilbert API client from Keystone Hilbert configuration.
 func NewHilbertClient(cfg *config.HilbertConfig) *HilbertClient {
 	if cfg == nil {
-		return &HilbertClient{httpClient: &http.Client{Timeout: 5 * time.Second}}
+		return &HilbertClient{httpClient: &http.Client{Timeout: 5 * time.Second}, now: time.Now}
 	}
 	timeoutSeconds := cfg.TimeoutSeconds
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 5
 	}
 	return &HilbertClient{
-		baseURL: strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
+		baseURL:   strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
+		accessKey: strings.TrimSpace(cfg.AccessKey),
+		secretKey: strings.TrimSpace(cfg.SecretKey),
 		httpClient: &http.Client{
 			Timeout: time.Duration(timeoutSeconds) * time.Second,
 		},
+		now: time.Now,
 	}
 }
 
 // Configured reports whether the client has enough endpoint configuration to call Hilbert.
 func (c *HilbertClient) Configured() bool {
 	return c != nil && strings.TrimSpace(c.baseURL) != ""
+}
+
+// ServiceAuthConfigured reports whether the client has endpoint and Digest AK/SK credentials for service calls.
+func (c *HilbertClient) ServiceAuthConfigured() bool {
+	return c.Configured() && strings.TrimSpace(c.accessKey) != "" && strings.TrimSpace(c.secretKey) != ""
 }
 
 // Login authenticates one Hilbert account code and plaintext password.
@@ -237,19 +248,17 @@ func (c *HilbertClient) Login(ctx context.Context, code string, password string)
 }
 
 // ListAvailableWorkspaces fetches workspaces available to the authenticated Hilbert session.
-func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context, sessionKey string) ([]HilbertWorkspace, error) {
-	if !c.Configured() {
+func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context) ([]HilbertWorkspace, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
-	}
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertWorkspaceAvailablePath, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create workspace list request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[[]HilbertWorkspace]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -262,13 +271,9 @@ func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context, sessionKey 
 }
 
 // QueryDCPlans fetches one page of Hilbert data collection plans for one workspace.
-func (c *HilbertClient) QueryDCPlans(ctx context.Context, sessionKey string, workspaceID int64, pageNum int64, pageSize int64) (*HilbertDCPlanPage, error) {
-	if !c.Configured() {
+func (c *HilbertClient) QueryDCPlans(ctx context.Context, workspaceID int64, pageNum int64, pageSize int64) (*HilbertDCPlanPage, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
-	}
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
 	}
 	if workspaceID <= 0 || pageNum <= 0 || pageSize <= 0 {
 		return nil, fmt.Errorf("%w: invalid dc plan query parameters", ErrHilbertUnavailable)
@@ -282,7 +287,9 @@ func (c *HilbertClient) QueryDCPlans(ctx context.Context, sessionKey string, wor
 	if err != nil {
 		return nil, fmt.Errorf("%w: create dc plan query request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[HilbertDCPlanPage]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -295,15 +302,11 @@ func (c *HilbertClient) QueryDCPlans(ctx context.Context, sessionKey string, wor
 }
 
 // QueryAccountByCode fetches one Hilbert account by exact account code.
-func (c *HilbertClient) QueryAccountByCode(ctx context.Context, sessionKey string, code string) (*HilbertAccount, error) {
-	if !c.Configured() {
+func (c *HilbertClient) QueryAccountByCode(ctx context.Context, code string) (*HilbertAccount, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
 	}
-	sessionKey = strings.TrimSpace(sessionKey)
 	code = strings.TrimSpace(code)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
-	}
 	if code == "" {
 		return nil, fmt.Errorf("%w: missing account code", ErrHilbertUnavailable)
 	}
@@ -316,7 +319,9 @@ func (c *HilbertClient) QueryAccountByCode(ctx context.Context, sessionKey strin
 	if err != nil {
 		return nil, fmt.Errorf("%w: create account query request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[HilbertAccountPage]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -332,13 +337,9 @@ func (c *HilbertClient) QueryAccountByCode(ctx context.Context, sessionKey strin
 }
 
 // QueryDCDevices fetches every Hilbert data collection device visible in one workspace.
-func (c *HilbertClient) QueryDCDevices(ctx context.Context, sessionKey string, workspaceID int64) (*HilbertDCDevicePage, error) {
-	if !c.Configured() {
+func (c *HilbertClient) QueryDCDevices(ctx context.Context, workspaceID int64) (*HilbertDCDevicePage, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
-	}
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
 	}
 	if workspaceID <= 0 {
 		return nil, fmt.Errorf("%w: invalid dc device workspace id", ErrHilbertUnavailable)
@@ -352,7 +353,9 @@ func (c *HilbertClient) QueryDCDevices(ctx context.Context, sessionKey string, w
 	if err != nil {
 		return nil, fmt.Errorf("%w: create dc device query request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[HilbertDCDevicePage]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -365,13 +368,9 @@ func (c *HilbertClient) QueryDCDevices(ctx context.Context, sessionKey string, w
 }
 
 // QueryDCDeviceTypeByID fetches one Hilbert data collection device type by primary key.
-func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, sessionKey string, id int64) (*HilbertDCDeviceType, error) {
-	if !c.Configured() {
+func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, id int64) (*HilbertDCDeviceType, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
-	}
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
 	}
 	if id <= 0 {
 		return nil, fmt.Errorf("%w: invalid dc device type id", ErrHilbertUnavailable)
@@ -385,7 +384,9 @@ func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, sessionKey st
 	if err != nil {
 		return nil, fmt.Errorf("%w: create dc device type query request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[HilbertDCDeviceTypePage]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -401,7 +402,7 @@ func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, sessionKey st
 }
 
 // GetDCDeviceAPIKey fetches and decrypts the existing Hilbert device API key.
-func (c *HilbertClient) GetDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) (string, error) {
+func (c *HilbertClient) GetDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) (string, error) {
 	query := url.Values{}
 	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))
 	query.Set("id", strconv.FormatInt(deviceID, 10))
@@ -409,25 +410,27 @@ func (c *HilbertClient) GetDCDeviceAPIKey(ctx context.Context, sessionKey string
 	if err != nil {
 		return "", fmt.Errorf("%w: create device API key request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(sessionKey))
-	return c.readDeviceAPIKeyResponse(ctx, sessionKey, req)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return "", err
+	}
+	return c.readDeviceAPIKeyResponse(ctx, req)
 }
 
 // GenerateDCDeviceAPIKey creates and decrypts a Hilbert device API key.
-func (c *HilbertClient) GenerateDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) (string, error) {
-	req, err := c.hilbertJSONRequest(ctx, http.MethodPost, hilbertDCDeviceGeneratePath, sessionKey, map[string]int64{
+func (c *HilbertClient) GenerateDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) (string, error) {
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCDeviceGeneratePath, map[string]int64{
 		"workspaceId": workspaceID,
 		"id":          deviceID,
 	})
 	if err != nil {
 		return "", err
 	}
-	return c.readDeviceAPIKeyResponse(ctx, sessionKey, req)
+	return c.readDeviceAPIKeyResponse(ctx, req)
 }
 
 // DeleteDCDeviceAPIKey removes the Hilbert device API key.
-func (c *HilbertClient) DeleteDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64) error {
-	req, err := c.hilbertJSONRequest(ctx, http.MethodPost, hilbertDCDeviceDeletePath, sessionKey, map[string]int64{
+func (c *HilbertClient) DeleteDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) error {
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCDeviceDeletePath, map[string]int64{
 		"workspaceId": workspaceID,
 		"id":          deviceID,
 	})
@@ -445,7 +448,7 @@ func (c *HilbertClient) DeleteDCDeviceAPIKey(ctx context.Context, sessionKey str
 }
 
 // ValidateDCDeviceAPIKey validates a plaintext key through Hilbert's nonce transport.
-func (c *HilbertClient) ValidateDCDeviceAPIKey(ctx context.Context, sessionKey string, workspaceID, deviceID int64, apiKey string) (bool, error) {
+func (c *HilbertClient) ValidateDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64, apiKey string) (bool, error) {
 	nonceRecord, err := c.generateNonce(ctx)
 	if err != nil {
 		return false, err
@@ -454,7 +457,7 @@ func (c *HilbertClient) ValidateDCDeviceAPIKey(ctx context.Context, sessionKey s
 	if err != nil {
 		return false, fmt.Errorf("%w: encrypt device API key", ErrHilbertUnavailable)
 	}
-	req, err := c.hilbertJSONRequest(ctx, http.MethodPost, hilbertDCDeviceValidatePath, sessionKey, map[string]any{
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCDeviceValidatePath, map[string]any{
 		"workspaceId":  workspaceID,
 		"id":           deviceID,
 		"nonceId":      nonceRecord.ID,
@@ -473,7 +476,7 @@ func (c *HilbertClient) ValidateDCDeviceAPIKey(ctx context.Context, sessionKey s
 	return resp.Data, nil
 }
 
-func (c *HilbertClient) readDeviceAPIKeyResponse(ctx context.Context, sessionKey string, req *http.Request) (string, error) {
+func (c *HilbertClient) readDeviceAPIKeyResponse(ctx context.Context, req *http.Request) (string, error) {
 	var resp hilbertCommonResponse[hilbertDCDeviceAPIKey]
 	if err := c.doJSON(req, &resp); err != nil {
 		return "", err
@@ -481,21 +484,23 @@ func (c *HilbertClient) readDeviceAPIKeyResponse(ctx context.Context, sessionKey
 	if resp.Code != 0 || resp.Data.NonceID <= 0 || strings.TrimSpace(resp.Data.CipherAPIKey) == "" {
 		return "", fmt.Errorf("%w: device API key response code %d", ErrHilbertUnavailable, resp.Code)
 	}
-	nonceRecord, err := c.consumeNonce(ctx, sessionKey, resp.Data.NonceID)
+	nonceRecord, err := c.consumeNonce(ctx, resp.Data.NonceID)
 	if err != nil {
 		return "", err
 	}
 	return DecryptHilbertNonceValue(resp.Data.CipherAPIKey, nonceRecord.RandomKey)
 }
 
-func (c *HilbertClient) consumeNonce(ctx context.Context, sessionKey string, nonceID int64) (*hilbertNonceData, error) {
+func (c *HilbertClient) consumeNonce(ctx context.Context, nonceID int64) (*hilbertNonceData, error) {
 	query := url.Values{}
 	query.Set("id", strconv.FormatInt(nonceID, 10))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertNonceConsumePath+"?"+query.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create nonce consume request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(sessionKey))
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 	var resp hilbertCommonResponse[*hilbertNonceData]
 	if err := c.doJSON(req, &resp); err != nil {
 		return nil, err
@@ -506,7 +511,7 @@ func (c *HilbertClient) consumeNonce(ctx context.Context, sessionKey string, non
 	return resp.Data, nil
 }
 
-func (c *HilbertClient) hilbertJSONRequest(ctx context.Context, method, path, sessionKey string, body any) (*http.Request, error) {
+func (c *HilbertClient) hilbertServiceJSONRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode Hilbert request", ErrHilbertUnavailable)
@@ -515,9 +520,35 @@ func (c *HilbertClient) hilbertJSONRequest(ctx context.Context, method, path, se
 	if err != nil {
 		return nil, fmt.Errorf("%w: create Hilbert request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(sessionKey))
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	return req, nil
+}
+
+func (c *HilbertClient) authorizeServiceRequest(req *http.Request) error {
+	now := time.Now
+	if c != nil && c.now != nil {
+		now = c.now
+	}
+	header, err := c.serviceAuthorizationHeader(now())
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", header)
+	return nil
+}
+
+func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error) {
+	ak := strings.TrimSpace(c.accessKey)
+	sk := strings.TrimSpace(c.secretKey)
+	if ak == "" || sk == "" {
+		return "", fmt.Errorf("%w: missing Hilbert AK/SK", ErrHilbertInvalidCredentials)
+	}
+	millis := strconv.FormatInt(now.UnixMilli(), 10)
+	digest := sha256.Sum256([]byte(sk + "," + millis))
+	return "Digest " + ak + ";" + millis + ";" + hex.EncodeToString(digest[:]), nil
 }
 
 type hilbertCommonResponse[T any] struct {

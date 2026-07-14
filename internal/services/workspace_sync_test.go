@@ -26,7 +26,6 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 	updatedAt := createdAt.Add(time.Hour)
 	description := " synced from Hilbert "
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{
 				ID:          123,
@@ -47,9 +46,6 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 	}
 	if result.SyncedCount != 1 || !result.DefaultIncluded || result.LastSyncedAt.IsZero() {
 		t.Fatalf("unexpected result: %#v", result)
-	}
-	if client.loginCode != "svc-keystone" || client.loginPassword != "svc-secret" || client.listSessionKey != "session-key" {
-		t.Fatalf("unexpected client calls: %#v", client)
 	}
 
 	var rows []struct {
@@ -105,7 +101,6 @@ func TestWorkspaceSyncServiceInvalidHilbertRecordDoesNotPartiallyUpsert(t *testi
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Valid Workspace"},
 			{ID: 0, Name: "Invalid Workspace"},
@@ -139,7 +134,6 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Resource Workspace", Admins: []string{"collector-a", "customer-a"}, Members: []string{"missing-a"}},
 		},
@@ -229,7 +223,6 @@ func TestWorkspaceSyncServiceProjectsWorkspacePeopleAsCollectors(t *testing.T) {
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Resource Workspace", Admins: []string{"operator-a", "internal-a"}},
 		},
@@ -288,8 +281,7 @@ func TestWorkspaceSyncServiceResourceConflictDoesNotRollbackWorkspace(t *testing
 	}
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
-		workspaces:  []auth.HilbertWorkspace{{ID: 123, Name: "Resource Workspace"}},
+		workspaces: []auth.HilbertWorkspace{{ID: 123, Name: "Resource Workspace"}},
 		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{
 			123: {
 				{ID: 456, WorkspaceID: 123, Name: "Device A", SN: "SN-A", DCDeviceTypeID: 77},
@@ -326,7 +318,6 @@ func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Resource Workspace", Admins: []string{"collector-a"}},
 		},
@@ -384,7 +375,6 @@ func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Shared Name"},
 			{ID: 124, Name: "Shared Name"},
@@ -403,13 +393,8 @@ func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 
 type fakeHilbertWorkspaceClient struct {
 	configured           bool
-	loginResult          *auth.HilbertLoginResult
-	loginErr             error
 	workspaces           []auth.HilbertWorkspace
 	listErr              error
-	loginCode            string
-	loginPassword        string
-	listSessionKey       string
 	accounts             map[string]*auth.HilbertAccount
 	devicesByWorkspace   map[int64][]auth.HilbertDCDevice
 	deviceErrByWorkspace map[int64]error
@@ -420,27 +405,21 @@ func (f *fakeHilbertWorkspaceClient) Configured() bool {
 	if f.configured {
 		return true
 	}
-	return f.loginResult != nil || len(f.workspaces) > 0 || f.loginErr != nil || f.listErr != nil
+	return len(f.workspaces) > 0 || f.listErr != nil
 }
 
-func (f *fakeHilbertWorkspaceClient) Login(_ context.Context, code string, password string) (*auth.HilbertLoginResult, error) {
-	f.loginCode = code
-	f.loginPassword = password
-	if f.loginErr != nil {
-		return nil, f.loginErr
-	}
-	return f.loginResult, nil
+func (f *fakeHilbertWorkspaceClient) ServiceAuthConfigured() bool {
+	return len(f.workspaces) > 0 || f.listErr != nil
 }
 
-func (f *fakeHilbertWorkspaceClient) ListAvailableWorkspaces(_ context.Context, sessionKey string) ([]auth.HilbertWorkspace, error) {
-	f.listSessionKey = sessionKey
+func (f *fakeHilbertWorkspaceClient) ListAvailableWorkspaces(_ context.Context) ([]auth.HilbertWorkspace, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	return f.workspaces, nil
 }
 
-func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, _ string, code string) (*auth.HilbertAccount, error) {
+func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, code string) (*auth.HilbertAccount, error) {
 	account := f.accounts[code]
 	if account == nil {
 		return nil, nil
@@ -448,14 +427,14 @@ func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, _ str
 	return account, nil
 }
 
-func (f *fakeHilbertWorkspaceClient) QueryDCDevices(_ context.Context, _ string, workspaceID int64) (*auth.HilbertDCDevicePage, error) {
+func (f *fakeHilbertWorkspaceClient) QueryDCDevices(_ context.Context, workspaceID int64) (*auth.HilbertDCDevicePage, error) {
 	if err := f.deviceErrByWorkspace[workspaceID]; err != nil {
 		return nil, err
 	}
 	return &auth.HilbertDCDevicePage{Records: f.devicesByWorkspace[workspaceID], PageNum: 1, PageSize: -1}, nil
 }
 
-func (f *fakeHilbertWorkspaceClient) QueryDCDeviceTypeByID(_ context.Context, _ string, id int64) (*auth.HilbertDCDeviceType, error) {
+func (f *fakeHilbertWorkspaceClient) QueryDCDeviceTypeByID(_ context.Context, id int64) (*auth.HilbertDCDeviceType, error) {
 	deviceType := f.deviceTypes[id]
 	if deviceType == nil {
 		return nil, nil
@@ -465,10 +444,10 @@ func (f *fakeHilbertWorkspaceClient) QueryDCDeviceTypeByID(_ context.Context, _ 
 
 func testWorkspaceSyncHilbertConfig() *config.HilbertConfig {
 	return &config.HilbertConfig{
-		BaseURL:                "http://hilbert",
-		TimeoutSeconds:         2,
-		ServiceAccountCode:     "svc-keystone",
-		ServiceAccountPassword: "svc-secret",
+		BaseURL:        "http://hilbert",
+		TimeoutSeconds: 2,
+		AccessKey:      "hilbert-ak",
+		SecretKey:      "hilbert-sk",
 	}
 }
 

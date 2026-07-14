@@ -1,0 +1,865 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Keystone 接入 Hilbert Digest AK/SK 认证设计</title>
+  <style>
+    :root {
+      --orange: #F47A16;
+      --blue: #1E4E9A;
+      --yellow: #FFD23F;
+      --ink: #15110D;
+      --paper: #FFF2D4;
+      --red: #D93A24;
+      --brown: #7A3E16;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", SimHei, sans-serif;
+      overflow-x: hidden;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 20% 0%, var(--yellow) 0 8%, transparent 9%),
+        repeating-linear-gradient(110deg, transparent 0 18px, #15110D 19px 21px, transparent 22px 44px),
+        var(--paper);
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.08;
+      background-image:
+        radial-gradient(var(--ink) 1px, transparent 1px),
+        radial-gradient(var(--ink) 1px, transparent 1px);
+      background-position: 0 0, 7px 7px;
+      background-size: 14px 14px;
+      z-index: 5;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+      background: var(--yellow);
+      border: 2px solid var(--ink);
+      padding: 0.05rem 0.25rem;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+
+    pre {
+      margin: 1rem 0 0;
+      padding: 1rem;
+      overflow-x: auto;
+      color: var(--paper);
+      background: var(--ink);
+      border: 4px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--brown);
+      white-space: pre;
+    }
+
+    pre code {
+      display: block;
+      padding: 0;
+      color: var(--paper);
+      background: transparent;
+      border: 0;
+      line-height: 1.65;
+    }
+
+    .page {
+      position: relative;
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 72px;
+      z-index: 1;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 520px;
+      padding: clamp(28px, 5vw, 62px);
+      background: var(--orange);
+      border: 7px solid var(--ink);
+      box-shadow: 14px 14px 0 var(--ink);
+      overflow: hidden;
+      clip-path: polygon(0 0, 100% 0, 100% 92%, 94% 100%, 0 100%);
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      background:
+        linear-gradient(24deg, transparent 0 48%, var(--ink) 49% 50%, transparent 51% 100%),
+        linear-gradient(62deg, transparent 0 49%, var(--ink) 50% 51%, transparent 52% 100%),
+        linear-gradient(119deg, transparent 0 49%, var(--ink) 50% 51%, transparent 52% 100%),
+        linear-gradient(156deg, transparent 0 49%, var(--ink) 50% 51%, transparent 52% 100%);
+      opacity: 0.16;
+      transform: rotate(-9deg);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: clamp(18px, 8vw, 92px);
+      top: clamp(90px, 14vw, 150px);
+      width: clamp(180px, 34vw, 370px);
+      aspect-ratio: 1;
+      border: 8px solid var(--ink);
+      background:
+        linear-gradient(90deg, var(--paper) 0 18%, transparent 18% 100%),
+        linear-gradient(0deg, transparent 0 42%, var(--ink) 42% 46%, transparent 46% 100%),
+        linear-gradient(90deg, transparent 0 35%, var(--ink) 35% 39%, transparent 39% 100%),
+        var(--yellow);
+      box-shadow: 12px 12px 0 var(--blue);
+      transform: rotate(8deg);
+      clip-path: polygon(10% 0, 100% 12%, 88% 100%, 0 84%);
+    }
+
+    .hero-kicker {
+      position: relative;
+      display: inline-block;
+      margin: 0 0 26px;
+      padding: 0.45rem 0.75rem;
+      color: var(--paper);
+      background: var(--ink);
+      border: 4px solid var(--paper);
+      font: 900 0.92rem Impact, "Arial Black", SimHei, sans-serif;
+      text-transform: uppercase;
+      box-shadow: 6px 6px 0 var(--blue);
+      transform: rotate(-2deg);
+      z-index: 2;
+    }
+
+    h1 {
+      position: relative;
+      max-width: 760px;
+      margin: 0;
+      color: var(--yellow);
+      font-family: Impact, "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(3.2rem, 9vw, 7.6rem);
+      line-height: 0.96;
+      letter-spacing: 0;
+      text-shadow:
+        4px 0 var(--ink),
+        -4px 0 var(--ink),
+        0 4px var(--ink),
+        0 -4px var(--ink),
+        10px 10px 0 var(--red);
+      z-index: 2;
+    }
+
+    .subtitle {
+      position: relative;
+      max-width: 720px;
+      margin: 28px 0 0;
+      padding: 1rem 1.1rem;
+      font-size: clamp(1.05rem, 2.5vw, 1.35rem);
+      font-weight: 900;
+      line-height: 1.6;
+      background: var(--paper);
+      border: 5px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--blue);
+      z-index: 2;
+    }
+
+    .strike {
+      position: relative;
+      margin-top: 34px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      z-index: 2;
+    }
+
+    .decision {
+      padding: 18px;
+      background: var(--paper);
+      border: 5px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      transform: skew(-3deg);
+    }
+
+    .decision strong,
+    .decision span {
+      display: block;
+      transform: skew(3deg);
+    }
+
+    .decision strong {
+      margin-bottom: 8px;
+      color: var(--red);
+      font-size: 1.05rem;
+      font-weight: 1000;
+    }
+
+    .decision span {
+      font-weight: 850;
+      line-height: 1.55;
+    }
+
+    .section {
+      margin-top: 46px;
+      padding: clamp(22px, 4vw, 38px);
+      background: var(--paper);
+      border: 6px solid var(--ink);
+      box-shadow: 12px 12px 0 var(--brown);
+      position: relative;
+    }
+
+    .section:nth-of-type(odd) {
+      box-shadow: 12px 12px 0 var(--blue);
+    }
+
+    .section-title {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      margin: 0 0 18px;
+    }
+
+    .section-no {
+      flex: 0 0 auto;
+      width: 58px;
+      height: 58px;
+      display: grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--red);
+      border: 4px solid var(--ink);
+      box-shadow: 5px 5px 0 var(--ink);
+      font: 900 1.5rem Impact, "Arial Black", sans-serif;
+      transform: rotate(-4deg);
+    }
+
+    h2 {
+      margin: 0;
+      font-family: Impact, "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(1.9rem, 4vw, 3.2rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 1.4rem 0 0.6rem;
+      font-size: 1.25rem;
+      line-height: 1.3;
+      font-weight: 1000;
+    }
+
+    p {
+      margin: 0.75rem 0;
+      max-width: 880px;
+      font-size: 1rem;
+      line-height: 1.8;
+      font-weight: 650;
+    }
+
+    ul,
+    ol {
+      margin: 0.8rem 0 0;
+      padding-left: 1.25rem;
+    }
+
+    li {
+      margin: 0.55rem 0;
+      line-height: 1.7;
+      font-weight: 650;
+    }
+
+    .burst {
+      margin: 1.2rem 0;
+      padding: 1rem 1.2rem;
+      background: var(--yellow);
+      border: 5px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--red);
+      font-weight: 950;
+      line-height: 1.7;
+      clip-path: polygon(0 10%, 4% 0, 22% 3%, 29% 0, 56% 4%, 64% 0, 86% 5%, 100% 0, 96% 18%, 100% 31%, 96% 50%, 100% 72%, 94% 100%, 72% 96%, 61% 100%, 34% 95%, 24% 100%, 0 92%, 4% 72%, 0 54%, 4% 33%);
+    }
+
+    .grid-two {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .panel {
+      padding: 18px;
+      background: var(--paper);
+      border: 4px solid var(--ink);
+      box-shadow: 7px 7px 0 var(--orange);
+    }
+
+    .panel.blue {
+      color: var(--paper);
+      background: var(--blue);
+      box-shadow: 7px 7px 0 var(--ink);
+    }
+
+    .panel.red {
+      color: var(--paper);
+      background: var(--red);
+      box-shadow: 7px 7px 0 var(--ink);
+    }
+
+    .panel h3 {
+      margin-top: 0;
+    }
+
+    .panel code {
+      color: var(--ink);
+    }
+
+    .table-wrap {
+      margin-top: 16px;
+      overflow-x: auto;
+      border: 5px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--blue);
+      background: var(--paper);
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      font-size: 0.96rem;
+    }
+
+    th,
+    td {
+      padding: 0.9rem;
+      border: 3px solid var(--ink);
+      vertical-align: top;
+      text-align: left;
+      line-height: 1.55;
+      font-weight: 650;
+    }
+
+    th {
+      color: var(--paper);
+      background: var(--ink);
+      font-weight: 1000;
+    }
+
+    .flow {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .flow-step {
+      min-height: 130px;
+      padding: 14px;
+      background: var(--yellow);
+      border: 4px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--brown);
+      transform: skew(-2deg);
+    }
+
+    .flow-step strong,
+    .flow-step span {
+      display: block;
+      transform: skew(2deg);
+    }
+
+    .flow-step strong {
+      margin-bottom: 8px;
+      font-family: Impact, "Arial Black", SimHei, sans-serif;
+      font-size: 1.1rem;
+    }
+
+    .flow-step span {
+      line-height: 1.55;
+      font-weight: 750;
+    }
+
+    .caption {
+      margin-top: 10px;
+      font-size: 0.92rem;
+      font-weight: 850;
+      color: var(--brown);
+    }
+
+    .final {
+      margin-top: 46px;
+      padding: clamp(24px, 5vw, 44px);
+      color: var(--paper);
+      background: var(--ink);
+      border: 7px solid var(--ink);
+      box-shadow: 14px 14px 0 var(--red);
+    }
+
+    .final h2 {
+      color: var(--yellow);
+      text-shadow: 5px 5px 0 var(--red);
+    }
+
+    .final p,
+    .final li {
+      color: var(--paper);
+    }
+
+    .final code {
+      color: var(--ink);
+    }
+
+    @media (max-width: 840px) {
+      .page {
+        width: min(100% - 22px, 680px);
+        padding-top: 12px;
+      }
+
+      .hero {
+        min-height: auto;
+        padding: 26px 20px 34px;
+        box-shadow: 8px 8px 0 var(--ink);
+      }
+
+      .hero::after {
+        position: relative;
+        display: block;
+        top: auto;
+        right: auto;
+        width: min(78vw, 260px);
+        margin: 28px auto 0;
+      }
+
+      h1 {
+        font-size: clamp(2.7rem, 15vw, 4.7rem);
+        text-shadow:
+          3px 0 var(--ink),
+          -3px 0 var(--ink),
+          0 3px var(--ink),
+          0 -3px var(--ink),
+          6px 6px 0 var(--red);
+      }
+
+      .strike,
+      .grid-two,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .section {
+        margin-top: 30px;
+        padding: 20px;
+        box-shadow: 8px 8px 0 var(--brown);
+      }
+
+      .section-title {
+        gap: 10px;
+      }
+
+      .section-no {
+        width: 46px;
+        height: 46px;
+        font-size: 1.2rem;
+      }
+
+      pre {
+        box-shadow: 6px 6px 0 var(--brown);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="hero-kicker">KEYSTONE / HILBERT / SERVICE AUTH</p>
+      <h1>Hilbert<br>Digest AK/SK<br>接管服务认证</h1>
+      <p class="subtitle">删除 Keystone 伪管理员账号登录链路，所有服务到 Hilbert 的后台调用统一使用正式 Digest AK/SK。</p>
+      <div class="strike">
+        <div class="decision">
+          <strong>核心判断</strong>
+          <span>Keystone 不再保存 Hilbert 账号密码，也不再为后台任务换取 sessionKey；服务身份由 Hilbert AK/SK 直接证明。</span>
+        </div>
+        <div class="decision">
+          <strong>实现边界</strong>
+          <span>数采员交互式登录仍使用 Hilbert code/password；本设计只替换 Keystone 后台服务调用 Hilbert 的认证方式。</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">01</div>
+        <h2>背景与问题</h2>
+      </div>
+      <p>Keystone 当前通过 <code>KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE</code> 和 <code>KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD</code> 登录 Hilbert，拿到 <code>sessionKey</code> 后再用 <code>Authorization: Bearer</code> 调用 workspace、dc-plan、dc-device 和 nonce API。</p>
+      <p>这个模型本质上是在用一个 Hilbert 管理员或机器账号模拟人工登录。Hilbert 现在已经支持正式 AK/SK Digest 认证，Keystone 应该切换到服务到服务凭证，不再保存可交互登录的密码。</p>
+      <div class="burst">本次不做历史兼容：main-v2 是新部署，旧 code/password 环境变量、配置字段、接口依赖和测试 fixture 应直接删除。</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>当前链路</th>
+              <th>问题</th>
+              <th>目标链路</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Keystone 持有 Hilbert code/password</td>
+              <td>后台服务身份和交互登录身份混在一起，密码生命周期不适合服务调用</td>
+              <td>Keystone 只持有 Hilbert AK/SK</td>
+            </tr>
+            <tr>
+              <td>每条服务链路先 Login 再 Bearer</td>
+              <td>多一次网络调用，且 sessionKey 不是服务认证的必要中间态</td>
+              <td>每个 Hilbert 受保护请求直接附带 Digest Authorization</td>
+            </tr>
+            <tr>
+              <td>配置名表达“service account password”</td>
+              <td>容易误导部署人员创建管理员密码并下发给 Keystone</td>
+              <td>配置名表达正式 AK/SK，和 Hilbert 控制台生成凭证一致</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">02</div>
+        <h2>目标与非目标</h2>
+      </div>
+      <div class="grid-two">
+        <div class="panel blue">
+          <h3>目标</h3>
+          <ul>
+            <li>删除 <code>KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE</code> 和 <code>KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD</code>。</li>
+            <li>新增 <code>KEYSTONE_HILBERT_ACCESS_KEY</code> 和 <code>KEYSTONE_HILBERT_SECRET_KEY</code>。</li>
+            <li>Keystone Hilbert client 支持 Digest header 生成，并在后台服务 API 上默认使用。</li>
+            <li>workspace sync、dc-plan sync、DGW device auth 三条链路不再调用 Hilbert login。</li>
+            <li>日志、错误响应和配置摘要不得输出 SK、Digest 或 nonce randomKey。</li>
+          </ul>
+        </div>
+        <div class="panel red">
+          <h3>非目标</h3>
+          <ul>
+            <li>不修改 Hilbert 后端认证协议。</li>
+            <li>不保留 code/password fallback。</li>
+            <li>不迁移历史部署配置。</li>
+            <li>不改变 Synapse 数采员登录表单。</li>
+            <li>不改变设备 API Key、JWT、TOS STS 的现有安全边界。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">03</div>
+        <h2>方案总览</h2>
+      </div>
+      <p>Hilbert 的 Digest 认证格式为 <code>Digest ak;epoch_millis;sha256(sk + "," + epoch_millis)</code>。Hilbert 中间件会用 AK 找到账户、解密 SK、校验时间窗、校验 digest、检查 AK/SK 限速，并继续执行角色权限和 workspace 可见性检查。</p>
+      <div class="flow">
+        <div class="flow-step">
+          <strong>配置装填</strong>
+          <span>Keystone 读取 Hilbert BaseURL、AccessKey、SecretKey 和 timeout。</span>
+        </div>
+        <div class="flow-step">
+          <strong>请求蓄力</strong>
+          <span>Hilbert client 在每个受保护请求前生成 epochMillis 和 digest。</span>
+        </div>
+        <div class="flow-step">
+          <strong>Digest 冲刺</strong>
+          <span>请求携带 <code>Authorization: Digest ...</code> 直接访问 Hilbert API。</span>
+        </div>
+        <div class="flow-step">
+          <strong>权限落点</strong>
+          <span>Hilbert 按 AK 所属账号的角色和 workspace 权限返回数据。</span>
+        </div>
+      </div>
+      <p class="caption">注意：当前 Hilbert Digest 不绑定 method、path 或 body，因此 Keystone 不应在本次自行扩展签名口径；否则会与 Hilbert 服务端不兼容。</p>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">04</div>
+        <h2>配置与类型变更</h2>
+      </div>
+      <h3>Keystone 全局配置</h3>
+      <pre><code>type HilbertConfig struct {
+    BaseURL        string
+    TimeoutSeconds int
+    AccessKey      string `json:"-"`
+    SecretKey      string `json:"-"`
+}</code></pre>
+      <h3>环境变量</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>动作</th>
+              <th>变量</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>保留</td>
+              <td><code>KEYSTONE_HILBERT_BASE_URL</code></td>
+              <td>Hilbert 后端地址，继续去掉尾部斜杠。</td>
+            </tr>
+            <tr>
+              <td>保留</td>
+              <td><code>KEYSTONE_HILBERT_TIMEOUT_SECONDS</code></td>
+              <td>HTTP 请求超时；小于等于 0 时回落到 5 秒。</td>
+            </tr>
+            <tr>
+              <td>新增</td>
+              <td><code>KEYSTONE_HILBERT_ACCESS_KEY</code></td>
+              <td>Hilbert 账号 AK；可以出现在校验错误名中，但不要在运行日志里反复打印。</td>
+            </tr>
+            <tr>
+              <td>新增</td>
+              <td><code>KEYSTONE_HILBERT_SECRET_KEY</code></td>
+              <td>Hilbert 账号 SK；禁止日志、JSON、Swagger 示例和错误响应输出。</td>
+            </tr>
+            <tr>
+              <td>删除</td>
+              <td><code>KEYSTONE_HILBERT_SERVICE_ACCOUNT_CODE</code></td>
+              <td>不再作为 Keystone 后台服务身份。</td>
+            </tr>
+            <tr>
+              <td>删除</td>
+              <td><code>KEYSTONE_HILBERT_SERVICE_ACCOUNT_PASSWORD</code></td>
+              <td>不再读取、校验、传入 Hilbert client 或出现在测试 fixture。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>DGW compat 配置</h3>
+      <p><code>internal/services/dgwcompat/config.go</code> 需要同样删除 <code>HilbertCode</code> 和 <code>HilbertPassword</code> 字段，改为 <code>HilbertAccessKey</code> 和 <code>HilbertSecretKey</code>。校验错误应改成：<code>KEYSTONE_HILBERT_BASE_URL, KEYSTONE_HILBERT_ACCESS_KEY and KEYSTONE_HILBERT_SECRET_KEY are required</code>。</p>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">05</div>
+        <h2>Hilbert Client 设计</h2>
+      </div>
+      <p><code>internal/auth/hilbert_client.go</code> 保留交互式 <code>Login(ctx, code, password)</code>，因为 Keystone 的 <code>/auth/login</code> 仍需要验证数采员 Hilbert 账号密码。新增服务认证能力时不要删除这条用户登录路径。</p>
+      <div class="burst">拆分原则：用户登录继续走 nonce + cipherDigest；后台服务请求统一走 Digest AK/SK。</div>
+      <h3>Digest header 生成</h3>
+      <pre><code>func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error) {
+    ak := strings.TrimSpace(c.accessKey)
+    sk := strings.TrimSpace(c.secretKey)
+    if ak == "" || sk == "" {
+        return "", ErrHilbertInvalidCredentials
+    }
+
+    millis := strconv.FormatInt(now.UnixMilli(), 10)
+    digest := sha256.Sum256([]byte(sk + "," + millis))
+    return "Digest " + ak + ";" + millis + ";" + hex.EncodeToString(digest[:]), nil
+}</code></pre>
+      <h3>请求封装</h3>
+      <p>当前所有需要 Hilbert 服务身份的 client 方法应移除 <code>sessionKey</code> 参数，改成内部自动设置 Digest header。公开方法变为：</p>
+      <pre><code>ListAvailableWorkspaces(ctx)
+QueryDCPlans(ctx, workspaceID, pageNum, pageSize)
+QueryAccountByCode(ctx, code)
+QueryDCDevices(ctx, workspaceID)
+QueryDCDeviceTypeByID(ctx, id)
+GetDCDeviceAPIKey(ctx, workspaceID, deviceID)
+GenerateDCDeviceAPIKey(ctx, workspaceID, deviceID)
+DeleteDCDeviceAPIKey(ctx, workspaceID, deviceID)
+ValidateDCDeviceAPIKey(ctx, workspaceID, deviceID, apiKey)
+ConsumeNonceWithServiceAuth(ctx, nonceID)</code></pre>
+      <p><code>generateNonce</code> 仍可无认证调用；<code>consumeNonce</code> 在 Hilbert 端要求 <code>external_user</code>，因此设备 API Key 获取、生成、校验时消费 nonce 也必须走 Digest。</p>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">06</div>
+        <h2>服务链路替换</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>模块</th>
+              <th>当前实现</th>
+              <th>改造后</th>
+              <th>额外注意</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>WorkspaceSyncService</code></td>
+              <td><code>Login(code,password)</code> 后 <code>ListAvailableWorkspaces(sessionKey)</code></td>
+              <td>直接 <code>ListAvailableWorkspaces(ctx)</code></td>
+              <td>日志从 “service identity login succeeded” 改为 “Hilbert Digest service auth configured”。</td>
+            </tr>
+            <tr>
+              <td><code>DCPlanSyncService</code></td>
+              <td><code>Login</code> 后分页查询 dc-plan</td>
+              <td>分页查询内部自动加 Digest</td>
+              <td>保留 workspace 本地投影校验；Hilbert 权限仍由 AK 所属账号约束。</td>
+            </tr>
+            <tr>
+              <td><code>WorkspaceResourceSyncService</code></td>
+              <td>复用 workspace sync 的 <code>sessionKey</code></td>
+              <td>不传会话；每个资源查询走 Digest</td>
+              <td>接口签名需要连带收窄。</td>
+            </tr>
+            <tr>
+              <td><code>deviceIdentityService</code></td>
+              <td>每次 provision / validate / reinit 前登录 Hilbert</td>
+              <td>删除 <code>loginHilbert</code>，设备 API Key 方法直接调用 Hilbert client</td>
+              <td>错误包装从 “hilbert service login” 改为具体 API 动作。</td>
+            </tr>
+            <tr>
+              <td><code>/auth/login</code></td>
+              <td>数采员提交 account/password，Keystone 调 Hilbert login</td>
+              <td>保持不变</td>
+              <td>这是用户认证，不是服务认证。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">07</div>
+        <h2>权限与安全</h2>
+      </div>
+      <p>Keystone 使用的 Hilbert AK/SK 应属于一个专用 Hilbert 账号。账号角色至少需要满足 <code>external_user</code>，并通过 Hilbert workspace membership 控制可见工作空间。若需要跨所有 workspace 同步，可以使用更高权限账号，但这应是部署决策，不应由 Keystone 代码绕过。</p>
+      <div class="grid-two">
+        <div class="panel">
+          <h3>凭证边界</h3>
+          <ul>
+            <li>SK 只进入环境变量或部署 Secret。</li>
+            <li>Digest header 不写日志。</li>
+            <li>错误响应只暴露认证失败或 Hilbert 不可用。</li>
+            <li>配置摘要必须对 <code>SecretKey</code> 使用 <code>json:"-"</code>。</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>协议边界</h3>
+          <ul>
+            <li>不自行把 method/path/body 加入 digest。</li>
+            <li>依赖 Hilbert 当前 60 秒时间窗。</li>
+            <li>Keystone 机器时钟必须和 Hilbert 保持同步。</li>
+            <li>Hilbert AK/SK 限速会影响批量同步和设备认证峰值。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">08</div>
+        <h2>实施计划</h2>
+      </div>
+      <ol>
+        <li>修改 <code>config.HilbertConfig</code>：删除 service account code/password，新增 access key/secret key，更新环境变量读取、trim、测试。</li>
+        <li>修改 <code>dgwcompat.Config</code>：替换 Hilbert 凭证字段和 Validate 错误文案。</li>
+        <li>扩展 <code>HilbertClient</code>：保存 AK/SK，新增 Digest header 生成 helper，新增带 Digest 的 JSON request helper。</li>
+        <li>收窄 Hilbert service client interface：删除 <code>Login</code> 和 <code>sessionKey</code> 参数。</li>
+        <li>改造 workspace sync、dc-plan sync、workspace resource sync、DGW device identity service。</li>
+        <li>更新单测 fake Hilbert client：断言不再调用 Login，断言请求头为 <code>Digest </code> 前缀，断言缺失 AK/SK 时服务未配置。</li>
+        <li>更新 v2 设计文档和部署配置说明中旧环境变量名称。</li>
+      </ol>
+      <h3>建议提交范围</h3>
+      <pre><code>internal/config/config.go
+internal/config/config_test.go
+internal/auth/hilbert_client.go
+internal/auth/hilbert_client_test.go
+internal/services/workspace_sync.go
+internal/services/workspace_sync_test.go
+internal/services/dc_plan_sync.go
+internal/services/dc_plan_sync_test.go
+internal/services/dgwcompat/config.go
+internal/services/dgwcompat/device_auth.go
+internal/services/dgwcompat/*_test.go
+docs/designs/v2/*.html</code></pre>
+    </section>
+
+    <section class="section">
+      <div class="section-title">
+        <div class="section-no">09</div>
+        <h2>验证标准</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>场景</th>
+              <th>验收</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>配置缺失</td>
+              <td>只设置 BaseURL 或只设置 AK/SK 时，workspace sync、dc-plan sync、DGW compat 明确返回未配置或启动校验失败。</td>
+            </tr>
+            <tr>
+              <td>workspace sync</td>
+              <td>请求 Hilbert <code>/v1/console/workspace/list-available</code> 时使用 Digest header，不调用 <code>/v1/console/account/login</code>。</td>
+            </tr>
+            <tr>
+              <td>dc-plan sync</td>
+              <td>分页查询 dc-plan 使用 Digest；AK 无 workspace 权限时 Hilbert 403 透传为 sync failed。</td>
+            </tr>
+            <tr>
+              <td>设备初始化</td>
+              <td>Get/Generate device API Key 和 nonce consume 均使用 Digest；错误 API Key validate 仍被拒绝。</td>
+            </tr>
+            <tr>
+              <td>数采员登录</td>
+              <td><code>/api/v1/auth/login</code> 仍按用户输入 account/password 调 Hilbert login，不依赖 Keystone AK/SK。</td>
+            </tr>
+            <tr>
+              <td>安全扫描</td>
+              <td>日志、Swagger、JSON 输出、测试失败信息不出现 SK、Digest 完整值、nonce randomKey。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>本地验证命令</h3>
+      <pre><code>go test -cover -race ./...
+golangci-lint run ./...
+reuse lint
+git diff --check</code></pre>
+    </section>
+
+    <section class="final">
+      <h2>最终决策</h2>
+      <p>Keystone main-v2 直接切到 Hilbert Digest AK/SK 服务认证。旧的 <code>SERVICE_ACCOUNT_CODE/PASSWORD</code> 不是兼容路径，而是删除对象。交互式账号密码登录只保留在数采员登录场景；所有后台同步和设备认证编排都由 AK/SK 代表 Keystone 服务身份。</p>
+      <ul>
+        <li>部署前在 Hilbert 为 Keystone 专用账号生成 AK/SK。</li>
+        <li>把该账号加入需要管理的 workspace，优先使用最小可见范围。</li>
+        <li>Keystone 部署 Secret 只写 <code>KEYSTONE_HILBERT_ACCESS_KEY</code> 和 <code>KEYSTONE_HILBERT_SECRET_KEY</code>。</li>
+        <li>生产验收必须包含真实 Hilbert Digest 调用和设备 API Key 全链路。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
