@@ -133,8 +133,8 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 			name = ?,
 			description = ?,
 			source = ?,
-			admins_str = ?,
-			members_str = ?,
+			admins = ?,
+			members = ?,
 			deleted_at = NULL,
 			updated_at = ?
 		WHERE id = ?
@@ -142,8 +142,8 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		sql.NullString{},
-		sql.NullString{},
+		"[]",
+		"[]",
 		now,
 		defaultWorkspaceID,
 	)
@@ -164,8 +164,8 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 			name,
 			description,
 			source,
-			admins_str,
-			members_str,
+			admins,
+			members,
 			last_synced_at,
 			created_at,
 			updated_at
@@ -175,8 +175,8 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		sql.NullString{},
-		sql.NullString{},
+		"[]",
+		"[]",
 		sql.NullTime{},
 		now,
 		now,
@@ -231,13 +231,22 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 		hilbertUpdatedAt = sql.NullTime{Time: workspace.UpdatedTime.UTC(), Valid: true}
 	}
 
+	admins, err := EncodeWorkspacePeople(workspace.Admins)
+	if err != nil {
+		return err
+	}
+	members, err := EncodeWorkspacePeople(workspace.Members)
+	if err != nil {
+		return err
+	}
+
 	args := []any{
 		workspace.ID,
 		strings.TrimSpace(workspace.Name),
 		description,
 		workspaceSourceHilbert,
-		nullableHashWrappedString(workspace.Admins),
-		nullableHashWrappedString(workspace.Members),
+		admins,
+		members,
 		syncedAt,
 		hilbertCreatedAt,
 		hilbertUpdatedAt,
@@ -248,15 +257,15 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 	if tx.DriverName() == "sqlite" {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO workspaces (
-				id, name, description, source, admins_str, members_str,
+				id, name, description, source, admins, members,
 				last_synced_at, hilbert_created_at, hilbert_updated_at, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				name = excluded.name,
 				description = excluded.description,
 				source = excluded.source,
-				admins_str = excluded.admins_str,
-				members_str = excluded.members_str,
+				admins = excluded.admins,
+				members = excluded.members,
 				last_synced_at = excluded.last_synced_at,
 				hilbert_created_at = excluded.hilbert_created_at,
 				hilbert_updated_at = excluded.hilbert_updated_at,
@@ -266,17 +275,17 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 		return err
 	}
 
-	_, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO workspaces (
-			id, name, description, source, admins_str, members_str,
+			id, name, description, source, admins, members,
 			last_synced_at, hilbert_created_at, hilbert_updated_at, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			name = VALUES(name),
 			description = VALUES(description),
 			source = VALUES(source),
-			admins_str = VALUES(admins_str),
-			members_str = VALUES(members_str),
+			admins = VALUES(admins),
+			members = VALUES(members),
 			last_synced_at = VALUES(last_synced_at),
 			hilbert_created_at = VALUES(hilbert_created_at),
 			hilbert_updated_at = VALUES(hilbert_updated_at),
@@ -284,14 +293,6 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 			deleted_at = NULL
 	`, args...)
 	return err
-}
-
-func nullableHashWrappedString(values []string) sql.NullString {
-	normalized := normalizeWorkspacePeople(values)
-	if len(normalized) == 0 {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: "#" + strings.Join(normalized, "#") + "#", Valid: true}
 }
 
 func normalizeWorkspacePeople(values []string) []string {

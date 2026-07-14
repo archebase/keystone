@@ -245,8 +245,9 @@ func (s *Server) buildRoutes() http.Handler {
 	s.transfer.RegisterRoutes(v1Transfer)
 
 	// Episodes API
-	v1Episodes := v1Routes.Group("/episodes")
-	s.episode.RegisterRoutes(v1Episodes)
+	v1Episodes := v1Routes.Group("/episodes", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+	s.episode.RegisterReadRoutes(v1Episodes)
+	s.episode.RegisterPresignRoute(v1Routes.Group("/episodes"))
 	if s.qa != nil {
 		s.qa.RegisterRoutes(v1Routes)
 	}
@@ -255,7 +256,8 @@ func (s *Server) buildRoutes() http.Handler {
 	v1Tasks := v1Routes.Group("")
 	taskStats := v1Routes.Group("/tasks/statistics", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
 	taskStats.GET("/breakdown", s.task.GetTaskBreakdown)
-	s.task.RegisterRoutes(v1Tasks)
+	authenticatedTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+	s.task.RegisterRoutes(authenticatedTasks)
 	collectorTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("data_collector"))
 	s.task.RegisterCollectorRoutes(collectorTasks)
 	if s.robot != nil {

@@ -75,7 +75,7 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 			robot_serial TEXT NOT NULL,
 			robot_id INTEGER NOT NULL,
 			collector_name TEXT NOT NULL,
-			organization_id INTEGER,
+			workspace_id INTEGER,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE dc_plan (

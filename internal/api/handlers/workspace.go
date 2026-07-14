@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
@@ -88,8 +87,8 @@ type workspaceRow struct {
 	Name         string         `db:"name"`
 	Description  sql.NullString `db:"description"`
 	Source       string         `db:"source"`
-	AdminsStr    sql.NullString `db:"admins_str"`
-	MembersStr   sql.NullString `db:"members_str"`
+	Admins       string         `db:"admins"`
+	Members      string         `db:"members"`
 	LastSyncedAt sql.NullTime   `db:"last_synced_at"`
 	CreatedAt    sql.NullTime   `db:"created_at"`
 	UpdatedAt    sql.NullTime   `db:"updated_at"`
@@ -151,8 +150,8 @@ func (h *WorkspaceHandler) ListWorkspaces(c *gin.Context) {
 			w.name,
 			w.description,
 			w.source,
-			w.admins_str,
-			w.members_str,
+			w.admins,
+			w.members,
 			w.last_synced_at,
 			w.created_at,
 			w.updated_at
@@ -211,7 +210,7 @@ func (h *WorkspaceHandler) GetWorkspace(c *gin.Context) {
 
 	var workspace workspaceRow
 	if err := h.db.Get(&workspace, `
-		SELECT id, name, description, source, admins_str, members_str, last_synced_at, created_at, updated_at
+		SELECT id, name, description, source, admins, members, last_synced_at, created_at, updated_at
 		FROM workspaces
 		WHERE id = ? AND deleted_at IS NULL
 	`, id); err != nil {
@@ -280,8 +279,8 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 			name = ?,
 			description = ?,
 			source = ?,
-			admins_str = ?,
-			members_str = ?,
+			admins = ?,
+			members = ?,
 			deleted_at = NULL,
 			updated_at = ?
 		WHERE id = ?
@@ -289,8 +288,8 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		sql.NullString{},
-		sql.NullString{},
+		"[]",
+		"[]",
 		now,
 		defaultWorkspaceID,
 	)
@@ -315,8 +314,8 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 			name,
 			description,
 			source,
-			admins_str,
-			members_str,
+			admins,
+			members,
 			last_synced_at,
 			created_at,
 			updated_at
@@ -326,8 +325,8 @@ func (h *WorkspaceHandler) ensureDefaultWorkspace(c *gin.Context) bool {
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		sql.NullString{},
-		sql.NullString{},
+		"[]",
+		"[]",
 		sql.NullTime{},
 		now,
 		now,
@@ -373,30 +372,6 @@ func parseNonNegativeInt64List(raw string, fieldName string) ([]int64, error) {
 	return values, nil
 }
 
-func splitHashWrappedString(value string) []string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return []string{}
-	}
-	value = strings.Trim(value, "#")
-	if value == "" {
-		return []string{}
-	}
-	return normalizeStringList(strings.Split(value, "#"))
-}
-
-func normalizeStringList(values []string) []string {
-	normalized := make([]string, 0, len(values))
-	for _, value := range values {
-		item := strings.TrimSpace(value)
-		if item == "" {
-			continue
-		}
-		normalized = append(normalized, item)
-	}
-	return normalized
-}
-
 func formatWorkspaceNullableTime(value sql.NullTime) string {
 	if !value.Valid {
 		return ""
@@ -406,13 +381,15 @@ func formatWorkspaceNullableTime(value sql.NullTime) string {
 
 // workspaceResponseFromRow converts a workspaceRow to a WorkspaceResponse.
 func workspaceResponseFromRow(workspace workspaceRow) WorkspaceResponse {
+	admins, _ := services.DecodeWorkspacePeople(workspace.Admins)
+	members, _ := services.DecodeWorkspacePeople(workspace.Members)
 	return WorkspaceResponse{
 		ID:           strconv.FormatInt(workspace.ID, 10),
 		Name:         workspace.Name,
 		Description:  workspace.Description.String,
 		Source:       workspace.Source,
-		Admins:       splitHashWrappedString(workspace.AdminsStr.String),
-		Members:      splitHashWrappedString(workspace.MembersStr.String),
+		Admins:       admins,
+		Members:      members,
 		LastSyncedAt: formatWorkspaceNullableTime(workspace.LastSyncedAt),
 		CreatedAt:    formatWorkspaceNullableTime(workspace.CreatedAt),
 		UpdatedAt:    formatWorkspaceNullableTime(workspace.UpdatedAt),

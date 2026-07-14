@@ -58,7 +58,7 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 			t.Fatalf("production records SQL should include %q: %s", want, sql)
 		}
 	}
-	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.organization_id) AS workspace_id") {
+	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.workspace_id) AS workspace_id") {
 		t.Fatalf("production records SQL should expose workspace scope: %s", sql)
 	}
 	for _, want := range []string{"ws.id = COALESCE(e.workstation_id, t.workstation_id)"} {
@@ -256,19 +256,28 @@ func TestParseOperatorDataProductionStatsQueryIgnoresCollectorFilter(t *testing.
 
 func TestScopeDataProductionStatsQueryToCurrentCollectorOverridesCollectorFilter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	db := newDataCollectorWorkspaceTestDB(t)
+	if _, err := db.Exec(`UPDATE workspaces SET members = '["dc-001"]' WHERE id = 123`); err != nil {
+		t.Fatalf("seed workspace access: %v", err)
+	}
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/operator/statistics", nil)
 	c.Set(middleware.ClaimsKey, &auth.Claims{
 		OperatorID: "dc-001",
 		Role:       "data_collector",
 	})
 	q := dataProductionStatsQuery{CollectorOperatorIDs: []string{"dc-999"}}
+	h := NewDataProductionStatisticsHandler(db)
 
-	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+	if !h.scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
 		t.Fatalf("expected scope application to succeed")
 	}
 	if strings.Join(q.CollectorOperatorIDs, ",") != "dc-001" {
 		t.Fatalf("collector filter = %#v, want dc-001", q.CollectorOperatorIDs)
+	}
+	if len(q.WorkspaceIDs) != 1 || q.WorkspaceIDs[0] != 123 {
+		t.Fatalf("workspace filter = %#v, want 123", q.WorkspaceIDs)
 	}
 }
 

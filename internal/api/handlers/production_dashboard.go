@@ -68,6 +68,7 @@ type productionDashboardScope struct {
 	OrganizationID string `json:"organization_id,omitempty"`
 	Warning        string `json:"warning,omitempty"`
 	collectorID    int64
+	workspaceIDs   []int64
 	empty          bool
 }
 
@@ -497,23 +498,38 @@ func (h *ProductionDashboardHandler) resolveProductionDashboardScope(c *gin.Cont
 	case "admin", "display":
 		return scope, nil
 	case "data_collector":
-		var workstationID string
-		err := h.db.GetContext(c.Request.Context(), &workstationID, `
-			SELECT CAST(id AS CHAR)
+		workspaceIDs, err := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, claims.OperatorID)
+		if err != nil {
+			return productionDashboardScope{}, err
+		}
+		if len(workspaceIDs) == 0 {
+			scope.Warning = "workspace access denied"
+			scope.empty = true
+			return scope, nil
+		}
+		scope.workspaceIDs = workspaceIDs
+		query, args, err := sqlx.In(`
+			SELECT COUNT(*)
 			FROM workstations
-				WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-			LIMIT 1
-		`, claims.CollectorID)
-		if err == sql.ErrNoRows {
+			WHERE data_collector_id = ? AND workspace_id IN (?) AND is_current = TRUE AND deleted_at IS NULL
+		`, claims.CollectorID, workspaceIDs)
+		if err != nil {
+			return productionDashboardScope{}, err
+		}
+		var workstationCount int
+		err = h.db.GetContext(c.Request.Context(), &workstationCount, h.db.Rebind(query), args...)
+		if err != nil {
+			return productionDashboardScope{}, err
+		}
+		if workstationCount == 0 {
 			scope.WorkstationID = ""
 			scope.Warning = "workstation not assigned"
 			scope.empty = true
 			return scope, nil
 		}
-		if err != nil {
-			return productionDashboardScope{}, err
-		}
-		scope.WorkstationID = workstationID
+		// Collector dashboard queries use collector ownership and aggregate all current
+		// and historical workstations instead of exposing an arbitrary current one.
+		scope.WorkstationID = ""
 		scope.OrganizationID = ""
 		return scope, nil
 	default:
@@ -998,13 +1014,16 @@ func buildOverviewStations(stations []dashboardStationItem) dashboardOverviewSta
 
 func appendDashboardTaskScope(conditions []string, args []interface{}, scope productionDashboardScope) ([]string, []interface{}) {
 	if scope.Role == "data_collector" {
+		workspaceCondition, workspaceArgs := dashboardInt64InCondition("ws_scope.workspace_id", scope.workspaceIDs)
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM workstations ws_scope
 			WHERE ws_scope.id = t.workstation_id
 				AND ws_scope.data_collector_id = ?
+				AND `+workspaceCondition+`
 				AND ws_scope.deleted_at IS NULL
 		)`)
 		args = append(args, scope.collectorID)
+		args = append(args, workspaceArgs...)
 		return conditions, args
 	}
 	if scope.WorkstationID != "" {
@@ -1020,13 +1039,16 @@ func appendDashboardTaskScope(conditions []string, args []interface{}, scope pro
 
 func appendDashboardEpisodeScope(conditions []string, args []interface{}, scope productionDashboardScope) ([]string, []interface{}) {
 	if scope.Role == "data_collector" {
+		workspaceCondition, workspaceArgs := dashboardInt64InCondition("ws_scope.workspace_id", scope.workspaceIDs)
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM workstations ws_scope
 			WHERE ws_scope.id = e.workstation_id
 				AND ws_scope.data_collector_id = ?
+				AND `+workspaceCondition+`
 				AND ws_scope.deleted_at IS NULL
 		)`)
 		args = append(args, scope.collectorID)
+		args = append(args, workspaceArgs...)
 		return conditions, args
 	}
 	if scope.WorkstationID != "" {
@@ -1044,6 +1066,9 @@ func appendDashboardStationScope(conditions []string, args []interface{}, scope 
 	if scope.Role == "data_collector" {
 		conditions = append(conditions, "ws.data_collector_id = ?")
 		args = append(args, scope.collectorID)
+		workspaceCondition, workspaceArgs := dashboardInt64InCondition("ws.workspace_id", scope.workspaceIDs)
+		conditions = append(conditions, workspaceCondition)
+		args = append(args, workspaceArgs...)
 		return conditions, args
 	}
 	if scope.WorkstationID != "" {
@@ -1051,7 +1076,7 @@ func appendDashboardStationScope(conditions []string, args []interface{}, scope 
 		args = append(args, scope.WorkstationID)
 	}
 	if scope.OrganizationID != "" {
-		conditions = append(conditions, "CAST(ws.organization_id AS CHAR) = ?")
+		conditions = append(conditions, "CAST(ws.workspace_id AS CHAR) = ?")
 		args = append(args, scope.OrganizationID)
 	}
 	return conditions, args
@@ -1059,13 +1084,16 @@ func appendDashboardStationScope(conditions []string, args []interface{}, scope 
 
 func appendDashboardRobotScope(conditions []string, args []interface{}, scope productionDashboardScope) ([]string, []interface{}) {
 	if scope.Role == "data_collector" {
+		workspaceCondition, workspaceArgs := dashboardInt64InCondition("ws_scope.workspace_id", scope.workspaceIDs)
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM workstations ws_scope
 			WHERE ws_scope.robot_id = r.id
 				AND ws_scope.data_collector_id = ?
+				AND `+workspaceCondition+`
 				AND ws_scope.deleted_at IS NULL
 		)`)
 		args = append(args, scope.collectorID)
+		args = append(args, workspaceArgs...)
 		return conditions, args
 	}
 	if scope.WorkstationID != "" {
@@ -1081,12 +1109,25 @@ func appendDashboardRobotScope(conditions []string, args []interface{}, scope pr
 		conditions = append(conditions, `EXISTS (
 			SELECT 1 FROM workstations ws_scope
 			WHERE ws_scope.robot_id = r.id
-				AND CAST(ws_scope.organization_id AS CHAR) = ?
+				AND CAST(ws_scope.workspace_id AS CHAR) = ?
 				AND ws_scope.deleted_at IS NULL
 		)`)
 		args = append(args, scope.OrganizationID)
 	}
 	return conditions, args
+}
+
+func dashboardInt64InCondition(column string, values []int64) (string, []interface{}) {
+	if len(values) == 0 {
+		return "1 = 0", nil
+	}
+	placeholders := make([]string, 0, len(values))
+	args := make([]interface{}, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	return column + " IN (" + strings.Join(placeholders, ",") + ")", args
 }
 
 func dashboardStationStatusText(status string) string {

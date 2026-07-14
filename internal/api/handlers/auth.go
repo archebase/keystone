@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
@@ -61,6 +63,39 @@ type collectorAuthRow struct {
 	Name       string `db:"name"`
 	OperatorID string `db:"operator_id"`
 	Status     string `db:"status"`
+}
+
+type authWorkstationRow struct {
+	ID          int64  `db:"id"`
+	WorkspaceID int64  `db:"workspace_id"`
+	RobotID     int64  `db:"robot_id"`
+	Status      string `db:"status"`
+}
+
+type authWorkstationInfo struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	RobotID     string `json:"robot_id"`
+	Status      string `json:"status"`
+}
+
+// AuthMeResponse describes the authenticated global identity and all current workstations.
+type AuthMeResponse struct {
+	CollectorID    *int64                `json:"collector_id"`
+	OperatorID     string                `json:"operator_id"`
+	Name           string                `json:"name"`
+	Role           string                `json:"role"`
+	WorkspaceCount int                   `json:"workspace_count"`
+	Workstations   []authWorkstationInfo `json:"workstations"`
+}
+
+func (row authWorkstationRow) info() authWorkstationInfo {
+	return authWorkstationInfo{
+		ID:          strconv.FormatInt(row.ID, 10),
+		WorkspaceID: strconv.FormatInt(row.WorkspaceID, 10),
+		RobotID:     strconv.FormatInt(row.RobotID, 10),
+		Status:      row.Status,
+	}
 }
 
 // RegisterRoutes registers auth endpoints under the provided router group.
@@ -172,6 +207,16 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "collector is inactive"})
 		return
 	}
+	workspaceIDs, err := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, row.OperatorID)
+	if err != nil {
+		logger.Printf("[AUTH] Failed to resolve collector Workspace access: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if len(workspaceIDs) == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "collector has no accessible workspace"})
+		return
+	}
 
 	displayName := strings.TrimSpace(hilbertAccount.DisplayName)
 	if displayName != "" {
@@ -183,7 +228,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// Best-effort: sync workstation status on login.
-	h.syncWorkstationStatusOnLogin(row.ID)
+	h.syncWorkstationStatusOnLogin(c.Request.Context(), row.ID, row.OperatorID)
 
 	claims := auth.NewCollectorClaims(row.ID, row.OperatorID)
 	token, err := auth.GenerateToken(claims, h.cfg)
@@ -213,22 +258,12 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && strings.TrimSpace(parts[1]) != "" {
 			if claims, err := auth.ParseToken(parts[1], h.cfg); err == nil && claims.Role == "data_collector" {
-				var wsID int64
-				if err := h.db.Get(&wsID, `
-					SELECT id
-					FROM workstations
-						WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-					LIMIT 1
-				`, claims.CollectorID); err == nil {
-					if _, err := h.db.Exec(`
+				if _, err := h.db.Exec(`
 						UPDATE workstations
 						SET status = 'offline', updated_at = ?
-						WHERE id = ? AND deleted_at IS NULL
-					`, time.Now().UTC(), wsID); err != nil {
-						logger.Printf("[AUTH] Failed to update workstation status on logout (ws=%d): %v", wsID, err)
-					}
-				} else if err != sql.ErrNoRows {
-					logger.Printf("[AUTH] Failed to query workstation for collector on logout (collector=%d): %v", claims.CollectorID, err)
+						WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
+					`, time.Now().UTC(), claims.CollectorID); err != nil {
+					logger.Printf("[AUTH] Failed to update workstation statuses on logout (collector=%d): %v", claims.CollectorID, err)
 				}
 			}
 		}
@@ -239,6 +274,17 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 
 // Me returns the current authenticated identity.
 // Requires JWTAuth middleware; works for both admin and data_collector roles.
+// Me returns the global collector identity and every current Workspace workstation.
+//
+// @Summary      Get current identity
+// @Description  Returns the authenticated identity; data collectors receive all current workstations across accessible Workspaces
+// @Tags         auth
+// @Produce      json
+// @Success      200 {object} AuthMeResponse
+// @Failure      401 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /auth/me [get]
 func (h *AuthHandler) Me(c *gin.Context) {
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -247,13 +293,11 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	}
 
 	if claims.Role == "admin" {
-		c.JSON(http.StatusOK, gin.H{
-			"collector_id":   nil,
-			"operator_id":    "admin",
-			"name":           "Administrator",
-			"role":           "admin",
-			"workstation_id": nil,
-			"robot_id":       nil,
+		c.JSON(http.StatusOK, AuthMeResponse{
+			OperatorID:   "admin",
+			Name:         "Administrator",
+			Role:         "admin",
+			Workstations: []authWorkstationInfo{},
 		})
 		return
 	}
@@ -278,42 +322,32 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		return
 	}
 
-	var wsRow struct {
-		ID      int64 `db:"id"`
-		RobotID int64 `db:"robot_id"`
-	}
-	err := h.db.Get(&wsRow, `
-		SELECT ws.id, ws.robot_id
-		FROM workstations ws
-		WHERE ws.data_collector_id = ? AND ws.is_current = TRUE AND ws.deleted_at IS NULL
-		LIMIT 1
-	`, claims.CollectorID)
-	var workstationID *string
-	var robotID *string
+	workspaceIDs, err := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, row.OperatorID)
 	if err != nil {
-		if err != sql.ErrNoRows {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-			return
-		}
-	} else {
-		ws := strconv.FormatInt(wsRow.ID, 10)
-		rb := strconv.FormatInt(wsRow.RobotID, 10)
-		workstationID = &ws
-		robotID = &rb
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	workstations, err := h.currentWorkstations(c.Request.Context(), claims.CollectorID, row.OperatorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	stationInfos := make([]authWorkstationInfo, 0, len(workstations))
+	for _, workstation := range workstations {
+		stationInfos = append(stationInfos, workstation.info())
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"collector_id":   claims.CollectorID,
-		"operator_id":    row.OperatorID,
-		"name":           row.Name,
-		"role":           claims.Role,
-		"workstation_id": workstationID,
-		"robot_id":       robotID,
+	c.JSON(http.StatusOK, AuthMeResponse{
+		CollectorID:    &claims.CollectorID,
+		OperatorID:     row.OperatorID,
+		Name:           row.Name,
+		Role:           claims.Role,
+		WorkspaceCount: len(workspaceIDs),
+		Workstations:   stationInfos,
 	})
 }
 
-// MeStationBreak sets the collector's workstation status to break (unless the workstation is offline).
-// Requires RequireRole("data_collector") middleware.
+// MeStationBreak sets every non-offline current workstation to break.
 func (h *AuthHandler) MeStationBreak(c *gin.Context) {
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -321,58 +355,44 @@ func (h *AuthHandler) MeStationBreak(c *gin.Context) {
 		return
 	}
 
-	var wsID int64
-	err := h.db.Get(&wsID, `
-		SELECT id
-		FROM workstations
-		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-		LIMIT 1
-	`, claims.CollectorID)
-	if err == sql.ErrNoRows {
+	workstations, err := h.currentWorkstations(c.Request.Context(), claims.CollectorID, claims.OperatorID)
+	if err != nil {
+		logger.Printf("[AUTH] MeStationBreak: failed to resolve workstations: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if len(workstations) == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "workstation not assigned"})
 		return
 	}
+	workstationIDs := make([]int64, 0, len(workstations))
+	for _, workstation := range workstations {
+		workstationIDs = append(workstationIDs, workstation.ID)
+	}
+	query, args, err := sqlx.In(`
+		UPDATE workstations
+		SET status = 'break', updated_at = ?
+		WHERE id IN (?) AND is_current = TRUE AND status != 'offline' AND deleted_at IS NULL
+	`, time.Now().UTC(), workstationIDs)
 	if err != nil {
-		logger.Printf("[AUTH] MeStationBreak: failed to resolve workstation: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
 		return
 	}
-
-	var cur string
-	if err := h.db.Get(&cur, `SELECT status FROM workstations WHERE id = ? AND deleted_at IS NULL`, wsID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "workstation not found"})
-			return
-		}
-		logger.Printf("[AUTH] MeStationBreak: failed to read status: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+	result, err := h.db.Exec(h.db.Rebind(query), args...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
 		return
 	}
-	if cur == "offline" {
-		c.JSON(http.StatusConflict, gin.H{"error": "workstation is offline"})
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "all workstations are offline"})
 		return
 	}
-	if cur != "break" {
-		if _, err := h.db.Exec(`
-			UPDATE workstations
-			SET status = 'break', updated_at = ?
-			WHERE id = ? AND deleted_at IS NULL
-		`, time.Now().UTC(), wsID); err != nil {
-			logger.Printf("[AUTH] MeStationBreak: failed to update workstation %d: %v", wsID, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
-			return
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"workstation_id": strconv.FormatInt(wsID, 10),
-		"status":         "break",
-	})
+	workstations, _ = h.currentWorkstations(c.Request.Context(), claims.CollectorID, claims.OperatorID)
+	c.JSON(http.StatusOK, gin.H{"workstations": authWorkstationInfos(workstations)})
 }
 
-// MeStationEndBreak sets the collector's workstation to active or inactive depending on whether
-// an active batch exists. Does not override offline (returns 409).
-// Requires RequireRole("data_collector") middleware.
+// MeStationEndBreak restores every non-offline current workstation based on active tasks.
 func (h *AuthHandler) MeStationEndBreak(c *gin.Context) {
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -380,87 +400,73 @@ func (h *AuthHandler) MeStationEndBreak(c *gin.Context) {
 		return
 	}
 
-	var wsID int64
-	err := h.db.Get(&wsID, `
-		SELECT id
-		FROM workstations
-		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-		LIMIT 1
-	`, claims.CollectorID)
-	if err == sql.ErrNoRows {
+	workstations, err := h.currentWorkstations(c.Request.Context(), claims.CollectorID, claims.OperatorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if len(workstations) == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "workstation not assigned"})
 		return
 	}
-	if err != nil {
-		logger.Printf("[AUTH] MeStationEndBreak: failed to resolve workstation: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-
-	var cur string
-	if err := h.db.Get(&cur, `SELECT status FROM workstations WHERE id = ? AND deleted_at IS NULL`, wsID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "workstation not found"})
+	updated := 0
+	for _, workstation := range workstations {
+		if workstation.Status == "offline" {
+			continue
+		}
+		if err := h.syncOneWorkstationStatus(workstation.ID); err != nil {
+			logger.Printf("[AUTH] MeStationEndBreak: failed to update workstation %d: %v", workstation.ID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
 			return
 		}
-		logger.Printf("[AUTH] MeStationEndBreak: failed to read status: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		updated++
+	}
+	if updated == 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "all workstations are offline"})
 		return
 	}
-	if cur == "offline" {
-		c.JSON(http.StatusConflict, gin.H{"error": "workstation is offline"})
-		return
-	}
-
-	var hasActiveTasks bool
-	if err := h.db.Get(&hasActiveTasks, `
-		SELECT EXISTS(
-			SELECT 1
-			FROM tasks
-			WHERE workstation_id = ?
-				AND status IN ('ready', 'in_progress', 'uploading')
-				AND deleted_at IS NULL
-		)
-	`, wsID); err != nil {
-		logger.Printf("[AUTH] MeStationEndBreak: failed to query active tasks: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-	newStatus := "inactive"
-	if hasActiveTasks {
-		newStatus = "active"
-	}
-	if _, err := h.db.Exec(`
-		UPDATE workstations
-		SET status = ?, updated_at = ?
-		WHERE id = ? AND deleted_at IS NULL
-	`, newStatus, time.Now().UTC(), wsID); err != nil {
-		logger.Printf("[AUTH] MeStationEndBreak: failed to update workstation %d: %v", wsID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"workstation_id": strconv.FormatInt(wsID, 10),
-		"status":         newStatus,
-	})
+	workstations, _ = h.currentWorkstations(c.Request.Context(), claims.CollectorID, claims.OperatorID)
+	c.JSON(http.StatusOK, gin.H{"workstations": authWorkstationInfos(workstations)})
 }
 
 // syncWorkstationStatusOnLogin is a best-effort helper that syncs workstation
 // status to active/inactive based on whether active tasks exist.
-func (h *AuthHandler) syncWorkstationStatusOnLogin(collectorID int64) {
-	var wsID int64
-	if err := h.db.Get(&wsID, `
-		SELECT id
-		FROM workstations
-		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-		LIMIT 1
-	`, collectorID); err != nil {
-		if err != sql.ErrNoRows {
-			logger.Printf("[AUTH] Failed to query workstation for collector on login (collector=%d): %v", collectorID, err)
-		}
+func (h *AuthHandler) syncWorkstationStatusOnLogin(ctx context.Context, collectorID int64, operatorID string) {
+	workstations, err := h.currentWorkstations(ctx, collectorID, operatorID)
+	if err != nil {
+		logger.Printf("[AUTH] Failed to query workstations for collector on login (collector=%d): %v", collectorID, err)
 		return
 	}
+	for _, workstation := range workstations {
+		if workstation.Status == "offline" {
+			continue
+		}
+		if err := h.syncOneWorkstationStatus(workstation.ID); err != nil {
+			logger.Printf("[AUTH] Failed to update workstation status on login (ws=%d): %v", workstation.ID, err)
+		}
+	}
+}
+
+func (h *AuthHandler) currentWorkstations(ctx context.Context, collectorID int64, operatorID string) ([]authWorkstationRow, error) {
+	workspaceIDs, err := services.AccessibleWorkspaceIDs(ctx, h.db, operatorID)
+	if err != nil || len(workspaceIDs) == 0 {
+		return []authWorkstationRow{}, err
+	}
+	query, args, err := sqlx.In(`
+		SELECT id, workspace_id, robot_id, status
+		FROM workstations
+		WHERE data_collector_id = ? AND workspace_id IN (?) AND is_current = TRUE AND deleted_at IS NULL
+		ORDER BY workspace_id, id
+	`, collectorID, workspaceIDs)
+	if err != nil {
+		return nil, err
+	}
+	rows := []authWorkstationRow{}
+	err = h.db.SelectContext(ctx, &rows, h.db.Rebind(query), args...)
+	return rows, err
+}
+
+func (h *AuthHandler) syncOneWorkstationStatus(workstationID int64) error {
 	var hasActiveTasks bool
 	if err := h.db.Get(&hasActiveTasks, `
 		SELECT EXISTS(
@@ -470,19 +476,25 @@ func (h *AuthHandler) syncWorkstationStatusOnLogin(collectorID int64) {
 				AND status IN ('ready', 'in_progress', 'uploading')
 				AND deleted_at IS NULL
 		)
-	`, wsID); err != nil {
-		logger.Printf("[AUTH] Failed to query active tasks for workstation on login (ws=%d): %v", wsID, err)
-		return
+	`, workstationID); err != nil {
+		return err
 	}
 	newStatus := "inactive"
 	if hasActiveTasks {
 		newStatus = "active"
 	}
-	if _, err := h.db.Exec(`
+	_, err := h.db.Exec(`
 		UPDATE workstations
 		SET status = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL
-	`, newStatus, time.Now().UTC(), wsID); err != nil {
-		logger.Printf("[AUTH] Failed to update workstation status on login (ws=%d): %v", wsID, err)
+	`, newStatus, time.Now().UTC(), workstationID)
+	return err
+}
+
+func authWorkstationInfos(rows []authWorkstationRow) []authWorkstationInfo {
+	infos := make([]authWorkstationInfo, 0, len(rows))
+	for _, row := range rows {
+		infos = append(infos, row.info())
 	}
+	return infos
 }

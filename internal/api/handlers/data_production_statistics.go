@@ -19,6 +19,7 @@ import (
 
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
+	"archebase.com/keystone-edge/internal/services"
 )
 
 // DataProductionStatisticsHandler handles Synapse Admin data production statistics APIs.
@@ -363,7 +364,7 @@ func (h *DataProductionStatisticsHandler) GetOperatorSummary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+	if !h.scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
 		return
 	}
 
@@ -423,7 +424,7 @@ func (h *DataProductionStatisticsHandler) GetOperatorTrend(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+	if !h.scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
 		return
 	}
 	timezoneOffset, err := parseStatsTimezoneOffset(c.Query("timezone_offset"))
@@ -497,7 +498,7 @@ func (h *DataProductionStatisticsHandler) GetOperatorBreakdown(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+	if !h.scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
 		return
 	}
 	pagination, err := ParsePagination(c)
@@ -552,7 +553,7 @@ func (h *DataProductionStatisticsHandler) writeBreakdown(c *gin.Context, q dataP
 	})
 }
 
-func scopeDataProductionStatsQueryToCurrentCollector(c *gin.Context, q *dataProductionStatsQuery) bool {
+func (h *DataProductionStatisticsHandler) scopeDataProductionStatsQueryToCurrentCollector(c *gin.Context, q *dataProductionStatsQuery) bool {
 	claims := middleware.GetClaims(c)
 	if claims == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
@@ -568,7 +569,18 @@ func scopeDataProductionStatsQueryToCurrentCollector(c *gin.Context, q *dataProd
 		c.JSON(http.StatusForbidden, gin.H{"error": "collector identity missing"})
 		return false
 	}
+	workspaceIDs, err := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, operatorID)
+	if err != nil {
+		logger.Printf("[DATA_PRODUCTION] Failed to resolve collector Workspace access: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve workspace access"})
+		return false
+	}
+	if len(workspaceIDs) == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+		return false
+	}
 	q.CollectorOperatorIDs = []string{operatorID}
+	q.WorkspaceIDs = workspaceIDs
 	return true
 }
 
@@ -924,7 +936,7 @@ func productionRecordsSQL() string {
 			CONCAT('episode:', e.id) AS id,
 			COALESCE(e.episode_id, '') AS episode_id,
 			COALESCE(t.completed_at, e.created_at) AS event_time,
-			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
+			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 			COALESCE(r.device_id, ws.robot_serial, CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR)), 'unknown') AS source_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,

@@ -52,7 +52,7 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 
 func TestDataOpsEpisodeWhereIncludesWorkspaceFilter(t *testing.T) {
 	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{WorkspaceIDs: []int64{0, 12}})
-	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.organization_id) IN (?,?)") {
+	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.workspace_id) IN (?,?)") {
 		t.Fatalf("workspace filter SQL should use task/workstation fallback: %s", sql)
 	}
 	if len(args) != 2 || args[0] != int64(0) || args[1] != int64(12) {

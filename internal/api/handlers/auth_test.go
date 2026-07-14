@@ -14,6 +14,7 @@ import (
 
 	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
@@ -174,6 +175,41 @@ func TestAuthHandlerLoginWithoutHilbertConfigReturnsServiceUnavailable(t *testin
 	}
 }
 
+func TestAuthHandlerBreakOnlyUpdatesAccessibleWorkspaceWorkstations(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO workspaces (id, admins, members) VALUES (20, '[]', '[]');
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current)
+		VALUES (11, 7, 10, 101, 'inactive', TRUE), (12, 7, 20, 102, 'inactive', TRUE)
+	`); err != nil {
+		t.Fatalf("seed workstations: %v", err)
+	}
+	handler := NewAuthHandler(db, testAuthConfig(), nil)
+	router := gin.New()
+	router.POST("/auth/me/station/break", func(c *gin.Context) {
+		c.Set(middleware.ClaimsKey, auth.NewCollectorClaims(7, "dc01"))
+		handler.MeStationBreak(c)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/auth/me/station/break", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var accessibleStatus string
+	if err := db.Get(&accessibleStatus, `SELECT status FROM workstations WHERE id = 11`); err != nil {
+		t.Fatalf("query accessible workstation: %v", err)
+	}
+	var revokedStatus string
+	if err := db.Get(&revokedStatus, `SELECT status FROM workstations WHERE id = 12`); err != nil {
+		t.Fatalf("query revoked workstation: %v", err)
+	}
+	if accessibleStatus != "break" || revokedStatus != "inactive" {
+		t.Fatalf("statuses accessible=%s revoked=%s", accessibleStatus, revokedStatus)
+	}
+}
+
 type testHilbertBehavior struct {
 	statusCode int
 	body       string
@@ -246,6 +282,13 @@ func newTestAuthDB(t *testing.T) *sqlx.DB {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	stmts := []string{
+		`CREATE TABLE workspaces (
+			id INTEGER PRIMARY KEY,
+			admins TEXT NOT NULL,
+			members TEXT NOT NULL,
+			deleted_at TEXT
+		)`,
+		`INSERT INTO workspaces (id, admins, members) VALUES (10, '[]', '["dc01"]')`,
 		`CREATE TABLE data_collectors (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -257,13 +300,15 @@ func newTestAuthDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE workstations (
 			id INTEGER PRIMARY KEY,
 			data_collector_id INTEGER,
+			workspace_id INTEGER NOT NULL DEFAULT 0,
+			robot_id INTEGER NOT NULL DEFAULT 0,
 			collector_name TEXT,
 			status TEXT,
 			is_current BOOLEAN,
 			updated_at TEXT,
 			deleted_at TEXT
 		)`,
-		`CREATE TABLE batches (
+		`CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY,
 			workstation_id INTEGER,
 			status TEXT,

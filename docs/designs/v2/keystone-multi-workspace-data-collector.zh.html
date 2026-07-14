@@ -1,0 +1,856 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone 多 Workspace 数采员实现设计</title>
+  <style>
+    :root {
+      --orange: #F47A16;
+      --blue: #1E4E9A;
+      --yellow: #FFD23F;
+      --ink: #15110D;
+      --paper: #FFF2D4;
+      --red: #D93A24;
+      --brown: #7A3E16;
+      --shadow: 8px 8px 0 var(--ink);
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      color: var(--ink);
+      background: var(--blue);
+      font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", SimHei, sans-serif;
+      line-height: 1.68;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        repeating-linear-gradient(0deg, rgba(21, 17, 13, .08) 0 1px, transparent 1px 7px),
+        var(--blue);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      opacity: .3;
+      background:
+        repeating-conic-gradient(from 8deg at 92% 8%, transparent 0 5deg, var(--yellow) 5deg 6deg, transparent 6deg 11deg);
+    }
+
+    a { color: var(--blue); font-weight: 900; }
+    p { margin: 12px 0; }
+    ul, ol { margin: 12px 0; padding-left: 24px; }
+    li { margin: 7px 0; }
+
+    code {
+      padding: 2px 6px;
+      border: 2px solid rgba(21, 17, 13, .18);
+      background: rgba(255, 255, 255, .52);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: .91em;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      margin: 18px 0;
+      padding: 18px;
+      overflow-x: auto;
+      border: 4px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper);
+      box-shadow: 5px 5px 0 var(--brown);
+      font: 14px/1.62 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    pre code { padding: 0; border: 0; background: transparent; color: inherit; }
+
+    table {
+      width: 100%;
+      margin: 16px 0;
+      border-collapse: collapse;
+      background: rgba(255, 255, 255, .3);
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border: 3px solid var(--ink);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { background: var(--yellow); font-weight: 1000; }
+
+    .page {
+      width: min(1160px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 26px 0 72px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 580px;
+      overflow: hidden;
+      border: 6px solid var(--ink);
+      background:
+        linear-gradient(116deg, var(--paper) 0 62%, transparent 62%),
+        var(--orange);
+      box-shadow: 14px 14px 0 var(--ink);
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      width: 520px;
+      height: 520px;
+      right: -210px;
+      top: -190px;
+      border: 42px solid var(--yellow);
+      border-radius: 50%;
+      box-shadow: 0 0 0 16px var(--ink);
+    }
+
+    .hero::after {
+      content: "MAIN-V2 / PR-9";
+      position: absolute;
+      right: 28px;
+      bottom: 28px;
+      padding: 12px 18px;
+      border: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      box-shadow: 6px 6px 0 var(--ink);
+      font: 900 22px/1 Impact, "Arial Black", sans-serif;
+      transform: rotate(-2deg);
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      width: min(920px, 100%);
+      padding: clamp(28px, 5vw, 58px);
+    }
+
+    .kicker {
+      display: inline-block;
+      padding: 7px 12px;
+      border: 4px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 5px 5px 0 var(--ink);
+      font-weight: 1000;
+      transform: rotate(-1deg);
+    }
+
+    h1 {
+      max-width: 850px;
+      margin: 30px 0 20px;
+      color: var(--red);
+      font-family: Impact, "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(46px, 8vw, 96px);
+      line-height: .98;
+      letter-spacing: 0;
+      -webkit-text-stroke: 3px var(--ink);
+      text-shadow: 7px 7px 0 var(--yellow), 12px 12px 0 var(--ink);
+      transform: skew(-3deg);
+    }
+
+    .subtitle {
+      max-width: 790px;
+      margin: 0;
+      font-size: clamp(18px, 2vw, 24px);
+      font-weight: 900;
+    }
+
+    .signals {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 34px;
+    }
+
+    .signal {
+      min-height: 110px;
+      padding: 13px;
+      border: 4px solid var(--ink);
+      background: var(--blue);
+      color: var(--paper);
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .signal b { display: block; color: var(--yellow); font-size: 13px; }
+    .signal span { display: block; margin-top: 8px; font-size: 15px; font-weight: 800; }
+
+    section {
+      margin-top: 32px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 84px 1fr;
+      border-bottom: 5px solid var(--ink);
+      background: var(--yellow);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      border-right: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      font: 900 34px/1 Impact, "Arial Black", sans-serif;
+    }
+
+    h2 {
+      margin: 0;
+      padding: 18px 22px;
+      font-family: "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(24px, 3.5vw, 38px);
+      line-height: 1.15;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      padding-left: 11px;
+      border-left: 8px solid var(--orange);
+      font-size: 20px;
+      line-height: 1.3;
+    }
+
+    .content { padding: clamp(20px, 4vw, 36px); }
+
+    .verdict {
+      padding: 18px 20px;
+      border: 4px solid var(--ink);
+      background: var(--orange);
+      box-shadow: 5px 5px 0 var(--ink);
+      font-size: 18px;
+      font-weight: 1000;
+    }
+
+    .grid-2, .grid-3 {
+      display: grid;
+      gap: 16px;
+      margin: 18px 0;
+    }
+
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .panel {
+      min-width: 0;
+      padding: 16px;
+      border: 4px solid var(--ink);
+      background: rgba(255, 255, 255, .38);
+      box-shadow: 4px 4px 0 var(--brown);
+    }
+
+    .panel.blue { background: var(--blue); color: var(--paper); }
+    .panel.orange { background: var(--orange); }
+    .panel.yellow { background: var(--yellow); }
+    .panel.red { background: var(--red); color: var(--paper); }
+    .panel h3 { margin-top: 0; border-left: 0; padding-left: 0; }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border: 2px solid var(--ink);
+      background: var(--yellow);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 1000;
+      vertical-align: middle;
+    }
+
+    .diagram-frame {
+      margin: 22px 0;
+      padding: 12px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 7px 7px 0 var(--brown);
+    }
+
+    .diagram-frame img { display: block; width: 100%; height: auto; }
+    .diagram-caption { margin: 10px 4px 0; color: var(--brown); font-size: 13px; font-weight: 800; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 22px;
+      margin: 22px 0;
+      counter-reset: flow;
+    }
+
+    .flow > div {
+      position: relative;
+      min-height: 128px;
+      padding: 38px 12px 12px;
+      border: 4px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 4px 4px 0 var(--ink);
+      font-weight: 800;
+    }
+
+    .flow > div::before {
+      counter-increment: flow;
+      content: counter(flow);
+      position: absolute;
+      top: 8px;
+      left: 10px;
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border: 2px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      font: 900 14px/1 Impact, sans-serif;
+    }
+
+    .flow > div:not(:last-child)::after {
+      content: "➜";
+      position: absolute;
+      right: -27px;
+      top: 42px;
+      z-index: 2;
+      color: var(--red);
+      font-size: 26px;
+      -webkit-text-stroke: 1px var(--ink);
+    }
+
+    .callout {
+      margin: 18px 0;
+      padding: 16px 18px;
+      border: 4px solid var(--ink);
+      border-left-width: 14px;
+      background: var(--yellow);
+      font-weight: 800;
+    }
+
+    .danger { background: var(--red); color: var(--paper); }
+    .decision-list { list-style: none; padding: 0; }
+    .decision-list li { padding: 12px 14px; border-bottom: 3px solid var(--ink); font-weight: 700; }
+    .decision-list li:last-child { border-bottom: 0; }
+
+    .footer-note {
+      margin-top: 34px;
+      padding: 18px;
+      border: 5px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper);
+      box-shadow: 8px 8px 0 var(--orange);
+      text-align: center;
+      font-weight: 900;
+    }
+
+    @media (max-width: 900px) {
+      .signals, .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow { grid-template-columns: 1fr; }
+      .flow > div { min-height: 0; }
+      .flow > div:not(:last-child)::after { content: "▼"; right: 50%; top: auto; bottom: -28px; transform: translateX(50%); }
+    }
+
+    @media (max-width: 680px) {
+      .page { width: min(100% - 18px, 1160px); padding-top: 10px; }
+      .hero { min-height: 0; box-shadow: 7px 7px 0 var(--ink); }
+      .hero::before { display: none; }
+      .hero-inner { padding: 24px 18px 110px; }
+      .hero::after { right: 16px; bottom: 18px; font-size: 17px; }
+      h1 { font-size: clamp(40px, 13vw, 56px); -webkit-text-stroke-width: 2px; text-shadow: 4px 4px 0 var(--yellow), 8px 8px 0 var(--ink); }
+      .signals, .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .section-head { grid-template-columns: 58px 1fr; }
+      .section-no { font-size: 25px; }
+      h2 { padding: 15px 13px; font-size: 24px; }
+      .content { padding: 18px 14px; }
+      th, td { padding: 8px; font-size: 13px; }
+      table { display: block; overflow-x: auto; }
+      section { box-shadow: 5px 5px 0 var(--ink); }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-inner">
+        <span class="kicker">IMPLEMENTATION DESIGN / DECISION LOCK</span>
+        <h1>一个身份<br>多个 Workspace</h1>
+        <p class="subtitle">Keystone 以全局数采员身份承接 Hilbert 账号，以 Workspace 的 admins/members 作为唯一归属事实；数采员登录后直接看到所有相关资源，不执行 Workspace 选择。</p>
+        <div class="signals">
+          <div class="signal"><b>身份</b><span><code>operator_id</code> 全局唯一</span></div>
+          <div class="signal"><b>关系</b><span>Workspace 与数采员多对多</span></div>
+          <div class="signal"><b>体验</b><span>数采员对 Workspace 无操作感知</span></div>
+          <div class="signal"><b>部署</b><span>main-v2 全新部署，不做历史兼容</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <div class="section-head"><div class="section-no">01</div><h2>核心判断</h2></div>
+      <div class="content">
+        <div class="verdict">采用“全局 <code>data_collectors</code> + 结构化 <code>workspaces.admins/members</code>”。不复制用户身份，不重复保存归属关系，也不建设通用 RBAC。</div>
+
+        <h3>为什么这是最小正确模型</h3>
+        <div class="grid-3">
+          <div class="panel blue">
+            <h3>身份稳定</h3>
+            <p>同一个 Hilbert account 在 Keystone 只有一个 <code>data_collector_id</code>。JWT、工位、任务审计和统计可以稳定引用同一身份。</p>
+          </div>
+          <div class="panel orange">
+            <h3>关系真实</h3>
+            <p>一个数采员可属于多个 Workspace，一个 Workspace 也可包含多个数采员，关系天然是多对多，不应塞进单一 <code>workspace_id</code>。</p>
+          </div>
+          <div class="panel yellow">
+            <h3>边界清楚</h3>
+            <p>身份状态与 Workspace 归属分开。账号 code 从一个 Workspace 的 admins/members 移除，只撤销该 Workspace 的访问。</p>
+          </div>
+        </div>
+
+        <h3>锁定决策</h3>
+        <table>
+          <thead><tr><th>问题</th><th>决定</th><th>理由</th></tr></thead>
+          <tbody>
+            <tr><td>是否新增关联表</td><td><span class="badge">否</span></td><td>Workspace 已保存 admins/members；重复建表会产生两个事实来源。</td></tr>
+            <tr><td>是否复制 collector</td><td><span class="badge">否</span></td><td>避免 JWT 身份歧义、资料重复和跨 Workspace 审计分裂。</td></tr>
+            <tr><td>JWT 是否携带 Workspace</td><td><span class="badge">否</span></td><td>JWT 表达身份；Workspace 权限必须按数据库当前关系实时判断。</td></tr>
+            <tr><td>数采员是否选择 Workspace</td><td><span class="badge">否</span></td><td>列表聚合其所有 Workspace 中与本人相关的资源。</td></tr>
+            <tr><td>是否实现通用角色系统</td><td><span class="badge">否</span></td><td>当前只需要“属于/不属于”，Hilbert admin/member 不映射为 Keystone RBAC。</td></tr>
+            <tr><td>是否设计历史迁移</td><td><span class="badge">否</span></td><td><code>main-v2</code> 只做新部署，直接修改初始 schema 与实现。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">02</div><h2>现状问题</h2></div>
+      <div class="content">
+        <p>当前 <code>data_collectors.organization_id</code> 实际承载单个 Workspace ID，同时活动 <code>operator_id</code> 全局唯一。同步同一个 Hilbert account 到第二个 Workspace 时，只能覆盖原 Workspace 或因 current workstation 冲突而跳过。</p>
+        <pre><code>Current model
+
+data_collectors
+  operator_id = alice       UNIQUE
+  organization_id = 10     only one workspace
+
+Hilbert reality
+  alice -> workspace 10
+  alice -> workspace 20</code></pre>
+
+        <div class="grid-2">
+          <div class="panel red">
+            <h3>覆盖风险</h3>
+            <p>按 <code>operator_id</code> upsert 会让后同步的 Workspace 覆盖先同步的 Workspace，结果依赖同步顺序。</p>
+          </div>
+          <div class="panel red">
+            <h3>授权缺口</h3>
+            <p>登录只查一条 collector，JWT 只携带该行 ID，无法表达同一身份在多个 Workspace 中的访问关系。</p>
+          </div>
+        </div>
+
+        <h3>Hilbert 的处理方式</h3>
+        <p>Hilbert 保留全局 account，并在 Workspace 的 <code>admins_str/members_str</code> 中保存 account code。Keystone 对齐这一所有权模型，但不继续使用 hash-wrapped 字符串：<code>main-v2</code> 将其改成结构化 JSON 数组，并作为唯一访问事实来源。</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">03</div><h2>目标领域模型</h2></div>
+      <div class="content">
+        <div class="diagram-frame">
+          <img src="keystone-multi-workspace-collector-membership.png" alt="Keystone 多 Workspace 数采员目标数据模型">
+          <p class="diagram-caption">可编辑源文件：<code>keystone-multi-workspace-collector-membership.drawio</code></p>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <h3>data_collectors</h3>
+            <p>Keystone 内部的全局数采员身份。由 Hilbert account code 唯一定位，保存展示名称、全局启停状态、登录时间和身份元数据。</p>
+          </div>
+          <div class="panel yellow">
+            <h3>workspaces.admins/members</h3>
+            <p>保存 Hilbert account code 数组，是 Workspace 归属和访问判断的唯一事实来源，不再派生第二张关系表。</p>
+          </div>
+          <div class="panel orange">
+            <h3>workstations</h3>
+            <p>继续引用全局 <code>data_collector_id</code>，同时显式携带 <code>workspace_id</code>。当前绑定唯一性按 collector + workspace 计算。</p>
+          </div>
+          <div class="panel blue">
+            <h3>tasks / resources</h3>
+            <p>资源自身携带 Workspace。授权时从资源推导 Workspace，再检查对应 admins/members；客户端不提交“当前 Workspace”状态。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">04</div><h2>数据库设计</h2></div>
+      <div class="content">
+        <h3>全局数采员身份</h3>
+        <pre><code>CREATE TABLE data_collectors (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    operator_id VARCHAR(100) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255),
+    certification VARCHAR(100),
+    status ENUM('active', 'inactive', 'on_leave') NOT NULL DEFAULT 'active',
+    metadata JSON,
+    last_login_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP NULL,
+
+    _operator_unique VARCHAR(200) GENERATED ALWAYS AS (
+        CONCAT(IFNULL(operator_id, ''), '|', IFNULL(deleted_at, ''))
+    ) STORED,
+    UNIQUE INDEX idx_operator_del (_operator_unique),
+    INDEX idx_collector_status (status),
+    INDEX idx_collector_deleted (deleted_at)
+);</code></pre>
+        <div class="callout"><code>data_collectors</code> 删除 <code>organization_id/workspace_id</code>。<code>operator_id</code> 继续作为 Keystone 与 Hilbert account code、<code>dc_plan.operator</code> 的业务匹配键。</div>
+
+        <h3>Workspace 访问关系</h3>
+        <pre><code>CREATE TABLE workspaces (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    source ENUM('default', 'hilbert') NOT NULL,
+    admins JSON NOT NULL,
+    members JSON NOT NULL,
+    last_synced_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at TIMESTAMP NULL
+);</code></pre>
+        <ul>
+          <li>删除旧的 <code>admins_str/members_str</code> hash-wrapped 字符串，API 继续返回字符串数组。</li>
+          <li>数组元素统一 trim、drop-empty、dedupe，使用标准 JSON parser，不进行字符串模糊匹配。</li>
+          <li>Hilbert Workspace 的 admins/members 只由同步更新；Keystone 管理端只读。</li>
+          <li><code>source=default</code> 的本地 Workspace 可以通过 Keystone API 管理 admins/members。</li>
+          <li>账号 code 从数组移除即撤销访问；全局 collector 保留，避免破坏任务和工位历史引用。</li>
+        </ul>
+
+        <h3>工位当前绑定</h3>
+        <pre><code>workstations
+  workspace_id BIGINT NOT NULL
+  data_collector_id BIGINT NOT NULL
+
+_current_collector_workspace_unique =
+  IF(is_current AND deleted_at IS NULL,
+     CONCAT(data_collector_id, '|', workspace_id),
+     NULL)
+
+UNIQUE(_current_collector_workspace_unique)</code></pre>
+        <p>同一数采员可以在 Workspace 10 和 Workspace 20 各有一条 current workstation；同一 Workspace 内仍只能有一条。Robot 的 current 唯一约束保持不变。</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">05</div><h2>Hilbert 同步语义</h2></div>
+      <div class="content">
+        <div class="flow">
+          <div>读取本轮全部 Hilbert Workspace snapshot</div>
+          <div>合并每个 Workspace 的 admins + members，按 code 去重</div>
+          <div>按 code 查询 account，并在本轮内缓存</div>
+          <div>原子更新 Workspace JSON 访问快照</div>
+          <div>按 account code upsert 全局 collector</div>
+        </div>
+
+        <h3>同步算法</h3>
+        <pre><code>validate all workspace snapshots
+
+transaction:
+    for workspace in snapshots:
+        admins = normalize(workspace.admins)
+        members = normalize(workspace.members)
+        upsert workspaces(
+            id,
+            admins = JSON(admins),
+            members = JSON(members),
+            source = 'hilbert'
+        )
+commit
+
+codes = union of every workspace admins + members
+accounts = query accounts by code with run-level cache
+
+for account in successful account queries:
+    upsert global data_collectors by operator_id
+
+report account query failures without reverting workspace snapshot</code></pre>
+
+        <table>
+          <thead><tr><th>场景</th><th>行为</th><th>安全结果</th></tr></thead>
+          <tbody>
+            <tr><td>同一 code 出现在多个 Workspace</td><td>各 Workspace JSON 保留该 code，collector 全局只 upsert 一次</td><td>一个身份，多 Workspace 访问</td></tr>
+            <tr><td>同一 code 同时是 admin 和 member</td><td>两个数组分别保留语义，访问判断取并集</td><td>不建立 Keystone RBAC</td></tr>
+            <tr><td>成员从 Hilbert Workspace 移除</td><td>下一次完整 Workspace snapshot 直接覆盖 admins/members</td><td>访问立即撤销</td></tr>
+            <tr><td>账号查询部分失败</td><td>Workspace 快照仍按 Hilbert 更新；失败账号不创建或更新 collector</td><td>已有 collector 按最新关系授权，新账号暂不能登录</td></tr>
+            <tr><td>collector 不再属于任何 Workspace</td><td>保留 collector 身份，但登录准入失败</td><td>历史外键稳定，无资源访问</td></tr>
+            <tr><td>Device 同步失败</td><td>不回滚已成功的 Workspace snapshot</td><td>访问关系与设备投影故障隔离</td></tr>
+          </tbody>
+        </table>
+
+        <div class="callout danger">admins/members 是授权数据。Workspace 列表通过整批校验后才能提交；一旦完整 snapshot 成功，必须覆盖旧数组，使 Hilbert 已移除的账号立即失权。</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">06</div><h2>认证与实时授权</h2></div>
+      <div class="content">
+        <h3>JWT 只表达身份</h3>
+        <pre><code>{
+  "collector_id": 9,
+  "operator_id": "alice",
+  "role": "data_collector"
+}</code></pre>
+        <p>JWT 不包含 <code>workspace_id</code> 或 Workspace 列表。关系可能在 token 有效期内变化，所有 Workspace 授权必须查询当前数据库。</p>
+
+        <h3>登录准入</h3>
+        <pre><code>Hilbert account/login succeeds
+  -> find active data_collectors by account.code
+  -> require account.code in any active workspace admins/members
+  -> issue Keystone JWT</code></pre>
+        <ul>
+          <li>Hilbert 负责验证账号密码与账号策略。</li>
+          <li>Keystone collector 必须存在且全局状态为 <code>active</code>。</li>
+          <li>account code 必须至少出现在一个有效 Workspace 的 admins/members，否则返回 <code>403 collector has no accessible workspace</code>。</li>
+          <li>登录只更新全局 collector 的名称与 <code>last_login_at</code>，不修改工位状态。</li>
+        </ul>
+
+        <h3>授权原语</h3>
+        <pre><code>CanCollectorAccessWorkspace(operatorID, workspaceID):
+    workspace = load workspace by ID
+    return contains(workspace.admins, operatorID)
+        OR contains(workspace.members, operatorID)
+
+ListAccessibleWorkspaceIDs(operatorID):
+    load active workspace id + admins + members
+    parse JSON arrays with the standard parser
+    return IDs whose arrays contain operatorID</code></pre>
+
+        <div class="grid-3">
+          <div class="panel yellow"><h3>列表资源</h3><p>先计算可访问 Workspace ID，再限制查询范围，并继续叠加“分配给本人”的业务条件。</p></div>
+          <div class="panel orange"><h3>单个资源</h3><p>先读取资源自身的 <code>workspace_id</code>，再调用授权原语；不信任客户端提交的 Workspace。</p></div>
+          <div class="panel blue"><h3>撤权</h3><p>code 从 admins/members 移除后，下一次请求立即返回 403，不等待重新登录。</p></div>
+        </div>
+
+        <div class="callout">admins/members 只提供 Workspace 边界授权，不代表数采员能看到 Workspace 中所有人的数据。任务、Episode、工位等仍要保留 collector ownership 条件。</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">07</div><h2>任务与工位行为</h2></div>
+      <div class="content">
+        <h3>数采计划生成任务</h3>
+        <pre><code>require CanCollectorAccessWorkspace(
+    dc_plan.operator,
+    dc_plan.workspace_id
+)
+
+collector = SELECT *
+FROM data_collectors
+WHERE operator_id = dc_plan.operator
+  AND status = 'active'
+  AND deleted_at IS NULL</code></pre>
+        <p>先用计划 Workspace 的 admins/members 验证 operator，再解析全局 collector。同一 operator 在多个 Workspace 中始终得到同一个 collector ID。</p>
+
+        <h3>当前工位解析</h3>
+        <pre><code>current workstation =
+  data_collector_id = collector.id
+  AND workspace_id = task.workspace_id
+  AND is_current = TRUE
+  AND deleted_at IS NULL</code></pre>
+
+        <table>
+          <thead><tr><th>约束</th><th>规则</th></tr></thead>
+          <tbody>
+            <tr><td>创建 current workstation</td><td>collector 的 operator code 必须出现在目标 Workspace admins/members。</td></tr>
+            <tr><td>Robot 一致性</td><td><code>robot.workspace_id == workstation.workspace_id</code>。</td></tr>
+            <tr><td>计划一致性</td><td><code>dc_plan.workspace_id == robot.workspace_id == workstation.workspace_id</code>。</td></tr>
+            <tr><td>多 Workspace 并存</td><td>同一 collector 每个 Workspace 可有一条 current workstation。</td></tr>
+            <tr><td>plan-specific workstation</td><td>继续允许 <code>is_current=false</code> 的历史/计划专用绑定，不受 current 唯一约束影响。</td></tr>
+            <tr><td>code 被移出 Workspace</td><td>禁止新建和使用该 Workspace 的 current workstation；已有行保留用于历史引用。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">08</div><h2>API 与 Synapse 体验</h2></div>
+      <div class="content">
+        <h3>管理员端</h3>
+        <ul>
+          <li>管理员继续先选择 Workspace，再管理该 Workspace 的设备、数采员、工位和计划。</li>
+          <li><code>GET /data_collectors?workspace_id=...</code> 读取 Workspace admins/members，再按 operator code 返回全局 collector。</li>
+          <li>Hilbert Workspace 的成员关系只读；新增和移除必须回到 Hilbert，下一次同步后生效。</li>
+          <li>default 本地 Workspace 可以通过 Keystone API 向 members 数组添加或移除 operator code。</li>
+          <li>全局 collector 的软删除是独立身份操作，不隐式改写任何 Workspace 数组。</li>
+        </ul>
+
+        <h3>数采员端</h3>
+        <div class="grid-2">
+          <div class="panel blue">
+            <h3>不增加 Workspace selector</h3>
+            <p>登录后仍进入 <code>/operator/control</code>。前端不保存 selectedWorkspaceId，也不要求数采员理解 Workspace 层级。</p>
+          </div>
+          <div class="panel yellow">
+            <h3>聚合本人相关资源</h3>
+            <p>任务、工位、Episode 和统计自动覆盖该 collector 在所有有效 Workspace 中的本人数据。</p>
+          </div>
+        </div>
+        <ul>
+          <li>重名任务、设备或工位旁可以显示 Workspace 名称用于消歧，但不提供切换控件。</li>
+          <li>操作任务时，Workspace 从 task/robot/workstation 资源本身推导。</li>
+          <li>Collector API 不接受前端用任意 <code>workspace_id</code> 扩大查询范围；后端始终按 admins/members 计算可访问边界。</li>
+        </ul>
+
+        <h3><code>GET /auth/me</code> 调整</h3>
+        <pre><code>{
+  "collector_id": "9",
+  "operator_id": "alice",
+  "name": "Alice",
+  "role": "data_collector",
+  "workspace_count": 2,
+  "workstations": [
+    {
+      "id": "101",
+      "workspace_id": "10",
+      "robot_id": "501",
+      "status": "active"
+    },
+    {
+      "id": "205",
+      "workspace_id": "20",
+      "robot_id": "702",
+      "status": "offline"
+    }
+  ]
+}</code></pre>
+        <p>删除单数 <code>workstation_id/robot_id</code> 假设。由于只部署新 main-v2，不提供旧响应字段兼容。</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">09</div><h2>实现范围</h2></div>
+      <div class="content">
+        <table>
+          <thead><tr><th>模块</th><th>主要修改</th></tr></thead>
+          <tbody>
+            <tr><td>V2 initial schema</td><td>删除 collector 单 Workspace 列；Workspace admins/members 改为 JSON；workstations 使用物理 <code>workspace_id</code> 并调整 current 唯一索引。</td></tr>
+            <tr><td>Workspace resource sync</td><td>原子覆盖 admins/members 快照、全局 collector upsert、run-level account cache、Workspace/device 故障隔离。</td></tr>
+            <tr><td>Auth</td><td>登录检查 code 至少出现在一个 Workspace；JWT 保持全局 collector ID；<code>/auth/me</code> 返回工位数组。</td></tr>
+            <tr><td>Authorization helper</td><td>增加统一的 collector Workspace access 查询，供 task、episode、station、statistics 使用。</td></tr>
+            <tr><td>Data collector admin API</td><td>列表按 Workspace admins/members 解析；Hilbert Workspace 只读；default Workspace 可维护 members。</td></tr>
+            <tr><td>Task generation</td><td>按 operator + plan Workspace 验证 admins/members；current workstation 查询加入 Workspace。</td></tr>
+            <tr><td>Station API</td><td>创建/更新校验 collector code 与 Workspace 数组、robot Workspace；所有 current 查询显式限定 Workspace。</td></tr>
+            <tr><td>Operator APIs</td><td>聚合 collector 在所有有效 Workspace 的本人资源，不要求 Workspace 参数。</td></tr>
+            <tr><td>Synapse</td><td>不增加 selector；适配 <code>/auth/me.workstations[]</code>；必要位置展示 Workspace 消歧标签。</td></tr>
+            <tr><td>OpenAPI</td><td>更新 collector 创建语义、<code>/auth/me</code> DTO、Workspace 授权错误与示例。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>明确不做</h3>
+        <ul class="decision-list panel">
+          <li>不设计旧数据库迁移、数据回填、双写或灰度切换。</li>
+          <li>不保留单数 <code>workstation_id/robot_id</code> 响应兼容。</li>
+          <li>不让数采员选择或提交当前 Workspace。</li>
+          <li>不把 Hilbert admin/member 映射为 Keystone 管理角色。</li>
+          <li>不建设通用用户、组织、角色和权限平台。</li>
+          <li>不增加第二份 Workspace 用户关系数据，也不使用 hash-wrapped 字符串模糊查询。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">10</div><h2>实施顺序与验证</h2></div>
+      <div class="content">
+        <h3>建议拆分</h3>
+        <table>
+          <thead><tr><th>阶段</th><th>内容</th><th>完成条件</th></tr></thead>
+          <tbody>
+            <tr><td>PR-9A</td><td>V2 schema、Workspace access repository、同步算法</td><td>同一 Hilbert code 只有一个 collector，并可出现在多个 Workspace JSON 数组；撤权随快照覆盖生效。</td></tr>
+            <tr><td>PR-9B</td><td>认证、授权 helper、collector admin API</td><td>JWT 身份稳定；code 从数组移除后无需重新登录即可拒绝访问。</td></tr>
+            <tr><td>PR-9C</td><td>task generation、station、operator 聚合查询</td><td>跨 Workspace 任务正确匹配各自 current workstation，不发生串 Workspace。</td></tr>
+            <tr><td>PR-9D</td><td>Synapse 与 OpenAPI 收口</td><td>数采员无需选择 Workspace，可看到所有本人相关资源；管理员 scoped UI 不回归。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>关键测试矩阵</h3>
+        <div class="grid-2">
+          <div class="panel yellow">
+            <h3>数据与同步</h3>
+            <ul>
+              <li>一个 code 同时属于两个 Workspace。</li>
+              <li>admin/member 重复 code 去重。</li>
+              <li>完整 snapshot 覆盖已移除账号。</li>
+              <li>账号查询失败不回滚已验证的 Workspace 快照。</li>
+              <li>default Workspace 数组不被 Hilbert 同步修改。</li>
+            </ul>
+          </div>
+          <div class="panel orange">
+            <h3>认证与授权</h3>
+            <ul>
+              <li>code 出现在多个 Workspace 时只签发一个 collector JWT。</li>
+              <li>code 不在任何 Workspace 时登录返回 403。</li>
+              <li>从一个 Workspace 数组移除后仅对应 Workspace 失权。</li>
+              <li>伪造 workspace_id 不能扩大访问范围。</li>
+              <li>全局 inactive collector 在所有 Workspace 失权。</li>
+            </ul>
+          </div>
+          <div class="panel blue">
+            <h3>任务与工位</h3>
+            <ul>
+              <li>同一 collector 在两个 Workspace 各有 current workstation。</li>
+              <li>任务只使用同 Workspace 工位。</li>
+              <li>Robot/collector Workspace 不一致时拒绝绑定。</li>
+              <li>plan-specific 非 current 工位继续允许。</li>
+            </ul>
+          </div>
+          <div class="panel red">
+            <h3>Synapse</h3>
+            <ul>
+              <li>登录后不出现 Workspace 选择页。</li>
+              <li>聚合列表包含两个 Workspace 的本人任务。</li>
+              <li>重名资源有 Workspace 消歧信息。</li>
+              <li><code>/auth/me.workstations[]</code> 空、单条、多条均正常。</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>验收口径</h3>
+        <div class="verdict">使用同一个 Hilbert 账号加入两个 Workspace：同步后 Keystone 只有一个 collector，两个 Workspace 的 admins/members 分别包含该 code；登录一次即可看到两个 Workspace 中分配给本人的任务；执行任一任务时只使用任务所属 Workspace 的工位；从其中一个 Workspace 移除该 code 后，该 Workspace 资源立即不可访问，另一个 Workspace 不受影响。</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">11</div><h2>风险与约束</h2></div>
+      <div class="content">
+        <table>
+          <thead><tr><th>风险</th><th>控制措施</th></tr></thead>
+          <tbody>
+            <tr><td>可访问 Workspace 计算需要解析 JSON</td><td>通过统一 repository 和标准 JSON parser 实现；Workspace 规模扩大后再评估 MySQL JSON 查询或派生索引。</td></tr>
+            <tr><td>同步失败造成权限快照不完整</td><td>先完整校验 Workspace 列表，再在单事务中原子覆盖全部 Hilbert Workspace 数组。</td></tr>
+            <tr><td>访问数组与资源 Workspace 串线</td><td>Station、task generation 和所有写操作统一验证 Workspace 一致性。</td></tr>
+            <tr><td>前端误把 Workspace access 当作数据可见性</td><td>后端同时执行 Workspace 授权与 collector ownership 过滤。</td></tr>
+            <tr><td>用户在多个 Workspace 有多个工位</td><td><code>/auth/me</code> 返回数组；任务执行按 task Workspace 精确选择。</td></tr>
+            <tr><td>Hilbert account code 变化</td><td>当前契约继续以 code 作为登录和计划 operator 匹配键；同时在 metadata 保留 Hilbert account ID 便于诊断。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="footer-note">FINAL LOCK · GLOBAL IDENTITY / WORKSPACE ACCESS SOURCE OF TRUTH / TRANSPARENT OPERATOR EXPERIENCE</div>
+  </main>
+</body>
+</html>

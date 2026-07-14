@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
@@ -130,11 +131,10 @@ type robotInfoRow struct {
 
 // dataCollectorInfoRow represents data collector info retrieved from DB
 type dataCollectorInfoRow struct {
-	ID          int64  `db:"id"`
-	WorkspaceID int64  `db:"workspace_id"`
-	Name        string `db:"name"`
-	OperatorID  string `db:"operator_id"`
-	Status      string `db:"status"`
+	ID         int64  `db:"id"`
+	Name       string `db:"name"`
+	OperatorID string `db:"operator_id"`
+	Status     string `db:"status"`
 }
 
 // CreateStation handles station creation requests.
@@ -211,7 +211,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 
 	var dcInfo dataCollectorInfoRow
 	err = h.db.Get(&dcInfo, `
-		SELECT id, organization_id AS workspace_id, name, operator_id, status
+		SELECT id, name, operator_id, status
 		FROM data_collectors 
 		WHERE id = ? AND deleted_at IS NULL
 	`, dcID)
@@ -230,20 +230,14 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector status must be active to be paired"})
 		return
 	}
-	if robotInfo.WorkspaceID != dcInfo.WorkspaceID {
-		c.JSON(http.StatusConflict, gin.H{"error": "cross-workspace station binding is not allowed"})
-		return
-	}
-
-	// Validate that the data_collector's workspace still exists.
-	var dcWorkspaceExists bool
-	if err = h.db.Get(&dcWorkspaceExists, "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL)", dcInfo.WorkspaceID); err != nil {
-		logger.Printf("[STATION] Failed to query workspace for data collector: %v", err)
+	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), h.db, dcInfo.OperatorID, robotInfo.WorkspaceID)
+	if err != nil {
+		logger.Printf("[STATION] Failed to check collector Workspace access: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create station"})
 		return
 	}
-	if !dcWorkspaceExists {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace not found"})
+	if !allowed {
+		c.JSON(http.StatusConflict, gin.H{"error": "cross-workspace station binding is not allowed"})
 		return
 	}
 
@@ -270,8 +264,8 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 	// Check if data_collector is already assigned to a current station.
 	err = h.db.Get(&existingStationID, `
 		SELECT id FROM workstations 
-		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-	`, dcInfo.ID)
+		WHERE data_collector_id = ? AND workspace_id = ? AND is_current = TRUE AND deleted_at IS NULL
+	`, dcInfo.ID, robotInfo.WorkspaceID)
 	if err == nil {
 		// Data collector is already assigned
 		c.JSON(http.StatusConflict, gin.H{
@@ -330,7 +324,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 				robot_serial = ?,
 				collector_name = ?,
 				collector_operator_id = ?,
-				organization_id = ?,
+				workspace_id = ?,
 				status = ?,
 				is_current = TRUE,
 				superseded_at = NULL,
@@ -343,7 +337,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 			robotInfo.DeviceID,
 			dcInfo.Name,
 			dcInfo.OperatorID,
-			dcInfo.WorkspaceID,
+			robotInfo.WorkspaceID,
 			"offline",
 			metadataStr,
 			now,
@@ -368,7 +362,7 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 				data_collector_id,
 				collector_name,
 				collector_operator_id,
-				organization_id,
+				workspace_id,
 				name,
 				status,
 				is_current,
@@ -381,9 +375,9 @@ func (h *StationHandler) CreateStation(c *gin.Context) {
 			robotInfo.DeviceID,
 			robotInfo.DeviceID, // robot_serial from device_id
 			dcInfo.ID,
-			dcInfo.Name,        // collector_name
-			dcInfo.OperatorID,  // collector_operator_id
-			dcInfo.WorkspaceID, // physical organization_id stores workspace ownership
+			dcInfo.Name,       // collector_name
+			dcInfo.OperatorID, // collector_operator_id
+			robotInfo.WorkspaceID,
 			stationName,
 			"offline",
 			true,
@@ -497,11 +491,11 @@ func (h *StationHandler) getStationResponseRow(stationID int64, currentOnly bool
 		SELECT
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
-			ws.organization_id AS workspace_id, o.name AS workspace_name,
+			ws.workspace_id AS workspace_id, o.name AS workspace_name,
 			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = ws.workspace_id AND o.deleted_at IS NULL
 		`+where, stationID)
 	return station, err
 }
@@ -571,7 +565,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 
 	whereClause := "WHERE ws.deleted_at IS NULL AND ws.is_current = TRUE"
 	args := []any{}
-	whereClause, args = appendInt64InFilter(whereClause, args, "ws.organization_id", workspaceIDs)
+	whereClause, args = appendInt64InFilter(whereClause, args, "ws.workspace_id", workspaceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "ws.status", statuses)
 	whereClause, args = appendStringInFilter(whereClause, args, "ws.robot_serial", deviceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "ws.collector_name", collectorNames)
@@ -582,7 +576,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		SELECT COUNT(*)
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = ws.workspace_id AND o.deleted_at IS NULL
 		` + whereClause
 	var total int
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
@@ -596,11 +590,11 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		SELECT 
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
-			ws.organization_id AS workspace_id, o.name AS workspace_name,
+			ws.workspace_id AS workspace_id, o.name AS workspace_name,
 			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
 		FROM workstations ws
 		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		INNER JOIN workspaces o ON o.id = ws.organization_id AND o.deleted_at IS NULL
+		INNER JOIN workspaces o ON o.id = ws.workspace_id AND o.deleted_at IS NULL
 		` + whereClause + `
 	`
 	orderClause, orderArgs := keywordOrderBy(keyword, "ws.id DESC", stationSearchFields...)
@@ -735,7 +729,7 @@ func (h *StationHandler) LookupStations(c *gin.Context) {
 			data_collector_id,
 			COALESCE(collector_name, '') AS collector_name,
 			COALESCE(collector_operator_id, '') AS collector_operator_id,
-			organization_id AS workspace_id,
+			workspace_id AS workspace_id,
 			name, status,
 			deleted_at
 		FROM workstations
@@ -888,10 +882,11 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	var current struct {
 		RobotID         int64  `db:"robot_id"`
 		DataCollectorID int64  `db:"data_collector_id"`
+		WorkspaceID     int64  `db:"workspace_id"`
 		Status          string `db:"status"`
 	}
 	if err := h.db.Get(&current, `
-		SELECT robot_id, data_collector_id, status
+		SELECT robot_id, data_collector_id, workspace_id, status
 		FROM workstations
 		WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL
 	`, stationID); err != nil {
@@ -941,7 +936,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 
 	var collector dataCollectorInfoRow
 	if err := h.db.Get(&collector, `
-		SELECT id, organization_id AS workspace_id, name, operator_id, status
+		SELECT id, name, operator_id, status
 		FROM data_collectors WHERE id = ? AND deleted_at IS NULL
 	`, collectorID); err != nil {
 		if err == sql.ErrNoRows {
@@ -956,7 +951,13 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector status must be active to be paired"})
 		return
 	}
-	if robot.WorkspaceID != collector.WorkspaceID {
+	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), h.db, collector.OperatorID, robot.WorkspaceID)
+	if err != nil {
+		logger.Printf("[STATION] Failed to check update collector Workspace access: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+		return
+	}
+	if !allowed {
 		c.JSON(http.StatusConflict, gin.H{"error": "cross-workspace station binding is not allowed"})
 		return
 	}
@@ -967,9 +968,9 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			SELECT EXISTS(
 				SELECT 1 FROM workstations
 				WHERE id != ? AND is_current = TRUE AND deleted_at IS NULL
-				  AND (robot_id = ? OR data_collector_id = ?)
+				  AND (robot_id = ? OR (data_collector_id = ? AND workspace_id = ?))
 			)
-		`, stationID, robotID, collectorID); err != nil {
+		`, stationID, robotID, collectorID, robot.WorkspaceID); err != nil {
 			logger.Printf("[STATION] Failed to check update binding conflict: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 			return
@@ -992,12 +993,12 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	setClauses := []string{
 		"robot_id = ?", "robot_name = ?", "robot_serial = ?",
 		"data_collector_id = ?", "collector_name = ?", "collector_operator_id = ?",
-		"organization_id = ?", "status = ?", "updated_at = ?",
+		"workspace_id = ?", "status = ?", "updated_at = ?",
 	}
 	args := []any{
 		robot.ID, robot.DeviceID, robot.DeviceID,
 		collector.ID, collector.Name, collector.OperatorID,
-		collector.WorkspaceID, status, time.Now().UTC(),
+		robot.WorkspaceID, status, time.Now().UTC(),
 	}
 	if len(req.Metadata) > 0 {
 		metadata := strings.TrimSpace(string(req.Metadata))

@@ -155,7 +155,7 @@ func (s *WorkspaceResourceSyncService) syncCollectors(
 			result.addError("collector", code, "account_missing", "workspace member account was not returned")
 			continue
 		}
-		upserted, upsertErr := upsertHilbertDataCollector(ctx, tx, workspace.ID, *account, syncedAt)
+		upserted, upsertErr := upsertHilbertDataCollector(ctx, tx, *account, syncedAt)
 		if upsertErr != nil {
 			result.CollectorSkippedCount++
 			result.addError("collector", code, "collector_upsert_failed", upsertErr.Error())
@@ -167,7 +167,7 @@ func (s *WorkspaceResourceSyncService) syncCollectors(
 	}
 }
 
-func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, workspaceID int64, account auth.HilbertAccount, syncedAt time.Time) (bool, error) {
+func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, account auth.HilbertAccount, syncedAt time.Time) (bool, error) {
 	operatorID := strings.TrimSpace(account.Code)
 	if operatorID == "" {
 		return false, fmt.Errorf("hilbert account code is empty")
@@ -180,12 +180,6 @@ func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, workspaceID in
 	if err == nil && existingSource != hilbertMetadataSource {
 		return false, fmt.Errorf("active data collector with operator_id %s is not a Hilbert projection", operatorID)
 	}
-	if err == nil {
-		if err := ensureCollectorWorkspaceBindingCompatible(ctx, tx, operatorID, workspaceID); err != nil {
-			return false, err
-		}
-	}
-
 	name := strings.TrimSpace(account.DisplayName)
 	if name == "" {
 		name = operatorID
@@ -197,7 +191,6 @@ func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, workspaceID in
 		"hilbert_role":               account.Role,
 		"hilbert_external_user_type": account.ExternalUserType,
 		"hilbert_status":             account.Status,
-		"hilbert_workspace_id":       workspaceID,
 		"last_seen_at":               syncedAt.Format(time.RFC3339),
 	})
 	if err != nil {
@@ -206,28 +199,26 @@ func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, workspaceID in
 
 	if tx.DriverName() == "sqlite" {
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO data_collectors (organization_id, name, operator_id, status, metadata, created_at, updated_at, deleted_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+			INSERT INTO data_collectors (name, operator_id, status, metadata, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, NULL)
 			ON CONFLICT(operator_id) DO UPDATE SET
-				organization_id = excluded.organization_id,
 				name = excluded.name,
 				metadata = excluded.metadata,
 				updated_at = excluded.updated_at,
 				deleted_at = NULL
-		`, workspaceID, name, operatorID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
+		`, name, operatorID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
 		return err == nil, err
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO data_collectors (organization_id, name, operator_id, status, metadata, created_at, updated_at, deleted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+		INSERT INTO data_collectors (name, operator_id, status, metadata, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?, NULL)
 		ON DUPLICATE KEY UPDATE
-			organization_id = VALUES(organization_id),
 			name = VALUES(name),
 			metadata = VALUES(metadata),
 			updated_at = VALUES(updated_at),
 			deleted_at = NULL
-	`, workspaceID, name, operatorID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
+	`, name, operatorID, hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
 	return err == nil, err
 }
 
@@ -285,32 +276,6 @@ func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCD
 	return err == nil, err
 }
 
-func ensureCollectorWorkspaceBindingCompatible(ctx context.Context, tx *sqlx.Tx, operatorID string, workspaceID int64) error {
-	var mismatch bool
-	if err := tx.GetContext(ctx, &mismatch, `
-		SELECT EXISTS(
-			SELECT 1
-			FROM data_collectors dc
-			INNER JOIN workstations ws
-				ON ws.data_collector_id = dc.id
-				AND ws.is_current = TRUE
-				AND ws.deleted_at IS NULL
-			INNER JOIN robots r
-				ON r.id = ws.robot_id
-				AND r.deleted_at IS NULL
-			WHERE dc.operator_id = ?
-				AND dc.deleted_at IS NULL
-				AND r.workspace_id <> ?
-		)
-	`, operatorID, workspaceID); err != nil {
-		return fmt.Errorf("check collector workspace binding: %w", err)
-	}
-	if mismatch {
-		return fmt.Errorf("current workstation binding belongs to another workspace")
-	}
-	return nil
-}
-
 func ensureRobotWorkspaceBindingCompatible(ctx context.Context, tx *sqlx.Tx, deviceID string, workspaceID int64) error {
 	var mismatch bool
 	if err := tx.GetContext(ctx, &mismatch, `
@@ -321,12 +286,9 @@ func ensureRobotWorkspaceBindingCompatible(ctx context.Context, tx *sqlx.Tx, dev
 				ON ws.robot_id = r.id
 				AND ws.is_current = TRUE
 				AND ws.deleted_at IS NULL
-			INNER JOIN data_collectors dc
-				ON dc.id = ws.data_collector_id
-				AND dc.deleted_at IS NULL
 			WHERE r.device_id = ?
 				AND r.deleted_at IS NULL
-				AND dc.organization_id <> ?
+				AND ws.workspace_id <> ?
 		)
 	`, deviceID, workspaceID); err != nil {
 		return fmt.Errorf("check robot workspace binding: %w", err)

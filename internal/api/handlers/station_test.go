@@ -35,7 +35,7 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, organization_id,
+				collector_name, collector_operator_id, workspace_id,
 				name, status, metadata, created_at, updated_at, deleted_at
 			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'active', '{}', ?, ?, NULL)`,
 			args: []any{now, now},
@@ -43,7 +43,7 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, organization_id,
+				collector_name, collector_operator_id, workspace_id,
 				name, status, metadata, created_at, updated_at, deleted_at
 			) VALUES (2, 2, 'device-b', 'device-b', 101, 'Bob', 'C002', 61, 'ws-b', 'inactive', '{}', ?, ?, NULL)`,
 			args: []any{now, now},
@@ -51,7 +51,7 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, organization_id,
+				collector_name, collector_operator_id, workspace_id,
 				name, status, metadata, created_at, updated_at, deleted_at
 			) VALUES (3, 3, 'device-c', 'device-c', 102, 'Alice', 'C003', 60, 'ws-c', 'offline', '{}', ?, ?, NULL)`,
 			args: []any{now, now},
@@ -92,9 +92,9 @@ func TestStationHandlerCreateRejectsCrossWorkspaceBinding(t *testing.T) {
 	db := newTestStationHandlerDB(t)
 	defer db.Close()
 	for _, stmt := range []string{
-		`INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Workspace A', NULL), (61, 'Workspace B', NULL)`,
+		`INSERT INTO workspaces (id, name, members, deleted_at) VALUES (60, 'Workspace A', '["C001"]', NULL), (61, 'Workspace B', '[]', NULL)`,
 		`INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES (1, 'device-a', 61, 'active', NULL)`,
-		`INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`,
+		`INSERT INTO data_collectors (id, name, operator_id, status, deleted_at) VALUES (100, 'Alice', 'C001', 'active', NULL)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("seed cross-workspace fixture: %v", err)
@@ -121,13 +121,13 @@ func TestStationHandlerUpdateUsesCurrentWorkspaceFields(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Workspace A', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, members, deleted_at) VALUES (60, 'Workspace A', '["C001"]', NULL)`},
 		{sql: `INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES (1, 'device-a', 60, 'active', NULL)`},
-		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
+		{sql: `INSERT INTO data_collectors (id, name, operator_id, status, deleted_at) VALUES (100, 'Alice', 'C001', 'active', NULL)`},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, organization_id,
+				collector_name, collector_operator_id, workspace_id,
 				name, status, is_current, metadata, created_at, updated_at, deleted_at
 			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'offline', TRUE, '{}', ?, ?, NULL)`,
 			args: []any{now, now},
@@ -173,13 +173,13 @@ func TestStationHandlerDeleteUnbindsAndCreateReusesHistoricalBinding(t *testing.
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
-		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, members, deleted_at) VALUES (60, 'Org A', '["C001"]', NULL)`},
+		{sql: `INSERT INTO data_collectors (id, name, operator_id, status, deleted_at) VALUES (100, 'Alice', 'C001', 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES (1, 'device-a', 60, 'active', NULL)`},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, organization_id,
+				collector_name, collector_operator_id, workspace_id,
 				name, status, is_current, metadata, created_at, updated_at, deleted_at
 			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'active', TRUE, '{"old":true}', ?, ?, NULL)`,
 			args: []any{now, now},
@@ -258,13 +258,13 @@ func TestStationHandlerDeleteRejectsPendingOrActiveTasks(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
-		{sql: `INSERT INTO data_collectors (id, organization_id, name, operator_id, status, deleted_at) VALUES (100, 60, 'Alice', 'C001', 'active', NULL)`},
+		{sql: `INSERT INTO workspaces (id, name, members, deleted_at) VALUES (60, 'Org A', '["C001"]', NULL)`},
+		{sql: `INSERT INTO data_collectors (id, name, operator_id, status, deleted_at) VALUES (100, 'Alice', 'C001', 'active', NULL)`},
 		{sql: `INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES (1, 'device-a', 60, 'active', NULL)`},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
-				collector_name, collector_operator_id, organization_id,
+				collector_name, collector_operator_id, workspace_id,
 				name, status, is_current, metadata, created_at, updated_at, deleted_at
 			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'active', TRUE, '{}', ?, ?, NULL)`,
 			args: []any{now, now},
@@ -317,6 +317,8 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
+			admins TEXT NOT NULL DEFAULT '[]',
+			members TEXT NOT NULL DEFAULT '[]',
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE robots (
@@ -328,7 +330,6 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 		)`,
 		`CREATE TABLE data_collectors (
 			id INTEGER PRIMARY KEY,
-			organization_id INTEGER NOT NULL,
 			name TEXT NOT NULL,
 			operator_id TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -342,7 +343,7 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 			data_collector_id INTEGER NOT NULL,
 			collector_name TEXT,
 			collector_operator_id TEXT,
-			organization_id INTEGER NOT NULL,
+			workspace_id INTEGER NOT NULL,
 			name TEXT,
 			status TEXT NOT NULL,
 			is_current BOOLEAN NOT NULL DEFAULT TRUE,

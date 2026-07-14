@@ -195,7 +195,7 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			robot_id INTEGER,
 			data_collector_id INTEGER,
-			organization_id INTEGER,
+			workspace_id INTEGER,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE robots (

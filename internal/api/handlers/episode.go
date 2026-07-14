@@ -22,6 +22,7 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
+	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
@@ -152,6 +153,17 @@ func (h *EpisodeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/:id/presign", h.GetEpisodePresignedURL)
 }
 
+// RegisterReadRoutes registers JWT-protected episode list and detail routes.
+func (h *EpisodeHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.GET("", h.ListEpisodes)
+	apiV1.GET("/:id", h.GetEpisode)
+}
+
+// RegisterPresignRoute keeps the presign endpoint's JWT/download-token authentication contract.
+func (h *EpisodeHandler) RegisterPresignRoute(apiV1 *gin.RouterGroup) {
+	apiV1.GET("/:id/presign", h.GetEpisodePresignedURL)
+}
+
 // parseEpisodeRFC3339 parses RFC3339 / RFC3339Nano timestamps for episode list filters (UTC).
 func parseEpisodeRFC3339(raw string) (time.Time, error) {
 	s := strings.TrimSpace(raw)
@@ -238,6 +250,22 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	robotDeviceID := c.Query("robot_device_id")
 	createdAtFrom := strings.TrimSpace(c.Query("created_at_from"))
 	createdAtTo := strings.TrimSpace(c.Query("created_at_to"))
+	claims := middleware.GetClaims(c)
+	collectorWorkspaceIDs := []int64{}
+	if claims != nil && claims.Role == "data_collector" {
+		var accessErr error
+		collectorWorkspaceIDs, accessErr = services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, claims.OperatorID)
+		if accessErr != nil {
+			logger.Printf("[EPISODE] Failed to resolve collector Workspace access: %v", accessErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list episodes"})
+			return
+		}
+		if len(collectorWorkspaceIDs) == 0 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+			return
+		}
+		collectorOperatorID = ""
+	}
 
 	// Parse limit and offset with defaults
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -262,7 +290,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			t.task_id AS task_public_id,
 			e.dc_plan_id,
 			e.local_dc_plan_id,
-			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
+			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 			dp.name AS dc_plan_name,
 				dp.dc_type,
 			r.device_id AS robot_device_id,
@@ -298,6 +326,30 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 
 	args := []interface{}{}
 	argsCount := []interface{}{}
+	if claims != nil && claims.Role == "data_collector" {
+		placeholders := make([]string, 0, len(collectorWorkspaceIDs))
+		for range collectorWorkspaceIDs {
+			placeholders = append(placeholders, "?")
+		}
+		scope := ` AND EXISTS (
+			SELECT 1 FROM workstations ws_scope
+			WHERE ws_scope.id = COALESCE(e.workstation_id, (
+				SELECT t_scope.workstation_id FROM tasks t_scope
+				WHERE t_scope.id = e.task_id AND t_scope.deleted_at IS NULL
+			))
+				AND ws_scope.data_collector_id = ?
+				AND ws_scope.workspace_id IN (` + strings.Join(placeholders, ",") + `)
+				AND ws_scope.deleted_at IS NULL
+		)`
+		query += scope
+		countQuery += scope
+		args = append(args, claims.CollectorID)
+		argsCount = append(argsCount, claims.CollectorID)
+		for _, workspaceID := range collectorWorkspaceIDs {
+			args = append(args, workspaceID)
+			argsCount = append(argsCount, workspaceID)
+		}
+	}
 
 	// Add filters
 	if taskID != "" {
@@ -525,6 +577,9 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 	if !h.requireEpisodePresignAuth(c, kind) {
 		return
 	}
+	if !h.authorizeCollectorEpisode(c, episodeID) {
+		return
+	}
 
 	var row struct {
 		McapPath    string         `db:"mcap_path"`
@@ -588,6 +643,9 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.authorizeCollectorEpisode(c, episodeID) {
+		return
+	}
 
 	var row episodeRow
 	query := `
@@ -598,7 +656,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			t.task_id AS task_public_id,
 			e.dc_plan_id,
 			e.local_dc_plan_id,
-			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
+			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 			dp.name AS dc_plan_name,
 				dp.dc_type,
 			r.device_id AS robot_device_id,
@@ -668,4 +726,46 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		Labels:            episodeLabelsFromDB(row.LabelsJSON),
 		Metadata:          parseJSONRaw(row.Metadata.String),
 	})
+}
+
+func (h *EpisodeHandler) authorizeCollectorEpisode(c *gin.Context, episodeID int64) bool {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" {
+		return true
+	}
+	var scope struct {
+		CollectorID int64 `db:"data_collector_id"`
+		WorkspaceID int64 `db:"workspace_id"`
+	}
+	if err := h.db.GetContext(c.Request.Context(), &scope, `
+		SELECT ws.data_collector_id, COALESCE(t.organization_id, ws.workspace_id) AS workspace_id
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		INNER JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
+		LIMIT 1
+	`, episodeID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+			return false
+		}
+		logger.Printf("[EPISODE] Failed to authorize collector episode: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize episode"})
+		return false
+	}
+	if scope.CollectorID != claims.CollectorID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "episode access denied"})
+		return false
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), h.db, claims.OperatorID, scope.WorkspaceID)
+	if err != nil {
+		logger.Printf("[EPISODE] Failed to authorize episode Workspace: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize episode"})
+		return false
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+		return false
+	}
+	return true
 }

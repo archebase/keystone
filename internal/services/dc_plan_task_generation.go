@@ -172,11 +172,10 @@ func (s *DCPlanTaskGenerationService) generateForPlan(ctx context.Context, plan 
 }
 
 type planCollectorRow struct {
-	ID          int64          `db:"id"`
-	WorkspaceID int64          `db:"workspace_id"`
-	Name        string         `db:"name"`
-	OperatorID  string         `db:"operator_id"`
-	Metadata    sql.NullString `db:"metadata"`
+	ID         int64          `db:"id"`
+	Name       string         `db:"name"`
+	OperatorID string         `db:"operator_id"`
+	Metadata   sql.NullString `db:"metadata"`
 }
 
 type planRobotRow struct {
@@ -198,7 +197,7 @@ type planWorkstationRow struct {
 func resolvePlanCollector(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan) (planCollectorRow, error) {
 	var collector planCollectorRow
 	err := tx.GetContext(ctx, &collector, `
-		SELECT id, organization_id AS workspace_id, name, operator_id, metadata
+		SELECT id, name, operator_id, metadata
 		FROM data_collectors
 		WHERE operator_id = ? AND deleted_at IS NULL
 		LIMIT 1`+forUpdateClause(tx), strings.TrimSpace(plan.Operator))
@@ -208,7 +207,11 @@ func resolvePlanCollector(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCP
 	if err != nil {
 		return collector, fmt.Errorf("collector_query_failed")
 	}
-	if collector.WorkspaceID != plan.WorkspaceID {
+	allowed, accessErr := OperatorHasWorkspaceAccess(ctx, tx, collector.OperatorID, plan.WorkspaceID)
+	if accessErr != nil {
+		return collector, fmt.Errorf("collector_workspace_query_failed")
+	}
+	if !allowed {
 		return collector, fmt.Errorf("workspace_mismatch")
 	}
 	return collector, nil
@@ -247,9 +250,9 @@ func ensurePlanWorkstation(
 			COALESCE(robot_serial, '') AS robot_serial, COALESCE(collector_name, '') AS collector_name,
 			COALESCE(collector_operator_id, '') AS collector_operator_id
 		FROM workstations
-		WHERE robot_id = ? AND data_collector_id = ? AND deleted_at IS NULL
+		WHERE robot_id = ? AND data_collector_id = ? AND workspace_id = ? AND deleted_at IS NULL
 		ORDER BY is_current DESC, id DESC
-		LIMIT 1`+forUpdateClause(tx), robot.ID, collector.ID)
+		LIMIT 1`+forUpdateClause(tx), robot.ID, collector.ID, plan.WorkspaceID)
 	if err == nil {
 		return ws, nil
 	}
@@ -257,7 +260,7 @@ func ensurePlanWorkstation(
 		return ws, fmt.Errorf("workstation_query_failed")
 	}
 	isCurrent := !hasCurrentBinding(ctx, tx, "robot_id", robot.ID) &&
-		!hasCurrentBinding(ctx, tx, "data_collector_id", collector.ID)
+		!hasCurrentCollectorBinding(ctx, tx, collector.ID, plan.WorkspaceID)
 
 	name := fmt.Sprintf("Hilbert Plan %d Workstation", plan.ID)
 	metadata, err := marshalMetadata(map[string]any{
@@ -274,7 +277,7 @@ func ensurePlanWorkstation(
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO workstations (
 			robot_id, robot_name, robot_serial, data_collector_id, collector_name, collector_operator_id,
-			organization_id, name, status, metadata, created_at, updated_at, is_current
+			workspace_id, name, status, metadata, created_at, updated_at, is_current
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, robot.ID, robot.DeviceID, robot.DeviceID, collector.ID, collector.Name, collector.OperatorID,
 		plan.WorkspaceID, name, "active", metadata, now, now, isCurrent)
@@ -300,6 +303,18 @@ func hasCurrentBinding(ctx context.Context, tx *sqlx.Tx, column string, id int64
 	var count int
 	query := fmt.Sprintf("SELECT COUNT(*) FROM workstations WHERE %s = ? AND is_current = TRUE AND deleted_at IS NULL", column) //nolint:gosec // column is hardcoded by caller.
 	if err := tx.GetContext(ctx, &count, query, id); err != nil {
+		return true
+	}
+	return count > 0
+}
+
+func hasCurrentCollectorBinding(ctx context.Context, tx *sqlx.Tx, collectorID int64, workspaceID int64) bool {
+	var count int
+	if err := tx.GetContext(ctx, &count, `
+		SELECT COUNT(*)
+		FROM workstations
+		WHERE data_collector_id = ? AND workspace_id = ? AND is_current = TRUE AND deleted_at IS NULL
+	`, collectorID, workspaceID); err != nil {
 		return true
 	}
 	return count > 0

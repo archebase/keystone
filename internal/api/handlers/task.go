@@ -254,6 +254,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 			return
 		}
 	}
+	claims := middleware.GetClaims(c)
 
 	conditions := []string{"tasks.deleted_at IS NULL"}
 	args := make([]interface{}, 0, 6)
@@ -273,12 +274,32 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		args = append(args, status)
 	}
 	if workspaceID != "" {
-		conditions = append(conditions, "COALESCE(tasks.organization_id, ws.organization_id) = ?")
+		conditions = append(conditions, "COALESCE(tasks.organization_id, ws.workspace_id) = ?")
 		args = append(args, workspaceID)
 	}
 	if dcPlanID != "" {
 		conditions = append(conditions, "tasks.dc_plan_id = ?")
 		args = append(args, dcPlanID)
+	}
+	if claims != nil && claims.Role == "data_collector" {
+		workspaceIDs, accessErr := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, claims.OperatorID)
+		if accessErr != nil {
+			logger.Printf("[TASK] Failed to resolve collector Workspace access: %v", accessErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
+			return
+		}
+		if len(workspaceIDs) == 0 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+			return
+		}
+		placeholders := make([]string, 0, len(workspaceIDs))
+		conditions = append(conditions, "ws.data_collector_id = ?")
+		args = append(args, claims.CollectorID)
+		for _, id := range workspaceIDs {
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		conditions = append(conditions, "COALESCE(tasks.organization_id, ws.workspace_id) IN ("+strings.Join(placeholders, ",")+")")
 	}
 
 	whereClause := strings.Join(conditions, " AND ")
@@ -302,7 +323,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		tasks.error_message,
 		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at,
 		tasks.dc_plan_id AS dc_plan_id,
-		COALESCE(tasks.organization_id, ws.organization_id) AS workspace_id,
+		COALESCE(tasks.organization_id, ws.workspace_id) AS workspace_id,
 		dp.name AS dc_plan_name,
 		dp.dc_type AS dc_type,
 		dp.dc_device_id AS dc_device_id
@@ -383,25 +404,9 @@ func (h *TaskHandler) CompleteTasks(c *gin.Context) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var workstationID int64
-	if err := tx.Get(&workstationID, `
-		SELECT id
-		FROM workstations
-		WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-		LIMIT 1
-	`, claims.CollectorID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "workstation not assigned"})
-			return
-		}
-		logger.Printf("[TASK] complete tasks workstation query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
-		return
-	}
-
-	var planExists int
-	if err := tx.Get(&planExists, `
-		SELECT 1
+	var planWorkspaceID int64
+	if err := tx.Get(&planWorkspaceID, `
+		SELECT workspace_id
 		FROM dc_plan
 		WHERE id = ? AND deleted_at IS NULL
 		LIMIT 1
@@ -411,6 +416,31 @@ func (h *TaskHandler) CompleteTasks(c *gin.Context) {
 			return
 		}
 		logger.Printf("[TASK] complete tasks plan query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), tx, claims.OperatorID, planWorkspaceID)
+	if err != nil {
+		logger.Printf("[TASK] complete tasks Workspace access query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+		return
+	}
+	var workstationID int64
+	if err := tx.Get(&workstationID, `
+		SELECT id
+		FROM workstations
+		WHERE data_collector_id = ? AND workspace_id = ? AND is_current = TRUE AND deleted_at IS NULL
+		LIMIT 1
+	`, claims.CollectorID, planWorkspaceID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "workstation not assigned for dc plan workspace"})
+			return
+		}
+		logger.Printf("[TASK] complete tasks workstation query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
 		return
 	}
@@ -512,6 +542,9 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid task id"})
 		return
 	}
+	if !h.authorizeCollectorTask(c, id) {
+		return
+	}
 
 	var task TaskDetailResponse
 	query := `SELECT
@@ -520,7 +553,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		CASE WHEN t.workstation_id IS NULL THEN NULL ELSE CAST(t.workstation_id AS CHAR) END AS workstation_id,
 		t.organization_id AS organization_id,
 		t.dc_plan_id AS dc_plan_id,
-		COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
+		COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 		dp.name AS dc_plan_name,
 		dp.dc_type AS dc_type,
 		dp.dc_device_id AS dc_device_id,
@@ -578,6 +611,10 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 // @Failure      500 {object} map[string]string
 // @Router       /tasks/{id} [delete]
 func (h *TaskHandler) DeleteTask(c *gin.Context) {
+	if claims := middleware.GetClaims(c); claims != nil && claims.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error_msg": "admin role required"})
+		return
+	}
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
@@ -910,6 +947,9 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid task id"})
 		return
 	}
+	if !h.authorizeCollectorTask(c, id) {
+		return
+	}
 
 	var currentStatus string
 	if err := h.db.Get(&currentStatus, `
@@ -961,7 +1001,7 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 			COALESCE(ws.name, '') AS workstation_name,
 			dp.operator AS operator_name,
 			t.metadata AS metadata,
-			COALESCE(t.organization_id, ws.organization_id) AS workspace_id,
+			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 			t.dc_plan_id AS dc_plan_id,
 			dp.dc_type AS dc_type,
 			dp.dc_device_id AS dc_device_id,
@@ -1031,6 +1071,47 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, taskConfig)
+}
+
+func (h *TaskHandler) authorizeCollectorTask(c *gin.Context, taskID int64) bool {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" {
+		return true
+	}
+	var taskScope struct {
+		CollectorID int64 `db:"data_collector_id"`
+		WorkspaceID int64 `db:"workspace_id"`
+	}
+	if err := h.db.GetContext(c.Request.Context(), &taskScope, `
+		SELECT ws.data_collector_id, COALESCE(t.organization_id, ws.workspace_id) AS workspace_id
+		FROM tasks t
+		INNER JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
+		WHERE t.id = ? AND t.deleted_at IS NULL
+		LIMIT 1
+	`, taskID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error_msg": "task not found"})
+			return false
+		}
+		logger.Printf("[TASK] Failed to authorize collector task: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to authorize task"})
+		return false
+	}
+	if taskScope.CollectorID != claims.CollectorID {
+		c.JSON(http.StatusForbidden, gin.H{"error_msg": "task access denied"})
+		return false
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), h.db, claims.OperatorID, taskScope.WorkspaceID)
+	if err != nil {
+		logger.Printf("[TASK] Failed to authorize task Workspace: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to authorize task"})
+		return false
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error_msg": "workspace access denied"})
+		return false
+	}
+	return true
 }
 
 type taskExecutionConfig struct {

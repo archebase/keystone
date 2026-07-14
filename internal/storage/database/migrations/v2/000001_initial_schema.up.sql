@@ -14,8 +14,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
     name VARCHAR(100) NOT NULL,
     description VARCHAR(200),
     source VARCHAR(32) NOT NULL,
-    admins_str VARCHAR(200),
-    members_str VARCHAR(1024),
+    admins JSON NOT NULL,
+    members JSON NOT NULL,
     last_synced_at TIMESTAMP NULL,
     hilbert_created_at TIMESTAMP NULL,
     hilbert_updated_at TIMESTAMP NULL,
@@ -31,23 +31,23 @@ INSERT INTO workspaces (
     name,
     description,
     source,
-    admins_str,
-    members_str,
+    admins,
+    members,
     last_synced_at
 ) VALUES (
     0,
     'Default Workspace',
     'Local-only fallback workspace',
     'default',
-    NULL,
-    NULL,
+    JSON_ARRAY(),
+    JSON_ARRAY(),
     NULL
 ) ON DUPLICATE KEY UPDATE
     name = VALUES(name),
     description = VALUES(description),
     source = VALUES(source),
-    admins_str = VALUES(admins_str),
-    members_str = VALUES(members_str),
+    admins = VALUES(admins),
+    members = VALUES(members),
     last_synced_at = VALUES(last_synced_at);
 
 CREATE TABLE IF NOT EXISTS dc_plan (
@@ -117,7 +117,6 @@ CREATE TABLE IF NOT EXISTS robots (
 
 CREATE TABLE IF NOT EXISTS data_collectors (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    organization_id BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(255) NOT NULL,
     operator_id VARCHAR(100) NOT NULL,
     email VARCHAR(255),
@@ -131,7 +130,6 @@ CREATE TABLE IF NOT EXISTS data_collectors (
     deleted_at TIMESTAMP NULL,
     _operator_unique VARCHAR(200) GENERATED ALWAYS AS (CONCAT(IFNULL(operator_id, ''), '|', IFNULL(deleted_at, ''))) STORED,
     UNIQUE INDEX idx_operator_del (_operator_unique),
-    INDEX idx_organization (organization_id),
     INDEX idx_status (status),
     INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -144,7 +142,7 @@ CREATE TABLE IF NOT EXISTS workstations (
     data_collector_id BIGINT NOT NULL,
     collector_name VARCHAR(255) COMMENT 'Denormalized: avoids join to data_collectors',
     collector_operator_id VARCHAR(100) COMMENT 'Denormalized: avoids join to data_collectors',
-    organization_id BIGINT NOT NULL DEFAULT 0,
+    workspace_id BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(255),
     status ENUM('active', 'inactive', 'break', 'offline') DEFAULT 'active',
     metadata JSON DEFAULT NULL,
@@ -154,17 +152,21 @@ CREATE TABLE IF NOT EXISTS workstations (
     is_current BOOLEAN NOT NULL DEFAULT TRUE COMMENT 'Current binding version visible for new work',
     superseded_at TIMESTAMP NULL COMMENT 'When this binding was replaced by a newer workstation row',
     superseded_by BIGINT NULL COMMENT 'Newer workstation id that replaced this binding',
-    _current_collector_unique VARCHAR(200) GENERATED ALWAYS AS (
-        IF(is_current AND deleted_at IS NULL, CAST(data_collector_id AS CHAR), NULL)
+    _current_collector_workspace_unique VARCHAR(240) GENERATED ALWAYS AS (
+        IF(
+            is_current AND deleted_at IS NULL,
+            CONCAT(CAST(data_collector_id AS CHAR), '|', CAST(workspace_id AS CHAR)),
+            NULL
+        )
     ) STORED,
     _current_robot_unique VARCHAR(200) GENERATED ALWAYS AS (
         IF(is_current AND deleted_at IS NULL, CAST(robot_id AS CHAR), NULL)
     ) STORED,
-    UNIQUE INDEX idx_current_collector (_current_collector_unique),
+    UNIQUE INDEX idx_current_collector_workspace (_current_collector_workspace_unique),
     UNIQUE INDEX idx_current_robot (_current_robot_unique),
     INDEX idx_robot (robot_id),
     INDEX idx_collector (data_collector_id),
-    INDEX idx_organization (organization_id),
+    INDEX idx_workspace (workspace_id),
     INDEX idx_status (status),
     INDEX idx_current (is_current),
     INDEX idx_superseded_by (superseded_by),

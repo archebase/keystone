@@ -137,6 +137,12 @@ func testTaskGenerationPlan(id int64, workspaceID int64, targetCount int64) auth
 func seedTaskGenerationPlan(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
 	t.Helper()
 	if _, err := db.Exec(`
+		INSERT OR IGNORE INTO workspaces (id, admins, members, deleted_at)
+		VALUES (?, '[]', '[]', NULL)
+	`, plan.WorkspaceID); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
 			id, workspace_id, name, dc_factory_id, dc_service_provider_id, operator,
 			dc_project_id, dc_task_id, dc_device_id, dc_type, dc_date,
@@ -165,10 +171,25 @@ func seedTaskGenerationResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCP
 func seedTaskGenerationCollector(t *testing.T, db *sqlx.DB, id int64, workspaceID int64, name string, operatorID string) {
 	t.Helper()
 	if _, err := db.Exec(`
-		INSERT INTO data_collectors (id, organization_id, name, operator_id, status, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, name, operatorID, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
+		INSERT INTO data_collectors (id, name, operator_id, status, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, id, name, operatorID, "active", `{"source":"hilbert"}`, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("seed collector: %v", err)
+	}
+	var members string
+	if err := db.Get(&members, `SELECT members FROM workspaces WHERE id = ?`, workspaceID); err != nil {
+		t.Fatalf("query workspace members: %v", err)
+	}
+	values, err := DecodeWorkspacePeople(members)
+	if err != nil {
+		t.Fatalf("decode workspace members: %v", err)
+	}
+	encoded, err := EncodeWorkspacePeople(append(values, operatorID))
+	if err != nil {
+		t.Fatalf("encode workspace members: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE workspaces SET members = ? WHERE id = ?`, encoded, workspaceID); err != nil {
+		t.Fatalf("update workspace members: %v", err)
 	}
 }
 
@@ -246,6 +267,12 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if _, err := db.Exec(`
+		CREATE TABLE workspaces (
+			id INTEGER PRIMARY KEY,
+			admins TEXT NOT NULL,
+			members TEXT NOT NULL,
+			deleted_at TIMESTAMP
+		);
 		CREATE TABLE dc_plan (
 			id INTEGER PRIMARY KEY,
 			workspace_id INTEGER NOT NULL,
@@ -276,7 +303,6 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		);
 		CREATE TABLE data_collectors (
 			id INTEGER PRIMARY KEY,
-			organization_id INTEGER NOT NULL,
 			name TEXT NOT NULL,
 			operator_id TEXT NOT NULL,
 			status TEXT,
@@ -303,7 +329,7 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			data_collector_id INTEGER NOT NULL,
 			collector_name TEXT,
 			collector_operator_id TEXT,
-			organization_id INTEGER NOT NULL,
+			workspace_id INTEGER NOT NULL,
 			name TEXT,
 			status TEXT,
 			metadata TEXT,

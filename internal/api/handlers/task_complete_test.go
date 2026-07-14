@@ -52,6 +52,27 @@ func TestTaskHandlerCompleteTasksScopesToCurrentWorkstationAndPlanGroup(t *testi
 	assertTaskStatusCount(t, db, "dc_plan_id = 10 AND workstation_id = 1", "pending", 1)
 }
 
+func TestTaskHandlerCompleteTasksRejectsRevokedWorkspace(t *testing.T) {
+	db := newTaskCompleteTestDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE workspaces SET members = '[]' WHERE id = 123`); err != nil {
+		t.Fatalf("revoke membership: %v", err)
+	}
+	handler := NewTaskHandler(db, nil, nil, 0)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/tasks/complete", func(c *gin.Context) {
+		c.Set(middleware.ClaimsKey, auth.NewCollectorClaims(100, "collector-100"))
+		handler.CompleteTasks(c)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/tasks/complete", bytes.NewBufferString(`{"dc_plan_id":10,"quantity":1}`)))
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want=%d body=%s", recorder.Code, http.StatusForbidden, recorder.Body.String())
+	}
+}
+
 func newTaskCompleteTestDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 	db, err := sqlx.Open("sqlite", "file:task-complete?mode=memory&cache=shared")
@@ -60,8 +81,9 @@ func newTaskCompleteTestDB(t *testing.T) *sqlx.DB {
 	}
 	db.SetMaxOpenConns(1)
 	statements := []string{
-		`CREATE TABLE workstations (id INTEGER PRIMARY KEY, data_collector_id INTEGER, is_current BOOLEAN, deleted_at TIMESTAMP NULL)`,
-		`CREATE TABLE dc_plan (id INTEGER PRIMARY KEY, deleted_at TIMESTAMP NULL)`,
+		`CREATE TABLE workspaces (id INTEGER PRIMARY KEY, admins TEXT NOT NULL, members TEXT NOT NULL, deleted_at TIMESTAMP NULL)`,
+		`CREATE TABLE workstations (id INTEGER PRIMARY KEY, data_collector_id INTEGER, workspace_id INTEGER, is_current BOOLEAN, deleted_at TIMESTAMP NULL)`,
+		`CREATE TABLE dc_plan (id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, deleted_at TIMESTAMP NULL)`,
 		`CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY,
 			task_id TEXT NOT NULL,
@@ -74,8 +96,9 @@ func newTaskCompleteTestDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
-		`INSERT INTO workstations (id, data_collector_id, is_current) VALUES (1, 100, TRUE), (2, 101, TRUE)`,
-		`INSERT INTO dc_plan (id) VALUES (10), (11)`,
+		`INSERT INTO workspaces (id, admins, members) VALUES (123, '[]', '["collector-100"]')`,
+		`INSERT INTO workstations (id, data_collector_id, workspace_id, is_current) VALUES (1, 100, 123, TRUE), (2, 101, 123, TRUE)`,
+		`INSERT INTO dc_plan (id, workspace_id) VALUES (10, 123), (11, 123)`,
 		`INSERT INTO tasks (id, task_id, dc_plan_id, workstation_id, status) VALUES
 			(1, 'task-1', 10, 1, 'pending'),
 			(2, 'task-2', 10, 1, 'pending'),
