@@ -90,6 +90,8 @@ type dataOpsEpisodeRow struct {
 	EpisodeID           string          `db:"episode_id"`
 	TaskID              int64           `db:"task_id"`
 	TaskPublicID        sql.NullString  `db:"task_public_id"`
+	DCTaskID            sql.NullInt64   `db:"dc_task_id"`
+	DCTaskName          sql.NullString  `db:"dc_task_name"`
 	RobotDeviceID       sql.NullString  `db:"robot_device_id"`
 	RobotMetadata       sql.NullString  `db:"robot_metadata"`
 	CollectorOperatorID sql.NullString  `db:"collector_operator_id"`
@@ -109,6 +111,8 @@ type DataOpsEpisodeItemResponse struct {
 	EpisodeID           string                        `json:"episode_id"`
 	TaskID              int64                         `json:"task_id"`
 	TaskPublicID        *string                       `json:"task_public_id,omitempty"`
+	DCTaskID            *int64                        `json:"dc_task_id,omitempty"`
+	DCTaskName          *string                       `json:"dc_task_name,omitempty"`
 	RobotDeviceID       *string                       `json:"robot_device_id,omitempty"`
 	RobotDeviceName     *string                       `json:"robot_device_name,omitempty"`
 	CollectorOperatorID *string                       `json:"collector_operator_id,omitempty"`
@@ -307,6 +311,7 @@ func dataOpsEpisodeBaseFromSQL() string {
 	return `
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
@@ -398,6 +403,8 @@ func dataOpsEpisodeListSQL(fromSQL string, where string) string {
 			e.episode_id,
 			e.task_id,
 			t.task_id AS task_public_id,
+			dp.dc_task_id,
+			dp.dc_task_name,
 			COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, '')) AS robot_device_id,
 			r.metadata AS robot_metadata,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS collector_operator_id,
@@ -517,6 +524,8 @@ func dataOpsEpisodeItemFromRow(row dataOpsEpisodeRow) DataOpsEpisodeItemResponse
 		EpisodeID:           row.EpisodeID,
 		TaskID:              row.TaskID,
 		TaskPublicID:        nullableString(row.TaskPublicID),
+		DCTaskID:            nullableInt64(row.DCTaskID),
+		DCTaskName:          nullableString(row.DCTaskName),
 		RobotDeviceID:       nullableString(row.RobotDeviceID),
 		RobotDeviceName:     nullableString(sql.NullString{String: robotDeviceName, Valid: robotDeviceName != ""}),
 		CollectorOperatorID: nullableString(row.CollectorOperatorID),

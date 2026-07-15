@@ -81,26 +81,34 @@ func TestDataOpsHilbertSyncRejectsDefaultWorkspaceScope(t *testing.T) {
 
 func TestDataOpsEpisodeListSQLUsesCurrentProductionMetadata(t *testing.T) {
 	sql := dataOpsEpisodeListSQL(dataOpsEpisodeBaseFromSQL(), " WHERE e.deleted_at IS NULL")
-	for _, current := range []string{"LEFT JOIN tasks", "LEFT JOIN workstations", "LEFT JOIN robots", "LEFT JOIN data_collectors"} {
+	for _, current := range []string{"LEFT JOIN tasks", "LEFT JOIN dc_plan", "LEFT JOIN workstations", "LEFT JOIN robots", "LEFT JOIN data_collectors"} {
 		if !strings.Contains(sql, current) {
 			t.Fatalf("data ops SQL should include %q: %s", current, sql)
 		}
+	}
+	if !strings.Contains(sql, "dp.dc_task_id") || !strings.Contains(sql, "dp.dc_task_name") {
+		t.Fatalf("data ops SQL should select dc task fields: %s", sql)
 	}
 	if !strings.Contains(sql, "r.metadata AS robot_metadata") {
 		t.Fatalf("data ops SQL should select robot metadata for device names: %s", sql)
 	}
 }
 
-func TestDataOpsEpisodeItemIncludesRobotDeviceName(t *testing.T) {
+func TestDataOpsEpisodeItemIncludesTaskAndRobotDisplayNames(t *testing.T) {
 	item := dataOpsEpisodeItemFromRow(dataOpsEpisodeRow{
 		ID:            1,
 		EpisodeID:     "episode-1",
 		TaskID:        10,
+		DCTaskID:      sql.NullInt64{Int64: 14, Valid: true},
+		DCTaskName:    sql.NullString{String: "Task One", Valid: true},
 		RobotDeviceID: sql.NullString{String: "robot-001", Valid: true},
 		RobotMetadata: sql.NullString{String: `{"hilbert_dc_device_name":"Device One"}`, Valid: true},
 		QAStatus:      "pending_qa",
 		CreatedAt:     time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
 	})
+	if item.DCTaskID == nil || *item.DCTaskID != 14 || item.DCTaskName == nil || *item.DCTaskName != "Task One" {
+		t.Fatalf("task fields=%v/%v want 14/Task One", item.DCTaskID, item.DCTaskName)
+	}
 	if item.RobotDeviceName == nil || *item.RobotDeviceName != "Device One" {
 		t.Fatalf("RobotDeviceName=%v want Device One", item.RobotDeviceName)
 	}
