@@ -100,19 +100,19 @@ type gatewayService struct {
 	db       *sqlx.DB
 	sts      stsProvider
 	sessions *sessionStore
+	qa       episodeQAEnqueuer
 	now      func() time.Time
 }
 
-func newGatewayService(cfg Config, sts stsProvider, sessions *sessionStore, db ...*sqlx.DB) *gatewayService {
+func newGatewayService(cfg Config, sts stsProvider, sessions *sessionStore, db *sqlx.DB, qa episodeQAEnqueuer) *gatewayService {
 	var database *sqlx.DB
-	if len(db) > 0 {
-		database = db[0]
-	}
+	database = db
 	return &gatewayService{
 		cfg:      cfg,
 		db:       database,
 		sts:      sts,
 		sessions: sessions,
+		qa:       qa,
 		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -323,7 +323,7 @@ func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.Comple
 			session.UploadID, session.LogicalUploadID, session.DeviceID, session.WorkspaceID, err)
 		return nil, err
 	}
-	episodeID, episodePK, err := s.completeBusinessUpload(ctx, session, req)
+	episodeID, episodePK, episodeCreated, err := s.completeBusinessUpload(ctx, session, req)
 	if err != nil {
 		return nil, err
 	}
@@ -355,6 +355,9 @@ func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.Comple
 	if episodeID != "" {
 		logger.Printf("[DGW_COMPAT] CompleteUpload persisted episode_id=%s episode_pk=%d logical_upload_id=%s task_id=%s",
 			episodeID, episodePK, updated.LogicalUploadID, updated.ClientHints["task_id"])
+	}
+	if episodeCreated && episodePK > 0 && s.qa != nil {
+		s.qa.EnqueueEpisode(episodePK)
 	}
 	return &cloudpb.CompleteUploadResponse{}, nil
 }
@@ -447,31 +450,31 @@ type completedUploadEpisode struct {
 	Metadata  sql.NullString `db:"metadata"`
 }
 
-func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *uploadSession, req *cloudpb.CompleteUploadRequest) (string, int64, error) {
+func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *uploadSession, req *cloudpb.CompleteUploadRequest) (string, int64, bool, error) {
 	if s.db == nil {
-		return "", 0, nil
+		return "", 0, false, nil
 	}
 	principal, err := principalFromContext(ctx)
 	if err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
 	rawTags := req.GetRawTags()
 	if err := requireMatchingRawTag(rawTags, "capture_id", session.ClientHints["capture_id"]); err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
 	if err := requireMatchingRawTag(rawTags, "task_id", session.ClientHints["task_id"]); err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
 	if err := requireMatchingRawTag(rawTags, "dc_plan_id", session.ClientHints["dc_plan_id"]); err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
 	if err := requireMatchingRawTag(rawTags, "workspace_id", fmt.Sprintf("%d", principal.WorkspaceID)); err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
 
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return "", 0, status.Error(codes.Unavailable, "begin upload transaction failed")
+		return "", 0, false, status.Error(codes.Unavailable, "begin upload transaction failed")
 	}
 	defer tx.Rollback() //nolint:errcheck // Safe after successful Commit.
 
@@ -499,12 +502,12 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	}
 	if err := tx.GetContext(ctx, &task, taskQuery, session.TaskPK); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", 0, status.Error(codes.NotFound, "task not found")
+			return "", 0, false, status.Error(codes.NotFound, "task not found")
 		}
-		return "", 0, status.Error(codes.Unavailable, "task lookup unavailable")
+		return "", 0, false, status.Error(codes.Unavailable, "task lookup unavailable")
 	}
 	if task.TaskID != session.TaskID || !task.DCPlanID.Valid || task.DCPlanID.Int64 != session.DCPlanID || task.PlanWorkspaceID != session.WorkspaceID {
-		return "", 0, status.Error(codes.FailedPrecondition, "task plan changed")
+		return "", 0, false, status.Error(codes.FailedPrecondition, "task plan changed")
 	}
 
 	var existing completedUploadEpisode
@@ -516,7 +519,7 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	`, task.TaskPK)
 	if err == nil {
 		if err := validateIdempotentComplete(existing, session, req); err != nil {
-			return "", 0, err
+			return "", 0, false, err
 		}
 		now := s.now()
 		if _, err := tx.ExecContext(ctx, `
@@ -525,27 +528,27 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 				episode_id = COALESCE(episode_id, ?), error_message = NULL, updated_at = ?
 			WHERE id = ? AND deleted_at IS NULL
 		`, now, existing.ID, now, task.TaskPK); err != nil {
-			return "", 0, status.Error(codes.Unavailable, "task completion failed")
+			return "", 0, false, status.Error(codes.Unavailable, "task completion failed")
 		}
 		if err := tx.Commit(); err != nil {
-			return "", 0, status.Error(codes.Unavailable, "commit upload transaction failed")
+			return "", 0, false, status.Error(codes.Unavailable, "commit upload transaction failed")
 		}
-		return existing.EpisodeID, existing.ID, nil
+		return existing.EpisodeID, existing.ID, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return "", 0, status.Error(codes.Unavailable, "episode lookup unavailable")
+		return "", 0, false, status.Error(codes.Unavailable, "episode lookup unavailable")
 	}
 	switch task.Status {
 	case "pending", "ready", "in_progress", "uploading", "completed":
 	default:
-		return "", 0, status.Error(codes.FailedPrecondition, "task is not completable")
+		return "", 0, false, status.Error(codes.FailedPrecondition, "task is not completable")
 	}
 
 	now := s.now()
 	episodeID := uuid.NewString()
 	metadata, err := uploadEpisodeMetadata(session, req)
 	if err != nil {
-		return "", 0, status.Error(codes.InvalidArgument, "invalid upload metadata")
+		return "", 0, false, status.Error(codes.InvalidArgument, "invalid upload metadata")
 	}
 	insertRes, err := tx.ExecContext(ctx, `
 		INSERT INTO episodes (
@@ -564,13 +567,13 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
 	`, episodeID, task.TaskPK, task.WorkstationID, task.OrganizationID, task.DCPlanID, task.LocalDCPlanID,
-		session.ObjectKey, session.ObjectKey+".metadata.json", req.GetFileSize(), metadata, now, now)
+		session.ObjectKey, "", req.GetFileSize(), metadata, now, now)
 	if err != nil {
-		return "", 0, status.Error(codes.Unavailable, "episode creation failed")
+		return "", 0, false, status.Error(codes.Unavailable, "episode creation failed")
 	}
 	episodePK, err := insertRes.LastInsertId()
 	if err != nil {
-		return "", 0, status.Error(codes.Unavailable, "episode id read failed")
+		return "", 0, false, status.Error(codes.Unavailable, "episode id read failed")
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE tasks
@@ -581,12 +584,12 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL
 	`, now, episodePK, now, task.TaskPK); err != nil {
-		return "", 0, status.Error(codes.Unavailable, "task completion failed")
+		return "", 0, false, status.Error(codes.Unavailable, "task completion failed")
 	}
 	if err := tx.Commit(); err != nil {
-		return "", 0, status.Error(codes.Unavailable, "commit upload transaction failed")
+		return "", 0, false, status.Error(codes.Unavailable, "commit upload transaction failed")
 	}
-	return episodeID, episodePK, nil
+	return episodeID, episodePK, true, nil
 }
 
 func parsePositiveInt64Hint(hints map[string]string, key string) (int64, error) {

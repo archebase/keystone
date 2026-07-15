@@ -27,12 +27,17 @@ import (
 // StorageHandler provides MinIO/S3 helper endpoints for the frontend.
 type StorageHandler struct {
 	s3      *s3.Client
+	tos     *episodeQATOSReader
 	authCfg *config.AuthConfig
 }
 
 // NewStorageHandler creates a new StorageHandler.
-func NewStorageHandler(s3Client *s3.Client, authCfg *config.AuthConfig) *StorageHandler {
-	return &StorageHandler{s3: s3Client, authCfg: authCfg}
+func NewStorageHandler(s3Client *s3.Client, authCfg *config.AuthConfig, storageCfg *config.StorageConfig) *StorageHandler {
+	h := &StorageHandler{s3: s3Client, authCfg: authCfg}
+	if storageCfg != nil && strings.EqualFold(storageCfg.Type, "tos") {
+		h.tos = newEpisodeQATOSReader(*storageCfg)
+	}
+	return h
 }
 
 func (h *StorageHandler) requireBearerToken(c *gin.Context) bool {
@@ -215,6 +220,11 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 		return
 	}
 
+	if h.tos != nil {
+		h.getTOSObject(c, bucket, objectName, usedDownloadToken)
+		return
+	}
+
 	ctx := c.Request.Context()
 
 	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
@@ -302,6 +312,69 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 	c.Status(statusCode)
 	if _, err := io.Copy(c.Writer, obj); err != nil {
 		logger.Printf("[S3] proxy stream interrupted: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+	}
+}
+
+func (h *StorageHandler) getTOSObject(c *gin.Context, bucket, objectName string, usedDownloadToken bool) {
+	headers := http.Header{}
+	if rangeHeader := strings.TrimSpace(c.GetHeader("Range")); rangeHeader != "" {
+		headers.Set("Range", rangeHeader)
+	}
+	req, err := h.tos.newRequest(c.Request.Context(), http.MethodGet, bucket, objectName, headers, nil)
+	if err != nil {
+		logger.Printf("[STORAGE] TOS proxy request failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create object request"})
+		return
+	}
+	resp, err := h.tos.client.Do(req)
+	if err != nil {
+		logger.Printf("[STORAGE] TOS proxy get failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch object"})
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		c.JSON(http.StatusNotFound, gin.H{"error": "object not found"})
+		return
+	}
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		if contentRange := strings.TrimSpace(resp.Header.Get("Content-Range")); contentRange != "" {
+			c.Header("Content-Range", contentRange)
+		}
+		c.Status(http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Printf("[STORAGE] TOS proxy get failed: bucket=%s, object=%s, status=%d, request_id=%s, range=%s",
+			bucket, objectName, resp.StatusCode, resp.Header.Get("x-tos-request-id"), headers.Get("Range"))
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch object"})
+		return
+	}
+
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Accept-Ranges", "bytes")
+	for _, header := range []string{"Content-Range", "ETag", "Last-Modified"} {
+		if value := strings.TrimSpace(resp.Header.Get(header)); value != "" {
+			c.Header(header, value)
+		}
+	}
+	if resp.ContentLength >= 0 {
+		c.Header("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+	}
+	if usedDownloadToken {
+		c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+url.QueryEscape(objectName))
+	} else {
+		c.Header("Content-Disposition", "inline; filename*=UTF-8''"+url.QueryEscape(objectName))
+	}
+
+	c.Status(resp.StatusCode)
+	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		logger.Printf("[STORAGE] TOS proxy stream interrupted: bucket=%s, object=%s, err=%v", bucket, objectName, err)
 	}
 }
 

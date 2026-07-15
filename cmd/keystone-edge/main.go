@@ -100,11 +100,12 @@ func main() {
 
 	// Initialize S3/MinIO storage
 	s3Client, err := s3.Connect(&s3.Config{
-		Endpoint:  cfg.Storage.Endpoint,
-		AccessKey: cfg.Storage.AccessKey,
-		SecretKey: cfg.Storage.SecretKey,
-		Bucket:    cfg.Storage.Bucket,
-		UseSSL:    cfg.Storage.UseSSL,
+		Endpoint:     cfg.Storage.Endpoint,
+		AccessKey:    cfg.Storage.AccessKey,
+		SecretKey:    cfg.Storage.SecretKey,
+		Bucket:       cfg.Storage.Bucket,
+		UseSSL:       cfg.Storage.UseSSL,
+		EnsureBucket: cfg.Storage.EnsureBucket,
 	})
 	if err != nil {
 		logger.Printf("[S3] Failed to connect to S3/MinIO: %v", err)
@@ -138,7 +139,7 @@ func main() {
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}
-	dgwCompatServer, err := dgwcompat.StartFromEnv(db.DB)
+	dgwCompatServer, err := dgwcompat.StartFromEnv(db.DB, srv.EpisodeQAEnqueuer())
 	if err != nil {
 		logger.Fatalf("[DGW_COMPAT] Failed to start compatibility server: %v", err)
 	}

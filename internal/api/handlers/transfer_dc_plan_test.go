@@ -163,11 +163,12 @@ func newTransferDCPlanTestS3(t *testing.T) *s3.Client {
 	t.Cleanup(server.Close)
 
 	client, err := s3.Connect(&s3.Config{
-		Endpoint:  strings.TrimPrefix(server.URL, "http://"),
-		AccessKey: "access",
-		SecretKey: "secret",
-		Bucket:    "bucket",
-		UseSSL:    false,
+		Endpoint:     strings.TrimPrefix(server.URL, "http://"),
+		AccessKey:    "access",
+		SecretKey:    "secret",
+		Bucket:       "bucket",
+		UseSSL:       false,
+		EnsureBucket: true,
 	})
 	if err != nil {
 		t.Fatalf("connect test s3: %v", err)

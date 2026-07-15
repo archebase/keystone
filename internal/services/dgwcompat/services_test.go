@@ -37,7 +37,7 @@ func TestGatewayCreateReissueCompleteFlow(t *testing.T) {
 		TOSKeyPrefix:   "device-uploads",
 		UploadPartSize: 8 * 1024 * 1024,
 	}
-	service := newGatewayService(cfg, fixedSTSProvider{expiration: expiration}, newSessionStore())
+	service := newGatewayService(cfg, fixedSTSProvider{expiration: expiration}, newSessionStore(), nil, nil)
 	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
 		DeviceID: "robot-1", WorkspaceID: 10, AuthEpoch: 1,
 	})
@@ -101,7 +101,8 @@ func TestGatewayCreateReissueCompleteFlow(t *testing.T) {
 
 func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
-	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db)
+	qa := &fakeEpisodeQAEnqueuer{}
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, qa)
 	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
@@ -155,18 +156,27 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	if task.Status != "completed" || task.EpisodeID <= 0 {
 		t.Fatalf("task status=%q episode_id=%d, want completed with episode", task.Status, task.EpisodeID)
 	}
-	var metadata string
-	if err := db.Get(&metadata, `SELECT metadata FROM episodes WHERE id = ?`, task.EpisodeID); err != nil {
+	var episode struct {
+		Metadata    string `db:"metadata"`
+		SidecarPath string `db:"sidecar_path"`
+	}
+	if err := db.Get(&episode, `SELECT metadata, sidecar_path FROM episodes WHERE id = ?`, task.EpisodeID); err != nil {
 		t.Fatalf("query episode metadata: %v", err)
 	}
-	if !strings.Contains(metadata, created.GetUploadId()) {
-		t.Fatalf("episode metadata does not contain upload id: %s", metadata)
+	if !strings.Contains(episode.Metadata, created.GetUploadId()) {
+		t.Fatalf("episode metadata does not contain upload id: %s", episode.Metadata)
+	}
+	if episode.SidecarPath != "" {
+		t.Fatalf("sidecar_path = %q, want empty for TOS-only upload", episode.SidecarPath)
+	}
+	if len(qa.episodes) != 1 || qa.episodes[0] != task.EpisodeID {
+		t.Fatalf("qa enqueued episodes = %v, want [%d]", qa.episodes, task.EpisodeID)
 	}
 }
 
 func TestGatewayCreateLogicalUploadRejectsMismatchedPlan(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
-	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
 	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
@@ -267,4 +277,12 @@ func newGatewayServiceTestDB(t *testing.T) *sqlx.DB {
 		}
 	}
 	return db
+}
+
+type fakeEpisodeQAEnqueuer struct {
+	episodes []int64
+}
+
+func (e *fakeEpisodeQAEnqueuer) EnqueueEpisode(episodeID int64) {
+	e.episodes = append(e.episodes, episodeID)
 }

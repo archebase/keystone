@@ -15,20 +15,27 @@ import (
 func TestLoad(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                       os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_MYSQL_HOST":                 os.Getenv("KEYSTONE_MYSQL_HOST"),
-		"KEYSTONE_MYSQL_PASSWORD":             os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":           os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":           os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_FACTORY_ID":                 os.Getenv("KEYSTONE_FACTORY_ID"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":     os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
-		"KEYSTONE_SYNC_DP_CONFIG":             os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
-		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":   os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
-		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED": os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
-		"KEYSTONE_HILBERT_BASE_URL":           os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
-		"KEYSTONE_HILBERT_TIMEOUT_SECONDS":    os.Getenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS"),
-		"KEYSTONE_HILBERT_ACCESS_KEY":         os.Getenv("KEYSTONE_HILBERT_ACCESS_KEY"),
-		"KEYSTONE_HILBERT_SECRET_KEY":         os.Getenv("KEYSTONE_HILBERT_SECRET_KEY"),
+		"KEYSTONE_MODE":                                os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_MYSQL_HOST":                          os.Getenv("KEYSTONE_MYSQL_HOST"),
+		"KEYSTONE_MYSQL_PASSWORD":                      os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":                    os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":                    os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_MINIO_BUCKET":                        os.Getenv("KEYSTONE_MINIO_BUCKET"),
+		"KEYSTONE_FACTORY_ID":                          os.Getenv("KEYSTONE_FACTORY_ID"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":              os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_SYNC_DP_CONFIG":                      os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
+		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":            os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
+		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED":          os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
+		"KEYSTONE_HILBERT_BASE_URL":                    os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
+		"KEYSTONE_HILBERT_TIMEOUT_SECONDS":             os.Getenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS"),
+		"KEYSTONE_HILBERT_ACCESS_KEY":                  os.Getenv("KEYSTONE_HILBERT_ACCESS_KEY"),
+		"KEYSTONE_HILBERT_SECRET_KEY":                  os.Getenv("KEYSTONE_HILBERT_SECRET_KEY"),
+		"KEYSTONE_DGW_COMPAT_ENABLED":                  os.Getenv("KEYSTONE_DGW_COMPAT_ENABLED"),
+		"KEYSTONE_DGW_TOS_ENDPOINT":                    os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT"),
+		"KEYSTONE_DGW_TOS_BUCKET":                      os.Getenv("KEYSTONE_DGW_TOS_BUCKET"),
+		"KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN": os.Getenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN"),
+		"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID":        os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"),
+		"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET":    os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"),
 	}
 	defer func() {
 		// Restore original environment variables
@@ -49,6 +56,13 @@ func TestLoad(t *testing.T) {
 	os.Unsetenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS")
 	os.Unsetenv("KEYSTONE_HILBERT_ACCESS_KEY")
 	os.Unsetenv("KEYSTONE_HILBERT_SECRET_KEY")
+	os.Unsetenv("KEYSTONE_MINIO_BUCKET")
+	os.Unsetenv("KEYSTONE_DGW_COMPAT_ENABLED")
+	os.Unsetenv("KEYSTONE_DGW_TOS_ENDPOINT")
+	os.Unsetenv("KEYSTONE_DGW_TOS_BUCKET")
+	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN")
+	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID")
+	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET")
 	os.Setenv("KEYSTONE_MYSQL_PASSWORD", "test-password")
 	os.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "test-access-key")
 	os.Setenv("KEYSTONE_MINIO_SECRET_KEY", "test-secret-key")
@@ -127,21 +141,28 @@ func TestLoad(t *testing.T) {
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
-		"KEYSTONE_MODE":                       os.Getenv("KEYSTONE_MODE"),
-		"KEYSTONE_BIND_ADDR":                  os.Getenv("KEYSTONE_BIND_ADDR"),
-		"KEYSTONE_MYSQL_PASSWORD":             os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
-		"KEYSTONE_MINIO_ACCESS_KEY":           os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
-		"KEYSTONE_MINIO_SECRET_KEY":           os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
-		"KEYSTONE_QA_MAX_WORKERS":             os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
-		"KEYSTONE_MAX_MEMORY_MB":              os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
-		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN":    os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":     os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
-		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":   os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
-		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED": os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
-		"KEYSTONE_HILBERT_BASE_URL":           os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
-		"KEYSTONE_HILBERT_TIMEOUT_SECONDS":    os.Getenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS"),
-		"KEYSTONE_HILBERT_ACCESS_KEY":         os.Getenv("KEYSTONE_HILBERT_ACCESS_KEY"),
-		"KEYSTONE_HILBERT_SECRET_KEY":         os.Getenv("KEYSTONE_HILBERT_SECRET_KEY"),
+		"KEYSTONE_MODE":                                os.Getenv("KEYSTONE_MODE"),
+		"KEYSTONE_BIND_ADDR":                           os.Getenv("KEYSTONE_BIND_ADDR"),
+		"KEYSTONE_MYSQL_PASSWORD":                      os.Getenv("KEYSTONE_MYSQL_PASSWORD"),
+		"KEYSTONE_MINIO_ACCESS_KEY":                    os.Getenv("KEYSTONE_MINIO_ACCESS_KEY"),
+		"KEYSTONE_MINIO_SECRET_KEY":                    os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
+		"KEYSTONE_MINIO_BUCKET":                        os.Getenv("KEYSTONE_MINIO_BUCKET"),
+		"KEYSTONE_QA_MAX_WORKERS":                      os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
+		"KEYSTONE_MAX_MEMORY_MB":                       os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
+		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN":             os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
+		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":              os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
+		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":            os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
+		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED":          os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
+		"KEYSTONE_HILBERT_BASE_URL":                    os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
+		"KEYSTONE_HILBERT_TIMEOUT_SECONDS":             os.Getenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS"),
+		"KEYSTONE_HILBERT_ACCESS_KEY":                  os.Getenv("KEYSTONE_HILBERT_ACCESS_KEY"),
+		"KEYSTONE_HILBERT_SECRET_KEY":                  os.Getenv("KEYSTONE_HILBERT_SECRET_KEY"),
+		"KEYSTONE_DGW_COMPAT_ENABLED":                  os.Getenv("KEYSTONE_DGW_COMPAT_ENABLED"),
+		"KEYSTONE_DGW_TOS_ENDPOINT":                    os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT"),
+		"KEYSTONE_DGW_TOS_BUCKET":                      os.Getenv("KEYSTONE_DGW_TOS_BUCKET"),
+		"KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN": os.Getenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN"),
+		"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID":        os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"),
+		"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET":    os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"),
 	}
 	defer func() {
 		for k, v := range originalEnv {
@@ -159,6 +180,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Setenv("KEYSTONE_MYSQL_PASSWORD", "custom-password")
 	os.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "custom-access")
 	os.Setenv("KEYSTONE_MINIO_SECRET_KEY", "custom-secret")
+	os.Setenv("KEYSTONE_MINIO_BUCKET", "custom-bucket")
 	os.Setenv("KEYSTONE_QA_MAX_WORKERS", "8")
 	os.Setenv("KEYSTONE_MAX_MEMORY_MB", "8192")
 	os.Setenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", "display-secret")
@@ -169,6 +191,12 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Setenv("KEYSTONE_HILBERT_TIMEOUT_SECONDS", "9")
 	os.Setenv("KEYSTONE_HILBERT_ACCESS_KEY", "hilbert-ak")
 	os.Setenv("KEYSTONE_HILBERT_SECRET_KEY", "hilbert-sk")
+	os.Unsetenv("KEYSTONE_DGW_COMPAT_ENABLED")
+	os.Unsetenv("KEYSTONE_DGW_TOS_ENDPOINT")
+	os.Unsetenv("KEYSTONE_DGW_TOS_BUCKET")
+	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN")
+	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID")
+	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET")
 
 	cfg, err := Load()
 	if err != nil {
@@ -181,6 +209,9 @@ func TestLoadWithCustomEnv(t *testing.T) {
 
 	if cfg.QA.MaxWorkers != 8 {
 		t.Errorf("Load().QA.MaxWorkers = %v, want 8", cfg.QA.MaxWorkers)
+	}
+	if cfg.Storage.Bucket != "custom-bucket" {
+		t.Errorf("Load().Storage.Bucket = %v, want custom-bucket", cfg.Storage.Bucket)
 	}
 
 	if cfg.Resources.MaxMemoryMB != 8192 {
@@ -205,6 +236,67 @@ func TestLoadWithCustomEnv(t *testing.T) {
 		cfg.Hilbert.AccessKey != "hilbert-ak" ||
 		cfg.Hilbert.SecretKey != "hilbert-sk" {
 		t.Errorf("Load().Hilbert = %+v, want custom Hilbert config", cfg.Hilbert)
+	}
+}
+
+func TestLoadStorageConfigUsesTOSWhenDGWCompatEnabled(t *testing.T) {
+	t.Setenv("KEYSTONE_DGW_COMPAT_ENABLED", "true")
+	t.Setenv("KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
+	t.Setenv("KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
+	t.Setenv("KEYSTONE_DGW_TOS_REGION", "cn-beijing")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN", "trn:iam::123:role/upload")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "trn:iam::123:role/qa-read")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT", "https://sts.volcengineapi.com")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
+	t.Setenv("KEYSTONE_MINIO_ENDPOINT", "192.168.119.4:9000")
+	t.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "minio-ak")
+	t.Setenv("KEYSTONE_MINIO_SECRET_KEY", "minio-sk")
+	t.Setenv("KEYSTONE_MINIO_BUCKET", "minio-bucket")
+
+	cfg := loadStorageConfig()
+	if cfg.Type != "tos" {
+		t.Fatalf("Type = %q, want tos", cfg.Type)
+	}
+	if cfg.Endpoint != "tos-cn-beijing.volces.com" {
+		t.Fatalf("Endpoint = %q, want tos-cn-beijing.volces.com", cfg.Endpoint)
+	}
+	if cfg.Region != "cn-beijing" {
+		t.Fatalf("Region = %q, want cn-beijing", cfg.Region)
+	}
+	if cfg.STSRoleTRN != "trn:iam::123:role/qa-read" || cfg.STSEndpoint != "https://sts.volcengineapi.com" {
+		t.Fatalf("STS config = role %q endpoint %q", cfg.STSRoleTRN, cfg.STSEndpoint)
+	}
+	if cfg.Bucket != "tos-bucket" {
+		t.Fatalf("Bucket = %q, want tos-bucket", cfg.Bucket)
+	}
+	if cfg.AccessKey != "tos-ak" || cfg.SecretKey != "tos-sk" {
+		t.Fatalf("unexpected TOS credentials selected")
+	}
+	if !cfg.UseSSL {
+		t.Fatalf("UseSSL = false, want true")
+	}
+	if cfg.EnsureBucket {
+		t.Fatalf("EnsureBucket = true, want false for TOS")
+	}
+}
+
+func TestLoadStorageConfigDoesNotFallbackToUploadSTSRoleForTOSQA(t *testing.T) {
+	t.Setenv("KEYSTONE_DGW_COMPAT_ENABLED", "true")
+	t.Setenv("KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
+	t.Setenv("KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
+	t.Setenv("KEYSTONE_DGW_TOS_REGION", "cn-beijing")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN", "trn:iam::123:role/upload")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
+
+	cfg := loadStorageConfig()
+	if cfg.Type != "tos" {
+		t.Fatalf("Type = %q, want tos", cfg.Type)
+	}
+	if cfg.STSRoleTRN != "" {
+		t.Fatalf("STSRoleTRN = %q, want empty when QA read role is not configured", cfg.STSRoleTRN)
 	}
 }
 

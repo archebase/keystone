@@ -51,12 +51,16 @@ type DatabaseConfig struct {
 
 // StorageConfig storage configuration
 type StorageConfig struct {
-	Type      string // "s3"
-	Endpoint  string
-	AccessKey string `json:"-"`
-	SecretKey string `json:"-"`
-	Bucket    string
-	UseSSL    bool
+	Type         string // "s3"
+	Endpoint     string
+	AccessKey    string `json:"-"`
+	SecretKey    string `json:"-"`
+	Bucket       string
+	UseSSL       bool
+	EnsureBucket bool
+	Region       string
+	STSRoleTRN   string
+	STSEndpoint  string
 }
 
 // QAConfig QA engine configuration
@@ -183,14 +187,7 @@ func Load() (*Config, error) {
 			MaxIdleConns:    getEnvInt("KEYSTONE_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: getEnvInt("KEYSTONE_DB_CONN_MAX_LIFETIME", 300),
 		},
-		Storage: StorageConfig{
-			Type:      "s3",
-			Endpoint:  getEnv("KEYSTONE_MINIO_ENDPOINT", "http://localhost:9000"),
-			AccessKey: getEnv("KEYSTONE_MINIO_ACCESS_KEY", ""),
-			SecretKey: getEnv("KEYSTONE_MINIO_SECRET_KEY", ""),
-			Bucket:    "edge-" + getEnv("KEYSTONE_FACTORY_ID", "factory-default"),
-			UseSSL:    getEnvBool("KEYSTONE_MINIO_USE_SSL", false),
-		},
+		Storage: loadStorageConfig(),
 		QA: QAConfig{
 			Enabled:              getEnvBool("KEYSTONE_QA_ENABLED", true),
 			AutoApproveThreshold: getEnvFloat("KEYSTONE_QA_AUTO_APPROVE_THRESHOLD", 0.90),
@@ -275,6 +272,62 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func loadStorageConfig() StorageConfig {
+	if getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false) {
+		tosEndpoint := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT"))
+		tosBucket := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET"))
+		tosAccessKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"))
+		tosSecretKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"))
+		if tosEndpoint != "" && tosBucket != "" && tosAccessKey != "" && tosSecretKey != "" {
+			endpoint, useSSL := normalizeObjectStorageEndpoint(tosEndpoint, true)
+			return StorageConfig{
+				Type:         "tos",
+				Endpoint:     endpoint,
+				AccessKey:    tosAccessKey,
+				SecretKey:    tosSecretKey,
+				Bucket:       tosBucket,
+				UseSSL:       useSSL,
+				EnsureBucket: false,
+				Region:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION")),
+				STSRoleTRN:   strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN")),
+				STSEndpoint:  strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT")),
+			}
+		}
+	}
+
+	endpoint, useSSL := normalizeObjectStorageEndpoint(
+		getEnv("KEYSTONE_MINIO_ENDPOINT", "http://localhost:9000"),
+		getEnvBool("KEYSTONE_MINIO_USE_SSL", false),
+	)
+	return StorageConfig{
+		Type:         "s3",
+		Endpoint:     endpoint,
+		AccessKey:    getEnv("KEYSTONE_MINIO_ACCESS_KEY", ""),
+		SecretKey:    getEnv("KEYSTONE_MINIO_SECRET_KEY", ""),
+		Bucket:       getEnv("KEYSTONE_MINIO_BUCKET", "edge-"+getEnv("KEYSTONE_FACTORY_ID", "factory-default")),
+		UseSSL:       useSSL,
+		EnsureBucket: true,
+		Region:       getEnv("KEYSTONE_MINIO_REGION", ""),
+	}
+}
+
+func normalizeObjectStorageEndpoint(raw string, fallbackUseSSL bool) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return value, fallbackUseSSL
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" {
+		return strings.TrimRight(value, "/"), fallbackUseSSL
+	}
+	useSSL := strings.EqualFold(parsed.Scheme, "https")
+	host := parsed.Host
+	if host == "" {
+		host = strings.TrimPrefix(value, parsed.Scheme+"://")
+	}
+	return strings.TrimRight(host, "/"), useSSL
 }
 
 // Validate validates the configuration

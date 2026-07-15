@@ -24,11 +24,12 @@ type Client struct {
 
 // Config S3 configuration
 type Config struct {
-	Endpoint  string
-	AccessKey string `json:"-"`
-	SecretKey string `json:"-"`
-	Bucket    string
-	UseSSL    bool
+	Endpoint     string
+	AccessKey    string `json:"-"`
+	SecretKey    string `json:"-"`
+	Bucket       string
+	UseSSL       bool
+	EnsureBucket bool
 }
 
 // Connect creates S3 client
@@ -43,21 +44,24 @@ func Connect(cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to create minio client: %w", err)
 	}
 
-	// Ensure bucket exists
-	ctx := context.Background()
-	exists, err := client.BucketExists(ctx, cfg.Bucket)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check bucket: %w", err)
-	}
-
-	if !exists {
-		err = client.MakeBucket(ctx, cfg.Bucket, minio.MakeBucketOptions{})
+	if cfg.EnsureBucket {
+		ctx := context.Background()
+		exists, err := client.BucketExists(ctx, cfg.Bucket)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create bucket: %w", err)
+			return nil, fmt.Errorf("failed to check bucket: %w", err)
 		}
-		logger.Printf("[S3] Created bucket: %s", cfg.Bucket)
+
+		if !exists {
+			err = client.MakeBucket(ctx, cfg.Bucket, minio.MakeBucketOptions{})
+			if err != nil {
+				return nil, fmt.Errorf("failed to create bucket: %w", err)
+			}
+			logger.Printf("[S3] Created bucket: %s", cfg.Bucket)
+		} else {
+			logger.Printf("[S3] Using existing bucket: %s", cfg.Bucket)
+		}
 	} else {
-		logger.Printf("[S3] Using existing bucket: %s", cfg.Bucket)
+		logger.Printf("[S3] Using configured bucket without existence check: %s", cfg.Bucket)
 	}
 
 	logger.Println("[S3] Connected to MinIO successfully")

@@ -22,8 +22,12 @@ type Server struct {
 	servers []*grpc.Server
 }
 
+type episodeQAEnqueuer interface {
+	EnqueueEpisode(episodeID int64)
+}
+
 // StartFromEnv starts the compatibility server if KEYSTONE_DGW_COMPAT_ENABLED is truthy.
-func StartFromEnv(db *sqlx.DB) (*Server, error) {
+func StartFromEnv(db *sqlx.DB, qaEnqueuer episodeQAEnqueuer) (*Server, error) {
 	cfg, err := LoadConfigFromEnv()
 	if err != nil {
 		return nil, err
@@ -32,11 +36,11 @@ func StartFromEnv(db *sqlx.DB) (*Server, error) {
 		logger.Println("[DGW_COMPAT] Compatibility server disabled")
 		return nil, nil
 	}
-	return Start(cfg, db)
+	return Start(cfg, db, qaEnqueuer)
 }
 
 // Start starts the compatibility gRPC listener.
-func Start(cfg Config, db *sqlx.DB) (*Server, error) {
+func Start(cfg Config, db *sqlx.DB, qaEnqueuer episodeQAEnqueuer) (*Server, error) {
 	if db == nil {
 		return nil, fmt.Errorf("dgw compatibility server requires database")
 	}
@@ -49,7 +53,7 @@ func Start(cfg Config, db *sqlx.DB) (*Server, error) {
 
 	server := grpc.NewServer(grpc.UnaryInterceptor(unifiedUnaryAuthInterceptor(db, cfg)))
 	cloudpb.RegisterAuthServiceServer(server, &authService{identity: identity})
-	cloudpb.RegisterDataGatewayServiceServer(server, newGatewayService(cfg, sts, sessions, db))
+	cloudpb.RegisterDataGatewayServiceServer(server, newGatewayService(cfg, sts, sessions, db, qaEnqueuer))
 	cloudpb.RegisterDeviceInitServiceServer(server, &deviceInitService{identity: identity})
 
 	started := &Server{cfg: cfg}

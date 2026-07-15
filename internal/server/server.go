@@ -87,7 +87,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	}
 	var storageHandler *handlers.StorageHandler
 	if s3Client != nil {
-		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth)
+		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth, &cfg.Storage)
 	}
 
 	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
@@ -106,7 +106,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
-	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
+	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.Storage)
 	transferHandler.SetEpisodeQAEnqueuer(qaHandler)
 
 	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)
@@ -400,6 +400,15 @@ func (s *Server) Start() error {
 	}
 
 	return nil
+}
+
+func (s *Server) EpisodeQAEnqueuer() interface {
+	EnqueueEpisode(episodeID int64)
+} {
+	if s == nil {
+		return nil
+	}
+	return s.qa
 }
 
 func (s *Server) syncWorkspacesOnStartup() {
