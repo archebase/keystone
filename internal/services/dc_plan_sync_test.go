@@ -7,6 +7,7 @@ package services
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -63,16 +64,20 @@ func TestDCPlanSyncServiceSyncsPagedPlans(t *testing.T) {
 	}
 
 	var rows []struct {
-		ID          int64  `db:"id"`
-		WorkspaceID int64  `db:"workspace_id"`
-		Name        string `db:"name"`
-		DCType      string `db:"dc_type"`
-		RawPayload  string `db:"raw_payload"`
+		ID            int64  `db:"id"`
+		WorkspaceID   int64  `db:"workspace_id"`
+		Name          string `db:"name"`
+		OperatorName  string `db:"operator_display_name"`
+		DCProjectName string `db:"dc_project_name"`
+		DCTaskName    string `db:"dc_task_name"`
+		DCDeviceName  string `db:"dc_device_name"`
+		DCType        string `db:"dc_type"`
+		RawPayload    string `db:"raw_payload"`
 	}
-	if err := db.Select(&rows, "SELECT id, workspace_id, name, dc_type, raw_payload FROM dc_plan ORDER BY id"); err != nil {
+	if err := db.Select(&rows, "SELECT id, workspace_id, name, operator_display_name, dc_project_name, dc_task_name, dc_device_name, dc_type, raw_payload FROM dc_plan ORDER BY id"); err != nil {
 		t.Fatalf("query dc_plan: %v", err)
 	}
-	if len(rows) != 2 || rows[0].ID != 1001 || rows[0].WorkspaceID != 123 || rows[0].Name != "Plan A" || rows[0].DCType != "ego" || rows[0].RawPayload == "" {
+	if len(rows) != 2 || rows[0].ID != 1001 || rows[0].WorkspaceID != 123 || rows[0].Name != "Plan A" || rows[0].OperatorName != "Collector 1001" || rows[0].DCProjectName != "Project 1001" || rows[0].DCTaskName != "Task 1001" || rows[0].DCDeviceName != "Device 1001" || rows[0].DCType != "ego" || rows[0].RawPayload == "" {
 		t.Fatalf("unexpected rows: %#v", rows)
 	}
 }
@@ -209,9 +214,13 @@ func testHilbertDCPlan(id int64, workspaceID int64, name string) auth.HilbertDCP
 		DCFactoryID:         11,
 		DCServiceProviderID: 12,
 		Operator:            "collector-a",
+		OperatorDisplayName: "Collector " + strconv.FormatInt(id, 10),
 		DCProjectID:         13,
+		DCProjectName:       "Project " + strconv.FormatInt(id, 10),
 		DCTaskID:            14,
+		DCTaskName:          "Task " + strconv.FormatInt(id, 10),
 		DCDeviceID:          15,
+		DCDeviceName:        "Device " + strconv.FormatInt(id, 10),
 		DCType:              "ego",
 		DCDate:              "2026-07-09",
 		TargetCount:         20,
@@ -237,13 +246,13 @@ func seedDCPlanRow(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
 	t.Helper()
 	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
-			id, workspace_id, name, dc_factory_id, dc_service_provider_id, operator,
-			dc_project_id, dc_task_id, dc_device_id, dc_type, dc_date,
+			id, workspace_id, name, dc_factory_id, dc_service_provider_id, operator, operator_display_name,
+			dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, dc_date,
 			target_count, cur_count, target_duration, cur_duration, created_by,
 			created_time, raw_payload, last_synced_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, plan.ID, plan.WorkspaceID, plan.Name, plan.DCFactoryID, plan.DCServiceProviderID, plan.Operator,
-		plan.DCProjectID, plan.DCTaskID, plan.DCDeviceID, plan.DCType, plan.DCDate,
+		plan.OperatorDisplayName, plan.DCProjectID, plan.DCProjectName, plan.DCTaskID, plan.DCTaskName, plan.DCDeviceID, plan.DCDeviceName, plan.DCType, plan.DCDate,
 		plan.TargetCount, plan.CurCount, plan.TargetDuration, plan.CurDuration, plan.CreatedBy,
 		plan.CreatedTime, "{}", time.Now().UTC()); err != nil {
 		t.Fatalf("seed dc_plan: %v", err)
@@ -288,9 +297,13 @@ func newTestDCPlanSyncDB(t *testing.T) *sqlx.DB {
 			dc_factory_id INTEGER NOT NULL,
 			dc_service_provider_id INTEGER NOT NULL,
 			operator TEXT NOT NULL,
+			operator_display_name TEXT,
 			dc_project_id INTEGER NOT NULL,
+			dc_project_name TEXT,
 			dc_task_id INTEGER NOT NULL,
+			dc_task_name TEXT,
 			dc_device_id INTEGER NOT NULL,
+			dc_device_name TEXT,
 			dc_type TEXT NOT NULL,
 			dc_date TEXT NOT NULL,
 			target_count INTEGER NOT NULL,

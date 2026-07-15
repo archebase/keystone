@@ -39,9 +39,13 @@ type DCPlanResponse struct {
 	DCFactoryID         int64  `json:"dc_factory_id"`
 	DCServiceProviderID int64  `json:"dc_service_provider_id"`
 	Operator            string `json:"operator"`
+	OperatorDisplayName string `json:"operator_display_name,omitempty"`
 	DCProjectID         int64  `json:"dc_project_id"`
+	DCProjectName       string `json:"dc_project_name,omitempty"`
 	DCTaskID            int64  `json:"dc_task_id"`
+	DCTaskName          string `json:"dc_task_name,omitempty"`
 	DCDeviceID          int64  `json:"dc_device_id"`
+	DCDeviceName        string `json:"dc_device_name,omitempty"`
 	DCType              string `json:"dc_type"`
 	DCDate              string `json:"dc_date"`
 	TargetCount         int64  `json:"target_count"`
@@ -82,9 +86,13 @@ type dcPlanRow struct {
 	DCFactoryID         int64           `db:"dc_factory_id"`
 	DCServiceProviderID int64           `db:"dc_service_provider_id"`
 	Operator            string          `db:"operator"`
+	OperatorDisplayName sql.NullString  `db:"operator_display_name"`
 	DCProjectID         int64           `db:"dc_project_id"`
+	DCProjectName       sql.NullString  `db:"dc_project_name"`
 	DCTaskID            int64           `db:"dc_task_id"`
+	DCTaskName          sql.NullString  `db:"dc_task_name"`
 	DCDeviceID          int64           `db:"dc_device_id"`
+	DCDeviceName        sql.NullString  `db:"dc_device_name"`
 	DCType              string          `db:"dc_type"`
 	DCDate              string          `db:"dc_date"`
 	TargetCount         int64           `db:"target_count"`
@@ -173,7 +181,7 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 	query := `
 		SELECT
 			dp.id, dp.workspace_id, dp.name, dp.description, dp.dc_factory_id, dp.dc_service_provider_id,
-			dp.operator, dp.dc_project_id, dp.dc_task_id, dp.dc_device_id, dp.dc_type, CAST(dp.dc_date AS CHAR) AS dc_date,
+			dp.operator, dp.operator_display_name, dp.dc_project_id, dp.dc_project_name, dp.dc_task_id, dp.dc_task_name, dp.dc_device_id, dp.dc_device_name, dp.dc_type, CAST(dp.dc_date AS CHAR) AS dc_date,
 			dp.target_count, dp.cur_count, COALESCE(progress.local_cur_count, 0) AS local_cur_count,
 			dp.target_duration, dp.cur_duration, COALESCE(progress.local_cur_duration, 0) AS local_cur_duration,
 			dp.created_by, dp.created_time, dp.updated_by, dp.updated_time, dp.last_synced_at
@@ -306,9 +314,13 @@ func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
 		DCFactoryID:         row.DCFactoryID,
 		DCServiceProviderID: row.DCServiceProviderID,
 		Operator:            row.Operator,
+		OperatorDisplayName: row.OperatorDisplayName.String,
 		DCProjectID:         row.DCProjectID,
+		DCProjectName:       row.DCProjectName.String,
 		DCTaskID:            row.DCTaskID,
+		DCTaskName:          row.DCTaskName.String,
 		DCDeviceID:          row.DCDeviceID,
+		DCDeviceName:        row.DCDeviceName.String,
 		DCType:              row.DCType,
 		DCDate:              row.DCDate,
 		TargetCount:         row.TargetCount,

@@ -36,6 +36,49 @@ func TestHilbertNonceEncryptionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHilbertDCPlanUnmarshalUsesNestedProjectAndTaskNames(t *testing.T) {
+	var plan HilbertDCPlan
+	if err := json.Unmarshal([]byte(`{
+		"id": 1001,
+		"workspaceId": 123,
+		"name": "Plan A",
+		"dcProjectId": 13,
+		"dcProject": {"id": 13, "name": "Project A"},
+		"dcTaskId": 14,
+		"dcTask": {"id": 14, "name": "Task A"},
+		"dcDeviceId": 15,
+		"dcDevice": {"id": 15, "name": "Device A"}
+	}`), &plan); err != nil {
+		t.Fatalf("unmarshal dc plan: %v", err)
+	}
+	if plan.DCProjectName != "Project A" || plan.DCTaskName != "Task A" || plan.DCDeviceName != "Device A" {
+		t.Fatalf("project/task/device names = %q/%q/%q, want nested names", plan.DCProjectName, plan.DCTaskName, plan.DCDeviceName)
+	}
+}
+
+func TestHilbertDCPlanUnmarshalKeepsFlatNamesOverNestedNames(t *testing.T) {
+	var plan HilbertDCPlan
+	if err := json.Unmarshal([]byte(`{
+		"id": 1001,
+		"workspaceId": 123,
+		"name": "Plan A",
+		"dcProjectId": 13,
+		"dcProjectName": "Flat Project",
+		"dcProject": {"id": 13, "name": "Nested Project"},
+		"dcTaskId": 14,
+		"dcTaskName": "Flat Task",
+		"dcTask": {"id": 14, "name": "Nested Task"},
+		"dcDeviceId": 15,
+		"dcDeviceName": "Flat Device",
+		"dcDevice": {"id": 15, "name": "Nested Device"}
+	}`), &plan); err != nil {
+		t.Fatalf("unmarshal dc plan: %v", err)
+	}
+	if plan.DCProjectName != "Flat Project" || plan.DCTaskName != "Flat Task" || plan.DCDeviceName != "Flat Device" {
+		t.Fatalf("project/task/device names = %q/%q/%q, want flat names", plan.DCProjectName, plan.DCTaskName, plan.DCDeviceName)
+	}
+}
+
 func TestValidateDCDeviceAPIKeyUsesNonceContract(t *testing.T) {
 	material := base64.StdEncoding.EncodeToString(make([]byte, hilbertNonceLengthBytes))
 	now := time.Unix(1700000000, 123000000)

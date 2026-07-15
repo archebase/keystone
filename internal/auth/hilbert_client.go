@@ -106,26 +106,75 @@ type HilbertWorkspace struct {
 
 // HilbertDCPlan stores one Hilbert data collection plan projection.
 type HilbertDCPlan struct {
-	ID                  int64      `json:"id"`
-	WorkspaceID         int64      `json:"workspaceId"`
-	Name                string     `json:"name"`
-	Description         *string    `json:"description"`
-	DCFactoryID         int64      `json:"dcFactoryId"`
-	DCServiceProviderID int64      `json:"dcServiceProviderId"`
-	Operator            string     `json:"operator"`
-	DCProjectID         int64      `json:"dcProjectId"`
-	DCTaskID            int64      `json:"dcTaskId"`
-	DCDeviceID          int64      `json:"dcDeviceId"`
-	DCType              string     `json:"dcType"`
-	DCDate              string     `json:"dcDate"`
-	TargetCount         int64      `json:"targetCount"`
-	CurCount            int64      `json:"curCount"`
-	TargetDuration      int64      `json:"targetDuration"`
-	CurDuration         int64      `json:"curDuration"`
-	CreatedBy           string     `json:"createdBy"`
-	CreatedTime         time.Time  `json:"createdTime"`
-	UpdatedBy           *string    `json:"updatedBy"`
-	UpdatedTime         *time.Time `json:"updatedTime"`
+	ID                  int64             `json:"id"`
+	WorkspaceID         int64             `json:"workspaceId"`
+	Name                string            `json:"name"`
+	Description         *string           `json:"description"`
+	DCFactoryID         int64             `json:"dcFactoryId"`
+	DCServiceProviderID int64             `json:"dcServiceProviderId"`
+	Operator            string            `json:"operator"`
+	OperatorDisplayName string            `json:"operatorDisplayName,omitempty"`
+	DCProjectID         int64             `json:"dcProjectId"`
+	DCProjectName       string            `json:"dcProjectName,omitempty"`
+	DCProject           *HilbertDCPlanRef `json:"dcProject,omitempty"`
+	DCTaskID            int64             `json:"dcTaskId"`
+	DCTaskName          string            `json:"dcTaskName,omitempty"`
+	DCTask              *HilbertDCPlanRef `json:"dcTask,omitempty"`
+	DCDeviceID          int64             `json:"dcDeviceId"`
+	DCDeviceName        string            `json:"dcDeviceName,omitempty"`
+	DCDevice            *HilbertDCPlanRef `json:"dcDevice,omitempty"`
+	DCType              string            `json:"dcType"`
+	DCDate              string            `json:"dcDate"`
+	TargetCount         int64             `json:"targetCount"`
+	CurCount            int64             `json:"curCount"`
+	TargetDuration      int64             `json:"targetDuration"`
+	CurDuration         int64             `json:"curDuration"`
+	CreatedBy           string            `json:"createdBy"`
+	CreatedTime         time.Time         `json:"createdTime"`
+	UpdatedBy           *string           `json:"updatedBy"`
+	UpdatedTime         *time.Time        `json:"updatedTime"`
+}
+
+// HilbertDCPlanRef stores the association shape embedded in Hilbert dc_plan responses.
+type HilbertDCPlanRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// UnmarshalJSON accepts Hilbert's nested dcProject/dcTask association objects
+// and the older flat name aliases used by some deployments.
+func (p *HilbertDCPlan) UnmarshalJSON(data []byte) error {
+	type alias HilbertDCPlan
+	aux := struct {
+		*alias
+		ProjectName string `json:"projectName"`
+		TaskName    string `json:"taskName"`
+		DeviceName  string `json:"deviceName"`
+	}{
+		alias: (*alias)(p),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if p.DCProjectName == "" {
+		p.DCProjectName = aux.ProjectName
+	}
+	if p.DCProjectName == "" && p.DCProject != nil {
+		p.DCProjectName = p.DCProject.Name
+	}
+	if p.DCTaskName == "" {
+		p.DCTaskName = aux.TaskName
+	}
+	if p.DCTaskName == "" && p.DCTask != nil {
+		p.DCTaskName = p.DCTask.Name
+	}
+	if p.DCDeviceName == "" {
+		p.DCDeviceName = aux.DeviceName
+	}
+	if p.DCDeviceName == "" && p.DCDevice != nil {
+		p.DCDeviceName = p.DCDevice.Name
+	}
+	return nil
 }
 
 // HilbertDCPlanPage stores Hilbert's page wrapper for dc-plan query.
