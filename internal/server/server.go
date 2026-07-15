@@ -279,8 +279,10 @@ func (s *Server) buildRoutes() http.Handler {
 		s.workspace.RegisterRoutes(adminWorkspaces)
 	}
 	if s.dcPlan != nil {
+		readDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+		s.dcPlan.RegisterReadRoutes(readDCPlans)
 		adminDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
-		s.dcPlan.RegisterRoutes(adminDCPlans)
+		s.dcPlan.RegisterAdminRoutes(adminDCPlans)
 	}
 	if s.dataStats != nil {
 		jwtMw := middleware.JWTAuth(&s.cfg.Auth)

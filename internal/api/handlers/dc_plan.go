@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -114,6 +115,16 @@ func (h *DCPlanHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/workspaces/:workspace_id/dc-plans/sync", h.SyncWorkspaceDCPlans)
 }
 
+// RegisterReadRoutes registers dc_plan routes available to authenticated readers.
+func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.GET("/dc-plans", h.ListDCPlans)
+}
+
+// RegisterAdminRoutes registers dc_plan admin-only routes.
+func (h *DCPlanHandler) RegisterAdminRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/workspaces/:workspace_id/dc-plans/sync", h.SyncWorkspaceDCPlans)
+}
+
 // ListDCPlans handles Hilbert dc_plan projection listing.
 //
 // @Summary      List Hilbert dc plans
@@ -144,9 +155,26 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 		return
 	}
 
+	claims := middleware.GetClaims(c)
+	if claims != nil && claims.Role == "data_collector" {
+		workspaceIDs, err := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, claims.OperatorID)
+		if err != nil {
+			logger.Printf("[DC_PLAN] Failed to resolve collector Workspace access: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list dc plans"})
+			return
+		}
+		if !int64SliceContains(workspaceIDs, workspaceID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+			return
+		}
+	}
+
 	name := strings.TrimSpace(c.Query("name"))
 	dcType := strings.TrimSpace(c.Query("dc_type"))
 	operator := strings.TrimSpace(c.Query("operator"))
+	if claims != nil && claims.Role == "data_collector" {
+		operator = claims.OperatorID
+	}
 	dcDate := strings.TrimSpace(c.Query("dc_date"))
 	if dcDate != "" {
 		if parsed, err := time.Parse("2006-01-02", dcDate); err != nil || parsed.Format("2006-01-02") != dcDate {
@@ -333,4 +361,13 @@ func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
 		UpdatedTime:         formatWorkspaceNullableTime(row.UpdatedTime),
 		LastSyncedAt:        formatWorkspaceNullableTime(row.LastSyncedAt),
 	}
+}
+
+func int64SliceContains(values []int64, needle int64) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
