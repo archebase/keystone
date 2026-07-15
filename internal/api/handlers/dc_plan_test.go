@@ -60,6 +60,46 @@ func TestDCPlanListFiltersByWorkspaceAndFields(t *testing.T) {
 	}
 }
 
+func TestDCPlanListUsesLocalEpisodeProgress(t *testing.T) {
+	db := newTestDCPlanHandlerDB(t)
+	defer db.Close()
+	seedDCPlanHandlerPlanWithProgress(t, db, 1001, 123, "Ego Kitchen", "ego", "alice", "2026-07-09", 0, 0)
+	if _, err := db.Exec(`
+		INSERT INTO tasks (id, task_id, dc_plan_id, status, deleted_at) VALUES
+			(1, 'task-1', 1001, 'completed', NULL),
+			(2, 'task-2', 1001, 'completed', NULL),
+			(3, 'task-3', 1001, 'pending', NULL)
+	`); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, episode_id, task_id, dc_plan_id, duration_sec, deleted_at) VALUES
+			(1, 'episode-1', 1, 1001, 6.4, NULL),
+			(2, 'episode-2', 2, 1001, 8.6, NULL)
+	`); err != nil {
+		t.Fatalf("seed episodes: %v", err)
+	}
+	router := newTestDCPlanRouter(db, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dc-plans?workspace_id=123&limit=20&offset=0", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp DCPlanListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("items=%d want=1 response=%#v", len(resp.Items), resp)
+	}
+	if resp.Items[0].CurCount != 2 || resp.Items[0].CurDuration != 15 {
+		t.Fatalf("progress=(%d,%d) want=(2,15)", resp.Items[0].CurCount, resp.Items[0].CurDuration)
+	}
+}
+
 func TestDCPlanListRejectsInvalidDCDate(t *testing.T) {
 	db := newTestDCPlanHandlerDB(t)
 	defer db.Close()
@@ -183,6 +223,11 @@ func seedDCPlanHandlerWorkspace(t *testing.T, db *sqlx.DB, id int64, source stri
 
 func seedDCPlanHandlerPlan(t *testing.T, db *sqlx.DB, id int64, workspaceID int64, name string, dcType string, operator string, dcDate string) {
 	t.Helper()
+	seedDCPlanHandlerPlanWithProgress(t, db, id, workspaceID, name, dcType, operator, dcDate, 2, 120)
+}
+
+func seedDCPlanHandlerPlanWithProgress(t *testing.T, db *sqlx.DB, id int64, workspaceID int64, name string, dcType string, operator string, dcDate string, curCount int64, curDuration int64) {
+	t.Helper()
 	now := time.Date(2026, 7, 9, 1, 2, 3, 0, time.UTC)
 	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
@@ -191,7 +236,7 @@ func seedDCPlanHandlerPlan(t *testing.T, db *sqlx.DB, id int64, workspaceID int6
 			target_count, cur_count, target_duration, cur_duration, created_by,
 			created_time, last_synced_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, name, 11, 12, operator, 13, 14, 15, dcType, dcDate, 20, 2, 3600, 120, "planner", now, now); err != nil {
+	`, id, workspaceID, name, 11, 12, operator, 13, 14, 15, dcType, dcDate, 20, curCount, 3600, curDuration, "planner", now, now); err != nil {
 		t.Fatalf("seed dc_plan: %v", err)
 	}
 }
@@ -235,6 +280,21 @@ func newTestDCPlanHandlerDB(t *testing.T) *sqlx.DB {
 			sync_error TEXT,
 			local_created_at TIMESTAMP,
 			local_updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			dc_plan_id INTEGER,
+			status TEXT NOT NULL,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE episodes (
+			id INTEGER PRIMARY KEY,
+			episode_id TEXT NOT NULL,
+			task_id INTEGER NOT NULL,
+			dc_plan_id INTEGER,
+			duration_sec REAL,
 			deleted_at TIMESTAMP
 		);
 	`); err != nil {

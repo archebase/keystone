@@ -31,7 +31,7 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (61, 'Org B', NULL)`},
 		{sql: `INSERT INTO robots (id, device_id, workspace_id, deleted_at) VALUES (1, 'device-a', 60, NULL)`},
 		{sql: `INSERT INTO robots (id, device_id, workspace_id, deleted_at) VALUES (2, 'device-b', 61, NULL)`},
-		{sql: `INSERT INTO robots (id, device_id, workspace_id, deleted_at) VALUES (3, 'device-c', 60, NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, metadata, deleted_at) VALUES (3, 'device-c', 60, '{"hilbert_dc_device_name":"Device C"}', NULL)`},
 		{
 			sql: `INSERT INTO workstations (
 				id, robot_id, robot_name, robot_serial, data_collector_id,
@@ -83,8 +83,58 @@ func TestStationHandlerListStations_FilterByWorkstationFields(t *testing.T) {
 		t.Fatalf("unexpected filtered response: %#v", resp)
 	}
 	got := resp.Items[0]
-	if got.ID != "3" || got.RobotSerial != "device-c" || got.CollectorName != "Alice" || got.CollectorOperatorID != "C003" || got.WorkspaceID != "60" {
+	if got.ID != "3" || got.RobotSerial != "device-c" || got.RobotDeviceName != "Device C" || got.CollectorName != "Alice" || got.CollectorOperatorID != "C003" || got.WorkspaceID != "60" {
 		t.Fatalf("unexpected station item: %#v", got)
+	}
+}
+
+func TestStationHandlerListStations_SearchesRobotDeviceName(t *testing.T) {
+	db := newTestStationHandlerDB(t)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	stmts := []struct {
+		sql  string
+		args []any
+	}{
+		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, metadata, deleted_at) VALUES (1, 'device-a', 60, '{"hilbert_dc_device_name":"Inspection Cart A"}', NULL)`},
+		{
+			sql: `INSERT INTO workstations (
+				id, robot_id, robot_name, robot_serial, data_collector_id,
+				collector_name, collector_operator_id, workspace_id,
+				name, status, metadata, created_at, updated_at, deleted_at
+			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'active', '{}', ?, ?, NULL)`,
+			args: []any{now, now},
+		},
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed station fixture failed: %v", err)
+		}
+	}
+
+	r := newTestStationRouter(t, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stations?search=Inspection", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Items []StationResponse `json:"items"`
+		Total int               `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+	}
+	if resp.Total != 1 || len(resp.Items) != 1 {
+		t.Fatalf("unexpected search response: %#v", resp)
+	}
+	if got := resp.Items[0].RobotDeviceName; got != "Inspection Cart A" {
+		t.Fatalf("RobotDeviceName=%q want=%q", got, "Inspection Cart A")
 	}
 }
 
@@ -326,6 +376,7 @@ func newTestStationHandlerDB(t *testing.T) *sqlx.DB {
 			device_id TEXT NOT NULL,
 			workspace_id INTEGER NOT NULL DEFAULT 60,
 			status TEXT NOT NULL DEFAULT 'active',
+			metadata TEXT,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE data_collectors (

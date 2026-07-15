@@ -7,6 +7,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -84,6 +85,24 @@ func TestDataOpsEpisodeListSQLUsesCurrentProductionMetadata(t *testing.T) {
 		if !strings.Contains(sql, current) {
 			t.Fatalf("data ops SQL should include %q: %s", current, sql)
 		}
+	}
+	if !strings.Contains(sql, "r.metadata AS robot_metadata") {
+		t.Fatalf("data ops SQL should select robot metadata for device names: %s", sql)
+	}
+}
+
+func TestDataOpsEpisodeItemIncludesRobotDeviceName(t *testing.T) {
+	item := dataOpsEpisodeItemFromRow(dataOpsEpisodeRow{
+		ID:            1,
+		EpisodeID:     "episode-1",
+		TaskID:        10,
+		RobotDeviceID: sql.NullString{String: "robot-001", Valid: true},
+		RobotMetadata: sql.NullString{String: `{"hilbert_dc_device_name":"Device One"}`, Valid: true},
+		QAStatus:      "pending_qa",
+		CreatedAt:     time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if item.RobotDeviceName == nil || *item.RobotDeviceName != "Device One" {
+		t.Fatalf("RobotDeviceName=%v want Device One", item.RobotDeviceName)
 	}
 }
 

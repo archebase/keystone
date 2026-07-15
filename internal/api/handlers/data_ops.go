@@ -91,6 +91,7 @@ type dataOpsEpisodeRow struct {
 	TaskID              int64           `db:"task_id"`
 	TaskPublicID        sql.NullString  `db:"task_public_id"`
 	RobotDeviceID       sql.NullString  `db:"robot_device_id"`
+	RobotMetadata       sql.NullString  `db:"robot_metadata"`
 	CollectorOperatorID sql.NullString  `db:"collector_operator_id"`
 	CollectorName       sql.NullString  `db:"collector_name"`
 	QAStatus            string          `db:"qa_status"`
@@ -109,6 +110,7 @@ type DataOpsEpisodeItemResponse struct {
 	TaskID              int64                         `json:"task_id"`
 	TaskPublicID        *string                       `json:"task_public_id,omitempty"`
 	RobotDeviceID       *string                       `json:"robot_device_id,omitempty"`
+	RobotDeviceName     *string                       `json:"robot_device_name,omitempty"`
 	CollectorOperatorID *string                       `json:"collector_operator_id,omitempty"`
 	CollectorName       *string                       `json:"collector_name,omitempty"`
 	QAStatus            string                        `json:"qa_status"`
@@ -397,6 +399,7 @@ func dataOpsEpisodeListSQL(fromSQL string, where string) string {
 			e.task_id,
 			t.task_id AS task_public_id,
 			COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, '')) AS robot_device_id,
+			r.metadata AS robot_metadata,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS collector_operator_id,
 			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS collector_name,
 			COALESCE(e.qa_status, '') AS qa_status,
@@ -508,12 +511,14 @@ func int64Placeholders(values []int64) (string, []interface{}) {
 }
 
 func dataOpsEpisodeItemFromRow(row dataOpsEpisodeRow) DataOpsEpisodeItemResponse {
+	robotDeviceName := robotDeviceNameFromMetadata(row.RobotMetadata)
 	return DataOpsEpisodeItemResponse{
 		ID:                  row.ID,
 		EpisodeID:           row.EpisodeID,
 		TaskID:              row.TaskID,
 		TaskPublicID:        nullableString(row.TaskPublicID),
 		RobotDeviceID:       nullableString(row.RobotDeviceID),
+		RobotDeviceName:     nullableString(sql.NullString{String: robotDeviceName, Valid: robotDeviceName != ""}),
 		CollectorOperatorID: nullableString(row.CollectorOperatorID),
 		CollectorName:       nullableString(row.CollectorName),
 		QAStatus:            row.QAStatus,

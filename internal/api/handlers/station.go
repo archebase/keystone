@@ -52,6 +52,7 @@ type StationResponse struct {
 	RobotID             string      `json:"robot_id"`
 	RobotName           string      `json:"robot_name,omitempty"`
 	RobotSerial         string      `json:"robot_serial,omitempty"`
+	RobotDeviceName     string      `json:"robot_device_name,omitempty"`
 	DataCollectorID     string      `json:"data_collector_id"`
 	CollectorName       string      `json:"collector_name,omitempty"`
 	CollectorOperatorID string      `json:"collector_operator_id,omitempty"`
@@ -423,6 +424,7 @@ type stationListRow struct {
 	RobotID             int64          `db:"robot_id"`
 	RobotName           string         `db:"robot_name"`
 	RobotSerial         string         `db:"robot_serial"`
+	RobotMetadata       sql.NullString `db:"robot_metadata"`
 	DataCollectorID     int64          `db:"data_collector_id"`
 	CollectorName       string         `db:"collector_name"`
 	CollectorOperatorID string         `db:"collector_operator_id"`
@@ -465,6 +467,7 @@ func stationResponseFromRow(s stationListRow) StationResponse {
 		RobotID:             fmt.Sprintf("%d", s.RobotID),
 		RobotName:           s.RobotName,
 		RobotSerial:         s.RobotSerial,
+		RobotDeviceName:     robotDeviceNameFromMetadata(s.RobotMetadata),
 		DataCollectorID:     fmt.Sprintf("%d", s.DataCollectorID),
 		CollectorName:       s.CollectorName,
 		CollectorOperatorID: s.CollectorOperatorID,
@@ -490,6 +493,7 @@ func (h *StationHandler) getStationResponseRow(stationID int64, currentOnly bool
 	err := h.db.Get(&station, `
 		SELECT
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			r.metadata AS robot_metadata,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
 			ws.workspace_id AS workspace_id, o.name AS workspace_name,
 			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
@@ -561,7 +565,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		return
 	}
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
-	stationSearchFields := []string{"ws.name", "ws.robot_serial", "ws.collector_operator_id", "ws.robot_name", "ws.collector_name"}
+	stationSearchFields := []string{"ws.name", "ws.robot_serial", "ws.collector_operator_id", "ws.robot_name", "ws.collector_name", "r.metadata"}
 
 	whereClause := "WHERE ws.deleted_at IS NULL AND ws.is_current = TRUE"
 	args := []any{}
@@ -589,6 +593,7 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 	query := `
 		SELECT 
 			ws.id, ws.robot_id, ws.robot_name, ws.robot_serial,
+			r.metadata AS robot_metadata,
 			ws.data_collector_id, ws.collector_name, ws.collector_operator_id,
 			ws.workspace_id AS workspace_id, o.name AS workspace_name,
 			ws.name, ws.status, ws.is_current, ws.superseded_by, ws.metadata, ws.created_at, ws.updated_at
@@ -651,6 +656,7 @@ type StationLookupItem struct {
 	Status              string `json:"status"`
 	RobotName           string `json:"robot_name,omitempty"`
 	RobotSerial         string `json:"robot_serial,omitempty"`
+	RobotDeviceName     string `json:"robot_device_name,omitempty"`
 	CollectorName       string `json:"collector_name,omitempty"`
 	CollectorOperatorID string `json:"collector_operator_id,omitempty"`
 	Deleted             bool   `json:"deleted"`
@@ -723,17 +729,19 @@ func (h *StationHandler) LookupStations(c *gin.Context) {
 
 	query, args, err := sqlx.In(`
 		SELECT
-			id, robot_id,
-			COALESCE(robot_name, '') AS robot_name,
-			COALESCE(robot_serial, '') AS robot_serial,
-			data_collector_id,
-			COALESCE(collector_name, '') AS collector_name,
-			COALESCE(collector_operator_id, '') AS collector_operator_id,
-			workspace_id AS workspace_id,
-			name, status,
-			deleted_at
-		FROM workstations
-		WHERE id IN (?)
+			ws.id, ws.robot_id,
+			COALESCE(ws.robot_name, '') AS robot_name,
+			COALESCE(ws.robot_serial, '') AS robot_serial,
+			r.metadata AS robot_metadata,
+			ws.data_collector_id,
+			COALESCE(ws.collector_name, '') AS collector_name,
+			COALESCE(ws.collector_operator_id, '') AS collector_operator_id,
+			ws.workspace_id AS workspace_id,
+			ws.name, ws.status,
+			ws.deleted_at
+		FROM workstations ws
+		LEFT JOIN robots r ON r.id = ws.robot_id
+		WHERE ws.id IN (?)
 	`, ids)
 	if err != nil {
 		logger.Printf("[STATION] Failed to build lookup query: %v", err)
@@ -747,6 +755,7 @@ func (h *StationHandler) LookupStations(c *gin.Context) {
 		RobotID             int64          `db:"robot_id"`
 		RobotName           string         `db:"robot_name"`
 		RobotSerial         string         `db:"robot_serial"`
+		RobotMetadata       sql.NullString `db:"robot_metadata"`
 		DataCollectorID     int64          `db:"data_collector_id"`
 		CollectorName       string         `db:"collector_name"`
 		CollectorOperatorID string         `db:"collector_operator_id"`
@@ -778,6 +787,7 @@ func (h *StationHandler) LookupStations(c *gin.Context) {
 			Status:              r.Status,
 			RobotName:           strings.TrimSpace(r.RobotName),
 			RobotSerial:         strings.TrimSpace(r.RobotSerial),
+			RobotDeviceName:     robotDeviceNameFromMetadata(r.RobotMetadata),
 			CollectorName:       strings.TrimSpace(r.CollectorName),
 			CollectorOperatorID: strings.TrimSpace(r.CollectorOperatorID),
 			Deleted:             r.DeletedAt.Valid,
