@@ -66,7 +66,7 @@ func (c *HilbertClient) RegisterRawData(ctx context.Context, request HilbertRawD
 		return 0, err
 	}
 	if resp.Code != 0 || resp.Data <= 0 {
-		return 0, fmt.Errorf("%w: raw-data register response code %d", ErrHilbertUnavailable, resp.Code)
+		return 0, fmt.Errorf("%w: raw-data register response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
 	}
 	return resp.Data, nil
 }
@@ -97,7 +97,7 @@ func (c *HilbertClient) GetRawDataUploadCredentials(ctx context.Context, workspa
 		return nil, err
 	}
 	if resp.Code != 0 {
-		return nil, fmt.Errorf("%w: raw-data credentials response code %d", ErrHilbertUnavailable, resp.Code)
+		return nil, fmt.Errorf("%w: raw-data credentials response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
 	}
 	if strings.TrimSpace(resp.Data.Bucket) == "" || strings.TrimSpace(resp.Data.Key) == "" || strings.TrimSpace(resp.Data.Credentials.AccessKeyID) == "" || strings.TrimSpace(resp.Data.Credentials.SecretAccessKey) == "" {
 		return nil, fmt.Errorf("%w: raw-data credentials response missing storage fields", ErrHilbertUnavailable)
@@ -127,7 +127,7 @@ func (c *HilbertClient) FinishRawDataUpload(ctx context.Context, workspaceID, ra
 		return err
 	}
 	if resp.Code != 0 || !resp.Data {
-		return fmt.Errorf("%w: raw-data finish response code %d", ErrHilbertUnavailable, resp.Code)
+		return fmt.Errorf("%w: raw-data finish response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
 	}
 	return nil
 }

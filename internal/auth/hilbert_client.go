@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -552,8 +553,17 @@ func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error
 }
 
 type hilbertCommonResponse[T any] struct {
-	Code int `json:"code"`
-	Data T   `json:"data"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Msg     string `json:"msg"`
+	Data    T      `json:"data"`
+}
+
+func (r hilbertCommonResponse[T]) errorMessage() string {
+	if strings.TrimSpace(r.Message) != "" {
+		return strings.TrimSpace(r.Message)
+	}
+	return strings.TrimSpace(r.Msg)
 }
 
 type hilbertNonceData struct {
@@ -626,15 +636,23 @@ func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("%w: status %d", ErrHilbertInvalidCredentials, resp.StatusCode)
+		return fmt.Errorf("%w: status %d body %q", ErrHilbertInvalidCredentials, resp.StatusCode, limitedResponseBody(resp))
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("%w: status %d", ErrHilbertUnavailable, resp.StatusCode)
+		return fmt.Errorf("%w: status %d body %q", ErrHilbertUnavailable, resp.StatusCode, limitedResponseBody(resp))
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("%w: decode response: %v", ErrHilbertUnavailable, err)
 	}
 	return nil
+}
+
+func limitedResponseBody(resp *http.Response) string {
+	if resp == nil || resp.Body == nil {
+		return ""
+	}
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return strings.TrimSpace(string(data))
 }
 
 func encryptHilbertPasswordDigest(password string, encodedMaterial string) (string, error) {

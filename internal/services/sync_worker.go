@@ -1145,6 +1145,8 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 	if err != nil {
 		return nil, fmt.Errorf("register Hilbert raw data: %w", err)
 	}
+	logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data registered: raw_data_id=%d workspace_id=%d dc_plan_id=%d size=%d object_key=%s",
+		ep.ID, rawDataID, uploadContext.WorkspaceID, uploadContext.DCPlanID, objectSize, mcapKey)
 	uploadCredentials, err := w.hilbert.GetRawDataUploadCredentials(ctx, uploadContext.WorkspaceID, rawDataID)
 	if err != nil {
 		return nil, fmt.Errorf("get Hilbert raw-data upload credentials: %w", err)
@@ -1165,6 +1167,8 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 	if tosUploader == nil {
 		tosUploader = cloud.NewTOSS3Uploader(w.syncOSSTimeout())
 	}
+	logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data upload start: raw_data_id=%d endpoint=%s bucket=%s object_key=%s size=%d",
+		ep.ID, rawDataID, uploadCredentials.Endpoint, uploadCredentials.Bucket, uploadCredentials.Key, objectSize)
 	objectETag, err := tosUploader.PutObject(ctx, hilbertUploadTarget(uploadCredentials), obj, objectSize, func(uploadedBytes int64, totalBytes int64) {
 		w.setEpisodeProgress(ep.ID, uploadedBytes, totalBytes)
 	})
