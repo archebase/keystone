@@ -119,7 +119,7 @@ type hilbertEpisodeUploadContext struct {
 	WorkspaceID int64
 }
 
-func (c hilbertEpisodeUploadContext) clientHints() map[string]string {
+func (c hilbertEpisodeUploadContext) clientHints() map[string]string { //nolint:unused // Reserved for direct DP upload mode.
 	return map[string]string{
 		"dc_plan_id":   strconv.FormatInt(c.DCPlanID, 10),
 		"workspace_id": strconv.FormatInt(c.WorkspaceID, 10),
@@ -1206,6 +1206,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	}, nil
 }
 
+//nolint:unused // Reserved for direct DP upload mode.
 func directCloudUploadRequest(
 	ep syncEpisodeUploadRow,
 	mcapKey string,
@@ -1353,7 +1354,7 @@ func hilbertUploadTarget(credentials *auth.HilbertRawDataUploadCredentials) clou
 	}
 }
 
-func (w *SyncWorker) newDirectUploader(dpConfig *DPDeviceUploadConfig) (*cloud.Uploader, func(), error) {
+func (w *SyncWorker) newDirectUploader(dpConfig *DPDeviceUploadConfig) (*cloud.Uploader, func(), error) { //nolint:unused // Reserved for direct DP upload mode.
 	if dpConfig == nil {
 		return nil, func() {}, fmt.Errorf("missing DP upload config")
 	}
@@ -1392,7 +1393,7 @@ func (w *SyncWorker) newDirectUploader(dpConfig *DPDeviceUploadConfig) (*cloud.U
 	return uploader, cleanup, nil
 }
 
-func (w *SyncWorker) syncRequestTimeout() time.Duration {
+func (w *SyncWorker) syncRequestTimeout() time.Duration { //nolint:unused // Reserved for direct DP upload mode.
 	if w.syncCfg != nil && w.syncCfg.RequestTimeoutSec > 0 {
 		return time.Duration(w.syncCfg.RequestTimeoutSec) * time.Second
 	}
@@ -1406,14 +1407,14 @@ func (w *SyncWorker) syncOSSTimeout() time.Duration {
 	return 300 * time.Second
 }
 
-func (w *SyncWorker) syncPersistRootDir() string {
+func (w *SyncWorker) syncPersistRootDir() string { //nolint:unused // Reserved for direct DP upload mode.
 	if w.syncCfg == nil {
 		return ""
 	}
 	return w.syncCfg.PersistRootDir
 }
 
-func (w *SyncWorker) syncMaxRestartCount() int {
+func (w *SyncWorker) syncMaxRestartCount() int { //nolint:unused // Reserved for direct DP upload mode.
 	if w.syncCfg != nil && w.syncCfg.MaxRestartCount >= 0 {
 		return w.syncCfg.MaxRestartCount
 	}
@@ -1688,7 +1689,7 @@ func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
 	return time.Duration(totalSec * float64(time.Second))
 }
 
-func (w *SyncWorker) directTagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) {
+func (w *SyncWorker) directTagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) { //nolint:unused // Reserved for direct DP upload mode.
 	key := objectKeyFromStoredPath(sidecarPath, w.minioBucket)
 	if key == "" {
 		return map[string]string{}, nil

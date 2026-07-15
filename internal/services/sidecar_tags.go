@@ -16,7 +16,7 @@ import (
 // Nested objects are flattened with dot notation (e.g. "device.device_id").
 // Array values are JSON-encoded into a single string under one key (e.g. recording.topics -> ["topic"]).
 // The "topics_summary" and top-level "task" keys are intentionally excluded.
-func flattenSidecar(data []byte) (map[string]string, error) {
+func flattenSidecar(data []byte) (map[string]string, error) { //nolint:unused // Reserved for direct DP upload mode.
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse sidecar json: %w", err)
@@ -27,7 +27,7 @@ func flattenSidecar(data []byte) (map[string]string, error) {
 	return result, nil
 }
 
-func flattenValue(out map[string]string, prefix string, v interface{}) {
+func flattenValue(out map[string]string, prefix string, v interface{}) { //nolint:unused // Reserved for direct DP upload mode.
 	switch val := v.(type) {
 	case map[string]interface{}:
 		for k, child := range val {
@@ -60,7 +60,7 @@ func flattenValue(out map[string]string, prefix string, v interface{}) {
 	}
 }
 
-func joinKey(prefix, key string) string {
+func joinKey(prefix, key string) string { //nolint:unused // Reserved for direct DP upload mode.
 	if prefix == "" {
 		return key
 	}

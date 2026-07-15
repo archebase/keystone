@@ -107,8 +107,7 @@ type gatewayService struct {
 }
 
 func newGatewayService(cfg Config, sts stsProvider, sessions *sessionStore, db *sqlx.DB, qa episodeQAEnqueuer) *gatewayService {
-	var database *sqlx.DB
-	database = db
+	database := db
 	return &gatewayService{
 		cfg:      cfg,
 		db:       database,

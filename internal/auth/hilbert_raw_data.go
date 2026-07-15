@@ -16,7 +16,7 @@ import (
 
 const (
 	hilbertRawDataRegisterPath             = "/v1/data-collection/raw-data/register"
-	hilbertRawDataGetUploadCredentialsPath = "/v1/data-collection/raw-data/get-upload-credentials"
+	hilbertRawDataGetUploadCredentialsPath = "/v1/data-collection/raw-data/get-upload-credentials" // #nosec G101 -- API path, not a credential.
 	hilbertRawDataFinishUploadPath         = "/v1/data-collection/raw-data/finish-upload"
 )
 

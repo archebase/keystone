@@ -116,7 +116,7 @@ func robotDeviceNameFromMetadata(ns sql.NullString) string {
 	return strings.TrimSpace(name)
 }
 
-func (h *RobotHandler) loadRobotRow(id int64) (robotRow, error) {
+func (h *RobotHandler) loadRobotRow(id int64) (robotRow, error) { //nolint:unused // Kept for detail endpoints that share robot row loading.
 	var r robotRow
 	err := h.db.Get(&r, `
 			SELECT

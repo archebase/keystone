@@ -404,6 +404,7 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// EpisodeQAEnqueuer exposes the QA handler dependency for services that enqueue episode QA.
 func (s *Server) EpisodeQAEnqueuer() interface {
 	EnqueueEpisode(episodeID int64)
 } {

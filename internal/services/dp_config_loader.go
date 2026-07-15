@@ -159,7 +159,7 @@ func ValidateDPDeviceProfile(configPath string, assetID string) error {
 	return err
 }
 
-func loadDPDeviceUploadConfig(configPath string, assetID string) (*DPDeviceUploadConfig, error) {
+func loadDPDeviceUploadConfig(configPath string, assetID string) (*DPDeviceUploadConfig, error) { //nolint:unused // Reserved for direct DP upload mode.
 	configPath = strings.TrimSpace(configPath)
 	assetID = strings.TrimSpace(assetID)
 	if assetID == "" {
