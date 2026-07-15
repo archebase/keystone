@@ -9,11 +9,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"log"
 	"strings"
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/cloud"
 	"archebase.com/keystone-edge/internal/logger"
 	"github.com/jmoiron/sqlx"
@@ -145,6 +147,74 @@ func TestUploadEpisodeDirectStopsAtHilbertGuard(t *testing.T) {
 	}
 }
 
+func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
+	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-s3-cn-beijing.ivolces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
+	}
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	credentials.Credentials.SessionToken = "temp-token"
+	hilbert := &fakeHilbertRawDataClient{
+		credentials: credentials,
+	}
+	uploader := &fakeTOSObjectUploader{}
+	w := &SyncWorker{
+		minioBucket: "source-bucket",
+		hilbert:     hilbert,
+		source:      source,
+		tosUploader: uploader,
+	}
+	createdAt := time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC)
+
+	result, err := w.uploadEpisodeDirect(context.Background(), syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		DurationSec:       sql.NullFloat64{Float64: 2.5, Valid: true},
+		CreatedAt:         createdAt,
+	})
+	if err != nil {
+		t.Fatalf("uploadEpisodeDirect() error = %v", err)
+	}
+
+	if hilbert.register.WorkspaceID != 123 || hilbert.register.DCPlanID != 1001 {
+		t.Fatalf("register request ids = %+v, want workspace=123 dc_plan=1001", hilbert.register)
+	}
+	if hilbert.register.BagName != "capture.mcap" || hilbert.register.BagSize != int64(len(source.data)) {
+		t.Fatalf("register bag fields = %+v", hilbert.register)
+	}
+	if hilbert.register.BagDigest != "9777442976c95a2f302786b97e60ceb5" {
+		t.Fatalf("register BagDigest = %q, want content md5", hilbert.register.BagDigest)
+	}
+	if !hilbert.register.BagStartTime.Equal(createdAt) || !hilbert.register.BagEndTime.Equal(createdAt.Add(2500*time.Millisecond)) {
+		t.Fatalf("register bag times = %s-%s", hilbert.register.BagStartTime, hilbert.register.BagEndTime)
+	}
+	if hilbert.credentialsWorkspaceID != 123 || hilbert.credentialsRawDataID != 9876 || !hilbert.finished {
+		t.Fatalf("Hilbert calls not completed: credentials workspace=%d raw=%d finished=%t",
+			hilbert.credentialsWorkspaceID, hilbert.credentialsRawDataID, hilbert.finished)
+	}
+	if uploader.target.Bucket != "hilbert-bucket" || uploader.target.Key != "raw-data/123/capture.mcap" {
+		t.Fatalf("upload target = %+v", uploader.target)
+	}
+	if uploader.size != int64(len(source.data)) || string(uploader.body) != string(source.data) {
+		t.Fatalf("uploaded size/body = %d/%q", uploader.size, string(uploader.body))
+	}
+	if source.statCount != 1 || source.openCount != 2 {
+		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=2", source.statCount, source.openCount)
+	}
+	if result.UploadID != "9876" || result.Bucket != "hilbert-bucket" || result.ObjectKey != "raw-data/123/capture.mcap" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 func TestDirectCloudUploadRequestContainsPlanMetadata(t *testing.T) {
 	rawTags := map[string]string{"existing": "tag"}
 	req := directCloudUploadRequest(
@@ -160,6 +230,90 @@ func TestDirectCloudUploadRequestContainsPlanMetadata(t *testing.T) {
 	}
 	if req.RawTags["existing"] != "tag" {
 		t.Fatalf("raw tags=%+v want original tags", req.RawTags)
+	}
+}
+
+type fakeHilbertRawDataClient struct {
+	register               auth.HilbertRawDataRegisterRequest
+	credentials            *auth.HilbertRawDataUploadCredentials
+	credentialsWorkspaceID int64
+	credentialsRawDataID   int64
+	finishWorkspaceID      int64
+	finishRawDataID        int64
+	finished               bool
+}
+
+func (c *fakeHilbertRawDataClient) RegisterRawData(_ context.Context, request auth.HilbertRawDataRegisterRequest) (int64, error) {
+	c.register = request
+	return 9876, nil
+}
+
+func (c *fakeHilbertRawDataClient) GetRawDataUploadCredentials(_ context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawDataUploadCredentials, error) {
+	c.credentialsWorkspaceID = workspaceID
+	c.credentialsRawDataID = rawDataID
+	return c.credentials, nil
+}
+
+func (c *fakeHilbertRawDataClient) FinishRawDataUpload(_ context.Context, workspaceID, rawDataID int64) error {
+	c.finishWorkspaceID = workspaceID
+	c.finishRawDataID = rawDataID
+	c.finished = true
+	return nil
+}
+
+type fakeSourceObjectReader struct {
+	data      []byte
+	statCount int
+	openCount int
+}
+
+func (r *fakeSourceObjectReader) StatObject(context.Context, string, string) (int64, error) {
+	r.statCount++
+	return int64(len(r.data)), nil
+}
+
+func (r *fakeSourceObjectReader) OpenObject(context.Context, string, string) (io.ReadCloser, error) {
+	r.openCount++
+	return io.NopCloser(bytes.NewReader(r.data)), nil
+}
+
+type fakeTOSObjectUploader struct {
+	target cloud.TOSS3UploadTarget
+	size   int64
+	body   []byte
+}
+
+func (u *fakeTOSObjectUploader) PutObject(_ context.Context, target cloud.TOSS3UploadTarget, reader io.Reader, size int64, progress cloud.UploadProgressFunc) (string, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+	u.target = target
+	u.size = size
+	u.body = data
+	if progress != nil {
+		progress(size, size)
+	}
+	return "etag-1", nil
+}
+
+func TestSyncEpisodeUploadRowBagTimes(t *testing.T) {
+	createdAt := time.Date(2026, 7, 15, 2, 0, 0, 0, time.UTC)
+	row := syncEpisodeUploadRow{
+		CreatedAt:   createdAt,
+		DurationSec: sql.NullFloat64{Float64: 1.5, Valid: true},
+	}
+	if got := row.bagStartTime(); !got.Equal(createdAt) {
+		t.Fatalf("bagStartTime() = %s, want %s", got, createdAt)
+	}
+	wantEnd := createdAt.Add(1500 * time.Millisecond)
+	if got := row.bagEndTime(); !got.Equal(wantEnd) {
+		t.Fatalf("bagEndTime() = %s, want %s", got, wantEnd)
+	}
+
+	row.DurationSec = sql.NullFloat64{}
+	if got := row.bagEndTime(); !got.Equal(createdAt.Add(time.Second)) {
+		t.Fatalf("bagEndTime() without duration = %s, want created+1s", got)
 	}
 }
 

@@ -6,18 +6,22 @@ package services
 
 import (
 	"context"
+	"crypto/md5" // #nosec G501 -- Hilbert raw-data API requires an MD5 bagDigest field.
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"math/rand"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/cloud"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
@@ -45,21 +49,69 @@ type syncEnqueueRequest struct {
 }
 
 type syncEpisodeUploadRow struct {
-	ID                      int64          `db:"id"`
-	EpisodeUUID             string         `db:"episode_id"`
-	DCPlanID                sql.NullInt64  `db:"dc_plan_id"`
-	LocalDCPlanID           sql.NullInt64  `db:"local_dc_plan_id"`
-	ProjectedDCPlanID       sql.NullInt64  `db:"projected_dc_plan_id"`
-	WorkspaceID             sql.NullInt64  `db:"workspace_id"`
-	DCPlanName              sql.NullString `db:"dc_plan_name"`
-	DCType                  sql.NullString `db:"dc_type"`
-	McapPath                string         `db:"mcap_path"`
-	SidecarPath             string         `db:"sidecar_path"`
-	CloudSynced             bool           `db:"cloud_synced"`
-	Metadata                sql.NullString `db:"metadata"`
-	WorkstationID           sql.NullInt64  `db:"workstation_id"`
-	DataCollectorOperatorID sql.NullString `db:"data_collector_operator_id"`
-	DataCollectorName       sql.NullString `db:"data_collector_name"`
+	ID                      int64           `db:"id"`
+	EpisodeUUID             string          `db:"episode_id"`
+	DCPlanID                sql.NullInt64   `db:"dc_plan_id"`
+	LocalDCPlanID           sql.NullInt64   `db:"local_dc_plan_id"`
+	ProjectedDCPlanID       sql.NullInt64   `db:"projected_dc_plan_id"`
+	WorkspaceID             sql.NullInt64   `db:"workspace_id"`
+	DCPlanName              sql.NullString  `db:"dc_plan_name"`
+	DCType                  sql.NullString  `db:"dc_type"`
+	McapPath                string          `db:"mcap_path"`
+	SidecarPath             string          `db:"sidecar_path"`
+	CloudSynced             bool            `db:"cloud_synced"`
+	Metadata                sql.NullString  `db:"metadata"`
+	WorkstationID           sql.NullInt64   `db:"workstation_id"`
+	DataCollectorOperatorID sql.NullString  `db:"data_collector_operator_id"`
+	DataCollectorName       sql.NullString  `db:"data_collector_name"`
+	DurationSec             sql.NullFloat64 `db:"duration_sec"`
+	CreatedAt               time.Time       `db:"created_at"`
+}
+
+type hilbertRawDataClient interface {
+	RegisterRawData(ctx context.Context, request auth.HilbertRawDataRegisterRequest) (int64, error)
+	GetRawDataUploadCredentials(ctx context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawDataUploadCredentials, error)
+	FinishRawDataUpload(ctx context.Context, workspaceID, rawDataID int64) error
+}
+
+type tosObjectUploader interface {
+	PutObject(ctx context.Context, target cloud.TOSS3UploadTarget, reader io.Reader, size int64, progress cloud.UploadProgressFunc) (string, error)
+}
+
+// SourceObjectReader reads source MCAP objects for Hilbert sync.
+type SourceObjectReader interface {
+	StatObject(ctx context.Context, bucket, objectName string) (int64, error)
+	OpenObject(ctx context.Context, bucket, objectName string) (io.ReadCloser, error)
+}
+
+type minioSourceObjectReader struct {
+	client *s3.Client
+}
+
+// NewMinioSourceObjectReader adapts the configured S3 client for source reads.
+func NewMinioSourceObjectReader(client *s3.Client) SourceObjectReader {
+	if client == nil {
+		return nil
+	}
+	return minioSourceObjectReader{client: client}
+}
+
+func (r minioSourceObjectReader) StatObject(ctx context.Context, bucket, objectName string) (int64, error) {
+	if r.client == nil {
+		return 0, fmt.Errorf("minio client not available")
+	}
+	objInfo, err := r.client.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		return 0, err
+	}
+	return objInfo.Size, nil
+}
+
+func (r minioSourceObjectReader) OpenObject(ctx context.Context, bucket, objectName string) (io.ReadCloser, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("minio client not available")
+	}
+	return r.client.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
 }
 
 type hilbertEpisodeUploadContext struct {
@@ -116,6 +168,9 @@ type SyncWorker struct {
 	uploader    *cloud.Uploader
 	minioClient *s3.Client
 	minioBucket string
+	hilbert     hilbertRawDataClient
+	tosUploader tosObjectUploader
+	source      SourceObjectReader
 	cfg         SyncWorkerConfig
 	syncCfg     *config.SyncConfig
 
@@ -171,6 +226,43 @@ func NewSyncWorker(db *sqlx.DB, uploader *cloud.Uploader, minioClient *s3.Client
 		enqueuedEpisode:   make(map[int64]struct{}),
 		progressByEpisode: make(map[int64]SyncProgressSnapshot),
 	}
+}
+
+// SetHilbertRawDataClient configures the Hilbert raw-data control plane client.
+func (w *SyncWorker) SetHilbertRawDataClient(client hilbertRawDataClient) {
+	if w == nil {
+		return
+	}
+	w.hilbert = client
+}
+
+// SetTOSObjectUploader configures the object-storage uploader used by Hilbert raw-data sync.
+func (w *SyncWorker) SetTOSObjectUploader(uploader tosObjectUploader) {
+	if w == nil {
+		return
+	}
+	w.tosUploader = uploader
+}
+
+// SetSourceObjectReader configures how the worker reads source MCAP objects.
+func (w *SyncWorker) SetSourceObjectReader(reader SourceObjectReader) {
+	if w == nil {
+		return
+	}
+	w.source = reader
+}
+
+func (w *SyncWorker) sourceReader() SourceObjectReader {
+	if w == nil {
+		return nil
+	}
+	if w.source != nil {
+		return w.source
+	}
+	if w.minioClient != nil {
+		return minioSourceObjectReader{client: w.minioClient}
+	}
+	return nil
 }
 
 func (w *SyncWorker) setEpisodeProgress(episodeID int64, uploadedBytes int64, totalBytes int64) {
@@ -964,6 +1056,8 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 			e.cloud_synced,
 			e.metadata,
 			e.workstation_id,
+			e.duration_sec,
+			e.created_at,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS data_collector_operator_id,
 			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS data_collector_name
 		FROM episodes e
@@ -1014,65 +1108,84 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 	if err != nil {
 		return nil, err
 	}
+	if w.hilbert == nil {
+		return nil, newNonRetryableSyncError("Hilbert raw-data client is not configured")
+	}
+	source := w.sourceReader()
+	if source == nil {
+		return nil, fmt.Errorf("source object reader not available")
+	}
 
 	mcapKey := stripBucketPrefix(ep.McapPath)
 	if mcapKey == "" {
 		return nil, newNonRetryableSyncError("episode %d has empty mcap_path", ep.ID)
 	}
 
-	assetID, err := resolveAssetIDForEpisode(ctx, w.db, ep.ID, ep.Metadata, ep.WorkstationID)
+	objectSize, err := source.StatObject(ctx, w.minioBucket, mcapKey)
 	if err != nil {
-		return nil, wrapNonRetryableSyncError(err, "resolve asset_id for episode %d", ep.ID)
+		return nil, fmt.Errorf("stat mcap object %s: %w", mcapKey, err)
+	}
+	if objectSize <= 0 {
+		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
+	}
+	mcapMD5Hex, err := objectMD5Hex(ctx, source, w.minioBucket, mcapKey)
+	if err != nil {
+		return nil, fmt.Errorf("calculate mcap md5 %s: %w", mcapKey, err)
 	}
 
-	if w.syncCfg == nil || strings.TrimSpace(w.syncCfg.DPConfigPath) == "" {
-		return nil, newNonRetryableSyncError("KEYSTONE_SYNC_DP_CONFIG is required for direct sync")
-	}
-	dpConfig, err := loadDPDeviceUploadConfig(w.syncCfg.DPConfigPath, assetID)
-	if err != nil {
-		return nil, wrapNonRetryableSyncError(err, "load DP config for asset_id %s", assetID)
-	}
-
-	sidecarTags, err := w.directTagsFromSidecar(ctx, ep.SidecarPath)
-	if err != nil {
-		return nil, err
-	}
-
-	rawTags, err := buildDPDirectRawTags(dpRawTagsInput{
-		Profile:         dpConfig.Profile,
-		McapKey:         mcapKey,
-		SidecarTags:     sidecarTags,
-		EpisodePublicID: ep.EpisodeUUID,
-		Context: dpRawTagContext{
-			DCPlanID:                uploadContext.DCPlanID,
-			WorkspaceID:             uploadContext.WorkspaceID,
-			DataCollectorOperatorID: ep.DataCollectorOperatorID,
-			DataCollectorName:       ep.DataCollectorName,
-		},
+	rawDataID, err := w.hilbert.RegisterRawData(ctx, auth.HilbertRawDataRegisterRequest{
+		WorkspaceID:  uploadContext.WorkspaceID,
+		DCPlanID:     uploadContext.DCPlanID,
+		BagName:      path.Base(mcapKey),
+		BagStartTime: ep.bagStartTime(),
+		BagEndTime:   ep.bagEndTime(),
+		BagSize:      objectSize,
+		BagDigest:    mcapMD5Hex,
 	})
 	if err != nil {
-		return nil, wrapNonRetryableSyncError(err, "build raw tags for episode %d", ep.ID)
+		return nil, fmt.Errorf("register Hilbert raw data: %w", err)
 	}
-
-	uploader, cleanup, err := w.newDirectUploader(dpConfig)
+	uploadCredentials, err := w.hilbert.GetRawDataUploadCredentials(ctx, uploadContext.WorkspaceID, rawDataID)
 	if err != nil {
-		return nil, fmt.Errorf("create direct uploader for asset_id %s: %w", assetID, err)
+		return nil, fmt.Errorf("get Hilbert raw-data upload credentials: %w", err)
 	}
-	defer cleanup()
+	if !strings.EqualFold(uploadCredentials.Provider, "TOS") {
+		return nil, fmt.Errorf("unsupported Hilbert raw-data provider %q", uploadCredentials.Provider)
+	}
 
-	logger.Printf("[SYNC-WORKER] Episode %d direct sync config resolved: asset_id=%s auth=%s auth_tls=%t gateway=%s gateway_tls=%t",
-		ep.ID, assetID, dpConfig.Auth.Target, dpConfig.Auth.UseTLS, dpConfig.Gateway.Target, dpConfig.Gateway.UseTLS)
+	obj, err := source.OpenObject(ctx, w.minioBucket, mcapKey)
+	if err != nil {
+		return nil, fmt.Errorf("get mcap object %s: %w", mcapKey, err)
+	}
+	defer func() {
+		_ = obj.Close()
+	}()
 
-	return uploader.Upload(ctx, directCloudUploadRequest(
-		ep,
-		mcapKey,
-		assetID,
-		rawTags,
-		uploadContext,
-		func(uploadedBytes int64, totalBytes int64) {
-			w.setEpisodeProgress(ep.ID, uploadedBytes, totalBytes)
-		},
-	))
+	tosUploader := w.tosUploader
+	if tosUploader == nil {
+		tosUploader = cloud.NewTOSS3Uploader(w.syncOSSTimeout())
+	}
+	objectETag, err := tosUploader.PutObject(ctx, hilbertUploadTarget(uploadCredentials), obj, objectSize, func(uploadedBytes int64, totalBytes int64) {
+		w.setEpisodeProgress(ep.ID, uploadedBytes, totalBytes)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("upload Hilbert raw-data object: %w", err)
+	}
+	if err := w.hilbert.FinishRawDataUpload(ctx, uploadContext.WorkspaceID, rawDataID); err != nil {
+		return nil, fmt.Errorf("finish Hilbert raw-data upload: %w", err)
+	}
+
+	rawID := strconv.FormatInt(rawDataID, 10)
+	logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data upload complete: raw_data_id=%s object_key=%s size=%d",
+		ep.ID, rawID, uploadCredentials.Key, objectSize)
+	return &cloud.UploadResult{
+		LogicalUploadID: rawID,
+		UploadID:        rawID,
+		Bucket:          uploadCredentials.Bucket,
+		ObjectKey:       uploadCredentials.Key,
+		FileSize:        objectSize,
+		OSSObjectETag:   objectETag,
+	}, nil
 }
 
 func directCloudUploadRequest(
@@ -1090,6 +1203,54 @@ func directCloudUploadRequest(
 		RawTags:     rawTags,
 		ClientHints: uploadContext.clientHints(),
 		Progress:    progress,
+	}
+}
+
+func (ep syncEpisodeUploadRow) bagStartTime() time.Time {
+	if !ep.CreatedAt.IsZero() {
+		return ep.CreatedAt.UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (ep syncEpisodeUploadRow) bagEndTime() time.Time {
+	start := ep.bagStartTime()
+	if ep.DurationSec.Valid && ep.DurationSec.Float64 > 0 {
+		return start.Add(time.Duration(ep.DurationSec.Float64 * float64(time.Second))).UTC()
+	}
+	return start.Add(time.Second).UTC()
+}
+
+func objectMD5Hex(ctx context.Context, source SourceObjectReader, bucket, key string) (string, error) {
+	if source == nil {
+		return "", fmt.Errorf("source object reader not available")
+	}
+	obj, err := source.OpenObject(ctx, bucket, key)
+	if err != nil {
+		return "", fmt.Errorf("open object %s: %w", key, err)
+	}
+	defer func() {
+		_ = obj.Close()
+	}()
+	hash := md5.New() // #nosec G401 -- Hilbert raw-data API requires MD5.
+	if _, err := io.Copy(hash, obj); err != nil {
+		return "", fmt.Errorf("read object %s: %w", key, err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func hilbertUploadTarget(credentials *auth.HilbertRawDataUploadCredentials) cloud.TOSS3UploadTarget {
+	if credentials == nil {
+		return cloud.TOSS3UploadTarget{}
+	}
+	return cloud.TOSS3UploadTarget{
+		Endpoint:        credentials.Endpoint,
+		Region:          credentials.Region,
+		Bucket:          credentials.Bucket,
+		Key:             credentials.Key,
+		AccessKeyID:     credentials.Credentials.AccessKeyID,
+		SecretAccessKey: credentials.Credentials.SecretAccessKey,
+		SessionToken:    credentials.Credentials.SessionToken,
 	}
 }
 
@@ -1431,7 +1592,7 @@ func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
 func (w *SyncWorker) directTagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) {
 	key := stripBucketPrefix(sidecarPath)
 	if key == "" {
-		return nil, newNonRetryableSyncError("empty sidecar_path")
+		return map[string]string{}, nil
 	}
 	if w.minioClient == nil {
 		return nil, fmt.Errorf("minio client not available")

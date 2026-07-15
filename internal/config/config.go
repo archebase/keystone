@@ -362,14 +362,16 @@ func (c *Config) Validate() error {
 	}
 	if c.Sync.Enabled {
 		c.Sync.DPConfigPath = strings.TrimSpace(c.Sync.DPConfigPath)
-		if c.Sync.DPConfigPath == "" {
-			return fmt.Errorf("KEYSTONE_SYNC_DP_CONFIG is required when sync is enabled")
+		if c.Hilbert.BaseURL == "" || c.Hilbert.AccessKey == "" || c.Hilbert.SecretKey == "" {
+			return fmt.Errorf("KEYSTONE_HILBERT_BASE_URL, KEYSTONE_HILBERT_ACCESS_KEY and KEYSTONE_HILBERT_SECRET_KEY are required when sync is enabled")
 		}
-		expandedDPConfigPath, err := expandHomePath(c.Sync.DPConfigPath)
-		if err != nil {
-			return fmt.Errorf("KEYSTONE_SYNC_DP_CONFIG %q is invalid: %w", c.Sync.DPConfigPath, err)
+		if c.Sync.DPConfigPath != "" {
+			expandedDPConfigPath, err := expandHomePath(c.Sync.DPConfigPath)
+			if err != nil {
+				return fmt.Errorf("KEYSTONE_SYNC_DP_CONFIG %q is invalid: %w", c.Sync.DPConfigPath, err)
+			}
+			c.Sync.DPConfigPath = expandedDPConfigPath
 		}
-		c.Sync.DPConfigPath = expandedDPConfigPath
 		c.Sync.AuthEndpoint = strings.TrimSpace(c.Sync.AuthEndpoint)
 		c.Sync.GatewayEndpoint = strings.TrimSpace(c.Sync.GatewayEndpoint)
 		c.Sync.APIKey = strings.TrimSpace(c.Sync.APIKey)

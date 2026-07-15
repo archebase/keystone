@@ -423,6 +423,7 @@ func TestValidateCallbackPublicBaseURL(t *testing.T) {
 		Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
 		Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
 		Auth:     AuthConfig{JWTSecret: "jwt-secret"},
+		Hilbert:  HilbertConfig{BaseURL: "https://hilbert.example", AccessKey: "ak", SecretKey: "sk"},
 	}
 
 	t.Run("required", func(t *testing.T) {
@@ -468,6 +469,7 @@ func TestValidateSyncDPConfig(t *testing.T) {
 		Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
 		Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
 		Auth:     AuthConfig{JWTSecret: "jwt-secret"},
+		Hilbert:  HilbertConfig{BaseURL: "https://hilbert.example", AccessKey: "ak", SecretKey: "sk"},
 	}
 
 	t.Run("sync disabled — no DP config required", func(t *testing.T) {
@@ -478,8 +480,9 @@ func TestValidateSyncDPConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("sync enabled — missing DP config", func(t *testing.T) {
+	t.Run("sync enabled — missing Hilbert config", func(t *testing.T) {
 		cfg := validBase
+		cfg.Hilbert = HilbertConfig{}
 		cfg.Sync = SyncConfig{
 			Enabled:           true,
 			DPConfigPath:      "",
@@ -492,16 +495,15 @@ func TestValidateSyncDPConfig(t *testing.T) {
 			RetryBaseSec:      30,
 			RetryMaxSec:       1800,
 		}
-		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "KEYSTONE_SYNC_DP_CONFIG") {
-			t.Fatalf("Validate() error = %v, want KEYSTONE_SYNC_DP_CONFIG error", err)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "KEYSTONE_HILBERT_BASE_URL") {
+			t.Fatalf("Validate() error = %v, want Hilbert config error", err)
 		}
 	})
 
-	t.Run("sync enabled — old cloud endpoint and API key are not required", func(t *testing.T) {
+	t.Run("sync enabled — DP config and old cloud endpoint/API key are not required", func(t *testing.T) {
 		cfg := validBase
 		cfg.Sync = SyncConfig{
 			Enabled:           true,
-			DPConfigPath:      "/etc/keystone/dp-config.json",
 			BatchSize:         10,
 			MaxRetries:        5,
 			MaxConcurrent:     2,
