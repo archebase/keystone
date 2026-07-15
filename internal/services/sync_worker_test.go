@@ -22,23 +22,25 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestStripBucketPrefix(t *testing.T) {
+func TestObjectKeyFromStoredPath(t *testing.T) {
 	tests := []struct {
-		input string
-		want  string
+		input  string
+		bucket string
+		want   string
 	}{
-		{"edge-factory-default/factory-default/device/2024-01-01/task.mcap", "factory-default/device/2024-01-01/task.mcap"},
-		{"/edge-factory-default/factory-default/device/2024-01-01/task.mcap", "factory-default/device/2024-01-01/task.mcap"},
-		{"bucket/key", "key"},
-		{"just-a-file.mcap", "just-a-file.mcap"},
-		{"  ", ""},
-		{"", ""},
+		{input: "edge-factory-default/factory-default/device/2024-01-01/task.mcap", bucket: "edge-factory-default", want: "factory-default/device/2024-01-01/task.mcap"},
+		{input: "/edge-factory-default/factory-default/device/2024-01-01/task.mcap", bucket: "edge-factory-default", want: "factory-default/device/2024-01-01/task.mcap"},
+		{input: "bucket/key", bucket: "bucket", want: "key"},
+		{input: "device-uploads/3/capture/capture.mcap", bucket: "archebase-keystone-device-upload-2116584179", want: "device-uploads/3/capture/capture.mcap"},
+		{input: "just-a-file.mcap", bucket: "bucket", want: "just-a-file.mcap"},
+		{input: "  ", bucket: "bucket", want: ""},
+		{input: "", bucket: "bucket", want: ""},
 	}
 
 	for _, tt := range tests {
-		got := stripBucketPrefix(tt.input)
+		got := objectKeyFromStoredPath(tt.input, tt.bucket)
 		if got != tt.want {
-			t.Errorf("stripBucketPrefix(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("objectKeyFromStoredPath(%q, %q) = %q, want %q", tt.input, tt.bucket, got, tt.want)
 		}
 	}
 }

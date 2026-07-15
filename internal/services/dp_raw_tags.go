@@ -33,8 +33,7 @@ type dpRawTagContext struct {
 }
 
 func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
-	mcapKey := stripBucketPrefix(input.McapKey)
-	rawFile := path.Base(strings.TrimSpace(mcapKey))
+	rawFile := path.Base(legacyStripBucketPrefix(input.McapKey))
 	if rawFile == "" || rawFile == "." || rawFile == "/" {
 		return nil, fmt.Errorf("raw_file basename is empty for mcap key %q", input.McapKey)
 	}
@@ -56,6 +55,14 @@ func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
 		return nil, fmt.Errorf("keystone extra tags: %w", err)
 	}
 	return merged, nil
+}
+
+func legacyStripBucketPrefix(storedPath string) string {
+	key := strings.TrimPrefix(strings.TrimSpace(storedPath), "/")
+	if idx := strings.Index(key, "/"); idx > 0 {
+		return key[idx+1:]
+	}
+	return key
 }
 
 func keystoneExtraTags(input dpRawTagsInput) map[string]string {

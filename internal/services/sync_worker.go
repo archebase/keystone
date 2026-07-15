@@ -1116,7 +1116,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 		return nil, fmt.Errorf("source object reader not available")
 	}
 
-	mcapKey := stripBucketPrefix(ep.McapPath)
+	mcapKey := objectKeyFromStoredPath(ep.McapPath, w.minioBucket)
 	if mcapKey == "" {
 		return nil, newNonRetryableSyncError("episode %d has empty mcap_path", ep.ID)
 	}
@@ -1590,7 +1590,7 @@ func (w *SyncWorker) nextRetryDelay(attemptCount int) time.Duration {
 }
 
 func (w *SyncWorker) directTagsFromSidecar(ctx context.Context, sidecarPath string) (map[string]string, error) {
-	key := stripBucketPrefix(sidecarPath)
+	key := objectKeyFromStoredPath(sidecarPath, w.minioBucket)
 	if key == "" {
 		return map[string]string{}, nil
 	}
@@ -1618,13 +1618,21 @@ func (w *SyncWorker) directTagsFromSidecar(ctx context.Context, sidecarPath stri
 	return tags, nil
 }
 
-// stripBucketPrefix removes the leading "bucket/" prefix from a stored path.
-// Stored paths look like "edge-factory-default/factory-default/device/date/task.mcap".
-func stripBucketPrefix(path string) string {
-	path = strings.TrimSpace(path)
-	path = strings.TrimPrefix(path, "/")
-	if idx := strings.Index(path, "/"); idx > 0 {
-		return path[idx+1:]
+// objectKeyFromStoredPath removes the leading "bucket/" only when the stored
+// path explicitly includes this worker's bucket name. TOS object keys such as
+// "device-uploads/..." must keep their first path segment.
+func objectKeyFromStoredPath(storedPath, bucket string) string {
+	key := strings.TrimPrefix(strings.TrimSpace(storedPath), "/")
+	bucket = strings.Trim(strings.TrimSpace(bucket), "/")
+	if key == "" || bucket == "" {
+		return key
 	}
-	return path
+	if key == bucket {
+		return ""
+	}
+	prefix := bucket + "/"
+	if strings.HasPrefix(key, prefix) {
+		return strings.TrimPrefix(key, prefix)
+	}
+	return key
 }
