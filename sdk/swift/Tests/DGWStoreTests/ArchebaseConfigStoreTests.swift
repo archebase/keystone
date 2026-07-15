@@ -151,10 +151,126 @@ import Testing
     #expect(persisted.apiKey.isEmpty)
 }
 
+@Test func persistedCredentialAccountSurvivesConfigPathChange() async throws {
+    let credentialStore = InMemoryDeviceCredentialStore()
+    let oldConfigURL = try temporaryConfigURL()
+    let oldStore = ArchebaseConfigStore(configURL: oldConfigURL, credentialStore: credentialStore)
+    let config = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])
+    try await oldStore.initialize(config)
+
+    let newConfigURL = try temporaryConfigURL()
+    try FileManager.default.copyItem(at: oldConfigURL, to: newConfigURL)
+    let newStore = ArchebaseConfigStore(configURL: newConfigURL, credentialStore: credentialStore)
+
+    #expect(try await newStore.load() == config)
+}
+
+@Test func loadMigratesLegacyPathCredentialAccount() async throws {
+    let credentialStore = InMemoryDeviceCredentialStore()
+    let configURL = try temporaryConfigURL()
+    let legacyConfig = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])
+    try legacyConfig.prettyJSONData().write(to: configURL)
+    try credentialStore.save("credential-v1", account: configURL.standardizedFileURL.path)
+    let store = ArchebaseConfigStore(configURL: configURL, credentialStore: credentialStore)
+
+    #expect(try await store.load() == legacyConfig)
+    let migrated = try ArchebaseConfig.decodePersisted(from: Data(contentsOf: configURL))
+    let migratedAccount = try #require(migrated.credentialAccount)
+    #expect(migratedAccount != configURL.standardizedFileURL.path)
+    #expect(try credentialStore.load(account: migratedAccount) == "credential-v1")
+}
+
+@Test func migratedCredentialAccountSurvivesConfigPathChange() async throws {
+    let credentialStore = InMemoryDeviceCredentialStore()
+    let oldConfigURL = try temporaryConfigURL()
+    let config = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])
+    try config.prettyJSONData().write(to: oldConfigURL)
+    try credentialStore.save("credential-v1", account: oldConfigURL.standardizedFileURL.path)
+    let oldStore = ArchebaseConfigStore(configURL: oldConfigURL, credentialStore: credentialStore)
+    #expect(try await oldStore.load() == config)
+
+    let newConfigURL = try temporaryConfigURL()
+    try FileManager.default.copyItem(at: oldConfigURL, to: newConfigURL)
+    let newStore = ArchebaseConfigStore(configURL: newConfigURL, credentialStore: credentialStore)
+
+    #expect(try await newStore.load() == config)
+}
+
+@Test func legacyCredentialCanMigrateAfterConfigPathAlreadyChanged() async throws {
+    let credentialStore = InMemoryDeviceCredentialStore()
+    let oldConfigURL = try temporaryConfigURL()
+    let newConfigURL = try temporaryConfigURL()
+    let config = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])
+    try config.prettyJSONData().write(to: newConfigURL)
+    try credentialStore.save("credential-v1", account: oldConfigURL.standardizedFileURL.path)
+    let store = ArchebaseConfigStore(configURL: newConfigURL, credentialStore: credentialStore)
+
+    #expect(try await store.load() == config)
+    let migrated = try ArchebaseConfig.decodePersisted(from: Data(contentsOf: newConfigURL))
+    let migratedAccount = try #require(migrated.credentialAccount)
+    #expect(migratedAccount != oldConfigURL.standardizedFileURL.path)
+    #expect(migratedAccount != newConfigURL.standardizedFileURL.path)
+    #expect(try credentialStore.load(account: migratedAccount) == "credential-v1")
+}
+
+@Test func missingPersistedCredentialAccountCanRecoverFromMigratableCredential() async throws {
+    let credentialStore = InMemoryDeviceCredentialStore()
+    let configURL = try temporaryConfigURL()
+    var persistedConfig = try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])
+    persistedConfig.credentialAccount = "missing-account"
+    try persistedConfig.prettyJSONData().write(to: configURL)
+    try credentialStore.save("credential-v1", account: "old-container-account")
+    let store = ArchebaseConfigStore(configURL: configURL, credentialStore: credentialStore)
+
+    #expect(try await store.load() == (try ArchebaseConfig(apiKey: "credential-v1", tags: ["device": "robot"])))
+    let migrated = try ArchebaseConfig.decodePersisted(from: Data(contentsOf: configURL))
+    let migratedAccount = try #require(migrated.credentialAccount)
+    #expect(migratedAccount != "missing-account")
+    #expect(try credentialStore.load(account: migratedAccount) == "credential-v1")
+}
+
 private func temporaryConfigURL() throws -> URL {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("archebase-config-tests", isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     return root.appendingPathComponent("archebase-config.json")
+}
+
+private final class InMemoryDeviceCredentialStore: DeviceCredentialStoring, @unchecked Sendable {
+    private var credentials: [String: String] = [:]
+    private let lock = NSLock()
+
+    func load(account: String) throws -> String {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        guard let credential = self.credentials[account] else {
+            throw DeviceCredentialStoreError.notFound
+        }
+        return credential
+    }
+
+    func save(_ credential: String, account: String) throws {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        self.credentials[account] = credential
+    }
+
+    func delete(account: String) throws {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        self.credentials.removeValue(forKey: account)
+    }
+
+    func loadMigratableCredential(excludingAccounts: Set<String>) throws -> StoredDeviceCredential {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        guard let candidate = self.credentials
+            .filter({ !excludingAccounts.contains($0.key) })
+            .sorted(by: { $0.key > $1.key })
+            .first else {
+            throw DeviceCredentialStoreError.notFound
+        }
+        return StoredDeviceCredential(account: candidate.key, credential: candidate.value)
+    }
 }

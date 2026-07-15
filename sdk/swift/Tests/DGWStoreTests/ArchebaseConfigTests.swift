@@ -16,6 +16,15 @@ import Testing
     #expect(config.tags == ["key1": "value1", "key2": "value2"])
 }
 
+@Test func archebaseConfigDecodesCredentialAccount() throws {
+    let json = Data(#"{"credential_store":"keychain","credential_account":"account-v1","tags":{"key":"value"}}"#.utf8)
+
+    let config = try ArchebaseConfig.decodePersisted(from: json)
+
+    #expect(config.credentialAccount == "account-v1")
+    #expect(config.tags == ["key": "value"])
+}
+
 @Test func archebaseConfigDoesNotEncodeAPIKey() throws {
     let config = try ArchebaseConfig(apiKey: "credential-v1", tags: ["tag": "value"])
 
@@ -24,6 +33,16 @@ import Testing
     #expect(json.contains("\"credential_store\" : \"keychain\""))
     #expect(!json.contains("credential-v1"))
     #expect(!json.contains("api_key"))
+}
+
+@Test func archebaseConfigEncodesCredentialAccount() throws {
+    var config = try ArchebaseConfig(apiKey: "credential-v1", tags: ["tag": "value"])
+    config.credentialAccount = "account-v1"
+
+    let json = String(data: try config.prettyJSONData(), encoding: .utf8) ?? ""
+
+    #expect(json.contains("\"credential_account\" : \"account-v1\""))
+    #expect(!json.contains("credential-v1"))
 }
 
 @Test func archebaseConfigRejectsEmptyAPIKey() {

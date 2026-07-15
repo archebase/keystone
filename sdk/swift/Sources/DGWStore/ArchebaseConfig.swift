@@ -14,9 +14,12 @@ public struct ArchebaseConfig: Codable, Sendable, Equatable {
     public var apiKey: String = ""
     /// Platform-managed device tags merged into upload raw tags.
     public var tags: [String: String]
+    /// Stable keychain account used to load the API key for this persisted config.
+    package var credentialAccount: String?
 
     enum CodingKeys: String, CodingKey {
         case credentialStore = "credential_store"
+        case credentialAccount = "credential_account"
         case tags
     }
 
@@ -26,6 +29,7 @@ public struct ArchebaseConfig: Codable, Sendable, Equatable {
     public init(apiKey: String, tags: [String: String]) throws {
         self.apiKey = apiKey
         self.tags = tags
+        self.credentialAccount = nil
         try self.validate()
     }
 
@@ -35,14 +39,17 @@ public struct ArchebaseConfig: Codable, Sendable, Equatable {
         guard credentialStore == Self.keychainCredentialStore else {
             throw DataGatewayClientError.invalidConfiguration("credential_store must be keychain")
         }
+        self.credentialAccount = try container.decodeIfPresent(String.self, forKey: .credentialAccount)
         self.tags = try container.decode([String: String].self, forKey: .tags)
         try Self.validateTags(self.tags, fieldName: "tags")
+        try Self.validateCredentialAccount(self.credentialAccount)
     }
 
     public func encode(to encoder: any Encoder) throws {
         try self.validate()
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.keychainCredentialStore, forKey: .credentialStore)
+        try container.encodeIfPresent(self.credentialAccount, forKey: .credentialAccount)
         try container.encode(self.tags, forKey: .tags)
     }
 
@@ -51,6 +58,7 @@ public struct ArchebaseConfig: Codable, Sendable, Equatable {
         if self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw DataGatewayClientError.invalidConfiguration("api_key must not be empty")
         }
+        try Self.validateCredentialAccount(self.credentialAccount)
         try Self.validateTags(self.tags, fieldName: "tags")
     }
 
@@ -90,6 +98,18 @@ public struct ArchebaseConfig: Codable, Sendable, Equatable {
         }
     }
 
+    private static func validateCredentialAccount(_ credentialAccount: String?) throws {
+        guard let credentialAccount else {
+            return
+        }
+        guard !credentialAccount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DataGatewayClientError.invalidConfiguration("credential_account must not be empty")
+        }
+        guard !credentialAccount.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else {
+            throw DataGatewayClientError.invalidConfiguration("credential_account contains unsupported control characters")
+        }
+    }
+
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -97,4 +117,8 @@ public struct ArchebaseConfig: Codable, Sendable, Equatable {
     }()
 
     private static let decoder = JSONDecoder()
+
+    public static func == (lhs: ArchebaseConfig, rhs: ArchebaseConfig) -> Bool {
+        lhs.apiKey == rhs.apiKey && lhs.tags == rhs.tags
+    }
 }

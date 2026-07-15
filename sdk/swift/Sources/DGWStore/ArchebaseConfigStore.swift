@@ -44,7 +44,20 @@ public actor ArchebaseConfigStore {
         }
         do {
             let persisted = try ArchebaseConfig.decodePersisted(from: Data(contentsOf: self.configURL))
-            let apiKey = try self.credentialStore.load(account: self.credentialAccount)
+            if let account = persisted.credentialAccount {
+                let apiKey: String
+                do {
+                    apiKey = try self.credentialStore.load(account: account)
+                } catch DeviceCredentialStoreError.notFound {
+                    apiKey = try self.credentialStore
+                        .loadMigratableCredential(excludingAccounts: [account, self.legacyCredentialAccount])
+                        .credential
+                    try self.migrateLegacyCredentialAccount(apiKey: apiKey, persisted: persisted)
+                }
+                return try ArchebaseConfig(apiKey: apiKey, tags: persisted.tags)
+            }
+            let apiKey = try self.loadLegacyCredentialForMigration()
+            try self.migrateLegacyCredentialAccount(apiKey: apiKey, persisted: persisted)
             return try ArchebaseConfig(apiKey: apiKey, tags: persisted.tags)
         } catch let error as DataGatewayClientError {
             throw error
@@ -76,10 +89,13 @@ public actor ArchebaseConfigStore {
     }
 
     private func write(_ config: ArchebaseConfig, replacingExisting: Bool) throws {
-        let data = try config.prettyJSONData()
-        let previousCredential = try? self.credentialStore.load(account: self.credentialAccount)
+        let account = try self.credentialAccountForWrite()
+        var persistedConfig = config
+        persistedConfig.credentialAccount = account
+        let data = try persistedConfig.prettyJSONData()
+        let previousCredential = try? self.credentialStore.load(account: account)
         do {
-            try self.credentialStore.save(config.apiKey, account: self.credentialAccount)
+            try self.credentialStore.save(config.apiKey, account: account)
             try AtomicFileWriter.write(data, to: self.configURL, fileManager: self.fileManager) { temporaryURL, destination, fileManager in
                 if replacingExisting {
                     try AtomicFileWriter.replaceOrMoveTemporaryItem(temporaryURL, to: destination, fileManager: fileManager)
@@ -99,23 +115,65 @@ public actor ArchebaseConfigStore {
                 throw DataGatewayClientError.persistenceFailed("archebase config verification failed after write")
             }
         } catch let error as DataGatewayClientError {
-            self.restoreCredential(previousCredential)
+            self.restoreCredential(previousCredential, account: account)
             throw error
         } catch {
-            self.restoreCredential(previousCredential)
+            self.restoreCredential(previousCredential, account: account)
             throw DataGatewayClientError.persistenceFailed("failed to write archebase config: \(error.localizedDescription)")
         }
     }
 
-    private var credentialAccount: String {
+    private func credentialAccountForWrite() throws -> String {
+        guard self.exists() else {
+            return Self.makeCredentialAccount()
+        }
+        let persisted = try? ArchebaseConfig.decodePersisted(from: Data(contentsOf: self.configURL))
+        if let account = persisted?.credentialAccount {
+            return account
+        }
+        return Self.makeCredentialAccount()
+    }
+
+    private static func makeCredentialAccount() -> String {
+        "archebase-device-api-key-\(UUID().uuidString.lowercased())"
+    }
+
+    private func loadLegacyCredentialForMigration() throws -> String {
+        do {
+            return try self.credentialStore.load(account: self.legacyCredentialAccount)
+        } catch DeviceCredentialStoreError.notFound {
+            return try self.credentialStore
+                .loadMigratableCredential(excludingAccounts: [self.legacyCredentialAccount])
+                .credential
+        }
+    }
+
+    private func migrateLegacyCredentialAccount(apiKey: String, persisted: ArchebaseConfig) throws {
+        let account = Self.makeCredentialAccount()
+        var migratedConfig = persisted
+        migratedConfig.apiKey = apiKey
+        migratedConfig.credentialAccount = account
+        let data = try migratedConfig.prettyJSONData()
+        try self.credentialStore.save(apiKey, account: account)
+        do {
+            try AtomicFileWriter.write(data, to: self.configURL, fileManager: self.fileManager) { temporaryURL, destination, fileManager in
+                try AtomicFileWriter.replaceOrMoveTemporaryItem(temporaryURL, to: destination, fileManager: fileManager)
+            }
+        } catch {
+            try? self.credentialStore.delete(account: account)
+            throw error
+        }
+    }
+
+    private var legacyCredentialAccount: String {
         self.configURL.path
     }
 
-    private func restoreCredential(_ credential: String?) {
+    private func restoreCredential(_ credential: String?, account: String) {
         if let credential {
-            try? self.credentialStore.save(credential, account: self.credentialAccount)
+            try? self.credentialStore.save(credential, account: account)
         } else {
-            try? self.credentialStore.delete(account: self.credentialAccount)
+            try? self.credentialStore.delete(account: account)
         }
     }
 }
