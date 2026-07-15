@@ -211,6 +211,8 @@ var (
 	errSyncRetryExhausted     = errors.New("sync retry max retries exceeded")
 	errSyncAlreadyCompleted   = errors.New("sync already completed")
 	errSyncNonRetryableFailed = errors.New("sync latest failure is non-retryable")
+
+	hilbertRawDataIDDestinationPrefix = "hilbert:raw_data_id:"
 )
 
 // NewSyncWorker creates a new sync worker. Call Start() to begin background processing.
@@ -1089,7 +1091,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 
 	startTime := time.Now()
 
-	result, err := w.uploadEpisodeDirect(ctx, ep)
+	result, err := w.uploadEpisodeDirect(ctx, syncLogID, ep)
 	if err != nil {
 		duration := int64(time.Since(startTime).Seconds())
 		w.markSyncFailed(ctx, syncLogID, episodeID, duration, err, attemptCount)
@@ -1103,7 +1105,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 	w.finishEpisodeProgress(episodeID)
 }
 
-func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUploadRow) (*cloud.UploadResult, error) {
+func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, ep syncEpisodeUploadRow) (*cloud.UploadResult, error) {
 	uploadContext, err := hilbertUploadContext(ep)
 	if err != nil {
 		return nil, err
@@ -1133,20 +1135,32 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, ep syncEpisodeUplo
 		return nil, fmt.Errorf("calculate mcap md5 %s: %w", mcapKey, err)
 	}
 
-	rawDataID, err := w.hilbert.RegisterRawData(ctx, auth.HilbertRawDataRegisterRequest{
-		WorkspaceID:  uploadContext.WorkspaceID,
-		DCPlanID:     uploadContext.DCPlanID,
-		BagName:      path.Base(mcapKey),
-		BagStartTime: ep.bagStartTime(),
-		BagEndTime:   ep.bagEndTime(),
-		BagSize:      objectSize,
-		BagDigest:    mcapMD5Hex,
-	})
+	rawDataID, err := w.hilbertRawDataIDFromSyncLog(ctx, syncLogID)
 	if err != nil {
-		return nil, fmt.Errorf("register Hilbert raw data: %w", err)
+		return nil, err
 	}
-	logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data registered: raw_data_id=%d workspace_id=%d dc_plan_id=%d size=%d object_key=%s",
-		ep.ID, rawDataID, uploadContext.WorkspaceID, uploadContext.DCPlanID, objectSize, mcapKey)
+	if rawDataID > 0 {
+		logger.Printf("[SYNC-WORKER] Episode %d reusing Hilbert raw-data registration: raw_data_id=%d sync_log_id=%d",
+			ep.ID, rawDataID, syncLogID)
+	} else {
+		rawDataID, err = w.hilbert.RegisterRawData(ctx, auth.HilbertRawDataRegisterRequest{
+			WorkspaceID:  uploadContext.WorkspaceID,
+			DCPlanID:     uploadContext.DCPlanID,
+			BagName:      hilbertBagName(ep, mcapKey),
+			BagStartTime: ep.bagStartTime(),
+			BagEndTime:   ep.bagEndTime(),
+			BagSize:      objectSize,
+			BagDigest:    mcapMD5Hex,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("register Hilbert raw data: %w", err)
+		}
+		if err := w.persistHilbertRawDataID(ctx, syncLogID, rawDataID); err != nil {
+			return nil, err
+		}
+		logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data registered: raw_data_id=%d workspace_id=%d dc_plan_id=%d size=%d object_key=%s",
+			ep.ID, rawDataID, uploadContext.WorkspaceID, uploadContext.DCPlanID, objectSize, mcapKey)
+	}
 	uploadCredentials, err := w.hilbert.GetRawDataUploadCredentials(ctx, uploadContext.WorkspaceID, rawDataID)
 	if err != nil {
 		return nil, fmt.Errorf("get Hilbert raw-data upload credentials: %w", err)
@@ -1223,6 +1237,87 @@ func (ep syncEpisodeUploadRow) bagEndTime() time.Time {
 		return start.Add(time.Duration(ep.DurationSec.Float64 * float64(time.Second))).UTC()
 	}
 	return start.Add(time.Second).UTC()
+}
+
+func hilbertBagName(ep syncEpisodeUploadRow, mcapKey string) string {
+	key := strings.Trim(strings.TrimSpace(mcapKey), "/")
+	ext := path.Ext(key)
+	segments := strings.Split(key, "/")
+	stem := strings.TrimSuffix(path.Base(key), ext)
+	if len(segments) >= 3 {
+		stem = segments[len(segments)-3] + "_" + segments[len(segments)-2]
+	} else if key != "" {
+		stem = strings.TrimSuffix(strings.ReplaceAll(key, "/", "_"), ext)
+	}
+	stem = sanitizeHilbertBagNamePart(stem)
+	if stem == "" {
+		stem = "capture"
+	}
+	episodePart := "episode_" + strconv.FormatInt(ep.ID, 10)
+	name := episodePart + "_" + stem
+	if ext == "" {
+		ext = ".mcap"
+	}
+	name = name + ext
+	if len(name) <= 180 {
+		return name
+	}
+	return name[:180-len(ext)] + ext
+}
+
+func sanitizeHilbertBagNamePart(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		valid := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_'
+		if valid {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
+}
+
+func (w *SyncWorker) hilbertRawDataIDFromSyncLog(ctx context.Context, syncLogID int64) (int64, error) {
+	if w == nil || w.db == nil || syncLogID <= 0 {
+		return 0, nil
+	}
+	var destination sql.NullString
+	if err := w.db.GetContext(ctx, &destination, "SELECT destination_path FROM sync_logs WHERE id = ?", syncLogID); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("load Hilbert raw-data id from sync_log %d: %w", syncLogID, err)
+	}
+	value := strings.TrimSpace(destination.String)
+	if !destination.Valid || !strings.HasPrefix(value, hilbertRawDataIDDestinationPrefix) {
+		return 0, nil
+	}
+	rawID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(value, hilbertRawDataIDDestinationPrefix)), 10, 64)
+	if err != nil || rawID <= 0 {
+		return 0, fmt.Errorf("invalid Hilbert raw-data id in sync_log %d: %q", syncLogID, value)
+	}
+	return rawID, nil
+}
+
+func (w *SyncWorker) persistHilbertRawDataID(ctx context.Context, syncLogID int64, rawDataID int64) error {
+	if w == nil || w.db == nil || syncLogID <= 0 || rawDataID <= 0 {
+		return nil
+	}
+	value := hilbertRawDataIDDestinationPrefix + strconv.FormatInt(rawDataID, 10)
+	if _, err := w.db.ExecContext(ctx, "UPDATE sync_logs SET destination_path = ? WHERE id = ?", value, syncLogID); err != nil {
+		return fmt.Errorf("persist Hilbert raw-data id %d to sync_log %d: %w", rawDataID, syncLogID, err)
+	}
+	return nil
 }
 
 func objectMD5Hex(ctx context.Context, source SourceObjectReader, bucket, key string) (string, error) {
