@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,5 +95,37 @@ func TestHilbertRawDataClientUsesRESTContract(t *testing.T) {
 	}
 	if !sawRegister || !sawCredentials || !sawFinish {
 		t.Fatalf("saw register=%t credentials=%t finish=%t", sawRegister, sawCredentials, sawFinish)
+	}
+}
+
+func TestHilbertRawDataClientHandlesLocalizedErrorMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != hilbertRawDataRegisterPath {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":-1,"message":{"en_US":"already exists","zh_CN":"原始数据已存在"},"data":null}`))
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL:   server.URL,
+		AccessKey: "ak",
+		SecretKey: "sk",
+	})
+	_, err := client.RegisterRawData(t.Context(), HilbertRawDataRegisterRequest{
+		WorkspaceID:  2,
+		DCPlanID:     8,
+		BagName:      "capture.mcap",
+		BagStartTime: time.Date(2026, 7, 15, 2, 0, 0, 0, time.UTC),
+		BagEndTime:   time.Date(2026, 7, 15, 2, 0, 1, 0, time.UTC),
+		BagSize:      1,
+		BagDigest:    "9dd4e461268c8034f5c8564e155c67a6",
+	})
+	if err == nil {
+		t.Fatal("RegisterRawData() error = nil")
+	}
+	if !strings.Contains(err.Error(), "原始数据已存在") {
+		t.Fatalf("RegisterRawData() error = %v, want localized message", err)
 	}
 }

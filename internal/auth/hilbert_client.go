@@ -553,17 +553,42 @@ func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error
 }
 
 type hilbertCommonResponse[T any] struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Msg     string `json:"msg"`
-	Data    T      `json:"data"`
+	Code    int             `json:"code"`
+	Message json.RawMessage `json:"message"`
+	Msg     json.RawMessage `json:"msg"`
+	Data    T               `json:"data"`
 }
 
 func (r hilbertCommonResponse[T]) errorMessage() string {
-	if strings.TrimSpace(r.Message) != "" {
-		return strings.TrimSpace(r.Message)
+	if msg := hilbertMessageText(r.Message); msg != "" {
+		return msg
 	}
-	return strings.TrimSpace(r.Msg)
+	return hilbertMessageText(r.Msg)
+}
+
+func hilbertMessageText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	var localized map[string]string
+	if err := json.Unmarshal(raw, &localized); err == nil {
+		if strings.TrimSpace(localized["zh_CN"]) != "" {
+			return strings.TrimSpace(localized["zh_CN"])
+		}
+		if strings.TrimSpace(localized["en_US"]) != "" {
+			return strings.TrimSpace(localized["en_US"])
+		}
+		for _, value := range localized {
+			if strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 type hilbertNonceData struct {
