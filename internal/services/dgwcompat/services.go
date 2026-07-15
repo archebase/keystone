@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -443,11 +445,12 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 }
 
 type completedUploadEpisode struct {
-	ID        int64          `db:"id"`
-	EpisodeID string         `db:"episode_id"`
-	MCAPPath  string         `db:"mcap_path"`
-	FileSize  sql.NullInt64  `db:"file_size_bytes"`
-	Metadata  sql.NullString `db:"metadata"`
+	ID        int64           `db:"id"`
+	EpisodeID string          `db:"episode_id"`
+	MCAPPath  string          `db:"mcap_path"`
+	FileSize  sql.NullInt64   `db:"file_size_bytes"`
+	Duration  sql.NullFloat64 `db:"duration_sec"`
+	Metadata  sql.NullString  `db:"metadata"`
 }
 
 func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *uploadSession, req *cloudpb.CompleteUploadRequest) (string, int64, bool, error) {
@@ -512,7 +515,7 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 
 	var existing completedUploadEpisode
 	err = tx.GetContext(ctx, &existing, `
-		SELECT id, episode_id, mcap_path, file_size_bytes, metadata
+		SELECT id, episode_id, mcap_path, file_size_bytes, duration_sec, metadata
 		FROM episodes
 		WHERE task_id = ? AND deleted_at IS NULL
 		LIMIT 1
@@ -550,6 +553,10 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	if err != nil {
 		return "", 0, false, status.Error(codes.InvalidArgument, "invalid upload metadata")
 	}
+	durationSec, err := uploadDurationSec(req.GetRawTags())
+	if err != nil {
+		return "", 0, false, err
+	}
 	insertRes, err := tx.ExecContext(ctx, `
 		INSERT INTO episodes (
 			episode_id,
@@ -561,13 +568,14 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			mcap_path,
 			sidecar_path,
 			file_size_bytes,
+			duration_sec,
 			qa_status,
 			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
 	`, episodeID, task.TaskPK, task.WorkstationID, task.OrganizationID, task.DCPlanID, task.LocalDCPlanID,
-		session.ObjectKey, "", req.GetFileSize(), metadata, now, now)
+		session.ObjectKey, "", req.GetFileSize(), durationSec, metadata, now, now)
 	if err != nil {
 		return "", 0, false, status.Error(codes.Unavailable, "episode creation failed")
 	}
@@ -626,6 +634,15 @@ func validateIdempotentComplete(episode completedUploadEpisode, session *uploadS
 	if episode.FileSize.Valid && episode.FileSize.Int64 != req.GetFileSize() {
 		return status.Error(codes.FailedPrecondition, "file_size differs from completed upload")
 	}
+	if episode.Duration.Valid {
+		durationSec, err := uploadDurationSec(req.GetRawTags())
+		if err != nil {
+			return err
+		}
+		if !durationSec.Valid || math.Abs(episode.Duration.Float64-durationSec.Float64) > 0.000001 {
+			return status.Error(codes.FailedPrecondition, "duration_sec differs from completed upload")
+		}
+	}
 	if !episode.Metadata.Valid {
 		return status.Error(codes.FailedPrecondition, "completed upload metadata is missing")
 	}
@@ -648,6 +665,18 @@ func validateIdempotentComplete(episode completedUploadEpisode, session *uploadS
 		return status.Error(codes.FailedPrecondition, "completed_part_count differs from completed upload")
 	}
 	return nil
+}
+
+func uploadDurationSec(tags map[string]string) (sql.NullFloat64, error) {
+	value := strings.TrimSpace(tags["duration_sec"])
+	if value == "" {
+		return sql.NullFloat64{}, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 {
+		return sql.NullFloat64{}, status.Error(codes.InvalidArgument, "duration_sec must be a positive number")
+	}
+	return sql.NullFloat64{Float64: parsed, Valid: true}, nil
 }
 
 func uploadEpisodeMetadata(session *uploadSession, req *cloudpb.CompleteUploadRequest) (string, error) {

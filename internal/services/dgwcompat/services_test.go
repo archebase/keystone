@@ -130,6 +130,7 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 			"dc_plan_id":   "1001",
 			"workspace_id": "10",
 			"device_id":    "101",
+			"duration_sec": "6.4",
 		},
 	}
 	if _, err := service.CompleteUpload(ctx, complete); err != nil {
@@ -157,10 +158,11 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 		t.Fatalf("task status=%q episode_id=%d, want completed with episode", task.Status, task.EpisodeID)
 	}
 	var episode struct {
-		Metadata    string `db:"metadata"`
-		SidecarPath string `db:"sidecar_path"`
+		Metadata    string  `db:"metadata"`
+		SidecarPath string  `db:"sidecar_path"`
+		DurationSec float64 `db:"duration_sec"`
 	}
-	if err := db.Get(&episode, `SELECT metadata, sidecar_path FROM episodes WHERE id = ?`, task.EpisodeID); err != nil {
+	if err := db.Get(&episode, `SELECT metadata, sidecar_path, duration_sec FROM episodes WHERE id = ?`, task.EpisodeID); err != nil {
 		t.Fatalf("query episode metadata: %v", err)
 	}
 	if !strings.Contains(episode.Metadata, created.GetUploadId()) {
@@ -168,6 +170,9 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	}
 	if episode.SidecarPath != "" {
 		t.Fatalf("sidecar_path = %q, want empty for TOS-only upload", episode.SidecarPath)
+	}
+	if episode.DurationSec != 6.4 {
+		t.Fatalf("duration_sec = %v, want 6.4", episode.DurationSec)
 	}
 	if len(qa.episodes) != 1 || qa.episodes[0] != task.EpisodeID {
 		t.Fatalf("qa enqueued episodes = %v, want [%d]", qa.episodes, task.EpisodeID)
@@ -261,6 +266,7 @@ func newGatewayServiceTestDB(t *testing.T) *sqlx.DB {
 			mcap_path TEXT NOT NULL,
 			sidecar_path TEXT NOT NULL,
 			file_size_bytes INTEGER,
+			duration_sec REAL,
 			qa_status TEXT,
 			metadata TEXT,
 			created_at TIMESTAMP NULL,
