@@ -58,13 +58,30 @@ type WorkspaceResourceSyncError struct {
 
 // WorkspaceResourceSyncService projects Hilbert workspace resources into Keystone.
 type WorkspaceResourceSyncService struct {
-	db            *sqlx.DB
-	hilbertClient HilbertWorkspaceResourceClient
+	db                  *sqlx.DB
+	hilbertClient       HilbertWorkspaceResourceClient
+	excludedOperatorIDs map[string]struct{}
 }
 
 // NewWorkspaceResourceSyncService creates a resource sync service.
 func NewWorkspaceResourceSyncService(db *sqlx.DB, hilbertClient HilbertWorkspaceResourceClient) *WorkspaceResourceSyncService {
 	return &WorkspaceResourceSyncService{db: db, hilbertClient: hilbertClient}
+}
+
+func newWorkspaceResourceSyncServiceWithExclusions(
+	db *sqlx.DB,
+	hilbertClient HilbertWorkspaceResourceClient,
+	excludedOperatorIDs []string,
+) *WorkspaceResourceSyncService {
+	excluded := make(map[string]struct{}, len(excludedOperatorIDs))
+	for _, operatorID := range normalizeWorkspacePeople(excludedOperatorIDs) {
+		excluded[operatorID] = struct{}{}
+	}
+	return &WorkspaceResourceSyncService{
+		db:                  db,
+		hilbertClient:       hilbertClient,
+		excludedOperatorIDs: excluded,
+	}
 }
 
 // SyncWorkspaces syncs resources for every Hilbert workspace and isolates failures per workspace.
@@ -156,6 +173,10 @@ func (s *WorkspaceResourceSyncService) syncCollectors(
 	result *WorkspaceResourceSyncResult,
 ) {
 	for _, code := range normalizeWorkspacePeople(append(workspace.Admins, workspace.Members...)) {
+		if _, excluded := s.excludedOperatorIDs[code]; excluded {
+			result.CollectorSkippedCount++
+			continue
+		}
 		account, err := s.hilbertClient.QueryAccountByCode(ctx, code)
 		if err != nil {
 			result.CollectorSkippedCount++

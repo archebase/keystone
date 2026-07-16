@@ -225,6 +225,68 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSyncServiceSkipsHilbertServiceIdentityAsCollector(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		workspaces: []auth.HilbertWorkspace{
+			{ID: 123, Name: "Resource Workspace", Admins: []string{"hilbert-ak"}, Members: []string{"collector-a"}},
+		},
+		accounts: map[string]*auth.HilbertAccount{
+			"hilbert-ak": {
+				ID:          1,
+				Code:        "hilbert-ak",
+				DisplayName: "Keystone Admin",
+				Role:        "admin",
+				Status:      "enabled",
+			},
+			"collector-a": {
+				ID:               7,
+				Code:             "collector-a",
+				DisplayName:      "Collector A",
+				Role:             "external_user",
+				ExternalUserType: "data_supplier",
+				Status:           "enabled",
+			},
+		},
+		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.ResourceSync.CollectorUpsertedCount != 1 || result.ResourceSync.CollectorSkippedCount != 1 {
+		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
+	}
+
+	var admins string
+	if err := db.Get(&admins, "SELECT admins FROM workspaces WHERE id = 123"); err != nil {
+		t.Fatalf("query workspace admins: %v", err)
+	}
+	if admins != `["hilbert-ak"]` {
+		t.Fatalf("admins=%q want service identity preserved on workspace", admins)
+	}
+
+	var serviceIdentityCount int
+	if err := db.Get(&serviceIdentityCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id = 'hilbert-ak'"); err != nil {
+		t.Fatalf("count service identity collector: %v", err)
+	}
+	if serviceIdentityCount != 0 {
+		t.Fatalf("serviceIdentityCount=%d want 0", serviceIdentityCount)
+	}
+
+	var collectorCount int
+	if err := db.Get(&collectorCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id = 'collector-a'"); err != nil {
+		t.Fatalf("count collector: %v", err)
+	}
+	if collectorCount != 1 {
+		t.Fatalf("collectorCount=%d want 1", collectorCount)
+	}
+}
+
 func TestWorkspaceSyncServiceProjectsWorkspacePeopleAsCollectors(t *testing.T) {
 	db := newTestWorkspaceSyncDB(t)
 	defer db.Close()

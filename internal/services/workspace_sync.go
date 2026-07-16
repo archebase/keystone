@@ -64,7 +64,11 @@ func NewWorkspaceSyncService(db *sqlx.DB, cfg *config.HilbertConfig, hilbertClie
 	}
 	var resourceSync *WorkspaceResourceSyncService
 	if resourceClient, ok := hilbertClient.(HilbertWorkspaceResourceClient); ok {
-		resourceSync = NewWorkspaceResourceSyncService(db, resourceClient)
+		excludedOperatorIDs := []string{}
+		if cfg != nil {
+			excludedOperatorIDs = append(excludedOperatorIDs, cfg.AccessKey)
+		}
+		resourceSync = newWorkspaceResourceSyncServiceWithExclusions(db, resourceClient, excludedOperatorIDs)
 	}
 	return &WorkspaceSyncService{db: db, cfg: cfg, hilbertClient: hilbertClient, resourceSync: resourceSync}
 }
