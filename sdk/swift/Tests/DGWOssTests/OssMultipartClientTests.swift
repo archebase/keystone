@@ -117,13 +117,13 @@ import Testing
     #expect(uploadRequests[0].key == "objects/demo.bin")
     #expect(uploadRequests[0].uploadId == "upload-1")
     #expect(uploadRequests[0].partNumber == 7)
-    #expect(try uploadRequests[0].body?.readData() == Data("abc".utf8))
+    #expect(try byteStreamData(uploadRequests[0].body) == Data("abc".utf8))
 
     let putRequests = await sdkClient.putRequests()
     #expect(putRequests.count == 1)
     #expect(putRequests[0].bucket == "bucket-1")
     #expect(putRequests[0].key == "objects/demo.bin")
-    #expect(try putRequests[0].body?.readData() == Data("put".utf8))
+    #expect(try byteStreamData(putRequests[0].body) == Data("put".utf8))
 
     let completeRequests = await sdkClient.completeRequests()
     #expect(completeRequests.count == 1)
@@ -948,6 +948,31 @@ private actor TestOssSessionClock: OssSessionClock {
 
     func now() async -> Date {
         self.current
+    }
+}
+
+private func byteStreamData(_ stream: ByteStream) throws -> Data {
+    switch stream {
+    case .data(let data):
+        return data
+    case .file(let url):
+        return try Data(contentsOf: url, options: .mappedIfSafe)
+    case .stream(let inputStream):
+        inputStream.open()
+        defer { inputStream.close() }
+        var result = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while inputStream.hasBytesAvailable {
+            let count = inputStream.read(&buffer, maxLength: buffer.count)
+            if count < 0 {
+                throw inputStream.streamError ?? OssOperationError.unexpected("failed to read test byte stream")
+            }
+            if count == 0 {
+                break
+            }
+            result.append(contentsOf: buffer.prefix(count))
+        }
+        return result
     }
 }
 
