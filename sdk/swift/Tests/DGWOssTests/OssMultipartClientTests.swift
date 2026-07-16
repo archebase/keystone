@@ -255,12 +255,12 @@ import Testing
     )
 
     let uploadRequests = await sdkClient.uploadPartRequests()
-    #expect(uploadRequests[0].headers["content-md5"] == "part-md5-base64")
-    #expect(uploadRequests[0].headers["content-length"] == "3")
+    #expect(uploadRequests[0].headers["Content-MD5"] == "part-md5-base64")
+    #expect(uploadRequests[0].headers["Content-Length"] == "3")
 
     let putRequests = await sdkClient.putRequests()
-    #expect(putRequests[0].headers["content-md5"] == "put-md5-base64")
-    #expect(putRequests[0].headers["content-length"] == "8")
+    #expect(putRequests[0].headers["Content-MD5"] == "put-md5-base64")
+    #expect(putRequests[0].headers["Content-Length"] == "8")
 }
 
 @Test func listPartsMergesPaginatorPagesInOrder() async throws {
