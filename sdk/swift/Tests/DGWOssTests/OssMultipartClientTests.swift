@@ -130,8 +130,8 @@ import Testing
     #expect(completeRequests[0].bucket == "bucket-1")
     #expect(completeRequests[0].key == "objects/demo.bin")
     #expect(completeRequests[0].uploadId == "upload-1")
-    #expect(completeRequests[0].completeMultipartUpload?.parts?.compactMap(\.partNumber) == [1, 2])
-    #expect(completeRequests[0].completeMultipartUpload?.parts?.compactMap(\.etag) == ["\"etag-1\"", "\"etag-2\""])
+    #expect(completeRequests[0].completeMultipartUpload.parts.map(\.partNumber) == [1, 2])
+    #expect(completeRequests[0].completeMultipartUpload.parts.map(\.etag) == ["\"etag-1\"", "\"etag-2\""])
 
     let abortRequests = await sdkClient.abortRequests()
     #expect(abortRequests.count == 1)
@@ -255,12 +255,12 @@ import Testing
     )
 
     let uploadRequests = await sdkClient.uploadPartRequests()
-    #expect(uploadRequests[0].commonProp.headers?["content-md5"] == "part-md5-base64")
-    #expect(uploadRequests[0].commonProp.headers?["content-length"] == "3")
+    #expect(uploadRequests[0].headers["content-md5"] == "part-md5-base64")
+    #expect(uploadRequests[0].headers["content-length"] == "3")
 
     let putRequests = await sdkClient.putRequests()
-    #expect(putRequests[0].commonProp.headers?["content-md5"] == "put-md5-base64")
-    #expect(putRequests[0].commonProp.headers?["content-length"] == "8")
+    #expect(putRequests[0].headers["content-md5"] == "put-md5-base64")
+    #expect(putRequests[0].headers["content-length"] == "8")
 }
 
 @Test func listPartsMergesPaginatorPagesInOrder() async throws {
