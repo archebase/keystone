@@ -190,7 +190,7 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if hilbert.register.WorkspaceID != 123 || hilbert.register.DCPlanID != 1001 {
 		t.Fatalf("register request ids = %+v, want workspace=123 dc_plan=1001", hilbert.register)
 	}
-	if hilbert.register.BagName != "episode_4181_device_capture.mcap" || hilbert.register.BagSize != int64(len(source.data)) {
+	if hilbert.register.BagName != "episode-uuid.mcap" || hilbert.register.BagSize != int64(len(source.data)) {
 		t.Fatalf("register bag fields = %+v", hilbert.register)
 	}
 	if hilbert.register.BagDigest != "9777442976c95a2f302786b97e60ceb5" {
