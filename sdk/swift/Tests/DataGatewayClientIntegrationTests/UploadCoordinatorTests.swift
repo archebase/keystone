@@ -2726,8 +2726,6 @@ private struct UploadCall: Equatable, Sendable {
 
 private func readUploadBodyBytes(_ body: OssUploadBody) throws -> Data? {
     switch try body.byteStream() {
-    case .none:
-        return nil
     case .data(let data):
         return data
     case .file(let fileURL):
