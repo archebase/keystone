@@ -127,6 +127,43 @@ func TestValidateDCDeviceAPIKeyUsesNonceContract(t *testing.T) {
 	}
 }
 
+func TestGetCurrentAccountUsesDigestAuth(t *testing.T) {
+	now := time.Unix(1700000000, 123000000)
+	millis := "1700000000123"
+	sum := sha256.Sum256([]byte("hilbert-sk," + millis))
+	wantAuth := "Digest hilbert-ak;" + millis + ";" + hex.EncodeToString(sum[:])
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != hilbertAccountGetCurPath {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != wantAuth {
+			t.Fatalf("authorization = %q", got)
+		}
+		writeHilbertTestJSON(t, w, map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"id":          1,
+				"code":        "shanghai-keystone",
+				"displayName": "上海一楼实训场Keystone",
+				"role":        "admin",
+				"status":      "enabled",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	client.now = func() time.Time { return now }
+	account, err := client.GetCurrentAccount(context.Background())
+	if err != nil {
+		t.Fatalf("GetCurrentAccount() error = %v", err)
+	}
+	if account == nil || account.Code != "shanghai-keystone" {
+		t.Fatalf("account=%#v want shanghai-keystone", account)
+	}
+}
+
 func writeHilbertTestJSON(t *testing.T, w http.ResponseWriter, value any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

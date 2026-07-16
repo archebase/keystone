@@ -25,6 +25,7 @@ const (
 
 // HilbertWorkspaceResourceClient captures Hilbert resource calls workspace resource sync needs.
 type HilbertWorkspaceResourceClient interface {
+	GetCurrentAccount(ctx context.Context) (*auth.HilbertAccount, error)
 	QueryAccountByCode(ctx context.Context, code string) (*auth.HilbertAccount, error)
 	QueryDCDevices(ctx context.Context, workspaceID int64) (*auth.HilbertDCDevicePage, error)
 	QueryDCDeviceTypeByID(ctx context.Context, id int64) (*auth.HilbertDCDeviceType, error)
@@ -94,11 +95,12 @@ func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, works
 		return summary
 	}
 
+	excludedOperatorIDs := s.resolveExcludedOperatorIDs(ctx)
 	for _, workspace := range workspaces {
 		if workspace.ID <= defaultWorkspaceID {
 			continue
 		}
-		result := s.syncWorkspace(ctx, workspace, syncedAt)
+		result := s.syncWorkspace(ctx, workspace, syncedAt, excludedOperatorIDs)
 		summary.CollectorUpsertedCount += result.CollectorUpsertedCount
 		summary.CollectorSkippedCount += result.CollectorSkippedCount
 		summary.RobotUpsertedCount += result.RobotUpsertedCount
@@ -117,7 +119,31 @@ func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, works
 	return summary
 }
 
-func (s *WorkspaceResourceSyncService) syncWorkspace(ctx context.Context, workspace auth.HilbertWorkspace, syncedAt time.Time) WorkspaceResourceSyncResult {
+func (s *WorkspaceResourceSyncService) resolveExcludedOperatorIDs(ctx context.Context) map[string]struct{} {
+	excluded := make(map[string]struct{}, len(s.excludedOperatorIDs)+1)
+	for operatorID := range s.excludedOperatorIDs {
+		excluded[operatorID] = struct{}{}
+	}
+	account, err := s.hilbertClient.GetCurrentAccount(ctx)
+	if err != nil {
+		logger.Printf("[WORKSPACE] Hilbert current account lookup failed; service identity may be projected as collector: %v", err)
+		return excluded
+	}
+	if account != nil {
+		operatorID := strings.TrimSpace(account.Code)
+		if operatorID != "" {
+			excluded[operatorID] = struct{}{}
+		}
+	}
+	return excluded
+}
+
+func (s *WorkspaceResourceSyncService) syncWorkspace(
+	ctx context.Context,
+	workspace auth.HilbertWorkspace,
+	syncedAt time.Time,
+	excludedOperatorIDs map[string]struct{},
+) WorkspaceResourceSyncResult {
 	result := WorkspaceResourceSyncResult{WorkspaceID: workspace.ID, Errors: []WorkspaceResourceSyncError{}}
 
 	tx, err := s.db.BeginTxx(ctx, nil)
@@ -127,7 +153,7 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(ctx context.Context, worksp
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	s.syncCollectors(ctx, tx, workspace, syncedAt, &result)
+	s.syncCollectors(ctx, tx, workspace, syncedAt, &result, excludedOperatorIDs)
 
 	devicesPage, err := s.hilbertClient.QueryDCDevices(ctx, workspace.ID)
 	if err != nil {
@@ -171,9 +197,10 @@ func (s *WorkspaceResourceSyncService) syncCollectors(
 	workspace auth.HilbertWorkspace,
 	syncedAt time.Time,
 	result *WorkspaceResourceSyncResult,
+	excludedOperatorIDs map[string]struct{},
 ) {
 	for _, code := range normalizeWorkspacePeople(append(workspace.Admins, workspace.Members...)) {
-		if _, excluded := s.excludedOperatorIDs[code]; excluded {
+		if _, excluded := excludedOperatorIDs[code]; excluded {
 			result.CollectorSkippedCount++
 			continue
 		}

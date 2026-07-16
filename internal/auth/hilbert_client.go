@@ -29,6 +29,7 @@ const (
 	hilbertNoncePath              = "/v1/console/nonce/generate"
 	hilbertLoginPath              = "/v1/console/account/login"
 	hilbertAccountQueryPath       = "/v1/console/account/query"
+	hilbertAccountGetCurPath      = "/v1/console/account/get-cur"
 	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
 	hilbertDCPlanQueryPath        = "/v1/data-collection/dc-plan/query"
 	hilbertDCDeviceQueryPath      = "/v1/data-collection/dc-device/query"
@@ -318,6 +319,29 @@ func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context) ([]HilbertW
 		return nil, fmt.Errorf("%w: workspace list response code %d", ErrHilbertUnavailable, resp.Code)
 	}
 	return resp.Data, nil
+}
+
+// GetCurrentAccount fetches the Hilbert account authenticated by the configured service AK/SK.
+func (c *HilbertClient) GetCurrentAccount(ctx context.Context) (*HilbertAccount, error) {
+	if !c.ServiceAuthConfigured() {
+		return nil, ErrHilbertUnavailable
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertAccountGetCurPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create current account request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
+
+	var resp hilbertCommonResponse[HilbertAccount]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: current account response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return &resp.Data, nil
 }
 
 // QueryDCPlans fetches one page of Hilbert data collection plans for one workspace.

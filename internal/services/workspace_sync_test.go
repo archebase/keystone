@@ -231,13 +231,13 @@ func TestWorkspaceSyncServiceSkipsHilbertServiceIdentityAsCollector(t *testing.T
 
 	client := &fakeHilbertWorkspaceClient{
 		workspaces: []auth.HilbertWorkspace{
-			{ID: 123, Name: "Resource Workspace", Admins: []string{"hilbert-ak"}, Members: []string{"collector-a"}},
+			{ID: 123, Name: "Resource Workspace", Admins: []string{"shanghai-keystone"}, Members: []string{"collector-a"}},
 		},
 		accounts: map[string]*auth.HilbertAccount{
-			"hilbert-ak": {
+			"shanghai-keystone": {
 				ID:          1,
-				Code:        "hilbert-ak",
-				DisplayName: "Keystone Admin",
+				Code:        "shanghai-keystone",
+				DisplayName: "上海一楼实训场Keystone",
 				Role:        "admin",
 				Status:      "enabled",
 			},
@@ -251,6 +251,13 @@ func TestWorkspaceSyncServiceSkipsHilbertServiceIdentityAsCollector(t *testing.T
 			},
 		},
 		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{},
+		currentAccount: &auth.HilbertAccount{
+			ID:          1,
+			Code:        "shanghai-keystone",
+			DisplayName: "上海一楼实训场Keystone",
+			Role:        "admin",
+			Status:      "enabled",
+		},
 	}
 	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
 
@@ -266,12 +273,12 @@ func TestWorkspaceSyncServiceSkipsHilbertServiceIdentityAsCollector(t *testing.T
 	if err := db.Get(&admins, "SELECT admins FROM workspaces WHERE id = 123"); err != nil {
 		t.Fatalf("query workspace admins: %v", err)
 	}
-	if admins != `["hilbert-ak"]` {
+	if admins != `["shanghai-keystone"]` {
 		t.Fatalf("admins=%q want service identity preserved on workspace", admins)
 	}
 
 	var serviceIdentityCount int
-	if err := db.Get(&serviceIdentityCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id = 'hilbert-ak'"); err != nil {
+	if err := db.Get(&serviceIdentityCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id = 'shanghai-keystone'"); err != nil {
 		t.Fatalf("count service identity collector: %v", err)
 	}
 	if serviceIdentityCount != 0 {
@@ -284,6 +291,9 @@ func TestWorkspaceSyncServiceSkipsHilbertServiceIdentityAsCollector(t *testing.T
 	}
 	if collectorCount != 1 {
 		t.Fatalf("collectorCount=%d want 1", collectorCount)
+	}
+	if client.currentAccountCallCount != 1 {
+		t.Fatalf("GetCurrentAccount calls=%d want 1", client.currentAccountCallCount)
 	}
 }
 
@@ -461,13 +471,16 @@ func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 }
 
 type fakeHilbertWorkspaceClient struct {
-	configured           bool
-	workspaces           []auth.HilbertWorkspace
-	listErr              error
-	accounts             map[string]*auth.HilbertAccount
-	devicesByWorkspace   map[int64][]auth.HilbertDCDevice
-	deviceErrByWorkspace map[int64]error
-	deviceTypes          map[int64]*auth.HilbertDCDeviceType
+	configured              bool
+	workspaces              []auth.HilbertWorkspace
+	listErr                 error
+	accounts                map[string]*auth.HilbertAccount
+	devicesByWorkspace      map[int64][]auth.HilbertDCDevice
+	deviceErrByWorkspace    map[int64]error
+	deviceTypes             map[int64]*auth.HilbertDCDeviceType
+	currentAccount          *auth.HilbertAccount
+	currentAccountErr       error
+	currentAccountCallCount int
 }
 
 func (f *fakeHilbertWorkspaceClient) Configured() bool {
@@ -486,6 +499,14 @@ func (f *fakeHilbertWorkspaceClient) ListAvailableWorkspaces(_ context.Context) 
 		return nil, f.listErr
 	}
 	return f.workspaces, nil
+}
+
+func (f *fakeHilbertWorkspaceClient) GetCurrentAccount(_ context.Context) (*auth.HilbertAccount, error) {
+	f.currentAccountCallCount++
+	if f.currentAccountErr != nil {
+		return nil, f.currentAccountErr
+	}
+	return f.currentAccount, nil
 }
 
 func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, code string) (*auth.HilbertAccount, error) {
