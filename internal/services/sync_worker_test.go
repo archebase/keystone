@@ -160,7 +160,7 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	}
 	credentials.Credentials.AccessKeyID = "temp-ak"
 	credentials.Credentials.SecretAccessKey = "temp-sk"
-	credentials.Credentials.SessionToken = "temp-token"
+	credentials.Credentials.TemporaryToken = "temp-token"
 	hilbert := &fakeHilbertRawDataClient{
 		credentials: credentials,
 	}

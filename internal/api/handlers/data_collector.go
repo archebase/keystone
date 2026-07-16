@@ -345,7 +345,7 @@ func upsertLocalDataCollector(ctx context.Context, tx *sqlx.Tx, req CreateDataCo
 		}
 		metadata = string(encoded)
 	}
-	result, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, ` // #nosec G701 -- constant INSERT with bound parameters only.
 		INSERT INTO data_collectors (
 			name, operator_id, email, password_hash, certification, status, metadata, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

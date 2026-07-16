@@ -1350,7 +1350,7 @@ func hilbertUploadTarget(credentials *auth.HilbertRawDataUploadCredentials) clou
 		Key:             credentials.Key,
 		AccessKeyID:     credentials.Credentials.AccessKeyID,
 		SecretAccessKey: credentials.Credentials.SecretAccessKey,
-		SessionToken:    credentials.Credentials.SessionToken,
+		TemporaryToken:  credentials.Credentials.TemporaryToken,
 	}
 }
 

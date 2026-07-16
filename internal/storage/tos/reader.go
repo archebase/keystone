@@ -112,7 +112,7 @@ func (r *Reader) StatObject(ctx context.Context, bucket, objectName string) (int
 	if err != nil {
 		return 0, err
 	}
-	resp, err := r.client.Do(req)
+	resp, err := r.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and objectURL validation.
 	if err != nil {
 		return 0, err
 	}
@@ -133,7 +133,7 @@ func (r *Reader) OpenObject(ctx context.Context, bucket, objectName string) (io.
 	if err != nil {
 		return nil, err
 	}
-	resp, err := r.client.Do(req)
+	resp, err := r.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and objectURL validation.
 	if err != nil {
 		return nil, err
 	}

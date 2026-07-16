@@ -378,7 +378,7 @@ func (h *AuthHandler) MeStationBreak(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
 		return
 	}
-	result, err := h.db.Exec(h.db.Rebind(query), args...)
+	result, err := h.db.Exec(h.db.Rebind(query), args...) // #nosec G701 -- query is built by sqlx.In with placeholders and trusted workstation IDs.
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workstation"})
 		return

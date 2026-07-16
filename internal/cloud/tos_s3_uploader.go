@@ -35,7 +35,7 @@ type TOSS3UploadTarget struct {
 	Key             string
 	AccessKeyID     string
 	SecretAccessKey string
-	SessionToken    string
+	TemporaryToken  string
 }
 
 // TOSS3Uploader uploads objects to Volcengine TOS through native TOS endpoints.
@@ -70,7 +70,7 @@ func (u *TOSS3Uploader) PutObject(ctx context.Context, target TOSS3UploadTarget,
 	}
 	defer func() {
 		_ = spooled.Close()
-		_ = os.Remove(spooled.Name())
+		_ = os.Remove(spooled.Name()) // #nosec G703 -- spooled is created by os.CreateTemp in this process.
 	}()
 	if _, err := spooled.Seek(0, io.SeekStart); err != nil {
 		return "", fmt.Errorf("rewind tos upload payload: %w", err)
@@ -88,7 +88,7 @@ func (u *TOSS3Uploader) PutObject(ctx context.Context, target TOSS3UploadTarget,
 	if u.timeout <= 0 {
 		client.Timeout = 300 * time.Second
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- target endpoint is Hilbert-issued and normalized before request creation.
 	if err != nil {
 		return "", fmt.Errorf("put tos object: %w", err)
 	}
@@ -138,7 +138,7 @@ func spoolTOSPayload(reader io.Reader, size int64) (*os.File, string, error) {
 	defer func() {
 		if remove {
 			_ = file.Close()
-			_ = os.Remove(file.Name())
+			_ = os.Remove(file.Name()) // #nosec G703 -- file is created by os.CreateTemp in this process.
 		}
 	}()
 
@@ -185,12 +185,12 @@ func signTOSRequest(req *http.Request, target TOSS3UploadTarget, payloadHash str
 	timestamp := now.Format("20060102T150405Z")
 	shortDate := timestamp[:8]
 	req.Header.Set("x-tos-date", timestamp)
-	if strings.TrimSpace(target.SessionToken) != "" {
-		req.Header.Set("x-tos-security-token", strings.TrimSpace(target.SessionToken))
+	if strings.TrimSpace(target.TemporaryToken) != "" {
+		req.Header.Set("x-tos-security-token", strings.TrimSpace(target.TemporaryToken))
 	}
 
 	signedHeaderNames := []string{"host", "x-tos-content-sha256", "x-tos-date"}
-	if strings.TrimSpace(target.SessionToken) != "" {
+	if strings.TrimSpace(target.TemporaryToken) != "" {
 		signedHeaderNames = append(signedHeaderNames, "x-tos-security-token")
 	}
 	sort.Strings(signedHeaderNames)

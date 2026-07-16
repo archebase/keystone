@@ -43,7 +43,7 @@ type HilbertRawDataUploadCredentials struct {
 	Credentials struct {
 		AccessKeyID     string    `json:"access_key_id"`
 		SecretAccessKey string    `json:"secret_access_key"`
-		SessionToken    string    `json:"session_token"`
+		TemporaryToken  string    `json:"session_token"`
 		ExpireTime      time.Time `json:"expire_time"`
 	} `json:"credentials"`
 }

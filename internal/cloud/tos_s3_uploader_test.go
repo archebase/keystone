@@ -65,7 +65,7 @@ func TestTOSNativePutRequestUsesNativeHostAndTOSSignature(t *testing.T) {
 		Key:             "motion-store/media/uploads/2/src.mcap",
 		AccessKeyID:     "temp-ak",
 		SecretAccessKey: "temp-sk",
-		SessionToken:    "temp-token",
+		TemporaryToken:  "temp-token",
 	}
 	endpoint, secure, err := normalizeTOSNativeEndpoint(target.Endpoint)
 	if err != nil {
