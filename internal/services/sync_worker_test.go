@@ -190,7 +190,7 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if hilbert.register.WorkspaceID != 123 || hilbert.register.DCPlanID != 1001 {
 		t.Fatalf("register request ids = %+v, want workspace=123 dc_plan=1001", hilbert.register)
 	}
-	if hilbert.register.BagName != "episode_4181_device_capture.mcap" || hilbert.register.BagSize != int64(len(source.data)) {
+	if hilbert.register.BagName != "episode-uuid.mcap" || hilbert.register.BagSize != int64(len(source.data)) {
 		t.Fatalf("register bag fields = %+v", hilbert.register)
 	}
 	if hilbert.register.BagDigest != "9777442976c95a2f302786b97e60ceb5" {
@@ -322,9 +322,18 @@ func TestSyncEpisodeUploadRowBagTimes(t *testing.T) {
 }
 
 func TestHilbertBagNameIsStableAndUnique(t *testing.T) {
-	row := syncEpisodeUploadRow{ID: 4181}
+	row := syncEpisodeUploadRow{ID: 4181, EpisodeUUID: "episode-uuid"}
 	got := hilbertBagName(row, "device-uploads/3/capture_20260715T044250Z_b2d9911e/5b9e8785-d568-4b1e-82fe-26cbc1320e44/capture.mcap")
-	want := "episode_4181_capture_20260715T044250Z_b2d9911e_5b9e8785-d568-4b1e-82fe-26cbc1320e44.mcap"
+	want := "episode-uuid.mcap"
+	if got != want {
+		t.Fatalf("hilbertBagName() = %q, want %q", got, want)
+	}
+}
+
+func TestHilbertBagNameFallsBackToEpisodeID(t *testing.T) {
+	row := syncEpisodeUploadRow{ID: 4181}
+	got := hilbertBagName(row, "device-uploads/3/capture.mcap")
+	want := "episode_4181.mcap"
 	if got != want {
 		t.Fatalf("hilbertBagName() = %q, want %q", got, want)
 	}

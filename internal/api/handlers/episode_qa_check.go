@@ -34,10 +34,11 @@ const (
 	qaRunModeAuto   QARunMode = "auto"
 	qaRunModeManual QARunMode = "manual"
 
-	qaStatusPendingQA = "pending_qa"
-	qaStatusRunning   = "qa_running"
-	qaStatusApproved  = "approved"
-	qaStatusFailed    = "failed"
+	qaStatusPendingQA          = "pending_qa"
+	qaStatusRunning            = "qa_running"
+	qaStatusApproved           = "approved"
+	qaStatusFailed             = "failed"
+	qaStatusManualReviewFailed = "manual_review_failed"
 
 	defaultEpisodeQAQueueSize = 256
 	defaultEpisodeQATimeout   = 2 * time.Minute
@@ -47,9 +48,10 @@ const (
 var (
 	mcapMagicBytes = []byte{0x89, 0x4d, 0x43, 0x41, 0x50, 0x30, 0x0d, 0x0a}
 
-	errEpisodeQANotFound       = errors.New("episode not found")
-	errEpisodeQAAlreadyRunning = errors.New("episode qa already running")
-	errEpisodeQAAutoSkipped    = errors.New("episode auto qa skipped")
+	errEpisodeQANotFound        = errors.New("episode not found")
+	errEpisodeQAAlreadyRunning  = errors.New("episode qa already running")
+	errEpisodeQAAutoSkipped     = errors.New("episode auto qa skipped")
+	errEpisodeQANotManualFailed = errors.New("episode is not manual review failed")
 )
 
 // QARunMode identifies whether a suite run was triggered automatically or manually.
@@ -68,6 +70,11 @@ type EpisodeQAHandler struct {
 // EpisodeQARunRequest is the request body for running an episode QA suite.
 type EpisodeQARunRequest struct {
 	Mode QARunMode `json:"mode,omitempty" example:"manual"`
+}
+
+// EpisodeQAManualReviewFailRequest is the request body for marking an episode failed by manual review.
+type EpisodeQAManualReviewFailRequest struct {
+	Details string `json:"details,omitempty"`
 }
 
 // EpisodeQACheckRecordResponse is one persisted QA check result.
@@ -197,6 +204,8 @@ func (h *EpisodeQAHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	qa.GET("/episodes", h.ListQAEpisodes)
 	qa.GET("/episodes/:id/checks", h.ListEpisodeQAChecks)
 	qa.POST("/episodes/:id/run", h.RunEpisodeQASuiteHTTP)
+	qa.POST("/episodes/:id/manual-review-fail", h.MarkEpisodeManualReviewFailedHTTP)
+	qa.POST("/episodes/:id/manual-review-fail/cancel", h.CancelEpisodeManualReviewFailedHTTP)
 }
 
 // EnqueueEpisode schedules lightweight automatic QA for a newly created episode.
@@ -244,7 +253,7 @@ func (h *EpisodeQAHandler) requireBearerJWT(c *gin.Context) bool {
 // @Description  Lists episodes with latest QA check. Defaults to actionable statuses.
 // @Tags         qa
 // @Produce      json
-// @Param        status      query     string  false  "QA status filter: all, pending_qa, qa_running, approved, failed"
+// @Param        status      query     string  false  "QA status filter: all, pending_qa, qa_running, approved, failed, manual_review_failed"
 // @Param        q           query     string  false  "Search episode/task/quality text"
 // @Param        page        query     int     false  "Page number, default 1"
 // @Param        page_size   query     int     false  "Page size, default 20"
@@ -475,6 +484,112 @@ func (h *EpisodeQAHandler) RunEpisodeQASuiteHTTP(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// MarkEpisodeManualReviewFailedHTTP marks one episode as failed by manual review.
+//
+// @Summary      Mark episode manual review failed
+// @Description  Records a manual review failure for one episode and writes a QA check history row.
+// @Tags         qa
+// @Accept       json
+// @Produce      json
+// @Param        id       path      int                              true  "Episode ID"
+// @Param        request  body      EpisodeQAManualReviewFailRequest false "Manual review failure request"
+// @Success      200      {object}  EpisodeQASuiteResponse
+// @Failure      404      {object}  map[string]string
+// @Failure      409      {object}  map[string]string
+// @Failure      500      {object}  map[string]string
+// @Router       /qa/episodes/{id}/manual-review-fail [post]
+func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailedHTTP(c *gin.Context) {
+	if h.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "database is not configured"})
+		return
+	}
+	if !h.requireBearerJWT(c) {
+		return
+	}
+
+	episodeID, ok := parseEpisodeIDParam(c)
+	if !ok {
+		return
+	}
+
+	var req EpisodeQAManualReviewFailRequest
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid manual review request"})
+			return
+		}
+	}
+
+	result, err := h.MarkEpisodeManualReviewFailed(c.Request.Context(), episodeID, req.Details)
+	if err != nil {
+		switch {
+		case errors.Is(err, errEpisodeQANotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		case errors.Is(err, errEpisodeQAAlreadyRunning):
+			c.JSON(http.StatusConflict, gin.H{"error": "qa already running"})
+		default:
+			logger.Printf("[EPISODE-QA] Manual review failed: episode=%d, err=%v", episodeID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark manual review failed"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// CancelEpisodeManualReviewFailedHTTP cancels a manual review failure decision.
+//
+// @Summary      Cancel episode manual review failure
+// @Description  Restores a manually failed episode back to pending QA and writes a QA check history row.
+// @Tags         qa
+// @Accept       json
+// @Produce      json
+// @Param        id       path      int                              true  "Episode ID"
+// @Param        request  body      EpisodeQAManualReviewFailRequest false "Manual review cancellation request"
+// @Success      200      {object}  EpisodeQASuiteResponse
+// @Failure      404      {object}  map[string]string
+// @Failure      409      {object}  map[string]string
+// @Failure      500      {object}  map[string]string
+// @Router       /qa/episodes/{id}/manual-review-fail/cancel [post]
+func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailedHTTP(c *gin.Context) {
+	if h.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "database is not configured"})
+		return
+	}
+	if !h.requireBearerJWT(c) {
+		return
+	}
+
+	episodeID, ok := parseEpisodeIDParam(c)
+	if !ok {
+		return
+	}
+
+	var req EpisodeQAManualReviewFailRequest
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid manual review cancellation request"})
+			return
+		}
+	}
+
+	result, err := h.CancelEpisodeManualReviewFailed(c.Request.Context(), episodeID, req.Details)
+	if err != nil {
+		switch {
+		case errors.Is(err, errEpisodeQANotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		case errors.Is(err, errEpisodeQANotManualFailed):
+			c.JSON(http.StatusConflict, gin.H{"error": "episode is not manual review failed"})
+		default:
+			logger.Printf("[EPISODE-QA] Cancel manual review failed: episode=%d, err=%v", episodeID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel manual review failed"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 // RunEpisodeQASuite executes and persists the configured QA suite for one episode.
 func (h *EpisodeQAHandler) RunEpisodeQASuite(ctx context.Context, episodeID int64, mode QARunMode) (*EpisodeQASuiteResponse, error) {
 	if h == nil || h.db == nil {
@@ -511,6 +626,188 @@ func (h *EpisodeQAHandler) RunEpisodeQASuite(ctx context.Context, episodeID int6
 		return nil, err
 	}
 	return result, nil
+}
+
+// MarkEpisodeManualReviewFailed records a manual failure decision for one episode.
+func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, episodeID int64, details string) (*EpisodeQASuiteResponse, error) {
+	if h == nil || h.db == nil {
+		return nil, fmt.Errorf("database is not configured")
+	}
+
+	row, err := h.loadEpisodeForQACheck(ctx, episodeID)
+	if err != nil {
+		return nil, err
+	}
+	if row.QAStatus == qaStatusRunning {
+		return nil, errEpisodeQAAlreadyRunning
+	}
+
+	details = strings.TrimSpace(details)
+	if details == "" {
+		details = "人工复核不通过"
+	}
+	checkedAt := time.Now().UTC()
+	metadata := map[string]any{
+		"mode":   "manual_review",
+		"source": "data_ops",
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshal manual review metadata: %w", err)
+	}
+
+	tx, err := h.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin manual review transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE episodes
+		SET qa_status = ?, qa_score = ?, quality_flag = ?
+		WHERE id = ? AND deleted_at IS NULL AND COALESCE(qa_status, '') <> ?
+	`, qaStatusManualReviewFailed, 0, details, row.ID, qaStatusRunning)
+	if err != nil {
+		return nil, fmt.Errorf("mark episode manual review failed: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("read manual review rows affected: %w", err)
+	}
+	if affected == 0 {
+		fresh, err := h.loadEpisodeForQACheck(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		if fresh.QAStatus == qaStatusRunning {
+			return nil, errEpisodeQAAlreadyRunning
+		}
+		return nil, fmt.Errorf("episode qa status changed from %q to %q", row.QAStatus, fresh.QAStatus)
+	}
+
+	res, err = tx.ExecContext(ctx, `
+		INSERT INTO qa_checks (episode_id, check_name, passed, score, details, check_metadata, checked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, row.ID, "manual_review", false, 0, details, string(metadataJSON), checkedAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert manual review qa_check: %w", err)
+	}
+	checkID, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("read manual review qa_check insert id: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit manual review transaction: %w", err)
+	}
+
+	return &EpisodeQASuiteResponse{
+		EpisodeID: row.ID,
+		QAStatus:  qaStatusManualReviewFailed,
+		Passed:    false,
+		Mode:      qaRunModeManual,
+		Checks: []EpisodeQACheckRecordResponse{{
+			ID:            checkID,
+			EpisodeID:     row.ID,
+			CheckName:     "manual_review",
+			Passed:        false,
+			Score:         0,
+			Details:       details,
+			CheckMetadata: metadata,
+			CheckedAt:     checkedAt.Format(time.RFC3339),
+		}},
+	}, nil
+}
+
+// CancelEpisodeManualReviewFailed restores a manually failed episode to pending QA.
+func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailed(ctx context.Context, episodeID int64, details string) (*EpisodeQASuiteResponse, error) {
+	if h == nil || h.db == nil {
+		return nil, fmt.Errorf("database is not configured")
+	}
+
+	row, err := h.loadEpisodeForQACheck(ctx, episodeID)
+	if err != nil {
+		return nil, err
+	}
+	if row.QAStatus != qaStatusManualReviewFailed {
+		return nil, errEpisodeQANotManualFailed
+	}
+
+	details = strings.TrimSpace(details)
+	if details == "" {
+		details = "取消人工复核不通过"
+	}
+	checkedAt := time.Now().UTC()
+	metadata := map[string]any{
+		"mode":   "manual_review_cancel",
+		"source": "data_ops",
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshal manual review cancel metadata: %w", err)
+	}
+
+	tx, err := h.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin manual review cancel transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE episodes
+		SET qa_status = ?, qa_score = NULL, quality_flag = NULL
+		WHERE id = ? AND deleted_at IS NULL AND qa_status = ?
+	`, qaStatusPendingQA, row.ID, qaStatusManualReviewFailed)
+	if err != nil {
+		return nil, fmt.Errorf("cancel episode manual review failed: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("read manual review cancel rows affected: %w", err)
+	}
+	if affected == 0 {
+		fresh, err := h.loadEpisodeForQACheck(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		if fresh.QAStatus != qaStatusManualReviewFailed {
+			return nil, errEpisodeQANotManualFailed
+		}
+		return nil, fmt.Errorf("episode qa status changed from %q to %q", row.QAStatus, fresh.QAStatus)
+	}
+
+	res, err = tx.ExecContext(ctx, `
+		INSERT INTO qa_checks (episode_id, check_name, passed, score, details, check_metadata, checked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, row.ID, "manual_review_cancel", true, 0, details, string(metadataJSON), checkedAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert manual review cancel qa_check: %w", err)
+	}
+	checkID, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("read manual review cancel qa_check insert id: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit manual review cancel transaction: %w", err)
+	}
+
+	return &EpisodeQASuiteResponse{
+		EpisodeID: row.ID,
+		QAStatus:  qaStatusPendingQA,
+		Passed:    true,
+		Mode:      qaRunModeManual,
+		Checks: []EpisodeQACheckRecordResponse{{
+			ID:            checkID,
+			EpisodeID:     row.ID,
+			CheckName:     "manual_review_cancel",
+			Passed:        true,
+			Score:         0,
+			Details:       details,
+			CheckMetadata: metadata,
+			CheckedAt:     checkedAt.Format(time.RFC3339),
+		}},
+	}, nil
 }
 
 func defaultEpisodeQASuite(row episodeQACheckRow) []string {
@@ -1223,7 +1520,7 @@ func qaEpisodeStatusFilter(raw string) ([]string, error) {
 			continue
 		}
 		switch s {
-		case qaStatusPendingQA, qaStatusRunning, qaStatusApproved, qaStatusFailed:
+		case qaStatusPendingQA, qaStatusRunning, qaStatusApproved, qaStatusFailed, qaStatusManualReviewFailed:
 			out = append(out, s)
 		default:
 			return nil, fmt.Errorf("unsupported qa status %q", s)

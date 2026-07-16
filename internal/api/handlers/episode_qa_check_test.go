@@ -487,6 +487,114 @@ func TestClaimEpisodeQARunReturnsConflictWhenRunning(t *testing.T) {
 	}
 }
 
+func TestMarkEpisodeManualReviewFailedUpdatesStatusAndHistory(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	_, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, quality_flag, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', NULL, NULL)
+	`)
+	if err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	result, err := handler.MarkEpisodeManualReviewFailed(context.Background(), 1, "人工复核发现数据无效")
+	if err != nil {
+		t.Fatalf("mark manual review failed: %v", err)
+	}
+	if result.QAStatus != qaStatusManualReviewFailed || result.Passed {
+		t.Fatalf("result = status %q passed %v, want manual_review_failed false", result.QAStatus, result.Passed)
+	}
+
+	var episode struct {
+		QAStatus    string  `db:"qa_status"`
+		QAScore     float64 `db:"qa_score"`
+		QualityFlag string  `db:"quality_flag"`
+	}
+	if err := db.Get(&episode, "SELECT qa_status, qa_score, quality_flag FROM episodes WHERE id = 1"); err != nil {
+		t.Fatalf("query episode: %v", err)
+	}
+	if episode.QAStatus != qaStatusManualReviewFailed {
+		t.Fatalf("qa_status = %q, want manual_review_failed", episode.QAStatus)
+	}
+	if episode.QAScore != 0 {
+		t.Fatalf("qa_score = %v, want 0", episode.QAScore)
+	}
+	if episode.QualityFlag != "人工复核发现数据无效" {
+		t.Fatalf("quality_flag = %q, want custom details", episode.QualityFlag)
+	}
+
+	var check struct {
+		CheckName string  `db:"check_name"`
+		Passed    bool    `db:"passed"`
+		Score     float64 `db:"score"`
+		Details   string  `db:"details"`
+		Metadata  string  `db:"check_metadata"`
+	}
+	if err := db.Get(&check, "SELECT check_name, passed, score, details, check_metadata FROM qa_checks WHERE episode_id = 1"); err != nil {
+		t.Fatalf("query qa_check: %v", err)
+	}
+	if check.CheckName != "manual_review" || check.Passed || check.Score != 0 || check.Details != "人工复核发现数据无效" {
+		t.Fatalf("qa_check = %+v, want manual review failure", check)
+	}
+	if check.Metadata == "" {
+		t.Fatalf("check_metadata is empty")
+	}
+}
+
+func TestCancelEpisodeManualReviewFailedRestoresPendingQAAndHistory(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	_, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, qa_score, quality_flag, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'manual_review_failed', 0, '人工复核不通过', NULL)
+	`)
+	if err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	result, err := handler.CancelEpisodeManualReviewFailed(context.Background(), 1, "")
+	if err != nil {
+		t.Fatalf("cancel manual review failed: %v", err)
+	}
+	if result.QAStatus != qaStatusPendingQA || !result.Passed {
+		t.Fatalf("result = status %q passed %v, want pending_qa true", result.QAStatus, result.Passed)
+	}
+
+	var episode struct {
+		QAStatus    string          `db:"qa_status"`
+		QAScore     sql.NullFloat64 `db:"qa_score"`
+		QualityFlag sql.NullString  `db:"quality_flag"`
+	}
+	if err := db.Get(&episode, "SELECT qa_status, qa_score, quality_flag FROM episodes WHERE id = 1"); err != nil {
+		t.Fatalf("query episode: %v", err)
+	}
+	if episode.QAStatus != qaStatusPendingQA {
+		t.Fatalf("qa_status = %q, want pending_qa", episode.QAStatus)
+	}
+	if episode.QAScore.Valid {
+		t.Fatalf("qa_score valid = %v, want NULL", episode.QAScore.Valid)
+	}
+	if episode.QualityFlag.Valid {
+		t.Fatalf("quality_flag = %q, want NULL", episode.QualityFlag.String)
+	}
+
+	var check struct {
+		CheckName string  `db:"check_name"`
+		Passed    bool    `db:"passed"`
+		Score     float64 `db:"score"`
+		Details   string  `db:"details"`
+	}
+	if err := db.Get(&check, "SELECT check_name, passed, score, details FROM qa_checks WHERE episode_id = 1"); err != nil {
+		t.Fatalf("query qa_check: %v", err)
+	}
+	if check.CheckName != "manual_review_cancel" || !check.Passed || check.Score != 0 || check.Details != "取消人工复核不通过" {
+		t.Fatalf("qa_check = %+v, want manual review cancel", check)
+	}
+}
+
 func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 

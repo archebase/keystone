@@ -63,10 +63,14 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/episodes", h.ListEpisodes)
 	apiV1.POST("/episodes/bulk-qa/preview", h.PreviewBulkEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync/preview", h.PreviewBulkEpisodeSync)
+	apiV1.POST("/episodes/bulk-mp4/preview", h.PreviewBulkEpisodeMP4)
 	apiV1.POST("/episodes/bulk-qa", h.BulkRunEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync", h.BulkSyncEpisodes)
+	apiV1.POST("/episodes/bulk-mp4", h.BulkExportEpisodeMP4)
+	apiV1.GET("/episodes/:id/mp4", h.DownloadEpisodeMP4)
 	apiV1.GET("/bulk-runs/current", h.GetCurrentBulkRun)
 	apiV1.GET("/bulk-runs/:run_id", h.GetBulkRun)
+	apiV1.GET("/bulk-runs/:run_id/download", h.DownloadBulkMP4)
 	apiV1.GET("/bulk-runs/:run_id/stream", h.StreamBulkRun)
 }
 
@@ -82,6 +86,10 @@ type dataOpsEpisodeQuery struct {
 	SyncStatuses         []string
 	RobotDeviceIDs       []string
 	CollectorOperatorIDs []string
+	DCProjectIDs         []int64
+	DCTaskIDs            []int64
+	DCProjectName        string
+	DCTaskName           string
 	Label                string
 }
 
@@ -90,6 +98,8 @@ type dataOpsEpisodeRow struct {
 	EpisodeID           string          `db:"episode_id"`
 	TaskID              int64           `db:"task_id"`
 	TaskPublicID        sql.NullString  `db:"task_public_id"`
+	DCProjectID         sql.NullInt64   `db:"dc_project_id"`
+	DCProjectName       sql.NullString  `db:"dc_project_name"`
 	DCTaskID            sql.NullInt64   `db:"dc_task_id"`
 	DCTaskName          sql.NullString  `db:"dc_task_name"`
 	RobotDeviceID       sql.NullString  `db:"robot_device_id"`
@@ -111,6 +121,8 @@ type DataOpsEpisodeItemResponse struct {
 	EpisodeID           string                        `json:"episode_id"`
 	TaskID              int64                         `json:"task_id"`
 	TaskPublicID        *string                       `json:"task_public_id,omitempty"`
+	DCProjectID         *int64                        `json:"dc_project_id,omitempty"`
+	DCProjectName       *string                       `json:"dc_project_name,omitempty"`
 	DCTaskID            *int64                        `json:"dc_task_id,omitempty"`
 	DCTaskName          *string                       `json:"dc_task_name,omitempty"`
 	RobotDeviceID       *string                       `json:"robot_device_id,omitempty"`
@@ -155,6 +167,10 @@ type DataOpsEpisodeListResponse struct {
 // @Param        sync_status            query     string  false  "Comma-separated sync statuses: not_started,pending,in_progress,completed,failed"
 // @Param        robot_device_id        query     string  false  "Comma-separated robot device IDs"
 // @Param        collector_operator_id  query     string  false  "Comma-separated collector operator IDs"
+// @Param        dc_project_id          query     string  false  "Comma-separated Hilbert project IDs"
+// @Param        dc_project_name        query     string  false  "Fuzzy Hilbert project name filter"
+// @Param        dc_task_id             query     string  false  "Comma-separated Hilbert task IDs"
+// @Param        dc_task_name           query     string  false  "Fuzzy Hilbert task name filter"
 // @Param        label                  query     string  false  "Exact label"
 // @Success      200                    {object}  DataOpsEpisodeListResponse
 // @Failure      400                    {object}  map[string]string
@@ -247,7 +263,7 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 	}
 	for _, status := range qaStatuses {
 		if _, ok := validDataProductionQAStatuses[status]; !ok {
-			return dataOpsEpisodeQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed")
+			return dataOpsEpisodeQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed, manual_review_failed")
 		}
 	}
 
@@ -269,6 +285,14 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
+	dcProjectIDs, err := parseNonNegativeInt64List(c.Query("dc_project_id"), "dc_project_id")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
+	dcTaskIDs, err := parseNonNegativeInt64List(c.Query("dc_task_id"), "dc_task_id")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
 
 	out := dataOpsEpisodeQuery{
 		Pagination:           pagination,
@@ -278,6 +302,10 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 		SyncStatuses:         syncStatuses,
 		RobotDeviceIDs:       robotDeviceIDs,
 		CollectorOperatorIDs: collectorOperatorIDs,
+		DCProjectIDs:         dcProjectIDs,
+		DCTaskIDs:            dcTaskIDs,
+		DCProjectName:        strings.TrimSpace(c.Query("dc_project_name")),
+		DCTaskName:           strings.TrimSpace(c.Query("dc_task_name")),
 		Label:                strings.TrimSpace(c.Query("label")),
 	}
 
@@ -302,6 +330,12 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 	}
 	if len(out.Label) > maxMultiValueFilterStringItemLength {
 		return dataOpsEpisodeQuery{}, fmt.Errorf("label contains a value longer than %d characters", maxMultiValueFilterStringItemLength)
+	}
+	if len(out.DCProjectName) > maxMultiValueFilterStringItemLength {
+		return dataOpsEpisodeQuery{}, fmt.Errorf("dc_project_name contains a value longer than %d characters", maxMultiValueFilterStringItemLength)
+	}
+	if len(out.DCTaskName) > maxMultiValueFilterStringItemLength {
+		return dataOpsEpisodeQuery{}, fmt.Errorf("dc_task_name contains a value longer than %d characters", maxMultiValueFilterStringItemLength)
 	}
 
 	return out, nil
@@ -335,9 +369,17 @@ func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 	where, args = appendStringInFilter(where, args, "e.qa_status", q.QAStatuses)
 	where, args = appendStringInFilter(where, args, "COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, ''), '')", q.RobotDeviceIDs)
 	where, args = appendStringInFilter(where, args, "COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, ''), '')", q.CollectorOperatorIDs)
+	where, args = appendInt64InFilter(where, args, "dp.dc_project_id", q.DCProjectIDs)
+	where, args = appendInt64InFilter(where, args, "dp.dc_task_id", q.DCTaskIDs)
 
 	if q.Keyword != "" {
-		where, args = appendKeywordSearch(where, args, q.Keyword, "e.episode_id", "t.task_id", "e.quality_flag")
+		where, args = appendKeywordSearch(where, args, q.Keyword, "e.episode_id", "t.task_id", "dp.dc_project_name", "dp.dc_task_name", "e.quality_flag")
+	}
+	if q.DCProjectName != "" {
+		where, args = appendKeywordSearch(where, args, q.DCProjectName, "dp.dc_project_name")
+	}
+	if q.DCTaskName != "" {
+		where, args = appendKeywordSearch(where, args, q.DCTaskName, "dp.dc_task_name")
 	}
 	if q.Label != "" {
 		where += " AND JSON_CONTAINS(COALESCE(e.labels, JSON_ARRAY()), JSON_QUOTE(?))"
@@ -403,6 +445,8 @@ func dataOpsEpisodeListSQL(fromSQL string, where string) string {
 			e.episode_id,
 			e.task_id,
 			t.task_id AS task_public_id,
+			dp.dc_project_id,
+			dp.dc_project_name,
 			dp.dc_task_id,
 			dp.dc_task_name,
 			COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, '')) AS robot_device_id,
@@ -524,6 +568,8 @@ func dataOpsEpisodeItemFromRow(row dataOpsEpisodeRow) DataOpsEpisodeItemResponse
 		EpisodeID:           row.EpisodeID,
 		TaskID:              row.TaskID,
 		TaskPublicID:        nullableString(row.TaskPublicID),
+		DCProjectID:         nullableInt64(row.DCProjectID),
+		DCProjectName:       nullableString(row.DCProjectName),
 		DCTaskID:            nullableInt64(row.DCTaskID),
 		DCTaskName:          nullableString(row.DCTaskName),
 		RobotDeviceID:       nullableString(row.RobotDeviceID),

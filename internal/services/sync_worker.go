@@ -1243,23 +1243,14 @@ func (ep syncEpisodeUploadRow) bagEndTime() time.Time {
 func hilbertBagName(ep syncEpisodeUploadRow, mcapKey string) string {
 	key := strings.Trim(strings.TrimSpace(mcapKey), "/")
 	ext := path.Ext(key)
-	segments := strings.Split(key, "/")
-	stem := strings.TrimSuffix(path.Base(key), ext)
-	if len(segments) >= 3 {
-		stem = segments[len(segments)-3] + "_" + segments[len(segments)-2]
-	} else if key != "" {
-		stem = strings.TrimSuffix(strings.ReplaceAll(key, "/", "_"), ext)
-	}
-	stem = sanitizeHilbertBagNamePart(stem)
+	stem := sanitizeHilbertBagNamePart(ep.EpisodeUUID)
 	if stem == "" {
-		stem = "capture"
+		stem = "episode_" + strconv.FormatInt(ep.ID, 10)
 	}
-	episodePart := "episode_" + strconv.FormatInt(ep.ID, 10)
-	name := episodePart + "_" + stem
 	if ext == "" {
 		ext = ".mcap"
 	}
-	name = name + ext
+	name := stem + ext
 	if len(name) <= 180 {
 		return name
 	}

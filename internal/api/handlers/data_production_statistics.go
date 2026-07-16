@@ -56,6 +56,8 @@ type dataProductionStatsQuery struct {
 	SourceID             string
 	RobotDeviceIDs       []string
 	CollectorOperatorIDs []string
+	DCProjectIDs         []int64
+	DCTaskIDs            []int64
 	QAStatuses           []string
 	CloudSyncedValues    []bool
 	DataType             string
@@ -146,6 +148,7 @@ type dataProductionDetailItem struct {
 	SourceID            string `json:"source_id" db:"source_id"`
 	SourceName          string `json:"source_name" db:"source_name"`
 	RobotDeviceID       string `json:"robot_device_id" db:"robot_device_id"`
+	RobotDeviceName     string `json:"robot_device_name" db:"robot_device_name"`
 	CollectorOperatorID string `json:"collector_operator_id" db:"collector_operator_id"`
 	CollectorName       string `json:"collector_name" db:"collector_name"`
 	TaskID              string `json:"task_id" db:"task_id"`
@@ -228,10 +231,11 @@ var validStatsGranularities = map[string]struct{}{
 }
 
 var validDataProductionQAStatuses = map[string]struct{}{
-	"pending_qa": {},
-	"qa_running": {},
-	"approved":   {},
-	"failed":     {},
+	"pending_qa":           {},
+	"qa_running":           {},
+	"approved":             {},
+	"failed":               {},
+	"manual_review_failed": {},
 }
 
 func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dataProductionStatsQuery, error) {
@@ -277,13 +281,21 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 			return dataProductionStatsQuery{}, err
 		}
 	}
+	dcProjectIDs, err := parseNonNegativeInt64List(c.Query("dc_project_id"), "dc_project_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
+	dcTaskIDs, err := parseNonNegativeInt64List(c.Query("dc_task_id"), "dc_task_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
 	qaStatuses, err := parseStatsStringListQuery(c, "qa_status")
 	if err != nil {
 		return dataProductionStatsQuery{}, err
 	}
 	for _, qaStatus := range qaStatuses {
 		if _, ok := validDataProductionQAStatuses[qaStatus]; !ok {
-			return dataProductionStatsQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed")
+			return dataProductionStatsQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed, manual_review_failed")
 		}
 	}
 
@@ -300,6 +312,8 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 		SourceID:             strings.TrimSpace(c.Query("source_id")),
 		RobotDeviceIDs:       robotDeviceIDs,
 		CollectorOperatorIDs: collectorOperatorIDs,
+		DCProjectIDs:         dcProjectIDs,
+		DCTaskIDs:            dcTaskIDs,
 		QAStatuses:           qaStatuses,
 		CloudSyncedValues:    cloudSyncedValues,
 		DataType:             strings.TrimSpace(c.Query("data_type")),
@@ -672,6 +686,7 @@ func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) s
 			source_id,
 			source_name,
 				robot_device_id,
+				robot_device_name,
 				collector_operator_id,
 			collector_name,
 			task_id,
@@ -877,6 +892,8 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 	conditions, args = appendStatsInt64InCondition(conditions, args, "workspace_id", q.WorkspaceIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "robot_device_id", q.RobotDeviceIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "collector_operator_id", q.CollectorOperatorIDs)
+	conditions, args = appendStatsInt64InCondition(conditions, args, "dc_project_id", q.DCProjectIDs)
+	conditions, args = appendStatsInt64InCondition(conditions, args, "dc_task_id", q.DCTaskIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "qa_status", q.QAStatuses)
 	conditions, args = appendStatsBoolInCondition(conditions, args, "cloud_synced", q.CloudSyncedValues)
 	if q.DataType != "" {
@@ -940,8 +957,19 @@ func productionRecordsSQL() string {
 			COALESCE(r.device_id, ws.robot_serial, CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR)), 'unknown') AS source_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
+			COALESCE(
+				NULLIF(JSON_UNQUOTE(JSON_EXTRACT(r.metadata, '$.hilbert_dc_device_name')), ''),
+				NULLIF(ws.robot_name, ''),
+				NULLIF(r.device_id, ''),
+				NULLIF(ws.robot_serial, ''),
+				''
+			) AS robot_device_name,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
 			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
+			dp.dc_project_id AS dc_project_id,
+			dp.dc_project_name AS dc_project_name,
+			dp.dc_task_id AS dc_task_id,
+			dp.dc_task_name AS dc_task_name,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_id,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_name,
 			'episode' AS data_type,
@@ -955,6 +983,7 @@ func productionRecordsSQL() string {
 			'' AS error_message
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
@@ -1098,7 +1127,11 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 	case "source":
 		return "source_id", "source_name", nil
 	case "robot_device":
-		return "robot_device_id", "robot_device_id", nil
+		return "robot_device_name", "robot_device_name", nil
+	case "dc_project":
+		return "COALESCE(CAST(dc_project_id AS CHAR), '')", "COALESCE(NULLIF(dc_project_name, ''), CAST(dc_project_id AS CHAR), '未分类')", nil
+	case "dc_task":
+		return "COALESCE(CAST(dc_task_id AS CHAR), '')", "COALESCE(NULLIF(dc_task_name, ''), CAST(dc_task_id AS CHAR), '未分类')", nil
 	case "collector":
 		return "collector_operator_id", "collector_operator_id", nil
 	case "qa_status":
@@ -1107,12 +1140,13 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 			WHEN 'qa_running' THEN '质检中'
 			WHEN 'approved' THEN '已通过'
 			WHEN 'failed' THEN '质检失败'
+			WHEN 'manual_review_failed' THEN '人工复核不通过'
 			ELSE qa_status
 		END`, nil
 	case "cloud_synced":
 		return "CASE WHEN cloud_synced THEN 'true' ELSE 'false' END", "CASE WHEN cloud_synced THEN '已同步' ELSE '未同步' END", nil
 	default:
-		return "", "", fmt.Errorf("dimension must be one of source, robot_device, collector, qa_status, cloud_synced")
+		return "", "", fmt.Errorf("dimension must be one of source, robot_device, dc_project, dc_task, collector, qa_status, cloud_synced")
 	}
 }
 

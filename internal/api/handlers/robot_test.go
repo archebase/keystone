@@ -125,6 +125,64 @@ func TestRobotHandlerListRobotsFiltersByWorkspaceID(t *testing.T) {
 	}
 }
 
+func TestRobotHandlerListRobotsFiltersByDeviceNameOnly(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+
+	stmts := []string{
+		`INSERT INTO robots (id, device_id, status, metadata) VALUES (1, 'robot-id-alpha', 'active', '{"hilbert_dc_device_name":"Inspection Cart A"}')`,
+		`INSERT INTO robots (id, device_id, status, metadata) VALUES (2, 'Inspection Cart B', 'active', '{"hilbert_dc_device_name":"Robot Beta"}')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed robot fixture failed: %v", err)
+		}
+	}
+
+	r := newTestRobotRouter(t, db)
+	tests := []struct {
+		name          string
+		path          string
+		wantDeviceIDs []string
+	}{
+		{
+			name:          "matches projected device name",
+			path:          "/api/v1/robots?device_name=Cart%20A",
+			wantDeviceIDs: []string{"robot-id-alpha"},
+		},
+		{
+			name:          "does not match device_id",
+			path:          "/api/v1/robots?device_name=Inspection%20Cart%20B",
+			wantDeviceIDs: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+
+			var resp RobotListResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+			}
+			if resp.Total != len(tt.wantDeviceIDs) || len(resp.Items) != len(tt.wantDeviceIDs) {
+				t.Fatalf("unexpected filtered response: %#v", resp)
+			}
+			for i, wantDeviceID := range tt.wantDeviceIDs {
+				if resp.Items[i].DeviceID != wantDeviceID {
+					t.Fatalf("item[%d].DeviceID=%q want=%q item=%#v", i, resp.Items[i].DeviceID, wantDeviceID, resp.Items[i])
+				}
+			}
+		})
+	}
+}
+
 func TestRobotHandlerListRobotsIncludesProjectedDeviceNameAndType(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()
