@@ -308,6 +308,7 @@ func parseConnectedFilter(raw string) (*bool, error) {
 // @Param        status        query     string  false  "Filter by status(es), comma-separated (active, maintenance, retired)"
 // @Param        connected     query     string  false  "Filter by connection status(es), comma-separated (true/false)"
 // @Param        device_id     query     string  false  "Filter by device ID(s), comma-separated"
+// @Param        device_name   query     string  false  "Search by projected device name"
 // @Param        keyword       query     string  false  "Search by device ID"
 // @Param        q             query     string  false  "Alias of keyword"
 // @Param        search        query     string  false  "Alias of keyword"
@@ -344,6 +345,7 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	deviceName := strings.TrimSpace(c.Query("device_name"))
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 
 	whereClause := "WHERE r.deleted_at IS NULL"
@@ -352,6 +354,10 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	whereClause, args = appendStringInFilter(whereClause, args, "r.device_id", deviceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "r.status", statuses)
 
+	if deviceName != "" {
+		whereClause += " AND " + robotDeviceNameSQLExpr(h.db.DriverName()) + " LIKE ?"
+		args = append(args, "%"+deviceName+"%")
+	}
 	if keyword != "" {
 		likeKeyword := "%" + keyword + "%"
 		whereClause += " AND r.device_id LIKE ?"
@@ -426,6 +432,15 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		HasNext: hasNext,
 		HasPrev: hasPrev,
 	})
+}
+
+func robotDeviceNameSQLExpr(driverName string) string {
+	switch driverName {
+	case "mysql":
+		return "COALESCE(CASE WHEN JSON_VALID(r.metadata) THEN JSON_UNQUOTE(JSON_EXTRACT(r.metadata, '$.hilbert_dc_device_name')) ELSE '' END, '')"
+	default:
+		return "COALESCE(CASE WHEN json_valid(r.metadata) THEN json_extract(r.metadata, '$.hilbert_dc_device_name') ELSE '' END, '')"
+	}
 }
 
 // GetDeviceConnection returns recorder and transfer connection state for a device.
