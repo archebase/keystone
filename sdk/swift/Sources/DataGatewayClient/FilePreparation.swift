@@ -9,7 +9,6 @@ import DGWProto
 import DGWStore
 import Foundation
 import GRPCCore
-import GRPCNIOTransportHTTP2
 
 /// Stable module marker for the public client target.
 public enum DataGatewayClientModule {
@@ -2504,13 +2503,13 @@ public actor DataGatewayClient {
 
 package final class DataGatewayClientRuntimeResources: @unchecked Sendable {
     private let authTransport: ManagedControlPlaneServiceClient<any CredentialExchangeTransport>
-    private let gatewayTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayService.Client<HTTP2ClientTransport.TransportServices>>
-    private let objectTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayObjectService.Client<HTTP2ClientTransport.TransportServices>>
+    private let gatewayTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayService.Client<ControlPlaneHTTP2ClientTransport>>
+    private let objectTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayObjectService.Client<ControlPlaneHTTP2ClientTransport>>
 
     package init(
         authTransport: ManagedControlPlaneServiceClient<any CredentialExchangeTransport>,
-        gatewayTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayService.Client<HTTP2ClientTransport.TransportServices>>,
-        objectTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayObjectService.Client<HTTP2ClientTransport.TransportServices>>
+        gatewayTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayService.Client<ControlPlaneHTTP2ClientTransport>>,
+        objectTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayObjectService.Client<ControlPlaneHTTP2ClientTransport>>
     ) {
         self.authTransport = authTransport
         self.gatewayTransport = gatewayTransport
@@ -2527,7 +2526,7 @@ package struct AnyUploadCoordinatorGatewayClient: UploadCoordinatorGatewayClient
 
     package init(
         authProvider: CredentialAuthProvider,
-        gatewayServiceClient: Archebase_DataGateway_V1_DataGatewayService.Client<HTTP2ClientTransport.TransportServices>,
+        gatewayServiceClient: Archebase_DataGateway_V1_DataGatewayService.Client<ControlPlaneHTTP2ClientTransport>,
         requestTimeout: Duration,
         retryPolicy: DGWControlPlane.RetryPolicy
         ) {

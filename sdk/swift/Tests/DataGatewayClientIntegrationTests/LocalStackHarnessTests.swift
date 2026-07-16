@@ -6,7 +6,6 @@ import DGWControlPlane
 import DGWProto
 import DGWStore
 import Foundation
-import GRPCNIOTransportHTTP2
 import Testing
 
 @testable import DataGatewayClient
@@ -899,7 +898,7 @@ private func uniqueConfigURL(from baseURL: URL) -> URL {
 
 private struct RealGatewayHarness {
     let authTransport: ManagedControlPlaneServiceClient<any CredentialExchangeTransport>
-    let gatewayTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayService.Client<HTTP2ClientTransport.TransportServices>>
+    let gatewayTransport: ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayService.Client<ControlPlaneHTTP2ClientTransport>>
     let gatewayClient: AnyUploadCoordinatorGatewayClient
 }
 

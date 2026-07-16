@@ -6,10 +6,12 @@ import Foundation
 import DGWAuth
 import DGWProto
 import GRPCCore
-import GRPCNIOTransportHTTP2
+import GRPCNIOTransportHTTP2Posix
 
 private let authorizationMetadataKey = "authorization"
 private let statusDetailsMetadataKey = "grpc-status-details-bin"
+
+package typealias ControlPlaneHTTP2ClientTransport = HTTP2ClientTransport.Posix
 
 package enum ControlPlaneTransportSecurity: Sendable, Equatable {
     case plaintext
@@ -113,7 +115,7 @@ package struct ControlPlaneTransportConfiguration: Sendable, Equatable {
             .make(authorizationHeader: authorizationHeader)
     }
 
-    fileprivate func makeTransportSecurity() -> HTTP2ClientTransport.TransportServices.TransportSecurity {
+    fileprivate func makeTransportSecurity() -> ControlPlaneHTTP2ClientTransport.TransportSecurity {
         switch self.security {
         case .plaintext:
             return .plaintext
@@ -149,14 +151,14 @@ package struct ControlPlaneTransportConfiguration: Sendable, Equatable {
 package final class ManagedControlPlaneServiceClient<ServiceClient: Sendable>: @unchecked Sendable {
     package let serviceClient: ServiceClient
 
-    private let grpcClient: GRPCClient<HTTP2ClientTransport.TransportServices>
+    private let grpcClient: GRPCClient<ControlPlaneHTTP2ClientTransport>
     private let runTask: Task<Void, Never>
 
     package init(
         configuration: ControlPlaneTransportConfiguration,
-        makeServiceClient: @escaping @Sendable (GRPCClient<HTTP2ClientTransport.TransportServices>) -> ServiceClient
+        makeServiceClient: @escaping @Sendable (GRPCClient<ControlPlaneHTTP2ClientTransport>) -> ServiceClient
     ) throws {
-        let transport = try HTTP2ClientTransport.TransportServices(
+        let transport = try ControlPlaneHTTP2ClientTransport(
             target: configuration.resolvedTarget().makeResolvableTarget(),
             transportSecurity: configuration.makeTransportSecurity()
         )
@@ -200,13 +202,13 @@ package struct ControlPlaneClientFactory: Sendable {
         }
     }
 
-    package func makeGatewayClient() throws -> ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayService.Client<HTTP2ClientTransport.TransportServices>> {
+    package func makeGatewayClient() throws -> ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayService.Client<ControlPlaneHTTP2ClientTransport>> {
         try ManagedControlPlaneServiceClient(configuration: self.configuration) { grpcClient in
             Archebase_DataGateway_V1_DataGatewayService.Client(wrapping: grpcClient)
         }
     }
 
-    package func makeObjectClient() throws -> ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayObjectService.Client<HTTP2ClientTransport.TransportServices>> {
+    package func makeObjectClient() throws -> ManagedControlPlaneServiceClient<Archebase_DataGateway_V1_DataGatewayObjectService.Client<ControlPlaneHTTP2ClientTransport>> {
         try ManagedControlPlaneServiceClient(configuration: self.configuration) { grpcClient in
             Archebase_DataGateway_V1_DataGatewayObjectService.Client(wrapping: grpcClient)
         }
