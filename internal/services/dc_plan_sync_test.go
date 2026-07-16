@@ -168,6 +168,84 @@ func TestDCPlanSyncServiceDoesNotDeleteMissingPlans(t *testing.T) {
 	}
 }
 
+func TestDCPlanSyncServiceSyncAllWorkspaces(t *testing.T) {
+	db := newTestDCPlanSyncDB(t)
+	defer db.Close()
+	seedDCPlanWorkspace(t, db, 0, workspaceSourceDefault)
+	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
+	seedDCPlanWorkspace(t, db, 456, workspaceSourceHilbert)
+	seedDCPlanWorkspace(t, db, 789, workspaceSourceDefault)
+
+	client := &fakeHilbertDCPlanClient{
+		pagesByWorkspace: map[int64][]*auth.HilbertDCPlanPage{
+			123: {
+				{Records: []auth.HilbertDCPlan{testHilbertDCPlan(1001, 123, "Plan A")}, Total: 1, PageNum: 1, PageSize: dcPlanSyncPageSize},
+			},
+			456: {
+				{Records: []auth.HilbertDCPlan{testHilbertDCPlan(2001, 456, "Plan B")}, Total: 1, PageNum: 1, PageSize: dcPlanSyncPageSize},
+			},
+		},
+	}
+	service := NewDCPlanSyncService(db, testDCPlanSyncHilbertConfig(), client)
+
+	result, err := service.SyncAllWorkspaces(context.Background())
+	if err != nil {
+		t.Fatalf("SyncAllWorkspaces() error = %v", err)
+	}
+	if result.WorkspaceCount != 2 || result.FailedCount != 0 || result.SyncedCount != 2 || result.PageCount != 2 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(client.queries) != 2 || client.queries[0].workspaceID != 123 || client.queries[1].workspaceID != 456 {
+		t.Fatalf("unexpected queries: %#v", client.queries)
+	}
+
+	var count int
+	if err := db.Get(&count, "SELECT COUNT(*) FROM dc_plan"); err != nil {
+		t.Fatalf("count dc_plan: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("count=%d want 2", count)
+	}
+}
+
+func TestDCPlanSyncServiceSyncAllWorkspacesIsolatesFailures(t *testing.T) {
+	db := newTestDCPlanSyncDB(t)
+	defer db.Close()
+	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
+	seedDCPlanWorkspace(t, db, 456, workspaceSourceHilbert)
+
+	client := &fakeHilbertDCPlanClient{
+		pagesByWorkspace: map[int64][]*auth.HilbertDCPlanPage{
+			123: {
+				{
+					Records: []auth.HilbertDCPlan{testHilbertDCPlan(0, 123, "Invalid Plan")},
+					Total:   1,
+				},
+			},
+			456: {
+				{Records: []auth.HilbertDCPlan{testHilbertDCPlan(2001, 456, "Plan B")}, Total: 1, PageNum: 1, PageSize: dcPlanSyncPageSize},
+			},
+		},
+	}
+	service := NewDCPlanSyncService(db, testDCPlanSyncHilbertConfig(), client)
+
+	result, err := service.SyncAllWorkspaces(context.Background())
+	if err != nil {
+		t.Fatalf("SyncAllWorkspaces() error = %v", err)
+	}
+	if result.WorkspaceCount != 2 || result.FailedCount != 1 || result.SyncedCount != 1 || len(result.Errors) != 1 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+
+	var ids []int64
+	if err := db.Select(&ids, "SELECT id FROM dc_plan ORDER BY id"); err != nil {
+		t.Fatalf("query dc_plan ids: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != 2001 {
+		t.Fatalf("ids=%#v want [2001]", ids)
+	}
+}
+
 type dcPlanQueryCall struct {
 	workspaceID int64
 	pageNum     int64
@@ -175,17 +253,18 @@ type dcPlanQueryCall struct {
 }
 
 type fakeHilbertDCPlanClient struct {
-	configured bool
-	pages      []*auth.HilbertDCPlanPage
-	queryErr   error
-	queries    []dcPlanQueryCall
+	configured       bool
+	pages            []*auth.HilbertDCPlanPage
+	pagesByWorkspace map[int64][]*auth.HilbertDCPlanPage
+	queryErr         error
+	queries          []dcPlanQueryCall
 }
 
 func (f *fakeHilbertDCPlanClient) Configured() bool {
 	if f.configured {
 		return true
 	}
-	return len(f.pages) > 0 || f.queryErr != nil
+	return len(f.pages) > 0 || len(f.pagesByWorkspace) > 0 || f.queryErr != nil
 }
 
 func (f *fakeHilbertDCPlanClient) ServiceAuthConfigured() bool {
@@ -197,11 +276,15 @@ func (f *fakeHilbertDCPlanClient) QueryDCPlans(_ context.Context, workspaceID in
 	if f.queryErr != nil {
 		return nil, f.queryErr
 	}
-	index := int(pageNum - 1)
-	if index < 0 || index >= len(f.pages) {
-		return &auth.HilbertDCPlanPage{Records: nil, Total: int64(len(f.pages)), PageNum: pageNum, PageSize: pageSize}, nil
+	pages := f.pages
+	if f.pagesByWorkspace != nil {
+		pages = f.pagesByWorkspace[workspaceID]
 	}
-	return f.pages[index], nil
+	index := int(pageNum - 1)
+	if index < 0 || index >= len(pages) {
+		return &auth.HilbertDCPlanPage{Records: nil, Total: int64(len(pages)), PageNum: pageNum, PageSize: pageSize}, nil
+	}
+	return pages[index], nil
 }
 
 func testHilbertDCPlan(id int64, workspaceID int64, name string) auth.HilbertDCPlan {

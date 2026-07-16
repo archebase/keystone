@@ -30,6 +30,8 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+const dcPlanAutoSyncInterval = 5 * time.Minute
+
 // Server represents the HTTP server
 type Server struct {
 	cfg                 *config.Config
@@ -54,9 +56,12 @@ type Server struct {
 	syncHandler         *handlers.SyncHandler
 	syncWorker          *services.SyncWorker
 	workspaceSync       *services.WorkspaceSyncService
+	dcPlanSync          *services.DCPlanSyncService
 	httpServer          *http.Server
 	transferWSServer    *http.Server
 	recorderWSServer    *http.Server
+	dcPlanSyncCancel    context.CancelFunc
+	dcPlanSyncDone      chan struct{}
 	shutdownMu          sync.RWMutex
 	isRunning           bool
 	engine              *gin.Engine
@@ -176,6 +181,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		syncHandler:         syncHandler,
 		syncWorker:          syncWorker,
 		workspaceSync:       workspaceSyncService,
+		dcPlanSync:          dcPlanSyncService,
 		engine:              engine,
 	}
 
@@ -367,6 +373,8 @@ func (s *Server) Start() error {
 	s.shutdownMu.Unlock()
 
 	s.syncWorkspacesOnStartup()
+	s.syncDCPlansOnStartup()
+	s.startPeriodicDCPlanSync()
 
 	logger.Printf("[SERVER] Starting HTTP server on %s", s.cfg.Server.BindAddr)
 	logger.Printf("[SERVER] Swagger UI: http://localhost%s/swagger/index.html", s.cfg.Server.BindAddr)
@@ -434,6 +442,67 @@ func (s *Server) syncWorkspacesOnStartup() {
 	logger.Printf("[WORKSPACE] Startup Hilbert workspace sync completed: synced_count=%d", result.SyncedCount)
 }
 
+func (s *Server) syncDCPlansOnStartup() {
+	s.syncDCPlansOnce(context.Background(), "Startup")
+}
+
+func (s *Server) startPeriodicDCPlanSync() {
+	if s.dcPlanSync == nil || !s.dcPlanSync.Configured() {
+		logger.Printf("[DC_PLAN] Periodic Hilbert dc plan sync skipped: service identity config incomplete")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	s.shutdownMu.Lock()
+	s.dcPlanSyncCancel = cancel
+	s.dcPlanSyncDone = done
+	s.shutdownMu.Unlock()
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(dcPlanAutoSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.syncDCPlansOnce(ctx, "Periodic")
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	logger.Printf("[DC_PLAN] Periodic Hilbert dc plan sync started: interval=%s", dcPlanAutoSyncInterval)
+}
+
+func (s *Server) syncDCPlansOnce(ctx context.Context, label string) {
+	if s.dcPlanSync == nil || !s.dcPlanSync.Configured() {
+		logger.Printf("[DC_PLAN] %s Hilbert dc plan sync skipped: service identity config incomplete", label)
+		return
+	}
+	timeout := time.Duration(s.cfg.Hilbert.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := s.dcPlanSync.SyncAllWorkspaces(syncCtx)
+	if err != nil {
+		logger.Printf("[DC_PLAN] %s Hilbert dc plan sync failed: %v", label, err)
+		return
+	}
+	logger.Printf(
+		"[DC_PLAN] %s Hilbert dc plan sync completed: workspaces=%d failed=%d synced_count=%d page_count=%d",
+		label,
+		result.WorkspaceCount,
+		result.FailedCount,
+		result.SyncedCount,
+		result.PageCount,
+	)
+}
+
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.shutdownMu.Lock()
@@ -442,7 +511,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	s.isRunning = false
+	dcPlanSyncCancel := s.dcPlanSyncCancel
+	dcPlanSyncDone := s.dcPlanSyncDone
+	s.dcPlanSyncCancel = nil
+	s.dcPlanSyncDone = nil
 	s.shutdownMu.Unlock()
+
+	if dcPlanSyncCancel != nil {
+		dcPlanSyncCancel()
+	}
+	if dcPlanSyncDone != nil {
+		select {
+		case <-dcPlanSyncDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	startedAt := time.Now()
 	shutdownTimeout := time.Duration(s.cfg.Server.ShutdownTimeout) * time.Second
