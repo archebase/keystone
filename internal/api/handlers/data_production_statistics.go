@@ -231,10 +231,11 @@ var validStatsGranularities = map[string]struct{}{
 }
 
 var validDataProductionQAStatuses = map[string]struct{}{
-	"pending_qa": {},
-	"qa_running": {},
-	"approved":   {},
-	"failed":     {},
+	"pending_qa":           {},
+	"qa_running":           {},
+	"approved":             {},
+	"failed":               {},
+	"manual_review_failed": {},
 }
 
 func parseDataProductionStatsQuery(c *gin.Context, requireGranularity bool) (dataProductionStatsQuery, error) {
@@ -294,7 +295,7 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 	}
 	for _, qaStatus := range qaStatuses {
 		if _, ok := validDataProductionQAStatuses[qaStatus]; !ok {
-			return dataProductionStatsQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed")
+			return dataProductionStatsQuery{}, fmt.Errorf("qa_status must be one of pending_qa, qa_running, approved, failed, manual_review_failed")
 		}
 	}
 
@@ -1139,6 +1140,7 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 			WHEN 'qa_running' THEN '质检中'
 			WHEN 'approved' THEN '已通过'
 			WHEN 'failed' THEN '质检失败'
+			WHEN 'manual_review_failed' THEN '人工审核未通过'
 			ELSE qa_status
 		END`, nil
 	case "cloud_synced":
