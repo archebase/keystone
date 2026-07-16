@@ -42,7 +42,7 @@ func TestDCPlanListFiltersByWorkspaceAndFields(t *testing.T) {
 	seedDCPlanHandlerPlan(t, db, 1003, 456, "Ego Other", "ego", "alice", "2026-07-09")
 	router := newTestDCPlanRouter(db, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/dc-plans?workspace_id=123&name=Ego&dc_type=ego&operator=alice&dc_date=2026-07-09&limit=20&offset=0", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dc-plans?workspace_id=123&name=Ego&dc_project_id=13&dc_project_name=1001&dc_task_id=14&dc_task_name=1001&dc_type=ego&operator=alice&dc_date=2026-07-09&limit=20&offset=0", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

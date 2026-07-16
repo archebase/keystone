@@ -56,6 +56,8 @@ type dataProductionStatsQuery struct {
 	SourceID             string
 	RobotDeviceIDs       []string
 	CollectorOperatorIDs []string
+	DCProjectIDs         []int64
+	DCTaskIDs            []int64
 	QAStatuses           []string
 	CloudSyncedValues    []bool
 	DataType             string
@@ -277,6 +279,14 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 			return dataProductionStatsQuery{}, err
 		}
 	}
+	dcProjectIDs, err := parseNonNegativeInt64List(c.Query("dc_project_id"), "dc_project_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
+	dcTaskIDs, err := parseNonNegativeInt64List(c.Query("dc_task_id"), "dc_task_id")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
 	qaStatuses, err := parseStatsStringListQuery(c, "qa_status")
 	if err != nil {
 		return dataProductionStatsQuery{}, err
@@ -300,6 +310,8 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 		SourceID:             strings.TrimSpace(c.Query("source_id")),
 		RobotDeviceIDs:       robotDeviceIDs,
 		CollectorOperatorIDs: collectorOperatorIDs,
+		DCProjectIDs:         dcProjectIDs,
+		DCTaskIDs:            dcTaskIDs,
 		QAStatuses:           qaStatuses,
 		CloudSyncedValues:    cloudSyncedValues,
 		DataType:             strings.TrimSpace(c.Query("data_type")),
@@ -877,6 +889,8 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 	conditions, args = appendStatsInt64InCondition(conditions, args, "workspace_id", q.WorkspaceIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "robot_device_id", q.RobotDeviceIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "collector_operator_id", q.CollectorOperatorIDs)
+	conditions, args = appendStatsInt64InCondition(conditions, args, "dc_project_id", q.DCProjectIDs)
+	conditions, args = appendStatsInt64InCondition(conditions, args, "dc_task_id", q.DCTaskIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "qa_status", q.QAStatuses)
 	conditions, args = appendStatsBoolInCondition(conditions, args, "cloud_synced", q.CloudSyncedValues)
 	if q.DataType != "" {
@@ -942,6 +956,10 @@ func productionRecordsSQL() string {
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
 			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
+			dp.dc_project_id AS dc_project_id,
+			dp.dc_project_name AS dc_project_name,
+			dp.dc_task_id AS dc_task_id,
+			dp.dc_task_name AS dc_task_name,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_id,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_name,
 			'episode' AS data_type,
@@ -955,6 +973,7 @@ func productionRecordsSQL() string {
 			'' AS error_message
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL

@@ -134,6 +134,10 @@ func (h *DCPlanHandler) RegisterAdminRoutes(apiV1 *gin.RouterGroup) {
 // @Produce      json
 // @Param        workspace_id query int    true  "Workspace ID"
 // @Param        name         query string false "Fuzzy plan name filter"
+// @Param        dc_project_id   query string false "Comma-separated project IDs"
+// @Param        dc_project_name query string false "Fuzzy project name filter"
+// @Param        dc_task_id      query string false "Comma-separated task IDs"
+// @Param        dc_task_name    query string false "Fuzzy task name filter"
 // @Param        dc_type      query string false "Exact data collection type"
 // @Param        operator     query string false "Exact operator account code"
 // @Param        dc_date      query string false "Exact collection date, YYYY-MM-DD"
@@ -170,6 +174,18 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 	}
 
 	name := strings.TrimSpace(c.Query("name"))
+	dcProjectIDs, err := parseNonNegativeInt64List(c.Query("dc_project_id"), "dc_project_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	dcProjectName := strings.TrimSpace(c.Query("dc_project_name"))
+	dcTaskIDs, err := parseNonNegativeInt64List(c.Query("dc_task_id"), "dc_task_id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	dcTaskName := strings.TrimSpace(c.Query("dc_task_name"))
 	dcType := strings.TrimSpace(c.Query("dc_type"))
 	operator := strings.TrimSpace(c.Query("operator"))
 	if claims != nil && claims.Role == "data_collector" {
@@ -186,6 +202,10 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 	whereClause := "WHERE dp.deleted_at IS NULL AND dp.workspace_id = ?"
 	args := []any{workspaceID}
 	whereClause, args = appendKeywordSearch(whereClause, args, name, "dp.name")
+	whereClause, args = appendInt64InFilter(whereClause, args, "dp.dc_project_id", dcProjectIDs)
+	whereClause, args = appendKeywordSearch(whereClause, args, dcProjectName, "dp.dc_project_name")
+	whereClause, args = appendInt64InFilter(whereClause, args, "dp.dc_task_id", dcTaskIDs)
+	whereClause, args = appendKeywordSearch(whereClause, args, dcTaskName, "dp.dc_task_name")
 	if dcType != "" {
 		whereClause += " AND dp.dc_type = ?"
 		args = append(args, dcType)

@@ -20,7 +20,7 @@ import (
 func TestParseDataProductionStatsQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&workspace_id=0&source_id=12&qa_status=approved,failed&cloud_synced=false&data_type=episode&task_id=task_1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&workspace_id=0&source_id=12&dc_project_id=13&dc_task_id=14&qa_status=approved,failed&cloud_synced=false&data_type=episode&task_id=task_1", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -33,6 +33,12 @@ func TestParseDataProductionStatsQuery(t *testing.T) {
 	}
 	if len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != 0 {
 		t.Fatalf("unexpected workspace ids: %#v", got.WorkspaceIDs)
+	}
+	if len(got.DCProjectIDs) != 1 || got.DCProjectIDs[0] != 13 {
+		t.Fatalf("unexpected project ids: %#v", got.DCProjectIDs)
+	}
+	if len(got.DCTaskIDs) != 1 || got.DCTaskIDs[0] != 14 {
+		t.Fatalf("unexpected task ids: %#v", got.DCTaskIDs)
 	}
 	if strings.Join(got.QAStatuses, ",") != "approved,failed" {
 		t.Fatalf("unexpected list filters: %+v", got)
@@ -53,10 +59,13 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 	if strings.Contains(sql, "t.status IN ('failed', 'cancelled')") || strings.Contains(sql, "t.status IN ('ready', 'in_progress')") {
 		t.Fatalf("production records SQL should not include task status fallback records: %s", sql)
 	}
-	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced"} {
+	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced", "dp.dc_project_id AS dc_project_id", "dp.dc_task_id AS dc_task_id"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("production records SQL should include %q: %s", want, sql)
 		}
+	}
+	if !strings.Contains(sql, "LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id") {
+		t.Fatalf("production records SQL should join dc_plan for project/task filters: %s", sql)
 	}
 	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.workspace_id) AS workspace_id") {
 		t.Fatalf("production records SQL should expose workspace scope: %s", sql)
@@ -106,16 +115,18 @@ func TestFilteredProductionRecordsSQLIncludesEpisodeFilters(t *testing.T) {
 		StartTime:         mustParseStatsTimeForTest(t, "2026-05-01T00:00:00Z"),
 		EndTime:           mustParseStatsTimeForTest(t, "2026-05-02T00:00:00Z"),
 		WorkspaceIDs:      []int64{0},
+		DCProjectIDs:      []int64{13},
+		DCTaskIDs:         []int64{14},
 		QAStatuses:        []string{"failed"},
 		CloudSyncedValues: []bool{cloudSynced},
 	})
-	for _, want := range []string{"workspace_id IN (?)", "qa_status IN (?)", "cloud_synced = ?"} {
+	for _, want := range []string{"workspace_id IN (?)", "dc_project_id IN (?)", "dc_task_id IN (?)", "qa_status IN (?)", "cloud_synced = ?"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("filtered SQL should include %q: %s", want, query)
 		}
 	}
-	if len(args) != 5 {
-		t.Fatalf("arg count = %d, want 5: %#v", len(args), args)
+	if len(args) != 7 {
+		t.Fatalf("arg count = %d, want 7: %#v", len(args), args)
 	}
 }
 
