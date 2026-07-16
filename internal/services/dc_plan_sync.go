@@ -46,6 +46,22 @@ type DCPlanSyncResult struct {
 	TaskGeneration *DCPlanTaskGenerationSummary
 }
 
+// DCPlanSyncAllResult summarizes a sync run across every Hilbert workspace.
+type DCPlanSyncAllResult struct {
+	WorkspaceCount int
+	SyncedCount    int
+	PageCount      int
+	FailedCount    int
+	Results        []DCPlanSyncResult
+	Errors         []DCPlanSyncWorkspaceError
+}
+
+// DCPlanSyncWorkspaceError describes one workspace-level dc_plan sync failure.
+type DCPlanSyncWorkspaceError struct {
+	WorkspaceID int64
+	Error       string
+}
+
 // DCPlanSyncService syncs Hilbert dc_plan projections into Keystone.
 type DCPlanSyncService struct {
 	db            *sqlx.DB
@@ -101,6 +117,61 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 		LastSyncedAt:   now,
 		TaskGeneration: taskGeneration,
 	}, nil
+}
+
+// SyncAllWorkspaces syncs dc_plan projections for every local Hilbert workspace.
+func (s *DCPlanSyncService) SyncAllWorkspaces(ctx context.Context) (*DCPlanSyncAllResult, error) {
+	if !s.Configured() {
+		return nil, ErrDCPlanSyncNotConfigured
+	}
+
+	workspaceIDs, err := s.listHilbertWorkspaceIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DCPlanSyncAllResult{
+		WorkspaceCount: len(workspaceIDs),
+		Results:        []DCPlanSyncResult{},
+		Errors:         []DCPlanSyncWorkspaceError{},
+	}
+	for _, workspaceID := range workspaceIDs {
+		workspaceResult, syncErr := s.SyncWorkspace(ctx, workspaceID)
+		if syncErr != nil {
+			result.FailedCount++
+			result.Errors = append(result.Errors, DCPlanSyncWorkspaceError{
+				WorkspaceID: workspaceID,
+				Error:       syncErr.Error(),
+			})
+			logger.Printf("[DC_PLAN] Hilbert dc plan sync failed for workspace_id=%d: %v", workspaceID, syncErr)
+			continue
+		}
+		result.SyncedCount += workspaceResult.SyncedCount
+		result.PageCount += workspaceResult.PageCount
+		result.Results = append(result.Results, *workspaceResult)
+	}
+
+	logger.Printf(
+		"[DC_PLAN] Hilbert dc plan sync completed: workspaces=%d failed=%d synced_count=%d page_count=%d",
+		result.WorkspaceCount,
+		result.FailedCount,
+		result.SyncedCount,
+		result.PageCount,
+	)
+	return result, nil
+}
+
+func (s *DCPlanSyncService) listHilbertWorkspaceIDs(ctx context.Context) ([]int64, error) {
+	workspaceIDs := []int64{}
+	if err := s.db.SelectContext(ctx, &workspaceIDs, `
+		SELECT id
+		FROM workspaces
+		WHERE id > ? AND source = ? AND deleted_at IS NULL
+		ORDER BY id
+	`, defaultWorkspaceID, workspaceSourceHilbert); err != nil {
+		return nil, fmt.Errorf("%w: query hilbert workspaces: %v", ErrDCPlanSyncFailed, err)
+	}
+	return workspaceIDs, nil
 }
 
 func (s *DCPlanSyncService) requireHilbertWorkspace(ctx context.Context, workspaceID int64) error {
