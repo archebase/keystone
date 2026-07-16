@@ -59,7 +59,7 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 	if strings.Contains(sql, "t.status IN ('failed', 'cancelled')") || strings.Contains(sql, "t.status IN ('ready', 'in_progress')") {
 		t.Fatalf("production records SQL should not include task status fallback records: %s", sql)
 	}
-	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced", "dp.dc_project_id AS dc_project_id", "dp.dc_task_id AS dc_task_id"} {
+	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced", "robot_device_name", "dp.dc_project_id AS dc_project_id", "dp.dc_task_id AS dc_task_id"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("production records SQL should include %q: %s", want, sql)
 		}
@@ -81,6 +81,7 @@ func TestDataProductionDetailsSQLSelectsCurrentFields(t *testing.T) {
 	querySQL := dataProductionDetailsSQL("SELECT 1", "time", "DESC")
 	for _, want := range []string{
 		"COALESCE(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), event_time)",
+		"robot_device_name",
 		"collector_name",
 		"qa_status",
 		"cloud_synced",
@@ -172,7 +173,9 @@ func TestStatsBreakdownExpressionsSupportsEpisodeDimensions(t *testing.T) {
 		wantID    string
 		wantName  string
 	}{
-		{dimension: "robot_device", wantID: "robot_device_id", wantName: "robot_device_id"},
+		{dimension: "robot_device", wantID: "robot_device_name", wantName: "robot_device_name"},
+		{dimension: "dc_project", wantID: "COALESCE(CAST(dc_project_id AS CHAR), '')", wantName: "dc_project_name"},
+		{dimension: "dc_task", wantID: "COALESCE(CAST(dc_task_id AS CHAR), '')", wantName: "dc_task_name"},
 		{dimension: "collector", wantID: "collector_operator_id", wantName: "collector_operator_id"},
 		{dimension: "qa_status", wantID: "qa_status", wantName: "WHEN 'pending_qa' THEN '待质检'"},
 		{dimension: "cloud_synced", wantID: "CASE WHEN cloud_synced THEN 'true' ELSE 'false' END", wantName: "CASE WHEN cloud_synced THEN '已同步' ELSE '未同步' END"},

@@ -148,6 +148,7 @@ type dataProductionDetailItem struct {
 	SourceID            string `json:"source_id" db:"source_id"`
 	SourceName          string `json:"source_name" db:"source_name"`
 	RobotDeviceID       string `json:"robot_device_id" db:"robot_device_id"`
+	RobotDeviceName     string `json:"robot_device_name" db:"robot_device_name"`
 	CollectorOperatorID string `json:"collector_operator_id" db:"collector_operator_id"`
 	CollectorName       string `json:"collector_name" db:"collector_name"`
 	TaskID              string `json:"task_id" db:"task_id"`
@@ -684,6 +685,7 @@ func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) s
 			source_id,
 			source_name,
 				robot_device_id,
+				robot_device_name,
 				collector_operator_id,
 			collector_name,
 			task_id,
@@ -954,6 +956,13 @@ func productionRecordsSQL() string {
 			COALESCE(r.device_id, ws.robot_serial, CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR)), 'unknown') AS source_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
+			COALESCE(
+				NULLIF(JSON_UNQUOTE(JSON_EXTRACT(r.metadata, '$.hilbert_dc_device_name')), ''),
+				NULLIF(ws.robot_name, ''),
+				NULLIF(r.device_id, ''),
+				NULLIF(ws.robot_serial, ''),
+				''
+			) AS robot_device_name,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
 			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
 			dp.dc_project_id AS dc_project_id,
@@ -1117,7 +1126,11 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 	case "source":
 		return "source_id", "source_name", nil
 	case "robot_device":
-		return "robot_device_id", "robot_device_id", nil
+		return "robot_device_name", "robot_device_name", nil
+	case "dc_project":
+		return "COALESCE(CAST(dc_project_id AS CHAR), '')", "COALESCE(NULLIF(dc_project_name, ''), CAST(dc_project_id AS CHAR), '未分类')", nil
+	case "dc_task":
+		return "COALESCE(CAST(dc_task_id AS CHAR), '')", "COALESCE(NULLIF(dc_task_name, ''), CAST(dc_task_id AS CHAR), '未分类')", nil
 	case "collector":
 		return "collector_operator_id", "collector_operator_id", nil
 	case "qa_status":
@@ -1131,7 +1144,7 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 	case "cloud_synced":
 		return "CASE WHEN cloud_synced THEN 'true' ELSE 'false' END", "CASE WHEN cloud_synced THEN '已同步' ELSE '未同步' END", nil
 	default:
-		return "", "", fmt.Errorf("dimension must be one of source, robot_device, collector, qa_status, cloud_synced")
+		return "", "", fmt.Errorf("dimension must be one of source, robot_device, dc_project, dc_task, collector, qa_status, cloud_synced")
 	}
 }
 
