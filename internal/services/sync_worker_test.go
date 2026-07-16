@@ -322,9 +322,18 @@ func TestSyncEpisodeUploadRowBagTimes(t *testing.T) {
 }
 
 func TestHilbertBagNameIsStableAndUnique(t *testing.T) {
-	row := syncEpisodeUploadRow{ID: 4181}
+	row := syncEpisodeUploadRow{ID: 4181, EpisodeUUID: "episode-uuid"}
 	got := hilbertBagName(row, "device-uploads/3/capture_20260715T044250Z_b2d9911e/5b9e8785-d568-4b1e-82fe-26cbc1320e44/capture.mcap")
-	want := "episode_4181_capture_20260715T044250Z_b2d9911e_5b9e8785-d568-4b1e-82fe-26cbc1320e44.mcap"
+	want := "episode-uuid.mcap"
+	if got != want {
+		t.Fatalf("hilbertBagName() = %q, want %q", got, want)
+	}
+}
+
+func TestHilbertBagNameFallsBackToEpisodeID(t *testing.T) {
+	row := syncEpisodeUploadRow{ID: 4181}
+	got := hilbertBagName(row, "device-uploads/3/capture.mcap")
+	want := "episode_4181.mcap"
 	if got != want {
 		t.Fatalf("hilbertBagName() = %q, want %q", got, want)
 	}
