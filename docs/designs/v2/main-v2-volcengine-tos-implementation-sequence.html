@@ -1,0 +1,1513 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>main-v2 设备认证与火山云 TOS 实施顺序</title>
+  <style>
+    :root {
+      --ink: #1D1A2F;
+      --signal: #8BD450;
+      --alert: #F47A16;
+      --paper: #FFF8E7;
+      --black: #000000;
+      --page-pad: clamp(20px, 5vw, 72px);
+      --content: 1180px;
+      --reading: 760px;
+    }
+
+    * {
+      box-sizing: border-box;
+      letter-spacing: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--ink);
+    }
+
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--paper);
+      background: var(--ink);
+      font-family: "Songti SC", "STSong", SimSun, Georgia, serif;
+      line-height: 1.72;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+      content: "";
+      opacity: 0.055;
+      background-image:
+        repeating-linear-gradient(0deg, transparent 0, transparent 3px, var(--paper) 4px),
+        repeating-linear-gradient(90deg, transparent 0, transparent 7px, var(--black) 8px);
+      background-size: 100% 5px, 9px 100%;
+      mix-blend-mode: screen;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    code,
+    pre,
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .hero {
+      position: relative;
+      min-height: min(850px, 92vh);
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+      align-items: center;
+      gap: clamp(32px, 7vw, 110px);
+      padding: clamp(72px, 10vh, 124px) var(--page-pad) 84px;
+      border-bottom: 12px solid var(--black);
+      isolation: isolate;
+    }
+
+    .hero::after {
+      position: absolute;
+      right: -10vw;
+      bottom: 0;
+      z-index: -1;
+      width: 62vw;
+      height: 34%;
+      content: "";
+      background: var(--signal);
+      border: 8px solid var(--black);
+      transform: skewX(-24deg) translateY(24%);
+      transform-origin: bottom;
+      box-shadow: -18px -18px 0 var(--black);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      margin: 0 0 20px;
+      padding: 7px 12px 5px;
+      color: var(--black);
+      background: var(--signal);
+      border: 4px solid var(--black);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      font-weight: 900;
+      line-height: 1.2;
+      text-transform: uppercase;
+      box-shadow: 7px 7px 0 var(--black);
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      max-width: 820px;
+      margin-bottom: 26px;
+      color: var(--paper);
+      font-family: "Songti SC", "STSong", SimSun, Didot, Georgia, serif;
+      font-size: clamp(48px, 7.4vw, 118px);
+      font-weight: 900;
+      line-height: 0.98;
+      text-wrap: balance;
+      text-shadow: 8px 8px 0 var(--black);
+    }
+
+    .hero-lede {
+      max-width: 680px;
+      margin: 0;
+      padding-left: 18px;
+      border-left: 8px solid var(--alert);
+      color: var(--paper);
+      font-size: clamp(18px, 2vw, 25px);
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    .switchboard {
+      position: relative;
+      min-height: 420px;
+      border: 7px solid var(--black);
+      background: var(--paper);
+      box-shadow: 18px 18px 0 var(--black);
+      transform: rotate(2deg);
+    }
+
+    .switchboard::before,
+    .switchboard::after {
+      position: absolute;
+      left: 9%;
+      width: 82%;
+      height: 26px;
+      content: "";
+      border: 5px solid var(--black);
+      background: var(--signal);
+    }
+
+    .switchboard::before {
+      top: 27%;
+      transform: rotate(-13deg);
+      transform-origin: left center;
+    }
+
+    .switchboard::after {
+      bottom: 27%;
+      background: var(--alert);
+      transform: rotate(13deg);
+      transform-origin: right center;
+    }
+
+    .node {
+      position: absolute;
+      z-index: 2;
+      display: grid;
+      place-items: center;
+      width: 118px;
+      min-height: 82px;
+      padding: 10px;
+      color: var(--paper);
+      background: var(--ink);
+      border: 5px solid var(--black);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 14px;
+      font-weight: 900;
+      line-height: 1.2;
+      text-align: center;
+      box-shadow: 7px 7px 0 var(--black);
+    }
+
+    .node.keystone { left: 7%; top: 9%; }
+    .node.hilbert { right: 7%; top: 8%; background: var(--signal); color: var(--black); }
+    .node.sdk { right: 7%; top: 42%; }
+    .node.tos { left: 10%; bottom: 7%; background: var(--alert); color: var(--black); }
+
+    .switch-label {
+      position: absolute;
+      top: 16px;
+      right: 18px;
+      margin: 0;
+      color: var(--black);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 900;
+      line-height: 1.2;
+      writing-mode: vertical-rl;
+    }
+
+    .decision-band {
+      position: relative;
+      padding: 42px var(--page-pad);
+      overflow: hidden;
+      color: var(--black);
+      background: var(--signal);
+      border-bottom: 10px solid var(--black);
+    }
+
+    .decision-band::after {
+      position: absolute;
+      top: -40px;
+      right: 5%;
+      width: 180px;
+      height: 180px;
+      content: "";
+      border: 22px solid var(--black);
+      transform: rotate(45deg);
+      opacity: 0.16;
+    }
+
+    .decision-band p {
+      position: relative;
+      z-index: 1;
+      max-width: var(--content);
+      margin: 0 auto;
+      font-size: clamp(27px, 4vw, 56px);
+      font-weight: 900;
+      line-height: 1.15;
+      text-wrap: balance;
+    }
+
+    main {
+      position: relative;
+    }
+
+    .section {
+      padding: 96px var(--page-pad);
+      border-bottom: 5px solid var(--black);
+    }
+
+    .section:nth-child(even) {
+      background: var(--ink);
+    }
+
+    .section-inner {
+      max-width: var(--content);
+      margin: 0 auto;
+    }
+
+    .section-heading {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      align-items: end;
+      gap: 24px;
+      margin-bottom: 50px;
+    }
+
+    .section-number {
+      color: var(--signal);
+      font-family: Didot, "Bodoni 72", Georgia, serif;
+      font-size: clamp(62px, 9vw, 132px);
+      font-weight: 900;
+      line-height: 0.75;
+      text-shadow: 5px 5px 0 var(--black);
+    }
+
+    h2 {
+      margin-bottom: 0;
+      color: var(--paper);
+      font-size: clamp(34px, 5vw, 68px);
+      font-weight: 900;
+      line-height: 1.02;
+      text-wrap: balance;
+    }
+
+    h3 {
+      margin-bottom: 14px;
+      color: var(--signal);
+      font-size: clamp(23px, 2.4vw, 32px);
+      line-height: 1.2;
+    }
+
+    .reading {
+      max-width: var(--reading);
+      font-size: 18px;
+    }
+
+    .scope-grid,
+    .repo-grid,
+    .risk-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0;
+      border: 5px solid var(--black);
+      box-shadow: 12px 12px 0 var(--black);
+    }
+
+    .scope-pane,
+    .repo-pane,
+    .risk-pane {
+      padding: clamp(24px, 4vw, 44px);
+      background: var(--paper);
+      color: var(--black);
+    }
+
+    .scope-pane + .scope-pane,
+    .repo-pane + .repo-pane,
+    .risk-pane:nth-child(even) {
+      border-left: 5px solid var(--black);
+    }
+
+    .scope-pane h3,
+    .repo-pane h3,
+    .risk-pane h3 {
+      color: var(--ink);
+    }
+
+    ul,
+    ol {
+      padding-left: 1.25em;
+    }
+
+    li + li {
+      margin-top: 10px;
+    }
+
+    .scope-no {
+      background: var(--alert);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+      margin-top: 42px;
+    }
+
+    .flow-step {
+      position: relative;
+      min-height: 178px;
+      padding: 25px 18px;
+      color: var(--black);
+      background: var(--paper);
+      border: 4px solid var(--black);
+      box-shadow: 7px 7px 0 var(--black);
+    }
+
+    .flow-step::after {
+      position: absolute;
+      top: calc(50% - 13px);
+      right: -22px;
+      z-index: 3;
+      width: 26px;
+      height: 26px;
+      content: "";
+      background: var(--signal);
+      border: 4px solid var(--black);
+      transform: rotate(45deg);
+    }
+
+    .flow-step:last-child {
+      background: var(--signal);
+    }
+
+    .flow-step:last-child::after {
+      display: none;
+    }
+
+    .flow-step strong,
+    .phase strong {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 20px;
+      line-height: 1.15;
+    }
+
+    .flow-step span {
+      display: block;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .timeline {
+      position: relative;
+      margin-top: 24px;
+    }
+
+    .timeline::before {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 34px;
+      width: 10px;
+      content: "";
+      background: var(--signal);
+      border-left: 3px solid var(--black);
+      border-right: 3px solid var(--black);
+    }
+
+    .phase {
+      position: relative;
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 24px;
+      padding-bottom: 48px;
+    }
+
+    .phase:last-child {
+      padding-bottom: 0;
+    }
+
+    .phase-index {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      place-items: center;
+      width: 76px;
+      height: 76px;
+      color: var(--black);
+      background: var(--signal);
+      border: 5px solid var(--black);
+      font-family: Didot, Georgia, serif;
+      font-size: 34px;
+      font-weight: 900;
+      box-shadow: 6px 6px 0 var(--black);
+    }
+
+    .phase-body {
+      padding: 28px 30px 26px;
+      color: var(--black);
+      background: var(--paper);
+      border: 5px solid var(--black);
+      box-shadow: 9px 9px 0 var(--black);
+    }
+
+    .phase-body p:last-child,
+    .phase-body ul:last-child {
+      margin-bottom: 0;
+    }
+
+    .phase-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 22px;
+    }
+
+    .gate {
+      padding: 15px 17px;
+      background: var(--signal);
+      border: 3px solid var(--black);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .gate.exit {
+      background: var(--alert);
+    }
+
+    .gate b {
+      display: block;
+      margin-bottom: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      text-transform: uppercase;
+    }
+
+    .file-list {
+      margin: 18px 0 0;
+      padding: 0;
+      list-style: none;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 14px;
+    }
+
+    .file-list li {
+      padding: 9px 12px;
+      overflow-wrap: anywhere;
+      background: var(--ink);
+      color: var(--paper);
+      border-left: 7px solid var(--signal);
+    }
+
+    .file-list li + li {
+      margin-top: 6px;
+    }
+
+    .contract {
+      display: grid;
+      grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+      gap: 34px;
+      align-items: start;
+    }
+
+    pre {
+      margin: 0;
+      padding: 25px;
+      overflow-x: auto;
+      color: var(--paper);
+      background: var(--black);
+      border: 5px solid var(--signal);
+      font-size: 14px;
+      line-height: 1.65;
+      box-shadow: 10px 10px 0 var(--alert);
+    }
+
+    .warning {
+      margin-top: 34px;
+      padding: 24px 28px;
+      color: var(--black);
+      background: var(--alert);
+      border: 5px solid var(--black);
+      font-size: 18px;
+      font-weight: 800;
+      box-shadow: 10px 10px 0 var(--black);
+    }
+
+    .design-figure {
+      margin: 42px 0 0;
+      padding: 16px;
+      background: var(--paper);
+      border: 5px solid var(--black);
+      box-shadow: 10px 10px 0 var(--black);
+    }
+
+    .design-figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .design-figure figcaption {
+      margin-top: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      color: var(--black);
+      background: var(--paper);
+      border: 5px solid var(--black);
+      box-shadow: 10px 10px 0 var(--black);
+    }
+
+    th,
+    td {
+      padding: 16px 18px;
+      vertical-align: top;
+      border: 3px solid var(--black);
+      text-align: left;
+    }
+
+    th {
+      background: var(--signal);
+      font-size: 15px;
+      line-height: 1.3;
+    }
+
+    td {
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .status-required {
+      display: inline-block;
+      padding: 2px 7px;
+      color: var(--black);
+      background: var(--alert);
+      border: 2px solid var(--black);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .sequence-strip {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      margin-top: 40px;
+      border: 5px solid var(--black);
+      box-shadow: 11px 11px 0 var(--black);
+    }
+
+    .sequence-strip div {
+      min-height: 116px;
+      padding: 17px 13px;
+      color: var(--black);
+      background: var(--paper);
+      border-right: 3px solid var(--black);
+      font-size: 14px;
+      font-weight: 800;
+      line-height: 1.4;
+    }
+
+    .sequence-strip div:last-child {
+      border-right: 0;
+      background: var(--signal);
+    }
+
+    .sequence-strip b {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--alert);
+      font-family: Didot, Georgia, serif;
+      font-size: 29px;
+      line-height: 1;
+      text-shadow: 1px 1px 0 var(--black);
+    }
+
+    .end-state {
+      padding: 100px var(--page-pad) 120px;
+      color: var(--black);
+      background: var(--signal);
+      border-top: 12px solid var(--black);
+    }
+
+    .end-state-inner {
+      max-width: var(--content);
+      margin: 0 auto;
+    }
+
+    .end-state h2 {
+      max-width: 980px;
+      color: var(--black);
+      font-size: clamp(43px, 7vw, 92px);
+      text-shadow: 6px 6px 0 var(--paper);
+    }
+
+    .end-state p {
+      max-width: 780px;
+      margin: 28px 0 0;
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    @media (max-width: 980px) {
+      .hero {
+        min-height: auto;
+        grid-template-columns: 1fr;
+      }
+
+      .switchboard {
+        width: min(100%, 640px);
+        min-height: 350px;
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-step {
+        min-height: auto;
+      }
+
+      .flow-step::after {
+        top: auto;
+        right: calc(50% - 13px);
+        bottom: -22px;
+      }
+
+      .sequence-strip {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .sequence-strip div:nth-child(3) {
+        border-right: 0;
+      }
+
+      .sequence-strip div:nth-child(-n+3) {
+        border-bottom: 3px solid var(--black);
+      }
+    }
+
+    @media (max-width: 720px) {
+      .hero {
+        padding-top: 58px;
+      }
+
+      h1 {
+        font-size: clamp(42px, 14vw, 70px);
+        overflow-wrap: anywhere;
+      }
+
+      .hero-lede {
+        font-size: 18px;
+      }
+
+      .switchboard {
+        min-height: 310px;
+        box-shadow: 10px 10px 0 var(--black);
+      }
+
+      .node {
+        width: 98px;
+        min-height: 68px;
+        font-size: 12px;
+      }
+
+      .section {
+        padding-top: 72px;
+        padding-bottom: 72px;
+      }
+
+      .section-heading {
+        grid-template-columns: 74px minmax(0, 1fr);
+        gap: 14px;
+      }
+
+      .scope-grid,
+      .repo-grid,
+      .risk-grid,
+      .contract {
+        grid-template-columns: 1fr;
+      }
+
+      .scope-pane + .scope-pane,
+      .repo-pane + .repo-pane,
+      .risk-pane:nth-child(even) {
+        border-top: 5px solid var(--black);
+        border-left: 0;
+      }
+
+      .phase {
+        grid-template-columns: 58px minmax(0, 1fr);
+        gap: 13px;
+      }
+
+      .timeline::before {
+        left: 25px;
+      }
+
+      .phase-index {
+        width: 58px;
+        height: 58px;
+        font-size: 26px;
+      }
+
+      .phase-body {
+        padding: 22px 18px;
+      }
+
+      .phase-meta {
+        grid-template-columns: 1fr;
+      }
+
+      .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 12px;
+      }
+
+      table {
+        min-width: 720px;
+      }
+
+      .sequence-strip {
+        grid-template-columns: 1fr;
+      }
+
+      .sequence-strip div,
+      .sequence-strip div:nth-child(3) {
+        border-right: 0;
+        border-bottom: 3px solid var(--black);
+      }
+
+      .sequence-strip div:last-child {
+        border-bottom: 0;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+    }
+
+    @media print {
+      body::before {
+        display: none;
+      }
+
+      .hero {
+        min-height: auto;
+      }
+
+      .section,
+      .end-state {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">MAIN-V2 / STORAGE ROUTE REWIRE</p>
+      <h1>设备认证<br>与 TOS 上传<br>实施顺序</h1>
+      <p class="hero-lede">在全新生产部署中，直接切断阿里云依赖，并建立 SDK → Keystone → Hilbert 的设备认证链路，再将数据面接入火山云 TOS。</p>
+    </div>
+    <div class="switchboard" aria-label="Keystone 单仓库、Swift SDK 与火山云 TOS 的重新接线示意">
+      <p class="switch-label">CONTROL → DATA → OBJECT</p>
+      <div class="node keystone">KEYSTONE<br>STS CONTROL</div>
+      <div class="node hilbert">HILBERT<br>DEVICE AUTH</div>
+      <div class="node sdk">SDK/SWIFT<br>UPLOAD</div>
+      <div class="node tos">VOLCENGINE<br>TOS</div>
+    </div>
+  </header>
+
+  <section class="decision-band" aria-label="核心判断">
+    <p>先把 Swift SDK 归并到 Keystone，再打通 Hilbert 设备认证与 Keystone 短期会话；认证主体可信后，才签发 TOS STS 并开放对象上传。</p>
+  </section>
+
+  <main>
+    <section class="section" id="scope">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">01</span>
+          <h2>范围锁定</h2>
+        </div>
+        <div class="scope-grid">
+          <article class="scope-pane">
+            <h3>本次必须完成</h3>
+            <ul>
+              <li>Keystone <span class="mono">dgwcompat</span> 使用火山云 STS 签发临时凭证。</li>
+              <li>将原 <span class="mono">data-sdk</span> 完整历史导入 <span class="mono">keystone/sdk/swift</span>，Keystone 成为唯一源码仓库。</li>
+              <li>Keystone 根目录提供 <span class="mono">Package.swift</span>，宿主 App 可通过 Keystone Git URL 引用 SwiftPM package。</li>
+              <li><span class="mono">keystone/sdk/swift</span> 在 iOS 18 / Swift 6 环境直接上传 TOS。</li>
+              <li>Go 与 Swift 从同一份 canonical proto 生成客户端代码。</li>
+              <li>设备 SDK 只访问 Keystone；Keystone 使用 Hilbert <span class="mono">dc-device</span> API 完成初始化、凭证验证和重置。</li>
+              <li>复用现有设备 auth token 验证首次初始化；token 由管理员签发并绑定设备，不能再只凭 device ID 公开获取。</li>
+              <li>Keystone 签发并统一校验短期设备 JWT，上传身份只能来自 JWT principal。</li>
+              <li>支持单对象上传、分片上传、凭证刷新、ListParts、HEAD 与 Abort。</li>
+              <li>协议明确返回并校验 <span class="mono">volcengine_tos</span> 和 region。</li>
+              <li>在 main-v2 全新生产环境使用新 bucket、新 IAM 策略和新部署配置。</li>
+            </ul>
+          </article>
+          <article class="scope-pane scope-no">
+            <h3>明确不做</h3>
+            <ul>
+              <li>不迁移阿里云历史对象或数据库记录。</li>
+              <li>不恢复旧 OSS multipart upload ID。</li>
+              <li>不支持 App 关闭、崩溃或被系统终止后的跨进程续传。</li>
+              <li>不长期保留阿里云与火山云双 Adapter。</li>
+              <li>不兼容旧环境变量或旧版设备 SDK。</li>
+              <li>不在 Keystone 与原 <span class="mono">data-sdk</span> 中长期维护两份 SDK 源码。</li>
+              <li>不把 Swift package 只放在无法被远程 SwiftPM 直接解析的嵌套目录。</li>
+              <li>本阶段不修改 Hilbert 源码，不新增 <span class="mono">ensure-api-key</span> 或原子 <span class="mono">rotate-api-key</span>。</li>
+              <li>不引入设备证书、mTLS 或自建 PKI。</li>
+              <li>默认不修改 Keystone 的 MinIO → 云同步客户端，除非 main-v2 同时启用 <span class="mono">KEYSTONE_SYNC_ENABLED</span>。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="architecture">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">02</span>
+          <h2>目标链路</h2>
+        </div>
+        <div class="reading">
+          <p>设备长期身份由 Hilbert 管理，Keystone 负责注册编排、短期设备会话和 TOS 授权。Swift SDK 与 Go 后端进入同一个仓库；设备不直接访问 Hilbert，也不持有 Hilbert AK/SK 或火山云长期凭证。</p>
+        </div>
+        <div class="flow" aria-label="目标上传流程">
+          <div class="flow-step">
+            <strong>设备初始化</strong>
+            <span>SDK 使用 device ID 与管理员签发的 device auth token 向 Keystone 初始化；Keystone 从 Hilbert 获取或生成设备 API Key。</span>
+          </div>
+          <div class="flow-step">
+            <strong>设备认证</strong>
+            <span>SDK 提交 device ID 与 API Key；Keystone 调用 Hilbert validate，通过后签发带 auth epoch 的短期 JWT。</span>
+          </div>
+          <div class="flow-step">
+            <strong>创建上传会话</strong>
+            <span>Gateway interceptor 校验 JWT principal，Keystone 生成 logical upload、object key 并向火山云 STS AssumeRole。</span>
+          </div>
+          <div class="flow-step">
+            <strong>下发契约</strong>
+            <span>返回 bucket、endpoint、region、临时 AK/SK/token、part size 和 backend。</span>
+          </div>
+          <div class="flow-step">
+            <strong>TOS 数据面</strong>
+            <span><span class="mono">sdk/swift</span> 直接执行 PutObject 或 multipart，并在内存中跟踪分片状态。</span>
+          </div>
+        </div>
+        <div class="warning">密钥边界：设备 API Key 允许进入 Swift SDK，但必须保存在 Keychain；Hilbert AK/SK 与火山云长期 AK/SK 永远不得下发。TOS STS 必须限制到目标 bucket 的指定 object-key prefix。</div>
+      </div>
+    </section>
+
+    <section class="section" id="device-auth">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">03</span>
+          <h2>设备认证契约</h2>
+        </div>
+        <div class="contract">
+          <div>
+            <h3>四层凭证</h3>
+            <p class="reading">device auth token 同时用于 Recorder WebSocket 和首次 SDK 初始化证明；Hilbert API Key 是 SDK 长期凭证；Keystone JWT 是短期业务会话；TOS STS 只授权本次对象上传。初始化权限在 auth token 上单独记录并一次性消费。</p>
+          </div>
+          <pre><code>InitDevice(device_id, device_auth_token)
+  → device_api_key + authoritative tags
+
+ExchangeCredential(device_id, device_api_key)
+  → JWT(device_id, workspace_id, auth_epoch)
+
+CreateLogicalUpload(Bearer JWT)
+  → TOS STS(bucket, region, object_key, expiry)</code></pre>
+        </div>
+        <figure class="design-figure">
+          <img src="device-sdk-keystone-hilbert-auth-sequence.drawio.png" alt="设备 SDK、Keystone、Hilbert 与火山云 TOS 的认证和上传时序图">
+          <figcaption>主链路：SDK 只访问 Keystone；Keystone 使用现有 Hilbert query、get/generate、nonce 与 validate API 完成认证编排。</figcaption>
+        </figure>
+        <div class="table-wrap" style="margin-top: 46px;">
+          <table>
+            <thead>
+              <tr>
+                <th>操作</th>
+                <th>Keystone 编排</th>
+                <th>失败与重试规则</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>InitDevice</td>
+                <td>校验 device auth token 哈希、设备状态和 sdk_initialized_at；调用 query；先 Get，不存在则 Generate</td>
+                <td>Generate 报已存在时回到 Get；成功后消费该 token 的 SDK 初始化权限，但 token 继续用于 Recorder WebSocket</td>
+              </tr>
+              <tr>
+                <td>ExchangeCredential</td>
+                <td>nonce/generate；AES-GCM 加密设备 API Key；调用 dc-device/validate；签发短期 JWT</td>
+                <td>Hilbert 不可用时不签发 JWT；不得使用本地静态 Key 或随机假 token 降级</td>
+              </tr>
+              <tr>
+                <td>ReinitDevice</td>
+                <td>正常场景校验当前 JWT；凭证丢失时要求管理员轮换 device auth token 并开启一次 recovery；随后递增 auth_epoch，顺序 Delete、Generate</td>
+                <td>Delete 不存在按成功；Generate 已存在则 Get；同一 recovery 可继续未完成操作；completed 重放只 Get，禁止再次 Delete</td>
+              </tr>
+              <tr>
+                <td>Gateway 请求</td>
+                <td>gRPC interceptor 校验 JWT 签名、过期时间和 auth_epoch</td>
+                <td>device ID、workspace 和对象前缀来自 principal；client hints 只允许校验，不作为身份来源</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="warning">注册安全门：当前只提交 device ID 的公开 <span class="mono">/devices/register</span> 不能继续签发 auth token。token 必须由管理员接口生成并通过可信配置渠道下发；否则攻击者可以自行取得“设备身份证明”。</div>
+      </div>
+    </section>
+
+    <section class="section" id="contract">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">04</span>
+          <h2>上传契约</h2>
+        </div>
+        <div class="contract">
+          <div>
+            <h3>现有协议可直接承载</h3>
+            <p class="reading">现有 protobuf 已包含 backend 和 region 字段，无需新增 RPC。合仓后应建立一份 canonical proto，同时为 Go 和 Swift 生成代码，并将两个字段提升为运行时必填契约。</p>
+          </div>
+          <pre><code>UploadCredentials {
+  bucket: "main-v2-uploads"
+  endpoint: "https://tos-...volces.com"
+  object_key: "device-prefix/.../capture.mcap"
+  sts_access_key_id: "..."
+  sts_access_key_secret: "..."
+  sts_security_token: "..."
+  sts_expire_at_unix: 178...
+  part_size_bytes: 8388608
+  object_store_backend: "volcengine_tos"
+  object_store_region: "cn-beijing"
+}</code></pre>
+        </div>
+        <div class="table-wrap" style="margin-top: 46px;">
+          <table>
+            <thead>
+              <tr>
+                <th>契约项</th>
+                <th>Keystone 责任</th>
+                <th>sdk/swift 责任</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="mono">object_store_backend</span></td>
+                <td>固定返回 <span class="mono">volcengine_tos</span></td>
+                <td>缺失或不匹配时立即拒绝创建上传会话</td>
+              </tr>
+              <tr>
+                <td><span class="mono">object_store_region</span></td>
+                <td>从部署配置返回，不从 endpoint 猜测</td>
+                <td>用于客户端配置和签名；刷新后必须保持不变</td>
+              </tr>
+              <tr>
+                <td>临时凭证</td>
+                <td>AssumeRole，控制 TTL 与最小权限</td>
+                <td>仅内存使用；到期前刷新；不写日志</td>
+              </tr>
+              <tr>
+                <td>ETag</td>
+                <td>作为存储端返回值记录，不推导阿里云算法</td>
+                <td>使用 PutObject/CompleteMultipartUpload 返回值并通过 HEAD 对账</td>
+              </tr>
+              <tr>
+                <td>part size</td>
+                <td>下发符合 TOS 限制的固定值</td>
+                <td>同一上传会话内固定；凭证刷新时不允许变化</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="sequence">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">05</span>
+          <h2>实施顺序</h2>
+        </div>
+        <div class="timeline">
+          <article class="phase">
+            <div class="phase-index">0</div>
+            <div class="phase-body">
+              <strong>仓库归并门：Keystone 成为唯一 SDK 源码</strong>
+              <p>先把原 data-sdk 作为完整 Git 历史导入 Keystone，而不是手工复制当前文件。导入完成后，旧仓库停止开发，所有后续 TOS 改动只在 Keystone 中进行。</p>
+              <ul>
+                <li>使用非 squash 的 Git subtree 或等价方式导入到 <span class="mono">keystone/sdk/swift</span>。</li>
+                <li>将 <span class="mono">Package.swift</span> 放到 Keystone 根目录，并用 target path 指向 <span class="mono">sdk/swift/Sources</span>。</li>
+                <li>建立 canonical proto 目录，Go 与 Swift 生成脚本共用同一份协议源文件。</li>
+                <li>调整 Swift 脚本、README、Package.resolved 和示例中的仓库路径。</li>
+                <li>为 Swift 源码补齐 SPDX；生成代码、Xcode 工程和 assets 使用 REUSE 声明覆盖。</li>
+                <li>Keystone CI 增加 macOS Swift build/test 与 proto freshness job。</li>
+              </ul>
+              <ul class="file-list">
+                <li>keystone/Package.swift</li>
+                <li>keystone/Package.resolved</li>
+                <li>keystone/sdk/swift/Sources</li>
+                <li>keystone/sdk/swift/Tests</li>
+                <li>keystone/sdk/swift/Scripts</li>
+                <li>keystone/proto/archebase/data_gateway/v1</li>
+                <li>keystone/.github/workflows/ci.yml</li>
+                <li>keystone/.reuse/dep5</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>原 data-sdk main 分支干净，Keystone 目标分支与导入策略确认。</div>
+                <div class="gate exit"><b>出口</b>App 可通过 Keystone Git revision 解析 Swift package，原阿里云版本测试在新目录下通过。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">1</div>
+            <div class="phase-body">
+              <strong>认证契约门：升级 device auth token 与 JWT principal</strong>
+              <p>先定义设备身份和凭证生命周期，再修改上传接口。Hilbert <span class="mono">dc_device.id</span> 的十进制字符串是唯一 device ID；workspace 必须由 Keystone 投影确定，不能由设备声明。</p>
+              <ul>
+                <li>将现有 <span class="mono">ws_client_auth_token</span> 提升为通用 device auth token；仍保存哈希并支持管理员轮换。</li>
+                <li>关闭只凭 device ID 调用公开注册接口签发 token 的能力；签发与恢复授权进入管理员边界。</li>
+                <li>为 token 状态增加 <span class="mono">sdk_initialized_at</span>、recovery 状态和操作阶段；WebSocket 使用权与 SDK 初始化权分别校验。</li>
+                <li>为 InitDevice 增加 <span class="mono">device_auth_token</span>，为 ExchangeCredential 增加 <span class="mono">device_id</span>。</li>
+                <li>定义 JWT 的 device ID、workspace ID、auth epoch、iat、exp、jti 和 token type。</li>
+                <li>JWT 默认有效期不超过 15 分钟；Reinit 开始时递增 auth epoch，使旧 JWT 立即失效。</li>
+                <li>明确 API Key 只进入 Keychain；Hilbert SK、nonce random key、JWT、STS 均禁止写日志。</li>
+              </ul>
+              <ul class="file-list">
+                <li>keystone/proto/archebase/data_gateway/v1/device_init.proto</li>
+                <li>keystone/proto/archebase/data_gateway/v1/auth.proto</li>
+                <li>keystone/internal/api/handlers/device_registration.go</li>
+                <li>keystone/internal/api/handlers/ws_client_auth.go</li>
+                <li>keystone/internal/services/dgwcompat/*device_auth*.go</li>
+                <li>keystone/internal/database/migrations/*device_auth*.sql</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>SDK 已归并，Hilbert device ID 与 Keystone robot 投影关系已确认。</div>
+                <div class="gate exit"><b>出口</b>管理员签发、一次性 SDK 初始化权、恢复状态、JWT claim 与数据库约束通过评审。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">2</div>
+            <div class="phase-body">
+              <strong>Keystone：接通 Hilbert 设备认证</strong>
+              <p>删除现有静态 API Key 和随机假 token 实现，使用 Hilbert 现有 query、get/generate、delete、nonce 与 validate API 建立真实身份链路。</p>
+              <ul>
+                <li>为 Keystone 配置专用 Hilbert AK/SK，并限制到所管理的 workspace。</li>
+                <li>InitDevice 先校验 device ID、auth token 哈希、active 状态和未消费的 SDK 初始化权，再执行 Query → Get/Generate。</li>
+                <li>ExchangeCredential 使用 nonce 加密后调用 <span class="mono">dc-device/validate</span>，成功才签发 JWT。</li>
+                <li>ReinitDevice 正常要求有效 JWT；凭证丢失时由管理员轮换 device auth token 并开启一次 recovery，再执行可续跑的 Delete → Generate。</li>
+                <li>增加 gRPC auth interceptor，统一校验 JWT、auth epoch 和方法访问策略。</li>
+                <li>上传服务从 principal 读取 device/workspace，不再信任请求中的身份 hints。</li>
+              </ul>
+              <ul class="file-list">
+                <li>keystone/internal/auth/hilbert_client.go</li>
+                <li>keystone/internal/services/dgwcompat/services.go</li>
+                <li>keystone/internal/services/dgwcompat/*auth*.go</li>
+                <li>keystone/internal/server/*interceptor*.go</li>
+                <li>keystone/internal/services/dgwcompat/*_test.go</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>Phase 1 的认证协议和数据库状态机已冻结。</div>
+                <div class="gate exit"><b>出口</b>错误 API Key 被拒绝；旧 auth epoch JWT 在 Reinit 后立即失效；失败重试不会锁死设备。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">3</div>
+            <div class="phase-body">
+              <strong>sdk/swift：设备初始化、Keychain 与 JWT 刷新</strong>
+              <p>SDK 只面向 Keystone 暴露稳定接口。初始化获得的设备 API Key 写入 Keychain；业务请求只携带短期 JWT，JWT 过期时重新执行凭证交换。</p>
+              <ul>
+                <li>设备安装配置包含管理员签发的 device auth token；SDK 通过安全配置访问，不复制到普通 JSON 日志或诊断输出。</li>
+                <li>API Key 从明文 <span class="mono">archebase-config.json</span> 迁入 Keychain。</li>
+                <li>取消“Init 已存在就自动 Reinit”的行为，避免意外删除并生成设备 Key。</li>
+                <li>Reinit 必须显式触发：正常使用 JWT；API Key 丢失时使用管理员刚轮换且已开启 recovery 的 device auth token。</li>
+                <li>实现 JWT 内存缓存、提前刷新、401 单次重换和并发刷新合并。</li>
+              </ul>
+              <ul class="file-list">
+                <li>keystone/sdk/swift/Sources/DataGatewayClient/DeviceInitConfigFetcher.swift</li>
+                <li>keystone/sdk/swift/Sources/DataGatewayClient/QiongcheDeviceProvisioner.swift</li>
+                <li>keystone/sdk/swift/Sources/DGWAuth/CredentialAuthProvider.swift</li>
+                <li>keystone/sdk/swift/Sources/DGWControlPlane/ControlPlaneTransport.swift</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>Keystone 真实 Init、Reinit 与 ExchangeCredential 可用。</div>
+                <div class="gate exit"><b>出口</b>设备可初始化、重置和刷新 JWT，磁盘配置与日志中不存在明文 API Key。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">4</div>
+            <div class="phase-body">
+              <strong>技术可行性门：TOS Swift 数据面 PoC</strong>
+              <p>先确认火山云官方客户端是否支持 iOS 18、Swift 6、SPM、临时凭证和流式分片。若官方客户端不满足要求，再决定使用 TOS S3 兼容方式或基于 URLSession 实现窄数据面客户端。</p>
+              <ul>
+                <li>真实测试桶完成 PutObject。</li>
+                <li>至少三段 multipart：initiate、upload parts、complete。</li>
+                <li>验证 ListParts、HEAD、Abort 和 STS token。</li>
+                <li>记录 TOS 错误码、签名要求、ETag 与最小 part size 行为。</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>火山云测试账号、bucket、region、受限角色可用。</div>
+                <div class="gate exit"><b>出口</b>客户端技术路线确定，所有基础对象操作在真桶跑通。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">5</div>
+            <div class="phase-body">
+              <strong>契约冻结：backend、region 与权限模型</strong>
+              <p>冻结 Keystone Go 控制面与同仓 Swift SDK 共同依赖的字段语义，确保两种语言生成代码和运行时校验一致。</p>
+              <ul>
+                <li>确定 backend 常量：<span class="mono">volcengine_tos</span>。</li>
+                <li>确定 endpoint 格式、region 值和 virtual-host/path-style 策略。</li>
+                <li>确定 STS TTL、提前刷新窗口和 object-key prefix。</li>
+                <li>确定 TOS 完成回调采用服务端 ETag，不保留 OSS 本地 ETag 算法。</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>Phase 4 已确认 TOS 行为。</div>
+                <div class="gate exit"><b>出口</b>契约样例、IAM 策略和错误分类表可供两端实现。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">6</div>
+            <div class="phase-body">
+              <strong>Keystone：替换凭证控制面</strong>
+              <p>在已完成 JWT 认证的 <span class="mono">dgwcompat</span> 上传后端中替换云凭证 Provider，不触碰无关 REST 和 MinIO 本地存储逻辑。</p>
+              <ul>
+                <li>将阿里云配置替换为 TOS/Volcengine 配置。</li>
+                <li>用火山云 STS Provider 替换 <span class="mono">aliyunSTSProvider</span>。</li>
+                <li>上传会话保存 backend、region、bucket、endpoint 和 object key。</li>
+                <li>Create/Reissue 均填充并保持相同的 backend、region 与对象定位信息。</li>
+                <li>错误响应脱敏，不记录 AK、SK、token 或完整策略。</li>
+              </ul>
+              <ul class="file-list">
+                <li>keystone/internal/services/dgwcompat/config.go</li>
+                <li>keystone/internal/services/dgwcompat/sts_client.go</li>
+                <li>keystone/internal/services/dgwcompat/services.go</li>
+                <li>keystone/internal/services/dgwcompat/*_test.go</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>契约与 IAM 策略已冻结。</div>
+                <div class="gate exit"><b>出口</b>单元测试通过，gRPC 返回可用于真实 TOS 上传的临时凭证。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">7</div>
+            <div class="phase-body">
+              <strong>sdk/swift：替换设备数据面</strong>
+              <p>保留 UploadCoordinator 的深模块 interface，替换其背后的阿里云实现。上层 SDK 的 <span class="mono">upload()</span> 调用方式不变。</p>
+              <ul>
+                <li>删除 <span class="mono">AlibabaCloudOSS</span> Swift Package 依赖。</li>
+                <li>将 <span class="mono">DGWOss</span> 收敛为 <span class="mono">DGWObjectStore</span> 或 <span class="mono">DGWTos</span>。</li>
+                <li>实现 TOS 的 PutObject、multipart、Abort、ListParts 和 HEAD。</li>
+                <li>使用协议下发的 region；禁止继续从 OSS endpoint 推导 region。</li>
+                <li>刷新凭证时校验 backend、region、bucket、endpoint、object key 和 part size 均不变。</li>
+                <li>删除 TOS 适配对跨进程上传状态的依赖；multipart ID 和 part ETag 只在当前上传任务内保存。</li>
+                <li>App 退出导致上传中断时，不恢复原 multipart；下一次上传创建新的 logical upload 和 multipart。</li>
+              </ul>
+              <ul class="file-list">
+                <li>keystone/Package.swift</li>
+                <li>keystone/sdk/swift/Sources/DGWOss/OssMultipartClient.swift</li>
+                <li>keystone/sdk/swift/Sources/DataGatewayClient/FilePreparation.swift</li>
+                <li>keystone/sdk/swift/Tests/DGWOssTests/*</li>
+                <li>keystone/sdk/swift/Tests/DataGatewayClientIntegrationTests/UploadCoordinatorTests.swift</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>Keystone 可签发真实 TOS 会话，PoC 客户端路线已确认。</div>
+                <div class="gate exit"><b>出口</b>Swift 单元与协调层集成测试通过，不再链接阿里云 OSS SDK。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">8</div>
+            <div class="phase-body">
+              <strong>端到端联调：真实设备行为</strong>
+              <p>在预生产 TOS bucket 上验证控制面、数据面和当前进程内的失败处理，而不是只依赖 mock。</p>
+              <ul>
+                <li>首次 Init、重复 Init、错误 device auth token、已撤销 token 和已消费 SDK 初始化权。</li>
+                <li>错误 API Key 无法换取 JWT；Reinit 后旧 JWT 立即失效。</li>
+                <li>在 Delete 成功后注入 Generate 失败，使用同一 recovery 操作重试并取得新 Key。</li>
+                <li>小文件走 PutObject，大文件走 multipart。</li>
+                <li>当前进程内出现响应不确定或分片重试时，使用 ListParts 对账已成功分片。</li>
+                <li>App 被终止后不恢复旧 multipart；再次上传必须创建新会话。</li>
+                <li>STS 临近过期时刷新客户端并继续同一个 multipart。</li>
+                <li>上传完成但业务 CompleteUpload 失败时，HEAD 验证后只重试业务完成。</li>
+                <li>错误凭证、越权 prefix、错误 region 和网络超时均返回可诊断错误。</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>Keystone Go 与同仓 Swift SDK 测试均通过。</div>
+                <div class="gate exit"><b>出口</b>验收矩阵全部通过，日志与监控不泄露凭证。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-index">9</div>
+            <div class="phase-body">
+              <strong>main-v2 全新生产部署</strong>
+              <p>创建生产 TOS 资源，部署 Keystone，再发布依赖 Keystone Swift package 的设备应用。不存在旧上传会话时，不需要迁移脚本或兼容开关。</p>
+              <ul>
+                <li>配置 Keystone 专用 Hilbert AK/SK、workspace 权限、调用超时和告警。</li>
+                <li>将 device auth token 签发收口到管理员接口，部署初始化/恢复状态迁移和 JWT 签名密钥。</li>
+                <li>创建生产 bucket、受限 IAM 角色、STS 调用身份和未完成 multipart 生命周期清理规则。</li>
+                <li>注入 TOS 环境变量并启动 Keystone。</li>
+                <li>用诊断设备执行 Init、ExchangeCredential、Reinit、重新认证和一小一大两次上传。</li>
+                <li>确认对象 key、size、ETag、业务完成记录与设备 UI 状态一致。</li>
+                <li>达到验收门槛后开放生产设备。</li>
+                <li>确认 App 已不再引用旧仓库后，将原 data-sdk 设置为只读归档并指向 Keystone。</li>
+              </ul>
+              <div class="phase-meta">
+                <div class="gate"><b>入口</b>预生产验收完成，生产 IAM 与 bucket 已审查。</div>
+                <div class="gate exit"><b>出口</b>main-v2 只依赖火山云 TOS，生产 smoke test 通过。</div>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="repositories">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">06</span>
+          <h2>单仓模块责任</h2>
+        </div>
+        <div class="repo-grid">
+          <article class="repo-pane">
+            <h3>Keystone / 控制面</h3>
+            <ul>
+              <li>持有 Hilbert 专用 AK/SK 并调用 <span class="mono">dc-device</span> API。</li>
+              <li>管理员签发并轮换 device auth token，分别管理 WebSocket 使用权、SDK 初始化权和恢复授权。</li>
+              <li>验证设备 API Key，签发 JWT，并通过 auth epoch 撤销旧会话。</li>
+              <li>持有长期火山云凭证。</li>
+              <li>AssumeRole 并签发短期会话。</li>
+              <li>生成 object key 和上传会话标识。</li>
+              <li>保证凭证刷新前后对象定位不变。</li>
+              <li>记录业务上传完成状态。</li>
+            </ul>
+          </article>
+          <article class="repo-pane">
+            <h3>Keystone sdk/swift / 数据面</h3>
+            <ul>
+              <li>使用 device auth token 初始化，设备 API Key 只保存到 Keychain。</li>
+              <li>使用 API Key 换取并刷新短期 Keystone JWT。</li>
+              <li>直接向 TOS 传输文件字节。</li>
+              <li>在当前上传任务内跟踪 multipart ID、part ETag 和进度。</li>
+              <li>在凭证过期前调用 Keystone 刷新。</li>
+              <li>在当前进程内通过 TOS ListParts 处理响应不确定和重试对账。</li>
+              <li>将 TOS 最终 ETag 回传业务完成接口。</li>
+            </ul>
+          </article>
+        </div>
+        <div class="warning">单一来源规则：协议只保留一份 canonical proto；根 <span class="mono">Package.swift</span> 负责远程 SwiftPM 解析。Hilbert 保持设备身份权威，Keystone 不复制 API Key 数据库；默认也不修改未启用的 MinIO → 云同步客户端。</div>
+      </div>
+    </section>
+
+    <section class="section" id="validation">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">07</span>
+          <h2>验收矩阵</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>场景</th>
+                <th>预期行为</th>
+                <th>证据</th>
+                <th>级别</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Keystone Git SwiftPM 解析</td>
+                <td>宿主 App 可固定 Keystone revision 并解析全部公开 SDK products</td>
+                <td>独立宿主 App resolve/build</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>Canonical proto freshness</td>
+                <td>同一份 proto 可重复生成 Go 与 Swift，工作树无差异</td>
+                <td>CI generation diff check</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>单仓许可证检查</td>
+                <td>导入的 Swift、生成文件和 Xcode assets 全部通过 REUSE</td>
+                <td><span class="mono">reuse lint</span></td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>首次设备初始化</td>
+                <td>管理员签发的 auth token 绑定正确 device；workspace 来自投影；API Key 写入 Keychain；SDK 初始化权成功后失效</td>
+                <td>Keystone 集成测试 + SDK Keychain 测试</td>
+                <td><span class="status-required">SECURITY</span></td>
+              </tr>
+              <tr>
+                <td>伪造设备凭证</td>
+                <td>错误 device ID、API Key、workspace hint 或过期 token 均不能换取 JWT</td>
+                <td>Hilbert validate 负向测试 + interceptor 测试</td>
+                <td><span class="status-required">SECURITY</span></td>
+              </tr>
+              <tr>
+                <td>Reinit 中途失败</td>
+                <td>Delete 成功、Generate 失败后，同一持久化 recovery 操作可继续并最终取得唯一新 Key</td>
+                <td>故障注入 + 持久化状态检查</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>Reinit 会话撤销</td>
+                <td>auth epoch 递增后，旧 JWT 立即被 Gateway 拒绝</td>
+                <td>轮换前后 JWT 对比测试</td>
+                <td><span class="status-required">SECURITY</span></td>
+              </tr>
+              <tr>
+                <td>凭证日志与磁盘</td>
+                <td>日志、JSON 配置和数据库不出现明文 API Key、JWT、nonce key、长期 AK/SK</td>
+                <td>日志扫描 + 文件检查</td>
+                <td><span class="status-required">SECURITY</span></td>
+              </tr>
+              <tr>
+                <td>小于 part size</td>
+                <td>使用 PutObject；返回 TOS ETag；业务完成一次</td>
+                <td>SDK 测试 + 真桶对象元数据</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>大文件 multipart</td>
+                <td>分片顺序正确；完成后 size 与源文件一致</td>
+                <td>ListParts、Complete 响应、HEAD</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>App 中途终止</td>
+                <td>不恢复旧 multipart；再次上传创建新会话，旧分片由 Abort 或生命周期规则清理</td>
+                <td>新旧 upload ID 对比 + TOS 未完成分片清理记录</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>STS 过期刷新</td>
+                <td>Reissue 后继续同一 bucket、key、multipart</td>
+                <td>短 TTL 集成测试</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>网络超时</td>
+                <td>按策略重试；无重复业务完成；可取消</td>
+                <td>故障注入测试与事件日志</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>越权 object key</td>
+                <td>TOS 拒绝；设备看不到长期凭证或策略细节</td>
+                <td>IAM 负向测试</td>
+                <td><span class="status-required">SECURITY</span></td>
+              </tr>
+              <tr>
+                <td>错误 backend/region</td>
+                <td>SDK 在上传前失败，不发送错误签名请求</td>
+                <td>契约单元测试</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+              <tr>
+                <td>业务完成暂时失败</td>
+                <td>对象不重复上传；HEAD 对账后重试 CompleteUpload</td>
+                <td>协调层集成测试</td>
+                <td><span class="status-required">BLOCKER</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="risks">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">08</span>
+          <h2>风险与控制</h2>
+        </div>
+        <div class="risk-grid">
+          <article class="risk-pane">
+            <h3>Swift 客户端适配</h3>
+            <p>火山云官方客户端可能不满足 Swift 6 Sendable、SPM 或流式 InputStream 要求。</p>
+            <p><strong>控制：</strong>Phase 4 作为阻断门；在写正式实现前确定客户端路线。</p>
+          </article>
+          <article class="risk-pane">
+            <h3>签名与 region</h3>
+            <p>TOS 的签名、host 形式和 token header 不能沿用 OSS 假设。</p>
+            <p><strong>控制：</strong>region 必须由 Keystone 下发；使用官方客户端或经真桶验证的签名实现。</p>
+          </article>
+          <article class="risk-pane" style="border-top: 5px solid var(--black);">
+            <h3>遗留 multipart</h3>
+            <p>App 被系统终止后无法可靠发送 Abort，已上传分片可能暂时占用存储空间。</p>
+            <p><strong>控制：</strong>显式取消时立即 Abort；生产 bucket 配置未完成 multipart 生命周期清理规则。</p>
+          </article>
+          <article class="risk-pane" style="border-top: 5px solid var(--black);">
+            <h3>权限过宽</h3>
+            <p>设备持有的临时凭证若能列桶或访问其他设备 prefix，会造成跨设备数据暴露。</p>
+            <p><strong>控制：</strong>角色策略限制 bucket、prefix 和必要 multipart 动作；负向权限测试为发布阻断项。</p>
+          </article>
+          <article class="risk-pane" style="border-top: 5px solid var(--black);">
+            <h3>Reinit 非原子窗口</h3>
+            <p>Hilbert Delete 成功而 Generate 暂时失败时，设备在拿到新 Key 前无法进行新认证。</p>
+            <p><strong>控制：</strong>设备级数据库锁、持久化 rotating 状态、同 token 续跑、Generate 已存在时回到 Get。</p>
+          </article>
+          <article class="risk-pane" style="border-top: 5px solid var(--black);">
+            <h3>Hilbert 可用性依赖</h3>
+            <p>Hilbert 不可用时，Init、Reinit 和新的 JWT 交换都会失败。</p>
+            <p><strong>控制：</strong>JWT 保持短期缓存；调用设置超时和有限重试；禁止使用静态 Key 或跳过 validate 降级。</p>
+          </article>
+        </div>
+        <div class="warning">单仓发布风险：SwiftPM 远程依赖默认从仓库根目录读取 manifest，因此 <span class="mono">Package.swift</span> 不能只留在 <span class="mono">sdk/swift</span>。宿主 App 应固定 Keystone revision 或使用统一 release tag，避免后端与 SDK 版本来源分裂。</div>
+      </div>
+    </section>
+
+    <section class="section" id="deployment">
+      <div class="section-inner">
+        <div class="section-heading">
+          <span class="section-number">09</span>
+          <h2>部署与回滚</h2>
+        </div>
+        <div class="reading">
+          <h3>部署顺序</h3>
+          <p>先完成 SDK 归并与单仓 CI，再收紧 device auth token 签发并部署 Hilbert 设备认证链路；认证验收通过后准备 TOS 基础设施，并发布依赖 Keystone Git revision 的设备应用。</p>
+        </div>
+        <div class="sequence-strip" aria-label="生产部署顺序">
+          <div><b>1</b>归并 SDK 历史并通过单仓 CI</div>
+          <div><b>2</b>收紧 device auth token 签发并部署 Hilbert/JWT</div>
+          <div><b>3</b>创建 TOS bucket、IAM 与生命周期规则</div>
+          <div><b>4</b>App 固定 Keystone Swift package revision</div>
+          <div><b>5</b>Init/Reinit + 小文件/大文件 smoke test</div>
+          <div><b>6</b>开放设备并归档旧 data-sdk 仓库</div>
+        </div>
+        <div class="reading" style="margin-top: 54px;">
+          <h3>回滚原则</h3>
+          <p>在生产验收前保持 Keystone 与 App revision 可回退。如果设备认证、Go 控制面或同仓 Swift SDK 出现阻断问题，停止签发和轮换 device auth token，并停止开放设备，再回退应用或服务版本；已成功写入 TOS 的对象不自动删除。Reinit 已删除旧 Key 时不能通过代码回滚恢复旧 Key，必须继续当前重置状态取得新 Key。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="end-state">
+    <div class="end-state-inner">
+      <h2>先建立可信设备主体，<br>再开放对象上传。</h2>
+      <p>完成标准不是“复制了 SDK”或“替换了代码”，而是 Keystone 成为唯一源码与发布入口，设备身份由 Hilbert 验证，Keystone 使用可撤销 JWT 和最小权限 TOS STS 完成可刷新、可校验的大文件上传。</p>
+    </div>
+  </footer>
+</body>
+</html>

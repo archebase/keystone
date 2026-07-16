@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="30.2.6">
+  <diagram name="Device Auth Sequence">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="2" value="设备认证主链路&#xa;SDK → Keystone → Hilbert → TOS" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=28;fontStyle=1;fontColor=#1D1A2F;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="900" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="管理端 / 可信配置渠道" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;recursiveResize=0;outlineConnect=0;portConstraint=eastwest;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="180" height="1480" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="设备 Swift SDK" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;recursiveResize=0;outlineConnect=0;portConstraint=eastwest;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="290" y="90" width="180" height="1480" as="geometry" />
+        </mxCell>
+        <mxCell id="5" value="Keystone&#xa;DeviceInit / Auth / Gateway" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;recursiveResize=0;outlineConnect=0;portConstraint=eastwest;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="540" y="90" width="210" height="1480" as="geometry" />
+        </mxCell>
+        <mxCell id="6" value="Hilbert&#xa;dc-device / nonce" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;recursiveResize=0;outlineConnect=0;portConstraint=eastwest;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="830" y="90" width="200" height="1480" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="火山云 TOS" style="shape=umlLifeline;perimeter=lifelinePerimeter;whiteSpace=wrap;html=1;container=1;collapsible=0;recursiveResize=0;outlineConnect=0;portConstraint=eastwest;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="90" width="180" height="1480" as="geometry" />
+        </mxCell>
+
+        <mxCell id="8" value="A. 首次初始化" style="swimlane;startSize=28;horizontal=1;fillColor=none;strokeColor=#666666;dashed=1;fontStyle=1;fontSize=14;container=0;collapsible=0;pointerEvents=0;" vertex="1" parent="1">
+          <mxGeometry x="25" y="175" width="1280" height="750" as="geometry" />
+        </mxCell>
+        <mxCell id="9" value="B. API key 换取 Keystone 短期访问 token" style="swimlane;startSize=28;horizontal=1;fillColor=none;strokeColor=#666666;dashed=1;fontStyle=1;fontSize=14;container=0;collapsible=0;pointerEvents=0;" vertex="1" parent="1">
+          <mxGeometry x="25" y="945" width="1280" height="395" as="geometry" />
+        </mxCell>
+        <mxCell id="10" value="C. 受认证上传" style="swimlane;startSize=28;horizontal=1;fillColor=none;strokeColor=#666666;dashed=1;fontStyle=1;fontSize=14;container=0;collapsible=0;pointerEvents=0;" vertex="1" parent="1">
+          <mxGeometry x="25" y="1360" width="1280" height="185" as="geometry" />
+        </mxCell>
+
+        <mxCell id="11" value="1. 管理员签发并下发 device_id + device_auth_token" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.09;exitDx=0;exitDy=0;entryX=0;entryY=0.09;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="3" target="4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="12" value="2. InitDevice(device_id, device_auth_token, sdk_version, platform)" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.15;exitDx=0;exitDy=0;entryX=0;entryY=0.15;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="4" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="13" value="3. 校验 token hash、active 与 SDK 初始化权；解析 Hilbert robot 投影" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#666666;exitX=0.5;exitY=0.20;exitDx=0;exitDy=0;entryX=0.5;entryY=0.20;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="5">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="790" y="385" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="14" value="4. GET dc-device/query(workspaceId, id)" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="15" value="5. device + workspace ownership" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#999999;exitX=0;exitY=0.29;exitDx=0;exitDy=0;entryX=1;entryY=0.29;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="6" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="16" value="6. GET api-key；不存在则 Generate；并发已存在则回到 Get" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.34;exitDx=0;exitDy=0;entryX=0;entryY=0.34;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="17" value="7. nonce_id + cipher_api_key" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#999999;exitX=0;exitY=0.39;exitDx=0;exitDy=0;entryX=1;entryY=0.39;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="6" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="18" value="8. GET nonce/consume?id=nonce_id" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.44;exitDx=0;exitDy=0;entryX=0;entryY=0.44;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="19" value="9. random_key；Keystone 解密 API key" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#999999;exitX=0;exitY=0.49;exitDx=0;exitDy=0;entryX=1;entryY=0.49;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="6" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="20" value="10. 消费 SDK 初始化权；返回 api_key + authoritative tags" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#999999;exitX=0;exitY=0.54;exitDx=0;exitDy=0;entryX=1;entryY=0.54;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="21" value="11. ExchangeCredential(device_id, api_key)" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.62;exitDx=0;exitDy=0;entryX=0;entryY=0.62;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="4" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="22" value="12. GET nonce/generate" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.67;exitDx=0;exitDy=0;entryX=0;entryY=0.67;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="23" value="13. nonce_id + random_key" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#999999;exitX=0;exitY=0.71;exitDx=0;exitDy=0;entryX=1;entryY=0.71;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="6" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="24" value="14. POST dc-device/validate(workspaceId, id, nonceId, cipherApiKey)" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.76;exitDx=0;exitDy=0;entryX=0;entryY=0.76;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="25" value="15. valid=true" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#999999;exitX=0;exitY=0.80;exitDx=0;exitDy=0;entryX=1;entryY=0.80;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="6" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="26" value="16. 短期 Bearer JWT(device_id, workspace_id, auth_epoch)" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#999999;exitX=0;exitY=0.84;exitDx=0;exitDy=0;entryX=1;entryY=0.84;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="27" value="17. CreateLogicalUpload + Bearer JWT" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.89;exitDx=0;exitDy=0;entryX=0;entryY=0.89;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="4" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="28" value="18. 校验 JWT principal；签发 TOS STS 临时凭证" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;strokeColor=#999999;exitX=0;exitY=0.93;exitDx=0;exitDy=0;entryX=1;entryY=0.93;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;" edge="1" parent="1" source="5" target="4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="29" value="19. PutObject / Multipart（短期 STS）" style="html=1;verticalAlign=bottom;endArrow=block;strokeWidth=2;exitX=1;exitY=0.97;exitDx=0;exitDy=0;entryX=0;entryY=0.97;entryDx=0;entryDy=0;labelBackgroundColor=#ffffff;fontSize=12;strokeColor=#82b366;" edge="1" parent="1" source="4" target="7">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="800" y="1510" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="30" value="ReinitDevice：正常要求有效 JWT；凭证丢失时管理员轮换 auth token 并开启一次 recovery。Keystone 持久化执行 Delete → Generate，失败可续跑。" style="shape=note;whiteSpace=wrap;html=1;size=18;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="520" width="300" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="31" value="安全门：公开 /devices/register 不能再只凭 device_id 签发 token。device auth token 必须由管理员生成；SDK 初始化权只消费一次，WebSocket 使用权继续保留。" style="shape=note;whiteSpace=wrap;html=1;size=18;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="655" width="300" height="135" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

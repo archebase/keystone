@@ -8,15 +8,16 @@ import (
 	"database/sql"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 )
 
 const (
-	dpReservedDeviceIDTagKey = "778a6d83c9ec49108537542a570966ee.device_id"
-	dpReservedRawFileTagKey  = "a206e337ecdf70a93bb611cf6a30c346.raw_file"
+	dpReservedDeviceIDTagKey = "778a6d83c9ec49108537542a570966ee.device_id" //nolint:unused // Reserved for direct DP upload mode.
+	dpReservedRawFileTagKey  = "a206e337ecdf70a93bb611cf6a30c346.raw_file"  //nolint:unused // Reserved for direct DP upload mode.
 )
 
-type dpRawTagsInput struct {
+type dpRawTagsInput struct { //nolint:unused // Reserved for direct DP upload mode.
 	Profile         DPDeviceProfile
 	McapKey         string
 	SidecarTags     map[string]string
@@ -24,22 +25,15 @@ type dpRawTagsInput struct {
 	Context         dpRawTagContext
 }
 
-type dpRawTagContext struct {
-	SOPSlug                 sql.NullString
-	SOPVersion              sql.NullString
-	SOPDescription          sql.NullString
-	Scene                   sql.NullString
-	Subscene                sql.NullString
-	RobotType               sql.NullString
+type dpRawTagContext struct { //nolint:unused // Reserved for direct DP upload mode.
+	DCPlanID                int64
+	WorkspaceID             int64
 	DataCollectorOperatorID sql.NullString
 	DataCollectorName       sql.NullString
-	OrderName               sql.NullString
-	BatchID                 sql.NullString
 }
 
-func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
-	mcapKey := stripBucketPrefix(input.McapKey)
-	rawFile := path.Base(strings.TrimSpace(mcapKey))
+func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) { //nolint:unused // Reserved for direct DP upload mode.
+	rawFile := path.Base(legacyStripBucketPrefix(input.McapKey))
 	if rawFile == "" || rawFile == "." || rawFile == "/" {
 		return nil, fmt.Errorf("raw_file basename is empty for mcap key %q", input.McapKey)
 	}
@@ -63,25 +57,31 @@ func buildDPDirectRawTags(input dpRawTagsInput) (map[string]string, error) {
 	return merged, nil
 }
 
-func keystoneExtraTags(input dpRawTagsInput) map[string]string {
+func legacyStripBucketPrefix(storedPath string) string { //nolint:unused // Reserved for direct DP upload mode.
+	key := strings.TrimPrefix(strings.TrimSpace(storedPath), "/")
+	if idx := strings.Index(key, "/"); idx > 0 {
+		return key[idx+1:]
+	}
+	return key
+}
+
+func keystoneExtraTags(input dpRawTagsInput) map[string]string { //nolint:unused // Reserved for direct DP upload mode.
 	tags := map[string]string{
 		"episode_id":   input.EpisodePublicID,
 		"sync_channel": "keystone_direct",
 	}
-	addNonEmptyTag(tags, "sop_slug", input.Context.SOPSlug)
-	addNonEmptyTag(tags, "sop_version", input.Context.SOPVersion)
-	addNonEmptyTag(tags, "sop_description", input.Context.SOPDescription)
-	addNonEmptyTag(tags, "scene", input.Context.Scene)
-	addNonEmptyTag(tags, "subscene", input.Context.Subscene)
-	addNonEmptyTag(tags, "robot_type", input.Context.RobotType)
+	if input.Context.DCPlanID > 0 {
+		tags["dc_plan_id"] = strconv.FormatInt(input.Context.DCPlanID, 10)
+	}
+	if input.Context.WorkspaceID > 0 {
+		tags["workspace_id"] = strconv.FormatInt(input.Context.WorkspaceID, 10)
+	}
 	addNonEmptyTag(tags, "data_collector_operator_id", input.Context.DataCollectorOperatorID)
 	addNonEmptyTag(tags, "data_collector_name", input.Context.DataCollectorName)
-	addNonEmptyTag(tags, "order_name", input.Context.OrderName)
-	addNonEmptyTag(tags, "batch_id", input.Context.BatchID)
 	return tags
 }
 
-func addNonEmptyTag(tags map[string]string, key string, value sql.NullString) {
+func addNonEmptyTag(tags map[string]string, key string, value sql.NullString) { //nolint:unused // Reserved for direct DP upload mode.
 	if !value.Valid {
 		return
 	}
@@ -92,7 +92,7 @@ func addNonEmptyTag(tags map[string]string, key string, value sql.NullString) {
 	tags[key] = trimmed
 }
 
-func insertAllNonConflictingTags(dst map[string]string, src map[string]string) error {
+func insertAllNonConflictingTags(dst map[string]string, src map[string]string) error { //nolint:unused // Reserved for direct DP upload mode.
 	for key, value := range src {
 		if err := insertNonConflictingTag(dst, key, value); err != nil {
 			return err
@@ -101,7 +101,7 @@ func insertAllNonConflictingTags(dst map[string]string, src map[string]string) e
 	return nil
 }
 
-func insertNonConflictingTag(dst map[string]string, key string, value string) error {
+func insertNonConflictingTag(dst map[string]string, key string, value string) error { //nolint:unused // Reserved for direct DP upload mode.
 	if key == "" {
 		return fmt.Errorf("raw tag key must not be empty")
 	}

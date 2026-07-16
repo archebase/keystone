@@ -31,7 +31,7 @@ func newNonRetryableSyncError(format string, args ...interface{}) error {
 	return &syncNonRetryableError{err: fmt.Errorf(format, args...)}
 }
 
-func wrapNonRetryableSyncError(err error, format string, args ...interface{}) error {
+func wrapNonRetryableSyncError(err error, format string, args ...interface{}) error { //nolint:unused // Reserved for upload paths that wrap lower-level permanent errors.
 	if err == nil {
 		return nil
 	}

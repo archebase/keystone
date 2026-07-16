@@ -143,7 +143,7 @@ func (c *GatewayClient) GetUploadRecovery(ctx context.Context, logicalUploadID s
 		LogicalUploadID:    resp.LogicalUploadId,
 		CurrentUploadID:    resp.CurrentUploadId,
 		NextAction:         resp.NextAction,
-		OSSObjectETag:      resp.OssObjectEtag,
+		OSSObjectETag:      resp.ObjectEtag,
 		CompletedPartCount: resp.CompletedPartCount,
 	}, nil
 }
@@ -209,7 +209,7 @@ func (c *GatewayClient) AbortUpload(ctx context.Context, logicalUploadID string,
 }
 
 // CompleteUpload notifies the data-gateway that all parts have been uploaded to OSS.
-func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, ossObjectEtag string, partSizeBytes int64) error {
+func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, objectETag string, partSizeBytes int64) error {
 	authHeader, err := c.getAuthHeader(ctx)
 	if err != nil {
 		return err
@@ -225,7 +225,7 @@ func (c *GatewayClient) CompleteUpload(ctx context.Context, uploadID string, fil
 			FileSize:           fileSize,
 			RawTags:            rawTags,
 			CompletedPartCount: completedPartCount,
-			OssObjectEtag:      ossObjectEtag,
+			ObjectEtag:         objectETag,
 			PartSizeBytes:      partSizeBytes,
 		})
 		return rpcErr

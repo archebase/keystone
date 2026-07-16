@@ -14,7 +14,7 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-func assetIDFromEpisodeMetadata(metadata sql.NullString) string {
+func assetIDFromEpisodeMetadata(metadata sql.NullString) string { //nolint:unused // Reserved for direct DP upload mode.
 	if !metadata.Valid || strings.TrimSpace(metadata.String) == "" {
 		return ""
 	}
@@ -26,7 +26,7 @@ func assetIDFromEpisodeMetadata(metadata sql.NullString) string {
 	return strings.TrimSpace(value)
 }
 
-func resolveAssetIDForEpisode(ctx context.Context, db *sqlx.DB, episodeID int64, metadata sql.NullString, workstationID sql.NullInt64) (string, error) {
+func resolveAssetIDForEpisode(ctx context.Context, db *sqlx.DB, episodeID int64, metadata sql.NullString, workstationID sql.NullInt64) (string, error) { //nolint:unused // Reserved for direct DP upload mode.
 	metadataAssetID := assetIDFromEpisodeMetadata(metadata)
 	if db != nil && workstationID.Valid && workstationID.Int64 > 0 {
 		var row struct {

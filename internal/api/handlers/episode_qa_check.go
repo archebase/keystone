@@ -59,6 +59,7 @@ type QARunMode string
 type EpisodeQAHandler struct {
 	db      *sqlx.DB
 	s3      *s3.Client
+	tos     *episodeQATOSReader
 	bucket  string
 	authCfg *config.AuthConfig
 	queue   chan int64
@@ -97,7 +98,6 @@ type EpisodeQAEpisodeResponse struct {
 	EpisodeID     string                        `json:"episode_id"`
 	TaskID        int64                         `json:"task_id"`
 	TaskPublicID  *string                       `json:"task_public_id,omitempty"`
-	RobotType     *string                       `json:"robot_type,omitempty"`
 	QAStatus      string                        `json:"qa_status"`
 	QualityFlag   *string                       `json:"quality_flag,omitempty"`
 	CreatedAt     string                        `json:"created_at"`
@@ -136,6 +136,7 @@ type episodeQACheckRow struct {
 	SidecarPath string         `db:"sidecar_path"`
 	QAStatus    string         `db:"qa_status"`
 	Quality     sql.NullString `db:"quality_flag"`
+	Metadata    sql.NullString `db:"metadata"`
 }
 
 type episodeQARunClaim struct {
@@ -160,7 +161,6 @@ type episodeQAListRow struct {
 	EpisodeID            string          `db:"episode_id"`
 	TaskID               int64           `db:"task_id"`
 	TaskPublicID         sql.NullString  `db:"task_public_id"`
-	RobotType            sql.NullString  `db:"robot_type"`
 	QAStatus             string          `db:"qa_status"`
 	QualityFlag          sql.NullString  `db:"quality_flag"`
 	CreatedAt            time.Time       `db:"created_at"`
@@ -174,13 +174,16 @@ type episodeQAListRow struct {
 }
 
 // NewEpisodeQAHandler creates the QA handler and starts the in-memory auto-QA worker.
-func NewEpisodeQAHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCfg *config.AuthConfig) *EpisodeQAHandler {
+func NewEpisodeQAHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCfg *config.AuthConfig, storageCfg *config.StorageConfig) *EpisodeQAHandler {
 	h := &EpisodeQAHandler{
 		db:      db,
 		s3:      s3Client,
 		bucket:  strings.TrimSpace(bucket),
 		authCfg: authCfg,
 		queue:   make(chan int64, defaultEpisodeQAQueueSize),
+	}
+	if storageCfg != nil && strings.EqualFold(storageCfg.Type, "tos") {
+		h.tos = newEpisodeQATOSReader(*storageCfg)
 	}
 	if db != nil {
 		go h.runAutoWorker()
@@ -242,7 +245,6 @@ func (h *EpisodeQAHandler) requireBearerJWT(c *gin.Context) bool {
 // @Tags         qa
 // @Produce      json
 // @Param        status      query     string  false  "QA status filter: all, pending_qa, qa_running, approved, failed"
-// @Param        robot_type  query     string  false  "Robot type name or model"
 // @Param        q           query     string  false  "Search episode/task/quality text"
 // @Param        page        query     int     false  "Page number, default 1"
 // @Param        page_size   query     int     false  "Page size, default 20"
@@ -272,14 +274,11 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 		return
 	}
 
-	where, args := buildQAEpisodeListWhere(statuses, c.Query("robot_type"), c.Query("q"))
+	where, args := buildQAEpisodeListWhere(statuses, c.Query("q"))
 	countQuery := `
 		SELECT COUNT(1)
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 	` + where
 
 	var total int
@@ -295,7 +294,6 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 			e.episode_id,
 			e.task_id,
 			t.task_id AS task_public_id,
-			COALESCE(rt.name, rt.model, '') AS robot_type,
 			COALESCE(e.qa_status, '') AS qa_status,
 			e.quality_flag,
 			e.created_at,
@@ -308,9 +306,6 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 			qc.checked_at AS latest_check_checked_at
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN qa_checks qc ON qc.id = (
 			SELECT qc2.id
 			FROM qa_checks qc2
@@ -339,7 +334,6 @@ func (h *EpisodeQAHandler) ListQAEpisodes(c *gin.Context) {
 			EpisodeID:    row.EpisodeID,
 			TaskID:       row.TaskID,
 			TaskPublicID: nullableString(row.TaskPublicID),
-			RobotType:    nullableString(row.RobotType),
 			QAStatus:     row.QAStatus,
 			QualityFlag:  nullableString(row.QualityFlag),
 			CreatedAt:    row.CreatedAt.UTC().Format(time.RFC3339),
@@ -519,8 +513,12 @@ func (h *EpisodeQAHandler) RunEpisodeQASuite(ctx context.Context, episodeID int6
 	return result, nil
 }
 
-func defaultEpisodeQASuite(_ episodeQACheckRow) []string {
-	return []string{episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty}
+func defaultEpisodeQASuite(row episodeQACheckRow) []string {
+	checks := []string{episodeQACheckMcapMagic}
+	if strings.TrimSpace(row.SidecarPath) != "" && !isTOSOnlyEpisode(row.Metadata) {
+		checks = append(checks, episodeQACheckRecordingNotEmpty)
+	}
+	return checks
 }
 
 func normalizeEpisodeQACheckName(raw string) string {
@@ -539,7 +537,7 @@ func isSupportedEpisodeQACheckName(checkName string) bool {
 func (h *EpisodeQAHandler) loadEpisodeForQACheck(ctx context.Context, episodeID int64) (episodeQACheckRow, error) {
 	var row episodeQACheckRow
 	err := h.db.GetContext(ctx, &row, `
-		SELECT id, mcap_path, COALESCE(sidecar_path, '') AS sidecar_path, COALESCE(qa_status, '') AS qa_status, quality_flag
+		SELECT id, mcap_path, COALESCE(sidecar_path, '') AS sidecar_path, COALESCE(qa_status, '') AS qa_status, quality_flag, metadata
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 		LIMIT 1
@@ -647,14 +645,18 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
 	}
 
-	bucket, objectName, ok := resolveEpisodeMcapLocation(h.bucket, row.McapPath)
+	bucket, objectName, ok := resolveEpisodeQAObjectLocation(h.bucket, row.McapPath, row.Metadata)
 	if !ok {
 		return evaluateMcapMagicCheck(0, nil, nil, "invalid mcap_path"), nil
 	}
 
-	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
+	if h.tos != nil {
+		return h.runTOSMcapMagicQACheck(ctx, bucket, objectName)
+	}
+
+	size, err := h.statQAObject(ctx, bucket, objectName)
 	if err != nil {
-		if isS3NotFound(err) {
+		if isStorageNotFound(err) {
 			return mcapMagicFailure("MCAP integrity check failed: object not found", map[string]any{
 				"bucket": bucket,
 				"object": objectName,
@@ -663,14 +665,13 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 		return episodeQACheckOutcome{}, fmt.Errorf("stat mcap object: %w", err)
 	}
 
-	size := stat.Size
 	if size < int64(len(mcapMagicBytes)*2) {
 		return evaluateMcapMagicCheck(size, nil, nil, "file is smaller than 16 bytes"), nil
 	}
 
 	head, err := h.readS3ObjectRange(ctx, bucket, objectName, 0, int64(len(mcapMagicBytes)-1))
 	if err != nil {
-		if isS3NotFound(err) {
+		if isStorageNotFound(err) {
 			return mcapMagicFailure("MCAP integrity check failed: object not found", map[string]any{
 				"bucket":          bucket,
 				"object":          objectName,
@@ -683,7 +684,7 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 	tailStart := size - int64(len(mcapMagicBytes))
 	tail, err := h.readS3ObjectRange(ctx, bucket, objectName, tailStart, size-1)
 	if err != nil {
-		if isS3NotFound(err) {
+		if isStorageNotFound(err) {
 			return mcapMagicFailure("MCAP integrity check failed: object not found", map[string]any{
 				"bucket":          bucket,
 				"object":          objectName,
@@ -696,12 +697,51 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 	return evaluateMcapMagicCheck(size, head, tail, ""), nil
 }
 
+func (h *EpisodeQAHandler) runTOSMcapMagicQACheck(ctx context.Context, bucket, objectName string) (episodeQACheckOutcome, error) {
+	headObject, err := h.tos.GetObjectWithMetadata(ctx, bucket, objectName, &httpRange{start: 0, end: int64(len(mcapMagicBytes) - 1)})
+	if err != nil {
+		if isStorageNotFound(err) {
+			return mcapMagicFailure("MCAP integrity check failed: object not found", map[string]any{
+				"bucket": bucket,
+				"object": objectName,
+			}), nil
+		}
+		return episodeQACheckOutcome{}, fmt.Errorf("read mcap head: %w", err)
+	}
+
+	size := sizeFromTOSRangeResponse(headObject)
+	if size <= 0 {
+		return episodeQACheckOutcome{}, fmt.Errorf("read mcap head: TOS response missing object size")
+	}
+	if size < int64(len(mcapMagicBytes)*2) {
+		return evaluateMcapMagicCheck(size, nil, nil, "file is smaller than 16 bytes"), nil
+	}
+	if len(headObject.Data) < len(mcapMagicBytes) {
+		return evaluateMcapMagicCheck(size, headObject.Data, nil, "file head is shorter than 8 bytes"), nil
+	}
+
+	tailStart := size - int64(len(mcapMagicBytes))
+	tailObject, err := h.tos.GetObjectWithMetadata(ctx, bucket, objectName, &httpRange{start: tailStart, end: size - 1})
+	if err != nil {
+		if isStorageNotFound(err) {
+			return mcapMagicFailure("MCAP integrity check failed: object not found", map[string]any{
+				"bucket":          bucket,
+				"object":          objectName,
+				"file_size_bytes": size,
+			}), nil
+		}
+		return episodeQACheckOutcome{}, fmt.Errorf("read mcap tail: %w", err)
+	}
+
+	return evaluateMcapMagicCheck(size, headObject.Data, tailObject.Data, ""), nil
+}
+
 func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row episodeQACheckRow) (episodeQACheckOutcome, error) {
 	if h.s3 == nil {
 		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
 	}
 
-	bucket, objectName, ok := resolveEpisodeMcapLocation(h.bucket, row.SidecarPath)
+	bucket, objectName, ok := resolveEpisodeQAObjectLocation(h.bucket, row.SidecarPath, row.Metadata)
 	if !ok {
 		return recordingNotEmptyFailure("Recording sidecar check failed: invalid sidecar_path", map[string]any{
 			"sidecar_path": row.SidecarPath,
@@ -713,25 +753,37 @@ func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row 
 		"object": objectName,
 	}
 
-	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
+	if h.tos != nil {
+		data, err := h.readS3Object(ctx, bucket, objectName, maxEpisodeQASidecarBytes)
+		if err != nil {
+			if isStorageNotFound(err) {
+				return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object not found", metadata), nil
+			}
+			return episodeQACheckOutcome{}, fmt.Errorf("read sidecar object: %w", err)
+		}
+		metadata["sidecar_size_bytes"] = len(data)
+		return evaluateRecordingNotEmptyCheck(data, metadata)
+	}
+
+	sidecarSize, err := h.statQAObject(ctx, bucket, objectName)
 	if err != nil {
-		if isS3NotFound(err) {
+		if isStorageNotFound(err) {
 			return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object not found", metadata), nil
 		}
 		return episodeQACheckOutcome{}, fmt.Errorf("stat sidecar object: %w", err)
 	}
-	metadata["sidecar_size_bytes"] = stat.Size
-	if stat.Size <= 0 {
+	metadata["sidecar_size_bytes"] = sidecarSize
+	if sidecarSize <= 0 {
 		return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object is empty", metadata), nil
 	}
-	if stat.Size > maxEpisodeQASidecarBytes {
+	if sidecarSize > maxEpisodeQASidecarBytes {
 		metadata["max_sidecar_size_bytes"] = maxEpisodeQASidecarBytes
 		return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object is too large", metadata), nil
 	}
 
 	data, err := h.readS3Object(ctx, bucket, objectName, maxEpisodeQASidecarBytes)
 	if err != nil {
-		if isS3NotFound(err) {
+		if isStorageNotFound(err) {
 			return recordingNotEmptyFailure("Recording sidecar check failed: sidecar object not found", metadata), nil
 		}
 		return episodeQACheckOutcome{}, fmt.Errorf("read sidecar object: %w", err)
@@ -740,7 +792,90 @@ func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row 
 	return evaluateRecordingNotEmptyCheck(data, metadata)
 }
 
+func sizeFromTOSRangeResponse(object episodeQATOSObject) int64 {
+	if object.ContentRange != "" {
+		if slash := strings.LastIndex(object.ContentRange, "/"); slash >= 0 && slash+1 < len(object.ContentRange) {
+			size, err := strconv.ParseInt(strings.TrimSpace(object.ContentRange[slash+1:]), 10, 64)
+			if err == nil && size >= 0 {
+				return size
+			}
+		}
+	}
+	if object.ContentLength >= 0 {
+		return object.ContentLength
+	}
+	return int64(len(object.Data))
+}
+
+func resolveEpisodeQAObjectLocation(configuredBucket, storedPath string, metadata sql.NullString) (string, string, bool) {
+	bucket := episodeStorageBucketFromMetadata(metadata)
+	if bucket == "" {
+		bucket = configuredBucket
+	}
+	return resolveEpisodeMcapLocation(bucket, storedPath)
+}
+
+func episodeStorageBucketFromMetadata(metadata sql.NullString) string {
+	if !metadata.Valid || strings.TrimSpace(metadata.String) == "" {
+		return ""
+	}
+	var raw struct {
+		Bucket string `json:"bucket"`
+	}
+	if err := json.Unmarshal([]byte(metadata.String), &raw); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw.Bucket)
+}
+
+func isTOSOnlyEpisode(metadata sql.NullString) bool {
+	if !metadata.Valid || strings.TrimSpace(metadata.String) == "" {
+		return false
+	}
+	var raw struct {
+		Source             string `json:"source"`
+		ObjectStoreBackend string `json:"object_store_backend"`
+		Bucket             string `json:"bucket"`
+		ObjectKey          string `json:"object_key"`
+	}
+	if err := json.Unmarshal([]byte(metadata.String), &raw); err != nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(raw.Source), "dgwcompat") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(raw.ObjectStoreBackend), "volcengine_tos") {
+		return true
+	}
+	return strings.TrimSpace(raw.Bucket) != "" && strings.TrimSpace(raw.ObjectKey) != ""
+}
+
+func (h *EpisodeQAHandler) statQAObject(ctx context.Context, bucket, objectName string) (int64, error) {
+	if h.tos != nil {
+		return h.tos.StatObject(ctx, bucket, objectName)
+	}
+	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
+	if err != nil {
+		return 0, err
+	}
+	return stat.Size, nil
+}
+
 func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName string, maxBytes int64) ([]byte, error) {
+	if h.tos != nil {
+		object, err := h.tos.GetObjectWithMetadata(ctx, bucket, objectName, &httpRange{start: 0, end: maxBytes})
+		if err != nil {
+			return nil, err
+		}
+		if size := sizeFromTOSRangeResponse(object); size > maxBytes && len(object.Data) > int(maxBytes) {
+			return nil, fmt.Errorf("object exceeds max size %d bytes", maxBytes)
+		}
+		if int64(len(object.Data)) > maxBytes {
+			return nil, fmt.Errorf("object exceeds max size %d bytes", maxBytes)
+		}
+		return object.Data, nil
+	}
+
 	obj, err := h.s3.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, err
@@ -763,6 +898,10 @@ func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName 
 }
 
 func (h *EpisodeQAHandler) readS3ObjectRange(ctx context.Context, bucket, objectName string, start, end int64) ([]byte, error) {
+	if h.tos != nil {
+		return h.tos.GetObject(ctx, bucket, objectName, &httpRange{start: start, end: end})
+	}
+
 	var opts minio.GetObjectOptions
 	if err := opts.SetRange(start, end); err != nil {
 		return nil, fmt.Errorf("set range %d-%d: %w", start, end, err)
@@ -911,6 +1050,14 @@ func mcapMagicFailure(details string, metadata map[string]any) episodeQACheckOut
 func isS3NotFound(err error) bool {
 	errResp := minio.ToErrorResponse(err)
 	return errResp.Code == "NoSuchKey" || errResp.StatusCode == http.StatusNotFound
+}
+
+func isStorageNotFound(err error) bool {
+	if isS3NotFound(err) {
+		return true
+	}
+	var tosErr *episodeQATOSError
+	return errors.As(err, &tosErr) && (tosErr.StatusCode == http.StatusNotFound || tosErr.Code == "NoSuchKey")
 }
 
 func spacedHex(data []byte) string {
@@ -1085,7 +1232,7 @@ func qaEpisodeStatusFilter(raw string) ([]string, error) {
 	return out, nil
 }
 
-func buildQAEpisodeListWhere(statuses []string, robotType, keyword string) (string, []interface{}) {
+func buildQAEpisodeListWhere(statuses []string, keyword string) (string, []interface{}) {
 	where := " WHERE e.deleted_at IS NULL"
 	args := []interface{}{}
 
@@ -1096,12 +1243,6 @@ func buildQAEpisodeListWhere(statuses []string, robotType, keyword string) (stri
 			args = append(args, status)
 		}
 		where += " AND e.qa_status IN (" + strings.Join(placeholders, ",") + ")"
-	}
-
-	rt := strings.TrimSpace(robotType)
-	if rt != "" {
-		where += " AND (rt.name = ? OR rt.model = ?)"
-		args = append(args, rt, rt)
 	}
 
 	q := strings.TrimSpace(keyword)

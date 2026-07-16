@@ -138,14 +138,13 @@ func TestWorkspaceSyncReturnsResult(t *testing.T) {
 	defer db.Close()
 
 	client := &fakeWorkspaceHilbertClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
-		workspaces:  []auth.HilbertWorkspace{{ID: 123, Name: "Hilbert Workspace"}},
+		workspaces: []auth.HilbertWorkspace{{ID: 123, Name: "Hilbert Workspace"}},
 	}
 	syncService := services.NewWorkspaceSyncService(db, &config.HilbertConfig{
-		BaseURL:                "http://hilbert",
-		TimeoutSeconds:         2,
-		ServiceAccountCode:     "svc-keystone",
-		ServiceAccountPassword: "svc-secret",
+		BaseURL:        "http://hilbert",
+		TimeoutSeconds: 2,
+		AccessKey:      "hilbert-ak",
+		SecretKey:      "hilbert-sk",
 	}, client)
 	router := newTestWorkspaceRouter(db, syncService)
 
@@ -163,27 +162,21 @@ func TestWorkspaceSyncReturnsResult(t *testing.T) {
 	if resp.SyncedCount != 1 || !resp.DefaultIncluded || resp.LastSyncedAt == "" {
 		t.Fatalf("unexpected sync response: %#v", resp)
 	}
-	if client.listSessionKey != "session-key" {
-		t.Fatalf("listSessionKey=%q want session-key", client.listSessionKey)
-	}
 }
 
 type fakeWorkspaceHilbertClient struct {
-	loginResult    *auth.HilbertLoginResult
-	workspaces     []auth.HilbertWorkspace
-	listSessionKey string
+	workspaces []auth.HilbertWorkspace
 }
 
 func (f *fakeWorkspaceHilbertClient) Configured() bool {
 	return true
 }
 
-func (f *fakeWorkspaceHilbertClient) Login(_ context.Context, _ string, _ string) (*auth.HilbertLoginResult, error) {
-	return f.loginResult, nil
+func (f *fakeWorkspaceHilbertClient) ServiceAuthConfigured() bool {
+	return true
 }
 
-func (f *fakeWorkspaceHilbertClient) ListAvailableWorkspaces(_ context.Context, sessionKey string) ([]auth.HilbertWorkspace, error) {
-	f.listSessionKey = sessionKey
+func (f *fakeWorkspaceHilbertClient) ListAvailableWorkspaces(_ context.Context) ([]auth.HilbertWorkspace, error) {
 	return f.workspaces, nil
 }
 
@@ -231,8 +224,8 @@ func newTestWorkspaceDB(t *testing.T) *sqlx.DB {
 			name TEXT NOT NULL,
 			description TEXT,
 			source TEXT NOT NULL,
-			admins_str TEXT,
-			members_str TEXT,
+			admins TEXT,
+			members TEXT,
 			last_synced_at TIMESTAMP,
 			hilbert_created_at TIMESTAMP,
 			hilbert_updated_at TIMESTAMP,

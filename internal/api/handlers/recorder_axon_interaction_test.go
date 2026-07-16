@@ -1806,7 +1806,7 @@ func seedRecorderWSClientTokenForDevice(t *testing.T, db *sqlx.DB, deviceID stri
 	if _, err := db.Exec(`
 		INSERT OR IGNORE INTO ws_client_auth_tokens (robot_id, token_hash, token_version, created_at)
 		VALUES (?, ?, ?, ?)
-	`, robotID, hashWSClientAuthToken(recorderWSAuthToken(deviceID)), wsClientTokenVersion, time.Now().UTC()); err != nil {
+	`, robotID, hashWSClientAuthToken(recorderWSAuthToken(deviceID)), services.DeviceAuthTokenVersion, time.Now().UTC()); err != nil {
 		t.Fatalf("seed ws client token: %v", err)
 	}
 }

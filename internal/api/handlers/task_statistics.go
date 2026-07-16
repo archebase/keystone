@@ -40,7 +40,7 @@ type taskBreakdownItem struct {
 	Count int64  `json:"count" db:"task_count"`
 }
 
-// GetTaskBreakdown returns paginated task counts grouped by scene or SOP.
+// GetTaskBreakdown returns paginated task counts grouped by plan or data collection type.
 func (h *TaskHandler) GetTaskBreakdown(c *gin.Context) {
 	claims := middleware.GetClaims(c)
 	if claims == nil {
@@ -118,7 +118,7 @@ func (h *TaskHandler) GetTaskBreakdown(c *gin.Context) {
 
 func parseTaskBreakdownQuery(c *gin.Context) (taskBreakdownQuery, error) {
 	q := taskBreakdownQuery{
-		Dimension:     strings.TrimSpace(c.DefaultQuery("dimension", "scene")),
+		Dimension:     strings.TrimSpace(c.DefaultQuery("dimension", "dc_plan")),
 		WorkstationID: strings.TrimSpace(c.Query("workstation_id")),
 		Status:        strings.TrimSpace(c.Query("status")),
 	}
@@ -161,25 +161,12 @@ func parseOptionalTaskStatsTime(raw string) (*time.Time, error) {
 
 func taskBreakdownExpressions(dimension string) (string, string, error) {
 	switch dimension {
-	case "scene":
-		return "COALESCE(CAST(tasks.scene_id AS CHAR), NULLIF(TRIM(tasks.scene_name), ''), '')",
-			`COALESCE(
-				NULLIF(TRIM(tasks.scene_name), ''),
-				CASE
-					WHEN tasks.scene_id IS NULL THEN '未分类'
-					ELSE CONCAT('场景 #', CAST(tasks.scene_id AS CHAR))
-				END
-			)`, nil
-	case "sop":
-		return "COALESCE(CAST(tasks.sop_id AS CHAR), '')",
-			`CASE
-				WHEN tasks.sop_id IS NULL THEN '未分类'
-				WHEN NULLIF(s.slug, '') IS NULL THEN CONCAT('SOP #', CAST(tasks.sop_id AS CHAR))
-				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
-				ELSE CONCAT(s.slug, ' @ ', s.version)
-			END`, nil
+	case "dc_plan":
+		return "COALESCE(CAST(tasks.dc_plan_id AS CHAR), '')", "COALESCE(NULLIF(dp.name, ''), '未分类')", nil
+	case "dc_type":
+		return "COALESCE(NULLIF(dp.dc_type, ''), '')", "COALESCE(NULLIF(dp.dc_type, ''), '未分类')", nil
 	default:
-		return "", "", fmt.Errorf("dimension must be one of scene, sop")
+		return "", "", fmt.Errorf("dimension must be one of dc_plan, dc_type")
 	}
 }
 
@@ -206,7 +193,7 @@ func taskBreakdownWhereClause(q taskBreakdownQuery) (string, []interface{}) {
 func taskBreakdownBaseSQL(whereClause string) string {
 	return fmt.Sprintf(`
 		FROM tasks
-		LEFT JOIN sops s ON s.id = tasks.sop_id AND s.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = tasks.dc_plan_id AND dp.deleted_at IS NULL
 		WHERE %s
 	`, whereClause)
 }

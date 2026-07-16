@@ -6,11 +6,7 @@ package handlers
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,33 +14,35 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/jmoiron/sqlx"
 )
 
-const wsClientTokenVersion = "kws_v1"
-
 func generateWSClientAuthToken() (string, error) {
-	randomBytes := make([]byte, 32)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return "", fmt.Errorf("read random bytes: %w", err)
-	}
-	return wsClientTokenVersion + "_" + base64.RawURLEncoding.EncodeToString(randomBytes), nil
+	return services.GenerateDeviceAuthToken()
 }
 
 func hashWSClientAuthToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	return services.HashDeviceAuthToken(token)
 }
 
-func insertWSClientAuthToken(tx *sqlx.Tx, robotID int64, token string, now time.Time) error {
+func insertWSClientAuthToken(tx *sqlx.Tx, robotID int64, token string, now time.Time, enableRecovery bool) error {
+	var recoveryRequestedAt sql.NullTime
+	recoveryStage := "none"
+	if enableRecovery {
+		recoveryRequestedAt = sql.NullTime{Time: now, Valid: true}
+		recoveryStage = "authorized"
+	}
 	if _, err := tx.Exec(`
 		INSERT INTO ws_client_auth_tokens (
 			robot_id,
 			token_hash,
 			token_version,
-			created_at
-		) VALUES (?, ?, ?, ?)
-	`, robotID, hashWSClientAuthToken(token), wsClientTokenVersion, now); err != nil {
+			created_at,
+			recovery_requested_at,
+			recovery_stage
+		) VALUES (?, ?, ?, ?, ?, ?)
+	`, robotID, hashWSClientAuthToken(token), services.DeviceAuthTokenVersion, now, recoveryRequestedAt, recoveryStage); err != nil {
 		return fmt.Errorf("insert ws client auth token: %w", err)
 	}
 	return nil

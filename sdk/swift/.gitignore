@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+.local/
+.public-dns/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+.tmp

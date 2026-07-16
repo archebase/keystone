@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -47,6 +46,9 @@ func TestGetTaskConfigUsesConfiguredCallbackPublicBaseURL(t *testing.T) {
 	if _, ok := resp["skills"]; ok {
 		t.Fatalf("task config unexpectedly contains skills: %#v", resp["skills"])
 	}
+	if resp["workspace_id"] != float64(123) || resp["dc_plan_id"] != float64(1001) || resp["dc_type"] != "ego" {
+		t.Fatalf("unexpected plan config fields: %#v", resp)
+	}
 }
 
 func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
@@ -61,24 +63,10 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			task_id TEXT NOT NULL,
 			workstation_id INTEGER,
-			order_id INTEGER,
-			factory_id INTEGER,
-			sop_id INTEGER,
 			dc_plan_id INTEGER,
-			scene_name TEXT,
-			subscene_name TEXT,
-			initial_scene_layout TEXT,
+			organization_id INTEGER,
+			metadata TEXT,
 			status TEXT NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE factories (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE orders (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE workstations (
@@ -87,27 +75,14 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 			robot_serial TEXT NOT NULL,
 			robot_id INTEGER NOT NULL,
 			collector_name TEXT NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE robots (
-			id INTEGER PRIMARY KEY,
-			robot_type_id INTEGER NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE robot_types (
-			id INTEGER PRIMARY KEY,
-			ros_topics TEXT NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE sops (
-			id INTEGER PRIMARY KEY,
-			slug TEXT NOT NULL,
+			workspace_id INTEGER,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE dc_plan (
 			id INTEGER PRIMARY KEY,
 			workspace_id INTEGER,
 			name TEXT,
+			operator TEXT,
 			dc_type TEXT,
 			dc_device_id INTEGER,
 			target_count INTEGER,
@@ -121,18 +96,13 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 		}
 	}
 
-	now := time.Now().UTC()
 	seed := []struct {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO factories (id, name) VALUES (30, '上海一厂')`, nil},
-		{`INSERT INTO orders (id, name) VALUES (10, 'order-a')`, nil},
-		{`INSERT INTO robot_types (id, ros_topics) VALUES (12, '["/camera","/tf"]')`, nil},
-		{`INSERT INTO robots (id, robot_type_id) VALUES (20, 12)`, nil},
 		{`INSERT INTO workstations (id, name, robot_serial, robot_id, collector_name) VALUES (40, 'station-a', 'robot-001', 20, 'collector-a')`, nil},
-		{`INSERT INTO sops (id, slug) VALUES (50, 'sop-a')`, nil},
-		{`INSERT INTO tasks (id, task_id, workstation_id, order_id, factory_id, sop_id, scene_name, subscene_name, initial_scene_layout, status) VALUES (1, 'task-a', 40, 10, 30, 50, 'scene-a', 'sub-a', '{}', 'pending')`, []any{now}},
+		{`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_type, dc_device_id, target_count, target_duration) VALUES (1001, 123, 'Plan A', 'collector-a', 'ego', 456, 10, 60)`, nil},
+		{`INSERT INTO tasks (id, task_id, workstation_id, dc_plan_id, organization_id, metadata, status) VALUES (1, 'task-a', 40, 1001, 123, '{"execution_config":{"topics":[]}}', 'pending')`, nil},
 	}
 	for _, stmt := range seed {
 		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {

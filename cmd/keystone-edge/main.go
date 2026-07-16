@@ -17,6 +17,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/server"
@@ -24,6 +25,7 @@ import (
 	"archebase.com/keystone-edge/internal/services/dgwcompat"
 	"archebase.com/keystone-edge/internal/storage/database"
 	"archebase.com/keystone-edge/internal/storage/s3"
+	tosstorage "archebase.com/keystone-edge/internal/storage/tos"
 )
 
 //	@title			Keystone Edge API
@@ -100,11 +102,12 @@ func main() {
 
 	// Initialize S3/MinIO storage
 	s3Client, err := s3.Connect(&s3.Config{
-		Endpoint:  cfg.Storage.Endpoint,
-		AccessKey: cfg.Storage.AccessKey,
-		SecretKey: cfg.Storage.SecretKey,
-		Bucket:    cfg.Storage.Bucket,
-		UseSSL:    cfg.Storage.UseSSL,
+		Endpoint:     cfg.Storage.Endpoint,
+		AccessKey:    cfg.Storage.AccessKey,
+		SecretKey:    cfg.Storage.SecretKey,
+		Bucket:       cfg.Storage.Bucket,
+		UseSSL:       cfg.Storage.UseSSL,
+		EnsureBucket: cfg.Storage.EnsureBucket,
 	})
 	if err != nil {
 		logger.Printf("[S3] Failed to connect to S3/MinIO: %v", err)
@@ -115,7 +118,13 @@ func main() {
 
 	// Initialize cloud sync worker
 	var syncWorker *services.SyncWorker
-	if cfg.Sync.Enabled && cfg.Sync.DPConfigPath != "" && s3Client != nil {
+	var sourceReader services.SourceObjectReader
+	if cfg.Storage.Type == "tos" {
+		sourceReader = tosstorage.NewReader(cfg.Storage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
+	} else if s3Client != nil {
+		sourceReader = services.NewMinioSourceObjectReader(s3Client)
+	}
+	if cfg.Sync.Enabled && cfg.Hilbert.BaseURL != "" && cfg.Hilbert.AccessKey != "" && cfg.Hilbert.SecretKey != "" && sourceReader != nil {
 		syncWorker = services.NewSyncWorker(db.DB, nil, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
 			BatchSize:       cfg.Sync.BatchSize,
 			MaxConcurrent:   cfg.Sync.MaxConcurrent,
@@ -126,11 +135,13 @@ func main() {
 			RetryMaxSec:     cfg.Sync.RetryMaxSec,
 			RetryJitterSec:  cfg.Sync.RetryJitterSec,
 		}, &cfg.Sync)
+		syncWorker.SetHilbertRawDataClient(auth.NewHilbertClient(&cfg.Hilbert))
+		syncWorker.SetSourceObjectReader(sourceReader)
 
 		syncWorker.Start()
-		logger.Printf("[SYNC] Cloud sync worker started: dp_config=%s auto_scan=%t", cfg.Sync.DPConfigPath, cfg.Sync.AutoScanEnabled)
+		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s auto_scan=%t", cfg.Hilbert.BaseURL, cfg.Sync.AutoScanEnabled)
 	} else {
-		logger.Println("[SYNC] Cloud sync disabled (KEYSTONE_SYNC_ENABLED=false, missing KEYSTONE_SYNC_DP_CONFIG, or S3 unavailable)")
+		logger.Println("[SYNC] Cloud sync disabled (KEYSTONE_SYNC_ENABLED=false, missing Hilbert config, or source object reader unavailable)")
 	}
 
 	// Initialize and start HTTP server
@@ -138,7 +149,7 @@ func main() {
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}
-	dgwCompatServer, err := dgwcompat.StartFromEnv()
+	dgwCompatServer, err := dgwcompat.StartFromEnv(db.DB, srv.EpisodeQAEnqueuer())
 	if err != nil {
 		logger.Fatalf("[DGW_COMPAT] Failed to start compatibility server: %v", err)
 	}

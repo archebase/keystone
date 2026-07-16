@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,14 +24,12 @@ const dataOpsBulkQAConcurrency = 4
 
 // DataOpsBulkEpisodeFilters contains data-ops filters for bulk episode actions.
 type DataOpsBulkEpisodeFilters struct {
+	WorkspaceID         string `json:"workspace_id,omitempty"`
 	CreatedAtFrom       string `json:"created_at_from,omitempty"`
 	CreatedAtTo         string `json:"created_at_to,omitempty"`
 	Keyword             string `json:"q,omitempty"`
 	QAStatus            string `json:"qa_status,omitempty"`
 	SyncStatus          string `json:"sync_status,omitempty"`
-	SceneID             string `json:"scene_id,omitempty"`
-	SOPID               string `json:"sop_id,omitempty"`
-	RobotTypeID         string `json:"robot_type_id,omitempty"`
 	RobotDeviceID       string `json:"robot_device_id,omitempty"`
 	CollectorOperatorID string `json:"collector_operator_id,omitempty"`
 	Label               string `json:"label,omitempty"`
@@ -113,7 +110,6 @@ func (h *DataOpsHandler) PreviewBulkEpisodeQA(c *gin.Context) {
 	if !ok {
 		return
 	}
-
 	preview, err := h.previewBulkEpisodeQA(c.Request.Context(), q)
 	if err != nil {
 		logger.Printf("[DATA_OPS] bulk QA preview failed: %v", err)
@@ -143,6 +139,10 @@ func (h *DataOpsHandler) PreviewBulkEpisodeSync(c *gin.Context) {
 
 	_, q, ok := h.parseBulkEpisodeActionRequest(c, false)
 	if !ok {
+		return
+	}
+	if !dataOpsHilbertSyncAllowed(q) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "default Workspace does not support Hilbert sync"})
 		return
 	}
 
@@ -181,7 +181,6 @@ func (h *DataOpsHandler) BulkRunEpisodeQA(c *gin.Context) {
 	if !ok {
 		return
 	}
-
 	h.bulkRunMu.Lock()
 	defer h.bulkRunMu.Unlock()
 
@@ -246,6 +245,10 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
 
 	_, q, ok := h.parseBulkEpisodeActionRequest(c, true)
 	if !ok {
+		return
+	}
+	if !dataOpsHilbertSyncAllowed(q) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "default Workspace does not support Hilbert sync"})
 		return
 	}
 
@@ -317,6 +320,10 @@ func (h *DataOpsHandler) parseBulkEpisodeActionRequest(c *gin.Context, requireCo
 }
 
 func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsEpisodeQuery, error) {
+	workspaceIDs, err := parseNonNegativeInt64List(filters.WorkspaceID, "workspace_id")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
 	qaStatuses, err := parseDataOpsBulkStringList(filters.QAStatus, "qa_status")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
@@ -337,18 +344,6 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 		}
 	}
 
-	sceneIDs, err := parseDataOpsBulkPositiveInt64List(filters.SceneID, "scene_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
-	sopIDs, err := parseDataOpsBulkPositiveInt64List(filters.SOPID, "sop_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
-	robotTypeIDs, err := parseDataOpsBulkPositiveInt64List(filters.RobotTypeID, "robot_type_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
 	robotDeviceIDs, err := parseDataOpsBulkStringList(filters.RobotDeviceID, "robot_device_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
@@ -359,12 +354,10 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 	}
 
 	out := dataOpsEpisodeQuery{
+		WorkspaceIDs:         workspaceIDs,
 		Keyword:              strings.TrimSpace(filters.Keyword),
 		QAStatuses:           qaStatuses,
 		SyncStatuses:         syncStatuses,
-		SceneIDs:             sceneIDs,
-		SOPIDs:               sopIDs,
-		RobotTypeIDs:         robotTypeIDs,
 		RobotDeviceIDs:       robotDeviceIDs,
 		CollectorOperatorIDs: collectorOperatorIDs,
 		Label:                strings.TrimSpace(filters.Label),
@@ -396,29 +389,8 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 	return out, nil
 }
 
-func parseDataOpsBulkPositiveInt64List(raw string, fieldName string) ([]int64, error) {
-	items, err := splitDataOpsBulkCommaItems(raw, fieldName, maxMultiValueFilterIntegerItemLength)
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-
-	seen := make(map[int64]struct{})
-	values := []int64{}
-	for _, item := range items {
-		parsed, err := strconv.ParseInt(item, 10, 64)
-		if err != nil || parsed <= 0 {
-			return nil, fmt.Errorf("invalid %s format", fieldName)
-		}
-		if _, ok := seen[parsed]; ok {
-			continue
-		}
-		seen[parsed] = struct{}{}
-		values = append(values, parsed)
-	}
-	return values, nil
+func dataOpsHilbertSyncAllowed(q dataOpsEpisodeQuery) bool {
+	return len(q.WorkspaceIDs) == 1 && q.WorkspaceIDs[0] > 0
 }
 
 func parseDataOpsBulkStringList(raw string, fieldName string) ([]string, error) {

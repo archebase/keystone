@@ -37,8 +37,8 @@ var (
 // HilbertWorkspaceClient captures the Hilbert calls workspace sync needs.
 type HilbertWorkspaceClient interface {
 	Configured() bool
-	Login(ctx context.Context, code string, password string) (*auth.HilbertLoginResult, error)
-	ListAvailableWorkspaces(ctx context.Context, sessionKey string) ([]auth.HilbertWorkspace, error)
+	ServiceAuthConfigured() bool
+	ListAvailableWorkspaces(ctx context.Context) ([]auth.HilbertWorkspace, error)
 }
 
 // WorkspaceSyncResult summarizes one Hilbert workspace sync run.
@@ -74,9 +74,7 @@ func (s *WorkspaceSyncService) Configured() bool {
 	if s == nil || s.db == nil || s.cfg == nil || s.hilbertClient == nil || !s.hilbertClient.Configured() {
 		return false
 	}
-	return strings.TrimSpace(s.cfg.BaseURL) != "" &&
-		strings.TrimSpace(s.cfg.ServiceAccountCode) != "" &&
-		strings.TrimSpace(s.cfg.ServiceAccountPassword) != ""
+	return strings.TrimSpace(s.cfg.BaseURL) != "" && s.hilbertClient.ServiceAuthConfigured()
 }
 
 // Sync logs into Hilbert, fetches available workspaces, validates every record, and transactionally upserts them.
@@ -90,16 +88,8 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 		return nil, fmt.Errorf("%w: ensure default workspace: %v", ErrWorkspaceSyncFailed, err)
 	}
 
-	loginResult, err := s.hilbertClient.Login(ctx, s.cfg.ServiceAccountCode, s.cfg.ServiceAccountPassword)
-	if err != nil {
-		return nil, fmt.Errorf("%w: login hilbert: %v", ErrWorkspaceSyncFailed, err)
-	}
-	sessionKey := loginResult.SessionKey()
-	if strings.TrimSpace(sessionKey) == "" {
-		return nil, fmt.Errorf("%w: login hilbert: missing session key", ErrWorkspaceSyncFailed)
-	}
-	logger.Printf("[WORKSPACE] Hilbert service identity login succeeded: code=%s", s.cfg.ServiceAccountCode)
-	workspaces, err := s.hilbertClient.ListAvailableWorkspaces(ctx, sessionKey)
+	logger.Printf("[WORKSPACE] Hilbert Digest service auth configured")
+	workspaces, err := s.hilbertClient.ListAvailableWorkspaces(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list hilbert workspaces: %v", ErrWorkspaceSyncFailed, err)
 	}
@@ -115,7 +105,7 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 
 	resourceSummary := &WorkspaceResourceSyncSummary{Enabled: true, WorkspaceResults: []WorkspaceResourceSyncResult{}}
 	if s.resourceSync != nil {
-		resourceSummary = s.resourceSync.SyncWorkspaces(ctx, sessionKey, workspaces, now)
+		resourceSummary = s.resourceSync.SyncWorkspaces(ctx, workspaces, now)
 	}
 
 	return &WorkspaceSyncResult{
@@ -133,8 +123,8 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 			name = ?,
 			description = ?,
 			source = ?,
-			admins_str = ?,
-			members_str = ?,
+			admins = ?,
+			members = ?,
 			deleted_at = NULL,
 			updated_at = ?
 		WHERE id = ?
@@ -142,8 +132,8 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		sql.NullString{},
-		sql.NullString{},
+		"[]",
+		"[]",
 		now,
 		defaultWorkspaceID,
 	)
@@ -164,8 +154,8 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 			name,
 			description,
 			source,
-			admins_str,
-			members_str,
+			admins,
+			members,
 			last_synced_at,
 			created_at,
 			updated_at
@@ -175,8 +165,8 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 		defaultWorkspaceName,
 		defaultWorkspaceDescription,
 		workspaceSourceDefault,
-		sql.NullString{},
-		sql.NullString{},
+		"[]",
+		"[]",
 		sql.NullTime{},
 		now,
 		now,
@@ -231,13 +221,22 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 		hilbertUpdatedAt = sql.NullTime{Time: workspace.UpdatedTime.UTC(), Valid: true}
 	}
 
+	admins, err := EncodeWorkspacePeople(workspace.Admins)
+	if err != nil {
+		return err
+	}
+	members, err := EncodeWorkspacePeople(workspace.Members)
+	if err != nil {
+		return err
+	}
+
 	args := []any{
 		workspace.ID,
 		strings.TrimSpace(workspace.Name),
 		description,
 		workspaceSourceHilbert,
-		nullableHashWrappedString(workspace.Admins),
-		nullableHashWrappedString(workspace.Members),
+		admins,
+		members,
 		syncedAt,
 		hilbertCreatedAt,
 		hilbertUpdatedAt,
@@ -248,15 +247,15 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 	if tx.DriverName() == "sqlite" {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO workspaces (
-				id, name, description, source, admins_str, members_str,
+				id, name, description, source, admins, members,
 				last_synced_at, hilbert_created_at, hilbert_updated_at, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				name = excluded.name,
 				description = excluded.description,
 				source = excluded.source,
-				admins_str = excluded.admins_str,
-				members_str = excluded.members_str,
+				admins = excluded.admins,
+				members = excluded.members,
 				last_synced_at = excluded.last_synced_at,
 				hilbert_created_at = excluded.hilbert_created_at,
 				hilbert_updated_at = excluded.hilbert_updated_at,
@@ -266,17 +265,17 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 		return err
 	}
 
-	_, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO workspaces (
-			id, name, description, source, admins_str, members_str,
+			id, name, description, source, admins, members,
 			last_synced_at, hilbert_created_at, hilbert_updated_at, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			name = VALUES(name),
 			description = VALUES(description),
 			source = VALUES(source),
-			admins_str = VALUES(admins_str),
-			members_str = VALUES(members_str),
+			admins = VALUES(admins),
+			members = VALUES(members),
 			last_synced_at = VALUES(last_synced_at),
 			hilbert_created_at = VALUES(hilbert_created_at),
 			hilbert_updated_at = VALUES(hilbert_updated_at),
@@ -284,14 +283,6 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 			deleted_at = NULL
 	`, args...)
 	return err
-}
-
-func nullableHashWrappedString(values []string) sql.NullString {
-	normalized := normalizeWorkspacePeople(values)
-	if len(normalized) == 0 {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: "#" + strings.Join(normalized, "#") + "#", Valid: true}
 }
 
 func normalizeWorkspacePeople(values []string) []string {

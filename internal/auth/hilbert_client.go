@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -31,7 +32,12 @@ const (
 	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
 	hilbertDCPlanQueryPath        = "/v1/data-collection/dc-plan/query"
 	hilbertDCDeviceQueryPath      = "/v1/data-collection/dc-device/query"
+	hilbertDCDeviceGetKeyPath     = "/v1/data-collection/dc-device/get-api-key"
+	hilbertDCDeviceGeneratePath   = "/v1/data-collection/dc-device/generate-api-key"
+	hilbertDCDeviceDeletePath     = "/v1/data-collection/dc-device/delete-api-key"
+	hilbertDCDeviceValidatePath   = "/v1/data-collection/dc-device/validate"
 	hilbertDCDeviceTypeQueryPath  = "/v1/data-collection/dc-device-type/query"
+	hilbertNonceConsumePath       = "/v1/console/nonce/consume"
 
 	hilbertNonceKeyLengthBytes = 32
 	hilbertNonceIVLengthBytes  = 12
@@ -100,26 +106,75 @@ type HilbertWorkspace struct {
 
 // HilbertDCPlan stores one Hilbert data collection plan projection.
 type HilbertDCPlan struct {
-	ID                  int64      `json:"id"`
-	WorkspaceID         int64      `json:"workspaceId"`
-	Name                string     `json:"name"`
-	Description         *string    `json:"description"`
-	DCFactoryID         int64      `json:"dcFactoryId"`
-	DCServiceProviderID int64      `json:"dcServiceProviderId"`
-	Operator            string     `json:"operator"`
-	DCProjectID         int64      `json:"dcProjectId"`
-	DCTaskID            int64      `json:"dcTaskId"`
-	DCDeviceID          int64      `json:"dcDeviceId"`
-	DCType              string     `json:"dcType"`
-	DCDate              string     `json:"dcDate"`
-	TargetCount         int64      `json:"targetCount"`
-	CurCount            int64      `json:"curCount"`
-	TargetDuration      int64      `json:"targetDuration"`
-	CurDuration         int64      `json:"curDuration"`
-	CreatedBy           string     `json:"createdBy"`
-	CreatedTime         time.Time  `json:"createdTime"`
-	UpdatedBy           *string    `json:"updatedBy"`
-	UpdatedTime         *time.Time `json:"updatedTime"`
+	ID                  int64             `json:"id"`
+	WorkspaceID         int64             `json:"workspaceId"`
+	Name                string            `json:"name"`
+	Description         *string           `json:"description"`
+	DCFactoryID         int64             `json:"dcFactoryId"`
+	DCServiceProviderID int64             `json:"dcServiceProviderId"`
+	Operator            string            `json:"operator"`
+	OperatorDisplayName string            `json:"operatorDisplayName,omitempty"`
+	DCProjectID         int64             `json:"dcProjectId"`
+	DCProjectName       string            `json:"dcProjectName,omitempty"`
+	DCProject           *HilbertDCPlanRef `json:"dcProject,omitempty"`
+	DCTaskID            int64             `json:"dcTaskId"`
+	DCTaskName          string            `json:"dcTaskName,omitempty"`
+	DCTask              *HilbertDCPlanRef `json:"dcTask,omitempty"`
+	DCDeviceID          int64             `json:"dcDeviceId"`
+	DCDeviceName        string            `json:"dcDeviceName,omitempty"`
+	DCDevice            *HilbertDCPlanRef `json:"dcDevice,omitempty"`
+	DCType              string            `json:"dcType"`
+	DCDate              string            `json:"dcDate"`
+	TargetCount         int64             `json:"targetCount"`
+	CurCount            int64             `json:"curCount"`
+	TargetDuration      int64             `json:"targetDuration"`
+	CurDuration         int64             `json:"curDuration"`
+	CreatedBy           string            `json:"createdBy"`
+	CreatedTime         time.Time         `json:"createdTime"`
+	UpdatedBy           *string           `json:"updatedBy"`
+	UpdatedTime         *time.Time        `json:"updatedTime"`
+}
+
+// HilbertDCPlanRef stores the association shape embedded in Hilbert dc_plan responses.
+type HilbertDCPlanRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// UnmarshalJSON accepts Hilbert's nested dcProject/dcTask association objects
+// and the older flat name aliases used by some deployments.
+func (p *HilbertDCPlan) UnmarshalJSON(data []byte) error {
+	type alias HilbertDCPlan
+	aux := struct {
+		*alias
+		ProjectName string `json:"projectName"`
+		TaskName    string `json:"taskName"`
+		DeviceName  string `json:"deviceName"`
+	}{
+		alias: (*alias)(p),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if p.DCProjectName == "" {
+		p.DCProjectName = aux.ProjectName
+	}
+	if p.DCProjectName == "" && p.DCProject != nil {
+		p.DCProjectName = p.DCProject.Name
+	}
+	if p.DCTaskName == "" {
+		p.DCTaskName = aux.TaskName
+	}
+	if p.DCTaskName == "" && p.DCTask != nil {
+		p.DCTaskName = p.DCTask.Name
+	}
+	if p.DCDeviceName == "" {
+		p.DCDeviceName = aux.DeviceName
+	}
+	if p.DCDeviceName == "" && p.DCDevice != nil {
+		p.DCDeviceName = p.DCDevice.Name
+	}
+	return nil
 }
 
 // HilbertDCPlanPage stores Hilbert's page wrapper for dc-plan query.
@@ -179,32 +234,48 @@ type HilbertDCDeviceTypePage struct {
 	PageSize int64                 `json:"pageSize"`
 }
 
+type hilbertDCDeviceAPIKey struct {
+	NonceID      int64  `json:"nonceId"`
+	CipherAPIKey string `json:"cipherApiKey"`
+}
+
 // HilbertClient authenticates collector credentials against the Hilbert backend.
 type HilbertClient struct {
 	baseURL    string
+	accessKey  string
+	secretKey  string
 	httpClient *http.Client
+	now        func() time.Time
 }
 
 // NewHilbertClient creates a Hilbert API client from Keystone Hilbert configuration.
 func NewHilbertClient(cfg *config.HilbertConfig) *HilbertClient {
 	if cfg == nil {
-		return &HilbertClient{httpClient: &http.Client{Timeout: 5 * time.Second}}
+		return &HilbertClient{httpClient: &http.Client{Timeout: 5 * time.Second}, now: time.Now}
 	}
 	timeoutSeconds := cfg.TimeoutSeconds
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 5
 	}
 	return &HilbertClient{
-		baseURL: strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
+		baseURL:   strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
+		accessKey: strings.TrimSpace(cfg.AccessKey),
+		secretKey: strings.TrimSpace(cfg.SecretKey),
 		httpClient: &http.Client{
 			Timeout: time.Duration(timeoutSeconds) * time.Second,
 		},
+		now: time.Now,
 	}
 }
 
 // Configured reports whether the client has enough endpoint configuration to call Hilbert.
 func (c *HilbertClient) Configured() bool {
 	return c != nil && strings.TrimSpace(c.baseURL) != ""
+}
+
+// ServiceAuthConfigured reports whether the client has endpoint and Digest AK/SK credentials for service calls.
+func (c *HilbertClient) ServiceAuthConfigured() bool {
+	return c.Configured() && strings.TrimSpace(c.accessKey) != "" && strings.TrimSpace(c.secretKey) != ""
 }
 
 // Login authenticates one Hilbert account code and plaintext password.
@@ -227,19 +298,17 @@ func (c *HilbertClient) Login(ctx context.Context, code string, password string)
 }
 
 // ListAvailableWorkspaces fetches workspaces available to the authenticated Hilbert session.
-func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context, sessionKey string) ([]HilbertWorkspace, error) {
-	if !c.Configured() {
+func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context) ([]HilbertWorkspace, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
-	}
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertWorkspaceAvailablePath, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create workspace list request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[[]HilbertWorkspace]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -252,13 +321,9 @@ func (c *HilbertClient) ListAvailableWorkspaces(ctx context.Context, sessionKey 
 }
 
 // QueryDCPlans fetches one page of Hilbert data collection plans for one workspace.
-func (c *HilbertClient) QueryDCPlans(ctx context.Context, sessionKey string, workspaceID int64, pageNum int64, pageSize int64) (*HilbertDCPlanPage, error) {
-	if !c.Configured() {
+func (c *HilbertClient) QueryDCPlans(ctx context.Context, workspaceID int64, pageNum int64, pageSize int64) (*HilbertDCPlanPage, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
-	}
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
 	}
 	if workspaceID <= 0 || pageNum <= 0 || pageSize <= 0 {
 		return nil, fmt.Errorf("%w: invalid dc plan query parameters", ErrHilbertUnavailable)
@@ -272,7 +337,9 @@ func (c *HilbertClient) QueryDCPlans(ctx context.Context, sessionKey string, wor
 	if err != nil {
 		return nil, fmt.Errorf("%w: create dc plan query request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[HilbertDCPlanPage]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -285,15 +352,11 @@ func (c *HilbertClient) QueryDCPlans(ctx context.Context, sessionKey string, wor
 }
 
 // QueryAccountByCode fetches one Hilbert account by exact account code.
-func (c *HilbertClient) QueryAccountByCode(ctx context.Context, sessionKey string, code string) (*HilbertAccount, error) {
-	if !c.Configured() {
+func (c *HilbertClient) QueryAccountByCode(ctx context.Context, code string) (*HilbertAccount, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
 	}
-	sessionKey = strings.TrimSpace(sessionKey)
 	code = strings.TrimSpace(code)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
-	}
 	if code == "" {
 		return nil, fmt.Errorf("%w: missing account code", ErrHilbertUnavailable)
 	}
@@ -306,7 +369,9 @@ func (c *HilbertClient) QueryAccountByCode(ctx context.Context, sessionKey strin
 	if err != nil {
 		return nil, fmt.Errorf("%w: create account query request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[HilbertAccountPage]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -322,13 +387,9 @@ func (c *HilbertClient) QueryAccountByCode(ctx context.Context, sessionKey strin
 }
 
 // QueryDCDevices fetches every Hilbert data collection device visible in one workspace.
-func (c *HilbertClient) QueryDCDevices(ctx context.Context, sessionKey string, workspaceID int64) (*HilbertDCDevicePage, error) {
-	if !c.Configured() {
+func (c *HilbertClient) QueryDCDevices(ctx context.Context, workspaceID int64) (*HilbertDCDevicePage, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
-	}
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
 	}
 	if workspaceID <= 0 {
 		return nil, fmt.Errorf("%w: invalid dc device workspace id", ErrHilbertUnavailable)
@@ -342,7 +403,9 @@ func (c *HilbertClient) QueryDCDevices(ctx context.Context, sessionKey string, w
 	if err != nil {
 		return nil, fmt.Errorf("%w: create dc device query request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[HilbertDCDevicePage]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -355,13 +418,9 @@ func (c *HilbertClient) QueryDCDevices(ctx context.Context, sessionKey string, w
 }
 
 // QueryDCDeviceTypeByID fetches one Hilbert data collection device type by primary key.
-func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, sessionKey string, id int64) (*HilbertDCDeviceType, error) {
-	if !c.Configured() {
+func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, id int64) (*HilbertDCDeviceType, error) {
+	if !c.ServiceAuthConfigured() {
 		return nil, ErrHilbertUnavailable
-	}
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return nil, fmt.Errorf("%w: missing session key", ErrHilbertInvalidCredentials)
 	}
 	if id <= 0 {
 		return nil, fmt.Errorf("%w: invalid dc device type id", ErrHilbertUnavailable)
@@ -375,7 +434,9 @@ func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, sessionKey st
 	if err != nil {
 		return nil, fmt.Errorf("%w: create dc device type query request", ErrHilbertUnavailable)
 	}
-	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
 
 	var resp hilbertCommonResponse[HilbertDCDeviceTypePage]
 	if err := c.doJSON(req, &resp); err != nil {
@@ -390,9 +451,193 @@ func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, sessionKey st
 	return &resp.Data.Records[0], nil
 }
 
+// GetDCDeviceAPIKey fetches and decrypts the existing Hilbert device API key.
+func (c *HilbertClient) GetDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) (string, error) {
+	query := url.Values{}
+	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))
+	query.Set("id", strconv.FormatInt(deviceID, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertDCDeviceGetKeyPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: create device API key request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return "", err
+	}
+	return c.readDeviceAPIKeyResponse(ctx, req)
+}
+
+// GenerateDCDeviceAPIKey creates and decrypts a Hilbert device API key.
+func (c *HilbertClient) GenerateDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) (string, error) {
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCDeviceGeneratePath, map[string]int64{
+		"workspaceId": workspaceID,
+		"id":          deviceID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return c.readDeviceAPIKeyResponse(ctx, req)
+}
+
+// DeleteDCDeviceAPIKey removes the Hilbert device API key.
+func (c *HilbertClient) DeleteDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) error {
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCDeviceDeletePath, map[string]int64{
+		"workspaceId": workspaceID,
+		"id":          deviceID,
+	})
+	if err != nil {
+		return err
+	}
+	var resp hilbertCommonResponse[bool]
+	if err := c.doJSON(req, &resp); err != nil {
+		return err
+	}
+	if resp.Code != 0 {
+		return fmt.Errorf("%w: delete device API key response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return nil
+}
+
+// ValidateDCDeviceAPIKey validates a plaintext key through Hilbert's nonce transport.
+func (c *HilbertClient) ValidateDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64, apiKey string) (bool, error) {
+	nonceRecord, err := c.generateNonce(ctx)
+	if err != nil {
+		return false, err
+	}
+	cipherAPIKey, err := EncryptHilbertNonceValue(apiKey, nonceRecord.RandomKey)
+	if err != nil {
+		return false, fmt.Errorf("%w: encrypt device API key", ErrHilbertUnavailable)
+	}
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCDeviceValidatePath, map[string]any{
+		"workspaceId":  workspaceID,
+		"id":           deviceID,
+		"nonceId":      nonceRecord.ID,
+		"cipherApiKey": cipherAPIKey,
+	})
+	if err != nil {
+		return false, err
+	}
+	var resp hilbertCommonResponse[bool]
+	if err := c.doJSON(req, &resp); err != nil {
+		return false, err
+	}
+	if resp.Code != 0 {
+		return false, fmt.Errorf("%w: validate device API key response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return resp.Data, nil
+}
+
+func (c *HilbertClient) readDeviceAPIKeyResponse(ctx context.Context, req *http.Request) (string, error) {
+	var resp hilbertCommonResponse[hilbertDCDeviceAPIKey]
+	if err := c.doJSON(req, &resp); err != nil {
+		return "", err
+	}
+	if resp.Code != 0 || resp.Data.NonceID <= 0 || strings.TrimSpace(resp.Data.CipherAPIKey) == "" {
+		return "", fmt.Errorf("%w: device API key response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	nonceRecord, err := c.consumeNonce(ctx, resp.Data.NonceID)
+	if err != nil {
+		return "", err
+	}
+	return DecryptHilbertNonceValue(resp.Data.CipherAPIKey, nonceRecord.RandomKey)
+}
+
+func (c *HilbertClient) consumeNonce(ctx context.Context, nonceID int64) (*hilbertNonceData, error) {
+	query := url.Values{}
+	query.Set("id", strconv.FormatInt(nonceID, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertNonceConsumePath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create nonce consume request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
+	var resp hilbertCommonResponse[*hilbertNonceData]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 || resp.Data == nil {
+		return nil, fmt.Errorf("%w: nonce consume response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return resp.Data, nil
+}
+
+func (c *HilbertClient) hilbertServiceJSONRequest(ctx context.Context, method, path string, body any) (*http.Request, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode Hilbert request", ErrHilbertUnavailable)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("%w: create Hilbert request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
+func (c *HilbertClient) authorizeServiceRequest(req *http.Request) error {
+	now := time.Now
+	if c != nil && c.now != nil {
+		now = c.now
+	}
+	header, err := c.serviceAuthorizationHeader(now())
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", header)
+	return nil
+}
+
+func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error) {
+	ak := strings.TrimSpace(c.accessKey)
+	sk := strings.TrimSpace(c.secretKey)
+	if ak == "" || sk == "" {
+		return "", fmt.Errorf("%w: missing Hilbert AK/SK", ErrHilbertInvalidCredentials)
+	}
+	millis := strconv.FormatInt(now.UnixMilli(), 10)
+	digest := sha256.Sum256([]byte(sk + "," + millis))
+	return "Digest " + ak + ";" + millis + ";" + hex.EncodeToString(digest[:]), nil
+}
+
 type hilbertCommonResponse[T any] struct {
-	Code int `json:"code"`
-	Data T   `json:"data"`
+	Code    int             `json:"code"`
+	Message json.RawMessage `json:"message"`
+	Msg     json.RawMessage `json:"msg"`
+	Data    T               `json:"data"`
+}
+
+func (r hilbertCommonResponse[T]) errorMessage() string {
+	if msg := hilbertMessageText(r.Message); msg != "" {
+		return msg
+	}
+	return hilbertMessageText(r.Msg)
+}
+
+func hilbertMessageText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	var localized map[string]string
+	if err := json.Unmarshal(raw, &localized); err == nil {
+		if strings.TrimSpace(localized["zh_CN"]) != "" {
+			return strings.TrimSpace(localized["zh_CN"])
+		}
+		if strings.TrimSpace(localized["en_US"]) != "" {
+			return strings.TrimSpace(localized["en_US"])
+		}
+		for _, value := range localized {
+			if strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 type hilbertNonceData struct {
@@ -465,10 +710,10 @@ func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("%w: status %d", ErrHilbertInvalidCredentials, resp.StatusCode)
+		return fmt.Errorf("%w: status %d body %q", ErrHilbertInvalidCredentials, resp.StatusCode, limitedResponseBody(resp))
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("%w: status %d", ErrHilbertUnavailable, resp.StatusCode)
+		return fmt.Errorf("%w: status %d body %q", ErrHilbertUnavailable, resp.StatusCode, limitedResponseBody(resp))
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("%w: decode response: %v", ErrHilbertUnavailable, err)
@@ -476,10 +721,22 @@ func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
 	return nil
 }
 
+func limitedResponseBody(resp *http.Response) string {
+	if resp == nil || resp.Body == nil {
+		return ""
+	}
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return strings.TrimSpace(string(data))
+}
+
 func encryptHilbertPasswordDigest(password string, encodedMaterial string) (string, error) {
 	digest := sha256.Sum256([]byte(password))
 	plainDigest := hex.EncodeToString(digest[:])
+	return EncryptHilbertNonceValue(plainDigest, encodedMaterial)
+}
 
+// EncryptHilbertNonceValue encrypts one plaintext value with Hilbert nonce material.
+func EncryptHilbertNonceValue(plainText string, encodedMaterial string) (string, error) {
 	material, err := base64.StdEncoding.DecodeString(encodedMaterial)
 	if err != nil {
 		return "", fmt.Errorf("decode nonce material: %w", err)
@@ -497,6 +754,34 @@ func encryptHilbertPasswordDigest(password string, encodedMaterial string) (stri
 		return "", fmt.Errorf("create aes-gcm cipher: %w", err)
 	}
 
-	cipherText := aesGCM.Seal(nil, material[hilbertNonceKeyLengthBytes:], []byte(plainDigest), nil)
+	cipherText := aesGCM.Seal(nil, material[hilbertNonceKeyLengthBytes:], []byte(plainText), nil)
 	return base64.StdEncoding.EncodeToString(cipherText), nil
+}
+
+// DecryptHilbertNonceValue decrypts one Hilbert nonce-encrypted value.
+func DecryptHilbertNonceValue(encodedCipherText string, encodedMaterial string) (string, error) {
+	material, err := base64.StdEncoding.DecodeString(encodedMaterial)
+	if err != nil {
+		return "", fmt.Errorf("decode nonce material: %w", err)
+	}
+	if len(material) != hilbertNonceLengthBytes {
+		return "", fmt.Errorf("nonce material length must be %d bytes", hilbertNonceLengthBytes)
+	}
+	cipherText, err := base64.StdEncoding.DecodeString(encodedCipherText)
+	if err != nil {
+		return "", fmt.Errorf("decode cipher text: %w", err)
+	}
+	block, err := aes.NewCipher(material[:hilbertNonceKeyLengthBytes])
+	if err != nil {
+		return "", fmt.Errorf("create aes cipher: %w", err)
+	}
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("create aes-gcm cipher: %w", err)
+	}
+	plainText, err := aesGCM.Open(nil, material[hilbertNonceKeyLengthBytes:], cipherText, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt cipher text: %w", err)
+	}
+	return string(plainText), nil
 }

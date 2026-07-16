@@ -17,45 +17,49 @@ import (
 type Config struct {
 	Enabled bool
 
-	AuthAddr       string
-	GatewayAddr    string
-	DeviceInitAddr string
+	GRPCAddr string
 
-	OSSBucket         string
-	OSSPublicEndpoint string
-	OSSKeyPrefix      string
-	UploadPartSize    int64
+	TOSBucket      string
+	TOSEndpoint    string
+	TOSRegion      string
+	TOSKeyPrefix   string
+	UploadPartSize int64
 
-	STSRoleARN      string
+	STSRoleTRN      string
 	STSSessionTTL   time.Duration
-	STSRegion       string
 	STSEndpoint     string
 	AccessKeyID     string
 	AccessKeySecret string
 	MockSTS         bool
 
-	DeviceAPIKey string
+	DeviceJWTSecret  string // #nosec G117 -- JWT signing secret is loaded from environment
+	DeviceJWTTTL     time.Duration
+	HilbertBaseURL   string
+	HilbertAccessKey string // #nosec G101 -- Hilbert AK is loaded from environment
+	HilbertSecretKey string // #nosec G101 -- Hilbert SK is loaded from environment
 }
 
 // LoadConfigFromEnv loads dgw compatibility settings without touching Keystone's global config.
 func LoadConfigFromEnv() (Config, error) {
 	cfg := Config{
-		Enabled:           getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false),
-		AuthAddr:          getEnv("KEYSTONE_DGW_AUTH_ADDR", ":50051"),
-		GatewayAddr:       getEnv("KEYSTONE_DGW_GATEWAY_ADDR", ":50053"),
-		DeviceInitAddr:    getEnv("KEYSTONE_DGW_DEVICE_INIT_ADDR", ":50057"),
-		OSSBucket:         strings.TrimSpace(os.Getenv("KEYSTONE_DGW_OSS_BUCKET")),
-		OSSPublicEndpoint: strings.TrimSpace(os.Getenv("KEYSTONE_DGW_OSS_PUBLIC_ENDPOINT")),
-		OSSKeyPrefix:      getEnv("KEYSTONE_DGW_OSS_KEY_PREFIX", "ego-portal-lite"),
-		UploadPartSize:    getEnvInt64("KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES", 8*1024*1024),
-		STSRoleARN:        strings.TrimSpace(os.Getenv("KEYSTONE_DGW_STS_ROLE_ARN")),
-		STSSessionTTL:     time.Duration(getEnvInt64("KEYSTONE_DGW_STS_SESSION_TTL_SECONDS", 3600)) * time.Second,
-		STSRegion:         getEnv("KEYSTONE_DGW_ALIBABA_CLOUD_STS_REGION", "cn-shanghai"),
-		STSEndpoint:       getEnv("KEYSTONE_DGW_ALIBABA_CLOUD_STS_ENDPOINT", "https://sts.cn-shanghai.aliyuncs.com"),
-		AccessKeyID:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_ALIBABA_CLOUD_ACCESS_KEY_ID")),
-		AccessKeySecret:   strings.TrimSpace(os.Getenv("KEYSTONE_DGW_ALIBABA_CLOUD_ACCESS_KEY_SECRET")),
-		MockSTS:           getEnvBool("KEYSTONE_DGW_MOCK_STS", false),
-		DeviceAPIKey:      getEnv("KEYSTONE_DGW_DEVICE_API_KEY", "keystone-poc-api-key"),
+		Enabled:          getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false),
+		GRPCAddr:         getEnv("KEYSTONE_DGW_GRPC_ADDR", ":50053"),
+		TOSBucket:        strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET")),
+		TOSEndpoint:      strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT")),
+		TOSRegion:        strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION")),
+		TOSKeyPrefix:     getEnv("KEYSTONE_DGW_TOS_KEY_PREFIX", "device-uploads"),
+		UploadPartSize:   getEnvInt64("KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES", 8*1024*1024),
+		STSRoleTRN:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN")),
+		STSSessionTTL:    time.Duration(getEnvInt64("KEYSTONE_DGW_STS_SESSION_TTL_SECONDS", 3600)) * time.Second,
+		STSEndpoint:      strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT")),
+		AccessKeyID:      strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID")),
+		AccessKeySecret:  strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET")),
+		MockSTS:          getEnvBool("KEYSTONE_DGW_MOCK_STS", false),
+		DeviceJWTSecret:  strings.TrimSpace(os.Getenv("KEYSTONE_JWT_SECRET")),
+		DeviceJWTTTL:     time.Duration(getEnvInt64("KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS", 900)) * time.Second,
+		HilbertBaseURL:   strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_BASE_URL")),
+		HilbertAccessKey: strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_ACCESS_KEY")),
+		HilbertSecretKey: strings.TrimSpace(os.Getenv("KEYSTONE_HILBERT_SECRET_KEY")),
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -68,35 +72,35 @@ func (c Config) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	if strings.TrimSpace(c.AuthAddr) == "" || strings.TrimSpace(c.GatewayAddr) == "" || strings.TrimSpace(c.DeviceInitAddr) == "" {
-		return fmt.Errorf("KEYSTONE_DGW auth, gateway and device init addresses must not be empty")
+	if strings.TrimSpace(c.GRPCAddr) == "" {
+		return fmt.Errorf("KEYSTONE_DGW_GRPC_ADDR must not be empty")
 	}
-	if c.OSSBucket == "" {
-		return fmt.Errorf("KEYSTONE_DGW_OSS_BUCKET is required when compatibility server is enabled")
+	if c.TOSBucket == "" {
+		return fmt.Errorf("KEYSTONE_DGW_TOS_BUCKET is required when compatibility server is enabled")
 	}
-	if c.OSSPublicEndpoint == "" {
-		return fmt.Errorf("KEYSTONE_DGW_OSS_PUBLIC_ENDPOINT is required when compatibility server is enabled")
+	if c.TOSEndpoint == "" || c.TOSRegion == "" {
+		return fmt.Errorf("KEYSTONE_DGW_TOS_ENDPOINT and KEYSTONE_DGW_TOS_REGION are required when compatibility server is enabled")
 	}
 	if c.UploadPartSize <= 0 {
 		return fmt.Errorf("KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES must be greater than 0")
 	}
-	if c.DeviceAPIKey == "" {
-		return fmt.Errorf("KEYSTONE_DGW_DEVICE_API_KEY must not be empty")
+	if c.DeviceJWTSecret == "" || c.DeviceJWTTTL <= 0 {
+		return fmt.Errorf("KEYSTONE_JWT_SECRET and a positive KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS are required")
+	}
+	if c.HilbertBaseURL == "" || c.HilbertAccessKey == "" || c.HilbertSecretKey == "" {
+		return fmt.Errorf("KEYSTONE_HILBERT_BASE_URL, KEYSTONE_HILBERT_ACCESS_KEY and KEYSTONE_HILBERT_SECRET_KEY are required")
 	}
 	if c.MockSTS {
 		return nil
 	}
-	if c.STSRoleARN == "" {
-		return fmt.Errorf("KEYSTONE_DGW_STS_ROLE_ARN is required when mock STS is disabled")
+	if c.STSRoleTRN == "" {
+		return fmt.Errorf("KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN is required when mock STS is disabled")
 	}
 	if c.STSSessionTTL <= 0 {
 		return fmt.Errorf("KEYSTONE_DGW_STS_SESSION_TTL_SECONDS must be greater than 0")
 	}
-	if c.STSRegion == "" || c.STSEndpoint == "" {
-		return fmt.Errorf("KEYSTONE_DGW_ALIBABA_CLOUD_STS_REGION and KEYSTONE_DGW_ALIBABA_CLOUD_STS_ENDPOINT are required")
-	}
 	if c.AccessKeyID == "" || c.AccessKeySecret == "" {
-		return fmt.Errorf("KEYSTONE_DGW_ALIBABA_CLOUD_ACCESS_KEY_ID and KEYSTONE_DGW_ALIBABA_CLOUD_ACCESS_KEY_SECRET are required")
+		return fmt.Errorf("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID and KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET are required")
 	}
 	return nil
 }

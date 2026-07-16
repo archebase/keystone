@@ -6,7 +6,7 @@ package services
 
 import (
 	"context"
-	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +34,8 @@ func TestDCPlanTaskGenerationCreatesMissingTasks(t *testing.T) {
 		t.Fatalf("unexpected plan summary: %#v", summary.Plans[0])
 	}
 	assertTaskGenerationCount(t, db, plan.ID, 3)
-	assertTaskGenerationCompatBatch(t, db, plan.ID, plan.TargetCount)
+	assertTaskGenerationDoesNotWriteOrderBatch(t, db)
+	assertTaskGenerationDoesNotWriteLegacyProductionMetadata(t, db)
 }
 
 func TestDCPlanTaskGenerationIsIdempotent(t *testing.T) {
@@ -136,6 +137,12 @@ func testTaskGenerationPlan(id int64, workspaceID int64, targetCount int64) auth
 func seedTaskGenerationPlan(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
 	t.Helper()
 	if _, err := db.Exec(`
+		INSERT OR IGNORE INTO workspaces (id, admins, members, deleted_at)
+		VALUES (?, '[]', '[]', NULL)
+	`, plan.WorkspaceID); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
 			id, workspace_id, name, dc_factory_id, dc_service_provider_id, operator,
 			dc_project_id, dc_task_id, dc_device_id, dc_type, dc_date,
@@ -154,15 +161,9 @@ func seedTaskGenerationResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCP
 	t.Helper()
 	seedTaskGenerationCollector(t, db, 7, plan.WorkspaceID, "Collector A", plan.Operator)
 	if _, err := db.Exec(`
-		INSERT INTO robot_types (id, name, model, ros_topics, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, 77, "Type A", "hilbert_dc_device_type_77", `["/camera"]`, time.Now().UTC(), time.Now().UTC()); err != nil {
-		t.Fatalf("seed robot type: %v", err)
-	}
-	if _, err := db.Exec(`
-		INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, 9, 77, "456", 1, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
+		INSERT INTO robots (id, device_id, workspace_id, status, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, 9, "456", plan.WorkspaceID, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
 }
@@ -170,10 +171,25 @@ func seedTaskGenerationResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCP
 func seedTaskGenerationCollector(t *testing.T, db *sqlx.DB, id int64, workspaceID int64, name string, operatorID string) {
 	t.Helper()
 	if _, err := db.Exec(`
-		INSERT INTO data_collectors (id, organization_id, name, operator_id, status, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, name, operatorID, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
+		INSERT INTO data_collectors (id, name, operator_id, status, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, id, name, operatorID, "active", `{"source":"hilbert"}`, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("seed collector: %v", err)
+	}
+	var members string
+	if err := db.Get(&members, `SELECT members FROM workspaces WHERE id = ?`, workspaceID); err != nil {
+		t.Fatalf("query workspace members: %v", err)
+	}
+	values, err := DecodeWorkspacePeople(members)
+	if err != nil {
+		t.Fatalf("decode workspace members: %v", err)
+	}
+	encoded, err := EncodeWorkspacePeople(append(values, operatorID))
+	if err != nil {
+		t.Fatalf("encode workspace members: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE workspaces SET members = ? WHERE id = ?`, encoded, workspaceID); err != nil {
+		t.Fatalf("update workspace members: %v", err)
 	}
 }
 
@@ -212,17 +228,35 @@ func assertTaskGenerationWorkstationCollector(t *testing.T, db *sqlx.DB, dcPlanI
 	}
 }
 
-func assertTaskGenerationCompatBatch(t *testing.T, db *sqlx.DB, dcPlanID int64, targetCount int64) {
+func assertTaskGenerationDoesNotWriteOrderBatch(t *testing.T, db *sqlx.DB) {
 	t.Helper()
-	var row struct {
-		BatchID      string `db:"batch_id"`
-		EpisodeCount int64  `db:"episode_count"`
+	for _, table := range []string{"orders", "batches"} {
+		var count int
+		if err := db.Get(&count, "SELECT COUNT(*) FROM "+table); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count=%d want 0", table, count)
+		}
 	}
-	if err := db.Get(&row, "SELECT batch_id, episode_count FROM batches WHERE batch_id = ?", "dcplan_"+strconv.FormatInt(dcPlanID, 10)); err != nil {
-		t.Fatalf("query compat batch: %v", err)
+}
+
+func assertTaskGenerationDoesNotWriteLegacyProductionMetadata(t *testing.T, db *sqlx.DB) {
+	t.Helper()
+	var task struct {
+		Metadata string `db:"metadata"`
 	}
-	if row.EpisodeCount != targetCount {
-		t.Fatalf("episode_count=%d want %d", row.EpisodeCount, targetCount)
+	if err := db.Get(&task, `
+		SELECT metadata
+		FROM tasks
+		LIMIT 1
+	`); err != nil {
+		t.Fatalf("query generated task: %v", err)
+	}
+	for _, value := range []string{`"workspace_id":123`, `"dc_plan_id":1001`, `"execution_config"`} {
+		if !strings.Contains(task.Metadata, value) {
+			t.Fatalf("task metadata %q missing %q", task.Metadata, value)
+		}
 	}
 }
 
@@ -233,6 +267,12 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if _, err := db.Exec(`
+		CREATE TABLE workspaces (
+			id INTEGER PRIMARY KEY,
+			admins TEXT NOT NULL,
+			members TEXT NOT NULL,
+			deleted_at TIMESTAMP
+		);
 		CREATE TABLE dc_plan (
 			id INTEGER PRIMARY KEY,
 			workspace_id INTEGER NOT NULL,
@@ -261,48 +301,8 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			local_updated_at TIMESTAMP,
 			deleted_at TIMESTAMP
 		);
-		CREATE TABLE factories (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
-			slug TEXT NOT NULL UNIQUE,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		);
-		CREATE TABLE sops (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			slug TEXT NOT NULL,
-			description TEXT,
-			version TEXT NOT NULL,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP,
-			UNIQUE(slug, version)
-		);
-		CREATE TABLE scenes (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			factory_id INTEGER NOT NULL,
-			name TEXT NOT NULL UNIQUE,
-			description TEXT,
-			initial_scene_layout_template TEXT,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		);
-		CREATE TABLE subscenes (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			scene_id INTEGER NOT NULL,
-			name TEXT NOT NULL,
-			description TEXT,
-			initial_scene_layout TEXT,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP,
-			UNIQUE(scene_id, name)
-		);
 		CREATE TABLE data_collectors (
 			id INTEGER PRIMARY KEY,
-			organization_id INTEGER NOT NULL,
 			name TEXT NOT NULL,
 			operator_id TEXT NOT NULL,
 			status TEXT,
@@ -311,20 +311,10 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP,
 			deleted_at TIMESTAMP
 		);
-		CREATE TABLE robot_types (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			model TEXT NOT NULL,
-			ros_topics TEXT NOT NULL,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		);
 		CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
-			robot_type_id INTEGER NOT NULL,
 			device_id TEXT NOT NULL,
-			factory_id INTEGER NOT NULL,
+			workspace_id INTEGER NOT NULL DEFAULT 0,
 			status TEXT,
 			metadata TEXT,
 			created_at TIMESTAMP,
@@ -339,8 +329,7 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			data_collector_id INTEGER NOT NULL,
 			collector_name TEXT,
 			collector_operator_id TEXT,
-			factory_id INTEGER NOT NULL,
-			organization_id INTEGER NOT NULL,
+			workspace_id INTEGER NOT NULL,
 			name TEXT,
 			status TEXT,
 			metadata TEXT,
@@ -352,7 +341,6 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		CREATE TABLE orders (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			organization_id INTEGER NOT NULL,
-			scene_id INTEGER NOT NULL,
 			name TEXT NOT NULL,
 			target_count INTEGER NOT NULL,
 			priority TEXT,
@@ -380,20 +368,13 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 		CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			task_id TEXT NOT NULL,
-			batch_id INTEGER NOT NULL,
-			order_id INTEGER NOT NULL,
-			sop_id INTEGER NOT NULL,
+			batch_id INTEGER,
+			order_id INTEGER,
 			workstation_id INTEGER,
-			scene_id INTEGER NOT NULL,
-			subscene_id INTEGER NOT NULL,
 			batch_name TEXT,
-			scene_name TEXT,
-			subscene_name TEXT,
-			factory_id INTEGER,
 			organization_id INTEGER,
 			dc_plan_id INTEGER,
 			local_dc_plan_id INTEGER,
-			initial_scene_layout TEXT,
 			status TEXT,
 			assigned_at TIMESTAMP,
 			metadata TEXT,

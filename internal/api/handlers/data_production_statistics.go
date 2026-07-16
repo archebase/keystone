@@ -19,6 +19,7 @@ import (
 
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
+	"archebase.com/keystone-edge/internal/services"
 )
 
 // DataProductionStatisticsHandler handles Synapse Admin data production statistics APIs.
@@ -51,12 +52,10 @@ type dataProductionStatsQuery struct {
 	StartTime            time.Time
 	EndTime              time.Time
 	Granularity          string
+	WorkspaceIDs         []int64
 	SourceID             string
-	SceneIDs             []int64
 	RobotDeviceIDs       []string
-	RobotTypeIDs         []string
 	CollectorOperatorIDs []string
-	SOPIDs               []string
 	QAStatuses           []string
 	CloudSyncedValues    []bool
 	DataType             string
@@ -146,17 +145,11 @@ type dataProductionDetailItem struct {
 	Time                string `json:"time" db:"time"`
 	SourceID            string `json:"source_id" db:"source_id"`
 	SourceName          string `json:"source_name" db:"source_name"`
-	SceneID             string `json:"scene_id" db:"scene_id"`
-	SceneName           string `json:"scene_name" db:"scene_name"`
 	RobotDeviceID       string `json:"robot_device_id" db:"robot_device_id"`
-	RobotTypeID         string `json:"robot_type_id" db:"robot_type_id"`
-	RobotTypeName       string `json:"robot_type_name" db:"robot_type_name"`
 	CollectorOperatorID string `json:"collector_operator_id" db:"collector_operator_id"`
 	CollectorName       string `json:"collector_name" db:"collector_name"`
 	TaskID              string `json:"task_id" db:"task_id"`
 	TaskName            string `json:"task_name" db:"task_name"`
-	SOPID               string `json:"sop_id" db:"sop_id"`
-	SOP                 string `json:"sop" db:"sop"`
 	DataType            string `json:"data_type" db:"data_type"`
 	Status              string `json:"status" db:"status"`
 	QAStatus            string `json:"qa_status" db:"qa_status"`
@@ -268,17 +261,12 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 			return dataProductionStatsQuery{}, fmt.Errorf("granularity must be one of hour, day, week, month")
 		}
 	}
-
-	sceneIDs, err := parsePositiveInt64List(c.Query("scene_id"), "scene_id")
+	workspaceIDs, err := parseNonNegativeInt64List(c.Query("workspace_id"), "workspace_id")
 	if err != nil {
 		return dataProductionStatsQuery{}, err
 	}
 
 	robotDeviceIDs, err := parseStatsStringListQuery(c, "robot_device_id")
-	if err != nil {
-		return dataProductionStatsQuery{}, err
-	}
-	robotTypeIDs, err := parseStatsStringListQuery(c, "robot_type_id")
 	if err != nil {
 		return dataProductionStatsQuery{}, err
 	}
@@ -288,10 +276,6 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 		if err != nil {
 			return dataProductionStatsQuery{}, err
 		}
-	}
-	sopIDs, err := parseStatsStringListQuery(c, "sop_id")
-	if err != nil {
-		return dataProductionStatsQuery{}, err
 	}
 	qaStatuses, err := parseStatsStringListQuery(c, "qa_status")
 	if err != nil {
@@ -312,12 +296,10 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 		StartTime:            startTime,
 		EndTime:              endTime,
 		Granularity:          granularity,
+		WorkspaceIDs:         workspaceIDs,
 		SourceID:             strings.TrimSpace(c.Query("source_id")),
-		SceneIDs:             sceneIDs,
 		RobotDeviceIDs:       robotDeviceIDs,
-		RobotTypeIDs:         robotTypeIDs,
 		CollectorOperatorIDs: collectorOperatorIDs,
-		SOPIDs:               sopIDs,
 		QAStatuses:           qaStatuses,
 		CloudSyncedValues:    cloudSyncedValues,
 		DataType:             strings.TrimSpace(c.Query("data_type")),
@@ -382,7 +364,7 @@ func (h *DataProductionStatisticsHandler) GetOperatorSummary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+	if !h.scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
 		return
 	}
 
@@ -442,7 +424,7 @@ func (h *DataProductionStatisticsHandler) GetOperatorTrend(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+	if !h.scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
 		return
 	}
 	timezoneOffset, err := parseStatsTimezoneOffset(c.Query("timezone_offset"))
@@ -516,7 +498,7 @@ func (h *DataProductionStatisticsHandler) GetOperatorBreakdown(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if !scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
+	if !h.scopeDataProductionStatsQueryToCurrentCollector(c, &q) {
 		return
 	}
 	pagination, err := ParsePagination(c)
@@ -571,7 +553,7 @@ func (h *DataProductionStatisticsHandler) writeBreakdown(c *gin.Context, q dataP
 	})
 }
 
-func scopeDataProductionStatsQueryToCurrentCollector(c *gin.Context, q *dataProductionStatsQuery) bool {
+func (h *DataProductionStatisticsHandler) scopeDataProductionStatsQueryToCurrentCollector(c *gin.Context, q *dataProductionStatsQuery) bool {
 	claims := middleware.GetClaims(c)
 	if claims == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
@@ -587,7 +569,18 @@ func scopeDataProductionStatsQueryToCurrentCollector(c *gin.Context, q *dataProd
 		c.JSON(http.StatusForbidden, gin.H{"error": "collector identity missing"})
 		return false
 	}
+	workspaceIDs, err := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, operatorID)
+	if err != nil {
+		logger.Printf("[DATA_PRODUCTION] Failed to resolve collector Workspace access: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve workspace access"})
+		return false
+	}
+	if len(workspaceIDs) == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+		return false
+	}
 	q.CollectorOperatorIDs = []string{operatorID}
+	q.WorkspaceIDs = workspaceIDs
 	return true
 }
 
@@ -678,18 +671,12 @@ func dataProductionDetailsSQL(baseSQL string, sortBy string, sortOrder string) s
 			DATE_FORMAT(COALESCE(CONVERT_TZ(event_time, @@session.time_zone, '+00:00'), event_time), '%%Y-%%m-%%dT%%H:%%i:%%sZ') AS time,
 			source_id,
 			source_name,
-			scene_id,
-			scene_name,
-			robot_device_id,
-			robot_type_id,
-			robot_type_name,
-			collector_operator_id,
+				robot_device_id,
+				collector_operator_id,
 			collector_name,
 			task_id,
 			task_name,
-			sop_id,
-			sop,
-			data_type,
+				data_type,
 			status,
 			qa_status,
 			COALESCE(cloud_synced, FALSE) AS cloud_synced,
@@ -722,12 +709,10 @@ func (h *DataProductionStatisticsHandler) ExportCSV(c *gin.Context) {
 		SELECT
 			episode_id AS id,
 			DATE_FORMAT(COALESCE(CONVERT_TZ(event_time, @@session.time_zone, ?), event_time), '%%Y-%%m-%%d %%H:%%i:%%s') AS time,
-			robot_device_id,
-			robot_type_name,
-			collector_operator_id,
+				robot_device_id,
+				collector_operator_id,
 			collector_name,
-			task_id,
-			sop,
+				task_id,
 			duration_ms,
 			size_bytes
 		FROM (%s) p
@@ -748,18 +733,16 @@ func (h *DataProductionStatisticsHandler) ExportCSV(c *gin.Context) {
 
 	writer := csv.NewWriter(c.Writer)
 	_ = writer.Write([]string{
-		"id", "time", "设备ID", "设备型号", "数采员工号", "数采员姓名", "task_id", "sop", "时长", "大小",
+		"id", "time", "设备ID", "数采员工号", "数采员姓名", "task_id", "时长", "大小",
 	})
 	for _, item := range items {
 		_ = writer.Write([]string{
 			item.ID,
 			item.Time,
 			item.RobotDeviceID,
-			item.RobotTypeName,
 			item.CollectorOperatorID,
 			item.CollectorName,
 			item.TaskID,
-			item.SOP,
 			formatExportDuration(item.DurationMs),
 			formatExportSize(item.SizeBytes),
 		})
@@ -891,11 +874,9 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 		conditions = append(conditions, "source_id = ?")
 		args = append(args, q.SourceID)
 	}
-	conditions, args = appendStatsInt64InCondition(conditions, args, "scene_id", q.SceneIDs)
+	conditions, args = appendStatsInt64InCondition(conditions, args, "workspace_id", q.WorkspaceIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "robot_device_id", q.RobotDeviceIDs)
-	conditions, args = appendStatsInCondition(conditions, args, "robot_type_id", q.RobotTypeIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "collector_operator_id", q.CollectorOperatorIDs)
-	conditions, args = appendStatsInCondition(conditions, args, "sop_id", q.SOPIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "qa_status", q.QAStatuses)
 	conditions, args = appendStatsBoolInCondition(conditions, args, "cloud_synced", q.CloudSyncedValues)
 	if q.DataType != "" {
@@ -955,27 +936,14 @@ func productionRecordsSQL() string {
 			CONCAT('episode:', e.id) AS id,
 			COALESCE(e.episode_id, '') AS episode_id,
 			COALESCE(t.completed_at, e.created_at) AS event_time,
+			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 			COALESCE(r.device_id, ws.robot_serial, CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR)), 'unknown') AS source_name,
-			e.scene_id AS scene_id,
-			COALESCE(e.scene_name, t.scene_name, '') AS scene_name,
 			COALESCE(r.device_id, ws.robot_serial, '') AS robot_device_id,
-			COALESCE(CAST(r.robot_type_id AS CHAR), '') AS robot_type_id,
-			COALESCE(NULLIF(rt.name, ''), NULLIF(ws.robot_name, ''), '') AS robot_type_name,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
 			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_id,
 			COALESCE(t.task_id, CAST(e.task_id AS CHAR)) AS task_name,
-			COALESCE(CAST(e.sop_id AS CHAR), CAST(t.sop_id AS CHAR), '') AS sop_id,
-			CASE
-				WHEN NULLIF(s.slug, '') IS NULL THEN
-					CASE
-						WHEN COALESCE(e.sop_id, t.sop_id) IS NULL THEN ''
-						ELSE CONCAT('SOP #', CAST(COALESCE(e.sop_id, t.sop_id) AS CHAR))
-					END
-				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
-				ELSE CONCAT(s.slug, ' @ ', s.version)
-			END AS sop,
 			'episode' AS data_type,
 			'success' AS status,
 			COALESCE(e.qa_status, '') AS qa_status,
@@ -989,9 +957,7 @@ func productionRecordsSQL() string {
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = COALESCE(e.sop_id, t.sop_id) AND s.deleted_at IS NULL
 		WHERE e.deleted_at IS NULL
 	`
 }
@@ -1135,12 +1101,6 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 		return "robot_device_id", "robot_device_id", nil
 	case "collector":
 		return "collector_operator_id", "collector_operator_id", nil
-	case "robot_type":
-		return "robot_type_id", "robot_type_name", nil
-	case "scene":
-		return "scene_id", "scene_name", nil
-	case "sop":
-		return "sop_id", "sop", nil
 	case "qa_status":
 		return "qa_status", `CASE qa_status
 			WHEN 'pending_qa' THEN '待质检'
@@ -1152,7 +1112,7 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 	case "cloud_synced":
 		return "CASE WHEN cloud_synced THEN 'true' ELSE 'false' END", "CASE WHEN cloud_synced THEN '已同步' ELSE '未同步' END", nil
 	default:
-		return "", "", fmt.Errorf("dimension must be one of source, robot_device, collector, robot_type, scene, sop, qa_status, cloud_synced")
+		return "", "", fmt.Errorf("dimension must be one of source, robot_device, collector, qa_status, cloud_synced")
 	}
 }
 

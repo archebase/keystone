@@ -146,7 +146,6 @@ type syncLogRow struct {
 	ID               int64          `db:"id"`
 	EpisodeID        int64          `db:"episode_id"`
 	EpisodePublicID  sql.NullString `db:"episode_public_id"`
-	SourceFactoryID  sql.NullString `db:"source_factory_id"`
 	SourcePath       sql.NullString `db:"source_path"`
 	DestinationPath  sql.NullString `db:"destination_path"`
 	Status           string         `db:"status"`
@@ -164,7 +163,6 @@ type syncEpisodeSummaryRow struct {
 	ID                 int64          `db:"id"`
 	EpisodeID          int64          `db:"episode_id"`
 	EpisodePublicID    sql.NullString `db:"episode_public_id"`
-	SourceFactoryID    sql.NullString `db:"source_factory_id"`
 	SourcePath         sql.NullString `db:"source_path"`
 	DestinationPath    sql.NullString `db:"destination_path"`
 	Status             string         `db:"status"`
@@ -186,7 +184,6 @@ type syncStatusDBRow struct {
 	CloudProcessed   bool           `db:"cloud_processed"`
 	CloudSyncedAt    sql.NullTime   `db:"cloud_synced_at"`
 	SyncLogID        sql.NullInt64  `db:"sync_log_id"`
-	SourceFactoryID  sql.NullString `db:"source_factory_id"`
 	SourcePath       sql.NullString `db:"source_path"`
 	DestinationPath  sql.NullString `db:"destination_path"`
 	Status           sql.NullString `db:"status"`
@@ -452,8 +449,7 @@ func (h *SyncHandler) ListSyncJobs(c *gin.Context) {
 			sl.id,
 			sl.episode_id,
 			e.episode_id AS episode_public_id,
-			sl.source_factory_id,
-			sl.source_path,
+				sl.source_path,
 			sl.destination_path,
 			sl.status,
 			sl.bytes_transferred,
@@ -547,8 +543,7 @@ func (h *SyncHandler) ListEpisodeSyncSummaries(c *gin.Context) {
 			latest_log.id,
 			latest_log.episode_id,
 			e.episode_id AS episode_public_id,
-			latest_log.source_factory_id,
-			latest_log.source_path,
+				latest_log.source_path,
 			latest_log.destination_path,
 			latest_log.status,
 			latest_log.bytes_transferred,
@@ -644,8 +639,7 @@ func (h *SyncHandler) ListEpisodeSyncLogs(c *gin.Context) {
 			sl.id,
 			sl.episode_id,
 			e.episode_id AS episode_public_id,
-			sl.source_factory_id,
-			sl.source_path,
+				sl.source_path,
 			sl.destination_path,
 			sl.status,
 			sl.bytes_transferred,
@@ -803,8 +797,7 @@ func (h *SyncHandler) loadEpisodeSyncStatuses(ctx context.Context, episodeIDs []
 			COALESCE(e.cloud_processed, FALSE) AS cloud_processed,
 			e.cloud_synced_at,
 			sl.id AS sync_log_id,
-			sl.source_factory_id,
-			sl.source_path,
+				sl.source_path,
 			sl.destination_path,
 			sl.status,
 			sl.bytes_transferred,
@@ -864,7 +857,6 @@ func syncStatusResponseFromRow(row syncStatusDBRow) EpisodeSyncStatusResponse {
 			ID:               row.SyncLogID.Int64,
 			EpisodeID:        row.EpisodeID,
 			EpisodePublicID:  row.EpisodePublicID,
-			SourceFactoryID:  row.SourceFactoryID,
 			SourcePath:       row.SourcePath,
 			DestinationPath:  row.DestinationPath,
 			Status:           row.Status.String,

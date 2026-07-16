@@ -5,13 +5,10 @@
 package handlers
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +28,8 @@ func TestRobotHandlerListRobots_DeviceIDSearchSemantics(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, asset_id, status, created_at, updated_at) VALUES (1, 10, 'wt1_robot_060', 30, 'asset-060', 'active', ?, ?)`, args: []any{now, now}},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, asset_id, status, created_at, updated_at) VALUES (2, 10, 'wt1_robot_120', 30, 'asset-120', 'active', ?, ?)`, args: []any{now, now}},
+		{sql: `INSERT INTO robots (id, device_id, asset_id, status, created_at, updated_at) VALUES (1, 'wt1_robot_060', 'asset-060', 'active', ?, ?)`, args: []any{now, now}},
+		{sql: `INSERT INTO robots (id, device_id, asset_id, status, created_at, updated_at) VALUES (2, 'wt1_robot_120', 'asset-120', 'active', ?, ?)`, args: []any{now, now}},
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
@@ -60,6 +57,11 @@ func TestRobotHandlerListRobots_DeviceIDSearchSemantics(t *testing.T) {
 		{
 			name:          "partial device_id does not match",
 			path:          "/api/v1/robots?device_id=060",
+			wantDeviceIDs: nil,
+		},
+		{
+			name:          "q does not match asset_id",
+			path:          "/api/v1/robots?q=asset-060",
 			wantDeviceIDs: nil,
 		},
 		{
@@ -95,17 +97,39 @@ func TestRobotHandlerListRobots_DeviceIDSearchSemantics(t *testing.T) {
 	}
 }
 
-func TestRobotHandlerListRobotsIncludesDisplayLabels(t *testing.T) {
+func TestRobotHandlerListRobotsFiltersByWorkspaceID(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+	seedRobotLookups(t, db)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_id, workspace_id, status)
+		VALUES (1, 'device-a', 123, 'active'), (2, 'device-b', 456, 'active')
+	`); err != nil {
+		t.Fatalf("seed robots: %v", err)
+	}
+
+	r := newTestRobotRouter(t, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/robots?workspace_id=456", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp RobotListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Items) != 1 || resp.Items[0].WorkspaceID != "456" {
+		t.Fatalf("response=%#v", resp)
+	}
+}
+
+func TestRobotHandlerListRobotsIncludesProjectedDeviceNameAndType(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()
 
-	if _, err := db.Exec(`INSERT INTO robot_types (id, name, model, deleted_at) VALUES (51, 'Arm Type 51', 'Model-51', NULL)`); err != nil {
-		t.Fatalf("seed robot type fixture failed: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO factories (id, name, slug, deleted_at) VALUES (81, 'Factory 81', 'fac-81', NULL)`); err != nil {
-		t.Fatalf("seed factory fixture failed: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, metadata) VALUES (1, 51, 'label_robot', 81, 'active', '{"hilbert_dc_device_name":"dev01"}')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, device_type_id, device_type, status, metadata) VALUES (1, 'label_robot', 77, 'Type 77', 'active', '{"hilbert_dc_device_name":"dev01"}')`); err != nil {
 		t.Fatalf("seed robot fixture failed: %v", err)
 	}
 
@@ -126,14 +150,11 @@ func TestRobotHandlerListRobotsIncludesDisplayLabels(t *testing.T) {
 		t.Fatalf("items=%#v, want one item", resp.Items)
 	}
 	got := resp.Items[0]
-	if got.RobotTypeModel != "Model-51" || got.RobotTypeName != "Arm Type 51" {
-		t.Fatalf("unexpected robot type labels: %#v", got)
-	}
 	if got.DeviceName != "dev01" {
 		t.Fatalf("DeviceName=%q want dev01 item=%#v", got.DeviceName, got)
 	}
-	if got.FactoryName != "Factory 81" || got.FactorySlug != "fac-81" {
-		t.Fatalf("unexpected factory labels: %#v", got)
+	if got.DeviceTypeID != "77" || got.DeviceType != "Type 77" {
+		t.Fatalf("device type = (%q, %q), want (77, Type 77) item=%#v", got.DeviceTypeID, got.DeviceType, got)
 	}
 }
 
@@ -165,9 +186,9 @@ func TestRobotHandlerListRobots_ConnectedFilterUsesSQLLimit(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, created_at, updated_at) VALUES (1, 10, 'older_robot', 30, 'active', ?, ?)`, args: []any{now, now}},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, created_at, updated_at) VALUES (2, 10, 'page_external_robot', 30, 'active', 'not-a-time', 'not-a-time')`},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, created_at, updated_at) VALUES (3, 10, 'newest_robot', 30, 'active', ?, ?)`, args: []any{now, now}},
+		{sql: `INSERT INTO robots (id, device_id, status, created_at, updated_at) VALUES (1, 'older_robot', 'active', ?, ?)`, args: []any{now, now}},
+		{sql: `INSERT INTO robots (id, device_id, status, created_at, updated_at) VALUES (2, 'page_external_robot', 'active', 'not-a-time', 'not-a-time')`},
+		{sql: `INSERT INTO robots (id, device_id, status, created_at, updated_at) VALUES (3, 'newest_robot', 'active', ?, ?)`, args: []any{now, now}},
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
@@ -208,9 +229,9 @@ func TestRobotHandlerListRobots_ConnectedFilterUsesHubIntersection(t *testing.T)
 		sql  string
 		args []any
 	}{
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, created_at, updated_at) VALUES (1, 10, 'recorder_only_robot', 30, 'active', ?, ?)`, args: []any{now, now}},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, created_at, updated_at) VALUES (2, 10, 'connected_robot', 30, 'active', ?, ?)`, args: []any{now, now}},
-		{sql: `INSERT INTO robots (id, robot_type_id, device_id, factory_id, status, created_at, updated_at) VALUES (3, 10, 'offline_robot', 30, 'active', ?, ?)`, args: []any{now, now}},
+		{sql: `INSERT INTO robots (id, device_id, status, created_at, updated_at) VALUES (1, 'recorder_only_robot', 'active', ?, ?)`, args: []any{now, now}},
+		{sql: `INSERT INTO robots (id, device_id, status, created_at, updated_at) VALUES (2, 'connected_robot', 'active', ?, ?)`, args: []any{now, now}},
+		{sql: `INSERT INTO robots (id, device_id, status, created_at, updated_at) VALUES (3, 'offline_robot', 'active', ?, ?)`, args: []any{now, now}},
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
@@ -270,230 +291,9 @@ func TestRobotHandlerListRobots_ConnectedFilterUsesHubIntersection(t *testing.T)
 	})
 }
 
-func TestRobotHandlerAssetID_CreateValidatesDPProfileAndList(t *testing.T) {
-	db := newTestRobotHandlerDB(t)
-	defer db.Close()
-	seedRobotLookups(t, db)
-
-	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, robotDPConfigJSON("asset-1")))
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
-		"robot_type_id": "10",
-		"device_id": "local-device-1",
-		"asset_id": "  asset-1  ",
-		"factory_id": "30"
-	}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create status=%d want=%d body=%s", w.Code, http.StatusCreated, w.Body.String())
-	}
-	var created CreateRobotResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
-		t.Fatalf("unmarshal create response: %v", err)
-	}
-	if created.AssetID != "asset-1" {
-		t.Fatalf("created asset_id=%v want asset-1", created.AssetID)
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/robots", nil)
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("list status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
-	}
-	var list RobotListResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
-		t.Fatalf("unmarshal list response: %v", err)
-	}
-	if len(list.Items) != 1 || list.Items[0].AssetID != "asset-1" {
-		t.Fatalf("list asset_id response=%#v", list)
-	}
-
-	req = httptest.NewRequest(http.MethodPut, "/api/v1/robots/"+created.ID, bytes.NewBufferString(`{"asset_id":"asset-1"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("ordinary update status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-}
-
-func TestRobotHandlerCloudAsset_BindChangeUnbind(t *testing.T) {
-	db := newTestRobotHandlerDB(t)
-	defer db.Close()
-	seedRobotLookups(t, db)
-	seedRobot(t, db, 1, "local-device-1", "", nil)
-
-	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, robotDPConfigJSON("asset-1", "asset-2")))
-
-	for _, tt := range []struct {
-		name      string
-		method    string
-		path      string
-		body      string
-		wantAsset string
-	}{
-		{name: "bind", method: http.MethodPut, path: "/api/v1/robots/1/cloud-asset", body: `{"asset_id":" asset-1 "}`, wantAsset: "asset-1"},
-		{name: "same value idempotent", method: http.MethodPut, path: "/api/v1/robots/1/cloud-asset", body: `{"asset_id":"asset-1"}`, wantAsset: "asset-1"},
-		{name: "change", method: http.MethodPut, path: "/api/v1/robots/1/cloud-asset", body: `{"asset_id":"asset-2"}`, wantAsset: "asset-2"},
-		{name: "unbind", method: http.MethodDelete, path: "/api/v1/robots/1/cloud-asset", wantAsset: ""},
-		{name: "unbind idempotent", method: http.MethodDelete, path: "/api/v1/robots/1/cloud-asset", wantAsset: ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, bytes.NewBufferString(tt.body))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			r.ServeHTTP(w, req)
-			if w.Code != http.StatusOK {
-				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
-			}
-			var resp RobotResponse
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
-			}
-			if resp.AssetID != tt.wantAsset {
-				t.Fatalf("asset_id=%q want=%q response=%#v", resp.AssetID, tt.wantAsset, resp)
-			}
-		})
-	}
-
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/robots/1/cloud-asset", bytes.NewBufferString(`{"asset_id":"   "}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("blank bind status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-}
-
-func TestRobotHandlerAssetID_UniqueAmongActiveRobots(t *testing.T) {
-	db := newTestRobotHandlerDB(t)
-	defer db.Close()
-	seedRobotLookups(t, db)
-	seedRobot(t, db, 1, "local-device-1", "asset-1", nil)
-	deletedAt := time.Now().UTC()
-	seedRobot(t, db, 2, "deleted-device", "deleted-asset", &deletedAt)
-
-	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, robotDPConfigJSON("asset-1", "deleted-asset")))
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
-		"robot_type_id": "10",
-		"device_id": "local-device-2",
-		"asset_id": "asset-1",
-		"factory_id": "30"
-	}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("duplicate create status=%d want=%d body=%s", w.Code, http.StatusConflict, w.Body.String())
-	}
-
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
-		"robot_type_id": "10",
-		"device_id": "local-device-3",
-		"asset_id": "deleted-asset",
-		"factory_id": "30"
-	}`))
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("soft-deleted reuse status=%d want=%d body=%s", w.Code, http.StatusCreated, w.Body.String())
-	}
-}
-
-func TestRobotHandlerCloudAssetOptions(t *testing.T) {
-	db := newTestRobotHandlerDB(t)
-	defer db.Close()
-	seedRobotLookups(t, db)
-	seedRobot(t, db, 1, "local-device-1", "asset-1", nil)
-	seedRobot(t, db, 2, "local-device-2", "current-asset", nil)
-	deletedAt := time.Now().UTC()
-	seedRobot(t, db, 3, "deleted-device", "deleted-asset", &deletedAt)
-
-	body := `{
-		"version": 3,
-		"endpoints": {"auth": "auth:1", "gateway": "gateway:2"},
-		"devices": [
-			{"deviceId":"asset-1","apiKey":"key","tags":{"k":"v"}},
-			{"deviceId":"asset-2","apiKey":"key","tags":{"k":"v"}},
-			{"deviceId":"current-asset","apiKey":"key","tags":{"k":"v"}},
-			{"deviceId":"deleted-asset","apiKey":"key","tags":{"k":"v"}},
-			{"deviceId":"bad-api","apiKey":"  ","tags":{"k":"v"}},
-			{"deviceId":"bad-tags","apiKey":"key","tags":{}}
-		]
-	}`
-	r := newTestRobotRouterWithDPConfig(t, db, writeRobotDPConfigFixture(t, body))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/robots/cloud-asset-options?robot_id=2&q=ASSET", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
-	}
-	var resp CloudAssetOptionsResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal options: %v body=%s", err, w.Body.String())
-	}
-	got := make([]string, 0, len(resp.Items))
-	for _, item := range resp.Items {
-		got = append(got, item.DeviceID)
-	}
-	want := []string{"asset-2", "deleted-asset"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("options=%v want=%v", got, want)
-	}
-}
-
-func TestRobotHandlerAssetID_Validation(t *testing.T) {
-	db := newTestRobotHandlerDB(t)
-	defer db.Close()
-	seedRobotLookups(t, db)
-
-	r := newTestRobotRouter(t, db)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString("{\n"+
-		`"robot_type_id":"10",`+
-		`"device_id":"local-device-1",`+
-		`"factory_id":"30",`+
-		`"asset_id":"asset\u0001id"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("control char status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-
-	longID := strings.Repeat("a", 101)
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/robots", bytes.NewBufferString(`{
-		"robot_type_id": "10",
-		"device_id": "local-device-2",
-		"factory_id": "30",
-		"asset_id": "`+longID+`"
-	}`))
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("long id status=%d want=%d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
-	}
-}
-
 func newTestRobotRouter(t *testing.T, db *sqlx.DB) *gin.Engine {
 	t.Helper()
 	return newTestRobotRouterWithHubs(t, db, nil, nil)
-}
-
-func newTestRobotRouterWithDPConfig(t *testing.T, db *sqlx.DB, dpConfigPath string) *gin.Engine {
-	t.Helper()
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	NewRobotHandler(db, nil, nil, dpConfigPath).RegisterRoutes(r.Group("/api/v1"))
-	return r
 }
 
 func newTestRobotRouterWithHubs(t *testing.T, db *sqlx.DB, recorderHub *services.RecorderHub, transferHub *services.TransferHub) *gin.Engine {
@@ -502,30 +302,6 @@ func newTestRobotRouterWithHubs(t *testing.T, db *sqlx.DB, recorderHub *services
 	r := gin.New()
 	NewRobotHandler(db, recorderHub, transferHub).RegisterRoutes(r.Group("/api/v1"))
 	return r
-}
-
-func writeRobotDPConfigFixture(t *testing.T, body string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "dp-config.json")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write DP config fixture: %v", err)
-	}
-	return path
-}
-
-func robotDPConfigJSON(deviceIDs ...string) string {
-	var b strings.Builder
-	b.WriteString(`{"version":3,"endpoints":{"auth":"auth:1","gateway":"gateway:2"},"devices":[`)
-	for i, deviceID := range deviceIDs {
-		if i > 0 {
-			b.WriteString(",")
-		}
-		b.WriteString(`{"deviceId":"`)
-		b.WriteString(deviceID)
-		b.WriteString(`","apiKey":"key","tags":{"k":"v"}}`)
-	}
-	b.WriteString(`]}`)
-	return b.String()
 }
 
 func connectRecorderForTest(t *testing.T, hub *services.RecorderHub, deviceID string, connectedAt time.Time) {
@@ -557,10 +333,11 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 
 	schema := `CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
-			robot_type_id INTEGER NOT NULL,
-		device_id TEXT NOT NULL,
-		asset_id TEXT,
-		factory_id INTEGER NOT NULL,
+			device_id TEXT NOT NULL,
+			device_type_id INTEGER,
+			device_type TEXT,
+			asset_id TEXT,
+			workspace_id INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL,
 		metadata TEXT,
 		created_at TIMESTAMP,
@@ -570,21 +347,15 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatalf("create robot schema failed: %v", err)
 	}
-	if _, err := db.Exec(`CREATE TABLE robot_types (
+	if _, err := db.Exec(`CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
-			model TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`); err != nil {
-		t.Fatalf("create robot type schema failed: %v", err)
+		t.Fatalf("create workspace schema failed: %v", err)
 	}
-	if _, err := db.Exec(`CREATE TABLE factories (
-			id INTEGER PRIMARY KEY,
-			name TEXT NOT NULL,
-			slug TEXT NOT NULL,
-			deleted_at TIMESTAMP NULL
-		)`); err != nil {
-		t.Fatalf("create factory schema failed: %v", err)
+	if _, err := db.Exec(`INSERT INTO workspaces (id, name, deleted_at) VALUES (0, 'Default Workspace', NULL)`); err != nil {
+		t.Fatalf("seed default workspace: %v", err)
 	}
 
 	return db
@@ -592,12 +363,6 @@ func newTestRobotHandlerDB(t *testing.T) *sqlx.DB {
 
 func seedRobotLookups(t *testing.T, db *sqlx.DB) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO robot_types (id, name, model, deleted_at) VALUES (10, 'Arm Type', 'Model-A', NULL)`); err != nil {
-		t.Fatalf("seed robot type: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO factories (id, name, slug, deleted_at) VALUES (30, 'Factory 30', 'fac-30', NULL)`); err != nil {
-		t.Fatalf("seed factory: %v", err)
-	}
 }
 
 func seedRobot(t *testing.T, db *sqlx.DB, id int64, deviceID string, assetID string, deletedAt *time.Time) {
@@ -612,8 +377,8 @@ func seedRobot(t *testing.T, db *sqlx.DB, id int64, deviceID string, assetID str
 	}
 	now := time.Now().UTC()
 	if _, err := db.Exec(`
-		INSERT INTO robots (id, robot_type_id, device_id, asset_id, factory_id, status, created_at, updated_at, deleted_at)
-		VALUES (?, 10, ?, ?, 30, 'active', ?, ?, ?)
+		INSERT INTO robots (id, device_id, asset_id, status, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, 'active', ?, ?, ?)
 	`, id, deviceID, asset, now, now, deleted); err != nil {
 		t.Fatalf("seed robot %d: %v", id, err)
 	}

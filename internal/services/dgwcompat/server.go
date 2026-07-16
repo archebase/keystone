@@ -12,17 +12,22 @@ import (
 
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
 	"archebase.com/keystone-edge/internal/logger"
+	"github.com/jmoiron/sqlx"
 	"google.golang.org/grpc"
 )
 
-// Server owns the compatibility gRPC servers.
+// Server owns the compatibility gRPC server.
 type Server struct {
 	cfg     Config
 	servers []*grpc.Server
 }
 
+type episodeQAEnqueuer interface {
+	EnqueueEpisode(episodeID int64)
+}
+
 // StartFromEnv starts the compatibility server if KEYSTONE_DGW_COMPAT_ENABLED is truthy.
-func StartFromEnv() (*Server, error) {
+func StartFromEnv(db *sqlx.DB, qaEnqueuer episodeQAEnqueuer) (*Server, error) {
 	cfg, err := LoadConfigFromEnv()
 	if err != nil {
 		return nil, err
@@ -31,38 +36,33 @@ func StartFromEnv() (*Server, error) {
 		logger.Println("[DGW_COMPAT] Compatibility server disabled")
 		return nil, nil
 	}
-	return Start(cfg)
+	return Start(cfg, db, qaEnqueuer)
 }
 
-// Start starts all compatibility gRPC listeners.
-func Start(cfg Config) (*Server, error) {
-	sts := newSTSProvider(cfg)
+// Start starts the compatibility gRPC listener.
+func Start(cfg Config, db *sqlx.DB, qaEnqueuer episodeQAEnqueuer) (*Server, error) {
+	if db == nil {
+		return nil, fmt.Errorf("dgw compatibility server requires database")
+	}
+	sts, err := newSTSProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
 	sessions := newSessionStore()
+	identity := newDeviceIdentityService(db, cfg)
 
-	auth := grpc.NewServer()
-	cloudpb.RegisterAuthServiceServer(auth, &authService{})
-
-	gateway := grpc.NewServer()
-	cloudpb.RegisterDataGatewayServiceServer(gateway, newGatewayService(cfg, sts, sessions))
-
-	deviceInit := grpc.NewServer()
-	cloudpb.RegisterDeviceInitServiceServer(deviceInit, &deviceInitService{apiKey: cfg.DeviceAPIKey})
+	server := grpc.NewServer(grpc.UnaryInterceptor(unifiedUnaryAuthInterceptor(db, cfg)))
+	cloudpb.RegisterAuthServiceServer(server, &authService{identity: identity})
+	cloudpb.RegisterDataGatewayServiceServer(server, newGatewayService(cfg, sts, sessions, db, qaEnqueuer))
+	cloudpb.RegisterDeviceInitServiceServer(server, &deviceInitService{identity: identity})
 
 	started := &Server{cfg: cfg}
-	if err := started.serve("auth", cfg.AuthAddr, auth); err != nil {
+	if err := started.serve("grpc", cfg.GRPCAddr, server); err != nil {
 		started.Stop(context.Background())
 		return nil, err
 	}
-	if err := started.serve("gateway", cfg.GatewayAddr, gateway); err != nil {
-		started.Stop(context.Background())
-		return nil, err
-	}
-	if err := started.serve("device_init", cfg.DeviceInitAddr, deviceInit); err != nil {
-		started.Stop(context.Background())
-		return nil, err
-	}
-	logger.Printf("[DGW_COMPAT] Started compatibility gRPC servers auth=%s gateway=%s device_init=%s bucket=%s endpoint=%s mock_sts=%t",
-		cfg.AuthAddr, cfg.GatewayAddr, cfg.DeviceInitAddr, cfg.OSSBucket, cfg.OSSPublicEndpoint, cfg.MockSTS)
+	logger.Printf("[DGW_COMPAT] Started compatibility gRPC server addr=%s services=auth,gateway,device_init backend=volcengine_tos bucket=%s endpoint=%s region=%s mock_sts=%t",
+		cfg.GRPCAddr, cfg.TOSBucket, cfg.TOSEndpoint, cfg.TOSRegion, cfg.MockSTS)
 	return started, nil
 }
 
@@ -103,5 +103,5 @@ func (s *Server) Stop(ctx context.Context) {
 		}(grpcServer)
 	}
 	wg.Wait()
-	logger.Println("[DGW_COMPAT] Compatibility gRPC servers stopped")
+	logger.Println("[DGW_COMPAT] Compatibility gRPC server stopped")
 }

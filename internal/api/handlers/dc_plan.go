@@ -7,12 +7,14 @@ package handlers
 import (
 	"database/sql"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -38,9 +40,13 @@ type DCPlanResponse struct {
 	DCFactoryID         int64  `json:"dc_factory_id"`
 	DCServiceProviderID int64  `json:"dc_service_provider_id"`
 	Operator            string `json:"operator"`
+	OperatorDisplayName string `json:"operator_display_name,omitempty"`
 	DCProjectID         int64  `json:"dc_project_id"`
+	DCProjectName       string `json:"dc_project_name,omitempty"`
 	DCTaskID            int64  `json:"dc_task_id"`
+	DCTaskName          string `json:"dc_task_name,omitempty"`
 	DCDeviceID          int64  `json:"dc_device_id"`
+	DCDeviceName        string `json:"dc_device_name,omitempty"`
 	DCType              string `json:"dc_type"`
 	DCDate              string `json:"dc_date"`
 	TargetCount         int64  `json:"target_count"`
@@ -74,32 +80,48 @@ type DCPlanSyncResponse struct {
 }
 
 type dcPlanRow struct {
-	ID                  int64          `db:"id"`
-	WorkspaceID         int64          `db:"workspace_id"`
-	Name                string         `db:"name"`
-	Description         sql.NullString `db:"description"`
-	DCFactoryID         int64          `db:"dc_factory_id"`
-	DCServiceProviderID int64          `db:"dc_service_provider_id"`
-	Operator            string         `db:"operator"`
-	DCProjectID         int64          `db:"dc_project_id"`
-	DCTaskID            int64          `db:"dc_task_id"`
-	DCDeviceID          int64          `db:"dc_device_id"`
-	DCType              string         `db:"dc_type"`
-	DCDate              string         `db:"dc_date"`
-	TargetCount         int64          `db:"target_count"`
-	CurCount            int64          `db:"cur_count"`
-	TargetDuration      int64          `db:"target_duration"`
-	CurDuration         int64          `db:"cur_duration"`
-	CreatedBy           string         `db:"created_by"`
-	CreatedTime         sql.NullTime   `db:"created_time"`
-	UpdatedBy           sql.NullString `db:"updated_by"`
-	UpdatedTime         sql.NullTime   `db:"updated_time"`
-	LastSyncedAt        sql.NullTime   `db:"last_synced_at"`
+	ID                  int64           `db:"id"`
+	WorkspaceID         int64           `db:"workspace_id"`
+	Name                string          `db:"name"`
+	Description         sql.NullString  `db:"description"`
+	DCFactoryID         int64           `db:"dc_factory_id"`
+	DCServiceProviderID int64           `db:"dc_service_provider_id"`
+	Operator            string          `db:"operator"`
+	OperatorDisplayName sql.NullString  `db:"operator_display_name"`
+	DCProjectID         int64           `db:"dc_project_id"`
+	DCProjectName       sql.NullString  `db:"dc_project_name"`
+	DCTaskID            int64           `db:"dc_task_id"`
+	DCTaskName          sql.NullString  `db:"dc_task_name"`
+	DCDeviceID          int64           `db:"dc_device_id"`
+	DCDeviceName        sql.NullString  `db:"dc_device_name"`
+	DCType              string          `db:"dc_type"`
+	DCDate              string          `db:"dc_date"`
+	TargetCount         int64           `db:"target_count"`
+	CurCount            int64           `db:"cur_count"`
+	LocalCurCount       int64           `db:"local_cur_count"`
+	TargetDuration      int64           `db:"target_duration"`
+	CurDuration         int64           `db:"cur_duration"`
+	LocalCurDuration    sql.NullFloat64 `db:"local_cur_duration"`
+	CreatedBy           string          `db:"created_by"`
+	CreatedTime         sql.NullTime    `db:"created_time"`
+	UpdatedBy           sql.NullString  `db:"updated_by"`
+	UpdatedTime         sql.NullTime    `db:"updated_time"`
+	LastSyncedAt        sql.NullTime    `db:"last_synced_at"`
 }
 
 // RegisterRoutes registers dc_plan routes.
 func (h *DCPlanHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/dc-plans", h.ListDCPlans)
+	apiV1.POST("/workspaces/:workspace_id/dc-plans/sync", h.SyncWorkspaceDCPlans)
+}
+
+// RegisterReadRoutes registers dc_plan routes available to authenticated readers.
+func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.GET("/dc-plans", h.ListDCPlans)
+}
+
+// RegisterAdminRoutes registers dc_plan admin-only routes.
+func (h *DCPlanHandler) RegisterAdminRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/workspaces/:workspace_id/dc-plans/sync", h.SyncWorkspaceDCPlans)
 }
 
@@ -133,9 +155,26 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 		return
 	}
 
+	claims := middleware.GetClaims(c)
+	if claims != nil && claims.Role == "data_collector" {
+		workspaceIDs, err := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, claims.OperatorID)
+		if err != nil {
+			logger.Printf("[DC_PLAN] Failed to resolve collector Workspace access: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list dc plans"})
+			return
+		}
+		if !int64SliceContains(workspaceIDs, workspaceID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+			return
+		}
+	}
+
 	name := strings.TrimSpace(c.Query("name"))
 	dcType := strings.TrimSpace(c.Query("dc_type"))
 	operator := strings.TrimSpace(c.Query("operator"))
+	if claims != nil && claims.Role == "data_collector" {
+		operator = claims.OperatorID
+	}
 	dcDate := strings.TrimSpace(c.Query("dc_date"))
 	if dcDate != "" {
 		if parsed, err := time.Parse("2006-01-02", dcDate); err != nil || parsed.Format("2006-01-02") != dcDate {
@@ -144,24 +183,24 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 		}
 	}
 
-	whereClause := "WHERE deleted_at IS NULL AND workspace_id = ?"
+	whereClause := "WHERE dp.deleted_at IS NULL AND dp.workspace_id = ?"
 	args := []any{workspaceID}
-	whereClause, args = appendKeywordSearch(whereClause, args, name, "name")
+	whereClause, args = appendKeywordSearch(whereClause, args, name, "dp.name")
 	if dcType != "" {
-		whereClause += " AND dc_type = ?"
+		whereClause += " AND dp.dc_type = ?"
 		args = append(args, dcType)
 	}
 	if operator != "" {
-		whereClause += " AND operator = ?"
+		whereClause += " AND dp.operator = ?"
 		args = append(args, operator)
 	}
 	if dcDate != "" {
-		whereClause += " AND dc_date = ?"
+		whereClause += " AND dp.dc_date = ?"
 		args = append(args, dcDate)
 	}
 
 	var total int
-	if err := h.db.Get(&total, "SELECT COUNT(*) FROM dc_plan "+whereClause, args...); err != nil {
+	if err := h.db.Get(&total, "SELECT COUNT(*) FROM dc_plan dp "+whereClause, args...); err != nil {
 		logger.Printf("[DC_PLAN] Failed to count dc plans: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list dc plans"})
 		return
@@ -169,13 +208,23 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 
 	query := `
 		SELECT
-			id, workspace_id, name, description, dc_factory_id, dc_service_provider_id,
-			operator, dc_project_id, dc_task_id, dc_device_id, dc_type, CAST(dc_date AS CHAR) AS dc_date,
-			target_count, cur_count, target_duration, cur_duration, created_by, created_time,
-			updated_by, updated_time, last_synced_at
-		FROM dc_plan
+			dp.id, dp.workspace_id, dp.name, dp.description, dp.dc_factory_id, dp.dc_service_provider_id,
+			dp.operator, dp.operator_display_name, dp.dc_project_id, dp.dc_project_name, dp.dc_task_id, dp.dc_task_name, dp.dc_device_id, dp.dc_device_name, dp.dc_type, CAST(dp.dc_date AS CHAR) AS dc_date,
+			dp.target_count, dp.cur_count, COALESCE(progress.local_cur_count, 0) AS local_cur_count,
+			dp.target_duration, dp.cur_duration, COALESCE(progress.local_cur_duration, 0) AS local_cur_duration,
+			dp.created_by, dp.created_time, dp.updated_by, dp.updated_time, dp.last_synced_at
+		FROM dc_plan dp
+		LEFT JOIN (
+			SELECT
+				dc_plan_id,
+				COUNT(*) AS local_cur_count,
+				COALESCE(SUM(COALESCE(duration_sec, 0)), 0) AS local_cur_duration
+			FROM episodes
+			WHERE deleted_at IS NULL AND dc_plan_id IS NOT NULL
+			GROUP BY dc_plan_id
+		) progress ON progress.dc_plan_id = dp.id
 		` + whereClause + `
-		ORDER BY dc_date DESC, id DESC
+		ORDER BY dp.dc_date DESC, dp.id DESC
 		LIMIT ? OFFSET ?
 	`
 	args = append(args, pagination.Limit, pagination.Offset)
@@ -274,6 +323,17 @@ func parsePositivePathInt64(c *gin.Context, field string) (int64, bool) {
 }
 
 func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
+	curCount := row.CurCount
+	if row.LocalCurCount > curCount {
+		curCount = row.LocalCurCount
+	}
+	curDuration := row.CurDuration
+	if row.LocalCurDuration.Valid {
+		localDuration := int64(math.Round(row.LocalCurDuration.Float64))
+		if localDuration > curDuration {
+			curDuration = localDuration
+		}
+	}
 	return DCPlanResponse{
 		ID:                  row.ID,
 		WorkspaceID:         row.WorkspaceID,
@@ -282,19 +342,32 @@ func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
 		DCFactoryID:         row.DCFactoryID,
 		DCServiceProviderID: row.DCServiceProviderID,
 		Operator:            row.Operator,
+		OperatorDisplayName: row.OperatorDisplayName.String,
 		DCProjectID:         row.DCProjectID,
+		DCProjectName:       row.DCProjectName.String,
 		DCTaskID:            row.DCTaskID,
+		DCTaskName:          row.DCTaskName.String,
 		DCDeviceID:          row.DCDeviceID,
+		DCDeviceName:        row.DCDeviceName.String,
 		DCType:              row.DCType,
 		DCDate:              row.DCDate,
 		TargetCount:         row.TargetCount,
-		CurCount:            row.CurCount,
+		CurCount:            curCount,
 		TargetDuration:      row.TargetDuration,
-		CurDuration:         row.CurDuration,
+		CurDuration:         curDuration,
 		CreatedBy:           row.CreatedBy,
 		CreatedTime:         formatWorkspaceNullableTime(row.CreatedTime),
 		UpdatedBy:           row.UpdatedBy.String,
 		UpdatedTime:         formatWorkspaceNullableTime(row.UpdatedTime),
 		LastSyncedAt:        formatWorkspaceNullableTime(row.LastSyncedAt),
 	}
+}
+
+func int64SliceContains(values []int64, needle int64) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }

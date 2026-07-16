@@ -1,0 +1,736 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>EgoPortal Lite 接入 Keystone SDK 与数采计划改造设计</title>
+  <style>
+    :root {
+      --ink: #1D1A2F;
+      --purple: #5F2A62;
+      --green: #8BD450;
+      --orange: #F47A16;
+      --paper: #FFF8E7;
+      --black: #09080F;
+      --line: 3px;
+      --shadow: 8px 8px 0 var(--black);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background: var(--ink);
+      color: var(--paper);
+      font-family: "Songti SC", STSong, SimSun, Georgia, serif;
+      line-height: 1.72;
+      letter-spacing: 0;
+    }
+
+    a { color: inherit; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+
+    .hero {
+      min-height: 92vh;
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(340px, .85fr);
+      border-bottom: 14px solid var(--green);
+      background: var(--purple);
+    }
+
+    .hero-copy {
+      position: relative;
+      z-index: 2;
+      padding: clamp(36px, 7vw, 104px) clamp(24px, 6vw, 88px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .eyebrow {
+      margin: 0 0 24px;
+      color: var(--green);
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 800;
+      font-size: 18px;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      max-width: 920px;
+      margin-bottom: 28px;
+      color: var(--paper);
+      font-size: 108px;
+      line-height: .93;
+      font-weight: 900;
+      text-wrap: balance;
+    }
+
+    .hero-lede {
+      max-width: 760px;
+      margin: 0;
+      padding-left: 18px;
+      border-left: 10px solid var(--orange);
+      font-size: 27px;
+      font-weight: 700;
+    }
+
+    .machine {
+      position: relative;
+      min-height: 640px;
+      background: var(--green);
+      border-left: 14px solid var(--black);
+      clip-path: polygon(13% 0, 100% 0, 100% 100%, 0 100%);
+      display: grid;
+      align-content: center;
+      padding: 70px 42px 70px 92px;
+      color: var(--black);
+    }
+
+    .machine::before,
+    .machine::after {
+      content: "";
+      position: absolute;
+      background: var(--orange);
+      border: var(--line) solid var(--black);
+      box-shadow: var(--shadow);
+      transform: skewY(-7deg);
+    }
+
+    .machine::before { width: 52%; height: 72px; top: 11%; right: -4%; }
+    .machine::after { width: 38%; height: 52px; bottom: 9%; left: 12%; }
+
+    .rail {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      gap: 14px;
+    }
+
+    .rail-node {
+      min-height: 92px;
+      display: grid;
+      grid-template-columns: 62px 1fr;
+      align-items: center;
+      border: var(--line) solid var(--black);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      transform: skewX(-5deg);
+    }
+
+    .rail-node b {
+      height: 100%;
+      display: grid;
+      place-items: center;
+      border-right: var(--line) solid var(--black);
+      background: var(--ink);
+      color: var(--green);
+      font-size: 24px;
+    }
+
+    .rail-node span {
+      padding: 16px 20px;
+      font-weight: 800;
+      font-size: 19px;
+    }
+
+    .decision {
+      padding: 24px clamp(24px, 6vw, 88px);
+      background: var(--orange);
+      color: var(--black);
+      border-bottom: 5px solid var(--black);
+      font-size: 42px;
+      line-height: 1.18;
+      font-weight: 900;
+      text-align: center;
+    }
+
+    main { overflow: hidden; }
+
+    section {
+      border-bottom: 4px solid var(--purple);
+      padding: clamp(58px, 8vw, 120px) clamp(22px, 6vw, 88px);
+    }
+
+    section:nth-child(even) { background: var(--black); }
+
+    .section-inner { max-width: 1320px; margin: 0 auto; }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 94px minmax(0, 1fr);
+      gap: 22px;
+      align-items: start;
+      margin-bottom: 46px;
+    }
+
+    .section-no {
+      height: 76px;
+      display: grid;
+      place-items: center;
+      background: var(--green);
+      color: var(--black);
+      border: var(--line) solid var(--black);
+      box-shadow: 6px 6px 0 var(--orange);
+      font: 900 28px Georgia, serif;
+    }
+
+    h2 {
+      margin-bottom: 8px;
+      color: var(--green);
+      font-size: 62px;
+      line-height: 1.05;
+      font-weight: 900;
+    }
+
+    .section-summary {
+      max-width: 900px;
+      color: var(--paper);
+      font-size: 19px;
+      font-weight: 700;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 26px;
+    }
+
+    .panel {
+      border: var(--line) solid var(--green);
+      background: var(--ink);
+      padding: 28px;
+      box-shadow: 8px 8px 0 var(--purple);
+    }
+
+    .panel.alert { border-color: var(--orange); }
+    .panel h3 { color: var(--green); font-size: 25px; }
+    .panel.alert h3 { color: var(--orange); }
+
+    ul, ol { margin: 0; padding-left: 1.35em; }
+    li + li { margin-top: 10px; }
+
+    .callout {
+      margin: 38px 0;
+      padding: 25px 30px;
+      background: var(--green);
+      color: var(--black);
+      border: var(--line) solid var(--black);
+      box-shadow: var(--shadow);
+      font-size: 28px;
+      line-height: 1.35;
+      font-weight: 900;
+      transform: rotate(-.35deg);
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .module {
+      position: relative;
+      min-height: 245px;
+      padding: 30px 24px;
+      border: var(--line) solid var(--black);
+      background: var(--paper);
+      color: var(--black);
+      box-shadow: var(--shadow);
+    }
+
+    .module::after {
+      content: "→";
+      position: absolute;
+      right: -24px;
+      top: 44%;
+      z-index: 3;
+      color: var(--orange);
+      font: 900 38px Georgia, serif;
+    }
+
+    .module:last-child::after { display: none; }
+    .module .tag { color: var(--purple); font: 800 13px Georgia, serif; }
+    .module h3 { margin: 10px 0 14px; font-size: 27px; line-height: 1.05; }
+
+    .flow {
+      display: grid;
+      gap: 12px;
+      counter-reset: flow;
+    }
+
+    .flow-row {
+      counter-increment: flow;
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr);
+      border: var(--line) solid var(--green);
+      background: var(--black);
+    }
+
+    .flow-row::before {
+      content: counter(flow, decimal-leading-zero);
+      display: grid;
+      place-items: center;
+      background: var(--green);
+      color: var(--black);
+      font: 900 24px Georgia, serif;
+    }
+
+    .flow-row div { padding: 17px 22px; }
+    .flow-row strong { color: var(--orange); }
+
+    .table-wrap { overflow-x: auto; border: var(--line) solid var(--green); }
+
+    table {
+      width: 100%;
+      min-width: 780px;
+      border-collapse: collapse;
+      background: var(--black);
+    }
+
+    th, td { padding: 17px 18px; border-bottom: 1px solid var(--purple); text-align: left; vertical-align: top; }
+    th { background: var(--green); color: var(--black); font-weight: 900; }
+    tr:last-child td { border-bottom: 0; }
+
+    pre {
+      margin: 28px 0;
+      padding: 24px;
+      overflow-x: auto;
+      border: var(--line) solid var(--green);
+      background: var(--black);
+      color: var(--paper);
+      box-shadow: 7px 7px 0 var(--purple);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .timeline { display: grid; gap: 18px; }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 100px minmax(0, 1fr);
+      border: var(--line) solid var(--orange);
+      background: var(--black);
+    }
+
+    .phase-index {
+      display: grid;
+      place-items: center;
+      background: var(--orange);
+      color: var(--black);
+      font: 900 38px Georgia, serif;
+    }
+
+    .phase-body { padding: 23px 27px; }
+    .phase-body h3 { margin-bottom: 8px; color: var(--green); font-size: 25px; }
+
+    .acceptance {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .check {
+      padding: 20px 22px;
+      border-left: 12px solid var(--green);
+      background: var(--paper);
+      color: var(--black);
+      font-weight: 800;
+    }
+
+    footer {
+      padding: 36px clamp(24px, 6vw, 88px);
+      background: var(--green);
+      color: var(--black);
+      border-top: 10px solid var(--orange);
+      font-weight: 900;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; }
+      h1 { font-size: 76px; }
+      h2 { font-size: 48px; }
+      .hero-lede { font-size: 23px; }
+      .decision { font-size: 32px; }
+      .callout { font-size: 24px; }
+      .machine { min-height: 520px; border-left: 0; border-top: 12px solid var(--black); clip-path: none; padding: 64px 24px; }
+      .split, .architecture, .acceptance { grid-template-columns: 1fr; }
+      .module::after { content: "↓"; right: 48%; top: auto; bottom: -35px; }
+      .section-head { grid-template-columns: 68px minmax(0, 1fr); }
+      .section-no { height: 62px; }
+    }
+
+    @media (max-width: 560px) {
+      h1 { font-size: 48px; }
+      h2 { font-size: 38px; }
+      .eyebrow { font-size: 14px; }
+      .hero-lede { font-size: 19px; }
+      .decision { font-size: 25px; }
+      .callout { font-size: 21px; }
+      .hero-copy { padding: 54px 22px; }
+      .rail-node { grid-template-columns: 48px 1fr; }
+      .rail-node span { font-size: 16px; }
+      section { padding: 58px 18px; }
+      .phase { grid-template-columns: 62px minmax(0, 1fr); }
+      .phase-body { padding: 20px 17px; }
+      .flow-row { grid-template-columns: 58px minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">EGO PORTAL LITE / KEYSTONE V2 / FRESH DEPLOYMENT</p>
+      <h1>切换 SDK<br>重组任务<br>锁定计划</h1>
+      <p class="hero-lede">从旧 Data SDK 与 Batch 工作流，切换到 Keystone 同仓 Swift SDK、Hilbert 数采计划和可追踪的 Task → Episode → Upload 闭环。</p>
+    </div>
+    <div class="machine" aria-label="系统重组流程">
+      <div class="rail">
+        <div class="rail-node"><b>01</b><span>Keystone Swift SDK<br>设备认证与 TOS 上传</span></div>
+        <div class="rail-node"><b>02</b><span>DC PLAN<br>计划成为唯一任务分组</span></div>
+        <div class="rail-node"><b>03</b><span>ONE CAPTURE / ONE TASK<br>采集不再复用代表任务</span></div>
+        <div class="rail-node"><b>04</b><span>EPISODE PERSISTED<br>上传完成形成业务记录</span></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="decision">核心决策：一次采集必须明确对应一个 Keystone task、一个 episode 和一个对象上传。</div>
+
+  <main>
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">01</div>
+          <div><h2>背景与问题</h2><p class="section-summary">现有 App 已能采集 MCAP 并通过旧 Data SDK 上传，但任务平台仍围绕 batch、SOP 和 scene 建模，上传完成也没有形成 Keystone episode。</p></div>
+        </div>
+        <div class="split">
+          <article class="panel">
+            <h3>现状</h3>
+            <ul>
+              <li>SwiftPM 指向独立 <code>data-sdk</code> 仓库。</li>
+              <li>设备绑定只保存 <code>device_id</code>，App 自行拼接三个 gRPC endpoint。</li>
+              <li>任务通过 <code>/batches</code>、<code>/batches/{id}/tasks</code> 和 <code>/sops</code> 获取。</li>
+              <li>多个本地采集可能复用一个代表性 task ID。</li>
+              <li>SDK <code>CompleteUpload</code> 当前只完成上传会话并写日志。</li>
+            </ul>
+          </article>
+          <article class="panel alert">
+            <h3>触发变化</h3>
+            <ul>
+              <li>Swift SDK 已归并到 Keystone，数据面改为火山云 TOS。</li>
+              <li>首次初始化必须使用管理员签发的 <code>device_auth_token</code>。</li>
+              <li>Hilbert <code>dc_plan</code> 成为生产计划主对象。</li>
+              <li>task 由数采计划生成，并携带 <code>dc_plan_id</code> 与 <code>workspace_id</code>。</li>
+              <li>生产数据需要通过 episode 留下可查询、可审计的持久事实。</li>
+            </ul>
+          </article>
+        </div>
+        <div class="callout">本项目只面向全新环境部署：不迁移历史 batch、不兼容旧 SDK 上传快照、不回填历史 capture 或 episode。</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">02</div>
+          <div><h2>目标与非目标</h2><p class="section-summary">目标不是维持旧接口外观，而是收敛出一个小而稳定的 App interface，让任务、采集和上传保持一一对应。</p></div>
+        </div>
+        <div class="split">
+          <article class="panel">
+            <h3>目标</h3>
+            <ul>
+              <li>Keystone 成为 Swift SDK 唯一源码和发布入口。</li>
+              <li>App 使用完整 bootstrap 配置初始化设备。</li>
+              <li>任务页面按数采计划分组、统计和展示。</li>
+              <li>每次开始采集前锁定一个明确的 pending task。</li>
+              <li>上传携带 task、dc plan、workspace 和 capture 上下文。</li>
+              <li>上传完成后持久化 episode 并完成对应 task。</li>
+            </ul>
+          </article>
+          <article class="panel alert">
+            <h3>非目标</h3>
+            <ul>
+              <li>不读取或迁移旧 SQLite batch 数据。</li>
+              <li>不恢复旧 OSS/TOS multipart 状态。</li>
+              <li>不兼容旧版无 token 设备初始化。</li>
+              <li>不继续暴露 SOP、scene、subscene 等旧任务字段。</li>
+              <li>不由 App 猜测 workspace 或从旧字段推导 dc plan。</li>
+              <li>不在本次扩展云端质量和隐私处理流程。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">03</div>
+          <div><h2>目标架构</h2><p class="section-summary">将当前巨型 ViewModel 中的 REST、SDK 和领域映射拆开，形成三个职责清晰的深模块。</p></div>
+        </div>
+        <div class="architecture">
+          <article class="module">
+            <span class="tag">REST ADAPTER</span>
+            <h3>KeystonePlatformClient</h3>
+            <p>负责登录、身份、任务、数采计划和 task 生命周期。只向 App 返回稳定领域模型，不泄漏 HTTP DTO。</p>
+          </article>
+          <article class="module">
+            <span class="tag">DOMAIN MODULE</span>
+            <h3>CaptureWorkflow</h3>
+            <p>选择计划、锁定 task、开始采集、生成 capture 绑定、协调上传和完成。它是 UI 与后端之间的主要 interface。</p>
+          </article>
+          <article class="module">
+            <span class="tag">SDK ADAPTER</span>
+            <h3>KeystoneUploadAdapter</h3>
+            <p>封装设备 bootstrap、ready 检查、上传事件和错误映射。App 不读取 SDK 私有配置文件。</p>
+          </article>
+        </div>
+        <pre><code>SwiftUI View
+  -> CaptureWorkflow
+       -> KeystonePlatformClient  -> Keystone REST /api/v1
+       -> CaptureEngine           -> local capture_session
+       -> KeystoneUploadAdapter   -> Keystone Swift SDK -> TOS</code></pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">04</div>
+          <div><h2>设备初始化</h2><p class="section-summary">设备 ID 不再是完整凭证。初始化入口改为可信 bootstrap 配置，一次性 token 只用于首次证明。</p></div>
+        </div>
+        <pre><code>{
+  "device_id": "260427000001",
+  "device_auth_token": "kda_v1_...",
+  "api":       { "scheme": "https", "host": "keystone.example.com", "port": 443 },
+  "auth":      { "scheme": "https", "host": "keystone.example.com", "port": 50053 },
+  "gateway":   { "scheme": "https", "host": "keystone.example.com", "port": 50053 },
+  "deviceInit":{ "scheme": "https", "host": "keystone.example.com", "port": 50053 }
+}</code></pre>
+        <div class="flow">
+          <div class="flow-row"><div><strong>扫描</strong> 管理员签发的完整 bootstrap JSON，不再扫描裸 device ID。</div></div>
+          <div class="flow-row"><div><strong>初始化</strong> 调用 <code>QiongcheDataGatewaySDK.saveConfigAndInit</code>，SDK 向 Keystone 消费初始化权限。</div></div>
+          <div class="flow-row"><div><strong>持久化</strong> API Key 进入 Keychain；普通 JSON 只保存 credential store 标记和 authoritative tags。</div></div>
+          <div class="flow-row"><div><strong>运行</strong> 后续启动仅调用 ready 检查，不重复提交已消费的 token。</div></div>
+        </div>
+        <div class="callout">禁止把 bootstrap JSON、device auth token、API Key、JWT 或 TOS STS 凭证写入 UserDefaults、日志、剪贴板或可导出的诊断文件。</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">05</div>
+          <div><h2>任务与计划模型</h2><p class="section-summary">数采计划负责分组与目标，task 负责一次具体执行。App 不再把计划本身当成可重复复用的 task。</p></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>旧模型</th><th>新模型</th><th>处理</th></tr></thead>
+            <tbody>
+              <tr><td><code>PlatformTaskBatchSummary</code></td><td><code>CollectionPlanSummary</code></td><td>按 <code>dc_plan_id</code> 分组，展示名称、目标数和状态计数。</td></tr>
+              <tr><td><code>assignmentID / batchID</code></td><td><code>dcPlanID / workspaceID</code></td><td>使用 Keystone 返回的权威数值 ID。</td></tr>
+              <tr><td><code>SOP / scene / subscene</code></td><td><code>dcPlanName / dcType / dcDeviceID</code></td><td>删除旧平台字段和额外 SOP 请求。</td></tr>
+              <tr><td>代表 task 重复采集</td><td>一次 capture 锁定一个 task</td><td>每次采集前选择计划内下一个可执行 task。</td></tr>
+              <tr><td><code>completeBatchTasks</code></td><td>上传完成后完成指定 task</td><td>禁止按 quantity 任意完成前 N 个 pending task。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre><code>struct CaptureAssignment {
+  let taskNumericID: Int64
+  let taskID: String
+  let dcPlanID: Int64
+  let workspaceID: Int64
+  let dcPlanName: String
+  let dcType: String
+  let deviceID: String
+}</code></pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">06</div>
+          <div><h2>REST 接口映射</h2><p class="section-summary">登录接口可继续使用，任务与提交接口需要完整切换到 Keystone 当前 contract。</p></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>场景</th><th>接口</th><th>App 行为</th></tr></thead>
+            <tbody>
+              <tr><td>登录</td><td><code>POST /api/v1/auth/login</code></td><td>提交 account/password，保存短期 access token。</td></tr>
+              <tr><td>当前身份</td><td><code>GET /api/v1/auth/me</code></td><td>取得 operator、role 和可用 workstation/workspace。</td></tr>
+              <tr><td>任务列表</td><td><code>GET /api/v1/tasks</code></td><td>完整分页；data collector 由服务端自动限制可见范围。</td></tr>
+              <tr><td>计划内任务</td><td><code>GET /api/v1/tasks?dc_plan_id={id}</code></td><td>选择 pending task 并计算本地执行进度。</td></tr>
+              <tr><td>计划信息</td><td><code>GET /api/v1/dc-plans?workspace_id={id}</code></td><td>取得计划名称、目标量、日期和类型。</td></tr>
+              <tr><td>完成任务</td><td>由上传完成事务完成指定 task</td><td>App 不再调用旧 batch complete 接口。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">07</div>
+          <div><h2>采集与上传闭环</h2><p class="section-summary">capture_session 的本地完整性检查保持不变，变化发生在业务绑定和上传完成后的持久化动作。</p></div>
+        </div>
+        <div class="flow">
+          <div class="flow-row"><div><strong>选择计划</strong> 用户选择一个未完成的数采计划。</div></div>
+          <div class="flow-row"><div><strong>锁定任务</strong> App 获取计划内一个明确的 pending task，并创建 <code>CaptureAssignment</code>。</div></div>
+          <div class="flow-row"><div><strong>本地采集</strong> task、dc plan、workspace 信息写入 metadata、MCAP task event 和 manifest。</div></div>
+          <div class="flow-row"><div><strong>本地验证</strong> MCAP、质量报告、manifest 和 checksum 全部通过后才允许上传。</div></div>
+          <div class="flow-row"><div><strong>创建上传</strong> SDK 请求携带 capture、task、dc plan 和 workspace 上下文。</div></div>
+          <div class="flow-row"><div><strong>TOS 直传</strong> SDK 使用 Keystone 签发的短期 STS 完成单对象或 multipart 上传。</div></div>
+          <div class="flow-row"><div><strong>业务完成</strong> Keystone 校验对象与任务上下文，创建 episode 并完成对应 task。</div></div>
+          <div class="flow-row"><div><strong>本地收尾</strong> App 写入 uploaded marker；按本地策略决定是否删除 MCAP。</div></div>
+        </div>
+        <pre><code>clientHints / rawTags
+  capture_id   = local capture UUID
+  task_id      = Keystone public task_id
+  dc_plan_id   = Hilbert plan projection ID
+  workspace_id = authenticated device workspace
+  device_id    = authenticated device ID
+  product      = ego_portal_lite
+  relative_path= capture.mcap</code></pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">08</div>
+          <div><h2>Keystone 必补能力</h2><p class="section-summary">仅替换 App SDK 依赖无法形成业务闭环。上传控制面必须理解 task 和 episode，而不能只维护内存 session。</p></div>
+        </div>
+        <div class="split">
+          <article class="panel alert">
+            <h3>CreateLogicalUpload 守卫</h3>
+            <ul>
+              <li>验证 <code>task_id</code> 存在且未被其他 episode 使用。</li>
+              <li>验证 task 的 <code>dc_plan_id</code> 与请求一致。</li>
+              <li>验证计划 workspace 与设备 JWT principal 一致。</li>
+              <li>将 task、plan、workspace 和 capture 上下文写入持久 upload session。</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <h3>CompleteUpload 事务</h3>
+            <ul>
+              <li>校验 TOS 对象存在、size 与 ETag 符合预期。</li>
+              <li>以 capture ID 或 logical upload ID 保证幂等。</li>
+              <li>创建 episode，复制 task 的 <code>dc_plan_id</code>。</li>
+              <li>保存 bucket、object key、size、ETag 和上传时间。</li>
+              <li>完成且只完成本次 capture 对应的 task。</li>
+            </ul>
+          </article>
+        </div>
+        <div class="callout">如果仍使用 <code>POST /tasks/complete {dc_plan_id, quantity}</code>，只能表达“完成若干任务”，无法证明哪一个上传对象对应哪一个 task，因此不作为正式链路。</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">09</div>
+          <div><h2>本地数据与 UI</h2><p class="section-summary">由于是全新部署，可以直接建立新 schema 和新文案，不保留 batch 兼容字段。</p></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>区域</th><th>改造内容</th></tr></thead>
+            <tbody>
+              <tr><td>SQLite</td><td>直接创建 <code>task_numeric_id</code>、<code>task_id</code>、<code>dc_plan_id</code>、<code>workspace_id</code>、<code>episode_id</code> 和 upload identifiers。</td></tr>
+              <tr><td>Capture metadata</td><td>TaskBinding 改为 CaptureAssignment，不再写 assignment、batch、SOP 和 scene 字段。</td></tr>
+              <tr><td>任务首页</td><td>显示计划名称、计划目标、已采集、上传中、已完成和剩余数量。</td></tr>
+              <tr><td>文件列表</td><td>按数采计划筛选；详情显示 task ID、dc plan ID、workspace ID 和 episode ID。</td></tr>
+              <tr><td>设备设置</td><td>展示设备 ID、初始化状态和 endpoint 摘要；不允许查看或编辑敏感 token。</td></tr>
+              <tr><td>术语</td><td>业务“批次”全部改为“数采计划”；多文件操作称“批量上传”，不再代表领域对象。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">10</div>
+          <div><h2>错误与安全</h2><p class="section-summary">错误必须告诉操作者下一步动作，同时避免泄露初始化和上传凭证。</p></div>
+        </div>
+        <div class="split">
+          <article class="panel">
+            <h3>可重试</h3>
+            <ul>
+              <li>Keystone 暂时不可达。</li>
+              <li>短期 JWT 或 TOS STS 过期。</li>
+              <li>网络中断、分片失败、HEAD 暂时失败。</li>
+              <li>服务端 5xx 或明确标记 retryable 的错误。</li>
+            </ul>
+          </article>
+          <article class="panel alert">
+            <h3>不可重试</h3>
+            <ul>
+              <li>device auth token 无效或已消费。</li>
+              <li>task 不存在、已完成或已绑定 episode。</li>
+              <li>dc plan 与 task 不匹配。</li>
+              <li>设备 workspace 与计划 workspace 不一致。</li>
+              <li>本地 checksum 或 manifest 校验失败。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">11</div>
+          <div><h2>实施顺序</h2><p class="section-summary">先冻结后端闭环和 SDK interface，再改 App，避免前端围绕临时 contract 反复调整。</p></div>
+        </div>
+        <div class="timeline">
+          <article class="phase"><div class="phase-index">0</div><div class="phase-body"><h3>契约冻结</h3><p>提交 Keystone SDK 当前设备认证和 TOS 改动，更新 README，冻结 bootstrap JSON、SDK 产品名和错误类型。</p></div></article>
+          <article class="phase"><div class="phase-index">1</div><div class="phase-body"><h3>Keystone 上传闭环</h3><p>让 CreateLogicalUpload/CompleteUpload 接入数据库，完成 task 校验、episode 创建、对象核验和幂等。</p></div></article>
+          <article class="phase"><div class="phase-index">2</div><div class="phase-body"><h3>App SDK 切换</h3><p>SwiftPM 改为 Keystone 根 package；引入完整 bootstrap 扫描；删除对 SDK 私有 JSON 的解析。</p></div></article>
+          <article class="phase"><div class="phase-index">3</div><div class="phase-body"><h3>任务模型切换</h3><p>建立 KeystonePlatformClient 和 CaptureAssignment；删除 batches、SOP、scene 及旧提交逻辑。</p></div></article>
+          <article class="phase"><div class="phase-index">4</div><div class="phase-body"><h3>本地 schema 与 UI</h3><p>使用全新 SQLite schema、计划分组页面、task 绑定详情和新的设备设置入口。</p></div></article>
+          <article class="phase"><div class="phase-index">5</div><div class="phase-body"><h3>端到端验证</h3><p>在真实设备和真实 TOS 环境完成登录、计划加载、task 锁定、采集、上传、episode 查询和 task 完成验证。</p></div></article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head">
+          <div class="section-no">12</div>
+          <div><h2>验收标准</h2><p class="section-summary">验收以数据库、对象存储和 App 三方事实一致为准，而不是只看 SDK 返回 completed。</p></div>
+        </div>
+        <div class="acceptance">
+          <div class="check">App 只能使用带有效 device auth token 的 bootstrap 完成首次初始化。</div>
+          <div class="check">App 不读取或展示明文 API Key、JWT、STS 或 bootstrap token。</div>
+          <div class="check">任务列表和 UI 不再出现 batch、SOP、scene 领域字段。</div>
+          <div class="check">每个本地 capture_session 持久化唯一 task、dc plan 和 workspace 绑定。</div>
+          <div class="check">TOS object metadata 与 App capture、task、plan 信息一致。</div>
+          <div class="check">每次上传成功产生且只产生一个 episode。</div>
+          <div class="check">episode 的 dc_plan_id 与对应 task 完全一致。</div>
+          <div class="check">完成一个上传只更新对应 task，不批量完成其他 pending task。</div>
+          <div class="check">重复 CompleteUpload 不创建重复 episode，返回同一业务结果。</div>
+          <div class="check">真机退出重进后可查询已完成数据，App、Keystone 与 TOS 状态一致。</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>设计状态：方向锁定。全新环境部署，无历史迁移；Keystone 上传闭环完成后再进入 ego-portal-lite 实施。</footer>
+</body>
+</html>

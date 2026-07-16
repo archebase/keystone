@@ -64,6 +64,39 @@ func TestGetEpisodeReturnsMetadata(t *testing.T) {
 	if recording["recorder_version"] != "axon_recorder 0.5.0" {
 		t.Fatalf("recorder.recording.recorder_version=%v want axon_recorder 0.5.0", recording["recorder_version"])
 	}
+	assertEpisodePlanFields(t, body)
+}
+
+func TestGetEpisodeReturnsDefaultWorkspaceFromTask(t *testing.T) {
+	db := openEpisodeMetadataTestDB(t)
+	defer db.Close()
+	seedEpisodeMetadataTestRow(t, db)
+	if _, err := db.Exec("UPDATE tasks SET organization_id = 0 WHERE id = 10"); err != nil {
+		t.Fatalf("update task workspace: %v", err)
+	}
+	if _, err := db.Exec("UPDATE episodes SET dc_plan_id = NULL WHERE id = 1"); err != nil {
+		t.Fatalf("clear episode plan: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewEpisodeHandler(db, nil, "", nil)
+	router.GET("/episodes/:id", handler.GetEpisode)
+
+	req := httptest.NewRequest(http.MethodGet, "/episodes/1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got := body["workspace_id"]; got != float64(0) {
+		t.Fatalf("workspace_id=%v want 0", got)
+	}
 }
 
 func TestListEpisodesOmitsMetadata(t *testing.T) {
@@ -96,6 +129,28 @@ func TestListEpisodesOmitsMetadata(t *testing.T) {
 	if _, ok := body.Items[0]["metadata"]; ok {
 		t.Fatalf("list item unexpectedly contains metadata: %#v", body.Items[0]["metadata"])
 	}
+	assertEpisodePlanFields(t, body.Items[0])
+}
+
+func assertEpisodePlanFields(t *testing.T, episode map[string]any) {
+	t.Helper()
+
+	wantNumbers := map[string]float64{
+		"dc_plan_id":       1001,
+		"local_dc_plan_id": 2001,
+		"workspace_id":     123,
+	}
+	for field, want := range wantNumbers {
+		if got := episode[field]; got != want {
+			t.Fatalf("%s=%v want %v episode=%#v", field, got, want, episode)
+		}
+	}
+	if got := episode["dc_plan_name"]; got != "Ego Plan A" {
+		t.Fatalf("dc_plan_name=%v want Ego Plan A", got)
+	}
+	if got := episode["dc_type"]; got != "ego" {
+		t.Fatalf("dc_type=%v want ego", got)
+	}
 }
 
 func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
@@ -109,6 +164,8 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			episode_id TEXT NOT NULL,
 			task_id INTEGER NOT NULL,
+			dc_plan_id INTEGER,
+			local_dc_plan_id INTEGER,
 			workstation_id INTEGER,
 			mcap_path TEXT NOT NULL,
 			sidecar_path TEXT NOT NULL,
@@ -130,21 +187,15 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY,
 			task_id TEXT,
-			sop_id INTEGER,
-			scene_name TEXT,
-			subscene_name TEXT,
-			deleted_at TIMESTAMP NULL
-		)`,
-		`CREATE TABLE sops (
-			id INTEGER PRIMARY KEY,
-			slug TEXT,
-			version TEXT,
+			organization_id INTEGER,
+			workstation_id INTEGER,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE workstations (
 			id INTEGER PRIMARY KEY,
 			robot_id INTEGER,
 			data_collector_id INTEGER,
+			workspace_id INTEGER,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE robots (
@@ -155,6 +206,13 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE data_collectors (
 			id INTEGER PRIMARY KEY,
 			operator_id TEXT,
+			deleted_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE dc_plan (
+			id INTEGER PRIMARY KEY,
+			workspace_id INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			dc_type TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 	} {
@@ -169,19 +227,25 @@ func seedEpisodeMetadataTestRow(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	metadata := `{"asset_id":"asset-1","recorder":{"recording":{"recorder_version":"axon_recorder 0.5.0"},"writer_health":{"state":"warning","writer_stall_state":"normal","writer_stall_suspected":false,"writer_partial_failures":0,"writer_queue_overflows":0,"error":null}}}`
 	if _, err := db.Exec(`
-		INSERT INTO tasks (id, task_id, sop_id, scene_name, subscene_name, deleted_at)
-		VALUES (10, 'task-public-1', NULL, 'scene', 'subscene', NULL)
+		INSERT INTO tasks (id, task_id, organization_id, workstation_id, deleted_at)
+		VALUES (10, 'task-public-1', 123, NULL, NULL)
 	`); err != nil {
 		t.Fatalf("seed task: %v", err)
 	}
 	if _, err := db.Exec(`
+		INSERT INTO dc_plan (id, workspace_id, name, dc_type, deleted_at)
+		VALUES (1001, 123, 'Ego Plan A', 'ego', NULL)
+	`); err != nil {
+		t.Fatalf("seed dc plan: %v", err)
+	}
+	if _, err := db.Exec(`
 		INSERT INTO episodes (
-			id, episode_id, task_id, workstation_id, mcap_path, sidecar_path,
+			id, episode_id, task_id, dc_plan_id, local_dc_plan_id, workstation_id, mcap_path, sidecar_path,
 			checksum, file_size_bytes, duration_sec, qa_status, qa_score,
 			quality_flag, auto_approved, cloud_synced, cloud_processed,
 			cloud_synced_at, created_at, labels, metadata, deleted_at
 		) VALUES (
-			1, 'episode-public-1', 10, NULL, 'bucket/a.mcap', 'bucket/a.json',
+			1, 'episode-public-1', 10, 1001, 2001, NULL, 'bucket/a.mcap', 'bucket/a.json',
 			'abc', 1024, 12.5, 'pending_qa', NULL,
 			NULL, FALSE, FALSE, FALSE,
 			NULL, '2026-06-24T00:00:00Z', '[]', ?, NULL

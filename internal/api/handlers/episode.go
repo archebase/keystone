@@ -22,6 +22,7 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
+	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
@@ -81,10 +82,11 @@ type episodeRow struct {
 	EpisodeID         string          `db:"episode_id"`
 	TaskID            int64           `db:"task_id"`
 	TaskPublicID      sql.NullString  `db:"task_public_id"`
-	SopSlug           sql.NullString  `db:"sop_slug"`
-	SopVersion        sql.NullString  `db:"sop_version"`
-	SceneName         sql.NullString  `db:"scene_name"`
-	SubsceneName      sql.NullString  `db:"subscene_name"`
+	DCPlanID          sql.NullInt64   `db:"dc_plan_id"`
+	LocalDCPlanID     sql.NullInt64   `db:"local_dc_plan_id"`
+	WorkspaceID       sql.NullInt64   `db:"workspace_id"`
+	DCPlanName        sql.NullString  `db:"dc_plan_name"`
+	DCType            sql.NullString  `db:"dc_type"`
 	RobotDeviceID     sql.NullString  `db:"robot_device_id"`
 	CollectorOperator sql.NullString  `db:"collector_operator_id"`
 	McapPath          string          `db:"mcap_path"`
@@ -110,10 +112,11 @@ type Episode struct {
 	EpisodeID         string   `json:"episode_id,omitempty"`
 	TaskID            int64    `json:"task_id"`
 	TaskPublicID      *string  `json:"task_public_id,omitempty"`
-	SopSlug           *string  `json:"sop_slug"`
-	SopVersion        *string  `json:"sop_version"`
-	SceneName         *string  `json:"scene_name"`
-	SubsceneName      *string  `json:"subscene_name"`
+	DCPlanID          *int64   `json:"dc_plan_id"`
+	LocalDCPlanID     *int64   `json:"local_dc_plan_id"`
+	WorkspaceID       *int64   `json:"workspace_id"`
+	DCPlanName        *string  `json:"dc_plan_name"`
+	DCType            *string  `json:"dc_type"`
 	RobotDeviceID     *string  `json:"robot_device_id"`
 	CollectorOperator *string  `json:"collector_operator_id"`
 	McapPath          string   `json:"mcap_path"`
@@ -147,6 +150,17 @@ type EpisodeListResponse struct {
 func (h *EpisodeHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("", h.ListEpisodes)
 	apiV1.GET("/:id", h.GetEpisode)
+	apiV1.GET("/:id/presign", h.GetEpisodePresignedURL)
+}
+
+// RegisterReadRoutes registers JWT-protected episode list and detail routes.
+func (h *EpisodeHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.GET("", h.ListEpisodes)
+	apiV1.GET("/:id", h.GetEpisode)
+}
+
+// RegisterPresignRoute keeps the presign endpoint's JWT/download-token authentication contract.
+func (h *EpisodeHandler) RegisterPresignRoute(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/:id/presign", h.GetEpisodePresignedURL)
 }
 
@@ -209,11 +223,10 @@ func episodeLabelsFromDB(ns sql.NullString) []string {
 // ListEpisodes returns a list of episodes with filtering and pagination
 //
 // @Summary      List episodes
-// @Description  Returns a list of episodes with optional filtering by task_id, scene_id, qa_status, auto_approved, cloud_processed, cloud_synced, robot_device_id, collector_operator_id, and created_at range
+// @Description  Returns a list of episodes with optional filtering by task_id, qa_status, auto_approved, cloud_processed, cloud_synced, robot_device_id, collector_operator_id, and created_at range
 // @Tags         episodes
 // @Produce      json
 // @Param        task_id                query     string  false  "Filter by task numeric id (or legacy public task_id string)"
-// @Param        scene_id               query     int     false  "Filter by task scene_id (numeric)"
 // @Param        qa_status              query     string  false  "Filter by QA status"
 // @Param        auto_approved          query     bool    false  "Filter by auto-approval status"
 // @Param        cloud_processed        query     bool    false  "Filter by cloud processing status"
@@ -235,9 +248,24 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	cloudSynced := c.Query("cloud_synced")
 	collectorOperatorID := c.Query("collector_operator_id")
 	robotDeviceID := c.Query("robot_device_id")
-	sceneID := c.Query("scene_id")
 	createdAtFrom := strings.TrimSpace(c.Query("created_at_from"))
 	createdAtTo := strings.TrimSpace(c.Query("created_at_to"))
+	claims := middleware.GetClaims(c)
+	collectorWorkspaceIDs := []int64{}
+	if claims != nil && claims.Role == "data_collector" {
+		var accessErr error
+		collectorWorkspaceIDs, accessErr = services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, claims.OperatorID)
+		if accessErr != nil {
+			logger.Printf("[EPISODE] Failed to resolve collector Workspace access: %v", accessErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list episodes"})
+			return
+		}
+		if len(collectorWorkspaceIDs) == 0 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+			return
+		}
+		collectorOperatorID = ""
+	}
 
 	// Parse limit and offset with defaults
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -260,10 +288,11 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.episode_id,
 			e.task_id as task_id,
 			t.task_id AS task_public_id,
-			s.slug AS sop_slug,
-			s.version AS sop_version,
-			t.scene_name AS scene_name,
-			t.subscene_name AS subscene_name,
+			e.dc_plan_id,
+			e.local_dc_plan_id,
+			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
+			dp.name AS dc_plan_name,
+				dp.dc_type,
 			r.device_id AS robot_device_id,
 			dc.operator_id AS collector_operator_id,
 			e.mcap_path,
@@ -282,8 +311,8 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.labels
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
 		WHERE e.deleted_at IS NULL
@@ -297,6 +326,30 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 
 	args := []interface{}{}
 	argsCount := []interface{}{}
+	if claims != nil && claims.Role == "data_collector" {
+		placeholders := make([]string, 0, len(collectorWorkspaceIDs))
+		for range collectorWorkspaceIDs {
+			placeholders = append(placeholders, "?")
+		}
+		scope := ` AND EXISTS (
+			SELECT 1 FROM workstations ws_scope
+			WHERE ws_scope.id = COALESCE(e.workstation_id, (
+				SELECT t_scope.workstation_id FROM tasks t_scope
+				WHERE t_scope.id = e.task_id AND t_scope.deleted_at IS NULL
+			))
+				AND ws_scope.data_collector_id = ?
+				AND ws_scope.workspace_id IN (` + strings.Join(placeholders, ",") + `)
+				AND ws_scope.deleted_at IS NULL
+		)`
+		query += scope
+		countQuery += scope
+		args = append(args, claims.CollectorID)
+		argsCount = append(argsCount, claims.CollectorID)
+		for _, workspaceID := range collectorWorkspaceIDs {
+			args = append(args, workspaceID)
+			argsCount = append(argsCount, workspaceID)
+		}
+	}
 
 	// Add filters
 	if taskID != "" {
@@ -312,15 +365,6 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			countQuery += " AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = e.task_id AND t.task_id = ? AND t.deleted_at IS NULL)"
 			args = append(args, taskID)
 			argsCount = append(argsCount, taskID)
-		}
-	}
-
-	if sceneID != "" {
-		if parsed, err := strconv.ParseInt(sceneID, 10, 64); err == nil {
-			query += " AND e.scene_id = ?"
-			countQuery += " AND e.scene_id = ?"
-			args = append(args, parsed)
-			argsCount = append(argsCount, parsed)
 		}
 	}
 
@@ -431,10 +475,11 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			EpisodeID:         r.EpisodeID,
 			TaskID:            r.TaskID,
 			TaskPublicID:      nullableString(r.TaskPublicID),
-			SopSlug:           nullableString(r.SopSlug),
-			SopVersion:        nullableString(r.SopVersion),
-			SceneName:         nullableString(r.SceneName),
-			SubsceneName:      nullableString(r.SubsceneName),
+			DCPlanID:          nullableInt64(r.DCPlanID),
+			LocalDCPlanID:     nullableInt64(r.LocalDCPlanID),
+			WorkspaceID:       nullableInt64(r.WorkspaceID),
+			DCPlanName:        nullableString(r.DCPlanName),
+			DCType:            nullableString(r.DCType),
 			RobotDeviceID:     nullableString(r.RobotDeviceID),
 			CollectorOperator: nullableString(r.CollectorOperator),
 			McapPath:          r.McapPath,
@@ -532,6 +577,9 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 	if !h.requireEpisodePresignAuth(c, kind) {
 		return
 	}
+	if !h.authorizeCollectorEpisode(c, episodeID) {
+		return
+	}
 
 	var row struct {
 		McapPath    string         `db:"mcap_path"`
@@ -595,6 +643,9 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.authorizeCollectorEpisode(c, episodeID) {
+		return
+	}
 
 	var row episodeRow
 	query := `
@@ -603,10 +654,11 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.episode_id,
 			e.task_id AS task_id,
 			t.task_id AS task_public_id,
-			s.slug AS sop_slug,
-			s.version AS sop_version,
-			t.scene_name AS scene_name,
-			t.subscene_name AS subscene_name,
+			e.dc_plan_id,
+			e.local_dc_plan_id,
+			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
+			dp.name AS dc_plan_name,
+				dp.dc_type,
 			r.device_id AS robot_device_id,
 			dc.operator_id AS collector_operator_id,
 			e.mcap_path,
@@ -626,8 +678,8 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.metadata
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
-		LEFT JOIN workstations ws ON ws.id = e.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
 		WHERE e.id = ? AND e.deleted_at IS NULL
@@ -651,10 +703,11 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		EpisodeID:         row.EpisodeID,
 		TaskID:            row.TaskID,
 		TaskPublicID:      nullableString(row.TaskPublicID),
-		SopSlug:           nullableString(row.SopSlug),
-		SopVersion:        nullableString(row.SopVersion),
-		SceneName:         nullableString(row.SceneName),
-		SubsceneName:      nullableString(row.SubsceneName),
+		DCPlanID:          nullableInt64(row.DCPlanID),
+		LocalDCPlanID:     nullableInt64(row.LocalDCPlanID),
+		WorkspaceID:       nullableInt64(row.WorkspaceID),
+		DCPlanName:        nullableString(row.DCPlanName),
+		DCType:            nullableString(row.DCType),
 		RobotDeviceID:     nullableString(row.RobotDeviceID),
 		CollectorOperator: nullableString(row.CollectorOperator),
 		McapPath:          row.McapPath,
@@ -673,4 +726,46 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		Labels:            episodeLabelsFromDB(row.LabelsJSON),
 		Metadata:          parseJSONRaw(row.Metadata.String),
 	})
+}
+
+func (h *EpisodeHandler) authorizeCollectorEpisode(c *gin.Context, episodeID int64) bool {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" {
+		return true
+	}
+	var scope struct {
+		CollectorID int64 `db:"data_collector_id"`
+		WorkspaceID int64 `db:"workspace_id"`
+	}
+	if err := h.db.GetContext(c.Request.Context(), &scope, `
+		SELECT ws.data_collector_id, COALESCE(t.organization_id, ws.workspace_id) AS workspace_id
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		INNER JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
+		LIMIT 1
+	`, episodeID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+			return false
+		}
+		logger.Printf("[EPISODE] Failed to authorize collector episode: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize episode"})
+		return false
+	}
+	if scope.CollectorID != claims.CollectorID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "episode access denied"})
+		return false
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), h.db, claims.OperatorID, scope.WorkspaceID)
+	if err != nil {
+		logger.Printf("[EPISODE] Failed to authorize episode Workspace: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize episode"})
+		return false
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+		return false
+	}
+	return true
 }

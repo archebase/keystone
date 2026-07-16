@@ -593,7 +593,7 @@ Future provider
         <h3>PR-1B 同步算法</h3>
         <ol>
           <li>Ensure <code>id=0</code> default workspace exists.</li>
-          <li>如果 <code>HilbertConfig</code> 的 <code>BaseURL</code>、<code>ServiceAccountCode</code>、<code>ServiceAccountPassword</code> 不完整，启动同步跳过；手动同步返回 <code>503</code>。</li>
+          <li>如果 <code>HilbertConfig</code> 的 <code>BaseURL</code>、<code>AccessKey</code>、<code>SecretKey</code> 不完整，启动同步跳过；手动同步返回 <code>503</code>。</li>
           <li>通过 service identity provider 登录 Hilbert，获得内存 <code>sessionKey</code>。</li>
           <li>调用 <code>GET /v1/console/workspace/list-available</code>。</li>
           <li>先校验全部记录：<code>id &gt; 0</code>、<code>name</code> 非空、无重复 ID。</li>

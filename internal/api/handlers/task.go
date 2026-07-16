@@ -8,8 +8,10 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,16 +21,9 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
 )
-
-func newPublicTaskID(now time.Time, seq int) (string, error) {
-	return services.NewPublicTaskID(now, seq)
-}
-
-func newPublicBatchID(now time.Time, seq int) (string, error) {
-	return services.NewPublicBatchID(now, seq)
-}
 
 type transferUploadHub interface {
 	Get(deviceID string) *services.TransferConn
@@ -80,13 +75,8 @@ type TaskConfig struct {
 	TaskID             string   `json:"task_id"`
 	DeviceID           string   `json:"device_id"`
 	DataCollectorID    string   `json:"data_collector_id"`
-	OrderID            string   `json:"order_id"`
-	Factory            string   `json:"factory"`
-	Scene              string   `json:"scene"`
 	WorkstationID      string   `json:"workstation_id"`
-	Subscene           string   `json:"subscene"`
-	InitialSceneLayout string   `json:"initial_scene_layout"`
-	SOPID              string   `json:"sop_id"`
+	OperatorName       string   `json:"operator_name,omitempty"`
 	Topics             []string `json:"topics"`
 	StartCallbackURL   string   `json:"start_callback_url"`
 	FinishCallbackURL  string   `json:"finish_callback_url"`
@@ -101,11 +91,37 @@ type TaskConfig struct {
 
 // RegisterRoutes registers task-related routes
 func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
-	apiV1.POST("/tasks", h.CreateTask)
 	apiV1.GET("/tasks", h.ListTasks)
 	apiV1.GET("/tasks/:id", h.GetTask)
 	apiV1.DELETE("/tasks/:id", h.DeleteTask)
 	apiV1.GET("/tasks/:id/config", h.GetTaskConfig)
+}
+
+// RegisterCollectorRoutes registers task operations restricted to data collectors.
+func (h *TaskHandler) RegisterCollectorRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/tasks/complete", h.CompleteTasks)
+}
+
+// CompleteTasksRequest identifies pending tasks to complete for the current workstation.
+type CompleteTasksRequest struct {
+	DCPlanID int64 `json:"dc_plan_id" binding:"required"`
+	Quantity int   `json:"quantity" binding:"required"`
+}
+
+// CompletedTask describes one task completed by an external-device workflow.
+type CompletedTask struct {
+	ID          string `json:"id"`
+	TaskID      string `json:"task_id"`
+	Status      string `json:"status"`
+	CompletedAt string `json:"completed_at"`
+}
+
+// CompleteTasksResponse reports tasks completed for one DC plan group.
+type CompleteTasksResponse struct {
+	DCPlanID       int64           `json:"dc_plan_id"`
+	RequestedCount int             `json:"requested_count"`
+	CompletedCount int             `json:"completed_count"`
+	Tasks          []CompletedTask `json:"tasks"`
 }
 
 var validTaskStatuses = map[string]struct{}{
@@ -122,16 +138,9 @@ var validTaskStatuses = map[string]struct{}{
 type TaskListItem struct {
 	ID                  int64   `json:"id" db:"id"`
 	TaskID              string  `json:"task_id" db:"task_id"`
-	BatchID             string  `json:"batch_id" db:"batch_id"`
-	OrderID             string  `json:"order_id" db:"order_id"`
-	SOPID               string  `json:"sop_id" db:"sop_id"`
 	WorkstationID       *string `json:"workstation_id" db:"workstation_id"`
 	RobotDeviceID       *string `json:"robot_device_id" db:"robot_device_id"`
 	CollectorOperatorID *string `json:"collector_operator_id" db:"collector_operator_id"`
-	SceneID             string  `json:"scene_id" db:"scene_id"`
-	SceneName           string  `json:"scene_name" db:"scene_name"`
-	SubsceneID          string  `json:"subscene_id" db:"subscene_id"`
-	SubsceneName        string  `json:"subscene_name" db:"subscene_name"`
 	Status              string  `json:"status" db:"status"`
 	ErrorMessage        *string `json:"error_message" db:"error_message"`
 	AssignedAt          *string `json:"assigned_at" db:"assigned_at"`
@@ -163,16 +172,7 @@ type TaskEpisodeDetail struct {
 type TaskDetailResponse struct {
 	ID               int64              `json:"id" db:"id"`
 	TaskID           string             `json:"task_id" db:"task_id"`
-	BatchID          string             `json:"batch_id" db:"batch_id"`
-	BatchName        string             `json:"batch_name" db:"batch_name"`
-	OrderID          string             `json:"order_id" db:"order_id"`
-	SOPID            string             `json:"sop_id" db:"sop_id"`
 	WorkstationID    *string            `json:"workstation_id" db:"workstation_id"`
-	SceneID          string             `json:"scene_id" db:"scene_id"`
-	SceneName        string             `json:"scene_name" db:"scene_name"`
-	SubsceneID       string             `json:"subscene_id" db:"subscene_id"`
-	SubsceneName     string             `json:"subscene_name" db:"subscene_name"`
-	FactoryID        *string            `json:"factory_id" db:"factory_id"`
 	OrganizationID   *int64             `json:"organization_id" db:"organization_id"`
 	DCPlanID         *int64             `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
 	WorkspaceID      *int64             `json:"workspace_id,omitempty" db:"workspace_id"`
@@ -254,6 +254,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 			return
 		}
 	}
+	claims := middleware.GetClaims(c)
 
 	conditions := []string{"tasks.deleted_at IS NULL"}
 	args := make([]interface{}, 0, 6)
@@ -273,18 +274,38 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		args = append(args, status)
 	}
 	if workspaceID != "" {
-		conditions = append(conditions, "dp.workspace_id = ?")
+		conditions = append(conditions, "COALESCE(tasks.organization_id, ws.workspace_id) = ?")
 		args = append(args, workspaceID)
 	}
 	if dcPlanID != "" {
 		conditions = append(conditions, "tasks.dc_plan_id = ?")
 		args = append(args, dcPlanID)
 	}
+	if claims != nil && claims.Role == "data_collector" {
+		workspaceIDs, accessErr := services.AccessibleWorkspaceIDs(c.Request.Context(), h.db, claims.OperatorID)
+		if accessErr != nil {
+			logger.Printf("[TASK] Failed to resolve collector Workspace access: %v", accessErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
+			return
+		}
+		if len(workspaceIDs) == 0 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+			return
+		}
+		placeholders := make([]string, 0, len(workspaceIDs))
+		conditions = append(conditions, "ws.data_collector_id = ?")
+		args = append(args, claims.CollectorID)
+		for _, id := range workspaceIDs {
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		conditions = append(conditions, "COALESCE(tasks.organization_id, ws.workspace_id) IN ("+strings.Join(placeholders, ",")+")")
+	}
 
 	whereClause := strings.Join(conditions, " AND ")
 
 	var total int
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM tasks LEFT JOIN dc_plan dp ON dp.id = tasks.dc_plan_id AND dp.deleted_at IS NULL WHERE %s", whereClause)
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM tasks LEFT JOIN workstations ws ON ws.id = tasks.workstation_id AND ws.deleted_at IS NULL LEFT JOIN dc_plan dp ON dp.id = tasks.dc_plan_id AND dp.deleted_at IS NULL WHERE %s", whereClause)
 	if err := h.db.Get(&total, countQuery, args...); err != nil {
 		logger.Printf("[TASK] Failed to count tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
@@ -295,21 +316,14 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	listQuery := fmt.Sprintf(`SELECT
 		tasks.id AS id,
 		tasks.task_id AS task_id,
-		CAST(tasks.batch_id AS CHAR) AS batch_id,
-		CAST(tasks.order_id AS CHAR) AS order_id,
-		CAST(tasks.sop_id AS CHAR) AS sop_id,
 		CASE WHEN tasks.workstation_id IS NULL THEN NULL ELSE CAST(tasks.workstation_id AS CHAR) END AS workstation_id,
 		NULLIF(TRIM(COALESCE(ws.robot_serial, '')), '') AS robot_device_id,
 		NULLIF(TRIM(COALESCE(ws.collector_operator_id, '')), '') AS collector_operator_id,
-		CAST(tasks.scene_id AS CHAR) AS scene_id,
-		COALESCE(tasks.scene_name, '') AS scene_name,
-		CAST(tasks.subscene_id AS CHAR) AS subscene_id,
-		COALESCE(tasks.subscene_name, '') AS subscene_name,
 		tasks.status,
 		tasks.error_message,
 		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at,
 		tasks.dc_plan_id AS dc_plan_id,
-		dp.workspace_id AS workspace_id,
+		COALESCE(tasks.organization_id, ws.workspace_id) AS workspace_id,
 		dp.name AS dc_plan_name,
 		dp.dc_type AS dc_type,
 		dp.dc_device_id AS dc_device_id
@@ -340,6 +354,176 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	})
 }
 
+// CompleteTasks marks pending tasks in one DC plan group as completed.
+//
+// @Summary      Complete DC plan tasks
+// @Description  Completes pending tasks assigned to the current data collector workstation.
+// @Tags         tasks
+// @Accept       json
+// @Produce      json
+// @Param        body body CompleteTasksRequest true "DC plan task group and quantity"
+// @Success      200 {object} CompleteTasksResponse
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]string
+// @Failure      403 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /tasks/complete [post]
+func (h *TaskHandler) CompleteTasks(c *gin.Context) {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	if claims.Role != "data_collector" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "data collector role required"})
+		return
+	}
+
+	var req CompleteTasksRequest
+	if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if req.DCPlanID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task group"})
+		return
+	}
+	if req.Quantity < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be >= 1"})
+		return
+	}
+
+	now := time.Now().UTC()
+	tx, err := h.db.Beginx()
+	if err != nil {
+		logger.Printf("[TASK] complete tasks begin transaction failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var planWorkspaceID int64
+	if err := tx.Get(&planWorkspaceID, `
+		SELECT workspace_id
+		FROM dc_plan
+		WHERE id = ? AND deleted_at IS NULL
+		LIMIT 1
+	`, req.DCPlanID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "dc plan not found"})
+			return
+		}
+		logger.Printf("[TASK] complete tasks plan query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), tx, claims.OperatorID, planWorkspaceID)
+	if err != nil {
+		logger.Printf("[TASK] complete tasks Workspace access query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "workspace access denied"})
+		return
+	}
+	var workstationID int64
+	if err := tx.Get(&workstationID, `
+		SELECT id
+		FROM workstations
+		WHERE data_collector_id = ? AND workspace_id = ? AND is_current = TRUE AND deleted_at IS NULL
+		LIMIT 1
+	`, claims.CollectorID, planWorkspaceID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "workstation not assigned for dc plan workspace"})
+			return
+		}
+		logger.Printf("[TASK] complete tasks workstation query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+
+	type pendingTaskRow struct {
+		ID     int64  `db:"id"`
+		TaskID string `db:"task_id"`
+	}
+	pendingTasks := make([]pendingTaskRow, 0, req.Quantity)
+	lockClause := " FOR UPDATE"
+	if tx.DriverName() == "sqlite" {
+		lockClause = ""
+	}
+	if err := tx.Select(&pendingTasks, `
+		SELECT id, task_id
+		FROM tasks
+		WHERE dc_plan_id = ?
+			AND workstation_id = ?
+			AND status = 'pending'
+			AND deleted_at IS NULL
+		ORDER BY assigned_at ASC, id ASC
+		LIMIT ?`+lockClause, req.DCPlanID, workstationID, req.Quantity); err != nil {
+		logger.Printf("[TASK] complete tasks pending query failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+	if len(pendingTasks) < req.Quantity {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":         fmt.Sprintf("quantity exceeds pending task count: pending_count=%d, requested=%d", len(pendingTasks), req.Quantity),
+			"pending_count": len(pendingTasks),
+			"requested":     req.Quantity,
+		})
+		return
+	}
+
+	completedAt := now.Format(time.RFC3339)
+	completedTasks := make([]CompletedTask, 0, len(pendingTasks))
+	for _, task := range pendingTasks {
+		result, err := tx.Exec(`
+			UPDATE tasks
+			SET status = 'completed',
+				started_at = COALESCE(started_at, ?),
+				completed_at = ?,
+				updated_at = ?
+			WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
+		`, now, now, now, task.ID)
+		if err != nil {
+			logger.Printf("[TASK] complete task %d update failed: %v", task.ID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+			return
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			logger.Printf("[TASK] complete task %d rows affected failed: %v", task.ID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+			return
+		}
+		if rowsAffected == 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "task was updated by another request"})
+			return
+		}
+		completedTasks = append(completedTasks, CompletedTask{
+			ID:          strconv.FormatInt(task.ID, 10),
+			TaskID:      task.TaskID,
+			Status:      "completed",
+			CompletedAt: completedAt,
+		})
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[TASK] complete tasks commit failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete tasks"})
+		return
+	}
+
+	c.JSON(http.StatusOK, CompleteTasksResponse{
+		DCPlanID:       req.DCPlanID,
+		RequestedCount: req.Quantity,
+		CompletedCount: len(completedTasks),
+		Tasks:          completedTasks,
+	})
+}
+
 // GetTask handles task detail requests.
 //
 // @Summary      Get task detail
@@ -358,24 +542,18 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid task id"})
 		return
 	}
+	if !h.authorizeCollectorTask(c, id) {
+		return
+	}
 
 	var task TaskDetailResponse
 	query := `SELECT
 		t.id AS id,
 		t.task_id AS task_id,
-		CAST(t.batch_id AS CHAR) AS batch_id,
-		COALESCE(t.batch_name, '') AS batch_name,
-		CAST(t.order_id AS CHAR) AS order_id,
-		CAST(t.sop_id AS CHAR) AS sop_id,
 		CASE WHEN t.workstation_id IS NULL THEN NULL ELSE CAST(t.workstation_id AS CHAR) END AS workstation_id,
-		CAST(t.scene_id AS CHAR) AS scene_id,
-		COALESCE(t.scene_name, '') AS scene_name,
-		CAST(t.subscene_id AS CHAR) AS subscene_id,
-		COALESCE(t.subscene_name, '') AS subscene_name,
-		CASE WHEN t.factory_id IS NULL THEN NULL ELSE CAST(t.factory_id AS CHAR) END AS factory_id,
 		t.organization_id AS organization_id,
 		t.dc_plan_id AS dc_plan_id,
-		dp.workspace_id AS workspace_id,
+		COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 		dp.name AS dc_plan_name,
 		dp.dc_type AS dc_type,
 		dp.dc_device_id AS dc_device_id,
@@ -388,6 +566,7 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 		e.id AS episode_numeric_id,
 		e.episode_id AS episode_public_id
 		FROM tasks t
+		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN episodes e ON e.task_id = t.id AND e.deleted_at IS NULL
 		WHERE t.id = ? AND t.deleted_at IS NULL
@@ -432,6 +611,10 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 // @Failure      500 {object} map[string]string
 // @Router       /tasks/{id} [delete]
 func (h *TaskHandler) DeleteTask(c *gin.Context) {
+	if claims := middleware.GetClaims(c); claims != nil && claims.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error_msg": "admin role required"})
+		return
+	}
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
@@ -467,300 +650,6 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
-}
-
-// CreateTaskResponse represents the response body for creating a task.
-type CreateTaskResponse struct {
-	ID        string               `json:"id"`
-	TaskID    string               `json:"task_id"`
-	Status    string               `json:"status"`
-	CreatedAt string               `json:"created_at"`
-	Tasks     []CreateTaskResponse `json:"tasks"`
-}
-
-// CreateTaskRequest represents the request body for creating a task.
-type CreateTaskRequest struct {
-	OrderID       int64 `json:"order_id" binding:"required"`
-	SOPID         int64 `json:"sop_id" binding:"required"`
-	SubsceneID    int64 `json:"subscene_id" binding:"required"`
-	WorkstationID int64 `json:"workstation_id" binding:"required"`
-	Quantity      *int  `json:"quantity,omitempty"`
-}
-
-// CreateTask handles task creation requests.
-//
-// @Summary      Create task
-// @Description  Creates a new task with pending status
-// @Tags         tasks
-// @Accept       json
-// @Produce      json
-// @Success      201  {object}  CreateTaskResponse
-// @Failure      500  {object}  map[string]string
-// @Router       /tasks [post]
-func (h *TaskHandler) CreateTask(c *gin.Context) {
-	var req CreateTaskRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": "Invalid request body: " + err.Error(),
-		})
-		return
-	}
-
-	now := time.Now().UTC()
-	quantity := 1
-	if req.Quantity != nil {
-		quantity = *req.Quantity
-	}
-	if quantity < 1 {
-		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "Invalid quantity: must be >= 1"})
-		return
-	}
-	if quantity > 1000 {
-		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "Invalid quantity: must be <= 1000"})
-		return
-	}
-
-	tx, err := h.db.Beginx()
-	if err != nil {
-		logger.Printf("[TASK] Failed to start transaction: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-		return
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	// Validate referenced rows exist (all IDs are table `id` fields).
-	var targetCount int
-	// Lock the order row to coordinate concurrent task generation for this order.
-	if err := tx.Get(&targetCount, "SELECT target_count FROM orders WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE", req.OrderID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusBadRequest, gin.H{"error_msg": fmt.Sprintf("Invalid order_id: %d", req.OrderID)})
-			return
-		}
-		logger.Printf("[TASK] Failed to validate order_id: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-		return
-	}
-	// Lock existing tasks for this order, so concurrent inserts will serialize under REPEATABLE READ.
-	var lockedTaskIDs []int64
-	if err := tx.Select(&lockedTaskIDs, "SELECT id FROM tasks WHERE order_id = ? AND deleted_at IS NULL FOR UPDATE", req.OrderID); err != nil {
-		logger.Printf("[TASK] Failed to lock existing tasks: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-		return
-	}
-	existingCount := len(lockedTaskIDs)
-	if existingCount+quantity > targetCount {
-		remaining := targetCount - existingCount
-		if remaining < 0 {
-			remaining = 0
-		}
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error_msg": fmt.Sprintf("Invalid quantity: order target_count=%d, existing_tasks=%d, remaining=%d", targetCount, existingCount, remaining),
-		})
-		return
-	}
-
-	var exists int
-	if err := tx.Get(&exists, "SELECT 1 FROM sops WHERE id = ? AND deleted_at IS NULL LIMIT 1", req.SOPID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusBadRequest, gin.H{"error_msg": fmt.Sprintf("Invalid sop_id: %d", req.SOPID)})
-			return
-		}
-		logger.Printf("[TASK] Failed to validate sop_id: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-		return
-	}
-	type subsceneRow struct {
-		ID      int64  `db:"id"`
-		SceneID int64  `db:"scene_id"`
-		Scene   string `db:"scene_name"`
-		Name    string `db:"name"`
-		Layout  string `db:"initial_scene_layout"`
-	}
-	var subscene subsceneRow
-	if err := tx.Get(&subscene, `
-		SELECT
-			ss.id,
-			ss.scene_id,
-			s.name AS scene_name,
-			ss.name,
-			COALESCE(ss.initial_scene_layout, '') AS initial_scene_layout
-		FROM subscenes ss
-		JOIN scenes s ON s.id = ss.scene_id AND s.deleted_at IS NULL
-		WHERE ss.id = ? AND ss.deleted_at IS NULL
-		LIMIT 1`, req.SubsceneID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusBadRequest, gin.H{"error_msg": fmt.Sprintf("Invalid subscene_id: %d", req.SubsceneID)})
-			return
-		}
-		logger.Printf("[TASK] Failed to validate subscene_id: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-		return
-	}
-	type workstationRow struct {
-		ID             int64 `db:"id"`
-		FactoryID      int64 `db:"factory_id"`
-		OrganizationID int64 `db:"organization_id"`
-	}
-	var ws workstationRow
-	if err := tx.Get(&ws, "SELECT id, factory_id, organization_id FROM workstations WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL LIMIT 1", req.WorkstationID); err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusBadRequest, gin.H{"error_msg": fmt.Sprintf("Invalid workstation_id: %d", req.WorkstationID)})
-			return
-		}
-		logger.Printf("[TASK] Failed to validate workstation_id: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-		return
-	}
-
-	// Ensure a batch exists for (order_id, workstation_id). Prefer active/pending, otherwise create.
-	type batchRow struct {
-		ID   int64          `db:"id"`
-		Name sql.NullString `db:"name"`
-	}
-	var batch batchRow
-	batchQuery := `
-		SELECT id, name
-		FROM batches
-		WHERE order_id = ? AND workstation_id = ? AND deleted_at IS NULL AND status IN ('pending', 'active')
-		ORDER BY created_at DESC, id DESC
-		LIMIT 1`
-	err = tx.Get(&batch, batchQuery, req.OrderID, req.WorkstationID)
-	if err != nil && err != sql.ErrNoRows {
-		logger.Printf("[TASK] Failed to query batch: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-		return
-	}
-	if err == sql.ErrNoRows {
-		batchIDStr, err := newPublicBatchID(now, 0)
-		if err != nil {
-			logger.Printf("[TASK] Failed to generate batch_id: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-			return
-		}
-		res, err := tx.Exec(
-			`INSERT INTO batches (
-				batch_id,
-				order_id,
-				workstation_id,
-				name,
-				status,
-				created_at,
-				updated_at
-			) VALUES (?, ?, ?, NULL, ?, ?, ?)`,
-			batchIDStr,
-			req.OrderID,
-			req.WorkstationID,
-			"pending",
-			now,
-			now,
-		)
-		if err != nil {
-			logger.Printf("[TASK] Failed to insert batch: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-			return
-		}
-		newID, err := res.LastInsertId()
-		if err != nil {
-			logger.Printf("[TASK] Failed to get batch insert id: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-			return
-		}
-		batch.ID = newID
-		batch.Name = sql.NullString{}
-	}
-
-	// Denormalized filtering fields — organization_id is stored directly on the workstation row.
-	organizationID := ws.OrganizationID
-
-	var taskBatchNameArg interface{}
-	if batch.Name.Valid {
-		taskBatchNameArg = batch.Name.String
-	}
-
-	created := make([]CreateTaskResponse, 0, quantity)
-	for i := 0; i < quantity; i++ {
-		taskID, err := newPublicTaskID(now, i)
-		if err != nil {
-			logger.Printf("[TASK] Failed to generate task_id: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-			return
-		}
-		resTask, err := tx.Exec(
-			`INSERT INTO tasks (
-				task_id,
-				batch_id,
-				order_id,
-				sop_id,
-				workstation_id,
-				scene_id,
-				subscene_id,
-				batch_name,
-				scene_name,
-				subscene_name,
-				factory_id,
-				organization_id,
-				initial_scene_layout,
-				status,
-				assigned_at,
-				created_at,
-				updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			taskID,
-			batch.ID,
-			req.OrderID,
-			req.SOPID,
-			req.WorkstationID,
-			subscene.SceneID,
-			req.SubsceneID,
-			taskBatchNameArg,
-			subscene.Scene,
-			subscene.Name,
-			ws.FactoryID,
-			organizationID,
-			subscene.Layout,
-			"pending",
-			now,
-			now,
-			now,
-		)
-		if err != nil {
-			logger.Printf("[TASK] Failed to insert task: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-			return
-		}
-		newTaskID, err := resTask.LastInsertId()
-		if err != nil {
-			logger.Printf("[TASK] Failed to get task insert id: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-			return
-		}
-		created = append(created, CreateTaskResponse{
-			ID:        fmt.Sprintf("%d", newTaskID),
-			TaskID:    taskID,
-			Status:    "pending",
-			CreatedAt: now.Format(time.RFC3339),
-		})
-	}
-
-	if err := tx.Commit(); err != nil {
-		logger.Printf("[TASK] Failed to commit transaction: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create task"})
-		return
-	}
-
-	resp := CreateTaskResponse{
-		Status:    "pending",
-		CreatedAt: now.Format(time.RFC3339),
-		Tasks:     created,
-	}
-	// Backwards compatibility for clients expecting a single task.
-	if len(created) > 0 {
-		resp.ID = created[0].ID
-		resp.TaskID = created[0].TaskID
-	}
-	c.JSON(http.StatusCreated, resp)
 }
 
 // RegisterCallbackRoutes registers callback routes for handling external events.
@@ -1058,6 +947,9 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "invalid task id"})
 		return
 	}
+	if !h.authorizeCollectorTask(c, id) {
+		return
+	}
 
 	var currentStatus string
 	if err := h.db.Get(&currentStatus, `
@@ -1087,16 +979,10 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		TaskID         string         `db:"task_id"`
 		WorkstationID  sql.NullInt64  `db:"workstation_id"`
 		RobotSerial    sql.NullString `db:"robot_serial"`
-		RobotID        sql.NullInt64  `db:"robot_id"`
 		CollectorName  sql.NullString `db:"collector_name"`
-		OrderName      sql.NullString `db:"order_name"`
 		Workstation    sql.NullString `db:"workstation_name"`
-		FactoryName    sql.NullString `db:"factory_name"`
-		SceneName      sql.NullString `db:"scene_name"`
-		SubsceneName   sql.NullString `db:"subscene_name"`
-		Layout         sql.NullString `db:"initial_scene_layout"`
-		SOPSlug        sql.NullString `db:"sop_slug"`
-		ROSTopics      sql.NullString `db:"ros_topics"`
+		OperatorName   sql.NullString `db:"operator_name"`
+		Metadata       sql.NullString `db:"metadata"`
 		WorkspaceID    sql.NullInt64  `db:"workspace_id"`
 		DCPlanID       sql.NullInt64  `db:"dc_plan_id"`
 		DCType         sql.NullString `db:"dc_type"`
@@ -1111,29 +997,18 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 			t.task_id AS task_id,
 			t.workstation_id AS workstation_id,
 			ws.robot_serial AS robot_serial,
-			ws.robot_id AS robot_id,
 			COALESCE(ws.collector_name, '') AS collector_name,
-			COALESCE(o.name, '') AS order_name,
 			COALESCE(ws.name, '') AS workstation_name,
-			COALESCE(f.name, '') AS factory_name,
-			COALESCE(t.scene_name, '') AS scene_name,
-			COALESCE(t.subscene_name, '') AS subscene_name,
-			COALESCE(t.initial_scene_layout, '') AS initial_scene_layout,
-			s.slug AS sop_slug,
-			COALESCE(rt.ros_topics, '[]') AS ros_topics,
-			dp.workspace_id AS workspace_id,
+			dp.operator AS operator_name,
+			t.metadata AS metadata,
+			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 			t.dc_plan_id AS dc_plan_id,
 			dp.dc_type AS dc_type,
 			dp.dc_device_id AS dc_device_id,
 			dp.target_count AS target_count,
 			dp.target_duration AS target_duration
 		FROM tasks t
-		LEFT JOIN factories f ON f.id = t.factory_id AND f.deleted_at IS NULL
-		LEFT JOIN orders o ON o.id = t.order_id AND o.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
-		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = t.sop_id AND s.deleted_at IS NULL
 		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		WHERE t.id = ? AND t.deleted_at IS NULL
 		LIMIT 1
@@ -1155,50 +1030,26 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Workstation %d has no robot_serial", row.WorkstationID.Int64)})
 		return
 	}
-	if !row.RobotID.Valid || row.RobotID.Int64 <= 0 {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Workstation %d has no robot_id", row.WorkstationID.Int64)})
-		return
-	}
 	if strings.TrimSpace(row.CollectorName.String) == "" {
 		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Workstation %d has no collector_name", row.WorkstationID.Int64)})
-		return
-	}
-	if strings.TrimSpace(row.OrderName.String) == "" {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": "Task order_id not found"})
 		return
 	}
 	if strings.TrimSpace(row.Workstation.String) == "" {
 		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Workstation %d has no name", row.WorkstationID.Int64)})
 		return
 	}
-	if strings.TrimSpace(row.FactoryName.String) == "" {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": "Task factory_id not found"})
-		return
-	}
-	if !row.ROSTopics.Valid || strings.TrimSpace(row.ROSTopics.String) == "" {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": fmt.Sprintf("Robot %d has no robot_type ros_topics", row.RobotID.Int64)})
-		return
-	}
-	if !row.SOPSlug.Valid || strings.TrimSpace(row.SOPSlug.String) == "" {
-		c.JSON(http.StatusConflict, gin.H{"error_msg": "Task sop_id not found"})
-		return
-	}
+	executionConfig := taskExecutionConfigFromMetadata(row.Metadata.String)
 
 	taskConfig := TaskConfig{
-		TaskID:             row.TaskID,
-		DeviceID:           strings.TrimSpace(row.RobotSerial.String),
-		DataCollectorID:    strings.TrimSpace(row.CollectorName.String),
-		OrderID:            strings.TrimSpace(row.OrderName.String),
-		Factory:            strings.TrimSpace(row.FactoryName.String),
-		Scene:              strings.TrimSpace(row.SceneName.String),
-		WorkstationID:      strings.TrimSpace(row.Workstation.String),
-		Subscene:           strings.TrimSpace(row.SubsceneName.String),
-		InitialSceneLayout: strings.TrimSpace(row.Layout.String),
-		SOPID:              strings.TrimSpace(row.SOPSlug.String),
-		Topics:             parseJSONArray(row.ROSTopics.String),
-		StartCallbackURL:   h.callbackURLs.startURL(),
-		FinishCallbackURL:  h.callbackURLs.finishURL(),
-		UserToken:          "",
+		TaskID:            row.TaskID,
+		DeviceID:          strings.TrimSpace(row.RobotSerial.String),
+		DataCollectorID:   strings.TrimSpace(row.CollectorName.String),
+		WorkstationID:     strings.TrimSpace(row.Workstation.String),
+		OperatorName:      strings.TrimSpace(row.OperatorName.String),
+		Topics:            executionConfig.Topics,
+		StartCallbackURL:  h.callbackURLs.startURL(),
+		FinishCallbackURL: h.callbackURLs.finishURL(),
+		UserToken:         "",
 	}
 	if row.WorkspaceID.Valid {
 		taskConfig.WorkspaceID = &row.WorkspaceID.Int64
@@ -1220,4 +1071,66 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, taskConfig)
+}
+
+func (h *TaskHandler) authorizeCollectorTask(c *gin.Context, taskID int64) bool {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" {
+		return true
+	}
+	var taskScope struct {
+		CollectorID int64 `db:"data_collector_id"`
+		WorkspaceID int64 `db:"workspace_id"`
+	}
+	if err := h.db.GetContext(c.Request.Context(), &taskScope, `
+		SELECT ws.data_collector_id, COALESCE(t.organization_id, ws.workspace_id) AS workspace_id
+		FROM tasks t
+		INNER JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
+		WHERE t.id = ? AND t.deleted_at IS NULL
+		LIMIT 1
+	`, taskID); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error_msg": "task not found"})
+			return false
+		}
+		logger.Printf("[TASK] Failed to authorize collector task: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to authorize task"})
+		return false
+	}
+	if taskScope.CollectorID != claims.CollectorID {
+		c.JSON(http.StatusForbidden, gin.H{"error_msg": "task access denied"})
+		return false
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), h.db, claims.OperatorID, taskScope.WorkspaceID)
+	if err != nil {
+		logger.Printf("[TASK] Failed to authorize task Workspace: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to authorize task"})
+		return false
+	}
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error_msg": "workspace access denied"})
+		return false
+	}
+	return true
+}
+
+type taskExecutionConfig struct {
+	Topics []string `json:"topics"`
+}
+
+func taskExecutionConfigFromMetadata(raw string) taskExecutionConfig {
+	config := taskExecutionConfig{Topics: []string{}}
+	if strings.TrimSpace(raw) == "" {
+		return config
+	}
+	var metadata struct {
+		ExecutionConfig taskExecutionConfig `json:"execution_config"`
+	}
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return config
+	}
+	if metadata.ExecutionConfig.Topics != nil {
+		config.Topics = metadata.ExecutionConfig.Topics
+	}
+	return config
 }

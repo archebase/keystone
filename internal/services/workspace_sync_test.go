@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,6 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 	updatedAt := createdAt.Add(time.Hour)
 	description := " synced from Hilbert "
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{
 				ID:          123,
@@ -47,23 +47,20 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 	if result.SyncedCount != 1 || !result.DefaultIncluded || result.LastSyncedAt.IsZero() {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if client.loginCode != "svc-keystone" || client.loginPassword != "svc-secret" || client.listSessionKey != "session-key" {
-		t.Fatalf("unexpected client calls: %#v", client)
-	}
 
 	var rows []struct {
 		ID               int64          `db:"id"`
 		Name             string         `db:"name"`
 		Description      string         `db:"description"`
 		Source           string         `db:"source"`
-		AdminsStr        sql.NullString `db:"admins_str"`
-		MembersStr       sql.NullString `db:"members_str"`
+		Admins           sql.NullString `db:"admins"`
+		Members          sql.NullString `db:"members"`
 		LastSyncedAt     sql.NullTime   `db:"last_synced_at"`
 		HilbertCreatedAt sql.NullTime   `db:"hilbert_created_at"`
 		HilbertUpdatedAt sql.NullTime   `db:"hilbert_updated_at"`
 	}
 	if err := db.Select(&rows, `
-		SELECT id, name, description, source, admins_str, members_str,
+		SELECT id, name, description, source, admins, members,
 		       last_synced_at, hilbert_created_at, hilbert_updated_at
 		FROM workspaces
 		ORDER BY id
@@ -80,8 +77,8 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 		rows[1].Name != "Customer Workspace" ||
 		rows[1].Description != "synced from Hilbert" ||
 		rows[1].Source != workspaceSourceHilbert ||
-		rows[1].AdminsStr.String != "#admin-a#" ||
-		rows[1].MembersStr.String != "#member-a#member-b#" ||
+		rows[1].Admins.String != `["admin-a"]` ||
+		rows[1].Members.String != `["member-a","member-b"]` ||
 		!rows[1].LastSyncedAt.Valid ||
 		!rows[1].HilbertCreatedAt.Valid ||
 		!rows[1].HilbertUpdatedAt.Valid {
@@ -104,7 +101,6 @@ func TestWorkspaceSyncServiceInvalidHilbertRecordDoesNotPartiallyUpsert(t *testi
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Valid Workspace"},
 			{ID: 0, Name: "Invalid Workspace"},
@@ -138,7 +134,6 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Resource Workspace", Admins: []string{"collector-a", "customer-a"}, Members: []string{"missing-a"}},
 		},
@@ -180,26 +175,23 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 	if result.ResourceSync.CollectorUpsertedCount != 2 ||
 		result.ResourceSync.CollectorSkippedCount != 1 ||
-		result.ResourceSync.RobotTypeUpsertedCount != 1 ||
-		result.ResourceSync.RobotUpsertedCount != 1 ||
-		result.ResourceSync.FactoryUpsertedCount != 1 {
+		result.ResourceSync.RobotUpsertedCount != 1 {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
 	}
 
 	var collector struct {
-		OrganizationID int64  `db:"organization_id"`
-		Name           string `db:"name"`
-		Status         string `db:"status"`
-		Metadata       string `db:"metadata"`
+		Name     string `db:"name"`
+		Status   string `db:"status"`
+		Metadata string `db:"metadata"`
 	}
 	if err := db.Get(&collector, `
-		SELECT organization_id, name, status, metadata
+		SELECT name, status, metadata
 		FROM data_collectors
 		WHERE operator_id = 'collector-a'
 	`); err != nil {
 		t.Fatalf("query collector: %v", err)
 	}
-	if collector.OrganizationID != 123 || collector.Name != "Collector A" || collector.Status != "active" || metadataSource(collector.Metadata) != "hilbert" {
+	if collector.Name != "Collector A" || collector.Status != "active" || metadataSource(collector.Metadata) != "hilbert" {
 		t.Fatalf("unexpected collector: %#v", collector)
 	}
 	var customerCount int
@@ -211,28 +203,25 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 
 	var robot struct {
-		RobotTypeID int64  `db:"robot_type_id"`
-		FactoryID   int64  `db:"factory_id"`
-		Status      string `db:"status"`
-		Metadata    string `db:"metadata"`
+		Status       string         `db:"status"`
+		DeviceTypeID sql.NullInt64  `db:"device_type_id"`
+		DeviceType   sql.NullString `db:"device_type"`
+		Metadata     string         `db:"metadata"`
 	}
 	if err := db.Get(&robot, `
-		SELECT robot_type_id, factory_id, status, metadata
+		SELECT status, device_type_id, device_type, metadata
 		FROM robots
 		WHERE device_id = '456'
 	`); err != nil {
 		t.Fatalf("query robot: %v", err)
 	}
-	if robot.RobotTypeID != 77 || robot.FactoryID == 0 || robot.Status != "active" || metadataSource(robot.Metadata) != "hilbert" {
+	if robot.Status != "active" ||
+		!robot.DeviceTypeID.Valid ||
+		robot.DeviceTypeID.Int64 != 77 ||
+		!robot.DeviceType.Valid ||
+		robot.DeviceType.String != "Type 77" ||
+		metadataSource(robot.Metadata) != "hilbert" {
 		t.Fatalf("unexpected robot: %#v", robot)
-	}
-
-	var robotTypeModel string
-	if err := db.Get(&robotTypeModel, "SELECT model FROM robot_types WHERE id = 77"); err != nil {
-		t.Fatalf("query robot type: %v", err)
-	}
-	if robotTypeModel != "hilbert_dc_device_type_77" {
-		t.Fatalf("robotTypeModel=%q", robotTypeModel)
 	}
 }
 
@@ -241,7 +230,6 @@ func TestWorkspaceSyncServiceProjectsWorkspacePeopleAsCollectors(t *testing.T) {
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Resource Workspace", Admins: []string{"operator-a", "internal-a"}},
 		},
@@ -283,7 +271,7 @@ func TestWorkspaceSyncServiceProjectsWorkspacePeopleAsCollectors(t *testing.T) {
 	}
 
 	var collectorCount int
-	if err := db.Get(&collectorCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id IN ('operator-a', 'internal-a') AND organization_id = 123"); err != nil {
+	if err := db.Get(&collectorCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id IN ('operator-a', 'internal-a')"); err != nil {
 		t.Fatalf("count workspace people collectors: %v", err)
 	}
 	if collectorCount != 2 {
@@ -300,8 +288,7 @@ func TestWorkspaceSyncServiceResourceConflictDoesNotRollbackWorkspace(t *testing
 	}
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
-		workspaces:  []auth.HilbertWorkspace{{ID: 123, Name: "Resource Workspace"}},
+		workspaces: []auth.HilbertWorkspace{{ID: 123, Name: "Resource Workspace"}},
 		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{
 			123: {
 				{ID: 456, WorkspaceID: 123, Name: "Device A", SN: "SN-A", DCDeviceTypeID: 77},
@@ -338,7 +325,6 @@ func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Resource Workspace", Admins: []string{"collector-a"}},
 		},
@@ -367,9 +353,7 @@ func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t
 	}
 	workspaceResult := result.ResourceSync.WorkspaceResults[0]
 	if workspaceResult.CollectorUpsertedCount != 0 ||
-		workspaceResult.RobotUpsertedCount != 0 ||
-		workspaceResult.RobotTypeUpsertedCount != 0 ||
-		workspaceResult.FactoryUpserted {
+		workspaceResult.RobotUpsertedCount != 0 {
 		t.Fatalf("resource summary reported rolled-back writes: %#v", workspaceResult)
 	}
 	if len(workspaceResult.Errors) == 0 || workspaceResult.Errors[0].Code != "dc_device_query_failed" {
@@ -393,12 +377,11 @@ func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t
 	}
 }
 
-func TestWorkspaceSyncServiceResourceFactoriesAllowDuplicateWorkspaceNames(t *testing.T) {
+func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 	db := newTestWorkspaceSyncDB(t)
 	defer db.Close()
 
 	client := &fakeHilbertWorkspaceClient{
-		loginResult: auth.NewHilbertLoginResult(auth.HilbertAccount{}, "session-key"),
 		workspaces: []auth.HilbertWorkspace{
 			{ID: 123, Name: "Shared Name"},
 			{ID: 124, Name: "Shared Name"},
@@ -410,38 +393,15 @@ func TestWorkspaceSyncServiceResourceFactoriesAllowDuplicateWorkspaceNames(t *te
 	if err != nil {
 		t.Fatalf("Sync() error = %v", err)
 	}
-	if result.ResourceSync == nil || result.ResourceSync.FactoryUpsertedCount != 2 {
+	if result.ResourceSync == nil {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
-	}
-
-	var factories []struct {
-		Name string `db:"name"`
-		Slug string `db:"slug"`
-	}
-	if err := db.Select(&factories, `
-		SELECT name, slug
-		FROM factories
-		WHERE slug IN ('hilbert_workspace_123', 'hilbert_workspace_124')
-		ORDER BY slug
-	`); err != nil {
-		t.Fatalf("query factories: %v", err)
-	}
-	if len(factories) != 2 ||
-		factories[0].Name != "Shared Name / Hilbert Workspace 123" ||
-		factories[1].Name != "Shared Name / Hilbert Workspace 124" {
-		t.Fatalf("unexpected factories: %#v", factories)
 	}
 }
 
 type fakeHilbertWorkspaceClient struct {
 	configured           bool
-	loginResult          *auth.HilbertLoginResult
-	loginErr             error
 	workspaces           []auth.HilbertWorkspace
 	listErr              error
-	loginCode            string
-	loginPassword        string
-	listSessionKey       string
 	accounts             map[string]*auth.HilbertAccount
 	devicesByWorkspace   map[int64][]auth.HilbertDCDevice
 	deviceErrByWorkspace map[int64]error
@@ -452,27 +412,21 @@ func (f *fakeHilbertWorkspaceClient) Configured() bool {
 	if f.configured {
 		return true
 	}
-	return f.loginResult != nil || len(f.workspaces) > 0 || f.loginErr != nil || f.listErr != nil
+	return len(f.workspaces) > 0 || f.listErr != nil
 }
 
-func (f *fakeHilbertWorkspaceClient) Login(_ context.Context, code string, password string) (*auth.HilbertLoginResult, error) {
-	f.loginCode = code
-	f.loginPassword = password
-	if f.loginErr != nil {
-		return nil, f.loginErr
-	}
-	return f.loginResult, nil
+func (f *fakeHilbertWorkspaceClient) ServiceAuthConfigured() bool {
+	return len(f.workspaces) > 0 || f.listErr != nil
 }
 
-func (f *fakeHilbertWorkspaceClient) ListAvailableWorkspaces(_ context.Context, sessionKey string) ([]auth.HilbertWorkspace, error) {
-	f.listSessionKey = sessionKey
+func (f *fakeHilbertWorkspaceClient) ListAvailableWorkspaces(_ context.Context) ([]auth.HilbertWorkspace, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	return f.workspaces, nil
 }
 
-func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, _ string, code string) (*auth.HilbertAccount, error) {
+func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, code string) (*auth.HilbertAccount, error) {
 	account := f.accounts[code]
 	if account == nil {
 		return nil, nil
@@ -480,14 +434,14 @@ func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, _ str
 	return account, nil
 }
 
-func (f *fakeHilbertWorkspaceClient) QueryDCDevices(_ context.Context, _ string, workspaceID int64) (*auth.HilbertDCDevicePage, error) {
+func (f *fakeHilbertWorkspaceClient) QueryDCDevices(_ context.Context, workspaceID int64) (*auth.HilbertDCDevicePage, error) {
 	if err := f.deviceErrByWorkspace[workspaceID]; err != nil {
 		return nil, err
 	}
 	return &auth.HilbertDCDevicePage{Records: f.devicesByWorkspace[workspaceID], PageNum: 1, PageSize: -1}, nil
 }
 
-func (f *fakeHilbertWorkspaceClient) QueryDCDeviceTypeByID(_ context.Context, _ string, id int64) (*auth.HilbertDCDeviceType, error) {
+func (f *fakeHilbertWorkspaceClient) QueryDCDeviceTypeByID(_ context.Context, id int64) (*auth.HilbertDCDeviceType, error) {
 	deviceType := f.deviceTypes[id]
 	if deviceType == nil {
 		return nil, nil
@@ -497,10 +451,66 @@ func (f *fakeHilbertWorkspaceClient) QueryDCDeviceTypeByID(_ context.Context, _ 
 
 func testWorkspaceSyncHilbertConfig() *config.HilbertConfig {
 	return &config.HilbertConfig{
-		BaseURL:                "http://hilbert",
-		TimeoutSeconds:         2,
-		ServiceAccountCode:     "svc-keystone",
-		ServiceAccountPassword: "svc-secret",
+		BaseURL:        "http://hilbert",
+		TimeoutSeconds: 2,
+		AccessKey:      "hilbert-ak",
+		SecretKey:      "hilbert-sk",
+	}
+}
+
+func TestWorkspaceResourceSyncAllowsCollectorAcrossWorkspaceBindings(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+	for _, stmt := range []string{
+		`INSERT INTO robots (id, device_id, workspace_id, status, metadata) VALUES (1, '456', 60, 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO data_collectors (id, name, operator_id, status, metadata) VALUES (1, 'Collector', 'collector-a', 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO workstations (id, robot_id, data_collector_id, workspace_id, is_current) VALUES (1, 1, 1, 60, TRUE)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed collector workspace change fixture: %v", err)
+		}
+	}
+	tx, err := db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	_, err = upsertHilbertDataCollector(context.Background(), tx, auth.HilbertAccount{
+		ID:          7,
+		Code:        "collector-a",
+		DisplayName: "Collector A",
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("upsert collector across Workspaces: %v", err)
+	}
+}
+
+func TestWorkspaceResourceSyncRejectsRobotWorkspaceChangeAcrossCurrentBinding(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+	for _, stmt := range []string{
+		`INSERT INTO robots (id, device_id, workspace_id, status, metadata) VALUES (1, '456', 60, 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO data_collectors (id, name, operator_id, status, metadata) VALUES (1, 'Collector', 'collector-a', 'active', '{"source":"hilbert"}')`,
+		`INSERT INTO workstations (id, robot_id, data_collector_id, workspace_id, is_current) VALUES (1, 1, 1, 60, TRUE)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed robot workspace change fixture: %v", err)
+		}
+	}
+	tx, err := db.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	_, err = upsertHilbertRobot(context.Background(), tx, auth.HilbertDCDevice{
+		ID:             456,
+		WorkspaceID:    61,
+		DCDeviceTypeID: 77,
+	}, &auth.HilbertDCDeviceType{ID: 77, Name: "Type 77"}, time.Now().UTC())
+	if err == nil || !strings.Contains(err.Error(), "another workspace") {
+		t.Fatalf("error=%v want workspace binding conflict", err)
 	}
 }
 
@@ -517,8 +527,8 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 			name TEXT NOT NULL,
 			description TEXT,
 			source TEXT NOT NULL,
-			admins_str TEXT,
-			members_str TEXT,
+			admins TEXT,
+			members TEXT,
 			last_synced_at TIMESTAMP,
 			hilbert_created_at TIMESTAMP,
 			hilbert_updated_at TIMESTAMP,
@@ -531,30 +541,12 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 		t.Fatalf("create workspaces table: %v", err)
 	}
 	for _, stmt := range []string{
-		`CREATE TABLE factories (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT,
-			slug TEXT UNIQUE,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		)`,
-		`CREATE TABLE robot_types (
-			id INTEGER PRIMARY KEY,
-			name TEXT,
-			model TEXT,
-			manufacturer TEXT,
-			ros_topics TEXT,
-			capabilities TEXT,
-			created_at TIMESTAMP,
-			updated_at TIMESTAMP,
-			deleted_at TIMESTAMP
-		)`,
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			robot_type_id INTEGER,
 			device_id TEXT UNIQUE,
-			factory_id INTEGER,
+			workspace_id INTEGER,
+			device_type_id INTEGER,
+			device_type TEXT,
 			asset_id TEXT,
 			status TEXT,
 			metadata TEXT,
@@ -564,7 +556,6 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 		)`,
 		`CREATE TABLE data_collectors (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			organization_id INTEGER,
 			name TEXT,
 			operator_id TEXT UNIQUE,
 			email TEXT,
@@ -575,6 +566,14 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 			metadata TEXT,
 			created_at TIMESTAMP,
 			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		)`,
+		`CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			robot_id INTEGER NOT NULL,
+			data_collector_id INTEGER NOT NULL,
+			workspace_id INTEGER NOT NULL,
+			is_current BOOLEAN NOT NULL DEFAULT TRUE,
 			deleted_at TIMESTAMP
 		)`,
 	} {

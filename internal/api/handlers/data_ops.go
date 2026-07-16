@@ -72,6 +72,7 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 type dataOpsEpisodeQuery struct {
 	Pagination           PaginationParams
+	WorkspaceIDs         []int64
 	CreatedAtFrom        time.Time
 	CreatedAtTo          time.Time
 	HasCreatedAtFrom     bool
@@ -79,9 +80,6 @@ type dataOpsEpisodeQuery struct {
 	Keyword              string
 	QAStatuses           []string
 	SyncStatuses         []string
-	SceneIDs             []int64
-	SOPIDs               []int64
-	RobotTypeIDs         []int64
 	RobotDeviceIDs       []string
 	CollectorOperatorIDs []string
 	Label                string
@@ -92,13 +90,10 @@ type dataOpsEpisodeRow struct {
 	EpisodeID           string          `db:"episode_id"`
 	TaskID              int64           `db:"task_id"`
 	TaskPublicID        sql.NullString  `db:"task_public_id"`
-	SOPID               sql.NullInt64   `db:"sop_id"`
-	SOP                 sql.NullString  `db:"sop"`
-	SceneID             int64           `db:"scene_id"`
-	SceneName           sql.NullString  `db:"scene_name"`
-	RobotTypeID         sql.NullInt64   `db:"robot_type_id"`
-	RobotType           sql.NullString  `db:"robot_type"`
+	DCTaskID            sql.NullInt64   `db:"dc_task_id"`
+	DCTaskName          sql.NullString  `db:"dc_task_name"`
 	RobotDeviceID       sql.NullString  `db:"robot_device_id"`
+	RobotMetadata       sql.NullString  `db:"robot_metadata"`
 	CollectorOperatorID sql.NullString  `db:"collector_operator_id"`
 	CollectorName       sql.NullString  `db:"collector_name"`
 	QAStatus            string          `db:"qa_status"`
@@ -116,13 +111,10 @@ type DataOpsEpisodeItemResponse struct {
 	EpisodeID           string                        `json:"episode_id"`
 	TaskID              int64                         `json:"task_id"`
 	TaskPublicID        *string                       `json:"task_public_id,omitempty"`
-	SOPID               *int64                        `json:"sop_id,omitempty"`
-	SOP                 *string                       `json:"sop,omitempty"`
-	SceneID             int64                         `json:"scene_id"`
-	SceneName           *string                       `json:"scene_name,omitempty"`
-	RobotTypeID         *int64                        `json:"robot_type_id,omitempty"`
-	RobotType           *string                       `json:"robot_type,omitempty"`
+	DCTaskID            *int64                        `json:"dc_task_id,omitempty"`
+	DCTaskName          *string                       `json:"dc_task_name,omitempty"`
 	RobotDeviceID       *string                       `json:"robot_device_id,omitempty"`
+	RobotDeviceName     *string                       `json:"robot_device_name,omitempty"`
 	CollectorOperatorID *string                       `json:"collector_operator_id,omitempty"`
 	CollectorName       *string                       `json:"collector_name,omitempty"`
 	QAStatus            string                        `json:"qa_status"`
@@ -155,14 +147,12 @@ type DataOpsEpisodeListResponse struct {
 // @Produce      json
 // @Param        limit                  query     int     false  "Max results"
 // @Param        offset                 query     int     false  "Pagination offset"
+// @Param        workspace_id           query     string  false  "Comma-separated Workspace IDs"
 // @Param        created_at_from        query     string  false  "created_at >= RFC3339"
 // @Param        created_at_to          query     string  false  "created_at <= RFC3339"
 // @Param        q                      query     string  false  "Search episode/task/quality text"
 // @Param        qa_status              query     string  false  "Comma-separated QA statuses"
 // @Param        sync_status            query     string  false  "Comma-separated sync statuses: not_started,pending,in_progress,completed,failed"
-// @Param        scene_id               query     string  false  "Comma-separated scene IDs"
-// @Param        sop_id                 query     string  false  "Comma-separated SOP IDs"
-// @Param        robot_type_id          query     string  false  "Comma-separated robot type IDs"
 // @Param        robot_device_id        query     string  false  "Comma-separated robot device IDs"
 // @Param        collector_operator_id  query     string  false  "Comma-separated collector operator IDs"
 // @Param        label                  query     string  false  "Exact label"
@@ -246,6 +236,10 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
+	workspaceIDs, err := parseNonNegativeInt64List(c.Query("workspace_id"), "workspace_id")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
 
 	qaStatuses, err := parseStatsStringListQuery(c, "qa_status")
 	if err != nil {
@@ -267,18 +261,6 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 		}
 	}
 
-	sceneIDs, err := parsePositiveInt64List(c.Query("scene_id"), "scene_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
-	sopIDs, err := parsePositiveInt64List(c.Query("sop_id"), "sop_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
-	robotTypeIDs, err := parsePositiveInt64List(c.Query("robot_type_id"), "robot_type_id")
-	if err != nil {
-		return dataOpsEpisodeQuery{}, err
-	}
 	robotDeviceIDs, err := parseStatsStringListQuery(c, "robot_device_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
@@ -290,12 +272,10 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 
 	out := dataOpsEpisodeQuery{
 		Pagination:           pagination,
+		WorkspaceIDs:         workspaceIDs,
 		Keyword:              strings.TrimSpace(c.Query("q")),
 		QAStatuses:           qaStatuses,
 		SyncStatuses:         syncStatuses,
-		SceneIDs:             sceneIDs,
-		SOPIDs:               sopIDs,
-		RobotTypeIDs:         robotTypeIDs,
 		RobotDeviceIDs:       robotDeviceIDs,
 		CollectorOperatorIDs: collectorOperatorIDs,
 		Label:                strings.TrimSpace(c.Query("label")),
@@ -331,12 +311,10 @@ func dataOpsEpisodeBaseFromSQL() string {
 	return `
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
-		LEFT JOIN scenes sc ON sc.id = e.scene_id AND sc.deleted_at IS NULL
+		LEFT JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
 		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
-		LEFT JOIN robot_types rt ON rt.id = r.robot_type_id AND rt.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
-		LEFT JOIN sops s ON s.id = COALESCE(e.sop_id, t.sop_id) AND s.deleted_at IS NULL
 	`
 }
 
@@ -352,11 +330,9 @@ func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 		where += " AND e.created_at <= ?"
 		args = append(args, q.CreatedAtTo)
 	}
+	where, args = appendInt64InFilter(where, args, "COALESCE(t.organization_id, ws.workspace_id)", q.WorkspaceIDs)
 
 	where, args = appendStringInFilter(where, args, "e.qa_status", q.QAStatuses)
-	where, args = appendInt64InFilter(where, args, "e.scene_id", q.SceneIDs)
-	where, args = appendInt64InFilter(where, args, "COALESCE(e.sop_id, t.sop_id)", q.SOPIDs)
-	where, args = appendInt64InFilter(where, args, "r.robot_type_id", q.RobotTypeIDs)
 	where, args = appendStringInFilter(where, args, "COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, ''), '')", q.RobotDeviceIDs)
 	where, args = appendStringInFilter(where, args, "COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, ''), '')", q.CollectorOperatorIDs)
 
@@ -427,24 +403,13 @@ func dataOpsEpisodeListSQL(fromSQL string, where string) string {
 			e.episode_id,
 			e.task_id,
 			t.task_id AS task_public_id,
-			COALESCE(e.sop_id, t.sop_id) AS sop_id,
-			CASE
-				WHEN NULLIF(s.slug, '') IS NULL THEN
-					CASE
-						WHEN COALESCE(e.sop_id, t.sop_id) IS NULL THEN ''
-						ELSE CONCAT('SOP #', CAST(COALESCE(e.sop_id, t.sop_id) AS CHAR))
-					END
-				WHEN NULLIF(s.version, '') IS NULL THEN s.slug
-				ELSE CONCAT(s.slug, ' @ ', s.version)
-			END AS sop,
-			e.scene_id,
-			COALESCE(NULLIF(e.scene_name, ''), NULLIF(t.scene_name, ''), NULLIF(sc.name, '')) AS scene_name,
-			r.robot_type_id,
-				COALESCE(NULLIF(rt.name, ''), NULLIF(rt.model, ''), NULLIF(ws.robot_name, '')) AS robot_type,
-				COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, '')) AS robot_device_id,
-				COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS collector_operator_id,
-				COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS collector_name,
-				COALESCE(e.qa_status, '') AS qa_status,
+			dp.dc_task_id,
+			dp.dc_task_name,
+			COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, '')) AS robot_device_id,
+			r.metadata AS robot_metadata,
+			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS collector_operator_id,
+			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS collector_name,
+			COALESCE(e.qa_status, '') AS qa_status,
 			e.quality_flag,
 			e.cloud_synced,
 			e.duration_sec,
@@ -521,8 +486,7 @@ func dataOpsLatestSyncLogsSQL(episodeIDs []int64) (string, []interface{}) {
 			sl.id,
 			sl.episode_id,
 			e.episode_id AS episode_public_id,
-			sl.source_factory_id,
-			sl.source_path,
+				sl.source_path,
 			sl.destination_path,
 			sl.status,
 			sl.bytes_transferred,
@@ -554,18 +518,16 @@ func int64Placeholders(values []int64) (string, []interface{}) {
 }
 
 func dataOpsEpisodeItemFromRow(row dataOpsEpisodeRow) DataOpsEpisodeItemResponse {
+	robotDeviceName := robotDeviceNameFromMetadata(row.RobotMetadata)
 	return DataOpsEpisodeItemResponse{
 		ID:                  row.ID,
 		EpisodeID:           row.EpisodeID,
 		TaskID:              row.TaskID,
 		TaskPublicID:        nullableString(row.TaskPublicID),
-		SOPID:               nullableInt64(row.SOPID),
-		SOP:                 nullableString(row.SOP),
-		SceneID:             row.SceneID,
-		SceneName:           nullableString(row.SceneName),
-		RobotTypeID:         nullableInt64(row.RobotTypeID),
-		RobotType:           nullableString(row.RobotType),
+		DCTaskID:            nullableInt64(row.DCTaskID),
+		DCTaskName:          nullableString(row.DCTaskName),
 		RobotDeviceID:       nullableString(row.RobotDeviceID),
+		RobotDeviceName:     nullableString(sql.NullString{String: robotDeviceName, Valid: robotDeviceName != ""}),
 		CollectorOperatorID: nullableString(row.CollectorOperatorID),
 		CollectorName:       nullableString(row.CollectorName),
 		QAStatus:            row.QAStatus,

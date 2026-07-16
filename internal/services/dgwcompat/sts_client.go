@@ -6,19 +6,21 @@ package dgwcompat
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha1" // #nosec G505 -- Alibaba Cloud RPC API requires HMAC-SHA1 signing.
-	"encoding/base64"
-	"encoding/xml"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"sort"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"archebase.com/keystone-edge/internal/logger"
+	"github.com/volcengine/volcengine-go-sdk/service/sts"
+	"github.com/volcengine/volcengine-go-sdk/volcengine"
+	"github.com/volcengine/volcengine-go-sdk/volcengine/credentials"
+	"github.com/volcengine/volcengine-go-sdk/volcengine/request"
+	"github.com/volcengine/volcengine-go-sdk/volcengine/session"
+	"github.com/volcengine/volcengine-go-sdk/volcengine/volcengineerr"
 )
 
 type stsCredentials struct {
@@ -28,15 +30,20 @@ type stsCredentials struct {
 	Expiration      time.Time
 }
 
+type stsScope struct {
+	Bucket    string
+	ObjectKey string
+}
+
 type stsProvider interface {
-	AssumeRole(ctx context.Context) (stsCredentials, error)
+	AssumeRole(ctx context.Context, scope stsScope) (stsCredentials, error)
 }
 
 type mockSTSProvider struct {
 	ttl time.Duration
 }
 
-func (p mockSTSProvider) AssumeRole(context.Context) (stsCredentials, error) {
+func (p mockSTSProvider) AssumeRole(context.Context, stsScope) (stsCredentials, error) {
 	expiration := time.Now().UTC().Add(p.ttl)
 	return stsCredentials{
 		AccessKeyID:     "mock-ak",
@@ -46,147 +53,136 @@ func (p mockSTSProvider) AssumeRole(context.Context) (stsCredentials, error) {
 	}, nil
 }
 
-type aliyunSTSProvider struct {
-	httpClient      *http.Client
-	endpoint        string
-	region          string
-	roleARN         string
-	sessionTTL      time.Duration
-	accessKeyID     string
-	accessKeySecret string
+type volcengineSTSClient interface {
+	AssumeRoleWithContext(ctx volcengine.Context, input *sts.AssumeRoleInput, opts ...request.Option) (*sts.AssumeRoleOutput, error)
 }
 
-func newSTSProvider(cfg Config) stsProvider {
+type volcengineSTSProvider struct {
+	client     volcengineSTSClient
+	roleTRN    string
+	sessionTTL time.Duration
+}
+
+func newSTSProvider(cfg Config) (stsProvider, error) {
 	if cfg.MockSTS {
-		return mockSTSProvider{ttl: cfg.STSSessionTTL}
+		return mockSTSProvider{ttl: cfg.STSSessionTTL}, nil
 	}
-	return &aliyunSTSProvider{
-		httpClient:      &http.Client{Timeout: 10 * time.Second},
-		endpoint:        cfg.STSEndpoint,
-		region:          cfg.STSRegion,
-		roleARN:         cfg.STSRoleARN,
-		sessionTTL:      cfg.STSSessionTTL,
-		accessKeyID:     cfg.AccessKeyID,
-		accessKeySecret: cfg.AccessKeySecret,
+	sdkConfig := volcengine.NewConfig().
+		WithRegion(cfg.TOSRegion).
+		WithCredentials(credentials.NewStaticCredentials(cfg.AccessKeyID, cfg.AccessKeySecret, ""))
+	if cfg.STSEndpoint != "" {
+		sdkConfig = sdkConfig.WithEndpoint(cfg.STSEndpoint)
 	}
-}
-
-func (p *aliyunSTSProvider) AssumeRole(ctx context.Context) (stsCredentials, error) {
-	durationSeconds := int64(p.sessionTTL.Seconds())
-	if durationSeconds <= 0 {
-		durationSeconds = 3600
-	}
-	params := []queryParam{
-		{Key: "Action", Value: "AssumeRole"},
-		{Key: "Format", Value: "XML"},
-		{Key: "Version", Value: "2015-04-01"},
-		{Key: "AccessKeyId", Value: p.accessKeyID},
-		{Key: "SignatureMethod", Value: "HMAC-SHA1"},
-		{Key: "SignatureVersion", Value: "1.0"},
-		{Key: "SignatureNonce", Value: uuid.NewString()},
-		{Key: "Timestamp", Value: time.Now().UTC().Format("2006-01-02T15:04:05Z")},
-		{Key: "RegionId", Value: p.region},
-		{Key: "RoleArn", Value: p.roleARN},
-		{Key: "RoleSessionName", Value: "keystone-ego-upload"},
-		{Key: "DurationSeconds", Value: fmt.Sprintf("%d", durationSeconds)},
-	}
-	canonicalized := canonicalizeQuery(params)
-	toSign := "GET&" + percentEncode("/") + "&" + percentEncode(canonicalized)
-	params = append(params, queryParam{Key: "Signature", Value: signQuery(toSign, p.accessKeySecret)})
-
-	requestURL := p.endpoint
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	sess, err := session.NewSession(sdkConfig)
 	if err != nil {
-		return stsCredentials{}, fmt.Errorf("create sts request: %w", err)
+		return nil, fmt.Errorf("create Volcengine STS session: %w", err)
 	}
-	req.URL.RawQuery = encodeRPCQuery(params)
-
-	resp, err := p.httpClient.Do(req) //nolint:gosec // G107: STS endpoint is operator-provided deployment config.
-	if err != nil {
-		return stsCredentials{}, fmt.Errorf("sts assume role request: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return stsCredentials{}, fmt.Errorf("read sts response: %w", err)
-	}
-	if resp.StatusCode >= 300 || strings.Contains(string(body), "<Error>") {
-		return stsCredentials{}, fmt.Errorf("sts assume role failed status=%d body=%s", resp.StatusCode, string(body))
-	}
-
-	var envelope assumeRoleEnvelope
-	if err := xml.Unmarshal(body, &envelope); err != nil {
-		return stsCredentials{}, fmt.Errorf("parse sts response: %w", err)
-	}
-	expiration, err := time.Parse(time.RFC3339, strings.TrimSpace(envelope.Credentials.Expiration))
-	if err != nil {
-		return stsCredentials{}, fmt.Errorf("parse sts expiration: %w", err)
-	}
-	credentials := envelope.Credentials
-	if credentials.AccessKeyID == "" || credentials.AccessKeySecret == "" || credentials.SecurityToken == "" {
-		return stsCredentials{}, fmt.Errorf("sts response missing credentials")
-	}
-	return stsCredentials{
-		AccessKeyID:     credentials.AccessKeyID,
-		AccessKeySecret: credentials.AccessKeySecret,
-		SecurityToken:   credentials.SecurityToken,
-		Expiration:      expiration.UTC(),
+	return &volcengineSTSProvider{
+		client:     sts.New(sess),
+		roleTRN:    cfg.STSRoleTRN,
+		sessionTTL: cfg.STSSessionTTL,
 	}, nil
 }
 
-type assumeRoleEnvelope struct {
-	XMLName     xml.Name                `xml:"AssumeRoleResponse"`
-	Credentials assumeRoleCredentialXML `xml:"Credentials"`
-}
-
-type assumeRoleCredentialXML struct {
-	AccessKeyID     string `xml:"AccessKeyId"`
-	AccessKeySecret string `xml:"AccessKeySecret"`
-	SecurityToken   string `xml:"SecurityToken"`
-	Expiration      string `xml:"Expiration"`
-}
-
-type queryParam struct {
-	Key   string
-	Value string
-}
-
-func canonicalizeQuery(params []queryParam) string {
-	sorted := make([]queryParam, len(params))
-	copy(sorted, params)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].Key == sorted[j].Key {
-			return sorted[i].Value < sorted[j].Value
+func (p *volcengineSTSProvider) AssumeRole(ctx context.Context, scope stsScope) (stsCredentials, error) {
+	policy, err := tosUploadPolicy(scope)
+	if err != nil {
+		return stsCredentials{}, err
+	}
+	durationSeconds := int32(p.sessionTTL.Seconds()) // #nosec G115 -- validated deployment TTL is intentionally bounded below.
+	if durationSeconds <= 0 {
+		durationSeconds = 900
+	}
+	sessionName := fmt.Sprintf("keystone-device-upload-%d", time.Now().UTC().Unix())
+	logger.Printf("[DGW_COMPAT] STS AssumeRole start role_trn=%s session_name=%s bucket=%s object_key=%s duration_seconds=%d policy_sha256=%s policy_bytes=%d",
+		p.roleTRN, sessionName, scope.Bucket, scope.ObjectKey, durationSeconds, sha256Hex(policy), len(policy))
+	output, err := p.client.AssumeRoleWithContext(ctx, (&sts.AssumeRoleInput{}).
+		SetDurationSeconds(durationSeconds).
+		SetPolicy(policy).
+		SetRoleSessionName(sessionName).
+		SetRoleTrn(p.roleTRN))
+	if err != nil {
+		var sdkErr volcengineerr.Error
+		if errors.As(err, &sdkErr) {
+			logger.Printf("[DGW_COMPAT] STS AssumeRole failed role_trn=%s bucket=%s object_key=%s error_code=%s",
+				p.roleTRN, scope.Bucket, scope.ObjectKey, sdkErr.Code())
+			return stsCredentials{}, fmt.Errorf("volcengine STS AssumeRole failed: %s", sdkErr.Code())
 		}
-		return sorted[i].Key < sorted[j].Key
-	})
-	parts := make([]string, 0, len(sorted))
-	for _, p := range sorted {
-		parts = append(parts, percentEncode(p.Key)+"="+percentEncode(p.Value))
+		logger.Printf("[DGW_COMPAT] STS AssumeRole failed role_trn=%s bucket=%s object_key=%s",
+			p.roleTRN, scope.Bucket, scope.ObjectKey)
+		return stsCredentials{}, fmt.Errorf("volcengine STS AssumeRole failed")
 	}
-	return strings.Join(parts, "&")
-}
-
-func encodeRPCQuery(params []queryParam) string {
-	parts := make([]string, 0, len(params))
-	for _, p := range params {
-		parts = append(parts, url.QueryEscape(p.Key)+"="+url.QueryEscape(p.Value))
+	if output == nil || output.Credentials == nil {
+		return stsCredentials{}, fmt.Errorf("volcengine STS response missing credentials")
 	}
-	return strings.Join(parts, "&")
+	creds := output.Credentials
+	if creds.AccessKeyId == nil || creds.SecretAccessKey == nil || creds.SessionToken == nil || creds.ExpiredTime == nil {
+		return stsCredentials{}, fmt.Errorf("volcengine STS response contains incomplete credentials")
+	}
+	expiration, err := time.Parse(time.RFC3339, strings.TrimSpace(*creds.ExpiredTime))
+	if err != nil {
+		return stsCredentials{}, fmt.Errorf("parse Volcengine STS expiration: %w", err)
+	}
+	result := stsCredentials{
+		AccessKeyID:     strings.TrimSpace(*creds.AccessKeyId),
+		AccessKeySecret: strings.TrimSpace(*creds.SecretAccessKey),
+		SecurityToken:   strings.TrimSpace(*creds.SessionToken),
+		Expiration:      expiration.UTC(),
+	}
+	if result.AccessKeyID == "" || result.AccessKeySecret == "" || result.SecurityToken == "" {
+		return stsCredentials{}, fmt.Errorf("volcengine STS response contains empty credentials")
+	}
+	logger.Printf("[DGW_COMPAT] STS AssumeRole success role_trn=%s bucket=%s object_key=%s expires_at=%s ttl_seconds=%d access_key_suffix=%s",
+		p.roleTRN,
+		scope.Bucket,
+		scope.ObjectKey,
+		result.Expiration.Format(time.RFC3339),
+		int(time.Until(result.Expiration).Seconds()),
+		suffix(result.AccessKeyID, 6),
+	)
+	return result, nil
 }
 
-func percentEncode(value string) string {
-	encoded := url.QueryEscape(value)
-	encoded = strings.ReplaceAll(encoded, "+", "%20")
-	encoded = strings.ReplaceAll(encoded, "*", "%2A")
-	encoded = strings.ReplaceAll(encoded, "%7E", "~")
-	return encoded
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
-func signQuery(stringToSign, secret string) string {
-	mac := hmac.New(sha1.New, []byte(secret+"&"))
-	mac.Write([]byte(stringToSign))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+func suffix(value string, n int) string {
+	value = strings.TrimSpace(value)
+	if n <= 0 || value == "" {
+		return ""
+	}
+	if len(value) <= n {
+		return value
+	}
+	return value[len(value)-n:]
+}
+
+func tosUploadPolicy(scope stsScope) (string, error) {
+	bucket := strings.TrimSpace(scope.Bucket)
+	objectKey := strings.TrimSpace(scope.ObjectKey)
+	if bucket == "" || objectKey == "" {
+		return "", fmt.Errorf("TOS STS scope requires bucket and object key")
+	}
+	policy := map[string]any{
+		"Statement": []map[string]any{{
+			"Effect": "Allow",
+			"Action": []string{
+				"tos:PutObject",
+				"tos:CreateMultipartUpload",
+				"tos:UploadPart",
+				"tos:CompleteMultipartUpload",
+				"tos:AbortMultipartUpload",
+				"tos:ListParts",
+				"tos:HeadObject",
+			},
+			"Resource": []string{"trn:tos:::" + bucket + "/" + objectKey},
+		}},
+	}
+	encoded, err := json.Marshal(policy)
+	if err != nil {
+		return "", fmt.Errorf("encode TOS STS policy: %w", err)
+	}
+	return string(encoded), nil
 }

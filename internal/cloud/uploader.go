@@ -111,7 +111,7 @@ type gatewayClient interface {
 	GetUploadRecovery(ctx context.Context, logicalUploadID string) (*UploadRecoveryInfo, error)
 	ReissueUploadCredentials(ctx context.Context, uploadID string) (*UploadSession, error)
 	AbortUpload(ctx context.Context, logicalUploadID string, reason string) error
-	CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, ossObjectEtag string, partSizeBytes int64) error
+	CompleteUpload(ctx context.Context, uploadID string, fileSize int64, rawTags map[string]string, completedPartCount int32, objectETag string, partSizeBytes int64) error
 }
 
 // ossClient is the subset of OSSUploader methods used by Uploader.

@@ -9,35 +9,375 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"log"
 	"strings"
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/cloud"
 	"archebase.com/keystone-edge/internal/logger"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
 
-func TestStripBucketPrefix(t *testing.T) {
+func TestObjectKeyFromStoredPath(t *testing.T) {
 	tests := []struct {
-		input string
-		want  string
+		input  string
+		bucket string
+		want   string
 	}{
-		{"edge-factory-default/factory-default/device/2024-01-01/task.mcap", "factory-default/device/2024-01-01/task.mcap"},
-		{"/edge-factory-default/factory-default/device/2024-01-01/task.mcap", "factory-default/device/2024-01-01/task.mcap"},
-		{"bucket/key", "key"},
-		{"just-a-file.mcap", "just-a-file.mcap"},
-		{"  ", ""},
-		{"", ""},
+		{input: "edge-factory-default/factory-default/device/2024-01-01/task.mcap", bucket: "edge-factory-default", want: "factory-default/device/2024-01-01/task.mcap"},
+		{input: "/edge-factory-default/factory-default/device/2024-01-01/task.mcap", bucket: "edge-factory-default", want: "factory-default/device/2024-01-01/task.mcap"},
+		{input: "bucket/key", bucket: "bucket", want: "key"},
+		{input: "device-uploads/3/capture/capture.mcap", bucket: "archebase-keystone-device-upload-2116584179", want: "device-uploads/3/capture/capture.mcap"},
+		{input: "just-a-file.mcap", bucket: "bucket", want: "just-a-file.mcap"},
+		{input: "  ", bucket: "bucket", want: ""},
+		{input: "", bucket: "bucket", want: ""},
 	}
 
 	for _, tt := range tests {
-		got := stripBucketPrefix(tt.input)
+		got := objectKeyFromStoredPath(tt.input, tt.bucket)
 		if got != tt.want {
-			t.Errorf("stripBucketPrefix(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("objectKeyFromStoredPath(%q, %q) = %q, want %q", tt.input, tt.bucket, got, tt.want)
 		}
+	}
+}
+
+func TestHilbertUploadContextRejectsMissingDCPlanID(t *testing.T) {
+	_, err := hilbertUploadContext(syncEpisodeUploadRow{ID: 4181})
+	if err == nil {
+		t.Fatal("hilbertUploadContext() error = nil, want missing dc_plan_id")
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+	if !strings.Contains(err.Error(), "episode 4181 missing dc_plan_id") {
+		t.Fatalf("error=%q want missing dc_plan_id detail", err)
+	}
+}
+
+func TestHilbertUploadContextRejectsLocalPlanOnly(t *testing.T) {
+	_, err := hilbertUploadContext(syncEpisodeUploadRow{
+		ID:            4181,
+		LocalDCPlanID: sql.NullInt64{Int64: 27, Valid: true},
+	})
+	if err == nil {
+		t.Fatal("hilbertUploadContext() error = nil, want local plan rejection")
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+	if !strings.Contains(err.Error(), "episode 4181 has local_dc_plan_id 27 but Hilbert upload requires dc_plan_id") {
+		t.Fatalf("error=%q want local plan detail", err)
+	}
+}
+
+func TestHilbertUploadContextRejectsMissingOrDeletedProjection(t *testing.T) {
+	_, err := hilbertUploadContext(syncEpisodeUploadRow{
+		ID:       4181,
+		DCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+	})
+	if err == nil {
+		t.Fatal("hilbertUploadContext() error = nil, want missing projection rejection")
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+	if !strings.Contains(err.Error(), "dc_plan 1001 not found or deleted") {
+		t.Fatalf("error=%q want missing projection detail", err)
+	}
+}
+
+func TestHilbertUploadContextRejectsInvalidWorkspace(t *testing.T) {
+	_, err := hilbertUploadContext(syncEpisodeUploadRow{
+		ID:                4181,
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: -9, Valid: true},
+	})
+	if err == nil {
+		t.Fatal("hilbertUploadContext() error = nil, want invalid workspace rejection")
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+	if !strings.Contains(err.Error(), "dc_plan 1001 has invalid workspace_id -9") {
+		t.Fatalf("error=%q want invalid workspace detail", err)
+	}
+}
+
+func TestHilbertUploadContextReturnsValidatedIDs(t *testing.T) {
+	got, err := hilbertUploadContext(syncEpisodeUploadRow{
+		ID:                4181,
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("hilbertUploadContext() error = %v", err)
+	}
+	if got.DCPlanID != 1001 || got.WorkspaceID != 123 {
+		t.Fatalf("context=%+v want dc_plan_id=1001 workspace_id=123", got)
+	}
+}
+
+func TestHilbertUploadContextClientHintsContainPlanAndWorkspace(t *testing.T) {
+	hints := (hilbertEpisodeUploadContext{DCPlanID: 1001, WorkspaceID: 123}).clientHints()
+	if hints["dc_plan_id"] != "1001" {
+		t.Fatalf("dc_plan_id hint=%q want 1001", hints["dc_plan_id"])
+	}
+	if hints["workspace_id"] != "123" {
+		t.Fatalf("workspace_id hint=%q want 123", hints["workspace_id"])
+	}
+}
+
+func TestUploadEpisodeDirectStopsAtHilbertGuard(t *testing.T) {
+	w := &SyncWorker{}
+	_, err := w.uploadEpisodeDirect(context.Background(), 0, syncEpisodeUploadRow{
+		ID:                4181,
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 0, Valid: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "dc_plan 1001 has invalid workspace_id 0") {
+		t.Fatalf("uploadEpisodeDirect() error=%v want Hilbert guard failure", err)
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error=%v want non-retryable", err)
+	}
+}
+
+func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
+	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-s3-cn-beijing.ivolces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
+	}
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	credentials.Credentials.TemporaryToken = "temp-token"
+	hilbert := &fakeHilbertRawDataClient{
+		credentials: credentials,
+	}
+	uploader := &fakeTOSObjectUploader{}
+	w := &SyncWorker{
+		minioBucket: "source-bucket",
+		hilbert:     hilbert,
+		source:      source,
+		tosUploader: uploader,
+	}
+	createdAt := time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC)
+
+	result, err := w.uploadEpisodeDirect(context.Background(), 0, syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		DurationSec:       sql.NullFloat64{Float64: 2.5, Valid: true},
+		CreatedAt:         createdAt,
+	})
+	if err != nil {
+		t.Fatalf("uploadEpisodeDirect() error = %v", err)
+	}
+
+	if hilbert.register.WorkspaceID != 123 || hilbert.register.DCPlanID != 1001 {
+		t.Fatalf("register request ids = %+v, want workspace=123 dc_plan=1001", hilbert.register)
+	}
+	if hilbert.register.BagName != "episode_4181_device_capture.mcap" || hilbert.register.BagSize != int64(len(source.data)) {
+		t.Fatalf("register bag fields = %+v", hilbert.register)
+	}
+	if hilbert.register.BagDigest != "9777442976c95a2f302786b97e60ceb5" {
+		t.Fatalf("register BagDigest = %q, want content md5", hilbert.register.BagDigest)
+	}
+	if !hilbert.register.BagStartTime.Equal(createdAt) || !hilbert.register.BagEndTime.Equal(createdAt.Add(2500*time.Millisecond)) {
+		t.Fatalf("register bag times = %s-%s", hilbert.register.BagStartTime, hilbert.register.BagEndTime)
+	}
+	if hilbert.credentialsWorkspaceID != 123 || hilbert.credentialsRawDataID != 9876 || !hilbert.finished {
+		t.Fatalf("Hilbert calls not completed: credentials workspace=%d raw=%d finished=%t",
+			hilbert.credentialsWorkspaceID, hilbert.credentialsRawDataID, hilbert.finished)
+	}
+	if uploader.target.Bucket != "hilbert-bucket" || uploader.target.Key != "raw-data/123/capture.mcap" {
+		t.Fatalf("upload target = %+v", uploader.target)
+	}
+	if uploader.size != int64(len(source.data)) || string(uploader.body) != string(source.data) {
+		t.Fatalf("uploaded size/body = %d/%q", uploader.size, string(uploader.body))
+	}
+	if source.statCount != 1 || source.openCount != 2 {
+		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=2", source.statCount, source.openCount)
+	}
+	if result.UploadID != "9876" || result.Bucket != "hilbert-bucket" || result.ObjectKey != "raw-data/123/capture.mcap" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestDirectCloudUploadRequestContainsPlanMetadata(t *testing.T) {
+	rawTags := map[string]string{"existing": "tag"}
+	req := directCloudUploadRequest(
+		syncEpisodeUploadRow{EpisodeUUID: "episode-1"},
+		"path/file.mcap",
+		"asset-1",
+		rawTags,
+		hilbertEpisodeUploadContext{DCPlanID: 1001, WorkspaceID: 123},
+		nil,
+	)
+	if req.ClientHints["dc_plan_id"] != "1001" || req.ClientHints["workspace_id"] != "123" {
+		t.Fatalf("client hints=%+v want plan/workspace ids", req.ClientHints)
+	}
+	if req.RawTags["existing"] != "tag" {
+		t.Fatalf("raw tags=%+v want original tags", req.RawTags)
+	}
+}
+
+type fakeHilbertRawDataClient struct {
+	register               auth.HilbertRawDataRegisterRequest
+	registerCount          int
+	credentials            *auth.HilbertRawDataUploadCredentials
+	credentialsWorkspaceID int64
+	credentialsRawDataID   int64
+	finishWorkspaceID      int64
+	finishRawDataID        int64
+	finished               bool
+}
+
+func (c *fakeHilbertRawDataClient) RegisterRawData(_ context.Context, request auth.HilbertRawDataRegisterRequest) (int64, error) {
+	c.registerCount++
+	c.register = request
+	return 9876, nil
+}
+
+func (c *fakeHilbertRawDataClient) GetRawDataUploadCredentials(_ context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawDataUploadCredentials, error) {
+	c.credentialsWorkspaceID = workspaceID
+	c.credentialsRawDataID = rawDataID
+	return c.credentials, nil
+}
+
+func (c *fakeHilbertRawDataClient) FinishRawDataUpload(_ context.Context, workspaceID, rawDataID int64) error {
+	c.finishWorkspaceID = workspaceID
+	c.finishRawDataID = rawDataID
+	c.finished = true
+	return nil
+}
+
+type fakeSourceObjectReader struct {
+	data      []byte
+	statCount int
+	openCount int
+}
+
+func (r *fakeSourceObjectReader) StatObject(context.Context, string, string) (int64, error) {
+	r.statCount++
+	return int64(len(r.data)), nil
+}
+
+func (r *fakeSourceObjectReader) OpenObject(context.Context, string, string) (io.ReadCloser, error) {
+	r.openCount++
+	return io.NopCloser(bytes.NewReader(r.data)), nil
+}
+
+type fakeTOSObjectUploader struct {
+	target cloud.TOSS3UploadTarget
+	size   int64
+	body   []byte
+}
+
+func (u *fakeTOSObjectUploader) PutObject(_ context.Context, target cloud.TOSS3UploadTarget, reader io.Reader, size int64, progress cloud.UploadProgressFunc) (string, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+	u.target = target
+	u.size = size
+	u.body = data
+	if progress != nil {
+		progress(size, size)
+	}
+	return "etag-1", nil
+}
+
+func TestSyncEpisodeUploadRowBagTimes(t *testing.T) {
+	createdAt := time.Date(2026, 7, 15, 2, 0, 0, 0, time.UTC)
+	row := syncEpisodeUploadRow{
+		CreatedAt:   createdAt,
+		DurationSec: sql.NullFloat64{Float64: 1.5, Valid: true},
+	}
+	if got := row.bagStartTime(); !got.Equal(createdAt) {
+		t.Fatalf("bagStartTime() = %s, want %s", got, createdAt)
+	}
+	wantEnd := createdAt.Add(1500 * time.Millisecond)
+	if got := row.bagEndTime(); !got.Equal(wantEnd) {
+		t.Fatalf("bagEndTime() = %s, want %s", got, wantEnd)
+	}
+
+	row.DurationSec = sql.NullFloat64{}
+	if got := row.bagEndTime(); !got.Equal(createdAt.Add(time.Second)) {
+		t.Fatalf("bagEndTime() without duration = %s, want created+1s", got)
+	}
+}
+
+func TestHilbertBagNameIsStableAndUnique(t *testing.T) {
+	row := syncEpisodeUploadRow{ID: 4181}
+	got := hilbertBagName(row, "device-uploads/3/capture_20260715T044250Z_b2d9911e/5b9e8785-d568-4b1e-82fe-26cbc1320e44/capture.mcap")
+	want := "episode_4181_capture_20260715T044250Z_b2d9911e_5b9e8785-d568-4b1e-82fe-26cbc1320e44.mcap"
+	if got != want {
+		t.Fatalf("hilbertBagName() = %q, want %q", got, want)
+	}
+}
+
+func TestUploadEpisodeDirectReusesPersistedHilbertRawDataID(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (id, episode_id, status, attempt_count, destination_path, started_at)
+		VALUES (123, 4181, 'in_progress', 2, ?, ?)
+	`, hilbertRawDataIDDestinationPrefix+"9876", time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-cn-beijing.volces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
+	}
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
+	uploader := &fakeTOSObjectUploader{}
+	w := &SyncWorker{
+		db:          db,
+		minioBucket: "source-bucket",
+		hilbert:     hilbert,
+		source:      source,
+		tosUploader: uploader,
+	}
+
+	result, err := w.uploadEpisodeDirect(context.Background(), 123, syncEpisodeUploadRow{
+		ID:                4181,
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("uploadEpisodeDirect() error = %v", err)
+	}
+	if hilbert.registerCount != 0 {
+		t.Fatalf("RegisterRawData calls = %d, want 0", hilbert.registerCount)
+	}
+	if hilbert.credentialsRawDataID != 9876 {
+		t.Fatalf("credentials rawDataID = %d, want 9876", hilbert.credentialsRawDataID)
+	}
+	if result.UploadID != "9876" {
+		t.Fatalf("UploadID = %q, want 9876", result.UploadID)
 	}
 }
 

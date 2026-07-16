@@ -49,6 +49,28 @@ func newTestUploader(persistRootDir string) *Uploader {
 	}
 }
 
+func TestPrepareUploadSessionSendsPlanClientHintsToGateway(t *testing.T) {
+	var gotHints map[string]string
+	gw := &fakeGateway{
+		createLogicalUploadFn: func(_ context.Context, clientHints map[string]string, _ string) (*UploadSession, error) {
+			gotHints = clientHints
+			return makeSession("logical-1", "upload-1"), nil
+		},
+	}
+	u := newDecideResumeUploader("", gw, &fakeOSS{})
+
+	_, err := u.prepareUploadSession(context.Background(), map[string]string{
+		"dc_plan_id":   "1001",
+		"workspace_id": "123",
+	}, "path/file.mcap", "asset-1", 1)
+	if err != nil {
+		t.Fatalf("prepareUploadSession() error = %v", err)
+	}
+	if gotHints["dc_plan_id"] != "1001" || gotHints["workspace_id"] != "123" {
+		t.Fatalf("CreateLogicalUpload hints=%+v want plan/workspace ids", gotHints)
+	}
+}
+
 // TestPersistAndCleanupActiveState verifies round-trip write + remove from active/.
 // Mirrors Rust abort_upload_cleans_persisted_state.
 func TestPersistAndCleanupActiveState(t *testing.T) {

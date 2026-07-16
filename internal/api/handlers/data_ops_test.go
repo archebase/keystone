@@ -7,6 +7,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -24,7 +25,7 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&scene_id=1,2&sop_id=9,10&robot_type_id=3&robot_device_id=robot-001,robot-002&collector_operator_id=op001&label=recalled_batch", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&workspace_id=0&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&robot_device_id=robot-001,robot-002&collector_operator_id=op001&label=recalled_batch", nil)
 
 	got, err := parseDataOpsEpisodeQuery(c)
 	if err != nil {
@@ -32,6 +33,9 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	}
 	if got.Pagination.Limit != 20 || got.Pagination.Offset != 40 {
 		t.Fatalf("unexpected pagination: %+v", got.Pagination)
+	}
+	if len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != 0 {
+		t.Fatalf("unexpected workspace ids: %#v", got.WorkspaceIDs)
 	}
 	if !got.HasCreatedAtFrom || !got.HasCreatedAtTo || got.Keyword != "ep" || got.Label != "recalled_batch" {
 		t.Fatalf("unexpected scalar filters: %+v", got)
@@ -42,42 +46,71 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	if strings.Join(got.SyncStatuses, ",") != "not_started,failed" {
 		t.Fatalf("unexpected sync statuses: %#v", got.SyncStatuses)
 	}
-	if len(got.SceneIDs) != 2 || got.SceneIDs[0] != 1 || got.SceneIDs[1] != 2 {
-		t.Fatalf("unexpected scene ids: %#v", got.SceneIDs)
-	}
-	if len(got.SOPIDs) != 2 || got.SOPIDs[0] != 9 || got.SOPIDs[1] != 10 {
-		t.Fatalf("unexpected sop ids: %#v", got.SOPIDs)
-	}
-	if len(got.RobotTypeIDs) != 1 || got.RobotTypeIDs[0] != 3 {
-		t.Fatalf("unexpected robot type ids: %#v", got.RobotTypeIDs)
-	}
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
 	}
 }
 
-func TestDataOpsEpisodeWhereIncludesSOPFilter(t *testing.T) {
-	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{SOPIDs: []int64{9, 10}})
-	if !strings.Contains(sql, "COALESCE(e.sop_id, t.sop_id) IN (?,?)") {
-		t.Fatalf("SOP filter SQL should use episode/task SOP fallback: %s", sql)
+func TestDataOpsEpisodeWhereIncludesWorkspaceFilter(t *testing.T) {
+	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{WorkspaceIDs: []int64{0, 12}})
+	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.workspace_id) IN (?,?)") {
+		t.Fatalf("workspace filter SQL should use task/workstation fallback: %s", sql)
 	}
-	if len(args) != 2 || args[0] != int64(9) || args[1] != int64(10) {
+	if len(args) != 2 || args[0] != int64(0) || args[1] != int64(12) {
 		t.Fatalf("unexpected args: %#v", args)
 	}
 }
 
-func TestDataOpsEpisodeListSQLIncludesSOPColumns(t *testing.T) {
+func TestDataOpsHilbertSyncRejectsDefaultWorkspaceScope(t *testing.T) {
+	if dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{}) {
+		t.Fatal("bulk Hilbert sync must require an explicit Workspace")
+	}
+	if dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{WorkspaceIDs: []int64{0}}) {
+		t.Fatal("default Workspace must not allow Hilbert sync")
+	}
+	if dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{WorkspaceIDs: []int64{0, 12}}) {
+		t.Fatal("mixed scope containing default Workspace must not allow Hilbert sync")
+	}
+	if dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{WorkspaceIDs: []int64{12, 13}}) {
+		t.Fatal("bulk Hilbert sync must not span multiple Workspaces")
+	}
+	if !dataOpsHilbertSyncAllowed(dataOpsEpisodeQuery{WorkspaceIDs: []int64{12}}) {
+		t.Fatal("Hilbert Workspace should allow sync")
+	}
+}
+
+func TestDataOpsEpisodeListSQLUsesCurrentProductionMetadata(t *testing.T) {
 	sql := dataOpsEpisodeListSQL(dataOpsEpisodeBaseFromSQL(), " WHERE e.deleted_at IS NULL")
-	for _, want := range []string{
-		"COALESCE(e.sop_id, t.sop_id) AS sop_id",
-		"LEFT JOIN sops s ON s.id = COALESCE(e.sop_id, t.sop_id)",
-		"CONCAT('SOP #', CAST(COALESCE(e.sop_id, t.sop_id) AS CHAR))",
-		"ELSE CONCAT(s.slug, ' @ ', s.version)",
-		"COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS collector_name",
-	} {
-		if !strings.Contains(sql, want) {
-			t.Fatalf("data ops SQL should include %q: %s", want, sql)
+	for _, current := range []string{"LEFT JOIN tasks", "LEFT JOIN dc_plan", "LEFT JOIN workstations", "LEFT JOIN robots", "LEFT JOIN data_collectors"} {
+		if !strings.Contains(sql, current) {
+			t.Fatalf("data ops SQL should include %q: %s", current, sql)
 		}
+	}
+	if !strings.Contains(sql, "dp.dc_task_id") || !strings.Contains(sql, "dp.dc_task_name") {
+		t.Fatalf("data ops SQL should select dc task fields: %s", sql)
+	}
+	if !strings.Contains(sql, "r.metadata AS robot_metadata") {
+		t.Fatalf("data ops SQL should select robot metadata for device names: %s", sql)
+	}
+}
+
+func TestDataOpsEpisodeItemIncludesTaskAndRobotDisplayNames(t *testing.T) {
+	item := dataOpsEpisodeItemFromRow(dataOpsEpisodeRow{
+		ID:            1,
+		EpisodeID:     "episode-1",
+		TaskID:        10,
+		DCTaskID:      sql.NullInt64{Int64: 14, Valid: true},
+		DCTaskName:    sql.NullString{String: "Task One", Valid: true},
+		RobotDeviceID: sql.NullString{String: "robot-001", Valid: true},
+		RobotMetadata: sql.NullString{String: `{"hilbert_dc_device_name":"Device One"}`, Valid: true},
+		QAStatus:      "pending_qa",
+		CreatedAt:     time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if item.DCTaskID == nil || *item.DCTaskID != 14 || item.DCTaskName == nil || *item.DCTaskName != "Task One" {
+		t.Fatalf("task fields=%v/%v want 14/Task One", item.DCTaskID, item.DCTaskName)
+	}
+	if item.RobotDeviceName == nil || *item.RobotDeviceName != "Device One" {
+		t.Fatalf("RobotDeviceName=%v want Device One", item.RobotDeviceName)
 	}
 }
 
@@ -114,14 +147,12 @@ func TestDataOpsLatestQueriesOnlyUsePageEpisodeIDs(t *testing.T) {
 
 func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	got, err := parseDataOpsBulkEpisodeFilters(DataOpsBulkEpisodeFilters{
+		WorkspaceID:         "12",
 		CreatedAtFrom:       "2026-06-01T00:00:00Z",
 		CreatedAtTo:         "2026-06-06T00:00:00Z",
 		Keyword:             "ep",
 		QAStatus:            "failed,pending_qa",
 		SyncStatus:          "not_started,failed",
-		SceneID:             "1,2",
-		SOPID:               "9,10",
-		RobotTypeID:         "3",
 		RobotDeviceID:       "robot-001,robot-002",
 		CollectorOperatorID: "op001",
 		Label:               "recalled_batch",
@@ -134,6 +165,9 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	if got.Pagination.Limit != 0 || got.Pagination.Offset != 0 {
 		t.Fatalf("bulk filters should ignore pagination: %+v", got.Pagination)
 	}
+	if len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != 12 {
+		t.Fatalf("unexpected workspace ids: %#v", got.WorkspaceIDs)
+	}
 	if !got.HasCreatedAtFrom || !got.HasCreatedAtTo || got.Keyword != "ep" || got.Label != "recalled_batch" {
 		t.Fatalf("unexpected scalar filters: %+v", got)
 	}
@@ -143,15 +177,6 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	if strings.Join(got.SyncStatuses, ",") != "not_started,failed" {
 		t.Fatalf("unexpected sync statuses: %#v", got.SyncStatuses)
 	}
-	if len(got.SceneIDs) != 2 || got.SceneIDs[0] != 1 || got.SceneIDs[1] != 2 {
-		t.Fatalf("unexpected scene ids: %#v", got.SceneIDs)
-	}
-	if len(got.SOPIDs) != 2 || got.SOPIDs[0] != 9 || got.SOPIDs[1] != 10 {
-		t.Fatalf("unexpected sop ids: %#v", got.SOPIDs)
-	}
-	if len(got.RobotTypeIDs) != 1 || got.RobotTypeIDs[0] != 3 {
-		t.Fatalf("unexpected robot type ids: %#v", got.RobotTypeIDs)
-	}
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
 	}
@@ -159,14 +184,10 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 
 func TestParseDataOpsBulkEpisodeFiltersDoesNotCapMultiValueCount(t *testing.T) {
 	got, err := parseDataOpsBulkEpisodeFilters(DataOpsBulkEpisodeFilters{
-		SceneID:       joinedNumberList(maxMultiValueFilterItems + 1),
 		RobotDeviceID: joinedStringList("robot-", maxMultiValueFilterItems+1),
 	})
 	if err != nil {
 		t.Fatalf("parseDataOpsBulkEpisodeFilters returned error: %v", err)
-	}
-	if len(got.SceneIDs) != maxMultiValueFilterItems+1 {
-		t.Fatalf("scene id count = %d, want %d", len(got.SceneIDs), maxMultiValueFilterItems+1)
 	}
 	if len(got.RobotDeviceIDs) != maxMultiValueFilterItems+1 {
 		t.Fatalf("robot device id count = %d, want %d", len(got.RobotDeviceIDs), maxMultiValueFilterItems+1)
@@ -247,8 +268,8 @@ func TestPreviewBulkEpisodeSyncTreatsMissingSyncLogAsEligible(t *testing.T) {
 
 	for id := int64(1); id <= 11; id++ {
 		if _, err := db.Exec(`
-			INSERT INTO episodes (id, episode_id, task_id, scene_id, qa_status, cloud_synced, deleted_at, created_at)
-			VALUES (?, ?, 0, 0, 'approved', 0, NULL, '2026-06-01T00:00:00Z')
+			INSERT INTO episodes (id, episode_id, task_id, qa_status, cloud_synced, deleted_at, created_at)
+			VALUES (?, ?, 0, 'approved', 0, NULL, '2026-06-01T00:00:00Z')
 		`, id, "episode"); err != nil {
 			t.Fatalf("insert episode %d: %v", id, err)
 		}
@@ -652,9 +673,7 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			episode_id TEXT NOT NULL,
 			task_id INTEGER NOT NULL,
-			scene_id INTEGER NOT NULL,
 			workstation_id INTEGER,
-			sop_id INTEGER,
 			qa_status TEXT,
 			cloud_synced BOOLEAN NOT NULL DEFAULT 0,
 			deleted_at TEXT,
@@ -662,11 +681,18 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 		)`,
 		`CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY,
-			sop_id INTEGER,
+			task_id TEXT,
+			dc_plan_id INTEGER,
+			organization_id INTEGER,
 			workstation_id INTEGER,
 			deleted_at TEXT
 		)`,
-		`CREATE TABLE scenes (id INTEGER PRIMARY KEY, deleted_at TEXT)`,
+		`CREATE TABLE dc_plan (
+			id INTEGER PRIMARY KEY,
+			dc_task_id INTEGER,
+			dc_task_name TEXT,
+			deleted_at TEXT
+		)`,
 		`CREATE TABLE workstations (
 			id INTEGER PRIMARY KEY,
 			robot_id INTEGER,
@@ -675,12 +701,9 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 		)`,
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
-			robot_type_id INTEGER,
 			deleted_at TEXT
 		)`,
-		`CREATE TABLE robot_types (id INTEGER PRIMARY KEY, deleted_at TEXT)`,
 		`CREATE TABLE data_collectors (id INTEGER PRIMARY KEY, deleted_at TEXT)`,
-		`CREATE TABLE sops (id INTEGER PRIMARY KEY, deleted_at TEXT)`,
 		`CREATE TABLE sync_logs (
 			id INTEGER PRIMARY KEY,
 			episode_id INTEGER NOT NULL,
@@ -716,8 +739,8 @@ func insertDataOpsBulkTestEpisode(t *testing.T, db *sqlx.DB, id int64, createdAt
 	t.Helper()
 
 	if _, err := db.Exec(`
-		INSERT INTO episodes (id, episode_id, task_id, scene_id, qa_status, cloud_synced, deleted_at, created_at)
-		VALUES (?, ?, 0, 0, 'pending_qa', 0, NULL, ?)
+		INSERT INTO episodes (id, episode_id, task_id, qa_status, cloud_synced, deleted_at, created_at)
+		VALUES (?, ?, 0, 'pending_qa', 0, NULL, ?)
 	`, id, "episode", createdAt); err != nil {
 		t.Fatalf("insert episode %d: %v", id, err)
 	}

@@ -1,0 +1,588 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone PR-4 Episode 按数采计划上传</title>
+  <style>
+    :root {
+      --orange: #F47A16;
+      --blue: #1E4E9A;
+      --yellow: #FFD23F;
+      --ink: #15110D;
+      --paper: #FFF2D4;
+      --red: #D93A24;
+      --brown: #7A3E16;
+      --shadow: 8px 8px 0 var(--ink);
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background: var(--orange);
+      color: var(--ink);
+      font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", SimHei, sans-serif;
+      line-height: 1.68;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 77% 17%, var(--yellow) 0 9%, transparent 9%),
+        repeating-linear-gradient(112deg, rgba(21, 17, 13, .17) 0 3px, transparent 3px 25px),
+        var(--orange);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+      opacity: .25;
+      background: radial-gradient(circle, rgba(21, 17, 13, .27) 0 1px, transparent 1px) 0 0 / 9px 9px;
+      mix-blend-mode: multiply;
+    }
+
+    a {
+      color: var(--blue);
+      font-weight: 1000;
+      text-decoration-thickness: 3px;
+    }
+
+    .page {
+      position: relative;
+      width: min(1180px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 28px 0 70px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 610px;
+      overflow: hidden;
+      border: 6px solid var(--ink);
+      background:
+        linear-gradient(110deg, var(--paper) 0 56%, transparent 56%),
+        linear-gradient(156deg, transparent 0 67%, var(--blue) 67%),
+        var(--yellow);
+      box-shadow: 14px 14px 0 var(--ink);
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -25%;
+      opacity: .72;
+      background: repeating-conic-gradient(from 4deg at 72% 39%, rgba(21, 17, 13, .22) 0 2deg, transparent 2deg 8deg);
+    }
+
+    .hero::after {
+      content: "PLAN ID LOCKED";
+      position: absolute;
+      right: -14px;
+      bottom: 32px;
+      padding: 12px 18px;
+      border: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      box-shadow: 7px 7px 0 var(--ink);
+      font: 900 21px/1 Impact, "Arial Black", sans-serif;
+      letter-spacing: 0;
+      transform: skewX(-12deg) rotate(-2deg);
+    }
+
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      width: min(940px, 100%);
+      padding: clamp(26px, 5vw, 62px);
+    }
+
+    .kicker {
+      display: inline-block;
+      padding: 7px 12px;
+      border: 4px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 5px 5px 0 var(--brown);
+      font-weight: 1000;
+      transform: rotate(-2deg);
+    }
+
+    h1 {
+      max-width: 920px;
+      margin: 30px 0 18px;
+      color: var(--red);
+      font-family: Impact, "Arial Black", "Source Han Sans SC", SimHei, sans-serif;
+      font-size: clamp(46px, 8vw, 104px);
+      line-height: .95;
+      letter-spacing: 0;
+      -webkit-text-stroke: 3px var(--ink);
+      text-shadow: 7px 7px 0 var(--yellow), 12px 12px 0 var(--ink);
+      transform: skew(-4deg);
+    }
+
+    .subtitle {
+      max-width: 840px;
+      margin: 0;
+      font-size: clamp(18px, 2.1vw, 24px);
+      font-weight: 900;
+    }
+
+    .arena {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      width: min(1020px, 100%);
+      margin-top: 34px;
+    }
+
+    .signal {
+      min-height: 112px;
+      padding: 12px;
+      border: 4px solid var(--ink);
+      background: var(--blue);
+      color: var(--paper);
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .signal b {
+      display: block;
+      color: var(--yellow);
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    .signal span {
+      display: block;
+      margin-top: 8px;
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    section {
+      margin-top: 30px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      border-bottom: 5px solid var(--ink);
+      background: var(--yellow);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      border-right: 5px solid var(--ink);
+      background: var(--red);
+      color: var(--paper);
+      font: 900 36px/1 Impact, "Arial Black", sans-serif;
+      -webkit-text-stroke: 1px var(--ink);
+    }
+
+    h2 {
+      margin: 0;
+      padding: 15px 18px;
+      font-size: clamp(25px, 4vw, 42px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .content { padding: clamp(18px, 3vw, 30px); }
+
+    h3 {
+      margin: 26px 0 10px;
+      font-size: 23px;
+      line-height: 1.22;
+      letter-spacing: 0;
+    }
+
+    h3:first-child { margin-top: 0; }
+    p { margin: 0 0 14px; }
+
+    code {
+      padding: 1px 5px;
+      border: 2px solid var(--ink);
+      background: var(--yellow);
+      color: var(--ink);
+      font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+      font-size: .92em;
+      font-weight: 800;
+    }
+
+    pre {
+      margin: 14px 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 4px solid var(--ink);
+      background: var(--ink);
+      color: var(--paper);
+      box-shadow: 6px 6px 0 var(--brown);
+      font: 14px/1.55 "SFMono-Regular", Consolas, "Courier New", monospace;
+      white-space: pre;
+    }
+
+    ul, ol {
+      margin: 8px 0 16px;
+      padding-left: 24px;
+    }
+
+    li { margin: 7px 0; }
+
+    table {
+      width: 100%;
+      margin: 16px 0 22px;
+      border-collapse: collapse;
+      background: var(--paper);
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border: 4px solid var(--ink);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--yellow);
+      font-weight: 1000;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .panel {
+      padding: 15px;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .panel h3 { margin-top: 0; }
+
+    .callout {
+      margin: 18px 0;
+      padding: 16px;
+      border: 5px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 6px 6px 0 var(--ink);
+      font-weight: 900;
+    }
+
+    .flow {
+      display: grid;
+      gap: 12px;
+      margin: 18px 0;
+    }
+
+    .flow-row {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .flow-key {
+      display: grid;
+      place-items: center;
+      padding: 12px;
+      border-right: 4px solid var(--ink);
+      background: var(--blue);
+      color: var(--paper);
+      font-weight: 1000;
+      text-align: center;
+    }
+
+    .flow-body { padding: 13px 15px; }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border: 3px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 3px 3px 0 var(--ink);
+      font-weight: 1000;
+    }
+
+    .tag.red {
+      background: var(--red);
+      color: var(--paper);
+    }
+
+    footer {
+      margin-top: 34px;
+      color: var(--ink);
+      font-weight: 800;
+    }
+
+    @media (max-width: 860px) {
+      .page { width: min(100% - 22px, 1180px); padding-top: 16px; }
+      .hero { min-height: auto; box-shadow: 8px 8px 0 var(--ink); }
+      .hero-inner { padding: 24px; }
+      .arena, .split { grid-template-columns: 1fr; }
+      .section-head { grid-template-columns: 60px 1fr; }
+      .section-no { font-size: 24px; }
+      .flow-row { grid-template-columns: 1fr; }
+      .flow-key { border-right: 0; border-bottom: 4px solid var(--ink); }
+      th, td { padding: 9px; }
+      pre { font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-inner">
+        <span class="kicker">Keystone V2 / PR-4 / 实现决策锁定</span>
+        <h1>EPISODE<br>锁定计划<br>直达上传</h1>
+        <p class="subtitle">
+          核心矛盾：task 已由 Hilbert 数采计划生成，但 episode 与直传链路仍没有把计划 ID
+          作为唯一业务元信息入口。PR-4 要把计划上下文从 task 固化到 episode，并在上传前强校验。
+        </p>
+        <div class="arena">
+          <div class="signal"><b>创建</b><span>task 计划字段复制到 episode</span></div>
+          <div class="signal"><b>守卫</b><span>计划存在且 workspace_id &gt; 0</span></div>
+          <div class="signal"><b>传输</b><span>raw_tags 与 client_hints 双写</span></div>
+          <div class="signal"><b>失败</b><span>业务前置缺失直接不可重试</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <div class="section-head"><div class="section-no">01</div><h2>背景与核心判断</h2></div>
+      <div class="content">
+        <p>
+          PR-2 已建立 Hilbert <code>dc_plan</code> 投影以及 <code>tasks</code> / <code>episodes</code> 的计划字段；
+          PR-2.5 补齐 Workspace 运营资源最小投影；PR-3 已让计划同步后生成带
+          <code>tasks.dc_plan_id</code> 的本地执行 task。剩余断点位于 episode 创建和云上传。
+        </p>
+        <div class="callout">
+          PR-4 的唯一业务事实入口是 <code>episodes.dc_plan_id</code> 指向的非删除 Hilbert 计划投影。
+          <code>workspace_id</code> 从该投影派生；order、batch、scene 等旧字段只保留为本地执行兼容和诊断信息，禁止回退解析。
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">02</div><h2>目标与非目标</h2></div>
+      <div class="content">
+        <div class="split">
+          <div class="panel">
+            <h3>目标</h3>
+            <ul>
+              <li>新 episode 创建时从 task 复制 <code>dc_plan_id</code> 和 <code>local_dc_plan_id</code>。</li>
+              <li>Episode API 暴露最小计划上下文，便于查询与排障。</li>
+              <li>自动同步与手动同步共用同一个 Hilbert 上传守卫。</li>
+              <li>上传时将 <code>dc_plan_id</code>、<code>workspace_id</code> 同时写入 <code>raw_tags</code> 和 <code>client_hints</code>。</li>
+              <li>计划前置条件失败时生成清晰、不可重试的 sync failure。</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>非目标</h3>
+            <ul>
+              <li>不修改 data-gateway proto。</li>
+              <li>不修改 Axon 协议，也不要求 Axon 上传计划 ID。</li>
+              <li>不支持仅有 <code>local_dc_plan_id</code> 的 Hilbert 上传。</li>
+              <li>不回填、不迁移历史 episode，也不在上传时从 task 补推导计划。</li>
+              <li>不删除 order/batch runtime，不改变 <code>sync_logs</code> schema。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">03</div><h2>端到端数据流</h2></div>
+      <div class="content">
+        <pre>Hilbert dc_plan projection
+  -> PR-3 task generation writes tasks.dc_plan_id
+  -> Axon transfer completion creates episode
+       copy task.dc_plan_id       -> episodes.dc_plan_id
+       copy task.local_dc_plan_id -> episodes.local_dc_plan_id
+  -> auto sync or manual sync enters the same worker path
+  -> load episode + non-deleted dc_plan projection
+  -> enforce Hilbert upload guard
+  -> raw_tags[dc_plan_id, workspace_id]
+  -> client_hints[dc_plan_id, workspace_id]
+  -> data-gateway upload</pre>
+        <div class="flow">
+          <div class="flow-row"><div class="flow-key">持久事实</div><div class="flow-body"><code>episodes.dc_plan_id</code> 与 <code>episodes.local_dc_plan_id</code> 是创建时快照；不新增 <code>episodes.workspace_id</code>。</div></div>
+          <div class="flow-row"><div class="flow-key">上传派生</div><div class="flow-body"><code>workspace_id</code> 每次从匹配的、未删除的 <code>dc_plan.workspace_id</code> 读取。</div></div>
+          <div class="flow-row"><div class="flow-key">禁止回退</div><div class="flow-body">缺少计划字段时，不允许从 task、order、batch、scene、sidecar 或历史 raw tags 猜测。</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">04</div><h2>Episode 创建与 API</h2></div>
+      <div class="content">
+        <h3>创建写入</h3>
+        <p>
+          在 <code>internal/api/handlers/transfer.go</code> 的 transfer completion 事务中，扩展 task 查询结果，
+          读取 <code>tasks.dc_plan_id</code> 和 <code>tasks.local_dc_plan_id</code>，并将两者加入现有
+          <code>INSERT INTO episodes</code>。字段只做原值复制，不增加额外解析逻辑。
+        </p>
+        <table>
+          <thead><tr><th>Task 状态</th><th>Episode 创建</th><th>后续 Hilbert 上传</th></tr></thead>
+          <tbody>
+            <tr><td>有 <code>dc_plan_id</code></td><td>复制 Hilbert 计划 ID。</td><td>通过计划与 Workspace 守卫后允许。</td></tr>
+            <tr><td>仅有 <code>local_dc_plan_id</code></td><td>允许创建并复制本地计划 ID。</td><td><span class="tag red">不可上传</span> Hilbert。</td></tr>
+            <tr><td>两个字段都为空</td><td>仍允许本地创建 episode。</td><td><span class="tag red">不可上传</span> Hilbert。</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Episode API 最小扩展</h3>
+        <p>Episode list/detail response 增加以下字段；Workspace 与计划展示字段通过 <code>dc_plan</code> 左连接派生：</p>
+        <pre>{
+  "dc_plan_id": 1001,
+  "local_dc_plan_id": null,
+  "workspace_id": 123,
+  "dc_plan_name": "Ego collection batch A",
+  "dc_type": "ego"
+}</pre>
+        <p>PR-4 不新增 <code>episodes.workspace_id</code> 持久列，也不扩大 Episode API 到完整计划详情。</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">05</div><h2>Hilbert 上传守卫</h2></div>
+      <div class="content">
+        <p>
+          <code>syncEpisodeUploadRow</code> 与 <code>processEpisodeWithMode</code> 的查询结果必须带上 episode 计划字段以及
+          匹配计划的 Workspace/展示元信息。自动队列和手动触发不预过滤无计划 episode，而是在 worker 中执行同一守卫，
+          确保 <code>sync_logs</code> 留下明确失败记录。
+        </p>
+        <table>
+          <thead><tr><th>守卫顺序</th><th>条件</th><th>结果</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><code>episodes.dc_plan_id</code> 非空且大于 0。</td><td>否则不可重试失败。</td></tr>
+            <tr><td>2</td><td>存在 ID 匹配且 <code>deleted_at IS NULL</code> 的 <code>dc_plan</code>。</td><td>否则不可重试失败。</td></tr>
+            <tr><td>3</td><td><code>dc_plan.workspace_id &gt; 0</code>。</td><td>否则不可重试失败；default Workspace 禁止上传。</td></tr>
+          </tbody>
+        </table>
+        <div class="callout">
+          <code>local_dc_plan_id</code> 只是本地计划关联。即使它存在，也不能替代 Hilbert <code>dc_plan_id</code> 通过守卫。
+        </div>
+        <h3>错误文案</h3>
+        <pre>episode 4181 missing dc_plan_id
+episode 4181 has local_dc_plan_id 27 but Hilbert upload requires dc_plan_id
+dc_plan 1001 not found or deleted
+dc_plan 1001 has invalid workspace_id 0</pre>
+        <p>
+          这些错误使用现有 <code>newNonRetryableSyncError</code> / <code>wrapNonRetryableSyncError</code> 分类，
+          由现有失败流程写入 <code>sync_logs</code>，不增加新列或新状态。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">06</div><h2>上传元信息契约</h2></div>
+      <div class="content">
+        <h3>双通道写入</h3>
+        <table>
+          <thead><tr><th>键</th><th><code>raw_tags</code></th><th><code>client_hints</code></th><th>来源</th></tr></thead>
+          <tbody>
+            <tr><td><code>dc_plan_id</code></td><td>必须</td><td>必须</td><td><code>episodes.dc_plan_id</code></td></tr>
+            <tr><td><code>workspace_id</code></td><td>必须</td><td>必须</td><td><code>dc_plan.workspace_id</code></td></tr>
+          </tbody>
+        </table>
+        <p>
+          两个值按十进制字符串传输，键名固定使用 <code>dc_plan_id</code> 和 <code>workspace_id</code>。
+          data-gateway 已有 <code>CreateLogicalUploadRequest.client_hints</code> 和
+          <code>CompleteUploadRequest.raw_tags</code>，因此不改 proto。
+        </p>
+
+        <h3>Keystone 内部改动</h3>
+        <ul>
+          <li>扩展 <code>dpRawTagContext</code> 或等价输入，让 <code>buildDPDirectRawTags</code> 注入两个计划 tag。</li>
+          <li>调用 <code>cloud.UploadRequest</code> 时，通过已有 <code>ClientHints</code> map 传入相同键值。</li>
+          <li>现有 uploader 继续自动合并 <code>episode_id</code> 与 <code>source=keystone-edge</code>。</li>
+        </ul>
+
+        <h3>旧 raw tags 的定位</h3>
+        <p>
+          现有 <code>order_name</code>、<code>batch_id</code>、<code>scene</code>、<code>subscene</code>、
+          <code>sop_slug</code>、采集员和 robot type 等 tag 本 PR 不删除。它们用于诊断、检索和兼容观察，
+          但 Hilbert raw data / dataset 归属必须只认 <code>dc_plan_id</code> 与 <code>workspace_id</code>。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">07</div><h2>实施步骤</h2></div>
+      <div class="content">
+        <ol>
+          <li>扩展 transfer handler 的 task row 与 episode insert，复制两个计划字段。</li>
+          <li>扩展 episode handler 的 row、查询和 response，返回五个最小计划字段。</li>
+          <li>扩展 <code>syncEpisodeUploadRow</code> 及其 SQL，加载 episode 计划字段和非删除 <code>dc_plan</code> 上下文。</li>
+          <li>在公共上传路径、解析制品和创建 uploader 之前执行 Hilbert 上传守卫。</li>
+          <li>扩展 raw tag 上下文，加入 <code>dc_plan_id</code>、<code>workspace_id</code>。</li>
+          <li>在 <code>cloud.UploadRequest.ClientHints</code> 中加入相同键值。</li>
+          <li>补充窄范围 handler/service 单测，并运行相关 Go package tests。</li>
+        </ol>
+        <p>
+          本 PR 没有历史迁移和数据回填，因此不需要额外 migration，也没有批处理或回滚脚本。
+          代码回滚后，新写入的 episode 计划字段可以保留，不影响旧 runtime。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">08</div><h2>测试矩阵</h2></div>
+      <div class="content">
+        <table>
+          <thead><tr><th>测试</th><th>断言</th></tr></thead>
+          <tbody>
+            <tr><td>transfer handler 创建 episode</td><td>task 的 <code>dc_plan_id</code> / <code>local_dc_plan_id</code> 原值写入 episode。</td></tr>
+            <tr><td>worker 缺 <code>dc_plan_id</code></td><td>返回不可重试错误；仅有 local plan 时错误明确指出 Hilbert 要求。</td></tr>
+            <tr><td>计划不存在或已删除</td><td>返回不可重试错误，不创建 logical upload。</td></tr>
+            <tr><td><code>workspace_id = 0</code></td><td>返回不可重试错误，不调用 data-gateway。</td></tr>
+            <tr><td>raw tags</td><td>包含字符串形式的 <code>dc_plan_id</code> / <code>workspace_id</code>，旧诊断 tags 仍保留。</td></tr>
+            <tr><td>client hints</td><td><code>CreateLogicalUpload</code> 收到相同的两个键值。</td></tr>
+          </tbody>
+        </table>
+        <p>
+          不扩展到全量 sync worker 回归矩阵；风险集中在 episode 创建复制、上传前置校验和两处 map 注入，测试与改动面保持一致。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><div class="section-no">09</div><h2>验收标准</h2></div>
+      <div class="content">
+        <ul>
+          <li>计划生成 task 完成录制后，新 episode 持久化相同的 <code>dc_plan_id</code>。</li>
+          <li>Episode list/detail 可看到 <code>dc_plan_id</code>、<code>local_dc_plan_id</code>、<code>workspace_id</code>、<code>dc_plan_name</code>、<code>dc_type</code>。</li>
+          <li>合法 Hilbert episode 上传时，<code>raw_tags</code> 和 <code>client_hints</code> 都包含计划与 Workspace ID。</li>
+          <li>无 Hilbert 计划、计划已删除、计划不存在或 default Workspace 的 episode 均产生不可重试 sync failure。</li>
+          <li>自动同步与手动同步行为一致，失败不被静默预过滤。</li>
+          <li>仅有 local plan 的 episode 可以留在本地，但不能进入 Hilbert。</li>
+          <li>历史 episode 不回填，PR-4 不承诺其可上传。</li>
+          <li>data-gateway proto、Axon 协议、<code>sync_logs</code> schema 均无变化。</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer>
+      关联总览：<a href="./keystone-hilbert-domain-migration-sequence.zh.html">Keystone 对齐 Hilbert 领域模型实施顺序</a>。
+      前置实现：<a href="./keystone-dc-plan-pr3-task-generation.zh.html">PR-3 Hilbert 数采计划驱动 Task 生成</a>。
+    </footer>
+  </main>
+</body>
+</html>

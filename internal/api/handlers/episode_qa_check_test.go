@@ -170,8 +170,8 @@ func TestEvaluateRecordingNotEmptyCheck(t *testing.T) {
 	}
 }
 
-func TestDefaultEpisodeQASuiteIncludesRecordingNotEmpty(t *testing.T) {
-	got := defaultEpisodeQASuite(episodeQACheckRow{})
+func TestDefaultEpisodeQASuiteIncludesRecordingNotEmptyWhenSidecarExists(t *testing.T) {
+	got := defaultEpisodeQASuite(episodeQACheckRow{SidecarPath: "device-uploads/capture.json"})
 	want := []string{episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty}
 	if len(got) != len(want) {
 		t.Fatalf("suite length = %d, want %d: %v", len(got), len(want), got)
@@ -180,6 +180,80 @@ func TestDefaultEpisodeQASuiteIncludesRecordingNotEmpty(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("suite[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestDefaultEpisodeQASuiteSkipsRecordingNotEmptyWithoutSidecar(t *testing.T) {
+	got := defaultEpisodeQASuite(episodeQACheckRow{})
+	want := []string{episodeQACheckMcapMagic}
+	if len(got) != len(want) {
+		t.Fatalf("suite length = %d, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("suite[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestDefaultEpisodeQASuiteSkipsRecordingNotEmptyForTOSOnlyEpisode(t *testing.T) {
+	got := defaultEpisodeQASuite(episodeQACheckRow{
+		SidecarPath: "device-uploads/capture.mcap.metadata.json",
+		Metadata: sql.NullString{
+			Valid:  true,
+			String: `{"source":"dgwcompat","bucket":"tos-bucket","object_key":"device-uploads/capture.mcap"}`,
+		},
+	})
+	want := []string{episodeQACheckMcapMagic}
+	if len(got) != len(want) {
+		t.Fatalf("suite length = %d, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("suite[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSizeFromTOSRangeResponse(t *testing.T) {
+	got := sizeFromTOSRangeResponse(episodeQATOSObject{
+		Data:          mcapMagicBytes,
+		ContentRange:  "bytes 0-7/1024",
+		ContentLength: int64(len(mcapMagicBytes)),
+	})
+	if got != 1024 {
+		t.Fatalf("size = %d, want 1024", got)
+	}
+}
+
+func TestResolveEpisodeQAObjectLocationUsesMetadataBucket(t *testing.T) {
+	metadata := sql.NullString{
+		Valid:  true,
+		String: `{"source":"dgwcompat","bucket":"tos-bucket","object_key":"device-uploads/capture.mcap"}`,
+	}
+
+	bucket, objectName, ok := resolveEpisodeQAObjectLocation("edge-factory-test", "device-uploads/capture.mcap", metadata)
+	if !ok {
+		t.Fatal("resolveEpisodeQAObjectLocation() ok = false, want true")
+	}
+	if bucket != "tos-bucket" {
+		t.Fatalf("bucket = %q, want tos-bucket", bucket)
+	}
+	if objectName != "device-uploads/capture.mcap" {
+		t.Fatalf("objectName = %q, want device-uploads/capture.mcap", objectName)
+	}
+}
+
+func TestResolveEpisodeQAObjectLocationFallsBackToConfiguredBucket(t *testing.T) {
+	bucket, objectName, ok := resolveEpisodeQAObjectLocation("edge-factory-test", "device-uploads/capture.mcap", sql.NullString{})
+	if !ok {
+		t.Fatal("resolveEpisodeQAObjectLocation() ok = false, want true")
+	}
+	if bucket != "edge-factory-test" {
+		t.Fatalf("bucket = %q, want edge-factory-test", bucket)
+	}
+	if objectName != "device-uploads/capture.mcap" {
+		t.Fatalf("objectName = %q, want device-uploads/capture.mcap", objectName)
 	}
 }
 
@@ -435,6 +509,7 @@ func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 			qa_score REAL,
 			auto_approved BOOLEAN,
 			quality_flag TEXT,
+			metadata TEXT,
 			deleted_at TIMESTAMP NULL
 		);
 		CREATE TABLE qa_checks (

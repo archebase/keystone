@@ -75,21 +75,19 @@ type RecorderTaskConfig struct {
 	// Data collector identifier
 	// @default collector-001
 	DataCollectorID string `json:"data_collector_id,omitempty"`
-	// Parent order or job identifier
-	// @default order-001
-	OrderID string `json:"order_id,omitempty"`
+	// Workspace identifier
+	WorkspaceID *int64 `json:"workspace_id,omitempty"`
+	// Data collection plan identifier
+	DCPlanID *int64 `json:"dc_plan_id,omitempty"`
+	// Data collection type
+	DCType string `json:"dc_type,omitempty"`
+	// Data collection device identifier
+	DCDeviceID *int64 `json:"dc_device_id,omitempty"`
+	// Workstation identifier
+	WorkstationID string `json:"workstation_id,omitempty"`
 	// Human operator identifier
 	// @default alice
 	OperatorName string `json:"operator_name,omitempty"`
-	// Recording scene label
-	// @default warehouse_pickup
-	Scene string `json:"scene,omitempty"`
-	// Recording subscene label
-	// @default aisle_a
-	Subscene string `json:"subscene,omitempty"`
-	// Factory identifier
-	// @default factory-shanghai
-	Factory string `json:"factory,omitempty"`
 	// Topic list to record
 	// @default ["/imu/data","/camera0/rgb"]
 	Topics []string `json:"topics,omitempty"`

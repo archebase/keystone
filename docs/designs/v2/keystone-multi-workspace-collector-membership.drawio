@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="30.2.6">
+  <diagram name="Target Domain Model">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" value="HILBERT&#xa;global account + workspace snapshot" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#1E4E9A;strokeColor=#15110D;strokeWidth=4;fontColor=#FFF2D4;fontStyle=1;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="50" y="80" width="270" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="DATA_COLLECTORS&#xa;GLOBAL IDENTITY&#xa;&#xa;PK id&#xa;UQ operator_id&#xa;name / status / metadata&#xa;NO workspace_id" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF2D4;strokeColor=#15110D;strokeWidth=5;fontColor=#15110D;fontStyle=1;fontSize=15;align=left;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="440" y="40" width="280" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="WORKSPACES&#xa;ACCESS SOURCE OF TRUTH&#xa;&#xa;PK id&#xa;admins JSON [account code]&#xa;members JSON [account code]&#xa;source / last_synced_at" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFD23F;strokeColor=#15110D;strokeWidth=5;fontColor=#15110D;fontStyle=1;fontSize=15;align=left;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="440" y="350" width="280" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="5" value="WORKSTATIONS&#xa;&#xa;FK data_collector_id&#xa;FK workspace_id&#xa;FK robot_id&#xa;UQ current(collector, workspace)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F47A16;strokeColor=#15110D;strokeWidth=4;fontColor=#15110D;fontStyle=1;fontSize=15;align=left;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="850" y="70" width="270" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="6" value="TASKS / RESOURCES&#xa;&#xa;carry workspace_id&#xa;carry collector ownership&#xa;derive access from resource" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#D93A24;strokeColor=#15110D;strokeWidth=4;fontColor=#FFF2D4;fontStyle=1;fontSize=15;align=left;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="850" y="390" width="270" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="ACCESS CHECK&#xa;&#xa;operator_id in workspace.admins&#xa;OR operator_id in workspace.members" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#15110D;strokeColor=#15110D;strokeWidth=4;fontColor=#FFD23F;fontStyle=1;fontSize=16;align=left;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="440" y="650" width="400" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="8" value="account upsert by code" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#15110D;strokeWidth=4;endArrow=block;endFill=1;fontStyle=1;fontSize=12;labelBackgroundColor=#FFF2D4;" edge="1" parent="1" source="2" target="3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="9" value="workspace admins + members snapshot" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#15110D;strokeWidth=4;endArrow=block;endFill=1;fontStyle=1;fontSize=12;labelBackgroundColor=#FFF2D4;" edge="1" parent="1" source="2" target="4">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="370" y="460" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="10" value="stable identity" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#1E4E9A;strokeWidth=4;endArrow=block;endFill=1;fontStyle=1;fontSize=12;labelBackgroundColor=#FFF2D4;" edge="1" parent="1" source="3" target="5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="12" value="resource scope" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#D93A24;strokeWidth=4;endArrow=block;endFill=1;fontStyle=1;fontSize=12;labelBackgroundColor=#FFF2D4;" edge="1" parent="1" source="4" target="6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="13" value="parse structured arrays" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#15110D;strokeWidth=4;endArrow=block;endFill=1;fontStyle=1;fontSize=12;labelBackgroundColor=#FFF2D4;" edge="1" parent="1" source="4" target="7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="14" value="authorize resource workspace" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#D93A24;strokeWidth=4;endArrow=block;endFill=1;fontStyle=1;fontSize=12;labelBackgroundColor=#FFF2D4;" edge="1" parent="1" source="7" target="6">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="990" y="710" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="15" value="ONE IDENTITY / ONE ACCESS SOURCE" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#15110D;strokeColor=#15110D;fontColor=#FFD23F;fontStyle=1;fontSize=19;" vertex="1" parent="1">
+          <mxGeometry x="50" y="680" width="330" height="70" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

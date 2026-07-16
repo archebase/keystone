@@ -42,19 +42,12 @@ type Server struct {
 	episode             *handlers.EpisodeHandler
 	qa                  *handlers.EpisodeQAHandler
 	task                *handlers.TaskHandler
-	batch               *handlers.BatchHandler
-	robotType           *handlers.RobotTypeHandler
 	robot               *handlers.RobotHandler
 	deviceRegistration  *handlers.DeviceRegistrationHandler
-	factory             *handlers.FactoryHandler
 	dataCollector       *handlers.DataCollectorHandler
 	station             *handlers.StationHandler
 	workspace           *handlers.WorkspaceHandler
 	dcPlan              *handlers.DCPlanHandler
-	sop                 *handlers.SOPHandler
-	scene               *handlers.SceneHandler
-	subscene            *handlers.SubsceneHandler
-	order               *handlers.OrderHandler
 	dataOps             *handlers.DataOpsHandler
 	dataStats           *handlers.DataProductionStatisticsHandler
 	productionDashboard *handlers.ProductionDashboardHandler
@@ -94,7 +87,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	}
 	var storageHandler *handlers.StorageHandler
 	if s3Client != nil {
-		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth)
+		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth, &cfg.Storage)
 	}
 
 	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
@@ -113,7 +106,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
-	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
+	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.Storage)
 	transferHandler.SetEpisodeQAEnqueuer(qaHandler)
 
 	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)
@@ -124,19 +117,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create database-dependent handlers only when DB is available
 	var (
-		batchHandler               *handlers.BatchHandler
-		robotTypeHandler           *handlers.RobotTypeHandler
 		robotHandler               *handlers.RobotHandler
 		deviceRegistrationHandler  *handlers.DeviceRegistrationHandler
-		factoryHandler             *handlers.FactoryHandler
 		dataCollectorHandler       *handlers.DataCollectorHandler
 		stationHandler             *handlers.StationHandler
 		workspaceHandler           *handlers.WorkspaceHandler
 		dcPlanHandler              *handlers.DCPlanHandler
-		sopHandler                 *handlers.SOPHandler
-		sceneHandler               *handlers.SceneHandler
-		subsceneHandler            *handlers.SubsceneHandler
-		orderHandler               *handlers.OrderHandler
 		dataOpsHandler             *handlers.DataOpsHandler
 		dataStatsHandler           *handlers.DataProductionStatisticsHandler
 		productionDashboardHandler *handlers.ProductionDashboardHandler
@@ -146,19 +132,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	if db != nil {
 		workspaceSyncService = services.NewWorkspaceSyncService(db, &cfg.Hilbert, nil)
 		dcPlanSyncService = services.NewDCPlanSyncService(db, &cfg.Hilbert, nil)
-		batchHandler = handlers.NewBatchHandler(db, recorderHub, recorderRPCTimeout)
-		robotTypeHandler = handlers.NewRobotTypeHandler(db)
-		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub, cfg.Sync.DPConfigPath)
+		robotHandler = handlers.NewRobotHandler(db, recorderHub, transferHub)
 		deviceRegistrationHandler = handlers.NewDeviceRegistrationHandler(db, cfg.Server.CallbackPublicBaseURL)
-		factoryHandler = handlers.NewFactoryHandler(db)
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
 		workspaceHandler = handlers.NewWorkspaceHandler(db, workspaceSyncService)
 		dcPlanHandler = handlers.NewDCPlanHandler(db, dcPlanSyncService)
-		sopHandler = handlers.NewSOPHandler(db)
-		sceneHandler = handlers.NewSceneHandler(db)
-		subsceneHandler = handlers.NewSubsceneHandler(db)
-		orderHandler = handlers.NewOrderHandler(db, recorderHub, recorderRPCTimeout)
 		dataOpsHandler = handlers.NewDataOpsHandler(db)
 		dataOpsHandler.SetBulkActionDeps(qaHandler, syncWorker)
 		if err := dataOpsHandler.InterruptActiveBulkQARuns(context.Background()); err != nil {
@@ -185,19 +164,12 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		episode:             episodeHandler,
 		qa:                  qaHandler,
 		task:                taskHandler,
-		batch:               batchHandler,
-		robotType:           robotTypeHandler,
 		robot:               robotHandler,
 		deviceRegistration:  deviceRegistrationHandler,
-		factory:             factoryHandler,
 		dataCollector:       dataCollectorHandler,
 		station:             stationHandler,
 		workspace:           workspaceHandler,
 		dcPlan:              dcPlanHandler,
-		sop:                 sopHandler,
-		scene:               sceneHandler,
-		subscene:            subsceneHandler,
-		order:               orderHandler,
 		dataOps:             dataOpsHandler,
 		dataStats:           dataStatsHandler,
 		productionDashboard: productionDashboardHandler,
@@ -273,8 +245,9 @@ func (s *Server) buildRoutes() http.Handler {
 	s.transfer.RegisterRoutes(v1Transfer)
 
 	// Episodes API
-	v1Episodes := v1Routes.Group("/episodes")
-	s.episode.RegisterRoutes(v1Episodes)
+	v1Episodes := v1Routes.Group("/episodes", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+	s.episode.RegisterReadRoutes(v1Episodes)
+	s.episode.RegisterPresignRoute(v1Routes.Group("/episodes"))
 	if s.qa != nil {
 		s.qa.RegisterRoutes(v1Routes)
 	}
@@ -283,18 +256,10 @@ func (s *Server) buildRoutes() http.Handler {
 	v1Tasks := v1Routes.Group("")
 	taskStats := v1Routes.Group("/tasks/statistics", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
 	taskStats.GET("/breakdown", s.task.GetTaskBreakdown)
-	s.task.RegisterRoutes(v1Tasks)
-	if s.batch != nil {
-		s.batch.RegisterRoutes(v1Tasks)
-		collectorBatches := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("data_collector"))
-		s.batch.RegisterCollectorRoutes(collectorBatches)
-	}
-	if s.robotType != nil {
-		s.robotType.RegisterRoutes(v1Tasks)
-		s.robotType.RegisterConfigTemplatePublicRoutes(v1Tasks)
-		adminRobotTypes := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
-		s.robotType.RegisterConfigTemplateAdminRoutes(adminRobotTypes)
-	}
+	authenticatedTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+	s.task.RegisterRoutes(authenticatedTasks)
+	collectorTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("data_collector"))
+	s.task.RegisterCollectorRoutes(collectorTasks)
 	if s.robot != nil {
 		s.robot.RegisterRoutes(v1Tasks)
 	}
@@ -302,9 +267,6 @@ func (s *Server) buildRoutes() http.Handler {
 		s.deviceRegistration.RegisterRoutes(v1Tasks)
 		adminDeviceCredentials := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
 		s.deviceRegistration.RegisterAdminRoutes(adminDeviceCredentials)
-	}
-	if s.factory != nil {
-		s.factory.RegisterRoutes(v1Tasks)
 	}
 	if s.dataCollector != nil {
 		s.dataCollector.RegisterRoutes(v1Tasks)
@@ -317,20 +279,10 @@ func (s *Server) buildRoutes() http.Handler {
 		s.workspace.RegisterRoutes(adminWorkspaces)
 	}
 	if s.dcPlan != nil {
+		readDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+		s.dcPlan.RegisterReadRoutes(readDCPlans)
 		adminDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
-		s.dcPlan.RegisterRoutes(adminDCPlans)
-	}
-	if s.sop != nil {
-		s.sop.RegisterRoutes(v1Tasks)
-	}
-	if s.scene != nil {
-		s.scene.RegisterRoutes(v1Tasks)
-	}
-	if s.subscene != nil {
-		s.subscene.RegisterRoutes(v1Tasks)
-	}
-	if s.order != nil {
-		s.order.RegisterRoutes(v1Tasks)
+		s.dcPlan.RegisterAdminRoutes(adminDCPlans)
 	}
 	if s.dataStats != nil {
 		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
@@ -450,6 +402,16 @@ func (s *Server) Start() error {
 	}
 
 	return nil
+}
+
+// EpisodeQAEnqueuer exposes the QA handler dependency for services that enqueue episode QA.
+func (s *Server) EpisodeQAEnqueuer() interface {
+	EnqueueEpisode(episodeID int64)
+} {
+	if s == nil {
+		return nil
+	}
+	return s.qa
 }
 
 func (s *Server) syncWorkspacesOnStartup() {
