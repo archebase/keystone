@@ -32,6 +32,10 @@ type DataOpsBulkEpisodeFilters struct {
 	SyncStatus          string `json:"sync_status,omitempty"`
 	RobotDeviceID       string `json:"robot_device_id,omitempty"`
 	CollectorOperatorID string `json:"collector_operator_id,omitempty"`
+	DCProjectID         string `json:"dc_project_id,omitempty"`
+	DCProjectName       string `json:"dc_project_name,omitempty"`
+	DCTaskID            string `json:"dc_task_id,omitempty"`
+	DCTaskName          string `json:"dc_task_name,omitempty"`
 	Label               string `json:"label,omitempty"`
 	Limit               string `json:"limit,omitempty"`
 	Offset              string `json:"offset,omitempty"`
@@ -352,6 +356,14 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
+	dcProjectIDs, err := parseNonNegativeInt64List(filters.DCProjectID, "dc_project_id")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
+	dcTaskIDs, err := parseNonNegativeInt64List(filters.DCTaskID, "dc_task_id")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
 
 	out := dataOpsEpisodeQuery{
 		WorkspaceIDs:         workspaceIDs,
@@ -360,6 +372,10 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 		SyncStatuses:         syncStatuses,
 		RobotDeviceIDs:       robotDeviceIDs,
 		CollectorOperatorIDs: collectorOperatorIDs,
+		DCProjectIDs:         dcProjectIDs,
+		DCTaskIDs:            dcTaskIDs,
+		DCProjectName:        strings.TrimSpace(filters.DCProjectName),
+		DCTaskName:           strings.TrimSpace(filters.DCTaskName),
 		Label:                strings.TrimSpace(filters.Label),
 	}
 
@@ -384,6 +400,12 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 	}
 	if len(out.Label) > maxMultiValueFilterStringItemLength {
 		return dataOpsEpisodeQuery{}, fmt.Errorf("label contains a value longer than %d characters", maxMultiValueFilterStringItemLength)
+	}
+	if len(out.DCProjectName) > maxMultiValueFilterStringItemLength {
+		return dataOpsEpisodeQuery{}, fmt.Errorf("dc_project_name contains a value longer than %d characters", maxMultiValueFilterStringItemLength)
+	}
+	if len(out.DCTaskName) > maxMultiValueFilterStringItemLength {
+		return dataOpsEpisodeQuery{}, fmt.Errorf("dc_task_name contains a value longer than %d characters", maxMultiValueFilterStringItemLength)
 	}
 
 	return out, nil

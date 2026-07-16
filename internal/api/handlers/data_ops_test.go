@@ -25,7 +25,7 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&workspace_id=0&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&robot_device_id=robot-001,robot-002&collector_operator_id=op001&label=recalled_batch", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&workspace_id=0&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&robot_device_id=robot-001,robot-002&collector_operator_id=op001&dc_project_id=13&dc_project_name=Project&dc_task_id=14&dc_task_name=Task&label=recalled_batch", nil)
 
 	got, err := parseDataOpsEpisodeQuery(c)
 	if err != nil {
@@ -49,6 +49,12 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
 	}
+	if len(got.DCProjectIDs) != 1 || got.DCProjectIDs[0] != 13 || got.DCProjectName != "Project" {
+		t.Fatalf("unexpected project filters: %+v", got)
+	}
+	if len(got.DCTaskIDs) != 1 || got.DCTaskIDs[0] != 14 || got.DCTaskName != "Task" {
+		t.Fatalf("unexpected task filters: %+v", got)
+	}
 }
 
 func TestDataOpsEpisodeWhereIncludesWorkspaceFilter(t *testing.T) {
@@ -57,6 +63,28 @@ func TestDataOpsEpisodeWhereIncludesWorkspaceFilter(t *testing.T) {
 		t.Fatalf("workspace filter SQL should use task/workstation fallback: %s", sql)
 	}
 	if len(args) != 2 || args[0] != int64(0) || args[1] != int64(12) {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
+func TestDataOpsEpisodeWhereIncludesProjectAndTaskFilters(t *testing.T) {
+	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{
+		DCProjectIDs:  []int64{13},
+		DCTaskIDs:     []int64{14},
+		DCProjectName: "Project",
+		DCTaskName:    "Task",
+	})
+	for _, want := range []string{
+		"dp.dc_project_id IN (?)",
+		"dp.dc_task_id IN (?)",
+		"dp.dc_project_name LIKE ?",
+		"dp.dc_task_name LIKE ?",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("project/task filter SQL should include %q: %s", want, sql)
+		}
+	}
+	if len(args) != 4 || args[0] != int64(13) || args[1] != int64(14) || args[2] != "%Project%" || args[3] != "%Task%" {
 		t.Fatalf("unexpected args: %#v", args)
 	}
 }
@@ -86,6 +114,9 @@ func TestDataOpsEpisodeListSQLUsesCurrentProductionMetadata(t *testing.T) {
 			t.Fatalf("data ops SQL should include %q: %s", current, sql)
 		}
 	}
+	if !strings.Contains(sql, "dp.dc_project_id") || !strings.Contains(sql, "dp.dc_project_name") {
+		t.Fatalf("data ops SQL should select dc project fields: %s", sql)
+	}
 	if !strings.Contains(sql, "dp.dc_task_id") || !strings.Contains(sql, "dp.dc_task_name") {
 		t.Fatalf("data ops SQL should select dc task fields: %s", sql)
 	}
@@ -99,6 +130,8 @@ func TestDataOpsEpisodeItemIncludesTaskAndRobotDisplayNames(t *testing.T) {
 		ID:            1,
 		EpisodeID:     "episode-1",
 		TaskID:        10,
+		DCProjectID:   sql.NullInt64{Int64: 13, Valid: true},
+		DCProjectName: sql.NullString{String: "Project One", Valid: true},
 		DCTaskID:      sql.NullInt64{Int64: 14, Valid: true},
 		DCTaskName:    sql.NullString{String: "Task One", Valid: true},
 		RobotDeviceID: sql.NullString{String: "robot-001", Valid: true},
@@ -108,6 +141,9 @@ func TestDataOpsEpisodeItemIncludesTaskAndRobotDisplayNames(t *testing.T) {
 	})
 	if item.DCTaskID == nil || *item.DCTaskID != 14 || item.DCTaskName == nil || *item.DCTaskName != "Task One" {
 		t.Fatalf("task fields=%v/%v want 14/Task One", item.DCTaskID, item.DCTaskName)
+	}
+	if item.DCProjectID == nil || *item.DCProjectID != 13 || item.DCProjectName == nil || *item.DCProjectName != "Project One" {
+		t.Fatalf("project fields=%v/%v want 13/Project One", item.DCProjectID, item.DCProjectName)
 	}
 	if item.RobotDeviceName == nil || *item.RobotDeviceName != "Device One" {
 		t.Fatalf("RobotDeviceName=%v want Device One", item.RobotDeviceName)
@@ -155,6 +191,10 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 		SyncStatus:          "not_started,failed",
 		RobotDeviceID:       "robot-001,robot-002",
 		CollectorOperatorID: "op001",
+		DCProjectID:         "13",
+		DCProjectName:       "Project",
+		DCTaskID:            "14",
+		DCTaskName:          "Task",
 		Label:               "recalled_batch",
 		Limit:               "20",
 		Offset:              "40",
@@ -179,6 +219,12 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	}
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
+	}
+	if len(got.DCProjectIDs) != 1 || got.DCProjectIDs[0] != 13 || got.DCProjectName != "Project" {
+		t.Fatalf("unexpected project filters: %+v", got)
+	}
+	if len(got.DCTaskIDs) != 1 || got.DCTaskIDs[0] != 14 || got.DCTaskName != "Task" {
+		t.Fatalf("unexpected task filters: %+v", got)
 	}
 }
 
@@ -689,6 +735,8 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 		)`,
 		`CREATE TABLE dc_plan (
 			id INTEGER PRIMARY KEY,
+			dc_project_id INTEGER,
+			dc_project_name TEXT,
 			dc_task_id INTEGER,
 			dc_task_name TEXT,
 			deleted_at TEXT
