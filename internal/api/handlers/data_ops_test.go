@@ -681,7 +681,16 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 		)`,
 		`CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY,
+			task_id TEXT,
+			dc_plan_id INTEGER,
+			organization_id INTEGER,
 			workstation_id INTEGER,
+			deleted_at TEXT
+		)`,
+		`CREATE TABLE dc_plan (
+			id INTEGER PRIMARY KEY,
+			dc_task_id INTEGER,
+			dc_task_name TEXT,
 			deleted_at TEXT
 		)`,
 		`CREATE TABLE workstations (
