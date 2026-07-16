@@ -419,12 +419,12 @@ import Testing
     try await writeQiongcheReadyFiles(
         rootURL: root,
         configString: oldConfigString,
-        remoteConfig: try ArchebaseConfig(apiKey: "credential-old", tags: ["device": "old"])
+        remoteConfig: try ArchebaseConfig(apiKey: "credential-old", tags: ["device_id": "100", "device": "old"])
     )
     let newConfigString = validQiongcheConfig(deviceName: "robot-001", authHost: "new-auth.example.com")
-    let recoveredConfig = try ArchebaseConfig(apiKey: "credential-v3", tags: ["device": "recovered"])
+    let recoveredConfig = try ArchebaseConfig(apiKey: "credential-v3", tags: ["device_id": "101", "device": "recovered"])
     let provisioner = SequencedQiongcheDeviceProvisioner(configs: [
-        try ArchebaseConfig(apiKey: "credential-v2", tags: ["device": "rotated"]),
+        try ArchebaseConfig(apiKey: "credential-v2", tags: ["device_id": "101", "device": "rotated"]),
         recoveredConfig,
     ])
     let persister = FailingDefaultQiongcheLocalPersister(failures: [.endpoints])
