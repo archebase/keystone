@@ -549,7 +549,7 @@ func TestCancelEpisodeManualReviewFailedRestoresPendingQAAndHistory(t *testing.T
 
 	_, err := db.Exec(`
 		INSERT INTO episodes (id, mcap_path, qa_status, qa_score, quality_flag, deleted_at)
-		VALUES (1, 'bucket/path.mcap', 'manual_review_failed', 0, '人工审核未通过', NULL)
+		VALUES (1, 'bucket/path.mcap', 'manual_review_failed', 0, '人工复核不通过', NULL)
 	`)
 	if err != nil {
 		t.Fatalf("insert episode: %v", err)
@@ -590,7 +590,7 @@ func TestCancelEpisodeManualReviewFailedRestoresPendingQAAndHistory(t *testing.T
 	if err := db.Get(&check, "SELECT check_name, passed, score, details FROM qa_checks WHERE episode_id = 1"); err != nil {
 		t.Fatalf("query qa_check: %v", err)
 	}
-	if check.CheckName != "manual_review_cancel" || !check.Passed || check.Score != 0 || check.Details != "取消人工审核未通过" {
+	if check.CheckName != "manual_review_cancel" || !check.Passed || check.Score != 0 || check.Details != "取消人工复核不通过" {
 		t.Fatalf("qa_check = %+v, want manual review cancel", check)
 	}
 }

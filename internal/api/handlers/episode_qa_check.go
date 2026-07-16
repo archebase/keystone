@@ -644,7 +644,7 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, ep
 
 	details = strings.TrimSpace(details)
 	if details == "" {
-		details = "人工审核未通过"
+		details = "人工复核不通过"
 	}
 	checkedAt := time.Now().UTC()
 	metadata := map[string]any{
@@ -735,7 +735,7 @@ func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailed(ctx context.Context, 
 
 	details = strings.TrimSpace(details)
 	if details == "" {
-		details = "取消人工审核未通过"
+		details = "取消人工复核不通过"
 	}
 	checkedAt := time.Now().UTC()
 	metadata := map[string]any{

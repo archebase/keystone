@@ -287,7 +287,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     checksum VARCHAR(128),
     file_size_bytes BIGINT,
     duration_sec DECIMAL(10, 2),
-    qa_status ENUM('pending_qa', 'qa_running', 'approved', 'failed') DEFAULT 'pending_qa',
+    qa_status ENUM('pending_qa', 'qa_running', 'approved', 'failed', 'manual_review_failed') DEFAULT 'pending_qa',
     qa_score DECIMAL(4, 3) COMMENT '0.000 to 1.000',
     auto_approved BOOLEAN DEFAULT FALSE,
     cloud_synced BOOLEAN DEFAULT FALSE,

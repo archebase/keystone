@@ -1140,7 +1140,7 @@ func statsBreakdownExpressions(dimension string) (string, string, error) {
 			WHEN 'qa_running' THEN '质检中'
 			WHEN 'approved' THEN '已通过'
 			WHEN 'failed' THEN '质检失败'
-			WHEN 'manual_review_failed' THEN '人工审核未通过'
+			WHEN 'manual_review_failed' THEN '人工复核不通过'
 			ELSE qa_status
 		END`, nil
 	case "cloud_synced":
