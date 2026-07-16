@@ -245,7 +245,7 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 	}
 
 	zipPath := h.bulkMP4ZipPath(runID)
-	if err := os.MkdirAll(filepath.Dir(zipPath), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(zipPath), 0o750); err != nil { // #nosec G703 -- zipPath is internally generated from run ID and os.TempDir.
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
 		return
 	}
@@ -255,8 +255,7 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 	zipTempPath := zipPath + ".tmp"
 	// #nosec G703 -- zipTempPath is derived from an internally generated bulk run ID and os.TempDir.
 	_ = os.Remove(zipTempPath)
-	// #nosec G304 -- zipTempPath is an internal temp file path, not user supplied.
-	zipFile, err := os.Create(zipTempPath)
+	zipFile, err := os.Create(zipTempPath) // #nosec G304,G703 -- zipTempPath is an internal temp file path, not user supplied.
 	if err != nil {
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
 		return
@@ -558,8 +557,7 @@ func sanitizeBulkMP4Name(name string) string {
 }
 
 func addFileToZip(zw *zip.Writer, filePath string, name string) error {
-	// #nosec G304 -- filePath is the MP4 output path generated under an internal temp directory.
-	file, err := os.Open(filePath)
+	file, err := os.Open(filePath) // #nosec G304,G703 -- filePath is generated under an internal temp directory.
 	if err != nil {
 		return err
 	}
