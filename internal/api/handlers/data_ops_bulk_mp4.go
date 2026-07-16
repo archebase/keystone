@@ -232,23 +232,30 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
 		return
 	}
-	defer os.RemoveAll(workDir)
+	defer func() {
+		if err := os.RemoveAll(workDir); err != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 workspace cleanup failed: run_id=%s dir=%s err=%v", runID, workDir, err)
+		}
+	}()
 
 	mp4Dir := filepath.Join(workDir, "mp4")
-	if err := os.MkdirAll(mp4Dir, 0o755); err != nil {
+	if err := os.MkdirAll(mp4Dir, 0o750); err != nil {
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
 		return
 	}
 
 	zipPath := h.bulkMP4ZipPath(runID)
-	if err := os.MkdirAll(filepath.Dir(zipPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(zipPath), 0o750); err != nil {
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
 		return
 	}
+	// #nosec G703 -- zipPath is derived from an internally generated bulk run ID and os.TempDir.
 	_ = os.Remove(zipPath)
 
 	zipTempPath := zipPath + ".tmp"
+	// #nosec G703 -- zipTempPath is derived from an internally generated bulk run ID and os.TempDir.
 	_ = os.Remove(zipTempPath)
+	// #nosec G304 -- zipTempPath is an internal temp file path, not user supplied.
 	zipFile, err := os.Create(zipTempPath)
 	if err != nil {
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
@@ -292,7 +299,6 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		}
 		if cleanup != nil {
 			cleanup()
-			cleanup = nil
 		}
 		run, err := h.incrementBulkQARunCounts(context.Background(), runID, outcome)
 		if err != nil {
@@ -317,6 +323,7 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
 		return
 	}
+	// #nosec G703 -- both paths are internal temp paths derived from the generated bulk run ID.
 	if err := os.Rename(zipTempPath, zipPath); err != nil {
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
 		return
@@ -379,7 +386,11 @@ func (h *DataOpsHandler) DownloadEpisodeMP4(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create mp4 workspace"})
 		return
 	}
-	defer os.RemoveAll(workDir)
+	defer func() {
+		if err := os.RemoveAll(workDir); err != nil {
+			logger.Printf("[DATA_OPS] Episode MP4 workspace cleanup failed: episode=%d dir=%s err=%v", episodeID, workDir, err)
+		}
+	}()
 
 	mp4Path, cleanup, err := h.convertEpisodeMP4(c.Request.Context(), row, workDir, filepath.Join(workDir, "mp4"))
 	if cleanup != nil {
@@ -410,11 +421,12 @@ func (h *DataOpsHandler) convertEpisodeMP4(ctx context.Context, row dataOpsBulkM
 		return "", cleanup, err
 	}
 
-	if err := os.MkdirAll(episodeOutputDir, 0o755); err != nil {
+	if err := os.MkdirAll(episodeOutputDir, 0o750); err != nil {
 		return "", cleanup, err
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, dataOpsBulkMP4Timeout)
 	defer cancel()
+	// #nosec G204 -- script path is a repository constant and input/output paths are internal temp files.
 	cmd := exec.CommandContext(cmdCtx, "python3", dataOpsBulkMP4Script, inputPath, "--output", episodeOutputDir, "--workers", "1", "--force")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -432,15 +444,25 @@ func (h *DataOpsHandler) downloadBulkMP4Object(ctx context.Context, bucket strin
 	if err != nil {
 		return fmt.Errorf("get mcap object: %w", err)
 	}
-	defer obj.Close()
+	defer func() {
+		if err := obj.Close(); err != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 source object close failed: bucket=%s object=%s err=%v", bucket, objectName, err)
+		}
+	}()
 
+	// #nosec G304 -- dst is an internal temp file path generated for this conversion.
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 	if _, err := io.Copy(out, obj); err != nil {
+		if closeErr := out.Close(); closeErr != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 temp file close after copy failure failed: path=%s err=%v", dst, closeErr)
+		}
 		return fmt.Errorf("write mcap temp file: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close mcap temp file: %w", err)
 	}
 	return nil
 }
@@ -536,11 +558,16 @@ func sanitizeBulkMP4Name(name string) string {
 }
 
 func addFileToZip(zw *zip.Writer, filePath string, name string) error {
+	// #nosec G304 -- filePath is the MP4 output path generated under an internal temp directory.
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 zip input close failed: path=%s err=%v", filePath, err)
+		}
+	}()
 
 	info, err := file.Stat()
 	if err != nil {
