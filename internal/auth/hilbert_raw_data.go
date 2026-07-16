@@ -43,7 +43,7 @@ type HilbertRawDataUploadCredentials struct {
 	Credentials struct {
 		AccessKeyID     string    `json:"access_key_id"`
 		SecretAccessKey string    `json:"secret_access_key"`
-		TemporaryToken  string    `json:"session_token"`
+		TemporaryToken  string    `json:"session_token"` // #nosec G117 -- Hilbert API field name is session_token for temporary TOS auth.
 		ExpireTime      time.Time `json:"expire_time"`
 	} `json:"credentials"`
 }

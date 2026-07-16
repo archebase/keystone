@@ -345,11 +345,12 @@ func upsertLocalDataCollector(ctx context.Context, tx *sqlx.Tx, req CreateDataCo
 		}
 		metadata = string(encoded)
 	}
-	result, err := tx.ExecContext(ctx, ` // #nosec G701 -- constant INSERT with bound parameters only.
+	const insertDataCollectorSQL = `
 		INSERT INTO data_collectors (
 			name, operator_id, email, password_hash, certification, status, metadata, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, req.Name, req.OperatorID, dcNullableString(req.Email), sql.NullString{}, dcNullableString(req.Certification), "active", metadata, time.Now().UTC(), time.Now().UTC())
+	`
+	result, err := tx.ExecContext(ctx, insertDataCollectorSQL, req.Name, req.OperatorID, dcNullableString(req.Email), sql.NullString{}, dcNullableString(req.Certification), "active", metadata, time.Now().UTC(), time.Now().UTC()) // #nosec G701 -- constant INSERT with bound parameters only.
 	if err != nil {
 		return 0, err
 	}

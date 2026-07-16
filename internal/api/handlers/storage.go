@@ -326,7 +326,7 @@ func (h *StorageHandler) getTOSObject(c *gin.Context, bucket, objectName string,
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create object request"})
 		return
 	}
-	resp, err := h.tos.client.Do(req)
+	resp, err := h.tos.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and request validation.
 	if err != nil {
 		logger.Printf("[STORAGE] TOS proxy get failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch object"})
