@@ -145,7 +145,8 @@ struct LocalStackHarnessTests {
     let script = try String(contentsOf: scriptURL, encoding: .utf8)
 
     #expect(script.contains("scripts/local_run.sh --build debug --deploy --reset-db"))
-    #expect(script.contains("DATA_GATEWAY_USE_MOCK_STS=true"))
+    #expect(script.contains("DATA_GATEWAY_USE_MOCK_STS"))
+    #expect(script.contains("DATA_GATEWAY_USE_MOCK_STS:-true"))
     #expect(script.contains("DGW_LOCAL_GATEWAY_HTTP_BASE"))
     #expect(script.contains("DGW_LOCAL_BOOTSTRAP_ADMIN_PASSWORD"))
     #expect(script.contains("DGW_LOCAL_BOOTSTRAP_MAX_TIME_SECONDS"))
