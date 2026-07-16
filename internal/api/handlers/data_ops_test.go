@@ -342,6 +342,32 @@ func TestPreviewBulkEpisodeSyncTreatsMissingSyncLogAsEligible(t *testing.T) {
 	}
 }
 
+func TestPreviewBulkEpisodeMP4SkipsFailedQA(t *testing.T) {
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-10T10:00:00Z")
+	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'failed' WHERE id = 1`); err != nil {
+		t.Fatalf("update failed episode: %v", err)
+	}
+	insertDataOpsBulkTestEpisode(t, db, 2, "2026-06-11T10:00:00Z")
+	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'approved' WHERE id = 2`); err != nil {
+		t.Fatalf("update approved episode: %v", err)
+	}
+
+	preview, err := h.previewBulkEpisodeMP4(context.Background(), dataOpsEpisodeQuery{})
+	if err != nil {
+		t.Fatalf("previewBulkEpisodeMP4 returned error: %v", err)
+	}
+
+	if preview.MatchedCount != 2 || preview.EligibleCount != 1 || preview.SkippedCount != 1 {
+		t.Fatalf("preview counts = matched %d eligible %d skipped %d, want 2/1/1", preview.MatchedCount, preview.EligibleCount, preview.SkippedCount)
+	}
+	if len(preview.SkippedBreakdown) != 1 || preview.SkippedBreakdown[0].Reason != "auto_qa_failed" || preview.SkippedBreakdown[0].Count != 1 {
+		t.Fatalf("unexpected skipped breakdown: %#v", preview.SkippedBreakdown)
+	}
+}
+
 func TestBulkRunEpisodeQACreatesRunSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

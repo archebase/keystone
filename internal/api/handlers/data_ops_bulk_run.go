@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	dataOpsBulkRunActionQA = "bulk_qa"
+	dataOpsBulkRunActionQA  = "bulk_qa"
+	dataOpsBulkRunActionMP4 = "bulk_mp4"
 
 	dataOpsBulkRunStatusQueued      = "queued"
 	dataOpsBulkRunStatusRunning     = "running"
@@ -123,6 +124,7 @@ type DataOpsBulkRunResponse struct {
 	UpdatedAt             time.Time  `json:"updated_at"`
 	FinishedAt            *time.Time `json:"finished_at"`
 	ErrorMessage          string     `json:"error_message"`
+	DownloadURL           string     `json:"download_url,omitempty"`
 }
 
 type dataOpsBulkRunRow struct {
@@ -214,8 +216,12 @@ func dataOpsBulkRunResponseFromRow(row dataOpsBulkRunRow) DataOpsBulkRunResponse
 }
 
 func (h *DataOpsHandler) createBulkQARun(ctx context.Context, totalCount int64) (DataOpsBulkRunResponse, error) {
+	return h.createBulkRun(ctx, dataOpsBulkRunActionQA, totalCount)
+}
+
+func (h *DataOpsHandler) createBulkRun(ctx context.Context, action string, totalCount int64) (DataOpsBulkRunResponse, error) {
 	now := h.dataOpsBulkRunNow()
-	runID, err := defaultDataOpsBulkRunID(dataOpsBulkRunActionQA, now)
+	runID, err := defaultDataOpsBulkRunID(action, now)
 	if err != nil {
 		return DataOpsBulkRunResponse{}, err
 	}
@@ -237,7 +243,7 @@ func (h *DataOpsHandler) createBulkQARun(ctx context.Context, totalCount int64) 
 			started_at, finished_at, created_at, updated_at
 		)
 		VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, '', ?, ?, ?, ?)
-	`, runID, dataOpsBulkRunActionQA, status, totalCount, startedAt, finishedAt, now, now); err != nil {
+	`, runID, action, status, totalCount, startedAt, finishedAt, now, now); err != nil {
 		return DataOpsBulkRunResponse{}, err
 	}
 
@@ -255,7 +261,11 @@ func (h *DataOpsHandler) loadBulkRun(ctx context.Context, runID string) (DataOps
 	`, runID); err != nil {
 		return DataOpsBulkRunResponse{}, err
 	}
-	return dataOpsBulkRunResponseFromRow(row), nil
+	resp := dataOpsBulkRunResponseFromRow(row)
+	if row.Action == dataOpsBulkRunActionMP4 && resp.Status == dataOpsBulkRunStatusCompleted {
+		resp.DownloadURL = h.bulkMP4DownloadURL(resp.RunID)
+	}
+	return resp, nil
 }
 
 func (h *DataOpsHandler) markBulkRunRunning(ctx context.Context, runID string) (DataOpsBulkRunResponse, error) {
@@ -325,7 +335,7 @@ func (h *DataOpsHandler) markBulkRunTerminal(ctx context.Context, runID string, 
 	return run, nil
 }
 
-// InterruptActiveBulkQARuns marks stale in-flight bulk QA runs as interrupted on service startup.
+// InterruptActiveBulkQARuns marks stale in-flight bulk runs as interrupted on service startup.
 func (h *DataOpsHandler) InterruptActiveBulkQARuns(ctx context.Context) error {
 	if h == nil || h.db == nil {
 		return nil
@@ -335,8 +345,8 @@ func (h *DataOpsHandler) InterruptActiveBulkQARuns(ctx context.Context) error {
 	_, err := h.db.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
-		WHERE action = ? AND status IN (?, ?)
-	`, dataOpsBulkRunStatusInterrupted, "service restarted before bulk qa completed", now, now, dataOpsBulkRunActionQA, dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning)
+		WHERE action IN (?, ?) AND status IN (?, ?)
+	`, dataOpsBulkRunStatusInterrupted, "service restarted before bulk action completed", now, now, dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning)
 	return err
 }
 
@@ -368,13 +378,13 @@ func (h *DataOpsHandler) GetBulkRun(c *gin.Context) {
 	c.JSON(http.StatusOK, run)
 }
 
-// GetCurrentBulkRun returns the active bulk QA run, if one exists.
+// GetCurrentBulkRun returns the active bulk run for an action, if one exists.
 //
 // @Summary      Get current bulk run
-// @Description  Returns the active bulk QA run snapshot, or 204 when no run is active.
+// @Description  Returns the active bulk run snapshot, or 204 when no run is active.
 // @Tags         data-ops
 // @Produce      json
-// @Param        action  query     string  true  "Bulk action, currently bulk_qa"
+// @Param        action  query     string  true  "Bulk action: bulk_qa or bulk_mp4"
 // @Success      200     {object}  DataOpsBulkRunResponse
 // @Success      204
 // @Failure      400     {object}  map[string]string
@@ -385,12 +395,13 @@ func (h *DataOpsHandler) GetCurrentBulkRun(c *gin.Context) {
 	if !h.ensureDataOpsDatabase(c) {
 		return
 	}
-	if c.Query("action") != dataOpsBulkRunActionQA {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be bulk_qa"})
+	action := c.Query("action")
+	if !isAllowedDataOpsBulkRunAction(action) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be bulk_qa or bulk_mp4"})
 		return
 	}
 
-	run, ok, err := h.currentBulkRun(c.Request.Context(), dataOpsBulkRunActionQA)
+	run, ok, err := h.currentBulkRun(c.Request.Context(), action)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load current bulk run"})
 		return
@@ -490,6 +501,15 @@ func (h *DataOpsHandler) currentBulkRun(ctx context.Context, action string) (Dat
 		return DataOpsBulkRunResponse{}, false, err
 	}
 	return dataOpsBulkRunResponseFromRow(row), true, nil
+}
+
+func isAllowedDataOpsBulkRunAction(action string) bool {
+	switch action {
+	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4:
+		return true
+	default:
+		return false
+	}
 }
 
 func dataOpsBulkRunTerminalEventName(status string) (string, bool) {
