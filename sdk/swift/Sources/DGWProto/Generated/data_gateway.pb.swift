@@ -8,6 +8,9 @@
 // For information on using the generated types, please see the documentation:
 //   https://github.com/apple/swift-protobuf/
 
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -1685,7 +1688,7 @@ extension Archebase_DataGateway_V1_GetUploadRecoveryRequest: SwiftProtobuf.Messa
 
 extension Archebase_DataGateway_V1_GetUploadRecoveryResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetUploadRecoveryResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}logical_upload_id\0\u{3}logical_upload_status\0\u{3}current_upload_id\0\u{1}bucket\0\u{1}endpoint\0\u{3}object_key\0\u{3}can_refresh_credentials\0\u{3}restart_allowed\0\u{3}terminal_reason\0\u{3}credential_refresh_count\0\u{3}session_expire_at_unix\0\u{3}next_action\0\u{3}completed_part_count\0\u{3}oss_object_etag\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}logical_upload_id\0\u{3}logical_upload_status\0\u{3}current_upload_id\0\u{1}bucket\0\u{1}endpoint\0\u{3}object_key\0\u{3}can_refresh_credentials\0\u{3}restart_allowed\0\u{3}terminal_reason\0\u{3}credential_refresh_count\0\u{3}session_expire_at_unix\0\u{3}next_action\0\u{3}completed_part_count\0\u{3}object_etag\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1924,7 +1927,7 @@ extension Archebase_DataGateway_V1_AbortUploadResponse: SwiftProtobuf.Message, S
 
 extension Archebase_DataGateway_V1_CompleteUploadRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CompleteUploadRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}upload_id\0\u{3}file_size\0\u{3}raw_tags\0\u{3}completed_part_count\0\u{3}oss_object_etag\0\u{3}part_size_bytes\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}upload_id\0\u{3}file_size\0\u{3}raw_tags\0\u{3}completed_part_count\0\u{3}object_etag\0\u{3}part_size_bytes\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
