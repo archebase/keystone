@@ -67,6 +67,7 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/episodes/bulk-qa", h.BulkRunEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync", h.BulkSyncEpisodes)
 	apiV1.POST("/episodes/bulk-mp4", h.BulkExportEpisodeMP4)
+	apiV1.GET("/episodes/:id/mp4", h.DownloadEpisodeMP4)
 	apiV1.GET("/bulk-runs/current", h.GetCurrentBulkRun)
 	apiV1.GET("/bulk-runs/:run_id", h.GetBulkRun)
 	apiV1.GET("/bulk-runs/:run_id/download", h.DownloadBulkMP4)

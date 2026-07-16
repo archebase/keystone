@@ -390,6 +390,23 @@ func TestFindBulkMP4OutputAcceptsCodecSubdirectory(t *testing.T) {
 	}
 }
 
+func TestBulkMP4ArchiveNameUsesEpisodeIDAndAvoidsDuplicates(t *testing.T) {
+	used := map[string]struct{}{}
+	first := uniqueBulkMP4ArchiveName(dataOpsBulkMP4EpisodeRow{ID: 1, EpisodeID: "ep/one"}, used)
+	second := uniqueBulkMP4ArchiveName(dataOpsBulkMP4EpisodeRow{ID: 2, EpisodeID: "ep/one"}, used)
+	third := uniqueBulkMP4ArchiveName(dataOpsBulkMP4EpisodeRow{ID: 3}, used)
+
+	if first != "ep_one.mp4" {
+		t.Fatalf("first archive name = %q, want ep_one.mp4", first)
+	}
+	if second != "ep_one_2.mp4" {
+		t.Fatalf("second archive name = %q, want ep_one_2.mp4", second)
+	}
+	if third != "episode_3.mp4" {
+		t.Fatalf("third archive name = %q, want episode_3.mp4", third)
+	}
+}
+
 func TestBulkRunEpisodeQACreatesRunSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

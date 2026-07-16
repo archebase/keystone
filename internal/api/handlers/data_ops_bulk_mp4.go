@@ -147,7 +147,7 @@ func (h *DataOpsHandler) DownloadBulkMP4(c *gin.Context) {
 }
 
 func (h *DataOpsHandler) ensureBulkMP4Configured(c *gin.Context) bool {
-	if h == nil || h.qa == nil || h.qa.s3 == nil {
+	if h == nil || h.qa == nil || (h.qa.s3 == nil && h.qa.tos == nil) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage service is not configured"})
 		return false
 	}
@@ -276,6 +276,7 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 	}()
 
 	mp4Count := 0
+	archiveNames := map[string]struct{}{}
 	var lastProgressPublishedAt time.Time
 	for _, row := range rows {
 		mp4Path, cleanup, err := h.convertEpisodeMP4(context.Background(), row, workDir, mp4Dir)
@@ -283,7 +284,7 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		if err != nil {
 			logger.Printf("[DATA_OPS] Bulk MP4 episode failed: run_id=%s episode=%d err=%v", runID, row.ID, err)
 			outcome = dataOpsBulkQAEpisodeProcessingFailed
-		} else if err := addFileToZip(zipWriter, mp4Path, filepath.Base(mp4Path)); err != nil {
+		} else if err := addFileToZip(zipWriter, mp4Path, uniqueBulkMP4ArchiveName(row, archiveNames)); err != nil {
 			logger.Printf("[DATA_OPS] Bulk MP4 zip append failed: run_id=%s episode=%d err=%v", runID, row.ID, err)
 			outcome = dataOpsBulkQAEpisodeProcessingFailed
 		} else {
@@ -336,6 +337,60 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		finalRun.ProcessingFailedCount,
 		zipPath,
 	)
+}
+
+// DownloadEpisodeMP4 converts one episode MCAP and returns the generated MP4.
+func (h *DataOpsHandler) DownloadEpisodeMP4(c *gin.Context) {
+	if !h.ensureDataOpsDatabase(c) {
+		return
+	}
+	if !h.ensureBulkMP4Configured(c) {
+		return
+	}
+
+	episodeID, ok := parseEpisodeIDParam(c)
+	if !ok {
+		return
+	}
+
+	var row dataOpsBulkMP4EpisodeRow
+	err := h.db.GetContext(c.Request.Context(), &row, `
+		SELECT e.id, e.episode_id, e.mcap_path, COALESCE(e.qa_status, '') AS qa_status
+		FROM episodes e
+		WHERE e.id = ? AND e.deleted_at IS NULL
+		LIMIT 1
+	`, episodeID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
+		return
+	}
+	if err != nil {
+		logger.Printf("[DATA_OPS] MP4 episode lookup failed: episode=%d err=%v", episodeID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load episode"})
+		return
+	}
+	if row.QAStatus == qaStatusFailed {
+		c.JSON(http.StatusConflict, gin.H{"error": "episode mp4 is blocked by failed qa status"})
+		return
+	}
+
+	workDir, err := os.MkdirTemp("", "keystone-episode-mp4-*")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create mp4 workspace"})
+		return
+	}
+	defer os.RemoveAll(workDir)
+
+	mp4Path, cleanup, err := h.convertEpisodeMP4(c.Request.Context(), row, workDir, filepath.Join(workDir, "mp4"))
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		logger.Printf("[DATA_OPS] MP4 episode conversion failed: episode=%d err=%v", episodeID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate mp4"})
+		return
+	}
+	c.FileAttachment(mp4Path, bulkMP4EpisodeFileName(row))
 }
 
 func (h *DataOpsHandler) convertEpisodeMP4(ctx context.Context, row dataOpsBulkMP4EpisodeRow, workDir string, mp4Dir string) (string, func(), error) {
@@ -446,6 +501,38 @@ func safeBulkMP4FileName(episodeID string, id int64) string {
 	}
 	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_", " ", "_")
 	return fmt.Sprintf("%s_%d", replacer.Replace(name), id)
+}
+
+func bulkMP4EpisodeFileName(row dataOpsBulkMP4EpisodeRow) string {
+	name := sanitizeBulkMP4Name(row.EpisodeID)
+	if name == "" {
+		name = fmt.Sprintf("episode_%d", row.ID)
+	}
+	return name + ".mp4"
+}
+
+func uniqueBulkMP4ArchiveName(row dataOpsBulkMP4EpisodeRow, used map[string]struct{}) string {
+	name := bulkMP4EpisodeFileName(row)
+	if _, exists := used[name]; !exists {
+		used[name] = struct{}{}
+		return name
+	}
+
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	ext := filepath.Ext(name)
+	name = fmt.Sprintf("%s_%d%s", base, row.ID, ext)
+	for i := 2; ; i++ {
+		if _, exists := used[name]; !exists {
+			used[name] = struct{}{}
+			return name
+		}
+		name = fmt.Sprintf("%s_%d_%d%s", base, row.ID, i, ext)
+	}
+}
+
+func sanitizeBulkMP4Name(name string) string {
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_", " ", "_")
+	return replacer.Replace(strings.TrimSpace(name))
 }
 
 func addFileToZip(zw *zip.Writer, filePath string, name string) error {
