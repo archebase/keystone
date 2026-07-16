@@ -138,6 +138,24 @@ func (r *episodeQATOSReader) GetObject(ctx context.Context, bucket, objectName s
 	return object.Data, nil
 }
 
+func (r *episodeQATOSReader) OpenObject(ctx context.Context, bucket, objectName string) (io.ReadCloser, error) {
+	req, err := r.newRequest(ctx, http.MethodGet, bucket, objectName, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and request validation.
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer func() { _ = resp.Body.Close() }()
+		logger.Printf("[EPISODE-QA] TOS OpenObject failed bucket=%s object=%s status=%d request_id=%s",
+			bucket, objectName, resp.StatusCode, resp.Header.Get("x-tos-request-id"))
+		return nil, tosErrorFromResponse(resp)
+	}
+	return resp.Body, nil
+}
+
 func (r *episodeQATOSReader) GetObjectWithMetadata(ctx context.Context, bucket, objectName string, byteRange *httpRange) (episodeQATOSObject, error) {
 	headers := http.Header{}
 	if byteRange != nil {

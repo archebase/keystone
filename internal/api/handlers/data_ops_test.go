@@ -12,6 +12,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -365,6 +367,26 @@ func TestPreviewBulkEpisodeMP4SkipsFailedQA(t *testing.T) {
 	}
 	if len(preview.SkippedBreakdown) != 1 || preview.SkippedBreakdown[0].Reason != "auto_qa_failed" || preview.SkippedBreakdown[0].Count != 1 {
 		t.Fatalf("unexpected skipped breakdown: %#v", preview.SkippedBreakdown)
+	}
+}
+
+func TestFindBulkMP4OutputAcceptsCodecSubdirectory(t *testing.T) {
+	outputDir := t.TempDir()
+	codecDir := filepath.Join(outputDir, "egolite")
+	if err := os.MkdirAll(codecDir, 0o755); err != nil {
+		t.Fatalf("mkdir codec dir: %v", err)
+	}
+	want := filepath.Join(codecDir, "episode_1.mp4")
+	if err := os.WriteFile(want, []byte("mp4"), 0o644); err != nil {
+		t.Fatalf("write mp4: %v", err)
+	}
+
+	got, err := findBulkMP4Output(outputDir, filepath.Join(t.TempDir(), "input.mcap"))
+	if err != nil {
+		t.Fatalf("findBulkMP4Output returned error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("findBulkMP4Output = %q, want %q", got, want)
 	}
 }
 

@@ -247,16 +247,51 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 	}
 	_ = os.Remove(zipPath)
 
-	var mp4Files []string
+	zipTempPath := zipPath + ".tmp"
+	_ = os.Remove(zipTempPath)
+	zipFile, err := os.Create(zipTempPath)
+	if err != nil {
+		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
+		return
+	}
+	zipWriter := zip.NewWriter(zipFile)
+	zipClosed := false
+	closeZip := func() error {
+		if zipClosed {
+			return nil
+		}
+		zipClosed = true
+		if err := zipWriter.Close(); err != nil {
+			_ = zipFile.Close()
+			return err
+		}
+		return zipFile.Close()
+	}
+	defer func() {
+		if !zipClosed {
+			_ = zipWriter.Close()
+			_ = zipFile.Close()
+		}
+		_ = os.Remove(zipTempPath)
+	}()
+
+	mp4Count := 0
 	var lastProgressPublishedAt time.Time
 	for _, row := range rows {
-		mp4Path, err := h.convertEpisodeMP4(context.Background(), row, workDir, mp4Dir)
+		mp4Path, cleanup, err := h.convertEpisodeMP4(context.Background(), row, workDir, mp4Dir)
 		outcome := dataOpsBulkQAEpisodePassed
 		if err != nil {
 			logger.Printf("[DATA_OPS] Bulk MP4 episode failed: run_id=%s episode=%d err=%v", runID, row.ID, err)
 			outcome = dataOpsBulkQAEpisodeProcessingFailed
+		} else if err := addFileToZip(zipWriter, mp4Path, filepath.Base(mp4Path)); err != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 zip append failed: run_id=%s episode=%d err=%v", runID, row.ID, err)
+			outcome = dataOpsBulkQAEpisodeProcessingFailed
 		} else {
-			mp4Files = append(mp4Files, mp4Path)
+			mp4Count++
+		}
+		if cleanup != nil {
+			cleanup()
+			cleanup = nil
 		}
 		run, err := h.incrementBulkQARunCounts(context.Background(), runID, outcome)
 		if err != nil {
@@ -270,14 +305,18 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		}
 	}
 
-	if len(mp4Files) == 0 {
+	if mp4Count == 0 {
 		finalRun, err := h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, "no mp4 files generated")
 		if err == nil {
 			h.publishBulkRunEvent("bulk_run_failed", finalRun)
 		}
 		return
 	}
-	if err := writeBulkMP4Zip(zipPath, mp4Files); err != nil {
+	if err := closeZip(); err != nil {
+		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
+		return
+	}
+	if err := os.Rename(zipTempPath, zipPath); err != nil {
 		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
 		return
 	}
@@ -299,37 +338,42 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 	)
 }
 
-func (h *DataOpsHandler) convertEpisodeMP4(ctx context.Context, row dataOpsBulkMP4EpisodeRow, workDir string, mp4Dir string) (string, error) {
+func (h *DataOpsHandler) convertEpisodeMP4(ctx context.Context, row dataOpsBulkMP4EpisodeRow, workDir string, mp4Dir string) (string, func(), error) {
 	bucket, objectName, ok := resolveEpisodeMcapLocation(h.qa.bucket, row.McapPath)
 	if !ok {
-		return "", fmt.Errorf("invalid mcap_path")
+		return "", nil, fmt.Errorf("invalid mcap_path")
 	}
 
-	inputPath := filepath.Join(workDir, safeBulkMP4FileName(row.EpisodeID, row.ID)+".mcap")
+	safeName := safeBulkMP4FileName(row.EpisodeID, row.ID)
+	inputPath := filepath.Join(workDir, safeName+".mcap")
+	episodeOutputDir := filepath.Join(mp4Dir, safeName)
+	cleanup := func() {
+		_ = os.Remove(inputPath)
+		_ = os.RemoveAll(episodeOutputDir)
+	}
 	if err := h.downloadBulkMP4Object(ctx, bucket, objectName, inputPath); err != nil {
-		return "", err
+		return "", cleanup, err
 	}
 
-	episodeOutputDir := filepath.Join(mp4Dir, safeBulkMP4FileName(row.EpisodeID, row.ID))
 	if err := os.MkdirAll(episodeOutputDir, 0o755); err != nil {
-		return "", err
+		return "", cleanup, err
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, dataOpsBulkMP4Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, "python3", dataOpsBulkMP4Script, inputPath, "--output", episodeOutputDir, "--workers", "1", "--force")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("mcap_to_mp4 failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return "", cleanup, fmt.Errorf("mcap_to_mp4 failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	mp4Path := filepath.Join(episodeOutputDir, strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))+".mp4")
-	if _, err := os.Stat(mp4Path); err != nil {
-		return "", fmt.Errorf("mp4 output not found: %w", err)
+	mp4Path, err := findBulkMP4Output(episodeOutputDir, inputPath)
+	if err != nil {
+		return "", cleanup, fmt.Errorf("mp4 output not found: %w", err)
 	}
-	return mp4Path, nil
+	return mp4Path, cleanup, nil
 }
 
 func (h *DataOpsHandler) downloadBulkMP4Object(ctx context.Context, bucket string, objectName string, dst string) error {
-	obj, err := h.qa.s3.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
+	obj, err := h.openBulkMP4Object(ctx, bucket, objectName)
 	if err != nil {
 		return fmt.Errorf("get mcap object: %w", err)
 	}
@@ -344,6 +388,44 @@ func (h *DataOpsHandler) downloadBulkMP4Object(ctx context.Context, bucket strin
 		return fmt.Errorf("write mcap temp file: %w", err)
 	}
 	return nil
+}
+
+func (h *DataOpsHandler) openBulkMP4Object(ctx context.Context, bucket string, objectName string) (io.ReadCloser, error) {
+	if h == nil || h.qa == nil {
+		return nil, fmt.Errorf("data ops qa handler is not configured")
+	}
+	if h.qa.tos != nil {
+		return h.qa.tos.OpenObject(ctx, bucket, objectName)
+	}
+	if h.qa.s3 == nil {
+		return nil, fmt.Errorf("object storage client is not configured")
+	}
+	return h.qa.s3.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
+}
+
+func findBulkMP4Output(outputDir string, inputPath string) (string, error) {
+	expected := filepath.Join(outputDir, strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))+".mp4")
+	if _, err := os.Stat(expected); err == nil {
+		return expected, nil
+	}
+
+	var matches []string
+	if err := filepath.WalkDir(outputDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(path), ".mp4") {
+			return nil
+		}
+		matches = append(matches, path)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("found %d mp4 files under %s", len(matches), outputDir)
+	}
+	return matches[0], nil
 }
 
 func (h *DataOpsHandler) bulkMP4DownloadURL(runID string) string {
@@ -364,23 +446,6 @@ func safeBulkMP4FileName(episodeID string, id int64) string {
 	}
 	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_", " ", "_")
 	return fmt.Sprintf("%s_%d", replacer.Replace(name), id)
-}
-
-func writeBulkMP4Zip(zipPath string, files []string) error {
-	out, err := os.Create(zipPath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	zw := zip.NewWriter(out)
-	defer zw.Close()
-	for _, filePath := range files {
-		if err := addFileToZip(zw, filePath, filepath.Base(filePath)); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func addFileToZip(zw *zip.Writer, filePath string, name string) error {
