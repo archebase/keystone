@@ -15,7 +15,7 @@ SDK 提供以下能力：
 5. 列出 App 本地仍可恢复的上传任务。
 6. 使用用户 access JWT 列出当前用户可见的远端 verified 逻辑对象。
 7. 在 App 重启、网络恢复或上传中断后继续上传。
-8. 取消远端上传并清理本地状态。
+8. 将 Keystone 逻辑上传标记为取消并清理本地状态。
 9. 仅删除本地快照，便于用户放弃恢复或处理异常状态。
 10. 接入日志与指标回调，方便接入宿主 App 的可观测性系统。
 
@@ -115,7 +115,7 @@ iOS App 推荐使用配置文件驱动方式接入。
 5. SDK 将 API Key 写入 Keychain，并在 `archebase-config.json` 中只保存 Keychain 引用和 tags。
 6. App 调用 `DataGatewayClient.fromArchebaseConfig(...)` 创建上传客户端。
 7. 用户选择文件后，App 调用 `uploadEvents(_:)` 或 `upload(_:)` 上传。
-8. App 被终止后不恢复旧 multipart；用户再次上传时创建新的 logical upload。
+8. App 被终止后，启动时通过 `listPendingUploads()` 找到本地快照，并按业务选择调用 `resumeUpload(logicalUploadID:)` 继续上传。
 
 如果接入方已经通过其他安全渠道直接向 App 下发 `API Key`，也可以跳过设备初始化，直接使用 `DataGatewayClientConfig.recommended(...)` 创建客户端。生产 App 通常优先使用设备初始化方式。
 
@@ -298,7 +298,7 @@ let newDeviceConfig = try await initializer.reinitDevice(deviceID: "260427-00000
 3. 如果服务端返回 `DATA_GATEWAY_DEVICE_NOT_INITIALIZED`，错误会以 `DataGatewayClientError.gatewayFailed` 向上暴露，不会自动 fallback 到 init。
 4. 重新初始化会轮换上传凭证，旧配置中的凭证会失效。
 
-App 终止后不会恢复旧 multipart。重新初始化只影响后续新建的上传客户端和新上传。
+App 终止后可使用原上传客户端配置和本地快照恢复 multipart。重新初始化会轮换设备凭证，只影响后续新建的上传客户端和新上传；使用旧凭证创建的在途会话可能因认证 epoch 变化而无法继续，应由 App 明确提示重新上传或清理旧快照。
 
 建议将重新初始化放在设置页或运维入口中，不要在普通上传失败时自动调用。普通上传失败应优先根据错误类型提示用户重试、恢复上传或联系支持。
 
@@ -457,15 +457,151 @@ App 只负责提供 `deviceID`、本地配置文件路径、上传持久化目�
 | `terminalSnapshotTTL` | `3600s` | 失败终态快照保留时间 |
 | `copyExternalFileIntoManagedStaging` | `false` | 兼容字段；当前版本不再生成 staging 数据副本，上传直接读取源文件 |
 
-## 10. 发起上传
+## 10. 上传流程与调用方式
 
-### 10.1 最小上传
+### 10.1 参与方和职责边界
+
+一次上传涉及三个参与方：
+
+| 参与方 | 职责 |
+|---|---|
+| iOS App / Swift SDK | 校验本地文件、交换设备凭证、编排上传、保存恢复快照、直接向对象存储发送文件数据。 |
+| Keystone | 认证设备、校验任务归属、分配上传 ID 和对象路径、签发限定对象范围的临时 STS 凭证、记录上传完成结果并创建 Episode。 |
+| 对象存储 | 接收 `PutObject` 或 multipart 请求，保存文件并返回分片 ETag 和对象 ETag。当前 Keystone 兼容服务使用火山引擎 TOS。 |
+
+文件字节不会经过 Keystone。Keystone 是认证和业务控制面，SDK 使用 Keystone 返回的临时 STS 凭证直接上传到对象存储，因此 Keystone 的 gRPC 请求只承载身份、任务上下文、上传状态和完成元数据。
+
+### 10.2 完整上传时序
+
+```mermaid
+sequenceDiagram
+    participant App as iOS App
+    participant SDK as Swift SDK
+    participant Auth as Keystone AuthService
+    participant Gateway as Keystone DataGatewayService
+    participant STS as Object Storage STS
+    participant OSS as Object Storage / TOS
+    participant DB as Keystone DB / QA Queue
+
+    App->>SDK: upload(request) / uploadEvents(request)
+    SDK->>SDK: 校验文件并计算大小、修改时间和首个 1 MiB MD5
+    SDK->>Auth: ExchangeCredential(device_id, API Key)
+    Auth-->>SDK: 短期 Bearer JWT
+    SDK->>Gateway: CreateLogicalUpload(client_hints) + Bearer JWT
+    Gateway->>Gateway: 校验设备、workspace、task、dc_plan
+    Gateway->>STS: AssumeRole(bucket + object_key scope)
+    STS-->>Gateway: 临时 STS 凭证
+    Gateway-->>SDK: logical_upload_id + upload_id + object_key + STS + part_size
+    SDK->>SDK: 保存 active 上传快照
+    alt 文件大小不超过 part_size
+        SDK->>OSS: PutObject(file bytes)
+        OSS-->>SDK: object ETag
+    else 文件大小超过 part_size
+        SDK->>OSS: InitiateMultipartUpload
+        OSS-->>SDK: multipart upload ID
+        loop 每个分片
+            SDK->>OSS: UploadPart(part_number, bytes)
+            OSS-->>SDK: part ETag
+            SDK->>SDK: 持久化已完成分片
+        end
+        SDK->>OSS: CompleteMultipartUpload(parts)
+        OSS-->>SDK: object ETag
+    end
+    opt STS 即将过期或对象存储返回凭证错误
+        SDK->>Gateway: ReissueUploadCredentials(upload_id)
+        Gateway-->>SDK: 同一 object_key 的新 STS 凭证
+    end
+    SDK->>Gateway: CompleteUpload(file_size, raw_tags, part_count, ETag, part_size)
+    Gateway->>DB: 幂等创建 Episode、完成 Task、写入上传元数据
+    Gateway->>DB: 新 Episode 入 QA 队列
+    Gateway-->>SDK: CompleteUploadResponse
+    SDK->>SDK: 将本地快照移入 completed 或按策略删除
+    SDK-->>App: UploadResult
+```
+
+具体步骤如下：
+
+1. SDK 检查文件存在且非空，并记录文件大小、修改时间、首个 1 MiB 的 MD5 和安全作用域 bookmark，用于后续恢复时确认源文件没有变化。
+2. SDK 使用初始化得到的 API Key 和 `device_id` 调用 `AuthService.ExchangeCredential`。Keystone 校验设备状态和 API Key，返回短期 Bearer JWT；SDK 会缓存并在过期前刷新该 JWT。
+3. SDK 携带 Bearer JWT 调用 `DataGatewayService.CreateLogicalUpload`。Keystone 从 JWT 恢复设备 principal，不信任客户端自行声明的设备或 workspace 身份。
+4. Keystone 校验 `clientHints` 关联的采集任务，生成 `logical_upload_id`、`upload_id` 和 `object_key`，再为该 bucket/object key 签发临时 STS 凭证和服务端指定的 `part_size_bytes`。
+5. SDK 先保存本地 active 快照，再按文件大小选择单对象 `PutObject` 或 multipart 上传。每个成功分片的 part number、ETag 和大小都会写入快照。
+6. STS 即将过期或对象存储返回可刷新的凭证错误时，SDK 调用 `ReissueUploadCredentials`。Keystone 只为原上传会话的同一对象路径签发新凭证，不改变 `upload_id` 或 `object_key`。
+7. 对象存储完成后，SDK 调用 `CompleteUpload`。这一步是业务完成确认，不再传输文件内容。
+8. Keystone 校验上传会话归属、任务上下文和完成参数，在事务中幂等创建 Episode、将 Task 更新为 `completed`，并将新 Episode 加入 QA 队列。
+9. 只有 `CompleteUpload` 成功后，SDK 才返回 `UploadResult` 并把本地快照转为完成状态。对象存储上传成功但该 RPC 失败时，应恢复或重试业务完成确认，不能直接视为整条业务链路成功。
+
+### 10.3 Keystone 任务上下文要求
+
+当前 Keystone 兼容上传服务会把一次上传绑定到已有采集任务。创建上传时，`clientHints` 至少需要包含：
+
+| 字段 | 用途 |
+|---|---|
+| `capture_id` | 组成对象路径并标识本次采集。 |
+| `task_id` | 查询 Keystone 中的 Task。 |
+| `dc_plan_id` | 校验 Task 所属采集计划。值必须是正整数的十进制字符串。 |
+
+`device_id` 和 `workspace_id` 以认证后的设备 principal 为准。Keystone 会覆盖或补齐这两个 hint；如果客户端显式传入且与认证身份不一致，请求会被拒绝。
+
+完成上传时，Keystone 要求 `rawTags` 中的 `capture_id`、`task_id`、`dc_plan_id` 和 `workspace_id` 与创建上传时的会话一致。通过设备初始化创建客户端时，`workspace_id` 会由 `archebase-config.json` 的设备 tags 自动合并；其余任务字段应由 App 从当前采集任务上下文传入。建议同一个业务字段在 `clientHints` 和 `rawTags` 中使用同一个值。
+
+```swift
+let taskContext = [
+    "capture_id": captureID,
+    "task_id": taskID,
+    "dc_plan_id": String(dcPlanID)
+]
+
+let request = UploadRequest(
+    fileURL: fileURL,
+    clientHints: taskContext,
+    rawTags: taskContext.merging(
+        ["workspace_id": String(workspaceID), "scene": "inspection"],
+        uniquingKeysWith: { _, new in new }
+    ),
+    displayName: fileURL.lastPathComponent
+)
+```
+
+如果使用 `fromArchebaseConfig(...)` 且配置 tags 已包含相同的 `workspace_id`，单次请求可以不重复传该 tag。若重复传入，值必须完全相同，否则 SDK 会在创建远端上传前抛出 `rawTagConflict`。
+
+### 10.4 上传标识和状态
+
+| 标识 | 稳定性和用途 |
+|---|---|
+| `logicalUploadID` | 一次逻辑上传的主 ID，是 App 恢复、取消和排查问题时应优先保存的标识。协议设计上它应在物理会话重建时保持稳定。 |
+| `uploadID` | 当前物理上传会话 ID。远端要求重建上传时会变化。 |
+| `multipartUploadID` | 对象存储生成的 multipart 会话 ID，只存在于分片上传，不是 Keystone 的业务 ID。 |
+| `objectKey` | Keystone 分配的对象路径。App 不应自行拼接或覆盖。当前格式为 `<prefix>/<device_id>/<capture_id>/<upload_id>/capture.mcap`。 |
+
+恢复上传时，SDK 先读取本地快照，再调用 `GetUploadRecovery(logicalUploadID)` 获取 Keystone 的会话状态：
+
+1. 可继续时，SDK 调用 `ReissueUploadCredentials`，并通过对象存储 `ListParts` 与本地已完成分片对账后继续上传。
+2. 对象已经上传但业务确认未完成时，SDK 使用 `HeadObject` 校验 ETag，然后只补调 `CompleteUpload`。
+3. 原会话无法继续且 Keystone 允许重建时，SDK 调用新的 `CreateLogicalUpload(restart_from_upload_id:)`，并受 `maxRestartCount` 限制。
+4. Keystone 返回终态或本地源文件发生变化时，SDK 抛出 `resumeNotPossible`。
+
+当前 Keystone `dgwcompat` 实现有两个恢复限制：上传会话保存在进程内存中，Keystone 进程重启后旧 `logicalUploadID` 的恢复查询可能返回 not found；`CreateLogicalUpload` 尚未关联 `restart_from_upload_id`，SDK 重建物理会话时会收到新的 `logicalUploadID`。将该服务用于需要稳定逻辑 ID 或跨服务重启恢复的生产环境前，应先持久化上传会话并补齐重建关联。
+
+`abortUpload(logicalUploadID:)` 当前会让 Keystone 将逻辑会话标记为 aborted，并在成功或远端 not found 时删除 SDK 本地快照。该调用目前不会删除已经写入的对象，也不会直接调用对象存储的 multipart abort；对象存储残留资源需要由服务端生命周期策略或后续清理任务处理。
+
+### 10.5 最小上传
 
 ```swift
 let request = UploadRequest(
     fileURL: fileURL,
-    clientHints: ["source": "ios-app"],
-    rawTags: ["scene": "inspection"],
+    clientHints: [
+        "capture_id": captureID,
+        "task_id": taskID,
+        "dc_plan_id": String(dcPlanID)
+    ],
+    rawTags: [
+        "capture_id": captureID,
+        "task_id": taskID,
+        "dc_plan_id": String(dcPlanID),
+        "workspace_id": String(workspaceID),
+        "scene": "inspection"
+    ],
     displayName: fileURL.lastPathComponent
 )
 
@@ -478,13 +614,23 @@ print(result.ossObjectETag)
 
 `upload(_:)` 适用于不需要细粒度进度 UI 的场景。方法成功后返回最终 `UploadResult`，失败时抛出 `DataGatewayClientError` 或底层错误。
 
-### 10.2 带上传事件的上传
+### 10.6 带上传事件的上传
 
 ```swift
 let request = UploadRequest(
     fileURL: fileURL,
-    clientHints: ["source": "ios-app"],
-    rawTags: ["scene": "inspection"],
+    clientHints: [
+        "capture_id": captureID,
+        "task_id": taskID,
+        "dc_plan_id": String(dcPlanID)
+    ],
+    rawTags: [
+        "capture_id": captureID,
+        "task_id": taskID,
+        "dc_plan_id": String(dcPlanID),
+        "workspace_id": String(workspaceID),
+        "scene": "inspection"
+    ],
     displayName: fileURL.lastPathComponent
 )
 
@@ -522,16 +668,16 @@ for try await event in await client.uploadEvents(request) {
 
 `uploadEvents(_:)` 会启动一次新的上传，它不是对 `upload(_:)` 已启动任务的旁路监听。`uploadingPart.sentBytes` 表示当前分片大小，不是累计上传字节数。恢复上传时，该值只覆盖本次恢复后实际继续发送的分片。
 
-### 10.3 UploadRequest 字段
+### 10.7 UploadRequest 字段
 
 | 字段 | 说明 |
 |---|---|
 | `fileURL` | 待上传的本地文件 URL。文件必须存在且非空。 |
-| `clientHints` | 传给上传网关的轻量上下文。建议只放路由、来源、App 版本等非敏感信息。 |
-| `rawTags` | 上传完成后随文件保存的业务标签。会与设备配置 tags 和 SDK 源文件名保留 tag 合并。 |
+| `clientHints` | 传给上传网关的任务和路由上下文。接入 Keystone 时必须包含 `capture_id`、`task_id` 和 `dc_plan_id`。 |
+| `rawTags` | 上传完成后随文件保存的业务标签。会与设备配置 tags 和 SDK 源文件名保留 tag 合并；Keystone 要求任务和 workspace 标签与上传会话一致。 |
 | `displayName` | 可选展示名。建议传入用户可识别的文件名，但不要依赖它决定远端存储路径。 |
 
-### 10.4 rawTags 合并规则
+### 10.8 rawTags 合并规则
 
 SDK 会把源文件名写入保留 raw tag，value 是 `UploadRequest.fileURL.lastPathComponent`：
 
@@ -554,7 +700,7 @@ SDK 会把源文件名写入保留 raw tag，value 是 `UploadRequest.fileURL.la
 
 | 字段 | 说明 |
 |---|---|
-| `logicalUploadID` | 稳定上传标识。App 应使用它做恢复、取消和问题排查。 |
+| `logicalUploadID` | 逻辑上传主标识。App 应使用它做恢复、取消和问题排查；当前 Keystone 重建限制见 10.4。 |
 | `uploadID` | 当前上传会话标识。恢复或重建后可能变化。 |
 | `bucket` | 对象存储 bucket 名称。通常用于诊断或与后端支持协作。 |
 | `objectKey` | 文件在对象存储中的 key。 |
@@ -625,7 +771,7 @@ print(result.objectKey)
 
 | 字段 | 说明 |
 |---|---|
-| `logicalUploadID` | 恢复和取消使用的稳定上传标识。 |
+| `logicalUploadID` | 恢复和取消使用的逻辑上传主标识。 |
 | `uploadID` | 最近一次上传会话标识。 |
 | `fileURL` | 本地源文件 URL。 |
 | `fileSize` | 文件大小，单位 bytes。 |
@@ -652,7 +798,9 @@ print(result.objectKey)
 try await client.abortUpload(logicalUploadID: logicalUploadID)
 ```
 
-`abortUpload(logicalUploadID:)` 会请求远端取消该上传，并在取消成功或远端已经找不到该上传时删除本地快照。用户在 UI 中选择“取消上传”或“放弃任务”时，优先使用该方法。
+`abortUpload(logicalUploadID:)` 会请求 Keystone 将逻辑上传标记为 aborted，并在请求成功或 Keystone 已找不到该上传时删除本地快照。用户在 UI 中选择“取消上传”或“放弃任务”时，优先使用该方法。
+
+当前实现不会通过这个 API 删除已经写入的对象，也不会直接取消对象存储中的 multipart 会话。对象存储残留资源由服务端生命周期策略或清理任务处理。
 
 ### 14.2 仅删除本地快照
 
@@ -666,7 +814,7 @@ try await client.deleteLocalSnapshot(logicalUploadID: logicalUploadID)
 2. 支持人员要求清理本地损坏状态。
 3. App 决定不再展示某个不可恢复任务，但不希望发送远端取消请求。
 
-如果你的目标是取消上传并释放远端资源，请使用 `abortUpload(logicalUploadID:)`。
+如果你的目标是停止 SDK 后续恢复并同步更新 Keystone 逻辑状态，请使用 `abortUpload(logicalUploadID:)`。如果还要求立即释放对象存储资源，需要额外的服务端清理能力。
 
 ## 15. 错误处理
 
@@ -783,7 +931,7 @@ let client = try await DataGatewayClient.fromArchebaseConfig(
 |---|---|
 | `operation` | 操作名称，例如 `upload`、`resume`、`refresh_credentials`。 |
 | `uploadID` | 当前上传会话标识，可能为空。 |
-| `logicalUploadID` | 稳定上传标识，可能为空。 |
+| `logicalUploadID` | 逻辑上传主标识，可能为空。 |
 | `phase` | SDK 当前阶段，可能为空。 |
 | `attempt` | 重试次数，可能为空。 |
 | `statusCode` | 错误状态码，可能为空。 |

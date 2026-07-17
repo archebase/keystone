@@ -1,0 +1,1317 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Swift SDK 上传接入手册</title>
+  <style>
+    :root {
+      --space: #1D1A2F;
+      --signal: #8BD450;
+      --alert: #F47A16;
+      --paper: #F7F1DF;
+      --ink: #000000;
+      --muted: rgba(247, 241, 223, 0.72);
+      --line: rgba(247, 241, 223, 0.22);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--space);
+      color: var(--paper);
+      font-family: "Songti SC", "STSong", "Noto Serif SC", SimSun, serif;
+      line-height: 1.72;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      background-color: var(--space);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      pointer-events: none;
+      opacity: 0.12;
+      background-image:
+        radial-gradient(circle at 17% 23%, var(--paper) 0 1px, transparent 1px),
+        radial-gradient(circle at 79% 67%, var(--paper) 0 1px, transparent 1px);
+      background-size: 17px 19px, 29px 31px;
+      mix-blend-mode: soft-light;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .shell {
+      width: min(1240px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 84px;
+    }
+
+    .hero {
+      position: relative;
+      min-height: min(760px, 88vh);
+      display: grid;
+      grid-template-columns: minmax(0, 1.16fr) minmax(330px, 0.84fr);
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 16px 16px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      top: -18%;
+      right: 35%;
+      width: 23%;
+      height: 142%;
+      border-left: 5px solid var(--ink);
+      border-right: 5px solid var(--ink);
+      background: var(--signal);
+      transform: skewX(-14deg);
+    }
+
+    .hero-copy {
+      position: relative;
+      z-index: 2;
+      min-width: 0;
+      align-self: center;
+      padding: clamp(30px, 6vw, 76px);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      margin-bottom: 22px;
+      padding: 6px 12px 4px;
+      border: 3px solid var(--ink);
+      background: var(--alert);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 13px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 620px;
+      font-size: clamp(48px, 6.9vw, 96px);
+      font-weight: 900;
+      line-height: 0.94;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .hero-lead {
+      max-width: 690px;
+      margin: 28px 0 0;
+      padding-left: 18px;
+      border-left: 10px solid var(--ink);
+      font-size: clamp(18px, 2.1vw, 27px);
+      font-weight: 800;
+      line-height: 1.42;
+    }
+
+    .hero-rule {
+      max-width: 660px;
+      margin-top: 26px;
+      padding: 13px 16px;
+      border: 3px solid var(--ink);
+      background: var(--signal);
+      font-weight: 900;
+    }
+
+    .console {
+      position: relative;
+      z-index: 3;
+      align-self: stretch;
+      display: grid;
+      align-content: center;
+      gap: 13px;
+      margin: 32px 32px 32px 0;
+      padding: 34px 26px;
+      border: 5px solid var(--ink);
+      background: var(--space);
+      color: var(--paper);
+      box-shadow: 10px 10px 0 var(--ink);
+    }
+
+    .console::before {
+      content: "PUBLIC API / UPLOAD SEQUENCE";
+      position: absolute;
+      top: 13px;
+      right: -18px;
+      padding: 5px 12px;
+      border: 3px solid var(--ink);
+      background: var(--alert);
+      color: var(--ink);
+      font: 900 12px/1.2 Georgia, serif;
+      transform: rotate(2deg);
+    }
+
+    .console-step {
+      display: grid;
+      grid-template-columns: 54px 1fr;
+      min-height: 76px;
+      border: 3px solid var(--paper);
+      background: var(--space);
+    }
+
+    .console-step b {
+      display: grid;
+      place-items: center;
+      border-right: 3px solid var(--paper);
+      background: var(--signal);
+      color: var(--ink);
+      font: 900 24px/1 Georgia, serif;
+    }
+
+    .console-step span {
+      align-self: center;
+      min-width: 0;
+      padding: 10px 13px;
+      font-size: 14px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .console-step code {
+      color: var(--signal);
+    }
+
+    .quick-nav {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      margin-top: 34px;
+      border: 4px solid var(--ink);
+      background: var(--ink);
+      gap: 3px;
+      box-shadow: 9px 9px 0 var(--ink);
+    }
+
+    .quick-nav a {
+      display: grid;
+      place-items: center;
+      min-height: 72px;
+      padding: 9px;
+      background: var(--paper);
+      color: var(--ink);
+      text-align: center;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .quick-nav a:hover,
+    .quick-nav a:focus-visible {
+      background: var(--signal);
+      outline: none;
+    }
+
+    section {
+      margin-top: 34px;
+      border-top: 5px solid var(--ink);
+      border-bottom: 5px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 12px 12px 0 var(--ink);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 90px 1fr auto;
+      align-items: stretch;
+      border-bottom: 5px solid var(--ink);
+      background: var(--signal);
+    }
+
+    .section-no {
+      display: grid;
+      place-items: center;
+      border-right: 5px solid var(--ink);
+      background: var(--space);
+      color: var(--paper);
+      font: 900 38px/1 Georgia, serif;
+    }
+
+    h2 {
+      margin: 0;
+      padding: 17px 20px;
+      font-size: clamp(27px, 4.2vw, 46px);
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    .section-tag {
+      display: grid;
+      place-items: center;
+      min-width: 170px;
+      padding: 10px 16px;
+      border-left: 5px solid var(--ink);
+      background: var(--alert);
+      font: 900 12px/1.3 Georgia, serif;
+      text-align: center;
+    }
+
+    .content {
+      padding: clamp(20px, 3.4vw, 40px);
+    }
+
+    .lede {
+      max-width: 920px;
+      margin: 0 0 22px;
+      font-size: 19px;
+      font-weight: 800;
+    }
+
+    h3 {
+      margin: 30px 0 12px;
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3:first-child {
+      margin-top: 0;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    .callout {
+      margin: 22px 0;
+      padding: 17px 19px;
+      border: 4px solid var(--ink);
+      background: var(--signal);
+      font-weight: 900;
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+
+    .callout.warning {
+      background: var(--alert);
+    }
+
+    .api-table,
+    .field-table,
+    .error-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      margin: 18px 0 8px;
+      font-size: 15px;
+    }
+
+    th,
+    td {
+      padding: 13px 14px;
+      border: 3px solid var(--ink);
+      vertical-align: top;
+      text-align: left;
+      overflow-wrap: anywhere;
+    }
+
+    th {
+      background: var(--space);
+      color: var(--paper);
+      font-weight: 900;
+    }
+
+    td:first-child {
+      font-weight: 900;
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    p code,
+    li code,
+    td code {
+      padding: 1px 5px;
+      background: var(--signal);
+      color: var(--ink);
+      border: 1px solid var(--ink);
+      font-weight: 800;
+    }
+
+    .code-block {
+      position: relative;
+      margin: 18px 0 24px;
+      border: 4px solid var(--ink);
+      background: var(--space);
+      color: var(--paper);
+      box-shadow: 7px 7px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .code-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 42px;
+      padding: 7px 9px 7px 13px;
+      border-bottom: 3px solid var(--ink);
+      background: var(--alert);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .copy-button {
+      width: 34px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 2px solid var(--ink);
+      border-radius: 0;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+      font: 900 14px/1 Georgia, serif;
+    }
+
+    .copy-button:hover,
+    .copy-button:focus-visible {
+      background: var(--signal);
+      outline: none;
+    }
+
+    pre {
+      margin: 0;
+      padding: 20px;
+      overflow: auto;
+      font-size: 13px;
+      line-height: 1.65;
+      tab-size: 2;
+    }
+
+    pre code {
+      font-size: inherit;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 22px 0;
+    }
+
+    .step {
+      min-height: 170px;
+      padding: 17px;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+
+    .step b {
+      display: inline-grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      margin-bottom: 14px;
+      background: var(--space);
+      color: var(--paper);
+      font: 900 20px/1 Georgia, serif;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 17px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 18px;
+      margin: 24px 0;
+    }
+
+    .flow-node {
+      position: relative;
+      min-height: 126px;
+      display: grid;
+      align-content: center;
+      padding: 14px;
+      border: 4px solid var(--ink);
+      background: var(--space);
+      color: var(--paper);
+      text-align: center;
+      font-weight: 900;
+    }
+
+    .flow-node:not(:last-child)::after {
+      content: "›";
+      position: absolute;
+      right: -19px;
+      top: 50%;
+      z-index: 2;
+      width: 20px;
+      color: var(--ink);
+      font: 900 38px/1 Georgia, serif;
+      transform: translateY(-50%);
+    }
+
+    .flow-node em {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--signal);
+      font-style: normal;
+      font: 900 12px/1.2 Georgia, serif;
+    }
+
+    .checklist {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 18px;
+      padding: 0;
+      list-style: none;
+    }
+
+    .checklist li {
+      position: relative;
+      min-height: 54px;
+      padding: 13px 14px 13px 52px;
+      border: 3px solid var(--ink);
+      font-weight: 800;
+    }
+
+    .checklist li::before {
+      content: "✓";
+      position: absolute;
+      left: 10px;
+      top: 9px;
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      background: var(--signal);
+      border: 2px solid var(--ink);
+      font-weight: 900;
+    }
+
+    .decision {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin: 20px 0;
+    }
+
+    .decision-pane {
+      padding: 19px;
+      border: 4px solid var(--ink);
+    }
+
+    .decision-pane:first-child {
+      background: var(--signal);
+    }
+
+    .decision-pane:last-child {
+      background: var(--alert);
+    }
+
+    .decision-pane h3 {
+      margin: 0 0 10px;
+    }
+
+    .footer {
+      margin-top: 42px;
+      padding: 24px;
+      border: 4px solid var(--paper);
+      color: var(--muted);
+      text-align: center;
+      font-size: 13px;
+    }
+
+    @media (max-width: 960px) {
+      .hero {
+        min-height: auto;
+        grid-template-columns: 1fr;
+      }
+
+      .hero::before {
+        top: 28%;
+        right: -8%;
+        width: 44%;
+        height: 28%;
+        transform: skewX(-16deg);
+      }
+
+      .console {
+        margin: 0 24px 24px;
+      }
+
+      .quick-nav {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .steps,
+      .flow {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .flow-node:not(:last-child)::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .shell {
+        width: min(100% - 18px, 1240px);
+        padding-top: 10px;
+      }
+
+      .hero,
+      section {
+        box-shadow: 7px 7px 0 var(--ink);
+      }
+
+      .hero-copy {
+        padding: 28px 20px 36px;
+      }
+
+      h1 {
+        font-size: clamp(42px, 14vw, 70px);
+      }
+
+      .console {
+        margin: 0 12px 16px;
+        padding: 38px 12px 16px;
+      }
+
+      .quick-nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .section-head {
+        grid-template-columns: 62px 1fr;
+      }
+
+      .section-no {
+        font-size: 28px;
+      }
+
+      .section-tag {
+        display: none;
+      }
+
+      .content {
+        padding: 18px 14px 24px;
+      }
+
+      .steps,
+      .flow,
+      .checklist,
+      .decision {
+        grid-template-columns: 1fr;
+      }
+
+      .api-table,
+      .field-table,
+      .error-table {
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        padding: 9px 8px;
+      }
+
+      pre {
+        padding: 14px;
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <span class="eyebrow">Swift SDK Integration Manual / 2026</span>
+        <h1>上传接入<br>启动序列</h1>
+        <p class="hero-lead">面向 SDK 使用者：从设备初始化到文件上传完成，你需要调用哪些公开接口、按什么顺序调用，以及失败后如何恢复。</p>
+        <p class="hero-rule">核心判断：App 只编排 SDK 公共 API。认证交换、STS、分片上传、重试和 Keystone 完成确认均由 SDK 内部处理。</p>
+      </div>
+
+      <div class="console" aria-label="上传调用主线">
+        <div class="console-step"><b>01</b><span><code>DataGatewayClient.initialize</code><br>写入公共服务端点</span></div>
+        <div class="console-step"><b>02</b><span><code>ArchebaseDeviceInitializer.initDevice</code><br>首次初始化设备</span></div>
+        <div class="console-step"><b>03</b><span><code>DataGatewayClient.fromArchebaseConfig</code><br>创建上传客户端</span></div>
+        <div class="console-step"><b>04</b><span><code>UploadRequest</code><br>填入文件与任务上下文</span></div>
+        <div class="console-step"><b>05</b><span><code>upload</code> 或 <code>uploadEvents</code><br>发起一次新上传</span></div>
+        <div class="console-step"><b>06</b><span><code>listPendingUploads</code> + <code>resumeUpload</code><br>启动后恢复未完成任务</span></div>
+      </div>
+    </header>
+
+    <nav class="quick-nav" aria-label="文档导航">
+      <a href="#boundary">调用边界</a>
+      <a href="#apis">接口清单</a>
+      <a href="#bootstrap">初始化</a>
+      <a href="#upload">发起上传</a>
+      <a href="#progress">进度事件</a>
+      <a href="#recovery">恢复取消</a>
+      <a href="#example">完整封装</a>
+    </nav>
+
+    <section id="boundary">
+      <div class="section-head">
+        <div class="section-no">00</div>
+        <h2>先确定调用边界</h2>
+        <div class="section-tag">DO NOT BYPASS THE SDK</div>
+      </div>
+      <div class="content">
+        <p class="lede">SDK 使用者需要准备本地路径、可信配置、设备初始化材料、待上传文件和任务上下文。其余上传协议由 SDK 负责。</p>
+
+        <div class="decision">
+          <div class="decision-pane">
+            <h3>App 需要调用</h3>
+            <p><code>DataGatewayClient</code>、<code>ArchebaseDeviceInitializer</code>、<code>UploadRequest</code> 以及恢复和取消相关公开方法。</p>
+          </div>
+          <div class="decision-pane">
+            <h3>App 不应该调用</h3>
+            <p>不要直接调用 Keystone 的 <code>AuthService</code>、<code>DataGatewayService</code>，也不要自行申请 STS、拼接 object key 或直接编排 TOS multipart。</p>
+          </div>
+        </div>
+
+        <div class="flow" aria-label="上传职责流">
+          <div class="flow-node"><em>APP</em>提供文件与任务上下文</div>
+          <div class="flow-node"><em>SDK</em>认证、持久化、编排</div>
+          <div class="flow-node"><em>KEYSTONE</em>授权上传与完成业务</div>
+          <div class="flow-node"><em>OBJECT STORE</em>接收文件字节</div>
+          <div class="flow-node"><em>APP</em>接收 UploadResult</div>
+        </div>
+
+        <div class="callout">文件字节不会经过 Keystone。App 调用 SDK 后，SDK 使用 Keystone 签发的临时凭证直传对象存储，并在数据上传完成后自动回调 Keystone 完成业务确认。</div>
+      </div>
+    </section>
+
+    <section id="apis">
+      <div class="section-head">
+        <div class="section-no">01</div>
+        <h2>你需要知道的接口</h2>
+        <div class="section-tag">PUBLIC SURFACE</div>
+      </div>
+      <div class="content">
+        <p class="lede">正常接入只需要下面 9 个入口。前 5 个完成首次上传，后 4 个处理生命周期和异常。</p>
+
+        <table class="api-table">
+          <thead>
+            <tr>
+              <th style="width: 27%">公开接口</th>
+              <th style="width: 22%">何时调用</th>
+              <th>调用结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>DataGatewayClient.initialize</code></td>
+              <td>首次使用 SDK 端点前</td>
+              <td>校验并原子写入 <code>archebase-endpoints.json</code>。</td>
+            </tr>
+            <tr>
+              <td><code>ArchebaseDeviceInitializer.initDevice</code></td>
+              <td>设备首次初始化</td>
+              <td>向 Keystone 初始化设备；API Key 进入 Keychain，tags 写入配置。</td>
+            </tr>
+            <tr>
+              <td><code>DataGatewayClient.fromArchebaseConfig</code></td>
+              <td>初始化完成后、App 启动时</td>
+              <td>创建可复用的 <code>DataGatewayClient</code> actor。</td>
+            </tr>
+            <tr>
+              <td><code>UploadRequest.init</code></td>
+              <td>每次新上传前</td>
+              <td>封装文件 URL、Keystone 任务上下文和业务标签。</td>
+            </tr>
+            <tr>
+              <td><code>client.upload</code></td>
+              <td>不需要实时进度 UI</td>
+              <td>等待整条上传链路完成并返回 <code>UploadResult</code>。</td>
+            </tr>
+            <tr>
+              <td><code>client.uploadEvents</code></td>
+              <td>需要阶段和分片进度 UI</td>
+              <td>返回同一次新上传的 <code>AsyncThrowingStream&lt;UploadEvent, Error&gt;</code>。</td>
+            </tr>
+            <tr>
+              <td><code>client.listPendingUploads</code></td>
+              <td>App 启动或回到前台</td>
+              <td>列出本机仍可恢复的 active 快照。</td>
+            </tr>
+            <tr>
+              <td><code>client.resumeUpload</code></td>
+              <td>用户选择恢复任务</td>
+              <td>校验源文件并恢复分片上传或补齐最终确认。</td>
+            </tr>
+            <tr>
+              <td><code>client.abortUpload</code></td>
+              <td>用户明确放弃上传</td>
+              <td>将 Keystone 逻辑上传标记为 aborted，并清理本地快照。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout warning"><code>deleteLocalSnapshot</code> 是支持和异常清理接口。它只删本地快照，不更新 Keystone 状态，普通“取消上传”按钮不应调用它。</div>
+      </div>
+    </section>
+
+    <section id="bootstrap">
+      <div class="section-head">
+        <div class="section-no">02</div>
+        <h2>初始化与创建客户端</h2>
+        <div class="section-tag">ONE-TIME BOOTSTRAP</div>
+      </div>
+      <div class="content">
+        <div class="steps">
+          <div class="step"><b>1</b><strong>计算本地路径</strong>全部放在 App 私有的 Application Support 目录。</div>
+          <div class="step"><b>2</b><strong>写入 endpoints</strong>配置必须来自可信渠道，不要硬编码生产密钥。</div>
+          <div class="step"><b>3</b><strong>初始化设备</strong>只在本机没有设备配置时调用。</div>
+          <div class="step"><b>4</b><strong>创建 client</strong>创建后在 App 服务层复用，不必每次上传重新创建。</div>
+        </div>
+
+        <h3>2.1 计算三个本地路径</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Swift / Local paths</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>import DataGatewayClient
+import DGWControlPlane
+import DGWStore
+import Foundation
+
+let supportRoot = FileManager.default.urls(
+    for: .applicationSupportDirectory,
+    in: .userDomainMask
+)[0]
+
+let archebaseRoot = supportRoot.appendingPathComponent(
+    "Archebase",
+    isDirectory: true
+)
+
+let endpointsURL = archebaseRoot.appendingPathComponent(
+    "archebase-endpoints.json"
+)
+let configURL = archebaseRoot.appendingPathComponent(
+    "archebase-config.json"
+)
+let persistRootURL = archebaseRoot.appendingPathComponent(
+    "Uploads",
+    isDirectory: true
+)</code></pre>
+        </div>
+
+        <h3>2.2 写入可信 endpoint JSON</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Call 01 / DataGatewayClient.initialize</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>try DataGatewayClient.initialize(
+    endpointsJSON: endpointsJSONStringFromTrustedChannel,
+    endpointsURL: endpointsURL
+)</code></pre>
+        </div>
+        <p>同一份配置可重复调用并幂等成功。如果文件已存在但内容不同，SDK 会抛出 <code>endpointsAlreadyInitialized</code>，避免 App 静默切换服务端。</p>
+
+        <h3>2.3 首次初始化设备</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Call 02 / ArchebaseDeviceInitializer.initDevice</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>let initializer = try ArchebaseDeviceInitializer(
+    config: DeviceInitClientConfig(
+        configURL: configURL,
+        endpointsURL: endpointsURL
+    )
+)
+
+let deviceConfig = try await initializer.initDevice(
+    deviceName: deviceNameFromTrustedConfig,
+    deviceAuthToken: deviceAuthTokenFromTrustedConfig
+)
+
+print(deviceConfig.tags)</code></pre>
+        </div>
+        <p><code>initDevice</code> 只用于首次初始化。若本地已有配置，SDK 抛出 <code>alreadyInitialized</code>；不要因为普通上传失败而自动调用 <code>reinitDevice</code>。</p>
+
+        <h3>2.4 创建并复用上传客户端</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Call 03 / DataGatewayClient.fromArchebaseConfig</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>let client = try await DataGatewayClient.fromArchebaseConfig(
+    configURL: configURL,
+    persistRootURL: persistRootURL,
+    endpointsURL: endpointsURL,
+    observability: .disabled
+)</code></pre>
+        </div>
+
+        <ul class="checklist">
+          <li>API Key 由 SDK 放入 Keychain，不写入日志或用户可导出文件。</li>
+          <li><code>archebase-config.json</code> 中的设备 tags 会自动合并到每次上传。</li>
+          <li>如果抛出 <code>notInitialized</code>，进入设备初始化流程。</li>
+          <li>如果抛出 <code>endpointsNotInitialized</code>，先写入 endpoint JSON。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="upload">
+      <div class="section-head">
+        <div class="section-no">03</div>
+        <h2>构造请求并发起上传</h2>
+        <div class="section-tag">NEW UPLOAD</div>
+      </div>
+      <div class="content">
+        <p class="lede">每次上传只需构造一个 <code>UploadRequest</code>。最容易出错的是任务上下文，而不是文件传输本身。</p>
+
+        <h3>3.1 Keystone 必需的任务字段</h3>
+        <table class="field-table">
+          <thead>
+            <tr>
+              <th style="width: 22%">字段</th>
+              <th style="width: 22%">放入位置</th>
+              <th>要求</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>capture_id</code></td>
+              <td><code>clientHints</code> + <code>rawTags</code></td>
+              <td>两处必须使用同一个值，用于标识采集并组成服务端对象路径。</td>
+            </tr>
+            <tr>
+              <td><code>task_id</code></td>
+              <td><code>clientHints</code> + <code>rawTags</code></td>
+              <td>必须对应 Keystone 中已存在且可上传的 Task。</td>
+            </tr>
+            <tr>
+              <td><code>dc_plan_id</code></td>
+              <td><code>clientHints</code> + <code>rawTags</code></td>
+              <td>正整数的十进制字符串，并且必须与 Task 所属计划一致。</td>
+            </tr>
+            <tr>
+              <td><code>workspace_id</code></td>
+              <td><code>rawTags</code></td>
+              <td>必须与设备身份一致。设备初始化返回的配置 tags 通常会自动提供该值。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout warning">不要自行传入或覆盖 <code>device_id</code> 来切换身份。Keystone 以认证后的设备 principal 为准，显式传入不一致的身份字段会被拒绝。</div>
+
+        <h3>3.2 构造 UploadRequest</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Call 04 / UploadRequest</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>let taskContext = [
+    "capture_id": captureID,
+    "task_id": taskID,
+    "dc_plan_id": String(dcPlanID)
+]
+
+let request = UploadRequest(
+    fileURL: fileURL,
+    clientHints: taskContext,
+    rawTags: taskContext.merging(
+        [
+            "workspace_id": String(workspaceID),
+            "scene": "inspection"
+        ],
+        uniquingKeysWith: { _, new in new }
+    ),
+    displayName: fileURL.lastPathComponent
+)</code></pre>
+        </div>
+
+        <p>如果客户端由 <code>fromArchebaseConfig</code> 创建，而且配置 tags 已含相同的 <code>workspace_id</code>，可以不在单次请求中重复传入。重复传入时值必须完全相同，否则 SDK 在创建远端上传前抛出 <code>rawTagConflict</code>。</p>
+
+        <h3>3.3 不需要进度 UI：调用 upload</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Call 05A / client.upload</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>let result = try await client.upload(request)
+
+print(result.logicalUploadID)
+print(result.objectKey)
+print(result.fileSize)
+print(result.ossObjectETag)</code></pre>
+        </div>
+
+        <p><code>upload</code> 返回时，文件数据已经写入对象存储，并且 Keystone 的 <code>CompleteUpload</code> 业务确认已经成功。只完成对象存储上传但未完成 Keystone 确认，不会返回成功结果。</p>
+      </div>
+    </section>
+
+    <section id="progress">
+      <div class="section-head">
+        <div class="section-no">04</div>
+        <h2>需要进度 UI 时</h2>
+        <div class="section-tag">ASYNC EVENT STREAM</div>
+      </div>
+      <div class="content">
+        <p class="lede"><code>uploadEvents</code> 会启动一次新的上传。它不是对另一个 <code>upload</code> 调用的旁路监听器，因此两者只能二选一。</p>
+
+        <div class="code-block">
+          <div class="code-label"><span>Call 05B / client.uploadEvents</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>var newlySentBytes: UInt64 = 0
+var finalResult: UploadResult?
+
+for try await event in await client.uploadEvents(request) {
+    switch event {
+    case .preparing:
+        await updateStatus("正在检查文件")
+
+    case .authenticating:
+        await updateStatus("正在认证设备")
+
+    case .creatingLogicalUpload:
+        await updateStatus("正在创建上传任务")
+
+    case .initiatingMultipart:
+        await updateStatus("正在初始化分片上传")
+
+    case .uploadingPart(_, let sentBytes, let totalBytes):
+        newlySentBytes += sentBytes
+        let progress = min(
+            Double(newlySentBytes) / Double(totalBytes),
+            1
+        )
+        await updateProgress(progress)
+
+    case .refreshingCredentials:
+        await updateStatus("正在刷新上传凭证")
+
+    case .reconcilingRemoteParts:
+        await updateStatus("正在核对已上传分片")
+
+    case .completingMultipart:
+        await updateStatus("正在完成文件上传")
+
+    case .completingBusinessUpload:
+        await updateStatus("正在确认业务结果")
+
+    case .completed(let result):
+        finalResult = result
+        await updateProgress(1)
+
+    case .resuming:
+        await updateStatus("正在恢复上传")
+    }
+}</code></pre>
+        </div>
+
+        <div class="callout"><code>uploadingPart.sentBytes</code> 表示当前事件新发送的分片字节数，不是累计值。恢复上传时，它也不包含上一次进程已经传完的字节，因此 UI 应明确区分“本次发送进度”和“历史总进度”。</div>
+
+        <p>在 SwiftUI 或 UIKit 中更新界面时，把状态更新切换到 <code>MainActor</code>。不要在事件循环中执行耗时同步工作，否则会拖慢事件消费和 UI 响应。</p>
+      </div>
+    </section>
+
+    <section id="recovery">
+      <div class="section-head">
+        <div class="section-no">05</div>
+        <h2>启动恢复、取消与清理</h2>
+        <div class="section-tag">LIFECYCLE CONTROL</div>
+      </div>
+      <div class="content">
+        <h3>5.1 App 启动后检查待恢复任务</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Call 06 / client.listPendingUploads</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>let pendingUploads = try await client.listPendingUploads()
+
+for pending in pendingUploads {
+    print(pending.logicalUploadID)
+    print(pending.fileURL)
+    print(pending.fileSize)
+    print(pending.phase)
+}</code></pre>
+        </div>
+
+        <p>SDK 不使用 iOS <code>URLSession</code> background transfer。App 被挂起或终止后，不要假设上传仍在后台运行；回到前台或重启后应重新创建 client 并检查 pending uploads。</p>
+
+        <h3>5.2 恢复用户选择的任务</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Call 07 / client.resumeUpload</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>let result = try await client.resumeUpload(
+    logicalUploadID: pending.logicalUploadID
+)</code></pre>
+        </div>
+
+        <p>恢复前 SDK 会检查原始文件仍然存在、大小未变化、修改时间和首个 1 MiB 指纹匹配。文件被移动、删除或改写时会抛出 <code>resumeNotPossible</code>。</p>
+
+        <h3>5.3 用户明确放弃上传</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Call 08 / client.abortUpload</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>try await client.abortUpload(
+    logicalUploadID: pending.logicalUploadID
+)</code></pre>
+        </div>
+
+        <p>该方法同步更新 Keystone 逻辑状态并删除本地快照。当前实现不会立即删除已经写入的对象，也不会直接取消对象存储 multipart；残留资源由服务端生命周期策略或清理任务处理。</p>
+
+        <h3>5.4 仅删除损坏的本地记录</h3>
+        <div class="code-block">
+          <div class="code-label"><span>Support only / client.deleteLocalSnapshot</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>try await client.deleteLocalSnapshot(
+    logicalUploadID: pending.logicalUploadID
+)</code></pre>
+        </div>
+
+        <div class="callout warning">这个方法不会通知 Keystone。只有用户明确选择“仅从本机移除记录”或支持人员要求清理本地损坏状态时才使用。</div>
+      </div>
+    </section>
+
+    <section id="errors">
+      <div class="section-head">
+        <div class="section-no">06</div>
+        <h2>错误处理决策表</h2>
+        <div class="section-tag">FAILURE ROUTING</div>
+      </div>
+      <div class="content">
+        <table class="error-table">
+          <thead>
+            <tr>
+              <th style="width: 28%">错误</th>
+              <th>App 应采取的动作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>notInitialized</code></td><td>进入设备初始化界面，不要直接重试上传。</td></tr>
+            <tr><td><code>alreadyInitialized</code></td><td>跳过初始化，直接调用 <code>fromArchebaseConfig</code> 创建 client。</td></tr>
+            <tr><td><code>endpointsNotInitialized</code></td><td>从可信渠道获取 endpoint JSON，调用 <code>DataGatewayClient.initialize</code>。</td></tr>
+            <tr><td><code>endpointsAlreadyInitialized</code></td><td>停止自动切换环境，交给明确的运维流程处理。</td></tr>
+            <tr><td><code>rawTagConflict</code></td><td>修正单次 <code>rawTags</code>，确保与设备配置 tags 使用相同值。</td></tr>
+            <tr><td><code>invalidLocalFile</code> / <code>zeroByteFile</code></td><td>让用户重新选择有效且非空的文件。</td></tr>
+            <tr><td><code>authenticationFailed</code></td><td>停止自动重试；提示检查设备状态或联系管理员，不要自动 reinit。</td></tr>
+            <tr><td><code>gatewayFailed</code></td><td>记录非敏感的 <code>detailCode</code>，按业务错误提示用户。</td></tr>
+            <tr><td><code>ossFailed</code> / <code>retryExhausted</code></td><td>提示网络或对象存储暂时不可用，保留快照并允许稍后恢复。</td></tr>
+            <tr><td><code>resumeNotPossible</code></td><td>提供重新上传、调用 <code>abortUpload</code> 或支持性本地清理入口。</td></tr>
+            <tr><td><code>uploadRestartExceeded</code></td><td>停止恢复循环，提示重新发起一次新上传。</td></tr>
+          </tbody>
+        </table>
+
+        <div class="code-block">
+          <div class="code-label"><span>Recommended error boundary</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>do {
+    let result = try await client.upload(request)
+    await showCompleted(result)
+} catch let error as DataGatewayClientError {
+    switch error {
+    case .notInitialized:
+        await showDeviceInitialization()
+    case .rawTagConflict(let key):
+        await showMetadataError(key: key)
+    case .invalidLocalFile, .zeroByteFile:
+        await askUserToSelectFileAgain()
+    case .resumeNotPossible:
+        await showRestartOrAbortActions()
+    case .authenticationFailed:
+        await showContactAdministrator()
+    case .gatewayFailed(_, let detailCode, _):
+        await showGatewayError(code: detailCode)
+    case .ossFailed, .retryExhausted:
+        await showResumeLater()
+    default:
+        await showGenericUploadFailure()
+    }
+}</code></pre>
+        </div>
+
+        <p>日志中可以记录操作名、阶段、<code>logicalUploadID</code>、非敏感错误码和时间。不要记录 API Key、device auth token、Bearer JWT、STS secret、带签名 URL 或完整配置字符串。</p>
+      </div>
+    </section>
+
+    <section id="example">
+      <div class="section-head">
+        <div class="section-no">07</div>
+        <h2>App 侧完整封装</h2>
+        <div class="section-tag">REFERENCE IMPLEMENTATION</div>
+      </div>
+      <div class="content">
+        <p class="lede">建议在 App 内封装一个 actor，集中管理路径、client 生命周期、上传、恢复和取消。UI 层只传业务参数，不直接接触配置文件和凭证。</p>
+
+        <div class="code-block">
+          <div class="code-label"><span>GatewayUploadService.swift</span><button class="copy-button" type="button" aria-label="复制代码">⧉</button></div>
+          <pre><code>import DataGatewayClient
+import DGWControlPlane
+import DGWStore
+import Foundation
+
+actor GatewayUploadService {
+    private let endpointsURL: URL
+    private let configURL: URL
+    private let persistRootURL: URL
+    private var client: DataGatewayClient?
+
+    init() {
+        let supportRoot = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        let root = supportRoot.appendingPathComponent(
+            "Archebase",
+            isDirectory: true
+        )
+
+        self.endpointsURL = root.appendingPathComponent(
+            "archebase-endpoints.json"
+        )
+        self.configURL = root.appendingPathComponent(
+            "archebase-config.json"
+        )
+        self.persistRootURL = root.appendingPathComponent(
+            "Uploads",
+            isDirectory: true
+        )
+    }
+
+    func initializeEndpoints(json: String) throws {
+        try DataGatewayClient.initialize(
+            endpointsJSON: json,
+            endpointsURL: self.endpointsURL
+        )
+    }
+
+    func initializeDevice(
+        deviceName: String,
+        deviceAuthToken: String
+    ) async throws {
+        let initializer = try ArchebaseDeviceInitializer(
+            config: DeviceInitClientConfig(
+                configURL: self.configURL,
+                endpointsURL: self.endpointsURL
+            )
+        )
+
+        _ = try await initializer.initDevice(
+            deviceName: deviceName,
+            deviceAuthToken: deviceAuthToken
+        )
+        self.client = try await self.makeClient()
+    }
+
+    func loadClient() async throws -> DataGatewayClient {
+        if let client = self.client {
+            return client
+        }
+        let client = try await self.makeClient()
+        self.client = client
+        return client
+    }
+
+    func upload(
+        fileURL: URL,
+        captureID: String,
+        taskID: String,
+        dcPlanID: Int64,
+        workspaceID: Int64,
+        extraTags: [String: String] = [:]
+    ) async throws -> UploadResult {
+        let context = [
+            "capture_id": captureID,
+            "task_id": taskID,
+            "dc_plan_id": String(dcPlanID)
+        ]
+        let requiredTags = context.merging(
+            ["workspace_id": String(workspaceID)],
+            uniquingKeysWith: { _, new in new }
+        )
+        let rawTags = requiredTags.merging(
+            extraTags,
+            uniquingKeysWith: { current, _ in current }
+        )
+
+        let request = UploadRequest(
+            fileURL: fileURL,
+            clientHints: context,
+            rawTags: rawTags,
+            displayName: fileURL.lastPathComponent
+        )
+
+        let client = try await self.loadClient()
+        return try await client.upload(request)
+    }
+
+    func pendingUploads() async throws -> [PendingUploadInfo] {
+        let client = try await self.loadClient()
+        return try await client.listPendingUploads()
+    }
+
+    func resume(logicalUploadID: String) async throws -> UploadResult {
+        let client = try await self.loadClient()
+        return try await client.resumeUpload(
+            logicalUploadID: logicalUploadID
+        )
+    }
+
+    func abort(logicalUploadID: String) async throws {
+        let client = try await self.loadClient()
+        try await client.abortUpload(
+            logicalUploadID: logicalUploadID
+        )
+    }
+
+    private func makeClient() async throws -> DataGatewayClient {
+        try await DataGatewayClient.fromArchebaseConfig(
+            configURL: self.configURL,
+            persistRootURL: self.persistRootURL,
+            endpointsURL: self.endpointsURL
+        )
+    }
+}</code></pre>
+        </div>
+
+        <h3>接入完成的验收标准</h3>
+        <ul class="checklist">
+          <li>首次安装可写入 endpoints、初始化设备并创建 client。</li>
+          <li>合法 Task 上下文可以完成小文件和 multipart 大文件上传。</li>
+          <li>UI 使用 <code>uploadEvents</code> 时不会重复调用 <code>upload</code>。</li>
+          <li>App 重启后可列出 pending uploads，并允许恢复或取消。</li>
+          <li>源文件变化时能正确提示无法恢复，不进入无限重试。</li>
+          <li>日志和埋点不包含 API Key、JWT、STS 或完整可信配置。</li>
+        </ul>
+
+        <div class="callout">最小成功路径只有五个动作：写入 endpoints → 初始化设备 → 创建 client → 构造 UploadRequest → 调用 upload。进度、恢复和取消是在这条主线之上的生命周期能力。</div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      Swift SDK 上传接入手册 · 面向 SDK 使用者 · 对应 Keystone Data Gateway Swift SDK 当前公开接口
+    </footer>
+  </main>
+
+  <script>
+    document.querySelectorAll('.copy-button').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const block = button.closest('.code-block');
+        const code = block ? block.querySelector('pre code') : null;
+        if (!code) return;
+
+        try {
+          await navigator.clipboard.writeText(code.textContent);
+          const previous = button.textContent;
+          button.textContent = '✓';
+          window.setTimeout(() => {
+            button.textContent = previous;
+          }, 1200);
+        } catch (_) {
+          button.textContent = '!';
+        }
+      });
+    });
+  </script>
+</body>
+</html>
