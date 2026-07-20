@@ -186,12 +186,13 @@ type planRobotRow struct {
 }
 
 type planWorkstationRow struct {
-	ID                  int64  `db:"id"`
-	Name                string `db:"name"`
-	RobotName           string `db:"robot_name"`
-	RobotSerial         string `db:"robot_serial"`
-	CollectorName       string `db:"collector_name"`
-	CollectorOperatorID string `db:"collector_operator_id"`
+	ID                  int64        `db:"id"`
+	Name                string       `db:"name"`
+	RobotName           string       `db:"robot_name"`
+	RobotSerial         string       `db:"robot_serial"`
+	CollectorName       string       `db:"collector_name"`
+	CollectorOperatorID string       `db:"collector_operator_id"`
+	SupersededAt        sql.NullTime `db:"superseded_at"`
 }
 
 func resolvePlanCollector(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan) (planCollectorRow, error) {
@@ -248,12 +249,23 @@ func ensurePlanWorkstation(
 	err := tx.GetContext(ctx, &ws, `
 		SELECT id, COALESCE(name, '') AS name, COALESCE(robot_name, '') AS robot_name,
 			COALESCE(robot_serial, '') AS robot_serial, COALESCE(collector_name, '') AS collector_name,
-			COALESCE(collector_operator_id, '') AS collector_operator_id
+			COALESCE(collector_operator_id, '') AS collector_operator_id, superseded_at
 		FROM workstations
 		WHERE robot_id = ? AND data_collector_id = ? AND workspace_id = ? AND deleted_at IS NULL
-		ORDER BY is_current DESC, id DESC
+		ORDER BY (superseded_at IS NULL) DESC, is_current DESC, id DESC
 		LIMIT 1`+forUpdateClause(tx), robot.ID, collector.ID, plan.WorkspaceID)
 	if err == nil {
+		if ws.SupersededAt.Valid {
+			if _, updateErr := tx.ExecContext(ctx, `
+				UPDATE workstations
+				SET status = 'offline', is_current = FALSE, superseded_at = NULL,
+					superseded_by = NULL, updated_at = ?
+				WHERE id = ? AND deleted_at IS NULL
+			`, now, ws.ID); updateErr != nil {
+				return ws, fmt.Errorf("workstation_reactivate_failed")
+			}
+			ws.SupersededAt = sql.NullTime{}
+		}
 		return ws, nil
 	}
 	if err != sql.ErrNoRows {

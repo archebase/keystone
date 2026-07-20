@@ -142,6 +142,52 @@ func TestDCPlanTaskGenerationPrecreatesSameCollectorDeviceWorkstationsWithoutAct
 	}
 }
 
+func TestDCPlanTaskGenerationReactivatesSupersededPlannedBinding(t *testing.T) {
+	db := newTestDCPlanTaskGenerationDB(t)
+	defer db.Close()
+	plan := testTaskGenerationPlan(1001, 123, 1)
+	seedTaskGenerationPlan(t, db, plan)
+	seedTaskGenerationResources(t, db, plan)
+	service := NewDCPlanTaskGenerationService(db)
+
+	first := service.GenerateForPlans(context.Background(), []auth.HilbertDCPlan{plan}, time.Now().UTC())
+	if first.CreatedCount != 1 || first.BlockedCount != 0 {
+		t.Fatalf("unexpected first summary: %#v", first)
+	}
+	var workstationID int64
+	if err := db.Get(&workstationID, `SELECT workstation_id FROM tasks WHERE dc_plan_id = ?`, plan.ID); err != nil {
+		t.Fatalf("query generated task workstation: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE workstations
+		SET is_current = FALSE, status = 'offline', superseded_at = ?, superseded_by = ?
+		WHERE id = ?
+	`, time.Now().UTC(), workstationID+1, workstationID); err != nil {
+		t.Fatalf("supersede planned workstation: %v", err)
+	}
+
+	second := service.GenerateForPlans(context.Background(), []auth.HilbertDCPlan{plan}, time.Now().UTC())
+	if second.CreatedCount != 0 || second.BlockedCount != 0 || second.Plans[0].Status != dcPlanTaskGenerationStatusNoop {
+		t.Fatalf("unexpected second summary: %#v", second)
+	}
+	var binding struct {
+		ID           int64      `db:"id"`
+		IsCurrent    bool       `db:"is_current"`
+		SupersededAt *time.Time `db:"superseded_at"`
+		SupersededBy *int64     `db:"superseded_by"`
+	}
+	if err := db.Get(&binding, `
+		SELECT id, is_current, superseded_at, superseded_by
+		FROM workstations
+		WHERE robot_id = 9 AND data_collector_id = 7
+	`); err != nil {
+		t.Fatalf("query reactivated workstation: %v", err)
+	}
+	if binding.ID != workstationID || binding.IsCurrent || binding.SupersededAt != nil || binding.SupersededBy != nil {
+		t.Fatalf("planned workstation was not reactivated in place: %#v", binding)
+	}
+}
+
 func TestDCPlanTaskGenerationBlocksMissingResources(t *testing.T) {
 	db := newTestDCPlanTaskGenerationDB(t)
 	defer db.Close()
@@ -371,7 +417,9 @@ func newTestDCPlanTaskGenerationDB(t *testing.T) *sqlx.DB {
 			created_at TIMESTAMP,
 			updated_at TIMESTAMP,
 			deleted_at TIMESTAMP,
-			is_current BOOLEAN NOT NULL DEFAULT TRUE
+			is_current BOOLEAN NOT NULL DEFAULT TRUE,
+			superseded_at TIMESTAMP,
+			superseded_by INTEGER
 		);
 		CREATE TABLE orders (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
