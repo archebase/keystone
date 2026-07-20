@@ -7,6 +7,7 @@ package dgwcompat
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,6 +127,13 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	logicalUploadID := uuid.NewString()
 	uploadID := uuid.NewString()
 	hints := cloneMap(req.GetClientHints())
+	if hints["product"] == "ego_portal_lite" {
+		checksumMD5 := strings.ToLower(strings.TrimSpace(hints["checksum_md5"]))
+		if !isMD5Hex(checksumMD5) {
+			return nil, status.Error(codes.InvalidArgument, "checksum_md5 must be a 32-character hexadecimal MD5 digest")
+		}
+		hints["checksum_md5"] = checksumMD5
+	}
 	if hinted := strings.TrimSpace(hints["device_id"]); hinted != "" && hinted != principal.DeviceID {
 		return nil, status.Error(codes.PermissionDenied, "client device hint does not match authenticated device")
 	}
@@ -473,6 +481,15 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	if err := requireMatchingRawTag(rawTags, "workspace_id", fmt.Sprintf("%d", principal.WorkspaceID)); err != nil {
 		return "", 0, false, err
 	}
+	if session.ClientHints["product"] == "ego_portal_lite" {
+		if err := requireMatchingRawTag(rawTags, "checksum_md5", session.ClientHints["checksum_md5"]); err != nil {
+			return "", 0, false, err
+		}
+		checksumMD5 := strings.ToLower(strings.TrimSpace(rawTags["checksum_md5"]))
+		if !isMD5Hex(checksumMD5) {
+			return "", 0, false, status.Error(codes.InvalidArgument, "checksum_md5 must be a 32-character hexadecimal MD5 digest")
+		}
+	}
 
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -626,6 +643,14 @@ func requireMatchingRawTag(tags map[string]string, key, expected string) error {
 	return nil
 }
 
+func isMD5Hex(value string) bool {
+	if len(value) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
 func validateIdempotentComplete(episode completedUploadEpisode, session *uploadSession, req *cloudpb.CompleteUploadRequest) error {
 	if episode.MCAPPath != session.ObjectKey {
 		return status.Error(codes.FailedPrecondition, "object key differs from completed upload")
@@ -691,6 +716,10 @@ func uploadEpisodeMetadata(session *uploadSession, req *cloudpb.CompleteUploadRe
 		"capture_id":           session.ClientHints["capture_id"],
 		"client_hints":         session.ClientHints,
 		"raw_tags":             req.GetRawTags(),
+	}
+	if session.ClientHints["product"] == "ego_portal_lite" {
+		payload["product"] = "ego_portal_lite"
+		payload["checksum_md5"] = strings.ToLower(strings.TrimSpace(req.GetRawTags()["checksum_md5"]))
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

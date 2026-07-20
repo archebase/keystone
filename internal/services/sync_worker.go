@@ -9,6 +9,7 @@ import (
 	"crypto/md5" // #nosec G501 -- Hilbert raw-data API requires an MD5 bagDigest field.
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1130,9 +1131,9 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if objectSize <= 0 {
 		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
 	}
-	mcapMD5Hex, err := objectMD5Hex(ctx, source, w.minioBucket, mcapKey)
+	mcapMD5Hex, err := episodeMCAPMD5Hex(ctx, ep, source, w.minioBucket, mcapKey)
 	if err != nil {
-		return nil, fmt.Errorf("calculate mcap md5 %s: %w", mcapKey, err)
+		return nil, fmt.Errorf("resolve mcap md5 %s: %w", mcapKey, err)
 	}
 
 	rawDataID, err := w.hilbertRawDataIDFromSyncLog(ctx, syncLogID)
@@ -1328,6 +1329,43 @@ func objectMD5Hex(ctx context.Context, source SourceObjectReader, bucket, key st
 		return "", fmt.Errorf("read object %s: %w", key, err)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func episodeMCAPMD5Hex(
+	ctx context.Context,
+	ep syncEpisodeUploadRow,
+	source SourceObjectReader,
+	bucket string,
+	key string,
+) (string, error) {
+	if ep.Metadata.Valid {
+		var metadata struct {
+			Source      string `json:"source"`
+			Product     string `json:"product"`
+			ChecksumMD5 string `json:"checksum_md5"`
+			ClientHints struct {
+				Product string `json:"product"`
+			} `json:"client_hints"`
+		}
+		if err := json.Unmarshal([]byte(ep.Metadata.String), &metadata); err == nil &&
+			metadata.Source == "dgwcompat" &&
+			(metadata.Product == "ego_portal_lite" || metadata.ClientHints.Product == "ego_portal_lite") {
+			checksumMD5 := strings.ToLower(strings.TrimSpace(metadata.ChecksumMD5))
+			if !isMD5HexDigest(checksumMD5) {
+				return "", newNonRetryableSyncError("episode %d missing valid dgwcompat checksum_md5", ep.ID)
+			}
+			return checksumMD5, nil
+		}
+	}
+	return objectMD5Hex(ctx, source, bucket, key)
+}
+
+func isMD5HexDigest(value string) bool {
+	if len(value) != md5.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func hilbertUploadTarget(credentials *auth.HilbertRawDataUploadCredentials) cloud.TOSS3UploadTarget {
