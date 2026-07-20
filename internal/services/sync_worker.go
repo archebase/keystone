@@ -6,10 +6,8 @@ package services
 
 import (
 	"context"
-	"crypto/md5" // #nosec G501 -- Hilbert raw-data API requires an MD5 bagDigest field.
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -61,7 +59,7 @@ type syncEpisodeUploadRow struct {
 	McapPath                string          `db:"mcap_path"`
 	SidecarPath             string          `db:"sidecar_path"`
 	CloudSynced             bool            `db:"cloud_synced"`
-	Metadata                sql.NullString  `db:"metadata"`
+	Checksum                sql.NullString  `db:"checksum"`
 	WorkstationID           sql.NullInt64   `db:"workstation_id"`
 	DataCollectorOperatorID sql.NullString  `db:"data_collector_operator_id"`
 	DataCollectorName       sql.NullString  `db:"data_collector_name"`
@@ -1057,7 +1055,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 			e.mcap_path,
 			e.sidecar_path,
 			e.cloud_synced,
-			e.metadata,
+			e.checksum,
 			e.workstation_id,
 			e.duration_sec,
 			e.created_at,
@@ -1131,11 +1129,6 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if objectSize <= 0 {
 		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
 	}
-	mcapMD5Hex, err := episodeMCAPMD5Hex(ctx, ep, source, w.minioBucket, mcapKey)
-	if err != nil {
-		return nil, fmt.Errorf("resolve mcap md5 %s: %w", mcapKey, err)
-	}
-
 	rawDataID, err := w.hilbertRawDataIDFromSyncLog(ctx, syncLogID)
 	if err != nil {
 		return nil, err
@@ -1144,6 +1137,10 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		logger.Printf("[SYNC-WORKER] Episode %d reusing Hilbert raw-data registration: raw_data_id=%d sync_log_id=%d",
 			ep.ID, rawDataID, syncLogID)
 	} else {
+		bagDigest, err := episodeSHA256Hex(ep)
+		if err != nil {
+			return nil, err
+		}
 		rawDataID, err = w.hilbert.RegisterRawData(ctx, auth.HilbertRawDataRegisterRequest{
 			WorkspaceID:  uploadContext.WorkspaceID,
 			DCPlanID:     uploadContext.DCPlanID,
@@ -1151,7 +1148,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 			BagStartTime: ep.bagStartTime(),
 			BagEndTime:   ep.bagEndTime(),
 			BagSize:      objectSize,
-			BagDigest:    mcapMD5Hex,
+			BagDigest:    bagDigest,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("register Hilbert raw data: %w", err)
@@ -1313,59 +1310,15 @@ func (w *SyncWorker) persistHilbertRawDataID(ctx context.Context, syncLogID int6
 	return nil
 }
 
-func objectMD5Hex(ctx context.Context, source SourceObjectReader, bucket, key string) (string, error) {
-	if source == nil {
-		return "", fmt.Errorf("source object reader not available")
+func episodeSHA256Hex(ep syncEpisodeUploadRow) (string, error) {
+	checksum := strings.ToLower(strings.TrimSpace(ep.Checksum.String))
+	if !ep.Checksum.Valid || len(checksum) != 64 {
+		return "", newNonRetryableSyncError("episode %d missing valid SHA-256 checksum", ep.ID)
 	}
-	obj, err := source.OpenObject(ctx, bucket, key)
-	if err != nil {
-		return "", fmt.Errorf("open object %s: %w", key, err)
+	if _, err := hex.DecodeString(checksum); err != nil {
+		return "", newNonRetryableSyncError("episode %d missing valid SHA-256 checksum", ep.ID)
 	}
-	defer func() {
-		_ = obj.Close()
-	}()
-	hash := md5.New() // #nosec G401 -- Hilbert raw-data API requires MD5.
-	if _, err := io.Copy(hash, obj); err != nil {
-		return "", fmt.Errorf("read object %s: %w", key, err)
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func episodeMCAPMD5Hex(
-	ctx context.Context,
-	ep syncEpisodeUploadRow,
-	source SourceObjectReader,
-	bucket string,
-	key string,
-) (string, error) {
-	if ep.Metadata.Valid {
-		var metadata struct {
-			Source      string `json:"source"`
-			Product     string `json:"product"`
-			ChecksumMD5 string `json:"checksum_md5"`
-			ClientHints struct {
-				Product string `json:"product"`
-			} `json:"client_hints"`
-		}
-		if err := json.Unmarshal([]byte(ep.Metadata.String), &metadata); err == nil &&
-			metadata.Source == "dgwcompat" &&
-			(metadata.Product == "ego_portal_lite" || metadata.ClientHints.Product == "ego_portal_lite") {
-			checksumMD5 := strings.ToLower(strings.TrimSpace(metadata.ChecksumMD5))
-			if !isMD5HexDigest(checksumMD5) {
-				return "", newNonRetryableSyncError("episode %d missing valid dgwcompat checksum_md5", ep.ID)
-			}
-			return checksumMD5, nil
-		}
-	}
-	return objectMD5Hex(ctx, source, bucket, key)
-}
-
-func isMD5HexDigest(value string) bool {
-	if len(value) != md5.Size*2 {
-		return false
-	}
-	_, err := hex.DecodeString(value)
-	return err == nil
+	return checksum, nil
 }
 
 func hilbertUploadTarget(credentials *auth.HilbertRawDataUploadCredentials) cloud.TOSS3UploadTarget {

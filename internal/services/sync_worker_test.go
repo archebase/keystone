@@ -180,8 +180,8 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
 		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
 		McapPath:          "source-bucket/device/capture.mcap",
-		Metadata: sql.NullString{
-			String: `{"source":"dgwcompat","product":"ego_portal_lite","checksum_md5":"9777442976c95a2f302786b97e60ceb5"}`,
+		Checksum: sql.NullString{
+			String: "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08",
 			Valid:  true,
 		},
 		DurationSec: sql.NullFloat64{Float64: 2.5, Valid: true},
@@ -197,8 +197,8 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if hilbert.register.BagName != "episode-uuid.mcap" || hilbert.register.BagSize != int64(len(source.data)) {
 		t.Fatalf("register bag fields = %+v", hilbert.register)
 	}
-	if hilbert.register.BagDigest != "9777442976c95a2f302786b97e60ceb5" {
-		t.Fatalf("register BagDigest = %q, want content md5", hilbert.register.BagDigest)
+	if hilbert.register.BagDigest != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
+		t.Fatalf("register BagDigest = %q, want persisted SHA-256", hilbert.register.BagDigest)
 	}
 	if !hilbert.register.BagStartTime.Equal(createdAt) || !hilbert.register.BagEndTime.Equal(createdAt.Add(2500*time.Millisecond)) {
 		t.Fatalf("register bag times = %s-%s", hilbert.register.BagStartTime, hilbert.register.BagEndTime)
@@ -221,40 +221,25 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	}
 }
 
-func TestEpisodeMCAPMD5HexRejectsDgwcompatEpisodeWithoutPersistedMD5(t *testing.T) {
-	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
-	_, err := episodeMCAPMD5Hex(context.Background(), syncEpisodeUploadRow{
-		ID:       4181,
-		Metadata: sql.NullString{String: `{"source":"dgwcompat","product":"ego_portal_lite"}`, Valid: true},
-	}, source, "source-bucket", "capture.mcap")
-	if err == nil || !strings.Contains(err.Error(), "missing valid dgwcompat checksum_md5") {
-		t.Fatalf("episodeMCAPMD5Hex() error = %v", err)
+func TestEpisodeSHA256HexRejectsMissingOrInvalidChecksum(t *testing.T) {
+	tests := []struct {
+		name     string
+		checksum sql.NullString
+	}{
+		{name: "missing"},
+		{name: "wrong length", checksum: sql.NullString{String: "abc", Valid: true}},
+		{name: "non hex", checksum: sql.NullString{String: strings.Repeat("z", 64), Valid: true}},
 	}
-	if !isNonRetryableSyncError(err) {
-		t.Fatalf("episodeMCAPMD5Hex() error = %v, want non-retryable", err)
-	}
-	if source.openCount != 0 {
-		t.Fatalf("source open count = %d, want 0", source.openCount)
-	}
-}
-
-func TestEpisodeMCAPMD5HexComputesDigestForNonDgwcompatEpisode(t *testing.T) {
-	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
-	digest, err := episodeMCAPMD5Hex(
-		context.Background(),
-		syncEpisodeUploadRow{ID: 4181},
-		source,
-		"source-bucket",
-		"capture.mcap",
-	)
-	if err != nil {
-		t.Fatalf("episodeMCAPMD5Hex() error = %v", err)
-	}
-	if digest != "9777442976c95a2f302786b97e60ceb5" {
-		t.Fatalf("episodeMCAPMD5Hex() = %q", digest)
-	}
-	if source.openCount != 1 {
-		t.Fatalf("source open count = %d, want 1", source.openCount)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := episodeSHA256Hex(syncEpisodeUploadRow{ID: 4181, Checksum: tt.checksum})
+			if err == nil || !strings.Contains(err.Error(), "missing valid SHA-256 checksum") {
+				t.Fatalf("episodeSHA256Hex() error = %v", err)
+			}
+			if !isNonRetryableSyncError(err) {
+				t.Fatalf("episodeSHA256Hex() error = %v, want non-retryable", err)
+			}
+		})
 	}
 }
 
