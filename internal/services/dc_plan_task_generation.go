@@ -262,7 +262,7 @@ func ensurePlanWorkstation(
 					superseded_by = NULL, updated_at = ?
 				WHERE id = ? AND deleted_at IS NULL
 			`, now, ws.ID); updateErr != nil {
-				return ws, fmt.Errorf("workstation_reactivate_failed")
+				return ws, fmt.Errorf("workstation_reactivate_failed: %w", updateErr)
 			}
 			ws.SupersededAt = sql.NullTime{}
 		}
