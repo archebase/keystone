@@ -9,8 +9,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"archebase.com/keystone-edge/internal/config"
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
+	_ "modernc.org/sqlite"
+
+	"archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/config"
 )
 
 func TestIsDashboardDisplayToken(t *testing.T) {
@@ -41,6 +45,108 @@ func TestIsDashboardDisplayToken(t *testing.T) {
 				t.Fatalf("IsDashboardDisplayToken() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestJWTAuthRejectsSupersededWorkstationSession(t *testing.T) {
+	db := newTestJWTAuthDB(t, false)
+	defer db.Close()
+	cfg := &config.AuthConfig{
+		JWTSecret:      "test-jwt-secret-at-least-32-bytes-long",
+		Issuer:         "keystone-test",
+		JWTExpiryHours: 24,
+	}
+	token, err := auth.GenerateToken(auth.NewCollectorWorkstationClaims(7, "dc01", 11, 101, 10), cfg)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	router := gin.New()
+	router.GET("/protected", JWTAuth(cfg, db), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+func TestJWTAuthRejectsCollectorSessionWithoutWorkstation(t *testing.T) {
+	db := newTestJWTAuthDB(t, true)
+	defer db.Close()
+	cfg := testJWTAuthConfig()
+	token, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), cfg)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	router := gin.New()
+	router.GET("/protected", JWTAuth(cfg, db), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+func TestDashboardAuthRejectsSupersededWorkstationSession(t *testing.T) {
+	db := newTestJWTAuthDB(t, false)
+	defer db.Close()
+	cfg := testJWTAuthConfig()
+	token, err := auth.GenerateToken(auth.NewCollectorWorkstationClaims(7, "dc01", 11, 101, 10), cfg)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	router := gin.New()
+	router.GET("/dashboard", DashboardAuth(cfg, db), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusUnauthorized, w.Body.String())
+	}
+}
+
+func newTestJWTAuthDB(t *testing.T, current bool) *sqlx.DB {
+	t.Helper()
+	db, err := sqlx.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY,
+			data_collector_id INTEGER NOT NULL,
+			is_current BOOLEAN NOT NULL,
+			deleted_at TEXT
+		)
+	`); err != nil {
+		db.Close()
+		t.Fatalf("create workstations: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO workstations (id, data_collector_id, is_current, deleted_at)
+		VALUES (11, 7, ?, NULL)
+	`, current); err != nil {
+		db.Close()
+		t.Fatalf("seed workstations: %v", err)
+	}
+	return db
+}
+
+func testJWTAuthConfig() *config.AuthConfig {
+	return &config.AuthConfig{
+		JWTSecret:      "test-jwt-secret-at-least-32-bytes-long",
+		Issuer:         "keystone-test",
+		JWTExpiryHours: 24,
 	}
 }
 

@@ -107,6 +107,41 @@ func TestDCPlanTaskGenerationAllowsMultiplePlansForSameRobot(t *testing.T) {
 	assertTaskGenerationWorkstationCollector(t, db, planB.ID, "collector-b")
 }
 
+func TestDCPlanTaskGenerationPrecreatesSameCollectorDeviceWorkstationsWithoutActivatingThem(t *testing.T) {
+	db := newTestDCPlanTaskGenerationDB(t)
+	defer db.Close()
+	planA := testTaskGenerationPlan(1001, 123, 1)
+	planB := testTaskGenerationPlan(1002, 123, 1)
+	planB.DCDeviceID = 789
+	seedTaskGenerationPlan(t, db, planA)
+	seedTaskGenerationPlan(t, db, planB)
+	seedTaskGenerationResources(t, db, planA)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_id, workspace_id, status, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, 10, "789", planB.WorkspaceID, "active", `{"source":"hilbert","hilbert_workspace_id":123}`, time.Now().UTC(), time.Now().UTC()); err != nil {
+		t.Fatalf("seed second robot: %v", err)
+	}
+
+	summary := NewDCPlanTaskGenerationService(db).GenerateForPlans(
+		context.Background(), []auth.HilbertDCPlan{planA, planB}, time.Now().UTC(),
+	)
+	if summary.CreatedCount != 2 || summary.BlockedCount != 0 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	var total int
+	if err := db.Get(&total, `SELECT COUNT(*) FROM workstations WHERE deleted_at IS NULL`); err != nil {
+		t.Fatalf("count workstations: %v", err)
+	}
+	var current int
+	if err := db.Get(&current, `SELECT COUNT(*) FROM workstations WHERE is_current = TRUE AND deleted_at IS NULL`); err != nil {
+		t.Fatalf("count current workstations: %v", err)
+	}
+	if total != 2 || current != 0 {
+		t.Fatalf("total=%d current=%d want total=2 current=0", total, current)
+	}
+}
+
 func TestDCPlanTaskGenerationBlocksMissingResources(t *testing.T) {
 	db := newTestDCPlanTaskGenerationDB(t)
 	defer db.Close()

@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ func NewAuthHandler(db *sqlx.DB, cfg *config.AuthConfig, hilbertCfg *config.Hilb
 type LoginRequest struct {
 	Account    string `json:"account"`                     // preferred unified field
 	OperatorID string `json:"operator_id"`                 // legacy collector field
+	DeviceID   string `json:"device_id"`                   // fixed device entry identity
 	Password   string `json:"password" binding:"required"` // #nosec G117 -- request DTO intentionally contains password
 }
 
@@ -64,6 +66,12 @@ type collectorAuthRow struct {
 	OperatorID string `db:"operator_id"`
 	Status     string `db:"status"`
 }
+
+var (
+	errLoginDeviceRequired            = errors.New("device_id is required")
+	errLoginWorkstationNotAssigned    = errors.New("workstation is not assigned for collector and device")
+	errLoginDeviceAssignedToCollector = errors.New("device is currently assigned to another collector")
+)
 
 type authWorkstationRow struct {
 	ID          int64  `db:"id"`
@@ -227,10 +235,32 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		_, _ = h.db.Exec("UPDATE data_collectors SET last_login_at = ? WHERE id = ?", time.Now().UTC(), row.ID)
 	}
 
-	// Best-effort: sync workstation status on login.
-	h.syncWorkstationStatusOnLogin(c.Request.Context(), row.ID, row.OperatorID)
+	workstation, err := h.activateLoginWorkstation(
+		c.Request.Context(), row.ID, row.OperatorID, strings.TrimSpace(req.DeviceID), time.Now().UTC(),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, errLoginDeviceRequired):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.Is(err, errLoginWorkstationNotAssigned):
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		case errors.Is(err, errLoginDeviceAssignedToCollector):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		default:
+			logger.Printf("[AUTH] Failed to activate login workstation: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to activate workstation"})
+		}
+		return
+	}
 
-	claims := auth.NewCollectorClaims(row.ID, row.OperatorID)
+	// Best-effort: sync the activated workstation status from its active tasks.
+	if err := h.syncOneWorkstationStatus(workstation.ID); err != nil {
+		logger.Printf("[AUTH] Failed to update workstation status on login (ws=%d): %v", workstation.ID, err)
+	}
+
+	claims := auth.NewCollectorWorkstationClaims(
+		row.ID, row.OperatorID, workstation.ID, workstation.RobotID, workstation.WorkspaceID,
+	)
 	token, err := auth.GenerateToken(claims, h.cfg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
@@ -250,6 +280,84 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 }
 
+func (h *AuthHandler) activateLoginWorkstation(
+	ctx context.Context,
+	collectorID int64,
+	operatorID string,
+	deviceID string,
+	now time.Time,
+) (authWorkstationRow, error) {
+	if deviceID == "" {
+		return authWorkstationRow{}, errLoginDeviceRequired
+	}
+	tx, err := h.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return authWorkstationRow{}, fmt.Errorf("begin workstation activation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	lockClause := " FOR UPDATE"
+	if tx.DriverName() == "sqlite" {
+		lockClause = ""
+	}
+	var workstation authWorkstationRow
+	if err := tx.GetContext(ctx, &workstation, `
+		SELECT ws.id, ws.workspace_id, ws.robot_id, ws.status
+		FROM workstations ws
+		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE ws.data_collector_id = ?
+			AND r.device_id = ?
+			AND r.status = 'active'
+			AND ws.deleted_at IS NULL
+		ORDER BY ws.is_current DESC, ws.id DESC
+		LIMIT 1`+lockClause, collectorID, deviceID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return authWorkstationRow{}, errLoginWorkstationNotAssigned
+		}
+		return authWorkstationRow{}, fmt.Errorf("query login workstation: %w", err)
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(ctx, tx, operatorID, workstation.WorkspaceID)
+	if err != nil {
+		return authWorkstationRow{}, fmt.Errorf("check login workstation access: %w", err)
+	}
+	if !allowed {
+		return authWorkstationRow{}, errLoginWorkstationNotAssigned
+	}
+
+	var conflictingCollectorID int64
+	err = tx.GetContext(ctx, &conflictingCollectorID, `
+		SELECT data_collector_id
+		FROM workstations
+		WHERE robot_id = ? AND id != ? AND is_current = TRUE AND deleted_at IS NULL
+		LIMIT 1`+lockClause, workstation.RobotID, workstation.ID)
+	if err == nil && conflictingCollectorID != collectorID {
+		return authWorkstationRow{}, errLoginDeviceAssignedToCollector
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return authWorkstationRow{}, fmt.Errorf("query current device binding: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE workstations
+		SET is_current = FALSE, status = 'offline', superseded_at = ?, superseded_by = ?, updated_at = ?
+		WHERE data_collector_id = ? AND id != ? AND is_current = TRUE AND deleted_at IS NULL
+	`, now, workstation.ID, now, collectorID, workstation.ID); err != nil {
+		return authWorkstationRow{}, fmt.Errorf("deactivate previous workstation: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE workstations
+		SET is_current = TRUE, status = 'inactive', superseded_at = NULL, superseded_by = NULL, updated_at = ?
+		WHERE id = ? AND data_collector_id = ? AND deleted_at IS NULL
+	`, now, workstation.ID, collectorID); err != nil {
+		return authWorkstationRow{}, fmt.Errorf("activate login workstation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return authWorkstationRow{}, fmt.Errorf("commit workstation activation: %w", err)
+	}
+	workstation.Status = "inactive"
+	return workstation, nil
+}
+
 // Logout acknowledges logout. The client discards the token; if a valid Bearer
 // token is present, the handler best-effort sets the workstation status to offline.
 func (h *AuthHandler) Logout(c *gin.Context) {
@@ -258,12 +366,23 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && strings.TrimSpace(parts[1]) != "" {
 			if claims, err := auth.ParseToken(parts[1], h.cfg); err == nil && claims.Role == "data_collector" {
-				if _, err := h.db.Exec(`
+				var updateErr error
+				now := time.Now().UTC()
+				if claims.WorkstationID > 0 {
+					_, updateErr = h.db.Exec(`
+						UPDATE workstations
+						SET status = 'offline', is_current = FALSE, superseded_at = ?, superseded_by = NULL, updated_at = ?
+						WHERE id = ? AND data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
+					`, now, now, claims.WorkstationID, claims.CollectorID)
+				} else {
+					_, updateErr = h.db.Exec(`
 						UPDATE workstations
 						SET status = 'offline', updated_at = ?
 						WHERE data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-					`, time.Now().UTC(), claims.CollectorID); err != nil {
-					logger.Printf("[AUTH] Failed to update workstation statuses on logout (collector=%d): %v", claims.CollectorID, err)
+					`, now, claims.CollectorID)
+				}
+				if updateErr != nil {
+					logger.Printf("[AUTH] Failed to update workstation statuses on logout (collector=%d): %v", claims.CollectorID, updateErr)
 				}
 			}
 		}
@@ -427,24 +546,6 @@ func (h *AuthHandler) MeStationEndBreak(c *gin.Context) {
 	}
 	workstations, _ = h.currentWorkstations(c.Request.Context(), claims.CollectorID, claims.OperatorID)
 	c.JSON(http.StatusOK, gin.H{"workstations": authWorkstationInfos(workstations)})
-}
-
-// syncWorkstationStatusOnLogin is a best-effort helper that syncs workstation
-// status to active/inactive based on whether active tasks exist.
-func (h *AuthHandler) syncWorkstationStatusOnLogin(ctx context.Context, collectorID int64, operatorID string) {
-	workstations, err := h.currentWorkstations(ctx, collectorID, operatorID)
-	if err != nil {
-		logger.Printf("[AUTH] Failed to query workstations for collector on login (collector=%d): %v", collectorID, err)
-		return
-	}
-	for _, workstation := range workstations {
-		if workstation.Status == "offline" {
-			continue
-		}
-		if err := h.syncOneWorkstationStatus(workstation.ID); err != nil {
-			logger.Printf("[AUTH] Failed to update workstation status on login (ws=%d): %v", workstation.ID, err)
-		}
-	}
 }
 
 func (h *AuthHandler) currentWorkstations(ctx context.Context, collectorID int64, operatorID string) ([]authWorkstationRow, error) {

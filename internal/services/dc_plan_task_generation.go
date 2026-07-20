@@ -259,9 +259,6 @@ func ensurePlanWorkstation(
 	if err != sql.ErrNoRows {
 		return ws, fmt.Errorf("workstation_query_failed")
 	}
-	isCurrent := !hasCurrentBinding(ctx, tx, "robot_id", robot.ID) &&
-		!hasCurrentCollectorBinding(ctx, tx, collector.ID, plan.WorkspaceID)
-
 	name := fmt.Sprintf("Hilbert Plan %d Workstation", plan.ID)
 	metadata, err := marshalMetadata(map[string]any{
 		"source":       "hilbert_dc_plan",
@@ -280,7 +277,7 @@ func ensurePlanWorkstation(
 			workspace_id, name, status, metadata, created_at, updated_at, is_current
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, robot.ID, robot.DeviceID, robot.DeviceID, collector.ID, collector.Name, collector.OperatorID,
-		plan.WorkspaceID, name, "active", metadata, now, now, isCurrent)
+		plan.WorkspaceID, name, "offline", metadata, now, now, false)
 	if err != nil {
 		return ws, fmt.Errorf("workstation_create_failed")
 	}
@@ -297,27 +294,6 @@ func ensurePlanWorkstation(
 		CollectorOperatorID: collector.OperatorID,
 	}
 	return ws, nil
-}
-
-func hasCurrentBinding(ctx context.Context, tx *sqlx.Tx, column string, id int64) bool {
-	var count int
-	query := fmt.Sprintf("SELECT COUNT(*) FROM workstations WHERE %s = ? AND is_current = TRUE AND deleted_at IS NULL", column) //nolint:gosec // column is hardcoded by caller.
-	if err := tx.GetContext(ctx, &count, query, id); err != nil {
-		return true
-	}
-	return count > 0
-}
-
-func hasCurrentCollectorBinding(ctx context.Context, tx *sqlx.Tx, collectorID int64, workspaceID int64) bool {
-	var count int
-	if err := tx.GetContext(ctx, &count, `
-		SELECT COUNT(*)
-		FROM workstations
-		WHERE data_collector_id = ? AND workspace_id = ? AND is_current = TRUE AND deleted_at IS NULL
-	`, collectorID, workspaceID); err != nil {
-		return true
-	}
-	return count > 0
 }
 
 func forUpdateClause(tx *sqlx.Tx) string {
