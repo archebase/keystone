@@ -180,8 +180,12 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
 		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
 		McapPath:          "source-bucket/device/capture.mcap",
-		DurationSec:       sql.NullFloat64{Float64: 2.5, Valid: true},
-		CreatedAt:         createdAt,
+		Metadata: sql.NullString{
+			String: `{"source":"dgwcompat","product":"ego_portal_lite","checksum_md5":"9777442976c95a2f302786b97e60ceb5"}`,
+			Valid:  true,
+		},
+		DurationSec: sql.NullFloat64{Float64: 2.5, Valid: true},
+		CreatedAt:   createdAt,
 	})
 	if err != nil {
 		t.Fatalf("uploadEpisodeDirect() error = %v", err)
@@ -209,11 +213,48 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if uploader.size != int64(len(source.data)) || string(uploader.body) != string(source.data) {
 		t.Fatalf("uploaded size/body = %d/%q", uploader.size, string(uploader.body))
 	}
-	if source.statCount != 1 || source.openCount != 2 {
-		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=2", source.statCount, source.openCount)
+	if source.statCount != 1 || source.openCount != 1 {
+		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=1", source.statCount, source.openCount)
 	}
 	if result.UploadID != "9876" || result.Bucket != "hilbert-bucket" || result.ObjectKey != "raw-data/123/capture.mcap" {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestEpisodeMCAPMD5HexRejectsDgwcompatEpisodeWithoutPersistedMD5(t *testing.T) {
+	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
+	_, err := episodeMCAPMD5Hex(context.Background(), syncEpisodeUploadRow{
+		ID:       4181,
+		Metadata: sql.NullString{String: `{"source":"dgwcompat","product":"ego_portal_lite"}`, Valid: true},
+	}, source, "source-bucket", "capture.mcap")
+	if err == nil || !strings.Contains(err.Error(), "missing valid dgwcompat checksum_md5") {
+		t.Fatalf("episodeMCAPMD5Hex() error = %v", err)
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("episodeMCAPMD5Hex() error = %v, want non-retryable", err)
+	}
+	if source.openCount != 0 {
+		t.Fatalf("source open count = %d, want 0", source.openCount)
+	}
+}
+
+func TestEpisodeMCAPMD5HexComputesDigestForNonDgwcompatEpisode(t *testing.T) {
+	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
+	digest, err := episodeMCAPMD5Hex(
+		context.Background(),
+		syncEpisodeUploadRow{ID: 4181},
+		source,
+		"source-bucket",
+		"capture.mcap",
+	)
+	if err != nil {
+		t.Fatalf("episodeMCAPMD5Hex() error = %v", err)
+	}
+	if digest != "9777442976c95a2f302786b97e60ceb5" {
+		t.Fatalf("episodeMCAPMD5Hex() = %q", digest)
+	}
+	if source.openCount != 1 {
+		t.Fatalf("source open count = %d, want 1", source.openCount)
 	}
 }
 

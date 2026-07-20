@@ -6,12 +6,15 @@ package dgwcompat
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
 	"github.com/jmoiron/sqlx"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	_ "modernc.org/sqlite"
 )
 
@@ -111,6 +114,8 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 		ClientHints: map[string]string{
 			"device_id":    "101",
 			"capture_id":   "capture-1",
+			"checksum_md5": "9777442976c95a2f302786b97e60ceb5",
+			"product":      "ego_portal_lite",
 			"task_id":      "task-1",
 			"dc_plan_id":   "1001",
 			"workspace_id": "10",
@@ -126,6 +131,7 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 		ObjectEtag:         "etag-1",
 		RawTags: map[string]string{
 			"capture_id":   "capture-1",
+			"checksum_md5": "9777442976c95a2f302786b97e60ceb5",
 			"task_id":      "task-1",
 			"dc_plan_id":   "1001",
 			"workspace_id": "10",
@@ -168,6 +174,15 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	if !strings.Contains(episode.Metadata, created.GetUploadId()) {
 		t.Fatalf("episode metadata does not contain upload id: %s", episode.Metadata)
 	}
+	var metadata struct {
+		ChecksumMD5 string `json:"checksum_md5"`
+	}
+	if err := json.Unmarshal([]byte(episode.Metadata), &metadata); err != nil {
+		t.Fatalf("decode episode metadata: %v", err)
+	}
+	if metadata.ChecksumMD5 != "9777442976c95a2f302786b97e60ceb5" {
+		t.Fatalf("episode checksum_md5 = %q", metadata.ChecksumMD5)
+	}
 	if episode.SidecarPath != "" {
 		t.Fatalf("sidecar_path = %q, want empty for TOS-only upload", episode.SidecarPath)
 	}
@@ -190,6 +205,7 @@ func TestGatewayCreateLogicalUploadRejectsMismatchedPlan(t *testing.T) {
 		ClientHints: map[string]string{
 			"device_id":    "101",
 			"capture_id":   "capture-1",
+			"checksum_md5": "9777442976c95a2f302786b97e60ceb5",
 			"task_id":      "task-1",
 			"dc_plan_id":   "9999",
 			"workspace_id": "10",
@@ -197,6 +213,32 @@ func TestGatewayCreateLogicalUploadRejectsMismatchedPlan(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("CreateLogicalUpload() error = nil, want mismatch rejection")
+	}
+}
+
+func TestGatewayCreateLogicalUploadRejectsInvalidMD5(t *testing.T) {
+	service := newGatewayService(
+		testGatewayConfig(),
+		fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()},
+		newSessionStore(),
+		nil,
+		nil,
+	)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	_, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"device_id":    "101",
+			"capture_id":   "capture-1",
+			"checksum_md5": "not-an-md5",
+			"product":      "ego_portal_lite",
+			"task_id":      "task-1",
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("CreateLogicalUpload() error = %v, want InvalidArgument", err)
 	}
 }
 
