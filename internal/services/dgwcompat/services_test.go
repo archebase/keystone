@@ -112,13 +112,14 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 
 	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
 		ClientHints: map[string]string{
-			"device_id":    "101",
-			"capture_id":   "capture-1",
-			"checksum_md5": "9777442976c95a2f302786b97e60ceb5",
-			"product":      "ego_portal_lite",
-			"task_id":      "task-1",
-			"dc_plan_id":   "1001",
-			"workspace_id": "10",
+			"device_id":       "101",
+			"capture_id":      "capture-1",
+			"checksum_md5":    "9777442976C95A2F302786B97E60CEB5",
+			"checksum_sha256": "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08",
+			"product":         "ego_portal_lite",
+			"task_id":         "task-1",
+			"dc_plan_id":      "1001",
+			"workspace_id":    "10",
 		},
 	})
 	if err != nil {
@@ -130,13 +131,14 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 		CompletedPartCount: 1,
 		ObjectEtag:         "etag-1",
 		RawTags: map[string]string{
-			"capture_id":   "capture-1",
-			"checksum_md5": "9777442976c95a2f302786b97e60ceb5",
-			"task_id":      "task-1",
-			"dc_plan_id":   "1001",
-			"workspace_id": "10",
-			"device_id":    "101",
-			"duration_sec": "6.4",
+			"capture_id":      "capture-1",
+			"checksum_md5":    "9777442976c95a2f302786b97e60ceb5",
+			"checksum_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+			"task_id":         "task-1",
+			"dc_plan_id":      "1001",
+			"workspace_id":    "10",
+			"device_id":       "101",
+			"duration_sec":    "6.4",
 		},
 	}
 	if _, err := service.CompleteUpload(ctx, complete); err != nil {
@@ -166,22 +168,30 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	var episode struct {
 		Metadata    string  `db:"metadata"`
 		SidecarPath string  `db:"sidecar_path"`
+		Checksum    string  `db:"checksum"`
 		DurationSec float64 `db:"duration_sec"`
 	}
-	if err := db.Get(&episode, `SELECT metadata, sidecar_path, duration_sec FROM episodes WHERE id = ?`, task.EpisodeID); err != nil {
+	if err := db.Get(&episode, `SELECT metadata, sidecar_path, checksum, duration_sec FROM episodes WHERE id = ?`, task.EpisodeID); err != nil {
 		t.Fatalf("query episode metadata: %v", err)
+	}
+	if episode.Checksum != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
+		t.Fatalf("episode checksum = %q", episode.Checksum)
 	}
 	if !strings.Contains(episode.Metadata, created.GetUploadId()) {
 		t.Fatalf("episode metadata does not contain upload id: %s", episode.Metadata)
 	}
 	var metadata struct {
-		ChecksumMD5 string `json:"checksum_md5"`
+		ChecksumMD5    string `json:"checksum_md5"`
+		ChecksumSHA256 string `json:"checksum_sha256"`
 	}
 	if err := json.Unmarshal([]byte(episode.Metadata), &metadata); err != nil {
 		t.Fatalf("decode episode metadata: %v", err)
 	}
 	if metadata.ChecksumMD5 != "9777442976c95a2f302786b97e60ceb5" {
 		t.Fatalf("episode checksum_md5 = %q", metadata.ChecksumMD5)
+	}
+	if metadata.ChecksumSHA256 != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
+		t.Fatalf("episode checksum_sha256 = %q", metadata.ChecksumSHA256)
 	}
 	if episode.SidecarPath != "" {
 		t.Fatalf("sidecar_path = %q, want empty for TOS-only upload", episode.SidecarPath)
@@ -235,6 +245,33 @@ func TestGatewayCreateLogicalUploadRejectsInvalidMD5(t *testing.T) {
 			"checksum_md5": "not-an-md5",
 			"product":      "ego_portal_lite",
 			"task_id":      "task-1",
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("CreateLogicalUpload() error = %v, want InvalidArgument", err)
+	}
+}
+
+func TestGatewayCreateLogicalUploadRejectsInvalidSHA256(t *testing.T) {
+	service := newGatewayService(
+		testGatewayConfig(),
+		fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()},
+		newSessionStore(),
+		nil,
+		nil,
+	)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	_, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"device_id":       "101",
+			"capture_id":      "capture-1",
+			"checksum_md5":    "9777442976c95a2f302786b97e60ceb5",
+			"checksum_sha256": "not-a-sha256",
+			"product":         "ego_portal_lite",
+			"task_id":         "task-1",
 		},
 	})
 	if status.Code(err) != codes.InvalidArgument {
@@ -309,6 +346,7 @@ func newGatewayServiceTestDB(t *testing.T) *sqlx.DB {
 			sidecar_path TEXT NOT NULL,
 			file_size_bytes INTEGER,
 			duration_sec REAL,
+			checksum TEXT,
 			qa_status TEXT,
 			metadata TEXT,
 			created_at TIMESTAMP NULL,

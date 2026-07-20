@@ -132,7 +132,12 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 		if !isMD5Hex(checksumMD5) {
 			return nil, status.Error(codes.InvalidArgument, "checksum_md5 must be a 32-character hexadecimal MD5 digest")
 		}
+		checksumSHA256 := strings.ToLower(strings.TrimSpace(hints["checksum_sha256"]))
+		if !isSHA256Hex(checksumSHA256) {
+			return nil, status.Error(codes.InvalidArgument, "checksum_sha256 must be a 64-character hexadecimal SHA-256 digest")
+		}
 		hints["checksum_md5"] = checksumMD5
+		hints["checksum_sha256"] = checksumSHA256
 	}
 	if hinted := strings.TrimSpace(hints["device_id"]); hinted != "" && hinted != principal.DeviceID {
 		return nil, status.Error(codes.PermissionDenied, "client device hint does not match authenticated device")
@@ -457,6 +462,7 @@ type completedUploadEpisode struct {
 	MCAPPath  string          `db:"mcap_path"`
 	FileSize  sql.NullInt64   `db:"file_size_bytes"`
 	Duration  sql.NullFloat64 `db:"duration_sec"`
+	Checksum  sql.NullString  `db:"checksum"`
 	Metadata  sql.NullString  `db:"metadata"`
 }
 
@@ -482,12 +488,19 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 		return "", 0, false, err
 	}
 	if session.ClientHints["product"] == "ego_portal_lite" {
-		if err := requireMatchingRawTag(rawTags, "checksum_md5", session.ClientHints["checksum_md5"]); err != nil {
+		if err := requireMatchingDigestRawTag(rawTags, "checksum_md5", session.ClientHints["checksum_md5"]); err != nil {
 			return "", 0, false, err
 		}
 		checksumMD5 := strings.ToLower(strings.TrimSpace(rawTags["checksum_md5"]))
 		if !isMD5Hex(checksumMD5) {
 			return "", 0, false, status.Error(codes.InvalidArgument, "checksum_md5 must be a 32-character hexadecimal MD5 digest")
+		}
+		if err := requireMatchingDigestRawTag(rawTags, "checksum_sha256", session.ClientHints["checksum_sha256"]); err != nil {
+			return "", 0, false, err
+		}
+		checksumSHA256 := strings.ToLower(strings.TrimSpace(rawTags["checksum_sha256"]))
+		if !isSHA256Hex(checksumSHA256) {
+			return "", 0, false, status.Error(codes.InvalidArgument, "checksum_sha256 must be a 64-character hexadecimal SHA-256 digest")
 		}
 	}
 
@@ -531,7 +544,7 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 
 	var existing completedUploadEpisode
 	err = tx.GetContext(ctx, &existing, `
-		SELECT id, episode_id, mcap_path, file_size_bytes, duration_sec, metadata
+		SELECT id, episode_id, mcap_path, file_size_bytes, duration_sec, checksum, metadata
 		FROM episodes
 		WHERE task_id = ? AND deleted_at IS NULL
 		LIMIT 1
@@ -573,6 +586,13 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	if err != nil {
 		return "", 0, false, err
 	}
+	var checksumSHA256 sql.NullString
+	if session.ClientHints["product"] == "ego_portal_lite" {
+		checksumSHA256 = sql.NullString{
+			String: strings.ToLower(strings.TrimSpace(req.GetRawTags()["checksum_sha256"])),
+			Valid:  true,
+		}
+	}
 	insertRes, err := tx.ExecContext(ctx, `
 		INSERT INTO episodes (
 			episode_id,
@@ -585,13 +605,14 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			sidecar_path,
 			file_size_bytes,
 			duration_sec,
+			checksum,
 			qa_status,
 			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
 	`, episodeID, task.TaskPK, task.WorkstationID, task.OrganizationID, task.DCPlanID, task.LocalDCPlanID,
-		session.ObjectKey, "", req.GetFileSize(), durationSec, metadata, now, now)
+		session.ObjectKey, "", req.GetFileSize(), durationSec, checksumSHA256, metadata, now, now)
 	if err != nil {
 		return "", 0, false, status.Error(codes.Unavailable, "episode creation failed")
 	}
@@ -643,8 +664,25 @@ func requireMatchingRawTag(tags map[string]string, key, expected string) error {
 	return nil
 }
 
+func requireMatchingDigestRawTag(tags map[string]string, key, expected string) error {
+	actual := strings.ToLower(strings.TrimSpace(tags[key]))
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if actual == "" || actual != expected {
+		return status.Errorf(codes.FailedPrecondition, "%s does not match upload session", key)
+	}
+	return nil
+}
+
 func isMD5Hex(value string) bool {
 	if len(value) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func isSHA256Hex(value string) bool {
+	if len(value) != 64 {
 		return false
 	}
 	_, err := hex.DecodeString(value)
@@ -666,6 +704,9 @@ func validateIdempotentComplete(episode completedUploadEpisode, session *uploadS
 		if !durationSec.Valid || math.Abs(episode.Duration.Float64-durationSec.Float64) > 0.000001 {
 			return status.Error(codes.FailedPrecondition, "duration_sec differs from completed upload")
 		}
+	}
+	if episode.Checksum.Valid && episode.Checksum.String != strings.ToLower(strings.TrimSpace(req.GetRawTags()["checksum_sha256"])) {
+		return status.Error(codes.FailedPrecondition, "checksum_sha256 differs from completed upload")
 	}
 	if !episode.Metadata.Valid {
 		return status.Error(codes.FailedPrecondition, "completed upload metadata is missing")
@@ -720,6 +761,7 @@ func uploadEpisodeMetadata(session *uploadSession, req *cloudpb.CompleteUploadRe
 	if session.ClientHints["product"] == "ego_portal_lite" {
 		payload["product"] = "ego_portal_lite"
 		payload["checksum_md5"] = strings.ToLower(strings.TrimSpace(req.GetRawTags()["checksum_md5"]))
+		payload["checksum_sha256"] = strings.ToLower(strings.TrimSpace(req.GetRawTags()["checksum_sha256"]))
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
