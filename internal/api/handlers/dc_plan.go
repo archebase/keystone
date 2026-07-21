@@ -87,7 +87,14 @@ type DCPlanSyncResponse struct {
 // OperatorPlanItem represents one plan currently executable by the logged-in collector.
 type OperatorPlanItem struct {
 	ID             int64  `json:"id"`
+	WorkspaceID    int64  `json:"workspace_id"`
 	Name           string `json:"name"`
+	DCProjectID    int64  `json:"dc_project_id"`
+	DCProjectName  string `json:"dc_project_name,omitempty"`
+	DCTaskID       int64  `json:"dc_task_id"`
+	DCTaskName     string `json:"dc_task_name,omitempty"`
+	DCDeviceID     int64  `json:"dc_device_id"`
+	DCDeviceName   string `json:"dc_device_name,omitempty"`
 	DCType         string `json:"dc_type"`
 	TargetCount    int64  `json:"target_count"`
 	CommittedCount int64  `json:"committed_count"`
@@ -199,7 +206,14 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 
 	rows := []struct {
 		ID             int64        `db:"id"`
+		WorkspaceID    int64        `db:"workspace_id"`
 		Name           string       `db:"name"`
+		DCProjectID    int64        `db:"dc_project_id"`
+		DCProjectName  string       `db:"dc_project_name"`
+		DCTaskID       int64        `db:"dc_task_id"`
+		DCTaskName     string       `db:"dc_task_name"`
+		DCDeviceID     int64        `db:"dc_device_id"`
+		DCDeviceName   string       `db:"dc_device_name"`
 		DCType         string       `db:"dc_type"`
 		TargetCount    int64        `db:"target_count"`
 		CommittedCount int64        `db:"committed_count"`
@@ -208,7 +222,14 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 	if err := h.db.SelectContext(c.Request.Context(), &rows, `
 		SELECT
 			dp.id,
+			dp.workspace_id,
 			dp.name,
+			dp.dc_project_id,
+			COALESCE(dp.dc_project_name, '') AS dc_project_name,
+			dp.dc_task_id,
+			COALESCE(dp.dc_task_name, '') AS dc_task_name,
+			dp.dc_device_id,
+			COALESCE(dp.dc_device_name, '') AS dc_device_name,
 			dp.dc_type,
 			dp.target_count,
 			dp.last_synced_at,
@@ -240,7 +261,14 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 		}
 		item := OperatorPlanItem{
 			ID:             row.ID,
+			WorkspaceID:    row.WorkspaceID,
 			Name:           row.Name,
+			DCProjectID:    row.DCProjectID,
+			DCProjectName:  row.DCProjectName,
+			DCTaskID:       row.DCTaskID,
+			DCTaskName:     row.DCTaskName,
+			DCDeviceID:     row.DCDeviceID,
+			DCDeviceName:   row.DCDeviceName,
 			DCType:         row.DCType,
 			TargetCount:    row.TargetCount,
 			CommittedCount: row.CommittedCount,

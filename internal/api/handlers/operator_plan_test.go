@@ -60,7 +60,10 @@ func TestRefreshOperatorPlansFiltersAssignmentAndReportsProgress(t *testing.T) {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 	item := response.Items[0]
-	if item.ID != 1001 || item.CommittedCount != 2 || item.RemainingCount != 3 {
+	if item.ID != 1001 || item.WorkspaceID != 123 || item.DCProjectID != 31 ||
+		item.DCProjectName != "Project A" || item.DCTaskID != 41 || item.DCTaskName != "Task A" ||
+		item.DCDeviceID != 456 || item.DCDeviceName != "Phone A" ||
+		item.CommittedCount != 2 || item.RemainingCount != 3 {
 		t.Fatalf("unexpected item: %#v", item)
 	}
 }
@@ -109,7 +112,8 @@ func newTestOperatorPlanDB(t *testing.T) *sqlx.DB {
 		CREATE TABLE robots (id INTEGER PRIMARY KEY, device_id TEXT, deleted_at TIMESTAMP);
 		CREATE TABLE dc_plan (
 			id INTEGER PRIMARY KEY, workspace_id INTEGER, name TEXT, operator TEXT,
-			dc_device_id INTEGER, dc_type TEXT, target_count INTEGER,
+			dc_project_id INTEGER, dc_project_name TEXT, dc_task_id INTEGER, dc_task_name TEXT,
+			dc_device_id INTEGER, dc_device_name TEXT, dc_type TEXT, target_count INTEGER,
 			last_synced_at TIMESTAMP, deleted_at TIMESTAMP
 		);
 		CREATE TABLE tasks (
@@ -126,9 +130,9 @@ func seedOperatorPlanFixture(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	for _, statement := range []string{
 		`INSERT INTO robots (id, device_id) VALUES (9, '456')`,
-		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_device_id, dc_type, target_count, last_synced_at) VALUES (1001, 123, 'Plan A', 'collector-a', 456, 'ego', 5, '2026-07-21 01:00:00')`,
-		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_device_id, dc_type, target_count, last_synced_at) VALUES (1002, 123, 'Other operator', 'collector-b', 456, 'ego', 5, '2026-07-21 01:00:00')`,
-		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_device_id, dc_type, target_count, last_synced_at) VALUES (1003, 123, 'Other robot', 'collector-a', 999, 'ego', 5, '2026-07-21 01:00:00')`,
+		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, target_count, last_synced_at) VALUES (1001, 123, 'Plan A', 'collector-a', 31, 'Project A', 41, 'Task A', 456, 'Phone A', 'ego', 5, '2026-07-21 01:00:00')`,
+		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, target_count, last_synced_at) VALUES (1002, 123, 'Other operator', 'collector-b', 32, 'Project B', 42, 'Task B', 456, 'Phone A', 'ego', 5, '2026-07-21 01:00:00')`,
+		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, target_count, last_synced_at) VALUES (1003, 123, 'Other robot', 'collector-a', 33, 'Project C', 43, 'Task C', 999, 'Phone C', 'ego', 5, '2026-07-21 01:00:00')`,
 		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (1, 1001, 'completed')`,
 		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (2, 1001, 'uploading')`,
 		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (3, 1001, 'pending')`,
