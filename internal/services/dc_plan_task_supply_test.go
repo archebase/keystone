@@ -1,0 +1,335 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
+package services
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"archebase.com/keystone-edge/internal/auth"
+	"github.com/jmoiron/sqlx"
+	_ "modernc.org/sqlite"
+)
+
+func TestDCPlanTaskSupplyCreatesAndReusesSinglePendingTask(t *testing.T) {
+	db := newTestDCPlanTaskSupplyDB(t)
+	defer db.Close()
+
+	plan := testTaskSupplyPlan(1001, 123, 10)
+	seedTaskSupplyPlan(t, db, plan)
+	seedTaskSupplyResources(t, db, plan)
+	workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+
+	service := NewDCPlanTaskSupplyService(db)
+	now := time.Date(2026, 7, 21, 14, 30, 0, 0, time.UTC)
+	first, err := service.EnsureNextTask(context.Background(), plan.ID, workstationID, now)
+	if err != nil {
+		t.Fatalf("first EnsureNextTask() error = %v", err)
+	}
+	second, err := service.EnsureNextTask(context.Background(), plan.ID, workstationID, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("second EnsureNextTask() error = %v", err)
+	}
+
+	if !first.Created || second.Created {
+		t.Fatalf("created flags first=%t second=%t", first.Created, second.Created)
+	}
+	if first.Task.ID <= 0 || second.Task.ID != first.Task.ID || second.Task.TaskID != first.Task.TaskID {
+		t.Fatalf("first=%#v second=%#v", first, second)
+	}
+
+	var pendingCount int
+	if err := db.Get(&pendingCount, `
+		SELECT COUNT(*)
+		FROM tasks
+		WHERE dc_plan_id = ? AND status = 'pending' AND deleted_at IS NULL
+	`, plan.ID); err != nil {
+		t.Fatalf("count pending tasks: %v", err)
+	}
+	if pendingCount != 1 {
+		t.Fatalf("pendingCount=%d want 1", pendingCount)
+	}
+}
+
+func TestDCPlanTaskSupplyCollapsesPrecreatedPendingTasks(t *testing.T) {
+	db := newTestDCPlanTaskSupplyDB(t)
+	defer db.Close()
+
+	plan := testTaskSupplyPlan(1001, 123, 10)
+	seedTaskSupplyPlan(t, db, plan)
+	seedTaskSupplyResources(t, db, plan)
+	workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+	if _, err := db.Exec(`
+		INSERT INTO tasks (task_id, workstation_id, organization_id, dc_plan_id, status) VALUES
+			('task-old-1', ?, ?, ?, 'pending'),
+			('task-old-2', ?, ?, ?, 'pending'),
+			('task-old-3', ?, ?, ?, 'pending')
+	`, workstationID, plan.WorkspaceID, plan.ID, workstationID, plan.WorkspaceID, plan.ID, workstationID, plan.WorkspaceID, plan.ID); err != nil {
+		t.Fatalf("seed pending tasks: %v", err)
+	}
+
+	result, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
+		context.Background(), plan.ID, workstationID, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("EnsureNextTask() error = %v", err)
+	}
+	if result.Created || result.Task.TaskID != "task-old-1" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+
+	var pendingCount int
+	if err := db.Get(&pendingCount, "SELECT COUNT(*) FROM tasks WHERE dc_plan_id = ? AND status = 'pending'", plan.ID); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	var cancelledCount int
+	if err := db.Get(&cancelledCount, "SELECT COUNT(*) FROM tasks WHERE dc_plan_id = ? AND status = 'cancelled'", plan.ID); err != nil {
+		t.Fatalf("count cancelled: %v", err)
+	}
+	if pendingCount != 1 || cancelledCount != 2 {
+		t.Fatalf("pending=%d cancelled=%d want 1/2", pendingCount, cancelledCount)
+	}
+}
+
+func TestDCPlanTaskSupplyCancelsPendingWhenTargetReached(t *testing.T) {
+	db := newTestDCPlanTaskSupplyDB(t)
+	defer db.Close()
+
+	plan := testTaskSupplyPlan(1001, 123, 1)
+	seedTaskSupplyPlan(t, db, plan)
+	seedTaskSupplyResources(t, db, plan)
+	workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+	if _, err := db.Exec(`
+		INSERT INTO tasks (task_id, workstation_id, organization_id, dc_plan_id, status) VALUES
+			('task-completed', ?, ?, ?, 'completed'),
+			('task-pending', ?, ?, ?, 'pending')
+	`, workstationID, plan.WorkspaceID, plan.ID, workstationID, plan.WorkspaceID, plan.ID); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+
+	_, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
+		context.Background(), plan.ID, workstationID, time.Now().UTC(),
+	)
+	if !errors.Is(err, ErrDCPlanTaskSupplyTargetReached) {
+		t.Fatalf("EnsureNextTask() error = %v, want target reached", err)
+	}
+
+	var status string
+	if err := db.Get(&status, "SELECT status FROM tasks WHERE task_id = 'task-pending'"); err != nil {
+		t.Fatalf("query pending task: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("pending status=%q want cancelled", status)
+	}
+}
+
+func TestDCPlanTaskSupplyBlocksReadyButAllowsUploadingPredecessor(t *testing.T) {
+	t.Run("ready blocks another task", func(t *testing.T) {
+		db := newTestDCPlanTaskSupplyDB(t)
+		defer db.Close()
+		plan := testTaskSupplyPlan(1001, 123, 2)
+		seedTaskSupplyPlan(t, db, plan)
+		seedTaskSupplyResources(t, db, plan)
+		workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+		if _, err := db.Exec(`
+			INSERT INTO tasks (task_id, workstation_id, organization_id, dc_plan_id, status) VALUES
+				('task-ready', ?, ?, ?, 'ready'),
+				('task-old-pending-1', ?, ?, ?, 'pending'),
+				('task-old-pending-2', ?, ?, ?, 'pending')
+		`, workstationID, plan.WorkspaceID, plan.ID, workstationID, plan.WorkspaceID, plan.ID,
+			workstationID, plan.WorkspaceID, plan.ID); err != nil {
+			t.Fatalf("seed ready task: %v", err)
+		}
+
+		_, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
+			context.Background(), plan.ID, workstationID, time.Now().UTC(),
+		)
+		if !errors.Is(err, ErrDCPlanTaskSupplyActiveTask) {
+			t.Fatalf("EnsureNextTask() error = %v, want active task", err)
+		}
+		var pendingCount int
+		if err := db.Get(&pendingCount, `
+			SELECT COUNT(*) FROM tasks WHERE dc_plan_id = ? AND status = 'pending'
+		`, plan.ID); err != nil {
+			t.Fatalf("count pending tasks: %v", err)
+		}
+		if pendingCount != 0 {
+			t.Fatalf("pendingCount=%d want 0 while a task is active", pendingCount)
+		}
+	})
+
+	t.Run("uploading allows next task", func(t *testing.T) {
+		db := newTestDCPlanTaskSupplyDB(t)
+		defer db.Close()
+		plan := testTaskSupplyPlan(1001, 123, 2)
+		seedTaskSupplyPlan(t, db, plan)
+		seedTaskSupplyResources(t, db, plan)
+		workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+		if _, err := db.Exec(`
+			INSERT INTO tasks (task_id, workstation_id, organization_id, dc_plan_id, status)
+			VALUES ('task-uploading', ?, ?, ?, 'uploading')
+		`, workstationID, plan.WorkspaceID, plan.ID); err != nil {
+			t.Fatalf("seed uploading task: %v", err)
+		}
+
+		result, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
+			context.Background(), plan.ID, workstationID, time.Now().UTC(),
+		)
+		if err != nil {
+			t.Fatalf("EnsureNextTask() error = %v", err)
+		}
+		if !result.Created || result.Task.Status != "pending" {
+			t.Fatalf("unexpected result: %#v", result)
+		}
+	})
+}
+
+func testTaskSupplyPlan(id int64, workspaceID int64, targetCount int64) auth.HilbertDCPlan {
+	return auth.HilbertDCPlan{
+		ID:                  id,
+		WorkspaceID:         workspaceID,
+		Name:                "Plan",
+		DCFactoryID:         321,
+		DCServiceProviderID: 12,
+		Operator:            "collector-a",
+		DCProjectID:         13,
+		DCTaskID:            14,
+		DCDeviceID:          456,
+		DCType:              "ego",
+		DCDate:              "2026-07-21",
+		TargetCount:         targetCount,
+		TargetDuration:      3600,
+		CreatedBy:           "planner",
+		CreatedTime:         time.Date(2026, 7, 21, 1, 2, 3, 0, time.UTC),
+	}
+}
+
+func seedTaskSupplyPlan(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO workspaces (id, admins, members, deleted_at)
+		VALUES (?, '[]', '["collector-a"]', NULL)
+	`, plan.WorkspaceID); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO dc_plan (
+			id, workspace_id, name, operator, dc_device_id, dc_type,
+			target_count, target_duration, deleted_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+	`, plan.ID, plan.WorkspaceID, plan.Name, plan.Operator, plan.DCDeviceID,
+		plan.DCType, plan.TargetCount, plan.TargetDuration); err != nil {
+		t.Fatalf("seed dc_plan: %v", err)
+	}
+}
+
+func seedTaskSupplyResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status, deleted_at)
+		VALUES (7, 'Collector A', ?, 'active', NULL)
+	`, plan.Operator); err != nil {
+		t.Fatalf("seed collector: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_id, workspace_id, status, deleted_at)
+		VALUES (9, ?, ?, 'active', NULL)
+	`, plan.DCDeviceID, plan.WorkspaceID); err != nil {
+		t.Fatalf("seed robot: %v", err)
+	}
+}
+
+func newTestDCPlanTaskSupplyDB(t *testing.T) *sqlx.DB {
+	t.Helper()
+	db, err := sqlx.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE workspaces (
+			id INTEGER PRIMARY KEY,
+			admins TEXT NOT NULL,
+			members TEXT NOT NULL,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE dc_plan (
+			id INTEGER PRIMARY KEY,
+			workspace_id INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			operator TEXT NOT NULL,
+			dc_device_id INTEGER NOT NULL,
+			dc_type TEXT NOT NULL,
+			target_count INTEGER NOT NULL,
+			target_duration INTEGER NOT NULL,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE data_collectors (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			operator_id TEXT NOT NULL,
+			status TEXT,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE robots (
+			id INTEGER PRIMARY KEY,
+			device_id TEXT NOT NULL,
+			workspace_id INTEGER NOT NULL,
+			status TEXT,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			robot_id INTEGER NOT NULL,
+			robot_name TEXT,
+			robot_serial TEXT,
+			data_collector_id INTEGER NOT NULL,
+			collector_name TEXT,
+			collector_operator_id TEXT,
+			workspace_id INTEGER NOT NULL,
+			name TEXT,
+			status TEXT,
+			is_current BOOLEAN NOT NULL DEFAULT TRUE,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id TEXT NOT NULL,
+			workstation_id INTEGER,
+			organization_id INTEGER,
+			dc_plan_id INTEGER,
+			local_dc_plan_id INTEGER,
+			status TEXT,
+			assigned_at TIMESTAMP,
+			metadata TEXT,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		);
+	`); err != nil {
+		db.Close()
+		t.Fatalf("create tables: %v", err)
+	}
+	return db
+}
+
+func seedCurrentTaskSupplyWorkstation(t *testing.T, db *sqlx.DB, workspaceID int64) int64 {
+	t.Helper()
+	result, err := db.Exec(`
+		INSERT INTO workstations (
+			robot_id, robot_name, robot_serial, data_collector_id, collector_name,
+			collector_operator_id, workspace_id, name, status, is_current
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, 9, "456", "456", 7, "Collector A", "collector-a", workspaceID, "Station A", "active", true)
+	if err != nil {
+		t.Fatalf("seed workstation: %v", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("workstation id: %v", err)
+	}
+	return id
+}

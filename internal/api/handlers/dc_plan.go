@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"math"
@@ -23,11 +24,16 @@ import (
 // DCPlanHandler handles Hilbert dc_plan projection requests.
 type DCPlanHandler struct {
 	db          *sqlx.DB
-	syncService *services.DCPlanSyncService
+	syncService dcPlanWorkspaceSyncer
+}
+
+type dcPlanWorkspaceSyncer interface {
+	Configured() bool
+	SyncWorkspace(context.Context, int64) (*services.DCPlanSyncResult, error)
 }
 
 // NewDCPlanHandler creates a new DCPlanHandler.
-func NewDCPlanHandler(db *sqlx.DB, syncService *services.DCPlanSyncService) *DCPlanHandler {
+func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer) *DCPlanHandler {
 	return &DCPlanHandler{db: db, syncService: syncService}
 }
 
@@ -72,11 +78,28 @@ type DCPlanListResponse struct {
 
 // DCPlanSyncResponse represents a manual dc_plan sync result.
 type DCPlanSyncResponse struct {
-	WorkspaceID    int64                                 `json:"workspace_id"`
-	SyncedCount    int                                   `json:"synced_count"`
-	PageCount      int                                   `json:"page_count"`
-	LastSyncedAt   string                                `json:"last_synced_at"`
-	TaskGeneration *services.DCPlanTaskGenerationSummary `json:"task_generation,omitempty"`
+	WorkspaceID  int64  `json:"workspace_id"`
+	SyncedCount  int    `json:"synced_count"`
+	PageCount    int    `json:"page_count"`
+	LastSyncedAt string `json:"last_synced_at"`
+}
+
+// OperatorPlanItem represents one plan currently executable by the logged-in collector.
+type OperatorPlanItem struct {
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	DCType         string `json:"dc_type"`
+	TargetCount    int64  `json:"target_count"`
+	CommittedCount int64  `json:"committed_count"`
+	RemainingCount int64  `json:"remaining_count"`
+	LastSyncedAt   string `json:"last_synced_at,omitempty"`
+}
+
+// OperatorPlanRefreshResponse reports the collector's latest assigned plans.
+type OperatorPlanRefreshResponse struct {
+	Items        []OperatorPlanItem `json:"items"`
+	Stale        bool               `json:"stale"`
+	LastSyncedAt string             `json:"last_synced_at,omitempty"`
 }
 
 type dcPlanRow struct {
@@ -118,6 +141,123 @@ func (h *DCPlanHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // RegisterReadRoutes registers dc_plan routes available to authenticated readers.
 func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/dc-plans", h.ListDCPlans)
+	apiV1.POST("/operator/plans/refresh", h.RefreshOperatorPlans)
+}
+
+// RefreshOperatorPlans synchronizes and returns plans assigned to the authenticated workstation.
+//
+// @Summary      Refresh operator plans
+// @Description  Synchronizes Hilbert plans and returns plans assigned to the authenticated collector workstation.
+// @Tags         dc-plans
+// @Produce      json
+// @Success      200 {object} OperatorPlanRefreshResponse
+// @Failure      403 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /operator/plans/refresh [post]
+func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkspaceID <= 0 ||
+		claims.RobotID <= 0 || claims.WorkstationID <= 0 || strings.TrimSpace(claims.OperatorID) == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "data collector workstation required"})
+		return
+	}
+
+	var robotDeviceID string
+	if err := h.db.GetContext(c.Request.Context(), &robotDeviceID, `
+		SELECT device_id
+		FROM robots
+		WHERE id = ? AND deleted_at IS NULL
+	`, claims.RobotID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+			return
+		}
+		logger.Printf("[DC_PLAN] Failed to resolve collector robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh operator plans"})
+		return
+	}
+	dcDeviceID, err := strconv.ParseInt(strings.TrimSpace(robotDeviceID), 10, 64)
+	if err != nil || dcDeviceID <= 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "robot is not linked to a Hilbert device"})
+		return
+	}
+
+	stale := false
+	if h.syncService == nil {
+		stale = true
+	} else if _, err := h.syncService.SyncWorkspace(c.Request.Context(), claims.WorkspaceID); err != nil {
+		stale = true
+		logger.Printf(
+			"[DC_PLAN] Operator plan refresh using stale projection: workspace_id=%d operator=%s error=%v",
+			claims.WorkspaceID,
+			claims.OperatorID,
+			err,
+		)
+	}
+
+	rows := []struct {
+		ID             int64        `db:"id"`
+		Name           string       `db:"name"`
+		DCType         string       `db:"dc_type"`
+		TargetCount    int64        `db:"target_count"`
+		CommittedCount int64        `db:"committed_count"`
+		LastSyncedAt   sql.NullTime `db:"last_synced_at"`
+	}{}
+	if err := h.db.SelectContext(c.Request.Context(), &rows, `
+		SELECT
+			dp.id,
+			dp.name,
+			dp.dc_type,
+			dp.target_count,
+			dp.last_synced_at,
+			(
+				SELECT COUNT(*)
+				FROM tasks t
+				WHERE t.dc_plan_id = dp.id
+					AND t.deleted_at IS NULL
+					AND t.status IN ('ready', 'in_progress', 'uploading', 'completed')
+			) AS committed_count
+		FROM dc_plan dp
+		WHERE dp.workspace_id = ?
+			AND dp.operator = ?
+			AND dp.dc_device_id = ?
+			AND dp.deleted_at IS NULL
+		ORDER BY dp.id
+	`, claims.WorkspaceID, strings.TrimSpace(claims.OperatorID), dcDeviceID); err != nil {
+		logger.Printf("[DC_PLAN] Failed to list operator plans: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh operator plans"})
+		return
+	}
+
+	response := OperatorPlanRefreshResponse{Items: []OperatorPlanItem{}, Stale: stale}
+	var latestSync time.Time
+	for _, row := range rows {
+		remaining := row.TargetCount - row.CommittedCount
+		if remaining < 0 {
+			remaining = 0
+		}
+		item := OperatorPlanItem{
+			ID:             row.ID,
+			Name:           row.Name,
+			DCType:         row.DCType,
+			TargetCount:    row.TargetCount,
+			CommittedCount: row.CommittedCount,
+			RemainingCount: remaining,
+		}
+		if row.LastSyncedAt.Valid {
+			item.LastSyncedAt = row.LastSyncedAt.Time.UTC().Format(time.RFC3339)
+			if row.LastSyncedAt.Time.After(latestSync) {
+				latestSync = row.LastSyncedAt.Time
+			}
+		}
+		response.Items = append(response.Items, item)
+	}
+	if !latestSync.IsZero() {
+		response.LastSyncedAt = latestSync.UTC().Format(time.RFC3339)
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // RegisterAdminRoutes registers dc_plan admin-only routes.
@@ -310,11 +450,10 @@ func (h *DCPlanHandler) SyncWorkspaceDCPlans(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, DCPlanSyncResponse{
-		WorkspaceID:    result.WorkspaceID,
-		SyncedCount:    result.SyncedCount,
-		PageCount:      result.PageCount,
-		LastSyncedAt:   result.LastSyncedAt.UTC().Format(time.RFC3339),
-		TaskGeneration: result.TaskGeneration,
+		WorkspaceID:  result.WorkspaceID,
+		SyncedCount:  result.SyncedCount,
+		PageCount:    result.PageCount,
+		LastSyncedAt: result.LastSyncedAt.UTC().Format(time.RFC3339),
 	})
 }
 

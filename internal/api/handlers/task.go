@@ -38,6 +38,7 @@ type TaskHandler struct {
 	recorderRPCTimeout   time.Duration
 	transferWriteTimeout time.Duration
 	callbackURLs         callbackURLs
+	taskSupply           *services.DCPlanTaskSupplyService
 }
 
 // NewTaskHandler creates a new TaskHandler.
@@ -52,6 +53,7 @@ func NewTaskHandler(db *sqlx.DB, hub *services.TransferHub, recorderHub *service
 		recorderHub:          recorderHub,
 		recorderRPCTimeout:   recorderRPCTimeout,
 		transferWriteTimeout: writeTimeout,
+		taskSupply:           services.NewDCPlanTaskSupplyService(db),
 	}
 }
 
@@ -100,6 +102,63 @@ func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // RegisterCollectorRoutes registers task operations restricted to data collectors.
 func (h *TaskHandler) RegisterCollectorRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks/complete", h.CompleteTasks)
+	apiV1.POST("/dc-plans/:id/tasks/next", h.EnsureNextPlanTask)
+}
+
+// EnsureNextPlanTask creates or reuses the pending task for a collector plan.
+//
+// @Summary      Ensure next plan task
+// @Description  Creates or reuses the single pending task for the authenticated collector workstation.
+// @Tags         tasks
+// @Produce      json
+// @Param        id path int true "DC plan ID"
+// @Success      200 {object} services.DCPlanTaskSupplyResult
+// @Failure      400 {object} map[string]string
+// @Failure      403 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /dc-plans/{id}/tasks/next [post]
+func (h *TaskHandler) EnsureNextPlanTask(c *gin.Context) {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkstationID <= 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "data collector workstation required"})
+		return
+	}
+
+	planID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || planID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid dc plan id"})
+		return
+	}
+
+	result, err := h.taskSupply.EnsureNextTask(
+		c.Request.Context(), planID, claims.WorkstationID, time.Now().UTC(),
+	)
+	if err == nil {
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	switch {
+	case errors.Is(err, services.ErrDCPlanTaskSupplyNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"code": "plan_not_found", "error": "dc plan not found"})
+	case errors.Is(err, services.ErrDCPlanTaskSupplyWorkstationMismatch):
+		c.JSON(http.StatusForbidden, gin.H{
+			"code": "plan_workstation_mismatch", "error": "dc plan is not assigned to this workstation",
+		})
+	case errors.Is(err, services.ErrDCPlanTaskSupplyTargetReached):
+		c.JSON(http.StatusConflict, gin.H{
+			"code": "plan_target_reached", "error": "dc plan target has been reached",
+		})
+	case errors.Is(err, services.ErrDCPlanTaskSupplyActiveTask):
+		c.JSON(http.StatusConflict, gin.H{
+			"code": "task_already_active", "error": "another task is already active",
+		})
+	default:
+		logger.Printf("[TASK] Ensure next plan task failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ensure next task"})
+	}
 }
 
 // CompleteTasksRequest identifies pending tasks to complete for the current workstation.
@@ -1039,6 +1098,7 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		return
 	}
 	executionConfig := taskExecutionConfigFromMetadata(row.Metadata.String)
+	planSnapshot := taskPlanSnapshotFromMetadata(row.Metadata.String)
 
 	taskConfig := TaskConfig{
 		TaskID:            row.TaskID,
@@ -1068,6 +1128,21 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	}
 	if row.TargetDuration.Valid {
 		taskConfig.PlanTargetDuration = &row.TargetDuration.Int64
+	}
+	if planSnapshot.Operator != nil {
+		taskConfig.OperatorName = strings.TrimSpace(*planSnapshot.Operator)
+	}
+	if planSnapshot.DCType != nil {
+		taskConfig.DCType = strings.TrimSpace(*planSnapshot.DCType)
+	}
+	if planSnapshot.DCDeviceID != nil {
+		taskConfig.DCDeviceID = planSnapshot.DCDeviceID
+	}
+	if planSnapshot.TargetCount != nil {
+		taskConfig.PlanTargetCount = planSnapshot.TargetCount
+	}
+	if planSnapshot.TargetDuration != nil {
+		taskConfig.PlanTargetDuration = planSnapshot.TargetDuration
 	}
 
 	c.JSON(http.StatusOK, taskConfig)
@@ -1118,6 +1193,14 @@ type taskExecutionConfig struct {
 	Topics []string `json:"topics"`
 }
 
+type taskPlanSnapshot struct {
+	Operator       *string `json:"operator"`
+	DCType         *string `json:"dc_type"`
+	DCDeviceID     *int64  `json:"dc_device_id"`
+	TargetCount    *int64  `json:"target_count"`
+	TargetDuration *int64  `json:"target_duration"`
+}
+
 func taskExecutionConfigFromMetadata(raw string) taskExecutionConfig {
 	config := taskExecutionConfig{Topics: []string{}}
 	if strings.TrimSpace(raw) == "" {
@@ -1133,4 +1216,15 @@ func taskExecutionConfigFromMetadata(raw string) taskExecutionConfig {
 		config.Topics = metadata.ExecutionConfig.Topics
 	}
 	return config
+}
+
+func taskPlanSnapshotFromMetadata(raw string) taskPlanSnapshot {
+	snapshot := taskPlanSnapshot{}
+	if strings.TrimSpace(raw) == "" {
+		return snapshot
+	}
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		return taskPlanSnapshot{}
+	}
+	return snapshot
 }

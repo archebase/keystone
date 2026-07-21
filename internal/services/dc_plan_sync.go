@@ -39,11 +39,10 @@ type HilbertDCPlanClient interface {
 
 // DCPlanSyncResult summarizes one Hilbert dc plan sync run.
 type DCPlanSyncResult struct {
-	WorkspaceID    int64
-	SyncedCount    int
-	PageCount      int
-	LastSyncedAt   time.Time
-	TaskGeneration *DCPlanTaskGenerationSummary
+	WorkspaceID  int64
+	SyncedCount  int
+	PageCount    int
+	LastSyncedAt time.Time
 }
 
 // DCPlanSyncAllResult summarizes a sync run across every Hilbert workspace.
@@ -67,7 +66,6 @@ type DCPlanSyncService struct {
 	db            *sqlx.DB
 	cfg           *config.HilbertConfig
 	hilbertClient HilbertDCPlanClient
-	taskGenerator *DCPlanTaskGenerationService
 }
 
 // NewDCPlanSyncService creates a DCPlanSyncService.
@@ -75,7 +73,7 @@ func NewDCPlanSyncService(db *sqlx.DB, cfg *config.HilbertConfig, hilbertClient 
 	if hilbertClient == nil {
 		hilbertClient = auth.NewHilbertClient(cfg)
 	}
-	return &DCPlanSyncService{db: db, cfg: cfg, hilbertClient: hilbertClient, taskGenerator: NewDCPlanTaskGenerationService(db)}
+	return &DCPlanSyncService{db: db, cfg: cfg, hilbertClient: hilbertClient}
 }
 
 // Configured reports whether sync has the required Hilbert service identity settings.
@@ -107,15 +105,13 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 	if err := s.upsertDCPlans(ctx, workspaceID, plans, now); err != nil {
 		return nil, fmt.Errorf("%w: upsert dc plans: %v", ErrDCPlanSyncFailed, err)
 	}
-	taskGeneration := s.taskGenerator.GenerateForPlans(ctx, plans, now)
 	logger.Printf("[DC_PLAN] Hilbert dc plan sync committed: workspace_id=%d synced_count=%d page_count=%d", workspaceID, len(plans), pageCount)
 
 	return &DCPlanSyncResult{
-		WorkspaceID:    workspaceID,
-		SyncedCount:    len(plans),
-		PageCount:      pageCount,
-		LastSyncedAt:   now,
-		TaskGeneration: taskGeneration,
+		WorkspaceID:  workspaceID,
+		SyncedCount:  len(plans),
+		PageCount:    pageCount,
+		LastSyncedAt: now,
 	}, nil
 }
 
@@ -270,6 +266,13 @@ func (s *DCPlanSyncService) upsertDCPlans(ctx context.Context, workspaceID int64
 		if err == nil && existingWorkspaceID != workspaceID {
 			return fmt.Errorf("dc plan %d already belongs to workspace %d", plan.ID, existingWorkspaceID)
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE dc_plan
+		SET deleted_at = ?, local_updated_at = ?
+		WHERE workspace_id = ? AND deleted_at IS NULL
+	`, syncedAt, syncedAt, workspaceID); err != nil {
+		return err
 	}
 
 	for _, plan := range plans {

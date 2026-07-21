@@ -142,7 +142,7 @@ func TestDCPlanSyncServiceRejectsPlanIDOwnedByAnotherWorkspace(t *testing.T) {
 	}
 }
 
-func TestDCPlanSyncServiceDoesNotDeleteMissingPlans(t *testing.T) {
+func TestDCPlanSyncServiceDeactivatesMissingPlansWithoutCreatingTasks(t *testing.T) {
 	db := newTestDCPlanSyncDB(t)
 	defer db.Close()
 	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
@@ -159,12 +159,23 @@ func TestDCPlanSyncServiceDoesNotDeleteMissingPlans(t *testing.T) {
 		t.Fatalf("SyncWorkspace() error = %v", err)
 	}
 
-	var count int
-	if err := db.Get(&count, "SELECT COUNT(*) FROM dc_plan WHERE workspace_id = ?", 123); err != nil {
-		t.Fatalf("count dc_plan: %v", err)
+	var rows []struct {
+		ID        int64      `db:"id"`
+		DeletedAt *time.Time `db:"deleted_at"`
 	}
-	if count != 2 {
-		t.Fatalf("count=%d want 2", count)
+	if err := db.Select(&rows, "SELECT id, deleted_at FROM dc_plan WHERE workspace_id = ? ORDER BY id", 123); err != nil {
+		t.Fatalf("query dc_plan: %v", err)
+	}
+	if len(rows) != 2 || rows[0].ID != 1001 || rows[0].DeletedAt == nil || rows[1].ID != 1002 || rows[1].DeletedAt != nil {
+		t.Fatalf("unexpected rows: %#v", rows)
+	}
+
+	var taskCount int
+	if err := db.Get(&taskCount, "SELECT COUNT(*) FROM tasks"); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("taskCount=%d want 0", taskCount)
 	}
 }
 
@@ -402,6 +413,13 @@ func newTestDCPlanSyncDB(t *testing.T) *sqlx.DB {
 			sync_error TEXT,
 			local_created_at TIMESTAMP,
 			local_updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id TEXT NOT NULL,
+			dc_plan_id INTEGER,
+			status TEXT,
 			deleted_at TIMESTAMP
 		);
 	`); err != nil {
