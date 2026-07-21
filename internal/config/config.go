@@ -19,6 +19,7 @@ type Config struct {
 	Server       ServerConfig
 	Database     DatabaseConfig
 	Storage      StorageConfig
+	TOSStorage   StorageConfig
 	QA           QAConfig
 	Sync         SyncConfig
 	Auth         AuthConfig
@@ -187,7 +188,8 @@ func Load() (*Config, error) {
 			MaxIdleConns:    getEnvInt("KEYSTONE_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: getEnvInt("KEYSTONE_DB_CONN_MAX_LIFETIME", 300),
 		},
-		Storage: loadStorageConfig(),
+		Storage:    loadStorageConfig(),
+		TOSStorage: loadTOSStorageConfig(),
 		QA: QAConfig{
 			Enabled:              getEnvBool("KEYSTONE_QA_ENABLED", true),
 			AutoApproveThreshold: getEnvFloat("KEYSTONE_QA_AUTO_APPROVE_THRESHOLD", 0.90),
@@ -275,6 +277,23 @@ func Load() (*Config, error) {
 }
 
 func loadStorageConfig() StorageConfig {
+	endpoint, useSSL := normalizeObjectStorageEndpoint(
+		getEnv("KEYSTONE_MINIO_ENDPOINT", "http://localhost:9000"),
+		getEnvBool("KEYSTONE_MINIO_USE_SSL", false),
+	)
+	return StorageConfig{
+		Type:         "s3",
+		Endpoint:     endpoint,
+		AccessKey:    getEnv("KEYSTONE_MINIO_ACCESS_KEY", ""),
+		SecretKey:    getEnv("KEYSTONE_MINIO_SECRET_KEY", ""),
+		Bucket:       getEnv("KEYSTONE_MINIO_BUCKET", "edge-"+getEnv("KEYSTONE_FACTORY_ID", "factory-default")),
+		UseSSL:       useSSL,
+		EnsureBucket: true,
+		Region:       getEnv("KEYSTONE_MINIO_REGION", ""),
+	}
+}
+
+func loadTOSStorageConfig() StorageConfig {
 	if getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false) {
 		tosEndpoint := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT"))
 		tosBucket := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET"))
@@ -296,21 +315,7 @@ func loadStorageConfig() StorageConfig {
 			}
 		}
 	}
-
-	endpoint, useSSL := normalizeObjectStorageEndpoint(
-		getEnv("KEYSTONE_MINIO_ENDPOINT", "http://localhost:9000"),
-		getEnvBool("KEYSTONE_MINIO_USE_SSL", false),
-	)
-	return StorageConfig{
-		Type:         "s3",
-		Endpoint:     endpoint,
-		AccessKey:    getEnv("KEYSTONE_MINIO_ACCESS_KEY", ""),
-		SecretKey:    getEnv("KEYSTONE_MINIO_SECRET_KEY", ""),
-		Bucket:       getEnv("KEYSTONE_MINIO_BUCKET", "edge-"+getEnv("KEYSTONE_FACTORY_ID", "factory-default")),
-		UseSSL:       useSSL,
-		EnsureBucket: true,
-		Region:       getEnv("KEYSTONE_MINIO_REGION", ""),
-	}
+	return StorageConfig{}
 }
 
 func normalizeObjectStorageEndpoint(raw string, fallbackUseSSL bool) (string, bool) {

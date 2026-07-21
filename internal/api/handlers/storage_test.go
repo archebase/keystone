@@ -88,3 +88,29 @@ func TestStorageHandlerProxiesTOSRangeResponse(t *testing.T) {
 		t.Fatalf("body = %q, want x", got)
 	}
 }
+
+func TestStorageHandlersRouteOnlyConfiguredTOSBucketToTOS(t *testing.T) {
+	tosCfg := &config.StorageConfig{
+		Type:       "tos",
+		Endpoint:   "tos-cn-beijing.volces.com",
+		Bucket:     "tos-bucket",
+		Region:     "cn-beijing",
+		STSRoleTRN: "trn:iam::123:role/qa-read",
+	}
+
+	storageHandler := NewStorageHandler(nil, nil, tosCfg)
+	if storageHandler.usesTOSBucket("minio-bucket") {
+		t.Fatal("MinIO bucket routed to TOS")
+	}
+	if !storageHandler.usesTOSBucket("tos-bucket") {
+		t.Fatal("configured TOS bucket was not routed to TOS")
+	}
+
+	qaHandler := NewEpisodeQAHandler(nil, nil, "minio-bucket", nil, tosCfg)
+	if qaHandler.usesTOSBucket("minio-bucket") {
+		t.Fatal("QA routed MinIO bucket to TOS")
+	}
+	if !qaHandler.usesTOSBucket("tos-bucket") {
+		t.Fatal("QA did not route configured TOS bucket to TOS")
+	}
+}

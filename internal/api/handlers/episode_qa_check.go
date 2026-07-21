@@ -59,12 +59,13 @@ type QARunMode string
 
 // EpisodeQAHandler handles QA center APIs and lightweight automatic QA execution.
 type EpisodeQAHandler struct {
-	db      *sqlx.DB
-	s3      *s3.Client
-	tos     *episodeQATOSReader
-	bucket  string
-	authCfg *config.AuthConfig
-	queue   chan int64
+	db        *sqlx.DB
+	s3        *s3.Client
+	tos       *episodeQATOSReader
+	bucket    string
+	tosBucket string
+	authCfg   *config.AuthConfig
+	queue     chan int64
 }
 
 // EpisodeQARunRequest is the request body for running an episode QA suite.
@@ -191,6 +192,7 @@ func NewEpisodeQAHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCf
 	}
 	if storageCfg != nil && strings.EqualFold(storageCfg.Type, "tos") {
 		h.tos = newEpisodeQATOSReader(*storageCfg)
+		h.tosBucket = strings.TrimSpace(storageCfg.Bucket)
 	}
 	if db != nil {
 		go h.runAutoWorker()
@@ -947,7 +949,7 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 		return evaluateMcapMagicCheck(0, nil, nil, "invalid mcap_path"), nil
 	}
 
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		return h.runTOSMcapMagicQACheck(ctx, bucket, objectName)
 	}
 
@@ -1050,7 +1052,7 @@ func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row 
 		"object": objectName,
 	}
 
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		data, err := h.readS3Object(ctx, bucket, objectName, maxEpisodeQASidecarBytes)
 		if err != nil {
 			if isStorageNotFound(err) {
@@ -1148,7 +1150,7 @@ func isTOSOnlyEpisode(metadata sql.NullString) bool {
 }
 
 func (h *EpisodeQAHandler) statQAObject(ctx context.Context, bucket, objectName string) (int64, error) {
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		return h.tos.StatObject(ctx, bucket, objectName)
 	}
 	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
@@ -1159,7 +1161,7 @@ func (h *EpisodeQAHandler) statQAObject(ctx context.Context, bucket, objectName 
 }
 
 func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName string, maxBytes int64) ([]byte, error) {
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		object, err := h.tos.GetObjectWithMetadata(ctx, bucket, objectName, &httpRange{start: 0, end: maxBytes})
 		if err != nil {
 			return nil, err
@@ -1195,7 +1197,7 @@ func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName 
 }
 
 func (h *EpisodeQAHandler) readS3ObjectRange(ctx context.Context, bucket, objectName string, start, end int64) ([]byte, error) {
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		return h.tos.GetObject(ctx, bucket, objectName, &httpRange{start: start, end: end})
 	}
 
@@ -1215,6 +1217,10 @@ func (h *EpisodeQAHandler) readS3ObjectRange(ctx context.Context, bucket, object
 	}()
 
 	return io.ReadAll(obj)
+}
+
+func (h *EpisodeQAHandler) usesTOSBucket(bucket string) bool {
+	return h.tos != nil && h.tosBucket != "" && strings.EqualFold(strings.TrimSpace(bucket), h.tosBucket)
 }
 
 func evaluateRecordingNotEmptyCheck(data []byte, metadata map[string]any) (episodeQACheckOutcome, error) {
