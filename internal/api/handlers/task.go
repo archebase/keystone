@@ -102,7 +102,121 @@ func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // RegisterCollectorRoutes registers task operations restricted to data collectors.
 func (h *TaskHandler) RegisterCollectorRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks/complete", h.CompleteTasks)
+	apiV1.POST("/tasks/:id/capture/start", h.StartCollectorCapture)
+	apiV1.POST("/tasks/:id/capture/finish", h.FinishCollectorCapture)
 	apiV1.POST("/dc-plans/:id/tasks/next", h.EnsureNextPlanTask)
+}
+
+// CollectorCaptureStateResponse reports the server-side task state for an EgoPortal capture.
+type CollectorCaptureStateResponse struct {
+	ID     string `json:"id"`
+	TaskID string `json:"task_id"`
+	Status string `json:"status"`
+}
+
+// StartCollectorCapture marks the authenticated workstation task as actively recording.
+//
+//	@Summary	Start EgoPortal task capture
+//	@Tags		tasks
+//	@Produce	json
+//	@Param		id	path		int	true	"Numeric task ID"
+//	@Success	200	{object}	CollectorCaptureStateResponse
+//	@Failure	400	{object}	map[string]any
+//	@Failure	401	{object}	map[string]any
+//	@Failure	404	{object}	map[string]any
+//	@Failure	409	{object}	map[string]any
+//	@Failure	500	{object}	map[string]any
+//	@Router		/tasks/{id}/capture/start [post]
+func (h *TaskHandler) StartCollectorCapture(c *gin.Context) {
+	h.transitionCollectorCapture(c, "start")
+}
+
+// FinishCollectorCapture marks local recording complete and ready for device-authenticated upload.
+//
+//	@Summary	Finish EgoPortal task capture
+//	@Tags		tasks
+//	@Produce	json
+//	@Param		id	path		int	true	"Numeric task ID"
+//	@Success	200	{object}	CollectorCaptureStateResponse
+//	@Failure	400	{object}	map[string]any
+//	@Failure	401	{object}	map[string]any
+//	@Failure	404	{object}	map[string]any
+//	@Failure	409	{object}	map[string]any
+//	@Failure	500	{object}	map[string]any
+//	@Router		/tasks/{id}/capture/finish [post]
+func (h *TaskHandler) FinishCollectorCapture(c *gin.Context) {
+	h.transitionCollectorCapture(c, "finish")
+}
+
+func (h *TaskHandler) transitionCollectorCapture(c *gin.Context, action string) {
+	taskID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || taskID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkstationID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "workstation session is required"})
+		return
+	}
+
+	fromStatuses := []string{"pending", "ready"}
+	targetStatus := "in_progress"
+	if action == "finish" {
+		fromStatuses = []string{"in_progress"}
+		targetStatus = "uploading"
+	}
+	query, args, err := sqlx.In(`
+		UPDATE tasks
+		SET status = ?,
+			started_at = CASE WHEN ? = 'in_progress' THEN COALESCE(started_at, ?) ELSE started_at END,
+			updated_at = ?
+		WHERE id = ? AND workstation_id = ? AND status IN (?) AND deleted_at IS NULL
+	`, targetStatus, targetStatus, time.Now().UTC(), time.Now().UTC(), taskID, claims.WorkstationID, fromStatuses)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update task"})
+		return
+	}
+	result, err := h.db.ExecContext(c.Request.Context(), h.db.Rebind(query), args...)
+	if err != nil {
+		logger.Printf("[TASK] Collector capture %s failed: task=%d err=%v", action, taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update task"})
+		return
+	}
+	affected, _ := result.RowsAffected()
+
+	var task struct {
+		ID     int64  `db:"id"`
+		TaskID string `db:"task_id"`
+		Status string `db:"status"`
+	}
+	if err := h.db.GetContext(c.Request.Context(), &task, `
+		SELECT id, task_id, status FROM tasks
+		WHERE id = ? AND workstation_id = ? AND deleted_at IS NULL
+	`, taskID, claims.WorkstationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query task"})
+		return
+	}
+	if affected == 0 {
+		if (action == "start" && task.Status != "in_progress") ||
+			(action == "finish" && task.Status != "uploading" && task.Status != "completed") {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":           "task_capture_state_conflict",
+				"current_status": task.Status,
+				"error":          "task capture state cannot be changed",
+			})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, CollectorCaptureStateResponse{
+		ID:     strconv.FormatInt(task.ID, 10),
+		TaskID: task.TaskID,
+		Status: task.Status,
+	})
 }
 
 // EnsureNextPlanTask creates or reuses the pending task for a collector plan.

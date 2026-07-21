@@ -6,6 +6,7 @@ package handlers
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestAuthHandlerLoginWithHilbertSuccessIssuesKeystoneJWT(t *testing.T) {
+func TestAuthHandlerLoginWithHilbertSuccessIssuesIdentityJWT(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
 
@@ -42,7 +43,7 @@ func TestAuthHandlerLoginWithHilbertSuccessIssuesKeystoneJWT(t *testing.T) {
 	defer hilbert.Close()
 
 	router := newTestAuthRouter(db, hilbert.URL)
-	w := performAuthLogin(router, `{"operator_id":"dc01","password":"secret","device_id":"device-a"}`)
+	w := performAuthLogin(router, `{"operator_id":"dc01","password":"secret"}`)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
@@ -60,7 +61,7 @@ func TestAuthHandlerLoginWithHilbertSuccessIssuesKeystoneJWT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse token: %v", err)
 	}
-	if claims.Role != "data_collector" || claims.CollectorID != 7 || claims.OperatorID != "dc01" || claims.WorkstationID != 11 {
+	if claims.Role != "data_collector" || claims.CollectorID != 7 || claims.OperatorID != "dc01" || claims.WorkstationID != 0 {
 		t.Fatalf("unexpected claims: %#v", claims)
 	}
 
@@ -81,7 +82,7 @@ func TestAuthHandlerLoginWithHilbertSuccessIssuesKeystoneJWT(t *testing.T) {
 	}
 }
 
-func TestAuthHandlerLoginActivatesWorkstationForRequestedDevice(t *testing.T) {
+func TestAuthHandlerActivateWorkstationForWebSelection(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
 
@@ -89,12 +90,14 @@ func TestAuthHandlerLoginActivatesWorkstationForRequestedDevice(t *testing.T) {
 		INSERT INTO data_collectors (id, name, operator_id, status, deleted_at)
 		VALUES (7, 'Collector', 'dc01', 'active', NULL);
 		INSERT INTO robots (id, device_id, workspace_id, status, deleted_at)
-		VALUES (101, 'device-a', 10, 'active', NULL), (102, 'device-b', 10, 'active', NULL);
+		VALUES (101, '101', 10, 'active', NULL), (102, '102', 10, 'active', NULL);
 		INSERT INTO workstations (
 			id, data_collector_id, workspace_id, robot_id, collector_name, status, is_current, deleted_at
 		) VALUES
 			(11, 7, 10, 101, 'Collector', 'active', TRUE, NULL),
-			(12, 7, 10, 102, 'Collector', 'offline', FALSE, NULL)
+			(12, 7, 10, 102, 'Collector', 'offline', FALSE, NULL);
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id, deleted_at)
+		VALUES (1001, 10, 'dc01', 102, NULL)
 	`); err != nil {
 		t.Fatalf("seed device workstations: %v", err)
 	}
@@ -106,12 +109,20 @@ func TestAuthHandlerLoginActivatesWorkstationForRequestedDevice(t *testing.T) {
 	defer hilbert.Close()
 
 	router := newTestAuthRouter(db, hilbert.URL)
-	w := performAuthLogin(router, `{"operator_id":"dc01","password":"secret","device_id":"device-b"}`)
+	login := performAuthLogin(router, `{"operator_id":"dc01","password":"secret"}`)
+	if login.Code != http.StatusOK {
+		t.Fatalf("login status=%d body=%s", login.Code, login.Body.String())
+	}
+	var loginResp LoginResponse
+	if err := json.Unmarshal(login.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("unmarshal login response: %v", err)
+	}
+	w := performAuthActivation(router, loginResp.AccessToken, `{"workstation_id":12}`, "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	var resp LoginResponse
+	var resp WorkstationActivationResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
@@ -133,6 +144,159 @@ func TestAuthHandlerLoginActivatesWorkstationForRequestedDevice(t *testing.T) {
 	}
 	if len(currentIDs) != 1 || currentIDs[0] != 12 {
 		t.Fatalf("current workstation ids=%v want [12]", currentIDs)
+	}
+}
+
+func TestAuthHandlerMeListsPlanEligibleNonCurrentWorkstation(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES (7, 'Collector', 'dc01', 'active');
+		INSERT INTO robots (id, device_id, device_name, workspace_id, status) VALUES (101, '101', 'Ego iPhone 01', 10, 'active');
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current)
+		VALUES (11, 7, 10, 101, 'offline', FALSE);
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id) VALUES (1001, 10, 'dc01', 101)
+	`); err != nil {
+		t.Fatalf("seed eligible workstation: %v", err)
+	}
+	token, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	newTestAuthRouter(db, "").ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp AuthMeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal me response: %v", err)
+	}
+	if len(resp.Workstations) != 0 || len(resp.AvailableWorkstations) != 1 {
+		t.Fatalf("current=%#v available=%#v", resp.Workstations, resp.AvailableWorkstations)
+	}
+	available := resp.AvailableWorkstations[0]
+	if available.ID != "11" || available.DeviceID != "101" || available.DeviceName != "Ego iPhone 01" || available.IsCurrent {
+		t.Fatalf("unexpected available workstation: %#v", available)
+	}
+}
+
+func TestAuthHandlerActivateWorkstationForEgoPortalDeviceCredential(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	deviceToken := "kda_v1_test-device-token"
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES (7, 'Collector', 'dc01', 'active');
+		INSERT INTO robots (id, device_id, device_name, workspace_id, status) VALUES (101, '101', 'Ego iPhone 01', 10, 'active');
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current)
+		VALUES (11, 7, 10, 101, 'offline', FALSE);
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id) VALUES (1001, 10, 'dc01', 101);
+		INSERT INTO ws_client_auth_tokens (robot_id, token_hash) VALUES (101, ?)
+	`, hashWSClientAuthToken(deviceToken)); err != nil {
+		t.Fatalf("seed ego activation: %v", err)
+	}
+	identityToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	w := performAuthActivation(newTestAuthRouter(db, ""), identityToken, `{}`, deviceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp WorkstationActivationResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal activation response: %v", err)
+	}
+	claims, err := auth.ParseToken(resp.AccessToken, testAuthConfig())
+	if err != nil || claims.WorkstationID != 11 || claims.RobotID != 101 {
+		t.Fatalf("claims=%#v err=%v", claims, err)
+	}
+	var lastUsed sql.NullString
+	if err := db.Get(&lastUsed, `SELECT last_used_at FROM ws_client_auth_tokens WHERE robot_id = 101`); err != nil {
+		t.Fatalf("query device credential usage: %v", err)
+	}
+	if !lastUsed.Valid || lastUsed.String == "" {
+		t.Fatalf("device credential last_used_at was not updated")
+	}
+}
+
+func TestAuthHandlerActivateWorkstationRejectsOccupiedDevice(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES
+			(7, 'Collector', 'dc01', 'active'), (8, 'Other', 'dc02', 'active');
+		INSERT INTO robots (id, device_id, workspace_id, status) VALUES (101, '101', 10, 'active');
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current) VALUES
+			(11, 7, 10, 101, 'offline', FALSE), (12, 8, 10, 101, 'active', TRUE);
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id) VALUES (1001, 10, 'dc01', 101)
+	`); err != nil {
+		t.Fatalf("seed occupied device: %v", err)
+	}
+	identityToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	w := performAuthActivation(newTestAuthRouter(db, ""), identityToken, `{"workstation_id":11}`, "")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "workstation_occupied") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAuthHandlerActivateWorkstationRejectsPreviousActiveRecording(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES
+			(7, 'Collector', 'dc01', 'active'), (8, 'Other', 'dc02', 'active');
+		INSERT INTO robots (id, device_id, workspace_id, status) VALUES (101, '101', 10, 'active');
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current) VALUES
+			(11, 7, 10, 101, 'offline', FALSE), (12, 8, 10, 101, 'offline', FALSE);
+		INSERT INTO tasks (id, workstation_id, status) VALUES (5001, 12, 'in_progress');
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id) VALUES (1001, 10, 'dc01', 101)
+	`); err != nil {
+		t.Fatalf("seed active recording: %v", err)
+	}
+	identityToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	w := performAuthActivation(newTestAuthRouter(db, ""), identityToken, `{"workstation_id":11}`, "")
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "recording_active") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAuthHandlerActivateWorkstationReleasesCollectorOtherWorkspace(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO workspaces (id, admins, members) VALUES (20, '[]', '["dc01"]');
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES (7, 'Collector', 'dc01', 'active');
+		INSERT INTO robots (id, device_id, workspace_id, status) VALUES
+			(101, '101', 20, 'active'), (102, '102', 10, 'active');
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current) VALUES
+			(11, 7, 20, 101, 'active', TRUE), (12, 7, 10, 102, 'offline', FALSE);
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id) VALUES (1001, 10, 'dc01', 102)
+	`); err != nil {
+		t.Fatalf("seed cross-workspace activation: %v", err)
+	}
+	identityToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	w := performAuthActivation(newTestAuthRouter(db, ""), identityToken, `{"workstation_id":12}`, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var currentIDs []int64
+	if err := db.Select(&currentIDs, `SELECT id FROM workstations WHERE data_collector_id = 7 AND is_current = TRUE ORDER BY id`); err != nil {
+		t.Fatalf("query current workstations: %v", err)
+	}
+	if len(currentIDs) != 1 || currentIDs[0] != 12 {
+		t.Fatalf("current workstations=%v want [12]", currentIDs)
 	}
 }
 
@@ -194,7 +358,7 @@ func TestAuthHandlerLoginAllowsSyncedWorkspaceMemberRegardlessHilbertType(t *tes
 	}
 }
 
-func TestAuthHandlerCollectorLoginRequiresDeviceID(t *testing.T) {
+func TestAuthHandlerCollectorLoginDoesNotRequireDeviceID(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
 	if _, err := db.Exec(`INSERT INTO data_collectors (id, name, operator_id, status, deleted_at) VALUES (7, 'Collector', 'dc01', 'active', NULL)`); err != nil {
@@ -207,8 +371,16 @@ func TestAuthHandlerCollectorLoginRequiresDeviceID(t *testing.T) {
 	defer hilbert.Close()
 
 	w := performAuthLogin(newTestAuthRouter(db, hilbert.URL), `{"operator_id":"dc01","password":"secret"}`)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "device_id is required") {
+	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp LoginResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	claims, err := auth.ParseToken(resp.AccessToken, testAuthConfig())
+	if err != nil || claims.WorkstationID != 0 {
+		t.Fatalf("identity claims=%#v err=%v", claims, err)
 	}
 }
 
@@ -300,6 +472,8 @@ func TestAuthHandlerBreakOnlyUpdatesAccessibleWorkspaceWorkstations(t *testing.T
 	defer db.Close()
 	if _, err := db.Exec(`
 		INSERT INTO workspaces (id, admins, members) VALUES (20, '[]', '[]');
+		INSERT INTO robots (id, device_id, workspace_id, status) VALUES
+			(101, '101', 10, 'active'), (102, '102', 20, 'active');
 		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current)
 		VALUES (11, 7, 10, 101, 'inactive', TRUE), (12, 7, 20, 102, 'inactive', TRUE)
 	`); err != nil {
@@ -367,13 +541,34 @@ func newTestHilbertServer(t *testing.T, behavior testHilbertBehavior) *httptest.
 func newTestAuthRouter(db *sqlx.DB, hilbertBaseURL string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	NewAuthHandler(db, testAuthConfig(), testHilbertConfig(hilbertBaseURL)).RegisterRoutes(router.Group("/api/v1"))
+	handler := NewAuthHandler(db, testAuthConfig(), testHilbertConfig(hilbertBaseURL))
+	api := router.Group("/api/v1")
+	handler.RegisterRoutes(api)
+	identityMw := middleware.IdentityJWTAuth(testAuthConfig())
+	workstationMw := middleware.JWTAuth(testAuthConfig(), db)
+	handler.RegisterAuthenticatedRoutes(
+		api.Group("/auth/me", identityMw),
+		api.Group("/auth/me/station", workstationMw, middleware.RequireRole("data_collector")),
+		api.Group("/auth/workstation", identityMw, middleware.RequireRole("data_collector")),
+	)
 	return router
 }
 
 func performAuthLogin(router *gin.Engine, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
+func performAuthActivation(router *gin.Engine, token string, body string, deviceToken string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/workstation/activate", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if deviceToken != "" {
+		req.Header.Set("Device-Authorization", deviceToken)
+	}
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w
@@ -420,6 +615,7 @@ func newTestAuthDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
 			device_id TEXT NOT NULL,
+			device_name TEXT,
 			workspace_id INTEGER NOT NULL,
 			status TEXT NOT NULL,
 			deleted_at TEXT
@@ -442,6 +638,20 @@ func newTestAuthDB(t *testing.T) *sqlx.DB {
 			workstation_id INTEGER,
 			status TEXT,
 			deleted_at TEXT
+		)`,
+		`CREATE TABLE dc_plan (
+			id INTEGER PRIMARY KEY,
+			workspace_id INTEGER NOT NULL,
+			operator TEXT NOT NULL,
+			dc_device_id INTEGER NOT NULL,
+			deleted_at TEXT
+		)`,
+		`CREATE TABLE ws_client_auth_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			robot_id INTEGER NOT NULL,
+			token_hash TEXT NOT NULL,
+			last_used_at TEXT,
+			revoked_at TEXT
 		)`,
 	}
 	for _, stmt := range stmts {

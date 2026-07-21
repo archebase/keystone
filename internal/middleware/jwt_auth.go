@@ -25,25 +25,25 @@ const ClaimsKey = "auth_claims"
 // dashboard display token rather than a normal user JWT.
 const DashboardDisplayKey = "dashboard_display_auth"
 
+// IdentityJWTAuth validates a JWT without requiring an active workstation.
+// It is intended for identity-level routes such as /auth/me and workstation activation.
+func IdentityJWTAuth(cfg *config.AuthConfig) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := authenticateBearer(c, cfg)
+		if !ok {
+			return
+		}
+		c.Set(ClaimsKey, claims)
+		c.Next()
+	}
+}
+
 // JWTAuth validates JWT tokens.
 // Header: Authorization: Bearer <jwt_token>
 func JWTAuth(cfg *config.AuthConfig, dbs ...*sqlx.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-			return
-		}
-
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
-			return
-		}
-
-		claims, err := auth.ParseToken(parts[1], cfg)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		claims, ok := authenticateBearer(c, cfg)
+		if !ok {
 			return
 		}
 		if !validateWorkstationSession(c, claims, dbs...) {
@@ -53,6 +53,27 @@ func JWTAuth(cfg *config.AuthConfig, dbs ...*sqlx.DB) gin.HandlerFunc {
 		c.Set(ClaimsKey, claims)
 		c.Next()
 	}
+}
+
+func authenticateBearer(c *gin.Context, cfg *config.AuthConfig) (*auth.Claims, bool) {
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return nil, false
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
+		return nil, false
+	}
+
+	claims, err := auth.ParseToken(parts[1], cfg)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return nil, false
+	}
+	return claims, true
 }
 
 // DashboardAuth allows a normal Bearer JWT or the optional production dashboard
@@ -101,7 +122,10 @@ func validateWorkstationSession(c *gin.Context, claims *auth.Claims, dbs ...*sql
 		return true
 	}
 	if claims.WorkstationID <= 0 {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "workstation session is required"})
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"code":  "workstation_scope_required",
+			"error": "workstation session is required",
+		})
 		return false
 	}
 	var active bool
@@ -115,7 +139,10 @@ func validateWorkstationSession(c *gin.Context, claims *auth.Claims, dbs ...*sql
 		return false
 	}
 	if !active {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "workstation session is no longer active"})
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"code":  "workstation_session_invalid",
+			"error": "workstation session is no longer active",
+		})
 		return false
 	}
 	return true

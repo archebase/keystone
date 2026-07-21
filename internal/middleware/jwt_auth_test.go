@@ -94,6 +94,31 @@ func TestJWTAuthRejectsCollectorSessionWithoutWorkstation(t *testing.T) {
 	}
 }
 
+func TestIdentityJWTAuthAcceptsCollectorWithoutWorkstation(t *testing.T) {
+	cfg := testJWTAuthConfig()
+	token, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), cfg)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	router := gin.New()
+	router.GET("/identity", IdentityJWTAuth(cfg), func(c *gin.Context) {
+		claims := GetClaims(c)
+		if claims == nil || claims.CollectorID != 7 || claims.WorkstationID != 0 {
+			t.Fatalf("claims=%#v", claims)
+		}
+		c.Status(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/identity", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusNoContent, w.Body.String())
+	}
+}
+
 func TestDashboardAuthRejectsSupersededWorkstationSession(t *testing.T) {
 	db := newTestJWTAuthDB(t, false)
 	defer db.Close()

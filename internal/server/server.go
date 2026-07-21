@@ -237,12 +237,15 @@ func (s *Server) buildRoutes() http.Handler {
 		s.auth.RegisterRoutes(v1Routes)
 
 		// Authenticated auth routes:
-		//   GET  /auth/me          — any valid token (admin or data_collector)
-		//   POST /auth/me/station/* — data_collector only
-		jwtMw := middleware.JWTAuth(&s.cfg.Auth, s.db)
-		meGroup := v1Routes.Group("/auth/me", jwtMw)
-		stationGroup := v1Routes.Group("/auth/me/station", jwtMw, middleware.RequireRole("data_collector"))
-		s.auth.RegisterAuthenticatedRoutes(meGroup, stationGroup)
+		//   GET  /auth/me                    — identity or workstation token
+		//   POST /auth/workstation/activate — data_collector identity token
+		//   POST /auth/me/station/*         — active workstation token
+		identityMw := middleware.IdentityJWTAuth(&s.cfg.Auth)
+		workstationMw := middleware.JWTAuth(&s.cfg.Auth, s.db)
+		meGroup := v1Routes.Group("/auth/me", identityMw)
+		stationGroup := v1Routes.Group("/auth/me/station", workstationMw, middleware.RequireRole("data_collector"))
+		activationGroup := v1Routes.Group("/auth/workstation", identityMw, middleware.RequireRole("data_collector"))
+		s.auth.RegisterAuthenticatedRoutes(meGroup, stationGroup, activationGroup)
 	}
 	if s.storage != nil {
 		s.storage.RegisterRoutes(v1Routes)
