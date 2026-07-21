@@ -86,6 +86,46 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultWorkspaceHandlesExistingRowWhenUpdateReportsZeroAffected(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	now := time.Date(2026, 7, 21, 13, 2, 12, 0, time.UTC)
+	if _, err := db.Exec(`
+		INSERT INTO workspaces (
+			id, name, description, source, admins, members, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, defaultWorkspaceID, defaultWorkspaceName, defaultWorkspaceDescription,
+		workspaceSourceDefault, "[]", "[]", now, now); err != nil {
+		t.Fatalf("seed default workspace: %v", err)
+	}
+
+	// Simulate MySQL's RowsAffected behavior for a no-op UPDATE: the row
+	// exists, but no stored value changed, so RowsAffected returns zero.
+	if _, err := db.Exec(`
+		CREATE TRIGGER ignore_default_workspace_noop_update
+		BEFORE UPDATE ON workspaces
+		WHEN OLD.id = 0
+		BEGIN
+			SELECT RAISE(IGNORE);
+		END
+	`); err != nil {
+		t.Fatalf("create no-op update trigger: %v", err)
+	}
+
+	if err := ensureDefaultWorkspace(context.Background(), db, now); err != nil {
+		t.Fatalf("ensureDefaultWorkspace() error = %v", err)
+	}
+
+	var count int
+	if err := db.Get(&count, "SELECT COUNT(*) FROM workspaces WHERE id = ?", defaultWorkspaceID); err != nil {
+		t.Fatalf("count default workspace: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("default workspace count=%d want 1", count)
+	}
+}
+
 func TestWorkspaceSyncServiceSyncRequiresConfig(t *testing.T) {
 	db := newTestWorkspaceSyncDB(t)
 	defer db.Close()
