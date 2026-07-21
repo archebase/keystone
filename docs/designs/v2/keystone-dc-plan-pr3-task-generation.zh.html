@@ -7,7 +7,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Keystone PR-3 Hilbert 数采计划驱动 Task 生成</title>
+  <title>Keystone PR-3 Hilbert 数采计划投影与按需 Task 执行链路</title>
   <style>
     :root {
       --orange: #F47A16;
@@ -363,17 +363,17 @@ SPDX-License-Identifier: MulanPSL-2.0
   <main class="page">
     <header class="hero">
       <div class="hero-inner">
-        <span class="kicker">Keystone V2 / PR-3 / 2026-07-09</span>
-        <h1>数采计划<br>接管 TASK<br>生成链路</h1>
+        <span class="kicker">Hilbert Plan / Execution Projection</span>
+        <h1>计划投影<br>按需 TASK<br>执行链路</h1>
         <p class="subtitle">
-          核心矛盾：Hilbert <code>dc_plan</code> 已经成为生产主对象，但 Keystone runtime 仍依赖
-          order/batch/task 旧链路。PR-3 要让计划同步后自动补齐本地 task，同时用兼容壳稳住现有执行路径。
+          核心判断：Hilbert 管“应该执行什么”，Keystone 管“已经执行到哪一步”。
+          数采计划保留本地投影，但 task 不再在同步时按 <code>target_count</code> 批量预生成，而是在准备执行时按需创建。
         </p>
         <div class="arena">
-          <div class="signal"><b>触发点</b><span>同步 Workspace 的 dc_plan 后自动生成</span></div>
-          <div class="signal"><b>主事实</b><span><code>tasks.dc_plan_id</code> 是新语义来源</span></div>
-          <div class="signal"><b>兼容层</b><span>order/batch/SOP/scene 只服务旧 runtime</span></div>
-          <div class="signal"><b>失败策略</b><span>单计划 blocked 不拖垮整批同步</span></div>
+          <div class="signal"><b>计划事实</b><span>Hilbert 是 source of truth</span></div>
+          <div class="signal"><b>本地职责</b><span><code>dc_plan</code> 是执行投影</span></div>
+          <div class="signal"><b>Task 供应</b><span>每计划最多一条 pending</span></div>
+          <div class="signal"><b>不可变点</b><span>进入 ready 后冻结快照</span></div>
         </div>
       </div>
     </header>
@@ -381,31 +381,31 @@ SPDX-License-Identifier: MulanPSL-2.0
     <section>
       <div class="section-head">
         <div class="section-no">01</div>
-        <h2>背景与问题</h2>
+        <h2>决策与背景</h2>
       </div>
       <div class="content">
         <p>
-          PR-2 已经把 Hilbert <code>dc_plan</code> 投影到 Keystone，并提供
-          <code>POST /workspaces/:workspace_id/dc-plans/sync</code> 与 <code>GET /dc-plans</code>。
-          但是现有任务生产仍通过本地 <code>orders</code> / <code>batches</code> 创建，
-          <code>tasks.dc_plan_id</code> 只是 schema 预留，runtime 尚未写入。
+          PR-2 已经把 Hilbert <code>dc_plan</code> 投影到 Keystone。当前实现会在计划同步成功后，
+          按 <code>target_count - existing_task_count</code> 一次性补齐全部 pending task。
+          当目标数量较大或 Hilbert 动态调整 operator、device、target_count 时，这种模型会提前制造大量执行实例，
+          并迫使同步链路承担 task 取消、换绑和迁移责任。
         </p>
         <div class="callout">
-          PR-3 的目标不是删除旧模型，而是把 Hilbert 数采计划变成 task 生成入口。
-          旧 order/batch/scene/SOP 字段继续存在，但只作为兼容壳，不能再承担业务事实来源。
+          修订后的 PR-3 只保留两个动作：完整刷新 Workspace 的计划投影；在真正准备执行时创建或复用下一条 task。
+          登录和计划同步不再批量修改 task。方案修订日期：2026-07-21。
         </div>
         <div class="flow">
           <div class="flow-row">
-            <div class="flow-key">现状</div>
-            <div class="flow-body">dc_plan 已同步；task 仍由本地 order/batch 手动创建；Axon config 仍读取旧字段。</div>
+            <div class="flow-key">当前代码</div>
+            <div class="flow-body">计划同步后立即按 <code>target_count</code> 补齐全部 task。</div>
           </div>
           <div class="flow-row">
-            <div class="flow-key">变化</div>
-            <div class="flow-body">每次成功同步 Hilbert 计划后，Keystone 自动按 <code>target_count</code> 补齐 tasks。</div>
+            <div class="flow-key">目标设计</div>
+            <div class="flow-body">同步只更新计划；点击准备或完成录制后，才确保存在下一条 task。</div>
           </div>
           <div class="flow-row">
-            <div class="flow-key">边界</div>
-            <div class="flow-body">不上传 raw data、不删除 order/batch schema、不改变 Axon 录制回调协议。</div>
+            <div class="flow-key">执行不变量</div>
+            <div class="flow-body"><code>pending</code> 可以取消；<code>ready</code> 及以后不随计划变化。</div>
           </div>
         </div>
       </div>
@@ -421,20 +421,21 @@ SPDX-License-Identifier: MulanPSL-2.0
           <div class="panel">
             <h3>目标</h3>
             <ul>
-              <li><code>SyncWorkspaceDCPlans</code> 成功同步计划后自动生成或补齐本地 tasks。</li>
-              <li>同一计划重复同步保持幂等，只新增 <code>target_count - existing_count</code> 的缺口。</li>
-              <li>为计划创建/复用兼容 <code>order</code> 与稳定 <code>batch</code>，不破坏现有 runtime。</li>
-              <li>按 <code>operator + dc_device_id</code> 找到或自动创建 current workstation。</li>
-              <li>task list/detail/config 暴露 <code>dc_plan_id</code>、workspace 和计划元信息。</li>
+              <li>Hilbert 始终是计划定义、operator、device 和 target_count 的事实来源。</li>
+              <li>Keystone 持久化 <code>dc_plan</code> 投影，Hilbert 不可用时不影响已准备任务。</li>
+              <li>进入数采任务页和手动刷新时，通过 Keystone 刷新当前 Workspace 计划。</li>
+              <li>每个计划最多保留一条未开始的 pending task。</li>
+              <li>task 在准备时创建；进入 ready 后配置快照不可变。</li>
             </ul>
           </div>
           <div class="panel">
             <h3>非目标</h3>
             <ul>
-              <li>不在拉取数采计划时创建设备、机器人或采集员主数据。</li>
-              <li>不删除 order/batch/schema 旧字段，不重写 Axon callback 协议。</li>
+              <li>不把计划刷新做成实时推送或复杂调度系统。</li>
+              <li>不在登录认证事务中创建、取消或迁移 task。</li>
+              <li>不修改 ready、in_progress、uploading、completed task。</li>
+              <li>不因为一次失败或不完整查询删除本地计划。</li>
               <li>不把 <code>target_duration</code> 平均分配到单个 task。</li>
-              <li>不迁移已经存在的 task 到新工位或新配置。</li>
               <li>不修改 <code>dc_plan.cur_count</code> / <code>cur_duration</code>，保持 Hilbert 投影语义。</li>
             </ul>
           </div>
@@ -448,24 +449,29 @@ SPDX-License-Identifier: MulanPSL-2.0
         <h2>方案总览</h2>
       </div>
       <div class="content">
-        <pre>POST /api/v1/workspaces/:workspace_id/dc-plans/sync
-  -> login Hilbert
-  -> query dc_plan pages
-  -> validate records
-  -> transaction: upsert dc_plan projections
-  -> for each returned plan:
-       transaction:
-         lock plan/order for generation
-         resolve data_collector by operator
-         resolve robot by device_id = dc_device_id
-         ensure current workstation for robot + collector
-         ensure plan compat factory / SOP / scene / subscene
-         ensure compat order + stable batch
-         create missing tasks up to target_count
-  -> return sync summary + per-plan task_generation summary</pre>
+        <pre>进入数采任务页 / 点击刷新计划
+  -> POST /api/v1/operator/plans/refresh
+  -> resolve authenticated operator + workspace + robot
+  -> fetch complete Hilbert dc_plan snapshot for workspace
+  -> validate all pages
+  -> transaction:
+       mark old Hilbert plans inactive
+       upsert returned plans active
+  -> return current operator/device plans
+
+点击准备 / 完成录制后自动准备
+  -> EnsureNextTask(plan_id, workstation_id)
+  -> transaction:
+       lock plan
+       validate operator / robot / workstation
+       reuse existing pending task, or
+       create exactly one pending task when target remains
+  -> fetch task config
+  -> submit Recorder config
+  -> task becomes ready and its snapshot is frozen</pre>
         <p>
-          task 生成只处理本次 Hilbert 返回并成功 upsert 的计划。本地已有但本次没返回的计划不动；
-          计划校验失败时不提交 plan upsert，也不会生成 task。
+          页面刷新和现有周期同步可以复用同一计划刷新 interface。同步失败时保留本地投影并返回上次同步时间；
+          只有完整 Workspace 快照成功返回后，才允许把本次未出现的 Hilbert 计划标记为 inactive。
         </p>
       </div>
     </section>
@@ -473,245 +479,155 @@ SPDX-License-Identifier: MulanPSL-2.0
     <section>
       <div class="section-head">
         <div class="section-no">04</div>
-        <h2>关键规则</h2>
+        <h2>计划刷新规则</h2>
       </div>
       <div class="content">
-        <h3>触发与幂等</h3>
+        <h3>触发方式</h3>
         <ul>
-          <li>触发点固定为 <code>POST /workspaces/:workspace_id/dc-plans/sync</code>，不新增显式 generate endpoint。</li>
-          <li>每次同步后按最新 <code>target_count</code> 补齐 task，只新增缺口。</li>
-          <li><code>target_count</code> 增大时补齐新增 task；减小时不删除、不取消、不改已有 task。</li>
-          <li>existing count 统计 <code>tasks.dc_plan_id = ? AND deleted_at IS NULL</code> 的所有状态 task。</li>
-          <li>soft-deleted task 不计入 existing count。</li>
+          <li>进入数采任务页面时刷新一次，不阻塞登录认证成功。</li>
+          <li>“刷新计划”按钮调用同一个 endpoint，并同步返回刷新后的计划。</li>
+          <li>现有 5 分钟周期同步可作为兜底，三种触发复用相同实现。</li>
+          <li>请求 Hilbert 失败时返回本地投影和 <code>last_synced_at</code>，不修改计划状态。</li>
         </ul>
 
-        <h3>工位解析</h3>
+        <h3>完整快照与本地投影</h3>
         <table>
           <thead>
             <tr>
-              <th>Hilbert 字段</th>
-              <th>Keystone 映射</th>
-              <th>PR-3 行为</th>
+              <th>场景</th>
+              <th>本地行为</th>
+              <th>Task 行为</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><code>dc_plan.operator</code></td>
-              <td><code>data_collectors.operator_id</code></td>
-              <td>必须已由 Workspace 级同步创建；缺失时该 plan blocked。</td>
+              <td>计划新增或字段变化</td>
+              <td>Upsert <code>dc_plan</code> 投影。</td>
+              <td>只影响下一条尚未创建的 task。</td>
             </tr>
             <tr>
-              <td><code>dc_plan.dc_device_id</code></td>
-              <td><code>robots.device_id</code></td>
-              <td>直接按字符串匹配；PR-3 不使用 <code>robots.asset_id</code> 作为主映射。</td>
+              <td>完整快照中计划缺失</td>
+              <td>标记 inactive / soft deleted，保留历史。</td>
+              <td>不再供应下一条；当前执行任务不变。</td>
             </tr>
             <tr>
-              <td><code>operator + dc_device_id</code></td>
-              <td><code>workstations</code></td>
-              <td>存在同一 current workstation 时复用；都未绑定时自动创建；绑定冲突时 blocked。</td>
+              <td>Hilbert 请求或分页失败</td>
+              <td>不提交任何投影变化。</td>
+              <td>已准备任务继续执行。</td>
             </tr>
           </tbody>
         </table>
         <ul>
-          <li>PR-3 不自动创建 robot 或 data_collector。</li>
-          <li>robot / data_collector 必须是 <code>active</code>，否则 blocked <code>resource_inactive</code>。</li>
-          <li>若 robot 和 collector 都未绑定 current workstation，则自动创建 <code>status='active'</code> 的 workstation。</li>
-          <li>自动创建工位名称为 <code>hilbert_ws_&lt;operator&gt;_&lt;dc_device_id&gt;</code>，过长时截断并加短 hash。</li>
-          <li>自动创建工位要求 <code>data_collectors.organization_id = dc_plan.workspace_id</code>，不一致时 blocked <code>workspace_mismatch</code>。</li>
-          <li>自动创建工位还要求 <code>robots.metadata.hilbert_workspace_id = dc_plan.workspace_id</code>；缺失或不一致时 blocked <code>workspace_mismatch</code>。</li>
-          <li>自动创建工位的 <code>factory_id</code> 使用 <code>dc_plan.dc_factory_id</code> 对应的 plan compat factory，不使用 PR-2.5 的 workspace compat factory。</li>
+          <li>operator 必须来自服务端认证身份，不接受前端提交任意 operator_id。</li>
+          <li>当前设备先解析为 <code>robots</code> 记录，再用 <code>robots.device_id</code> 对齐 Hilbert <code>dc_device_id</code>。</li>
+          <li>本地 <code>dc_plan</code> 不允许独立编辑 Hilbert 权威字段。</li>
         </ul>
-
-        <h3>兼容 order / batch</h3>
-        <ul>
-          <li>每个 <code>dc_plan</code> 一个 compat order，一个稳定 compat batch。</li>
-          <li><code>orders.target_count = dc_plan.target_count</code>，每次同步跟随更新。</li>
-          <li>若 compat order 已 <code>completed</code> / <code>cancelled</code>，generation blocked <code>compat_order_closed</code>。</li>
-          <li><code>batches.batch_id = dcplan_&lt;dc_plan_id&gt;</code>，长期复用，不按同步次数创建新 batch。</li>
-          <li><code>batches.episode_count = dc_plan.target_count</code>，每次同步跟随更新。</li>
-          <li>若 compat batch 已 <code>completed</code> / <code>cancelled</code> / <code>recalled</code>，generation blocked <code>compat_batch_closed</code>。</li>
-        </ul>
-
-        <h3>兼容生产元信息</h3>
-        <ul>
-          <li>按 <code>dc_plan.dc_factory_id</code> 创建/复用 plan compat factory stub，用于 task / order / batch / scene runtime 兼容。</li>
-          <li>PR-2.5 的 workspace compat factory 只用于 <code>robots.factory_id</code> 落库；plan compat factory 与 workspace compat factory 不要求相同。</li>
-          <li>按 <code>dc_plan.dc_type</code> 创建/复用 compat SOP、scene、subscene。</li>
-          <li><code>sops.slug = hilbert_dc_plan_&lt;dc_type&gt;</code>，<code>version = 1.0.0</code>。</li>
-          <li><code>scenes.name = Hilbert &lt;dc_type&gt;</code>，<code>subscenes.name = Default</code>。</li>
-          <li>这些旧字段只满足现有 joins 和 Axon config，不再表达真实业务元信息。</li>
-        </ul>
-
-        <h3>task 内容</h3>
-        <ul>
-          <li>沿用现有 <code>newPublicTaskID()</code>，不把 plan ID 塞进 public <code>task_id</code>。</li>
-          <li><code>tasks.dc_plan_id</code> 写入 Hilbert plan ID，<code>local_dc_plan_id</code> 保持空。</li>
-          <li><code>target_duration</code> 只进入 task metadata，不平均分配，不控制 recorder 自动停止。</li>
-          <li>已存在 task 一律不迁移；新补齐 task 使用最新 plan 快照。</li>
-        </ul>
-        <pre>{
-  "source": "hilbert_dc_plan",
-  "dc_plan_id": 1001,
-  "workspace_id": 123,
-  "dc_plan_sequence": 5,
-  "target_count": 10,
-  "target_duration": 600,
-  "dc_type": "ego",
-  "dc_device_id": 456,
-  "generated_at": "2026-07-09T12:00:00Z"
-}</pre>
       </div>
     </section>
 
     <section>
       <div class="section-head">
         <div class="section-no">05</div>
-        <h2>API 契约</h2>
+        <h2>按需 Task 供应</h2>
       </div>
       <div class="content">
-        <h3>同步响应扩展</h3>
-        <p>
-          <code>DCPlanSyncResponse</code> 增加 <code>task_generation</code> summary。业务 blocked 仍返回 200；
-          系统级数据库错误或 Hilbert 调用失败才返回 5xx / 503。
-        </p>
-        <pre>{
-  "workspace_id": 123,
-  "synced_count": 10,
-  "page_count": 1,
-  "last_synced_at": "2026-07-09T12:00:00Z",
-  "task_generation": {
-    "enabled": true,
-    "created_count": 18,
-    "existing_count": 42,
-    "blocked_count": 2,
-    "plans": [
-      {
-        "dc_plan_id": 1001,
-        "status": "generated",
-        "target_count": 10,
-        "existing_task_count": 4,
-        "created_task_count": 6,
-        "workstation_id": 12
-      },
-      {
-        "dc_plan_id": 1002,
-        "status": "blocked",
-        "target_count": 5,
-        "existing_task_count": 0,
-        "created_task_count": 0,
-        "reason": "robot_not_found"
-      }
-    ]
-  }
-}</pre>
-
-        <h3>task 列表与详情</h3>
+        <h3>EnsureNextTask 不变量</h3>
         <ul>
-          <li><code>GET /tasks</code> 增加筛选：<code>workspace_id</code>、<code>dc_plan_id</code>。</li>
-          <li>task list/detail response 增加：<code>dc_plan_id</code>、<code>workspace_id</code>、<code>dc_plan_name</code>、<code>dc_type</code>、<code>dc_device_id</code>。</li>
-          <li>保留现有 <code>batch_id</code> / <code>order_id</code> 字段，不在 PR-3 删除或重命名。</li>
+          <li>事务内锁定 plan，并重新读取 target_count 与任务状态计数。</li>
+          <li>同一计划已有 pending 时直接复用，不能创建第二条 pending。</li>
+          <li>存在 ready / in_progress 时拒绝准备另一条。</li>
+          <li>上一条处于 uploading 时允许准备下一条，这是完成录制后自动衔接的预期状态。</li>
+          <li>可计入目标的 task 数量已经达到 target_count 时返回计划已完成，不创建 task。</li>
+          <li>collector、robot、workspace 或 workstation 不匹配时返回明确业务错误。</li>
+          <li>新 task 保存当时的 plan 配置快照；进入 ready 后不再受后续同步影响。</li>
         </ul>
+        <h3>目标数量计算</h3>
+        <pre>committed = ready + in_progress + uploading + completed
 
-        <h3>Axon task config</h3>
-        <ul>
-          <li>保持现有 config contract，不一次性替换旧字段。</li>
-          <li>继续返回 <code>order_id</code>、<code>factory</code>、<code>scene</code>、<code>subscene</code>、<code>sop_id</code>、<code>topics</code>。</li>
-          <li>新增非破坏字段：<code>workspace_id</code>、<code>dc_plan_id</code>、<code>dc_type</code>、<code>dc_device_id</code>、<code>plan_target_count</code>、<code>plan_target_duration</code>。</li>
-        </ul>
+if committed >= target_count:
+    cancel existing pending task
+    stop supplying tasks
+else if pending exists:
+    return pending
+else:
+    create one pending task</pre>
+        <p><code>cancelled</code> 不计入目标。<code>failed</code> 默认不计入目标，以允许补采；如业务决定失败也消耗目标，应作为独立规则显式配置。</p>
       </div>
     </section>
 
     <section>
       <div class="section-head">
         <div class="section-no">06</div>
-        <h2>事务与错误处理</h2>
+        <h2>Interface 与页面流程</h2>
       </div>
       <div class="content">
-        <table>
-          <thead>
-            <tr>
-              <th>场景</th>
-              <th>处理</th>
-              <th>响应</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Hilbert 查询或 plan 校验失败</td>
-              <td>不提交 plan upsert，不生成 task。</td>
-              <td>503 或 5xx。</td>
-            </tr>
-            <tr>
-              <td>plan upsert 成功，单个 plan 缺 robot / collector</td>
-              <td>该 plan 不生成 task，其他 plan 继续。</td>
-              <td>200，plan summary 为 <code>blocked</code>。</td>
-            </tr>
-            <tr>
-              <td>robot / collector 当前绑定冲突</td>
-              <td>不自动拆绑，不生成 task。</td>
-              <td>200，reason <code>workstation_binding_conflict</code>。</td>
-            </tr>
-            <tr>
-              <td>单 plan 生成过程中 DB 写失败</td>
-              <td>回滚该 plan 的工位、compat 壳和 task 写入。</td>
-              <td>200 或 5xx，取决于错误是否可归类为业务 blocked。</td>
-            </tr>
-            <tr>
-              <td>并发同步同一 plan</td>
-              <td>generation transaction 中锁定 plan 或 compat order 行，重新计算缺口。</td>
-              <td>幂等，不超额生成。</td>
-            </tr>
-          </tbody>
-        </table>
+        <pre>RefreshWorkspacePlans(ctx, workspaceID) ([]DCPlan, error)
+
+EnsureNextTask(ctx, planID, workstationID) (*Task, error)</pre>
         <div class="callout">
-          事务边界锁定为：本次 Hilbert 返回的 plans 先整批 upsert；之后每个 plan 独立事务生成 task。
-          单计划失败不回滚整个 workspace 的 plan 投影。
+          两个 interface 分离：计划刷新只负责远端投影；task 供应只负责本地执行实例。
+          进入数采任务页、手动刷新和周期任务调用前者；点击准备和完成录制后的自动衔接调用后者。
         </div>
+        <h3>建议 HTTP interface</h3>
+        <ul>
+          <li><code>POST /api/v1/operator/plans/refresh</code>：刷新并返回认证数采员在当前设备上的计划。</li>
+          <li><code>POST /api/v1/dc-plans/:id/tasks/next</code>：创建或复用下一条 pending task。</li>
+          <li>现有 task config / Recorder RPC contract 保持不变。</li>
+        </ul>
       </div>
     </section>
 
     <section>
       <div class="section-head">
         <div class="section-no">07</div>
-        <h2>实施计划</h2>
+        <h2>事务与错误处理</h2>
       </div>
       <div class="content">
-        <ol>
-          <li>在 <code>services</code> 或 handler 内新增 plan task generation service，避免把所有逻辑塞进 <code>dc_plan.go</code>。</li>
-          <li>扩展 <code>DCPlanSyncResult</code> 和 <code>DCPlanSyncResponse</code>，返回 task generation summary。</li>
-          <li>同步 flow 中 upsert plans 后，对本次返回的 plans 逐个调用 generation。</li>
-          <li>实现 resolve collector / robot / workstation；只自动创建 workstation，不创建 robot / collector。</li>
-          <li>实现 plan compat factory、SOP、scene、subscene、order、batch ensure 逻辑。</li>
-          <li>实现 task 缺口补齐、metadata snapshot、并发锁和 target_count 变化处理。</li>
-          <li>扩展 task list/detail/config response 和筛选参数。</li>
-          <li>补 handler/service 单测：首次生成、重复幂等、target_count 增大、target_count 减小、缺资源 blocked、绑定冲突、robot workspace mismatch、并发防超额。</li>
-        </ol>
+        <table>
+          <thead><tr><th>场景</th><th>处理</th><th>对执行任务的影响</th></tr></thead>
+          <tbody>
+            <tr><td>Hilbert 查询或分页失败</td><td>不提交计划变化，返回本地投影和 stale 状态。</td><td>无。</td></tr>
+            <tr><td>完整快照中计划消失</td><td>事务内将计划标记 inactive。</td><td>停止供应下一条；ready 及以后不变。</td></tr>
+            <tr><td>target_count 增加</td><td>不预生成；下一次 EnsureNextTask 继续供应。</td><td>无。</td></tr>
+            <tr><td>target_count 减少</td><td>达到新目标后停止供应，并取消唯一 pending，确保 next-task interface 不再返回它。</td><td>ready 及以后不变。</td></tr>
+            <tr><td>operator / device 变化</td><td>下一条 task 使用新投影重新解析资源。</td><td>当前 task 保留旧快照。</td></tr>
+            <tr><td>并发点击准备 / 自动准备</td><td>锁定 plan，复用唯一 pending。</td><td>不会重复创建。</td></tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
     <section>
       <div class="section-head">
         <div class="section-no">08</div>
-        <h2>验收标准</h2>
+        <h2>实施与验收</h2>
       </div>
       <div class="content">
+        <h3>实施顺序</h3>
+        <ol>
+          <li>计划同步改为完整快照事务，只更新 <code>dc_plan</code>，移除同步后的批量 task generation。</li>
+          <li>新增 operator plan refresh endpoint，页面进入和刷新按钮复用。</li>
+          <li>将现有 generation 实现收缩为 <code>EnsureNextTask</code>，每计划最多一条 pending。</li>
+          <li>配置页面按计划请求 next task；完成录制后复用同一 interface 自动准备。</li>
+          <li>为计划刷新失败、target 增减、计划移除、并发准备和快照不可变补测试。</li>
+        </ol>
+        <h3>验收标准</h3>
         <ul>
-          <li>同步一个包含 10 个 target 的 plan 后，Keystone 自动生成 10 个 pending task。</li>
-          <li>重复同步同一个 plan 不新增 task。</li>
-          <li>Hilbert 将 target 从 10 调到 15 后，再同步只新增 5 个 task。</li>
-          <li>Hilbert 将 target 从 15 调到 8 后，再同步不删除 task，并在 summary 中暴露本地 existing 超过 target。</li>
-          <li>robot / collector 缺失时 plan blocked，其他 plan 正常生成。</li>
-          <li>robot + collector 存在但无 current workstation 时自动创建工位。</li>
-          <li>task list/detail 能按 <code>workspace_id</code> / <code>dc_plan_id</code> 查询并展示计划字段。</li>
-          <li>Axon <code>GET /tasks/:id/config</code> 对计划生成 task 仍返回兼容旧字段，并追加计划字段。</li>
-          <li><code>dc_plan.cur_count</code> / <code>cur_duration</code> 不因本地 task 生成被修改。</li>
+          <li>同步 target_count=1000 的计划后，不创建任何 task。</li>
+          <li>第一次点击准备只创建一条 pending，并成功下发为 ready。</li>
+          <li>重复或并发请求 next task 不产生第二条 pending。</li>
+          <li>完成录制后，未达到目标时只创建并准备下一条。</li>
+          <li>target 增加后继续供应；target 减少到已承诺数量时停止供应。</li>
+          <li>计划 operator/device 变化不修改当前 ready/in_progress task，下一条使用新快照。</li>
+          <li>Hilbert 不可用时页面仍展示本地计划和上次同步时间。</li>
+          <li>完整快照中计划消失后不再供应新 task，历史 task / episode 可继续查询。</li>
         </ul>
       </div>
     </section>
 
     <footer>
       关联总览：<code>docs/designs/v2/keystone-hilbert-domain-migration-sequence.zh.html</code>。
-      前置实现：<code>docs/designs/v2/keystone-dc-plan-pr2-implementation.zh.html</code>。
+      当前代码仍采用同步后批量补齐；本文记录已确认的目标改造方案。
     </footer>
   </main>
 </body>

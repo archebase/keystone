@@ -433,7 +433,7 @@ SPDX-License-Identifier: MulanPSL-2.0
               <li>Swift SDK 已归并到 Keystone，数据面改为火山云 TOS。</li>
               <li>首次初始化必须使用管理员签发的 <code>device_auth_token</code>。</li>
               <li>Hilbert <code>dc_plan</code> 成为生产计划主对象。</li>
-              <li>task 由数采计划生成，并携带 <code>dc_plan_id</code> 与 <code>workspace_id</code>。</li>
+              <li>task 在准备执行时按数采计划按需创建，并携带 <code>dc_plan_id</code> 与 <code>workspace_id</code>。</li>
               <li>生产数据需要通过 episode 留下可查询、可审计的持久事实。</li>
             </ul>
           </article>
@@ -455,7 +455,7 @@ SPDX-License-Identifier: MulanPSL-2.0
               <li>Keystone 成为 Swift SDK 唯一源码和发布入口。</li>
               <li>App 使用完整 bootstrap 配置初始化设备。</li>
               <li>任务页面按数采计划分组、统计和展示。</li>
-              <li>每次开始采集前锁定一个明确的 pending task。</li>
+              <li>每次开始采集前通过 Keystone 获取或创建一个明确的 pending task。</li>
               <li>上传携带 task、dc plan、workspace 和 capture 上下文。</li>
               <li>上传完成后持久化 episode 并完成对应 task。</li>
             </ul>
@@ -573,7 +573,7 @@ SPDX-License-Identifier: MulanPSL-2.0
               <tr><td>登录</td><td><code>POST /api/v1/auth/login</code></td><td>提交 account/password，保存短期 access token。</td></tr>
               <tr><td>当前身份</td><td><code>GET /api/v1/auth/me</code></td><td>取得 operator、role 和可用 workstation/workspace。</td></tr>
               <tr><td>任务列表</td><td><code>GET /api/v1/tasks</code></td><td>完整分页；data collector 由服务端自动限制可见范围。</td></tr>
-              <tr><td>计划内任务</td><td><code>GET /api/v1/tasks?dc_plan_id={id}</code></td><td>选择 pending task 并计算本地执行进度。</td></tr>
+              <tr><td>准备下一任务</td><td><code>POST /api/v1/dc-plans/{id}/tasks/next</code></td><td>由 Keystone 原子获取或创建唯一 pending task；列表接口只用于查询历史和状态。</td></tr>
               <tr><td>计划信息</td><td><code>GET /api/v1/dc-plans?workspace_id={id}</code></td><td>取得计划名称、目标量、日期和类型。</td></tr>
               <tr><td>完成任务</td><td>由上传完成事务完成指定 task</td><td>App 不再调用旧 batch complete 接口。</td></tr>
             </tbody>
@@ -590,7 +590,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         </div>
         <div class="flow">
           <div class="flow-row"><div><strong>选择计划</strong> 用户选择一个未完成的数采计划。</div></div>
-          <div class="flow-row"><div><strong>锁定任务</strong> App 获取计划内一个明确的 pending task，并创建 <code>CaptureAssignment</code>。</div></div>
+          <div class="flow-row"><div><strong>锁定任务</strong> App 调用 next-task interface 获取或创建一个明确的 pending task，并创建 <code>CaptureAssignment</code>。</div></div>
           <div class="flow-row"><div><strong>本地采集</strong> task、dc plan、workspace 信息写入 metadata、MCAP task event 和 manifest。</div></div>
           <div class="flow-row"><div><strong>本地验证</strong> MCAP、质量报告、manifest 和 checksum 全部通过后才允许上传。</div></div>
           <div class="flow-row"><div><strong>创建上传</strong> SDK 请求携带 capture、task、dc plan 和 workspace 上下文。</div></div>

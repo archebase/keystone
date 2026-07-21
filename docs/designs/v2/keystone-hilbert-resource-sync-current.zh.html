@@ -1,0 +1,982 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Keystone 从 Hilbert 同步 workspace、人员、机器人、数采计划与任务的当前实现说明。">
+  <title>Keystone × Hilbert 资源同步｜当前实现全景</title>
+  <style>
+    :root {
+      --ink: #1D1A2F;
+      --signal: #8BD450;
+      --warning: #F5C024;
+      --paper: #f4f0df;
+      --black: #08070d;
+      --muted: rgba(244, 240, 223, 0.68);
+      --line: rgba(244, 240, 223, 0.22);
+      --max: 1180px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--paper);
+      background: var(--ink);
+      font-family: "Songti SC", "STSong", SimSun, Georgia, serif;
+      line-height: 1.72;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.055;
+      z-index: 20;
+      background-image:
+        repeating-linear-gradient(0deg, transparent 0 3px, var(--paper) 4px),
+        repeating-linear-gradient(90deg, transparent 0 7px, var(--paper) 8px);
+      background-size: 5px 5px, 9px 9px;
+      mix-blend-mode: screen;
+    }
+
+    a { color: inherit; }
+
+    code,
+    pre,
+    .mono,
+    .eyebrow,
+    .metric strong,
+    .step-no,
+    .tag,
+    .toc a {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    code {
+      padding: 0.08em 0.34em;
+      color: var(--signal);
+      background: rgba(8, 7, 13, 0.48);
+      border-bottom: 1px solid rgba(139, 212, 80, 0.42);
+    }
+
+    .shell {
+      width: min(calc(100% - 40px), var(--max));
+      margin: 0 auto;
+    }
+
+    .hero {
+      min-height: 86vh;
+      position: relative;
+      display: grid;
+      align-content: center;
+      overflow: hidden;
+      border-bottom: 8px solid var(--signal);
+    }
+
+    .hero::after {
+      content: "SYNC / PROJECTION / EXECUTION";
+      position: absolute;
+      right: -48px;
+      bottom: 110px;
+      color: var(--black);
+      background: var(--warning);
+      padding: 8px 74px;
+      font: 800 12px/1 ui-monospace, monospace;
+      letter-spacing: 0.18em;
+      transform: rotate(-12deg);
+      box-shadow: 9px 9px 0 var(--black);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.55fr);
+      gap: clamp(36px, 7vw, 100px);
+      align-items: end;
+      padding: 90px 0 110px;
+    }
+
+    .eyebrow {
+      margin: 0 0 18px;
+      color: var(--signal);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+    }
+
+    h1,
+    h2,
+    h3,
+    p { margin-top: 0; }
+
+    h1 {
+      max-width: 900px;
+      margin-bottom: 30px;
+      font-size: clamp(54px, 9vw, 126px);
+      line-height: 0.86;
+      letter-spacing: -0.075em;
+      text-wrap: balance;
+    }
+
+    h1 span {
+      display: block;
+      color: var(--signal);
+      margin-left: clamp(20px, 8vw, 110px);
+    }
+
+    .hero-lede {
+      max-width: 780px;
+      margin: 0;
+      font-size: clamp(18px, 2.3vw, 28px);
+      line-height: 1.48;
+      text-wrap: pretty;
+    }
+
+    .hero-panel {
+      position: relative;
+      padding: 26px 24px 30px;
+      color: var(--black);
+      background: var(--signal);
+      box-shadow: 12px 12px 0 var(--black);
+      transform: translateY(-8px) rotate(1deg);
+    }
+
+    .hero-panel::before {
+      content: "CURRENT STATE";
+      position: absolute;
+      top: -17px;
+      left: 18px;
+      padding: 4px 9px;
+      color: var(--paper);
+      background: var(--black);
+      font: 800 11px/1.2 ui-monospace, monospace;
+      letter-spacing: 0.12em;
+    }
+
+    .hero-panel b {
+      display: block;
+      margin-bottom: 12px;
+      font-size: 22px;
+      line-height: 1.2;
+    }
+
+    .hero-panel p { margin: 0; font-size: 14px; line-height: 1.65; }
+
+    .toc-wrap {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--black);
+      border-bottom: 1px solid var(--signal);
+    }
+
+    .toc {
+      display: flex;
+      gap: 7px;
+      overflow-x: auto;
+      padding: 10px 0;
+      scrollbar-width: thin;
+    }
+
+    .toc a {
+      flex: 0 0 auto;
+      padding: 7px 10px;
+      color: var(--muted);
+      font-size: 11px;
+      text-decoration: none;
+      border-left: 2px solid transparent;
+    }
+
+    .toc a:hover,
+    .toc a:focus-visible {
+      color: var(--signal);
+      border-left-color: var(--signal);
+      outline: none;
+    }
+
+    main { padding-bottom: 80px; }
+
+    section {
+      padding: 86px 0 28px;
+      scroll-margin-top: 48px;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 170px minmax(0, 1fr);
+      gap: 30px;
+      align-items: start;
+      padding-bottom: 24px;
+      margin-bottom: 34px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-index {
+      color: var(--signal);
+      font: 900 64px/0.9 ui-monospace, monospace;
+      letter-spacing: -0.08em;
+    }
+
+    h2 {
+      margin-bottom: 10px;
+      font-size: clamp(34px, 5vw, 68px);
+      line-height: 0.98;
+      letter-spacing: -0.045em;
+    }
+
+    .section-summary {
+      max-width: 760px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    h3 {
+      margin-bottom: 13px;
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    .judgement {
+      position: relative;
+      max-width: 990px;
+      padding: 30px 34px 34px;
+      color: var(--black);
+      background: var(--warning);
+      border-left: 18px solid var(--signal);
+      box-shadow: 12px 12px 0 var(--black);
+    }
+
+    .judgement small {
+      display: block;
+      margin-bottom: 9px;
+      font: 800 11px/1.2 ui-monospace, monospace;
+      letter-spacing: 0.15em;
+    }
+
+    .judgement strong {
+      display: block;
+      font-size: clamp(24px, 3.5vw, 44px);
+      line-height: 1.18;
+      text-wrap: balance;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      margin-top: 46px;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+
+    .metric {
+      min-height: 150px;
+      padding: 22px;
+      background: var(--ink);
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--signal);
+      font-size: clamp(28px, 4vw, 48px);
+      line-height: 1;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .dual-flow {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 26px;
+    }
+
+    .flow-lane {
+      border: 1px solid var(--line);
+      background: rgba(8, 7, 13, 0.22);
+    }
+
+    .flow-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 18px 20px;
+      color: var(--black);
+      background: var(--signal);
+    }
+
+    .flow-title strong { font-size: 20px; }
+
+    .tag {
+      align-self: center;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+
+    .flow-steps { padding: 4px 20px 22px; }
+
+    .flow-step {
+      position: relative;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 14px;
+      padding: 22px 0 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .flow-step:last-child { border-bottom: 0; }
+
+    .flow-step:not(:last-child)::after {
+      content: "↓";
+      position: absolute;
+      left: 9px;
+      bottom: -13px;
+      z-index: 2;
+      color: var(--warning);
+      background: var(--ink);
+      font: 900 20px/1 monospace;
+    }
+
+    .step-no {
+      color: var(--warning);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .flow-step b { display: block; margin-bottom: 5px; }
+
+    .flow-step p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    .sequence {
+      display: grid;
+      gap: 0;
+      counter-reset: seq;
+    }
+
+    .sequence-item {
+      counter-increment: seq;
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      min-height: 120px;
+      border-top: 1px solid var(--line);
+    }
+
+    .sequence-item:last-child { border-bottom: 1px solid var(--line); }
+
+    .sequence-item::before {
+      content: "0" counter(seq);
+      padding: 24px 20px;
+      color: var(--signal);
+      font: 900 36px/1 ui-monospace, monospace;
+      border-right: 1px solid var(--line);
+    }
+
+    .sequence-body { padding: 22px 28px 25px; }
+
+    .sequence-body p { max-width: 850px; margin-bottom: 0; color: var(--muted); }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 26px;
+    }
+
+    .block {
+      padding: 26px;
+      border: 1px solid var(--line);
+      background: rgba(8, 7, 13, 0.26);
+    }
+
+    .block ul,
+    .plain-list { margin: 0; padding-left: 1.2em; }
+
+    .block li,
+    .plain-list li { margin: 0.55em 0; }
+
+    .warning-block {
+      color: var(--black);
+      background: var(--warning);
+      border-color: var(--black);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      padding: 15px 16px;
+      text-align: left;
+      vertical-align: top;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    th:last-child,
+    td:last-child { border-right: 0; }
+
+    tr:last-child td { border-bottom: 0; }
+
+    th {
+      color: var(--black);
+      background: var(--signal);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+    }
+
+    td { color: var(--muted); }
+
+    td strong { color: var(--paper); }
+
+    pre {
+      margin: 0;
+      padding: 24px;
+      overflow-x: auto;
+      color: var(--signal);
+      background: var(--black);
+      border-left: 8px solid var(--warning);
+      font-size: 13px;
+      line-height: 1.72;
+      white-space: pre;
+    }
+
+    .endpoint-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .endpoint {
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr);
+      gap: 14px;
+      padding: 16px;
+      border: 1px solid var(--line);
+    }
+
+    .endpoint .method {
+      color: var(--warning);
+      font: 900 12px/1.5 ui-monospace, monospace;
+    }
+
+    .endpoint b {
+      display: block;
+      overflow-wrap: anywhere;
+      font: 600 12px/1.55 ui-monospace, monospace;
+    }
+
+    .endpoint span { display: block; color: var(--muted); font-size: 12px; }
+
+    .callout {
+      display: grid;
+      grid-template-columns: 12px minmax(0, 1fr);
+      gap: 18px;
+      margin: 26px 0;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+    }
+
+    .callout::before { content: ""; background: var(--signal); }
+
+    .callout p { margin: 0; color: var(--muted); }
+
+    .source-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+
+    .source-item {
+      padding: 18px 20px;
+      background: var(--ink);
+    }
+
+    .source-item b {
+      display: block;
+      color: var(--signal);
+      font: 700 12px/1.5 ui-monospace, monospace;
+      overflow-wrap: anywhere;
+    }
+
+    .source-item span { color: var(--muted); font-size: 13px; }
+
+    footer {
+      padding: 38px 0 48px;
+      color: var(--black);
+      background: var(--signal);
+      border-top: 8px solid var(--black);
+    }
+
+    .footer-grid {
+      display: flex;
+      justify-content: space-between;
+      gap: 30px;
+      align-items: end;
+    }
+
+    footer strong { font-size: 24px; }
+
+    footer p { max-width: 650px; margin: 8px 0 0; font-size: 13px; }
+
+    @media (max-width: 860px) {
+      .hero { min-height: auto; }
+      .hero-grid,
+      .dual-flow,
+      .split { grid-template-columns: 1fr; }
+      .hero-grid { padding: 72px 0 90px; }
+      .hero-panel { max-width: 430px; }
+      .section-head { grid-template-columns: 1fr; gap: 14px; }
+      .section-index { font-size: 42px; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .sequence-item { grid-template-columns: 86px minmax(0, 1fr); }
+      .endpoint-list,
+      .source-list { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 540px) {
+      .shell { width: min(calc(100% - 24px), var(--max)); }
+      h1 { font-size: 48px; }
+      h1 span { margin-left: 12px; }
+      .hero::after { display: none; }
+      section { padding-top: 64px; }
+      .metric-grid { grid-template-columns: 1fr; }
+      .metric { min-height: auto; }
+      .sequence-item { grid-template-columns: 58px minmax(0, 1fr); }
+      .sequence-item::before { padding: 22px 10px; font-size: 22px; }
+      .sequence-body { padding: 20px 16px; }
+      .judgement { padding: 24px 20px 28px; border-left-width: 9px; box-shadow: 7px 7px 0 var(--black); }
+      .footer-grid { display: block; }
+    }
+
+    @media print {
+      body::before,
+      .toc-wrap { display: none; }
+      body { background: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .hero { min-height: auto; }
+      section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="shell hero-grid">
+      <div>
+        <p class="eyebrow">KEYSTONE EDGE / IMPLEMENTATION MAP</p>
+        <h1>HILBERT 资源<span>同步全景</span></h1>
+        <p class="hero-lede">从远端主数据投影，到本地可执行任务：当前 Keystone 用两条同步链路，把 Workspace、人员、机器人、数采计划逐层转化为 Axon 可以执行的任务。</p>
+      </div>
+      <aside class="hero-panel">
+        <b>这是一份“现状说明”，不是未来方案。</b>
+        <p>结论全部以当前代码为准。历史 PR 文档中已经删除的 factory / order / batch 兼容逻辑，不纳入当前实现。</p>
+      </aside>
+    </div>
+  </header>
+
+  <div class="toc-wrap">
+    <nav class="shell toc" aria-label="文档目录">
+      <a href="#verdict">00 核心判断</a>
+      <a href="#overview">01 总体链路</a>
+      <a href="#workspace">02 Workspace 资源</a>
+      <a href="#plans">03 计划与任务</a>
+      <a href="#mapping">04 数据映射</a>
+      <a href="#transactions">05 事务失败</a>
+      <a href="#triggers">06 触发与接口</a>
+      <a href="#boundaries">07 边界风险</a>
+      <a href="#sources">08 代码索引</a>
+    </nav>
+  </div>
+
+  <main>
+    <section id="verdict">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">00</div>
+          <div>
+            <h2>核心判断</h2>
+            <p class="section-summary">“同步资源”不是一个统一定时任务，而是职责、频率和失败边界不同的两条主链路。</p>
+          </div>
+        </div>
+
+        <div class="judgement">
+          <small>PRIMARY CONCLUSION</small>
+          <strong>先投影执行资源，再同步计划并补齐任务；Workspace 资源不周期刷新，dc_plan 每 5 分钟刷新。</strong>
+        </div>
+
+        <div class="metric-grid" aria-label="同步关键参数">
+          <div class="metric"><strong>2</strong><span>两条资源主链路：Workspace Resource 与 DC Plan / Task</span></div>
+          <div class="metric"><strong>5m</strong><span>数采计划自动同步周期，硬编码于 Server</span></div>
+          <div class="metric"><strong>200</strong><span>Hilbert dc_plan 单页拉取数量</span></div>
+          <div class="metric"><strong>5s</strong><span>Hilbert 默认超时；一次同步共享同一个 context</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="overview">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">01</div>
+          <div>
+            <h2>总体链路</h2>
+            <p class="section-summary">Server 启动时按固定顺序执行 Workspace 同步、dc_plan 同步，再启动 dc_plan 周期任务。前一阶段失败不会阻止后一阶段继续尝试。</p>
+          </div>
+        </div>
+
+        <div class="dual-flow">
+          <article class="flow-lane">
+            <div class="flow-title"><strong>A / Workspace 资源投影</strong><span class="tag">STARTUP + MANUAL</span></div>
+            <div class="flow-steps">
+              <div class="flow-step"><span class="step-no">A1</span><div><b>确保默认 Workspace</b><p>创建或恢复本地 <code>workspaces.id=0</code>，它不参与 Hilbert 计划同步。</p></div></div>
+              <div class="flow-step"><span class="step-no">A2</span><div><b>拉取可见 Workspace</b><p>通过 Digest AK/SK 调用 <code>list-available</code>，可见范围由 Hilbert 账号权限决定。</p></div></div>
+              <div class="flow-step"><span class="step-no">A3</span><div><b>事务 Upsert Workspace</b><p>先整批校验，再在一个事务中写入 <code>workspaces</code>。</p></div></div>
+              <div class="flow-step"><span class="step-no">A4</span><div><b>逐 Workspace 投影资源</b><p>Admins/Members → data_collectors；DC Devices/Types → robots。</p></div></div>
+            </div>
+          </article>
+
+          <article class="flow-lane">
+            <div class="flow-title"><strong>B / 计划与任务投影</strong><span class="tag">STARTUP + 5 MIN + MANUAL</span></div>
+            <div class="flow-steps">
+              <div class="flow-step"><span class="step-no">B1</span><div><b>读取本地 Hilbert Workspace</b><p>只处理 <code>source='hilbert'</code>、未删除且 ID &gt; 0 的 Workspace。</p></div></div>
+              <div class="flow-step"><span class="step-no">B2</span><div><b>分页拉取 dc_plan</b><p>每页 200，直到达到 total 或返回空页。</p></div></div>
+              <div class="flow-step"><span class="step-no">B3</span><div><b>事务 Upsert 计划</b><p>校验计划归属与必填字段，整批写入当前 Workspace 的 <code>dc_plan</code>。</p></div></div>
+              <div class="flow-step"><span class="step-no">B4</span><div><b>按计划补齐任务</b><p>解析 collector、robot、workstation，并补到 <code>target_count</code>。</p></div></div>
+            </div>
+          </article>
+        </div>
+
+        <div class="callout">
+          <p><strong>启动顺序：</strong><code>syncWorkspacesOnStartup()</code> → <code>syncDCPlansOnStartup()</code> → <code>startPeriodicDCPlanSync()</code>。Workspace 同步失败时只记录日志，dc_plan 仍会基于数据库里已有的 Hilbert Workspace 继续同步。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="workspace">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">02</div>
+          <div>
+            <h2>Workspace 资源同步</h2>
+            <p class="section-summary">入口是 <code>WorkspaceSyncService.Sync</code>。它先保证本地默认空间，再写 Workspace 主表，最后为每个 Hilbert Workspace 单独同步人员与机器人。</p>
+          </div>
+        </div>
+
+        <div class="sequence">
+          <article class="sequence-item"><div class="sequence-body"><h3>配置门禁</h3><p>必须同时具备数据库、Hilbert BaseURL、AccessKey、SecretKey，并且 Hilbert client 报告 Digest 服务认证可用；否则启动同步跳过，手动接口返回 503。</p></div></article>
+          <article class="sequence-item"><div class="sequence-body"><h3>确保默认 Workspace</h3><p>Keystone 固定维护 <code>id=0</code>、<code>source='default'</code> 的本地兜底空间。逻辑先 UPDATE 恢复软删除记录；若 MySQL 报告 0 行变化，会再次确认主键是否存在，避免重复插入 0。</p></div></article>
+          <article class="sequence-item"><div class="sequence-body"><h3>拉取与校验可见 Workspace</h3><p>调用 Hilbert <code>/v1/console/workspace/list-available</code>。要求 ID &gt; 0、名称非空、返回列表中 ID 不重复；任一记录非法，整批 Workspace 不写入。</p></div></article>
+          <article class="sequence-item"><div class="sequence-body"><h3>事务写入 Workspace</h3><p>整批 Workspace 在一个数据库事务中 Upsert。Hilbert ID 直接作为本地主键；同步 name、description、admins、members、Hilbert 创建/更新时间和原始同步时间；重复记录会恢复 <code>deleted_at=NULL</code>。</p></div></article>
+          <article class="sequence-item"><div class="sequence-body"><h3>排除服务身份</h3><p>人员投影前，先把配置中的 AccessKey 和 <code>GET /account/get-cur</code> 返回的当前账号 code 加入排除集合，避免 Keystone 的 Hilbert 服务账号被当成数采员。查询当前账号失败只告警，不中止同步。</p></div></article>
+          <article class="sequence-item"><div class="sequence-body"><h3>逐 Workspace 同步人员与机器人</h3><p>每个 Workspace 开独立事务。人员来自 admins + members 去重列表；机器人来自该 Workspace 的全部 dc-device。不同 Workspace 互相隔离，一个失败不回滚已完成的其他 Workspace。</p></div></article>
+        </div>
+
+        <div class="split" style="margin-top: 34px">
+          <article class="block">
+            <h3>人员 → data_collectors</h3>
+            <ul>
+              <li>逐 code 调用 Hilbert account query，<code>pageSize=1</code>。</li>
+              <li><code>account.code</code> → <code>data_collectors.operator_id</code>。</li>
+              <li><code>displayName</code> 为空时回退到 code。</li>
+              <li>metadata 保存 Hilbert account ID、角色、外部用户类型、状态和 last_seen_at。</li>
+              <li>若同 operator_id 已存在且 metadata source 不是 <code>hilbert</code>，拒绝覆盖并记录错误。</li>
+              <li>软删除记录可被 Upsert 恢复；更新已有记录时当前代码不强制改写 status。</li>
+            </ul>
+          </article>
+          <article class="block">
+            <h3>设备 → robots</h3>
+            <ul>
+              <li>每个 Workspace 调用一次 dc-device query，使用 <code>pageSize=-1</code>。</li>
+              <li>Hilbert device 数字 ID 转字符串 → <code>robots.device_id</code>。</li>
+              <li><code>device.name</code> → <code>robots.device_name</code>；Workspace ID 直接写入。</li>
+              <li>每台设备按 type ID 单独查询设备类型，名称写入 <code>device_type</code>。</li>
+              <li>若同 device_id 是非 Hilbert 本地资源，拒绝覆盖。</li>
+              <li>若机器人已有 current workstation 且属于另一 Workspace，拒绝迁移 Workspace。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="plans">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">03</div>
+          <div>
+            <h2>dc_plan 与任务生成</h2>
+            <p class="section-summary">dc_plan 同步只依赖本地已经存在的 Hilbert Workspace。计划成功落库后，任务生成按 plan 独立执行；生成失败不会回滚计划投影。</p>
+          </div>
+        </div>
+
+        <div class="judgement" style="margin-bottom: 34px">
+          <small>APPROVED REVISION / NOT IMPLEMENTED YET</small>
+          <strong>本节记录的是当前代码行为。已确认的目标方案将移除同步后的批量 task generation，改为进入数采页刷新计划、准备时按需创建下一条 task。</strong>
+        </div>
+
+        <pre aria-label="计划同步伪代码">for workspace in local workspaces where source = "hilbert":
+    plans = fetch Hilbert dc_plan pages(pageSize=200)
+    validate every plan
+    transaction: upsert all plans for this workspace
+
+    for plan in plans:
+        transaction:
+            lock plan
+            collector = data_collectors[operator]
+            robot = robots[str(dc_device_id)]
+            workstation = find or create(robot, collector, workspace)
+            missing = target_count - existing_non_deleted_tasks
+            create missing pending tasks</pre>
+
+        <div class="split" style="margin-top: 30px">
+          <article class="block">
+            <h3>计划校验与写入</h3>
+            <ul>
+              <li>Workspace 必须是未删除的 Hilbert 投影，默认 Workspace 0 被明确拒绝。</li>
+              <li>计划 ID、Workspace 归属、名称、operator、dc_type、创建人、日期和数值字段均校验。</li>
+              <li>同一批返回的 plan ID 不允许重复。</li>
+              <li>本地已有同 plan ID 但属于另一 Workspace 时，整批事务失败。</li>
+              <li>保存 Hilbert 原始 JSON 到 <code>raw_payload</code>，便于追溯。</li>
+              <li>Hilbert 本次未返回的本地计划不会删除或软删除。</li>
+            </ul>
+          </article>
+          <article class="block">
+            <h3>任务补齐规则</h3>
+            <ul>
+              <li>collector 按 <code>plan.operator</code> 匹配，并验证其 Workspace 访问权。</li>
+              <li>robot 按 <code>str(plan.dc_device_id)</code> 匹配，并要求 workspace_id 一致。</li>
+              <li>优先复用同 robot + collector + workspace 的工位；历史 superseded 工位会被重新激活为 offline。</li>
+              <li>找不到工位时自动创建，初始 <code>status='offline'</code>、<code>is_current=false</code>。</li>
+              <li>只补齐 <code>target_count - existing_count</code>；target 减少时不删除任务。</li>
+              <li>新任务状态为 pending，<code>dc_plan_id</code> 指向 Hilbert plan，<code>local_dc_plan_id=NULL</code>。</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="callout">
+          <p><strong>幂等边界：</strong>计划 Upsert 是幂等的；任务生成按所有未软删除任务计数，不区分 pending / uploading / completed。重复同步不会重复创建，只有 Hilbert <code>target_count</code> 增大时才补缺口。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="mapping">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">04</div>
+          <div>
+            <h2>数据映射</h2>
+            <p class="section-summary">Hilbert 主键尽量直接成为 Keystone 的稳定外部映射键；运行时本地主键仍由 Keystone 自己维护。</p>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Hilbert 来源</th><th>Keystone 目标</th><th>主映射</th><th>关键字段</th><th>覆盖保护</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Workspace</strong></td><td><code>workspaces</code></td><td><code>workspace.id → workspaces.id</code></td><td>name、description、admins、members、Hilbert 时间</td><td>ID 必须 &gt; 0；整批校验与事务</td></tr>
+              <tr><td><strong>Account</strong></td><td><code>data_collectors</code></td><td><code>account.code → operator_id</code></td><td>displayName、role、externalUserType、Hilbert status 写入 metadata</td><td>不覆盖 active 非 Hilbert 同名资源</td></tr>
+              <tr><td><strong>DC Device</strong></td><td><code>robots</code></td><td><code>strconv(device.id) → device_id</code></td><td>device_name、workspace_id、device_type_id/name、完整 raw metadata</td><td>不覆盖 active 非 Hilbert 资源；保护 current workstation 的 Workspace</td></tr>
+              <tr><td><strong>DC Device Type</strong></td><td><code>robots</code> 字段</td><td><code>type.id → device_type_id</code></td><td>type.name → device_type</td><td>查询失败时跳过该机器人，不建立独立类型表投影</td></tr>
+              <tr><td><strong>DC Plan</strong></td><td><code>dc_plan</code></td><td><code>plan.id → dc_plan.id</code></td><td>operator、device、dc_type、目标数量/时长、raw_payload</td><td>禁止同一 plan ID 跨 Workspace</td></tr>
+              <tr><td><strong>Plan target</strong></td><td><code>tasks</code></td><td><code>tasks.dc_plan_id → plan.id</code></td><td>pending、workstation、organization/workspace、计划快照 metadata</td><td>只补缺口，不删减已有任务</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="transactions">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">05</div>
+          <div>
+            <h2>事务与失败隔离</h2>
+            <p class="section-summary">当前实现不是“全部成功或全部失败”。不同层级采用不同事务边界，以允许局部资源继续同步。</p>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>阶段</th><th>事务边界</th><th>失败后行为</th><th>是否继续</th></tr></thead>
+            <tbody>
+              <tr><td><strong>默认 Workspace</strong></td><td>单条 UPDATE / 查询 / INSERT</td><td>失败则整个 Workspace Sync 返回失败</td><td>Server 仍继续尝试启动 dc_plan 同步</td></tr>
+              <tr><td><strong>Workspace 主表</strong></td><td>本次 Hilbert 返回的全部 Workspace 共用一个事务</td><td>任一校验或 Upsert 失败，不提交任何 Hilbert Workspace</td><td>不进入资源投影</td></tr>
+              <tr><td><strong>人员 + 机器人</strong></td><td>每个 Workspace 一个事务</td><td>单个人员/机器人错误通常记录并跳过；设备列表查询失败会回滚该 Workspace 内已经写入的人员</td><td>继续下一个 Workspace</td></tr>
+              <tr><td><strong>dc_plan</strong></td><td>每个 Workspace 的全部计划一个事务</td><td>该 Workspace 计划不提交</td><td><code>SyncAllWorkspaces</code> 继续其他 Workspace</td></tr>
+              <tr><td><strong>Task generation</strong></td><td>每个 plan 一个独立事务</td><td>返回 blocked reason；该 plan 不创建任务</td><td>其他 plan 继续，dc_plan 同步本身仍视为成功</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="split" style="margin-top: 30px">
+          <article class="block">
+            <h3>结构性错误：直接失败</h3>
+            <ul>
+              <li>Hilbert 不可达、Digest 认证失败或响应 code 非 0。</li>
+              <li>Workspace / plan 返回记录不合法或重复。</li>
+              <li>Workspace 主表、dc_plan 主表事务失败。</li>
+              <li>上下文超时；默认 5 秒覆盖一次完整同步调用。</li>
+            </ul>
+          </article>
+          <article class="block warning-block">
+            <h3>业务缺口：记录后继续</h3>
+            <ul>
+              <li>Workspace 成员账号不存在或查询失败。</li>
+              <li>机器人类型查询失败、资源来源冲突、Workspace 绑定冲突。</li>
+              <li>plan 缺 collector、robot、Workspace 权限或工位创建失败。</li>
+              <li>这些错误会进入 summary / 日志，但不必然让外层 HTTP 请求失败。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="triggers">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">06</div>
+          <div>
+            <h2>触发方式与接口</h2>
+            <p class="section-summary">Workspace 资源同步没有周期 ticker；计划同步具有固定 5 分钟 ticker。两者也都提供手动 HTTP 入口。</p>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>同步对象</th><th>启动</th><th>周期</th><th>手动 API</th><th>作用范围</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Workspace + collector + robot</strong></td><td>Server.Start 同步执行</td><td>无</td><td><code>POST /api/v1/workspaces/sync</code></td><td>AK/SK 当前可见的全部 Workspace</td></tr>
+              <tr><td><strong>dc_plan + task</strong></td><td>紧随 Workspace Sync 后执行</td><td>每 5 分钟</td><td><code>POST /api/v1/workspaces/:workspace_id/dc-plans/sync</code></td><td>启动/周期处理全部本地 Hilbert Workspace；手动仅一个</td></tr>
+              <tr><td><strong>原始数据上传</strong></td><td>独立 SyncWorker</td><td>由 Sync 配置控制</td><td>独立数据运维接口</td><td>Episode / MCAP，不属于资源投影</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 style="margin-top: 40px">Hilbert 调用清单</h3>
+        <div class="endpoint-list">
+          <div class="endpoint"><span class="method">GET</span><div><b>/v1/console/workspace/list-available</b><span>列出服务身份可见 Workspace</span></div></div>
+          <div class="endpoint"><span class="method">GET</span><div><b>/v1/console/account/get-cur</b><span>识别并排除当前服务账号</span></div></div>
+          <div class="endpoint"><span class="method">GET</span><div><b>/v1/console/account/query</b><span>按成员 code 查询账号，逐成员调用</span></div></div>
+          <div class="endpoint"><span class="method">GET</span><div><b>/v1/data-collection/dc-device/query</b><span>按 Workspace 拉取全部设备</span></div></div>
+          <div class="endpoint"><span class="method">GET</span><div><b>/v1/data-collection/dc-device-type/query</b><span>逐设备类型 ID 查询类型</span></div></div>
+          <div class="endpoint"><span class="method">GET</span><div><b>/v1/data-collection/dc-plan/query</b><span>按 Workspace 分页拉取计划</span></div></div>
+        </div>
+
+        <div class="callout">
+          <p><strong>认证格式：</strong>所有后台资源调用直接携带 <code>Authorization: Digest AK;epoch_millis;sha256(SK + "," + epoch_millis)</code>，不会先调用 Hilbert account login，也不会缓存 sessionKey。</p>
+        </div>
+        <div class="callout">
+          <p><strong>配置开关边界：</strong>Workspace / dc_plan 资源同步是否运行，只由 Hilbert BaseURL、AK、SK 和数据库是否可用决定；它不读取原始数据上传链路的 <code>KEYSTONE_SYNC_ENABLED</code>。后者只控制 Episode / MCAP 云同步 worker。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="boundaries">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">07</div>
+          <div>
+            <h2>当前边界与风险</h2>
+            <p class="section-summary">以下是代码当前真实行为。它们不一定都是缺陷，但会直接影响同步一致性、性能和运维预期。</p>
+          </div>
+        </div>
+
+        <div class="split">
+          <article class="block">
+            <h3>一致性边界</h3>
+            <ul>
+              <li><strong>只 Upsert，不做删除收敛：</strong>Hilbert 删除 Workspace、成员、设备或计划后，本地对象不会自动软删除。</li>
+              <li><strong>资源不周期刷新：</strong>人员或设备变更只有重启 Keystone 或手动 Workspace Sync 才能看到。</li>
+              <li><strong>状态字段保守：</strong>collector / robot 已存在时 Upsert 不强制把 status 改回 active。</li>
+              <li><strong>计划与资源可能错位：</strong>Workspace 启动同步失败后，dc_plan 仍可能基于旧资源继续拉取和生成。</li>
+            </ul>
+          </article>
+          <article class="block">
+            <h3>性能与容量边界</h3>
+            <ul>
+              <li><strong>账号 N+1：</strong>每个去重后的 admin/member 各发一次 account query。</li>
+              <li><strong>类型 N+1：</strong>每台带 type ID 的设备各发一次类型查询，没有本次同步级缓存。</li>
+              <li><strong>设备一次性拉全：</strong><code>pageSize=-1</code>，依赖 Hilbert 支持无限页语义。</li>
+              <li><strong>共享超时：</strong>一次全量同步共享默认 5 秒 context；Workspace 多、成员多或 plan 分页多时容易整体超时。</li>
+            </ul>
+          </article>
+          <article class="block">
+            <h3>任务生成边界</h3>
+            <ul>
+              <li>只根据 target_count 补任务，不根据 cur_count 回收或完成任务。</li>
+              <li>已有任务使用旧 metadata；同步计划不会刷新已生成任务快照。</li>
+              <li>自动创建的 workstation 是 offline 且非 current，后续仍需运营侧分配/激活流程。</li>
+              <li>task generation blocked 不会使 dc_plan 同步 HTTP 失败，需要查看响应 summary。</li>
+              <li><strong>目标改造：</strong>每计划最多一条 pending；target 增减只影响后续供应，ready 及以后快照不变。</li>
+            </ul>
+          </article>
+          <article class="block warning-block">
+            <h3>运维检查重点</h3>
+            <ul>
+              <li>Keystone 与 Hilbert 时钟必须同步，Digest 使用毫秒时间戳。</li>
+              <li>AK 所属账号必须能看见目标 Workspace，并具备相关查询权限。</li>
+              <li>关注日志中的 workspace 级 errors 与 task generation blocked reason。</li>
+              <li>资源变化后，先触发 Workspace Sync，再触发 dc_plan Sync，顺序不能反。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-index">08</div>
+          <div>
+            <h2>代码索引</h2>
+            <p class="section-summary">文档以这些当前实现文件为事实来源；历史设计文档只用于交叉核对术语。</p>
+          </div>
+        </div>
+
+        <div class="source-list">
+          <div class="source-item"><b>internal/server/server.go</b><span>启动顺序、5 分钟计划同步 ticker、同步超时。</span></div>
+          <div class="source-item"><b>internal/services/workspace_sync.go</b><span>默认 Workspace、Workspace 校验和事务 Upsert。</span></div>
+          <div class="source-item"><b>internal/services/workspace_resource_sync.go</b><span>人员、设备、类型投影及冲突保护。</span></div>
+          <div class="source-item"><b>internal/services/dc_plan_sync.go</b><span>计划分页、校验、事务 Upsert 与 Workspace 失败隔离。</span></div>
+          <div class="source-item"><b>internal/services/dc_plan_task_generation.go</b><span>collector/robot/workstation 解析与任务缺口补齐。</span></div>
+          <div class="source-item"><b>internal/auth/hilbert_client.go</b><span>Digest 认证、Hilbert endpoint 与响应处理。</span></div>
+          <div class="source-item"><b>internal/api/handlers/workspace.go</b><span>手动 Workspace 同步 API 与响应。</span></div>
+          <div class="source-item"><b>internal/api/handlers/dc_plan.go</b><span>单 Workspace dc_plan 手动同步 API。</span></div>
+          <div class="source-item"><b>internal/config/config.go</b><span>BaseURL、超时、AK/SK 环境变量。</span></div>
+          <div class="source-item"><b>internal/storage/database/migrations/v2/000001_initial_schema.up.sql</b><span>Workspace、dc_plan 和默认 Workspace 基线结构。</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell footer-grid">
+      <div>
+        <strong>最终结论 / CURRENT IMPLEMENTATION</strong>
+        <p>Hilbert 负责主数据与计划定义；Keystone 负责受控投影、运行时绑定和本地执行状态。当前代码仍批量生成 task；已确认的下一步是把 task 供应收缩到准备时按需创建。</p>
+      </div>
+      <div class="mono">ARCHETYPE / KEYSTONE EDGE / 2026</div>
+    </div>
+  </footer>
+</body>
+</html>
