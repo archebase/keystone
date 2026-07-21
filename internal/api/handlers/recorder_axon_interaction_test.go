@@ -816,8 +816,11 @@ func TestRecorderWebSocketAuthRejectsMissingBearerToken(t *testing.T) {
 }
 
 func TestRecorderWebSocketAuthDefaultsToDisabled(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDevice(t, db, "robot-001", 1, 101)
+
 	hub := services.NewRecorderHub()
-	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, nil)
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
 	wsURL := newRecorderWebSocketTestServer(t, handler, "robot-001")
 
 	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
@@ -825,6 +828,94 @@ func TestRecorderWebSocketAuthDefaultsToDisabled(t *testing.T) {
 		t.Fatalf("dial without bearer token failed with default recorder auth config: %v", err)
 	}
 	_ = conn.CloseNow()
+}
+
+func TestRecorderWebSocketWithoutAuthResolvesDeviceNameToDeviceID(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDeviceWithName(t, db, "456", "robot_dc87", 1, 101)
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{ResponseTimeout: 1}, db)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.HandleWebSocket(w, r, "robot_dc87")
+	}))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial by device_name without bearer token failed: %v", err)
+	}
+	defer func() {
+		if err := conn.CloseNow(); err != nil {
+			t.Errorf("close recorder websocket: %v", err)
+		}
+	}()
+
+	if hub.Get("456") == nil {
+		t.Fatalf("recorder was not registered under canonical device_id")
+	}
+	if hub.Get("robot_dc87") != nil {
+		t.Fatalf("recorder was registered under device_name instead of canonical device_id")
+	}
+}
+
+func TestRecorderWebSocketWithoutAuthRejectsUnknownDeviceName(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	handler := NewRecorderHandler(services.NewRecorderHub(), &config.RecorderConfig{ResponseTimeout: 1}, db)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/recorder/missing-device", nil)
+
+	handler.HandleWebSocket(w, req, "missing-device")
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+}
+
+func TestRecorderWebSocketRejectsEmptyCanonicalDeviceID(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, device_name, status) VALUES (1, '   ', 'robot_dc87', 'active')`); err != nil {
+		t.Fatalf("seed robot with empty canonical id: %v", err)
+	}
+
+	handler := NewRecorderHandler(services.NewRecorderHub(), &config.RecorderConfig{ResponseTimeout: 1}, db)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/recorder/robot_dc87", nil)
+
+	handler.HandleWebSocket(w, req, "robot_dc87")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+}
+
+func TestRecorderWebSocketWithAuthResolvesDeviceNameBeforeTokenValidation(t *testing.T) {
+	db := newRecorderInteractionDB(t)
+	seedRecorderInteractionDeviceWithName(t, db, "456", "robot_dc87", 1, 101)
+	seedRecorderWSClientTokenForDevice(t, db, "456")
+
+	hub := services.NewRecorderHub()
+	handler := NewRecorderHandler(hub, &config.RecorderConfig{AuthEnabled: true, ResponseTimeout: 1}, db)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.HandleWebSocket(w, r, "robot_dc87")
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.Dial(context.Background(), wsURL, recorderWebSocketDialOptions(recorderWSAuthToken("456")))
+	if err != nil {
+		t.Fatalf("dial by device_name with canonical device token failed: %v", err)
+	}
+	defer func() {
+		if err := conn.CloseNow(); err != nil {
+			t.Errorf("close authenticated recorder websocket: %v", err)
+		}
+	}()
+
+	if hub.Get("456") == nil {
+		t.Fatalf("authenticated recorder was not registered under canonical device_id")
+	}
 }
 
 func TestRecorderWebSocketAuthRejectsTokenForDifferentDevice(t *testing.T) {
@@ -1021,6 +1112,7 @@ func newRecorderInteractionDB(t *testing.T) *sqlx.DB {
 	if _, err := db.Exec(`CREATE TABLE robots (
 		id INTEGER PRIMARY KEY,
 		device_id TEXT NOT NULL,
+		device_name TEXT,
 		status TEXT NOT NULL DEFAULT 'active',
 		deleted_at TIMESTAMP NULL
 	)`); err != nil {
@@ -1065,8 +1157,12 @@ func newRecorderInteractionDB(t *testing.T) *sqlx.DB {
 }
 
 func seedRecorderInteractionDevice(t *testing.T, db *sqlx.DB, deviceID string, robotID int64, workstationID int64) {
+	seedRecorderInteractionDeviceWithName(t, db, deviceID, deviceID, robotID, workstationID)
+}
+
+func seedRecorderInteractionDeviceWithName(t *testing.T, db *sqlx.DB, deviceID string, deviceName string, robotID int64, workstationID int64) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO robots (id, device_id, status) VALUES (?, ?, 'active')`, robotID, deviceID); err != nil {
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, device_name, status) VALUES (?, ?, ?, 'active')`, robotID, deviceID, deviceName); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (?, ?)`, workstationID, robotID); err != nil {

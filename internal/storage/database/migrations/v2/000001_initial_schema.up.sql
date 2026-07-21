@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS dc_plan (
 CREATE TABLE IF NOT EXISTS robots (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     device_id VARCHAR(100) NOT NULL,
+    device_name VARCHAR(255),
     workspace_id BIGINT NOT NULL DEFAULT 0,
     device_type_id BIGINT,
     device_type VARCHAR(255),
@@ -108,6 +109,13 @@ CREATE TABLE IF NOT EXISTS robots (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL,
     _device_unique VARCHAR(200) GENERATED ALWAYS AS (CONCAT(IFNULL(device_id, ''), '|', IFNULL(deleted_at, ''))) STORED,
+    _device_name_unique VARCHAR(255) GENERATED ALWAYS AS (
+        CASE
+            WHEN deleted_at IS NULL AND device_name IS NOT NULL AND device_name <> ''
+            THEN device_name
+            ELSE NULL
+        END
+    ) STORED,
     _asset_unique VARCHAR(100) GENERATED ALWAYS AS (
         CASE
             WHEN deleted_at IS NULL AND asset_id IS NOT NULL AND asset_id <> ''
@@ -116,6 +124,7 @@ CREATE TABLE IF NOT EXISTS robots (
         END
     ) STORED,
     UNIQUE INDEX idx_device_del (_device_unique),
+    UNIQUE INDEX idx_device_name_active_unique (_device_name_unique),
     UNIQUE INDEX idx_asset_active_unique (_asset_unique),
     INDEX idx_workspace (workspace_id),
     INDEX idx_device_type_id (device_type_id),

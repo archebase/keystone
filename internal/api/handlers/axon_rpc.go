@@ -138,10 +138,28 @@ func (h *RecorderHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // HandleWebSocket handles recorder WebSocket connections.
 func (h *RecorderHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request, deviceID string) {
-	if deviceID == "" {
+	deviceName := strings.TrimSpace(deviceID)
+	if deviceName == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+
+	deviceID, err := resolveAxonDeviceID(r.Context(), h.db, deviceName)
+	if err != nil {
+		if errors.Is(err, errAxonDeviceNameNotFound) {
+			if h.cfg != nil && h.cfg.AuthEnabled {
+				writeRecorderWebSocketAuthError(w, http.StatusUnauthorized, "unauthorized", true)
+				return
+			}
+			logger.Printf("[RECORDER][%s] robot not found in database", deviceName)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		logger.Printf("[RECORDER][%s] device lookup failed: %v", deviceName, err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
 	if h.cfg != nil && h.cfg.AuthEnabled && !h.authorizeRecorderWebSocket(w, r, deviceID) {
 		return
 	}

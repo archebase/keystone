@@ -6,6 +6,9 @@ package handlers
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +18,42 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
+
+func TestTransferWebSocketResolvesDeviceNameToDeviceID(t *testing.T) {
+	db := newTransferTakeoverDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close transfer test database: %v", err)
+		}
+	}()
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, device_name, status) VALUES (2, '456', 'robot_dc87', 'active')`); err != nil {
+		t.Fatalf("seed named robot: %v", err)
+	}
+
+	hub := services.NewTransferHub(10)
+	handler := NewTransferHandler(hub, &config.TransferConfig{}, db, nil, "", "", nil, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.HandleWebSocket(w, r, "robot_dc87")
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.Dial(context.Background(), "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial transfer by device_name: %v", err)
+	}
+	defer func() {
+		if err := conn.CloseNow(); err != nil {
+			t.Errorf("close transfer websocket: %v", err)
+		}
+	}()
+
+	if hub.Get("456") == nil {
+		t.Fatalf("transfer was not registered under canonical device_id")
+	}
+	if hub.Get("robot_dc87") != nil {
+		t.Fatalf("transfer was registered under device_name instead of canonical device_id")
+	}
+}
 
 func TestTransferIgnoresUploadFailedFromReplacedConnection(t *testing.T) {
 	db := newTransferTakeoverDB(t)
@@ -87,6 +126,8 @@ func newTransferTakeoverDB(t *testing.T) *sqlx.DB {
 	if _, err := db.Exec(`CREATE TABLE robots (
 		id INTEGER PRIMARY KEY,
 		device_id TEXT NOT NULL,
+		device_name TEXT,
+		status TEXT NOT NULL DEFAULT 'active',
 		deleted_at TIMESTAMP NULL
 	)`); err != nil {
 		t.Fatalf("create robots schema: %v", err)
@@ -98,7 +139,7 @@ func newTransferTakeoverDB(t *testing.T) *sqlx.DB {
 	)`); err != nil {
 		t.Fatalf("create workstations schema: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO robots (id, device_id) VALUES (1, 'robot-001')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO robots (id, device_id, device_name) VALUES (1, 'robot-001', 'robot-001')`); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (10, 1)`); err != nil {

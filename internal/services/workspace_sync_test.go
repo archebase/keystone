@@ -203,19 +203,21 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	}
 
 	var robot struct {
+		DeviceName   string         `db:"device_name"`
 		Status       string         `db:"status"`
 		DeviceTypeID sql.NullInt64  `db:"device_type_id"`
 		DeviceType   sql.NullString `db:"device_type"`
 		Metadata     string         `db:"metadata"`
 	}
 	if err := db.Get(&robot, `
-		SELECT status, device_type_id, device_type, metadata
+		SELECT device_name, status, device_type_id, device_type, metadata
 		FROM robots
 		WHERE device_id = '456'
 	`); err != nil {
 		t.Fatalf("query robot: %v", err)
 	}
-	if robot.Status != "active" ||
+	if robot.DeviceName != "Device A" ||
+		robot.Status != "active" ||
 		!robot.DeviceTypeID.Valid ||
 		robot.DeviceTypeID.Int64 != 77 ||
 		!robot.DeviceType.Valid ||
@@ -627,6 +629,7 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			device_id TEXT UNIQUE,
+			device_name TEXT,
 			workspace_id INTEGER,
 			device_type_id INTEGER,
 			device_type TEXT,
