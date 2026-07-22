@@ -190,21 +190,23 @@ func TestDCPlanTaskSupplyBlocksReadyButAllowsUploadingPredecessor(t *testing.T) 
 
 func testTaskSupplyPlan(id int64, workspaceID int64, targetCount int64) auth.HilbertDCPlan {
 	return auth.HilbertDCPlan{
-		ID:                  id,
-		WorkspaceID:         workspaceID,
-		Name:                "Plan",
-		DCFactoryID:         321,
-		DCServiceProviderID: 12,
-		Operator:            "collector-a",
-		DCProjectID:         13,
-		DCTaskID:            14,
-		DCDeviceID:          456,
-		DCType:              "ego",
-		DCDate:              "2026-07-21",
-		TargetCount:         targetCount,
-		TargetDuration:      3600,
-		CreatedBy:           "planner",
-		CreatedTime:         time.Date(2026, 7, 21, 1, 2, 3, 0, time.UTC),
+		ID:                   id,
+		WorkspaceID:          workspaceID,
+		Name:                 "Plan",
+		DCFactoryID:          321,
+		DCServiceProviderID:  12,
+		Operator:             "collector-a",
+		DCProjectID:          13,
+		DCProjectDescription: "Collect objects in the kitchen",
+		DCTaskID:             14,
+		DCTaskDescription:    "Follow the collection instructions",
+		DCDeviceID:           456,
+		DCType:               "ego",
+		DCDate:               "2026-07-21",
+		TargetCount:          targetCount,
+		TargetDuration:       3600,
+		CreatedBy:            "planner",
+		CreatedTime:          time.Date(2026, 7, 21, 1, 2, 3, 0, time.UTC),
 	}
 }
 
@@ -218,10 +220,10 @@ func seedTaskSupplyPlan(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
 	}
 	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
-			id, workspace_id, name, operator, dc_device_id, dc_type,
+			id, workspace_id, name, operator, dc_project_description, dc_task_description, dc_device_id, dc_type,
 			target_count, target_duration, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-	`, plan.ID, plan.WorkspaceID, plan.Name, plan.Operator, plan.DCDeviceID,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+	`, plan.ID, plan.WorkspaceID, plan.Name, plan.Operator, plan.DCProjectDescription, plan.DCTaskDescription, plan.DCDeviceID,
 		plan.DCType, plan.TargetCount, plan.TargetDuration); err != nil {
 		t.Fatalf("seed dc_plan: %v", err)
 	}
@@ -261,6 +263,8 @@ func newTestDCPlanTaskSupplyDB(t *testing.T) *sqlx.DB {
 			workspace_id INTEGER NOT NULL,
 			name TEXT NOT NULL,
 			operator TEXT NOT NULL,
+			dc_project_description TEXT,
+			dc_task_description TEXT,
 			dc_device_id INTEGER NOT NULL,
 			dc_type TEXT NOT NULL,
 			target_count INTEGER NOT NULL,

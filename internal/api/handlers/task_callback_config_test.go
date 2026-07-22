@@ -56,7 +56,7 @@ func TestGetTaskConfigUsesTaskPlanSnapshot(t *testing.T) {
 	defer db.Close()
 	if _, err := db.Exec(`
 		UPDATE tasks
-		SET metadata = '{"operator":"snapshot-collector","dc_type":"snapshot-type","dc_device_id":654,"target_count":8,"target_duration":90,"execution_config":{"topics":[]}}'
+		SET metadata = '{"dc_plan_name":"Snapshot Plan","dc_project_description":"Snapshot project instructions","dc_task_description":"Snapshot task instructions","operator":"snapshot-collector","dc_type":"snapshot-type","dc_device_id":654,"target_count":8,"target_duration":90,"execution_config":{"topics":[]}}'
 		WHERE id = 1
 	`); err != nil {
 		t.Fatalf("update task snapshot: %v", err)
@@ -85,10 +85,30 @@ func TestGetTaskConfigUsesTaskPlanSnapshot(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	if response.OperatorName != "snapshot-collector" || response.DCType != "snapshot-type" ||
+		response.DCPlanName != "Snapshot Plan" ||
+		response.DCProjectDescription != "Snapshot project instructions" ||
+		response.DCTaskDescription != "Snapshot task instructions" ||
 		response.DCDeviceID == nil || *response.DCDeviceID != 654 ||
 		response.PlanTargetCount == nil || *response.PlanTargetCount != 8 ||
 		response.PlanTargetDuration == nil || *response.PlanTargetDuration != 90 {
 		t.Fatalf("task config did not preserve snapshot: %#v", response)
+	}
+}
+
+func TestTaskListItemUsesTaskPlanSnapshot(t *testing.T) {
+	livePlanName := "Live Plan"
+	item := TaskListItem{DCPlanName: &livePlanName}
+
+	applyTaskPlanSnapshot(&item, `{
+		"dc_plan_name":"Snapshot Plan",
+		"dc_project_description":"Snapshot project instructions",
+		"dc_task_description":"Snapshot task instructions"
+	}`)
+
+	if item.DCPlanName == nil || *item.DCPlanName != "Snapshot Plan" ||
+		item.DCProjectDescription != "Snapshot project instructions" ||
+		item.DCTaskDescription != "Snapshot task instructions" {
+		t.Fatalf("task list item did not preserve snapshot: %#v", item)
 	}
 }
 

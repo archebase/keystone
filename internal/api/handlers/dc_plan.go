@@ -39,31 +39,33 @@ func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer) *DCPlanHan
 
 // DCPlanResponse represents one Hilbert dc_plan projection.
 type DCPlanResponse struct {
-	ID                  int64  `json:"id"`
-	WorkspaceID         int64  `json:"workspace_id"`
-	Name                string `json:"name"`
-	Description         string `json:"description,omitempty"`
-	DCFactoryID         int64  `json:"dc_factory_id"`
-	DCServiceProviderID int64  `json:"dc_service_provider_id"`
-	Operator            string `json:"operator"`
-	OperatorDisplayName string `json:"operator_display_name,omitempty"`
-	DCProjectID         int64  `json:"dc_project_id"`
-	DCProjectName       string `json:"dc_project_name,omitempty"`
-	DCTaskID            int64  `json:"dc_task_id"`
-	DCTaskName          string `json:"dc_task_name,omitempty"`
-	DCDeviceID          int64  `json:"dc_device_id"`
-	DCDeviceName        string `json:"dc_device_name,omitempty"`
-	DCType              string `json:"dc_type"`
-	DCDate              string `json:"dc_date"`
-	TargetCount         int64  `json:"target_count"`
-	CurCount            int64  `json:"cur_count"`
-	TargetDuration      int64  `json:"target_duration"`
-	CurDuration         int64  `json:"cur_duration"`
-	CreatedBy           string `json:"created_by"`
-	CreatedTime         string `json:"created_time"`
-	UpdatedBy           string `json:"updated_by,omitempty"`
-	UpdatedTime         string `json:"updated_time,omitempty"`
-	LastSyncedAt        string `json:"last_synced_at,omitempty"`
+	ID                   int64  `json:"id"`
+	WorkspaceID          int64  `json:"workspace_id"`
+	Name                 string `json:"name"`
+	Description          string `json:"description,omitempty"`
+	DCFactoryID          int64  `json:"dc_factory_id"`
+	DCServiceProviderID  int64  `json:"dc_service_provider_id"`
+	Operator             string `json:"operator"`
+	OperatorDisplayName  string `json:"operator_display_name,omitempty"`
+	DCProjectID          int64  `json:"dc_project_id"`
+	DCProjectName        string `json:"dc_project_name,omitempty"`
+	DCProjectDescription string `json:"dc_project_description,omitempty"`
+	DCTaskID             int64  `json:"dc_task_id"`
+	DCTaskName           string `json:"dc_task_name,omitempty"`
+	DCTaskDescription    string `json:"dc_task_description,omitempty"`
+	DCDeviceID           int64  `json:"dc_device_id"`
+	DCDeviceName         string `json:"dc_device_name,omitempty"`
+	DCType               string `json:"dc_type"`
+	DCDate               string `json:"dc_date"`
+	TargetCount          int64  `json:"target_count"`
+	CurCount             int64  `json:"cur_count"`
+	TargetDuration       int64  `json:"target_duration"`
+	CurDuration          int64  `json:"cur_duration"`
+	CreatedBy            string `json:"created_by"`
+	CreatedTime          string `json:"created_time"`
+	UpdatedBy            string `json:"updated_by,omitempty"`
+	UpdatedTime          string `json:"updated_time,omitempty"`
+	LastSyncedAt         string `json:"last_synced_at,omitempty"`
 }
 
 // DCPlanListResponse represents a paginated dc_plan list response.
@@ -86,20 +88,25 @@ type DCPlanSyncResponse struct {
 
 // OperatorPlanItem represents one plan currently executable by the logged-in collector.
 type OperatorPlanItem struct {
-	ID             int64  `json:"id"`
-	WorkspaceID    int64  `json:"workspace_id"`
-	Name           string `json:"name"`
-	DCProjectID    int64  `json:"dc_project_id"`
-	DCProjectName  string `json:"dc_project_name,omitempty"`
-	DCTaskID       int64  `json:"dc_task_id"`
-	DCTaskName     string `json:"dc_task_name,omitempty"`
-	DCDeviceID     int64  `json:"dc_device_id"`
-	DCDeviceName   string `json:"dc_device_name,omitempty"`
-	DCType         string `json:"dc_type"`
-	TargetCount    int64  `json:"target_count"`
-	CommittedCount int64  `json:"committed_count"`
-	RemainingCount int64  `json:"remaining_count"`
-	LastSyncedAt   string `json:"last_synced_at,omitempty"`
+	ID                   int64  `json:"id"`
+	WorkspaceID          int64  `json:"workspace_id"`
+	Name                 string `json:"name"`
+	DCProjectID          int64  `json:"dc_project_id"`
+	DCProjectName        string `json:"dc_project_name,omitempty"`
+	DCProjectDescription string `json:"dc_project_description,omitempty"`
+	DCTaskID             int64  `json:"dc_task_id"`
+	DCTaskName           string `json:"dc_task_name,omitempty"`
+	DCTaskDescription    string `json:"dc_task_description,omitempty"`
+	DCDeviceID           int64  `json:"dc_device_id"`
+	DCDeviceName         string `json:"dc_device_name,omitempty"`
+	DCType               string `json:"dc_type"`
+	TargetCount          int64  `json:"target_count"`
+	CurCount             int64  `json:"cur_count"`
+	TargetDuration       int64  `json:"target_duration"`
+	CurDuration          int64  `json:"cur_duration"`
+	CommittedCount       int64  `json:"committed_count"`
+	RemainingCount       int64  `json:"remaining_count"`
+	LastSyncedAt         string `json:"last_synced_at,omitempty"`
 }
 
 // OperatorPlanRefreshResponse reports the collector's latest assigned plans.
@@ -110,33 +117,35 @@ type OperatorPlanRefreshResponse struct {
 }
 
 type dcPlanRow struct {
-	ID                  int64           `db:"id"`
-	WorkspaceID         int64           `db:"workspace_id"`
-	Name                string          `db:"name"`
-	Description         sql.NullString  `db:"description"`
-	DCFactoryID         int64           `db:"dc_factory_id"`
-	DCServiceProviderID int64           `db:"dc_service_provider_id"`
-	Operator            string          `db:"operator"`
-	OperatorDisplayName sql.NullString  `db:"operator_display_name"`
-	DCProjectID         int64           `db:"dc_project_id"`
-	DCProjectName       sql.NullString  `db:"dc_project_name"`
-	DCTaskID            int64           `db:"dc_task_id"`
-	DCTaskName          sql.NullString  `db:"dc_task_name"`
-	DCDeviceID          int64           `db:"dc_device_id"`
-	DCDeviceName        sql.NullString  `db:"dc_device_name"`
-	DCType              string          `db:"dc_type"`
-	DCDate              string          `db:"dc_date"`
-	TargetCount         int64           `db:"target_count"`
-	CurCount            int64           `db:"cur_count"`
-	LocalCurCount       int64           `db:"local_cur_count"`
-	TargetDuration      int64           `db:"target_duration"`
-	CurDuration         int64           `db:"cur_duration"`
-	LocalCurDuration    sql.NullFloat64 `db:"local_cur_duration"`
-	CreatedBy           string          `db:"created_by"`
-	CreatedTime         sql.NullTime    `db:"created_time"`
-	UpdatedBy           sql.NullString  `db:"updated_by"`
-	UpdatedTime         sql.NullTime    `db:"updated_time"`
-	LastSyncedAt        sql.NullTime    `db:"last_synced_at"`
+	ID                   int64           `db:"id"`
+	WorkspaceID          int64           `db:"workspace_id"`
+	Name                 string          `db:"name"`
+	Description          sql.NullString  `db:"description"`
+	DCFactoryID          int64           `db:"dc_factory_id"`
+	DCServiceProviderID  int64           `db:"dc_service_provider_id"`
+	Operator             string          `db:"operator"`
+	OperatorDisplayName  sql.NullString  `db:"operator_display_name"`
+	DCProjectID          int64           `db:"dc_project_id"`
+	DCProjectName        sql.NullString  `db:"dc_project_name"`
+	DCProjectDescription sql.NullString  `db:"dc_project_description"`
+	DCTaskID             int64           `db:"dc_task_id"`
+	DCTaskName           sql.NullString  `db:"dc_task_name"`
+	DCTaskDescription    sql.NullString  `db:"dc_task_description"`
+	DCDeviceID           int64           `db:"dc_device_id"`
+	DCDeviceName         sql.NullString  `db:"dc_device_name"`
+	DCType               string          `db:"dc_type"`
+	DCDate               string          `db:"dc_date"`
+	TargetCount          int64           `db:"target_count"`
+	CurCount             int64           `db:"cur_count"`
+	LocalCurCount        int64           `db:"local_cur_count"`
+	TargetDuration       int64           `db:"target_duration"`
+	CurDuration          int64           `db:"cur_duration"`
+	LocalCurDuration     sql.NullFloat64 `db:"local_cur_duration"`
+	CreatedBy            string          `db:"created_by"`
+	CreatedTime          sql.NullTime    `db:"created_time"`
+	UpdatedBy            sql.NullString  `db:"updated_by"`
+	UpdatedTime          sql.NullTime    `db:"updated_time"`
+	LastSyncedAt         sql.NullTime    `db:"last_synced_at"`
 }
 
 // RegisterRoutes registers dc_plan routes.
@@ -205,19 +214,26 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 	}
 
 	rows := []struct {
-		ID             int64        `db:"id"`
-		WorkspaceID    int64        `db:"workspace_id"`
-		Name           string       `db:"name"`
-		DCProjectID    int64        `db:"dc_project_id"`
-		DCProjectName  string       `db:"dc_project_name"`
-		DCTaskID       int64        `db:"dc_task_id"`
-		DCTaskName     string       `db:"dc_task_name"`
-		DCDeviceID     int64        `db:"dc_device_id"`
-		DCDeviceName   string       `db:"dc_device_name"`
-		DCType         string       `db:"dc_type"`
-		TargetCount    int64        `db:"target_count"`
-		CommittedCount int64        `db:"committed_count"`
-		LastSyncedAt   sql.NullTime `db:"last_synced_at"`
+		ID                   int64        `db:"id"`
+		WorkspaceID          int64        `db:"workspace_id"`
+		Name                 string       `db:"name"`
+		DCProjectID          int64        `db:"dc_project_id"`
+		DCProjectName        string       `db:"dc_project_name"`
+		DCProjectDescription string       `db:"dc_project_description"`
+		DCTaskID             int64        `db:"dc_task_id"`
+		DCTaskName           string       `db:"dc_task_name"`
+		DCTaskDescription    string       `db:"dc_task_description"`
+		DCDeviceID           int64        `db:"dc_device_id"`
+		DCDeviceName         string       `db:"dc_device_name"`
+		DCType               string       `db:"dc_type"`
+		TargetCount          int64        `db:"target_count"`
+		CurCount             int64        `db:"cur_count"`
+		LocalCurCount        int64        `db:"local_cur_count"`
+		TargetDuration       int64        `db:"target_duration"`
+		CurDuration          int64        `db:"cur_duration"`
+		LocalCurDuration     float64      `db:"local_cur_duration"`
+		CommittedCount       int64        `db:"committed_count"`
+		LastSyncedAt         sql.NullTime `db:"last_synced_at"`
 	}{}
 	if err := h.db.SelectContext(c.Request.Context(), &rows, `
 		SELECT
@@ -226,13 +242,28 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 			dp.name,
 			dp.dc_project_id,
 			COALESCE(dp.dc_project_name, '') AS dc_project_name,
+			COALESCE(dp.dc_project_description, '') AS dc_project_description,
 			dp.dc_task_id,
 			COALESCE(dp.dc_task_name, '') AS dc_task_name,
+			COALESCE(dp.dc_task_description, '') AS dc_task_description,
 			dp.dc_device_id,
 			COALESCE(dp.dc_device_name, '') AS dc_device_name,
 			dp.dc_type,
 			dp.target_count,
+			dp.cur_count,
+			dp.target_duration,
+			dp.cur_duration,
 			dp.last_synced_at,
+			(
+				SELECT COUNT(*)
+				FROM episodes e
+				WHERE e.dc_plan_id = dp.id AND e.deleted_at IS NULL
+			) AS local_cur_count,
+			(
+				SELECT COALESCE(SUM(COALESCE(e.duration_sec, 0)), 0)
+				FROM episodes e
+				WHERE e.dc_plan_id = dp.id AND e.deleted_at IS NULL
+			) AS local_cur_duration,
 			(
 				SELECT COUNT(*)
 				FROM tasks t
@@ -255,24 +286,42 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 	response := OperatorPlanRefreshResponse{Items: []OperatorPlanItem{}, Stale: stale}
 	var latestSync time.Time
 	for _, row := range rows {
-		remaining := row.TargetCount - row.CommittedCount
+		curCount := row.CurCount
+		if row.LocalCurCount > curCount {
+			curCount = row.LocalCurCount
+		}
+		curDuration := row.CurDuration
+		localDuration := int64(math.Round(row.LocalCurDuration))
+		if localDuration > curDuration {
+			curDuration = localDuration
+		}
+		reservedCount := row.CommittedCount
+		if curCount > reservedCount {
+			reservedCount = curCount
+		}
+		remaining := row.TargetCount - reservedCount
 		if remaining < 0 {
 			remaining = 0
 		}
 		item := OperatorPlanItem{
-			ID:             row.ID,
-			WorkspaceID:    row.WorkspaceID,
-			Name:           row.Name,
-			DCProjectID:    row.DCProjectID,
-			DCProjectName:  row.DCProjectName,
-			DCTaskID:       row.DCTaskID,
-			DCTaskName:     row.DCTaskName,
-			DCDeviceID:     row.DCDeviceID,
-			DCDeviceName:   row.DCDeviceName,
-			DCType:         row.DCType,
-			TargetCount:    row.TargetCount,
-			CommittedCount: row.CommittedCount,
-			RemainingCount: remaining,
+			ID:                   row.ID,
+			WorkspaceID:          row.WorkspaceID,
+			Name:                 row.Name,
+			DCProjectID:          row.DCProjectID,
+			DCProjectName:        row.DCProjectName,
+			DCProjectDescription: row.DCProjectDescription,
+			DCTaskID:             row.DCTaskID,
+			DCTaskName:           row.DCTaskName,
+			DCTaskDescription:    row.DCTaskDescription,
+			DCDeviceID:           row.DCDeviceID,
+			DCDeviceName:         row.DCDeviceName,
+			DCType:               row.DCType,
+			TargetCount:          row.TargetCount,
+			CurCount:             curCount,
+			TargetDuration:       row.TargetDuration,
+			CurDuration:          curDuration,
+			CommittedCount:       row.CommittedCount,
+			RemainingCount:       remaining,
 		}
 		if row.LastSyncedAt.Valid {
 			item.LastSyncedAt = row.LastSyncedAt.Time.UTC().Format(time.RFC3339)
@@ -397,7 +446,7 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 	query := `
 		SELECT
 			dp.id, dp.workspace_id, dp.name, dp.description, dp.dc_factory_id, dp.dc_service_provider_id,
-			dp.operator, dp.operator_display_name, dp.dc_project_id, dp.dc_project_name, dp.dc_task_id, dp.dc_task_name, dp.dc_device_id, dp.dc_device_name, dp.dc_type, CAST(dp.dc_date AS CHAR) AS dc_date,
+			dp.operator, dp.operator_display_name, dp.dc_project_id, dp.dc_project_name, dp.dc_project_description, dp.dc_task_id, dp.dc_task_name, dp.dc_task_description, dp.dc_device_id, dp.dc_device_name, dp.dc_type, CAST(dp.dc_date AS CHAR) AS dc_date,
 			dp.target_count, dp.cur_count, COALESCE(progress.local_cur_count, 0) AS local_cur_count,
 			dp.target_duration, dp.cur_duration, COALESCE(progress.local_cur_duration, 0) AS local_cur_duration,
 			dp.created_by, dp.created_time, dp.updated_by, dp.updated_time, dp.last_synced_at
@@ -522,31 +571,33 @@ func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
 		}
 	}
 	return DCPlanResponse{
-		ID:                  row.ID,
-		WorkspaceID:         row.WorkspaceID,
-		Name:                row.Name,
-		Description:         row.Description.String,
-		DCFactoryID:         row.DCFactoryID,
-		DCServiceProviderID: row.DCServiceProviderID,
-		Operator:            row.Operator,
-		OperatorDisplayName: row.OperatorDisplayName.String,
-		DCProjectID:         row.DCProjectID,
-		DCProjectName:       row.DCProjectName.String,
-		DCTaskID:            row.DCTaskID,
-		DCTaskName:          row.DCTaskName.String,
-		DCDeviceID:          row.DCDeviceID,
-		DCDeviceName:        row.DCDeviceName.String,
-		DCType:              row.DCType,
-		DCDate:              row.DCDate,
-		TargetCount:         row.TargetCount,
-		CurCount:            curCount,
-		TargetDuration:      row.TargetDuration,
-		CurDuration:         curDuration,
-		CreatedBy:           row.CreatedBy,
-		CreatedTime:         formatWorkspaceNullableTime(row.CreatedTime),
-		UpdatedBy:           row.UpdatedBy.String,
-		UpdatedTime:         formatWorkspaceNullableTime(row.UpdatedTime),
-		LastSyncedAt:        formatWorkspaceNullableTime(row.LastSyncedAt),
+		ID:                   row.ID,
+		WorkspaceID:          row.WorkspaceID,
+		Name:                 row.Name,
+		Description:          row.Description.String,
+		DCFactoryID:          row.DCFactoryID,
+		DCServiceProviderID:  row.DCServiceProviderID,
+		Operator:             row.Operator,
+		OperatorDisplayName:  row.OperatorDisplayName.String,
+		DCProjectID:          row.DCProjectID,
+		DCProjectName:        row.DCProjectName.String,
+		DCProjectDescription: row.DCProjectDescription.String,
+		DCTaskID:             row.DCTaskID,
+		DCTaskName:           row.DCTaskName.String,
+		DCTaskDescription:    row.DCTaskDescription.String,
+		DCDeviceID:           row.DCDeviceID,
+		DCDeviceName:         row.DCDeviceName.String,
+		DCType:               row.DCType,
+		DCDate:               row.DCDate,
+		TargetCount:          row.TargetCount,
+		CurCount:             curCount,
+		TargetDuration:       row.TargetDuration,
+		CurDuration:          curDuration,
+		CreatedBy:            row.CreatedBy,
+		CreatedTime:          formatWorkspaceNullableTime(row.CreatedTime),
+		UpdatedBy:            row.UpdatedBy.String,
+		UpdatedTime:          formatWorkspaceNullableTime(row.UpdatedTime),
+		LastSyncedAt:         formatWorkspaceNullableTime(row.LastSyncedAt),
 	}
 }
 

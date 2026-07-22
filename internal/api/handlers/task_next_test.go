@@ -57,6 +57,8 @@ func newTestNextPlanTaskDB(t *testing.T) *sqlx.DB {
 	if _, err := db.Exec(`
 		CREATE TABLE dc_plan (
 			id INTEGER PRIMARY KEY, workspace_id INTEGER, name TEXT, operator TEXT,
+			dc_project_description TEXT,
+			dc_task_description TEXT,
 			dc_device_id INTEGER, dc_type TEXT, target_count INTEGER, target_duration INTEGER,
 			deleted_at TIMESTAMP
 		);

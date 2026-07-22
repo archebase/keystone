@@ -74,21 +74,24 @@ func (h *TaskHandler) axonTransferWriteTimeout() time.Duration {
 
 // TaskConfig represents the task configuration response
 type TaskConfig struct {
-	TaskID             string   `json:"task_id"`
-	DeviceID           string   `json:"device_id"`
-	DataCollectorID    string   `json:"data_collector_id"`
-	WorkstationID      string   `json:"workstation_id"`
-	OperatorName       string   `json:"operator_name,omitempty"`
-	Topics             []string `json:"topics"`
-	StartCallbackURL   string   `json:"start_callback_url"`
-	FinishCallbackURL  string   `json:"finish_callback_url"`
-	UserToken          string   `json:"user_token"`
-	WorkspaceID        *int64   `json:"workspace_id,omitempty"`
-	DCPlanID           *int64   `json:"dc_plan_id,omitempty"`
-	DCType             string   `json:"dc_type,omitempty"`
-	DCDeviceID         *int64   `json:"dc_device_id,omitempty"`
-	PlanTargetCount    *int64   `json:"plan_target_count,omitempty"`
-	PlanTargetDuration *int64   `json:"plan_target_duration,omitempty"`
+	TaskID               string   `json:"task_id"`
+	DeviceID             string   `json:"device_id"`
+	DataCollectorID      string   `json:"data_collector_id"`
+	WorkstationID        string   `json:"workstation_id"`
+	OperatorName         string   `json:"operator_name,omitempty"`
+	Topics               []string `json:"topics"`
+	StartCallbackURL     string   `json:"start_callback_url"`
+	FinishCallbackURL    string   `json:"finish_callback_url"`
+	UserToken            string   `json:"user_token"`
+	WorkspaceID          *int64   `json:"workspace_id,omitempty"`
+	DCPlanID             *int64   `json:"dc_plan_id,omitempty"`
+	DCPlanName           string   `json:"dc_plan_name,omitempty"`
+	DCProjectDescription string   `json:"dc_project_description,omitempty"`
+	DCTaskDescription    string   `json:"dc_task_description,omitempty"`
+	DCType               string   `json:"dc_type,omitempty"`
+	DCDeviceID           *int64   `json:"dc_device_id,omitempty"`
+	PlanTargetCount      *int64   `json:"plan_target_count,omitempty"`
+	PlanTargetDuration   *int64   `json:"plan_target_duration,omitempty"`
 }
 
 // RegisterRoutes registers task-related routes
@@ -309,19 +312,22 @@ var validTaskStatuses = map[string]struct{}{
 
 // TaskListItem represents a task item in list responses.
 type TaskListItem struct {
-	ID                  int64   `json:"id" db:"id"`
-	TaskID              string  `json:"task_id" db:"task_id"`
-	WorkstationID       *string `json:"workstation_id" db:"workstation_id"`
-	RobotDeviceID       *string `json:"robot_device_id" db:"robot_device_id"`
-	CollectorOperatorID *string `json:"collector_operator_id" db:"collector_operator_id"`
-	Status              string  `json:"status" db:"status"`
-	ErrorMessage        *string `json:"error_message" db:"error_message"`
-	AssignedAt          *string `json:"assigned_at" db:"assigned_at"`
-	DCPlanID            *int64  `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
-	WorkspaceID         *int64  `json:"workspace_id,omitempty" db:"workspace_id"`
-	DCPlanName          *string `json:"dc_plan_name,omitempty" db:"dc_plan_name"`
-	DCType              *string `json:"dc_type,omitempty" db:"dc_type"`
-	DCDeviceID          *int64  `json:"dc_device_id,omitempty" db:"dc_device_id"`
+	ID                   int64          `json:"id" db:"id"`
+	TaskID               string         `json:"task_id" db:"task_id"`
+	WorkstationID        *string        `json:"workstation_id" db:"workstation_id"`
+	RobotDeviceID        *string        `json:"robot_device_id" db:"robot_device_id"`
+	CollectorOperatorID  *string        `json:"collector_operator_id" db:"collector_operator_id"`
+	Status               string         `json:"status" db:"status"`
+	ErrorMessage         *string        `json:"error_message" db:"error_message"`
+	AssignedAt           *string        `json:"assigned_at" db:"assigned_at"`
+	DCPlanID             *int64         `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
+	WorkspaceID          *int64         `json:"workspace_id,omitempty" db:"workspace_id"`
+	DCPlanName           *string        `json:"dc_plan_name,omitempty" db:"dc_plan_name"`
+	DCProjectDescription string         `json:"dc_project_description,omitempty"`
+	DCTaskDescription    string         `json:"dc_task_description,omitempty"`
+	DCType               *string        `json:"dc_type,omitempty" db:"dc_type"`
+	DCDeviceID           *int64         `json:"dc_device_id,omitempty" db:"dc_device_id"`
+	PlanSnapshotRaw      sql.NullString `json:"-" db:"plan_snapshot_raw"`
 }
 
 // ListTasksResponse represents the response body for listing tasks.
@@ -494,6 +500,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		NULLIF(TRIM(COALESCE(ws.collector_operator_id, '')), '') AS collector_operator_id,
 		tasks.status,
 		tasks.error_message,
+		tasks.metadata AS plan_snapshot_raw,
 		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at,
 		tasks.dc_plan_id AS dc_plan_id,
 		COALESCE(tasks.organization_id, ws.workspace_id) AS workspace_id,
@@ -512,6 +519,9 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		logger.Printf("[TASK] Failed to query tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
 		return
+	}
+	for index := range items {
+		applyTaskPlanSnapshot(&items[index], items[index].PlanSnapshotRaw.String)
 	}
 
 	hasNext := (offset + limit) < total
@@ -1231,6 +1241,15 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	if row.DCPlanID.Valid {
 		taskConfig.DCPlanID = &row.DCPlanID.Int64
 	}
+	if planSnapshot.DCPlanName != nil {
+		taskConfig.DCPlanName = strings.TrimSpace(*planSnapshot.DCPlanName)
+	}
+	if planSnapshot.DCProjectDescription != nil {
+		taskConfig.DCProjectDescription = strings.TrimSpace(*planSnapshot.DCProjectDescription)
+	}
+	if planSnapshot.DCTaskDescription != nil {
+		taskConfig.DCTaskDescription = strings.TrimSpace(*planSnapshot.DCTaskDescription)
+	}
 	if row.DCType.Valid {
 		taskConfig.DCType = strings.TrimSpace(row.DCType.String)
 	}
@@ -1308,11 +1327,14 @@ type taskExecutionConfig struct {
 }
 
 type taskPlanSnapshot struct {
-	Operator       *string `json:"operator"`
-	DCType         *string `json:"dc_type"`
-	DCDeviceID     *int64  `json:"dc_device_id"`
-	TargetCount    *int64  `json:"target_count"`
-	TargetDuration *int64  `json:"target_duration"`
+	DCPlanName           *string `json:"dc_plan_name"`
+	DCProjectDescription *string `json:"dc_project_description"`
+	DCTaskDescription    *string `json:"dc_task_description"`
+	Operator             *string `json:"operator"`
+	DCType               *string `json:"dc_type"`
+	DCDeviceID           *int64  `json:"dc_device_id"`
+	TargetCount          *int64  `json:"target_count"`
+	TargetDuration       *int64  `json:"target_duration"`
 }
 
 func taskExecutionConfigFromMetadata(raw string) taskExecutionConfig {
@@ -1341,4 +1363,21 @@ func taskPlanSnapshotFromMetadata(raw string) taskPlanSnapshot {
 		return taskPlanSnapshot{}
 	}
 	return snapshot
+}
+
+func applyTaskPlanSnapshot(item *TaskListItem, raw string) {
+	if item == nil {
+		return
+	}
+	snapshot := taskPlanSnapshotFromMetadata(raw)
+	if snapshot.DCPlanName != nil {
+		value := strings.TrimSpace(*snapshot.DCPlanName)
+		item.DCPlanName = &value
+	}
+	if snapshot.DCProjectDescription != nil {
+		item.DCProjectDescription = strings.TrimSpace(*snapshot.DCProjectDescription)
+	}
+	if snapshot.DCTaskDescription != nil {
+		item.DCTaskDescription = strings.TrimSpace(*snapshot.DCTaskDescription)
+	}
 }

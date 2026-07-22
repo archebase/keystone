@@ -43,16 +43,16 @@ func TestHilbertDCPlanUnmarshalUsesNestedProjectAndTaskNames(t *testing.T) {
 		"workspaceId": 123,
 		"name": "Plan A",
 		"dcProjectId": 13,
-		"dcProject": {"id": 13, "name": "Project A"},
+		"dcProject": {"id": 13, "name": "Project A", "description": "Kitchen collection project"},
 		"dcTaskId": 14,
-		"dcTask": {"id": 14, "name": "Task A"},
+		"dcTask": {"id": 14, "name": "Task A", "description": "Fold the blanket twice"},
 		"dcDeviceId": 15,
 		"dcDevice": {"id": 15, "name": "Device A"}
 	}`), &plan); err != nil {
 		t.Fatalf("unmarshal dc plan: %v", err)
 	}
-	if plan.DCProjectName != "Project A" || plan.DCTaskName != "Task A" || plan.DCDeviceName != "Device A" {
-		t.Fatalf("project/task/device names = %q/%q/%q, want nested names", plan.DCProjectName, plan.DCTaskName, plan.DCDeviceName)
+	if plan.DCProjectName != "Project A" || plan.DCProjectDescription != "Kitchen collection project" || plan.DCTaskName != "Task A" || plan.DCTaskDescription != "Fold the blanket twice" || plan.DCDeviceName != "Device A" {
+		t.Fatalf("project/task descriptions/device = %q/%q/%q/%q/%q, want nested values", plan.DCProjectName, plan.DCProjectDescription, plan.DCTaskName, plan.DCTaskDescription, plan.DCDeviceName)
 	}
 }
 

@@ -53,14 +53,16 @@ func NewDCPlanTaskSupplyService(db *sqlx.DB) *DCPlanTaskSupplyService {
 }
 
 type taskSupplyPlanRow struct {
-	ID             int64  `db:"id"`
-	WorkspaceID    int64  `db:"workspace_id"`
-	Name           string `db:"name"`
-	Operator       string `db:"operator"`
-	DCDeviceID     int64  `db:"dc_device_id"`
-	DCType         string `db:"dc_type"`
-	TargetCount    int64  `db:"target_count"`
-	TargetDuration int64  `db:"target_duration"`
+	ID                   int64  `db:"id"`
+	WorkspaceID          int64  `db:"workspace_id"`
+	Name                 string `db:"name"`
+	Operator             string `db:"operator"`
+	DCProjectDescription string `db:"dc_project_description"`
+	DCTaskDescription    string `db:"dc_task_description"`
+	DCDeviceID           int64  `db:"dc_device_id"`
+	DCType               string `db:"dc_type"`
+	TargetCount          int64  `db:"target_count"`
+	TargetDuration       int64  `db:"target_duration"`
 }
 
 func taskSupplyForUpdateClause(tx *sqlx.Tx) string {
@@ -89,7 +91,10 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 
 	var plan taskSupplyPlanRow
 	if err := tx.GetContext(ctx, &plan, `
-		SELECT id, workspace_id, name, operator, dc_device_id, dc_type, target_count, target_duration
+		SELECT id, workspace_id, name, operator,
+			COALESCE(dc_project_description, '') AS dc_project_description,
+			COALESCE(dc_task_description, '') AS dc_task_description,
+			dc_device_id, dc_type, target_count, target_duration
 		FROM dc_plan
 		WHERE id = ? AND deleted_at IS NULL
 		LIMIT 1`+taskSupplyForUpdateClause(tx), planID); err != nil {
@@ -197,16 +202,18 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 	}
 
 	metadata, err := marshalMetadata(map[string]any{
-		"source":              "hilbert_dc_plan",
-		"workspace_id":        plan.WorkspaceID,
-		"dc_plan_id":          plan.ID,
-		"dc_plan_name":        strings.TrimSpace(plan.Name),
-		"dc_type":             strings.TrimSpace(plan.DCType),
-		"dc_device_id":        plan.DCDeviceID,
-		"operator":            strings.TrimSpace(plan.Operator),
-		"target_count":        plan.TargetCount,
-		"target_duration":     plan.TargetDuration,
-		"last_plan_synced_at": now.UTC().Format(time.RFC3339),
+		"source":                 "hilbert_dc_plan",
+		"workspace_id":           plan.WorkspaceID,
+		"dc_plan_id":             plan.ID,
+		"dc_plan_name":           strings.TrimSpace(plan.Name),
+		"dc_type":                strings.TrimSpace(plan.DCType),
+		"dc_project_description": strings.TrimSpace(plan.DCProjectDescription),
+		"dc_task_description":    strings.TrimSpace(plan.DCTaskDescription),
+		"dc_device_id":           plan.DCDeviceID,
+		"operator":               strings.TrimSpace(plan.Operator),
+		"target_count":           plan.TargetCount,
+		"target_duration":        plan.TargetDuration,
+		"last_plan_synced_at":    now.UTC().Format(time.RFC3339),
 		"execution_config": map[string]any{
 			"topics": []string{},
 		},

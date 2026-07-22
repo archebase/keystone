@@ -59,7 +59,7 @@ func TestDCPlanListFiltersByWorkspaceAndFields(t *testing.T) {
 	if resp.Items[0].ID != 1001 || resp.Items[0].WorkspaceID != 123 || resp.Items[0].Name != "Ego Kitchen" {
 		t.Fatalf("unexpected item: %#v", resp.Items[0])
 	}
-	if resp.Items[0].DCProjectName != "Project 1001" || resp.Items[0].DCTaskName != "Task 1001" {
+	if resp.Items[0].DCProjectName != "Project 1001" || resp.Items[0].DCProjectDescription != "Project description 1001" || resp.Items[0].DCTaskName != "Task 1001" || resp.Items[0].DCTaskDescription != "Description 1001" {
 		t.Fatalf("unexpected project/task names: %#v", resp.Items[0])
 	}
 	if resp.Items[0].DCDeviceName != "Device 1001" || resp.Items[0].OperatorDisplayName != "Collector 1001" {
@@ -239,11 +239,11 @@ func seedDCPlanHandlerPlanWithProgress(t *testing.T, db *sqlx.DB, id int64, work
 	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
 			id, workspace_id, name, dc_factory_id, dc_service_provider_id, operator, operator_display_name,
-			dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, dc_date,
+			dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, dc_date,
 			target_count, cur_count, target_duration, cur_duration, created_by,
 			created_time, last_synced_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, name, 11, 12, operator, "Collector "+strconv.FormatInt(id, 10), 13, "Project "+strconv.FormatInt(id, 10), 14, "Task "+strconv.FormatInt(id, 10), 15, "Device "+strconv.FormatInt(id, 10), dcType, dcDate, 20, curCount, 3600, curDuration, "planner", now, now); err != nil {
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, workspaceID, name, 11, 12, operator, "Collector "+strconv.FormatInt(id, 10), 13, "Project "+strconv.FormatInt(id, 10), "Project description "+strconv.FormatInt(id, 10), 14, "Task "+strconv.FormatInt(id, 10), "Description "+strconv.FormatInt(id, 10), 15, "Device "+strconv.FormatInt(id, 10), dcType, dcDate, 20, curCount, 3600, curDuration, "planner", now, now); err != nil {
 		t.Fatalf("seed dc_plan: %v", err)
 	}
 }
@@ -272,8 +272,10 @@ func newTestDCPlanHandlerDB(t *testing.T) *sqlx.DB {
 			operator_display_name TEXT,
 			dc_project_id INTEGER NOT NULL,
 			dc_project_name TEXT,
+			dc_project_description TEXT,
 			dc_task_id INTEGER NOT NULL,
 			dc_task_name TEXT,
+			dc_task_description TEXT,
 			dc_device_id INTEGER NOT NULL,
 			dc_device_name TEXT,
 			dc_type TEXT NOT NULL,

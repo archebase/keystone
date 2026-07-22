@@ -178,7 +178,7 @@ func TestAuthHandlerMeListsPlanEligibleNonCurrentWorkstation(t *testing.T) {
 		t.Fatalf("current=%#v available=%#v", resp.Workstations, resp.AvailableWorkstations)
 	}
 	available := resp.AvailableWorkstations[0]
-	if available.ID != "11" || available.DeviceID != "101" || available.DeviceName != "Ego iPhone 01" || available.IsCurrent {
+	if available.ID != "11" || available.WorkspaceName != "Test Workspace" || available.DeviceID != "101" || available.DeviceName != "Ego iPhone 01" || available.IsCurrent {
 		t.Fatalf("unexpected available workstation: %#v", available)
 	}
 }
@@ -599,11 +599,12 @@ func newTestAuthDB(t *testing.T) *sqlx.DB {
 	stmts := []string{
 		`CREATE TABLE workspaces (
 			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL DEFAULT 'Workspace',
 			admins TEXT NOT NULL,
 			members TEXT NOT NULL,
 			deleted_at TEXT
 		)`,
-		`INSERT INTO workspaces (id, admins, members) VALUES (10, '[]', '["dc01"]')`,
+		`INSERT INTO workspaces (id, name, admins, members) VALUES (10, 'Test Workspace', '[]', '["dc01"]')`,
 		`CREATE TABLE data_collectors (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,

@@ -75,25 +75,27 @@ var (
 )
 
 type authWorkstationRow struct {
-	ID          int64  `db:"id"`
-	WorkspaceID int64  `db:"workspace_id"`
-	RobotID     int64  `db:"robot_id"`
-	Status      string `db:"status"`
-	DeviceID    string `db:"device_id"`
-	DeviceName  string `db:"device_name"`
-	IsCurrent   bool   `db:"is_current"`
-	Occupied    bool   `db:"occupied"`
+	ID            int64  `db:"id"`
+	WorkspaceID   int64  `db:"workspace_id"`
+	WorkspaceName string `db:"workspace_name"`
+	RobotID       int64  `db:"robot_id"`
+	Status        string `db:"status"`
+	DeviceID      string `db:"device_id"`
+	DeviceName    string `db:"device_name"`
+	IsCurrent     bool   `db:"is_current"`
+	Occupied      bool   `db:"occupied"`
 }
 
 type authWorkstationInfo struct {
-	ID          string `json:"id"`
-	WorkspaceID string `json:"workspace_id"`
-	RobotID     string `json:"robot_id"`
-	Status      string `json:"status"`
-	DeviceID    string `json:"device_id"`
-	DeviceName  string `json:"device_name,omitempty"`
-	IsCurrent   bool   `json:"is_current"`
-	Occupied    bool   `json:"occupied"`
+	ID            string `json:"id"`
+	WorkspaceID   string `json:"workspace_id"`
+	WorkspaceName string `json:"workspace_name"`
+	RobotID       string `json:"robot_id"`
+	Status        string `json:"status"`
+	DeviceID      string `json:"device_id"`
+	DeviceName    string `json:"device_name,omitempty"`
+	IsCurrent     bool   `json:"is_current"`
+	Occupied      bool   `json:"occupied"`
 }
 
 // AuthMeResponse describes the authenticated global identity and all current workstations.
@@ -124,14 +126,15 @@ type WorkstationActivationResponse struct {
 
 func (row authWorkstationRow) info() authWorkstationInfo {
 	return authWorkstationInfo{
-		ID:          strconv.FormatInt(row.ID, 10),
-		WorkspaceID: strconv.FormatInt(row.WorkspaceID, 10),
-		RobotID:     strconv.FormatInt(row.RobotID, 10),
-		Status:      row.Status,
-		DeviceID:    row.DeviceID,
-		DeviceName:  row.DeviceName,
-		IsCurrent:   row.IsCurrent,
-		Occupied:    row.Occupied,
+		ID:            strconv.FormatInt(row.ID, 10),
+		WorkspaceID:   strconv.FormatInt(row.WorkspaceID, 10),
+		WorkspaceName: row.WorkspaceName,
+		RobotID:       strconv.FormatInt(row.RobotID, 10),
+		Status:        row.Status,
+		DeviceID:      row.DeviceID,
+		DeviceName:    row.DeviceName,
+		IsCurrent:     row.IsCurrent,
+		Occupied:      row.Occupied,
 	}
 }
 
@@ -504,11 +507,12 @@ func resolveActivationWorkstation(
 	}
 
 	query := `
-		SELECT ws.id, ws.workspace_id, ws.robot_id, ws.status,
+		SELECT ws.id, ws.workspace_id, w.name AS workspace_name, ws.robot_id, ws.status,
 			r.device_id, COALESCE(r.device_name, '') AS device_name,
 			ws.is_current, FALSE AS occupied
 		FROM workstations ws
 		JOIN robots r ON r.id = ws.robot_id
+		JOIN workspaces w ON w.id = ws.workspace_id AND w.deleted_at IS NULL
 		WHERE ws.data_collector_id = ? AND ws.deleted_at IS NULL
 			AND r.status = 'active' AND r.deleted_at IS NULL`
 	args := []any{collectorID}
@@ -773,11 +777,12 @@ func (h *AuthHandler) currentWorkstations(ctx context.Context, collectorID int64
 		return []authWorkstationRow{}, err
 	}
 	query, args, err := sqlx.In(`
-		SELECT ws.id, ws.workspace_id, ws.robot_id, ws.status,
+		SELECT ws.id, ws.workspace_id, w.name AS workspace_name, ws.robot_id, ws.status,
 			r.device_id, COALESCE(r.device_name, '') AS device_name,
 			ws.is_current, FALSE AS occupied
 		FROM workstations ws
 		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		JOIN workspaces w ON w.id = ws.workspace_id AND w.deleted_at IS NULL
 		WHERE ws.data_collector_id = ? AND ws.workspace_id IN (?)
 			AND ws.is_current = TRUE AND ws.deleted_at IS NULL
 		ORDER BY ws.workspace_id, ws.id
@@ -820,7 +825,7 @@ func (h *AuthHandler) availableWorkstations(
 	for _, plan := range plans {
 		var row authWorkstationRow
 		err := h.db.GetContext(ctx, &row, `
-			SELECT ws.id, ws.workspace_id, ws.robot_id, ws.status,
+			SELECT ws.id, ws.workspace_id, w.name AS workspace_name, ws.robot_id, ws.status,
 				r.device_id, COALESCE(r.device_name, '') AS device_name,
 				ws.is_current,
 				EXISTS(
@@ -832,6 +837,7 @@ func (h *AuthHandler) availableWorkstations(
 				) AS occupied
 			FROM workstations ws
 			JOIN robots r ON r.id = ws.robot_id
+			JOIN workspaces w ON w.id = ws.workspace_id AND w.deleted_at IS NULL
 			WHERE ws.data_collector_id = ? AND ws.workspace_id = ?
 				AND r.device_id = ? AND r.status = 'active'
 				AND ws.deleted_at IS NULL AND r.deleted_at IS NULL
