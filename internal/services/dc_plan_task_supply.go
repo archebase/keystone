@@ -62,6 +62,7 @@ type taskSupplyPlanRow struct {
 	DCDeviceID           int64  `db:"dc_device_id"`
 	DCType               string `db:"dc_type"`
 	TargetCount          int64  `db:"target_count"`
+	CurCount             int64  `db:"cur_count"`
 	TargetDuration       int64  `db:"target_duration"`
 }
 
@@ -94,7 +95,7 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 		SELECT id, workspace_id, name, operator,
 			COALESCE(dc_project_description, '') AS dc_project_description,
 			COALESCE(dc_task_description, '') AS dc_task_description,
-			dc_device_id, dc_type, target_count, target_duration
+			dc_device_id, dc_type, target_count, cur_count, target_duration
 		FROM dc_plan
 		WHERE id = ? AND deleted_at IS NULL
 		LIMIT 1`+taskSupplyForUpdateClause(tx), planID); err != nil {
@@ -125,19 +126,47 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 	}
 
 	var counts struct {
-		Committed int64 `db:"committed"`
-		Active    int64 `db:"active"`
+		LocalReserved int64 `db:"local_reserved"`
+		Active        int64 `db:"active"`
 	}
 	if err := tx.GetContext(ctx, &counts, `
 		SELECT
-			COALESCE(SUM(CASE WHEN status IN ('ready', 'in_progress', 'uploading', 'completed') THEN 1 ELSE 0 END), 0) AS committed,
-			COALESCE(SUM(CASE WHEN status IN ('ready', 'in_progress') THEN 1 ELSE 0 END), 0) AS active
-		FROM tasks
-		WHERE dc_plan_id = ? AND deleted_at IS NULL
-	`, plan.ID); err != nil {
+			(
+				SELECT COUNT(*)
+				FROM episodes e
+				WHERE e.dc_plan_id = ?
+					AND COALESCE(e.cloud_synced, FALSE) = FALSE
+					AND COALESCE(e.qa_status, 'pending_qa') NOT IN ('failed', 'manual_review_failed')
+					AND e.deleted_at IS NULL
+			) + (
+				SELECT COUNT(*)
+				FROM tasks t
+				WHERE t.dc_plan_id = ?
+					AND t.status = 'uploading'
+					AND t.deleted_at IS NULL
+					AND NOT EXISTS (
+						SELECT 1
+						FROM episodes e
+						WHERE e.task_id = t.id AND e.deleted_at IS NULL
+					)
+			) + (
+				SELECT COUNT(*)
+				FROM tasks t
+				WHERE t.dc_plan_id = ?
+					AND t.status IN ('ready', 'in_progress')
+					AND t.deleted_at IS NULL
+			) AS local_reserved,
+			(
+				SELECT COUNT(*)
+				FROM tasks t
+				WHERE t.dc_plan_id = ?
+					AND t.status IN ('ready', 'in_progress')
+					AND t.deleted_at IS NULL
+			) AS active
+	`, plan.ID, plan.ID, plan.ID, plan.ID); err != nil {
 		return nil, fmt.Errorf("count committed plan tasks: %w", err)
 	}
-	if counts.Committed >= plan.TargetCount {
+	if plan.CurCount+counts.LocalReserved >= plan.TargetCount {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE tasks
 			SET status = 'cancelled', updated_at = ?

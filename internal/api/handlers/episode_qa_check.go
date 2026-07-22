@@ -24,6 +24,7 @@ import (
 	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
@@ -59,13 +60,14 @@ type QARunMode string
 
 // EpisodeQAHandler handles QA center APIs and lightweight automatic QA execution.
 type EpisodeQAHandler struct {
-	db        *sqlx.DB
-	s3        *s3.Client
-	tos       *episodeQATOSReader
-	bucket    string
-	tosBucket string
-	authCfg   *config.AuthConfig
-	queue     chan int64
+	db          *sqlx.DB
+	s3          *s3.Client
+	tos         *episodeQATOSReader
+	bucket      string
+	tosBucket   string
+	authCfg     *config.AuthConfig
+	queue       chan int64
+	stateBroker *services.DeviceStateBroker
 }
 
 // EpisodeQARunRequest is the request body for running an episode QA suite.
@@ -150,6 +152,7 @@ type episodeQACheckRow struct {
 type episodeQARunClaim struct {
 	EpisodeID      int64
 	OriginalStatus string
+	Mode           QARunMode
 	MutableStatus  bool
 }
 
@@ -198,6 +201,15 @@ func NewEpisodeQAHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCf
 		go h.runAutoWorker()
 	}
 	return h
+}
+
+// SetDeviceStateBroker enables QA status event publishing for operator clients.
+// It must be called during single-threaded initialization before the handler is used.
+func (h *EpisodeQAHandler) SetDeviceStateBroker(broker *services.DeviceStateBroker) {
+	if h == nil {
+		return
+	}
+	h.stateBroker = broker
 }
 
 // RegisterRoutes registers QA center routes under /api/v1/qa.
@@ -703,7 +715,7 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, ep
 		return nil, fmt.Errorf("commit manual review transaction: %w", err)
 	}
 
-	return &EpisodeQASuiteResponse{
+	result := &EpisodeQASuiteResponse{
 		EpisodeID: row.ID,
 		QAStatus:  qaStatusManualReviewFailed,
 		Passed:    false,
@@ -718,7 +730,9 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, ep
 			CheckMetadata: metadata,
 			CheckedAt:     checkedAt.Format(time.RFC3339),
 		}},
-	}, nil
+	}
+	h.publishEpisodeQAStatusEvent(ctx, result)
+	return result, nil
 }
 
 // CancelEpisodeManualReviewFailed restores a manually failed episode to pending QA.
@@ -794,7 +808,7 @@ func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailed(ctx context.Context, 
 		return nil, fmt.Errorf("commit manual review cancel transaction: %w", err)
 	}
 
-	return &EpisodeQASuiteResponse{
+	result := &EpisodeQASuiteResponse{
 		EpisodeID: row.ID,
 		QAStatus:  qaStatusPendingQA,
 		Passed:    true,
@@ -809,7 +823,9 @@ func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailed(ctx context.Context, 
 			CheckMetadata: metadata,
 			CheckedAt:     checkedAt.Format(time.RFC3339),
 		}},
-	}, nil
+	}
+	h.publishEpisodeQAStatusEvent(ctx, result)
+	return result, nil
 }
 
 func defaultEpisodeQASuite(row episodeQACheckRow) []string {
@@ -871,6 +887,7 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 	claim := episodeQARunClaim{
 		EpisodeID:      row.ID,
 		OriginalStatus: row.QAStatus,
+		Mode:           mode,
 	}
 
 	if row.QAStatus == qaStatusRunning {
@@ -907,6 +924,11 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 	}
 
 	claim.MutableStatus = true
+	h.publishEpisodeQAStatusEvent(ctx, &EpisodeQASuiteResponse{
+		EpisodeID: claim.EpisodeID,
+		QAStatus:  qaStatusRunning,
+		Mode:      claim.Mode,
+	})
 	return claim, nil
 }
 
@@ -915,13 +937,28 @@ func (h *EpisodeQAHandler) releaseEpisodeQARun(ctx context.Context, claim episod
 		return
 	}
 	// #nosec G701 -- static SQL with placeholder-bound status and episode values.
-	if _, err := h.db.ExecContext(ctx, `
+	res, err := h.db.ExecContext(ctx, `
 		UPDATE episodes
 		SET qa_status = ?
 		WHERE id = ? AND deleted_at IS NULL AND qa_status = ?
-	`, claim.OriginalStatus, claim.EpisodeID, qaStatusRunning); err != nil {
+	`, claim.OriginalStatus, claim.EpisodeID, qaStatusRunning)
+	if err != nil {
 		logger.Printf("[EPISODE-QA] Failed to release QA run: episode=%d, err=%v", claim.EpisodeID, err)
+		return
 	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		logger.Printf("[EPISODE-QA] Failed to read released QA run rows: episode=%d, err=%v", claim.EpisodeID, err)
+		return
+	}
+	if affected == 0 {
+		return
+	}
+	h.publishEpisodeQAStatusEvent(ctx, &EpisodeQASuiteResponse{
+		EpisodeID: claim.EpisodeID,
+		QAStatus:  claim.OriginalStatus,
+		Mode:      claim.Mode,
+	})
 }
 
 func (h *EpisodeQAHandler) runEpisodeQACheck(ctx context.Context, checkName string, row episodeQACheckRow) (episodeQACheckOutcome, error) {
@@ -1488,13 +1525,57 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 		return nil, fmt.Errorf("commit qa check transaction: %w", err)
 	}
 
-	return &EpisodeQASuiteResponse{
+	result := &EpisodeQASuiteResponse{
 		EpisodeID: claim.EpisodeID,
 		QAStatus:  finalStatus,
 		Passed:    allPassed,
 		Mode:      mode,
 		Checks:    checks,
-	}, nil
+	}
+	h.publishEpisodeQAStatusEvent(ctx, result)
+	return result, nil
+}
+
+func (h *EpisodeQAHandler) publishEpisodeQAStatusEvent(ctx context.Context, result *EpisodeQASuiteResponse) {
+	if h == nil || h.db == nil || h.stateBroker == nil || result == nil {
+		return
+	}
+
+	var target struct {
+		DeviceID     string `db:"device_id"`
+		TaskPublicID string `db:"task_public_id"`
+		DCPlanID     int64  `db:"dc_plan_id"`
+	}
+	if err := h.db.GetContext(ctx, &target, `
+		SELECT
+			COALESCE(r.device_id, '') AS device_id,
+			COALESCE(t.task_id, '') AS task_public_id,
+			COALESCE(e.dc_plan_id, 0) AS dc_plan_id
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN workstations ws
+			ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
+		LIMIT 1
+	`, result.EpisodeID); err != nil {
+		logger.Printf("[EPISODE-QA] Failed to resolve QA event target: episode=%d, err=%v", result.EpisodeID, err)
+		return
+	}
+	if strings.TrimSpace(target.DeviceID) == "" {
+		return
+	}
+
+	h.stateBroker.Publish(target.DeviceID, services.DeviceStateEvent{
+		"type":       "plan_progress_changed",
+		"episode_id": result.EpisodeID,
+		"task_id":    strings.TrimSpace(target.TaskPublicID),
+		"dc_plan_id": target.DCPlanID,
+		"qa_status":  result.QAStatus,
+		"passed":     result.Passed,
+		"mode":       result.Mode,
+		"reason":     "qa_status_changed",
+	})
 }
 
 func parsePositiveIntQuery(c *gin.Context, key string, fallback int) int {

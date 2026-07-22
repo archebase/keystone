@@ -70,19 +70,23 @@ func TestDCPlanListFiltersByWorkspaceAndFields(t *testing.T) {
 func TestDCPlanListUsesLocalEpisodeProgress(t *testing.T) {
 	db := newTestDCPlanHandlerDB(t)
 	defer db.Close()
-	seedDCPlanHandlerPlanWithProgress(t, db, 1001, 123, "Ego Kitchen", "ego", "alice", "2026-07-09", 0, 0)
+	seedDCPlanHandlerPlanWithProgress(t, db, 1001, 123, "Ego Kitchen", "ego", "alice", "2026-07-09", 2, 20)
 	if _, err := db.Exec(`
 		INSERT INTO tasks (id, task_id, dc_plan_id, status, deleted_at) VALUES
 			(1, 'task-1', 1001, 'completed', NULL),
 			(2, 'task-2', 1001, 'completed', NULL),
-			(3, 'task-3', 1001, 'pending', NULL)
+			(3, 'task-3', 1001, 'pending', NULL),
+			(4, 'task-4', 1001, 'completed', NULL),
+			(5, 'task-5', 1001, 'completed', NULL)
 	`); err != nil {
 		t.Fatalf("seed tasks: %v", err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO episodes (id, episode_id, task_id, dc_plan_id, duration_sec, deleted_at) VALUES
-			(1, 'episode-1', 1, 1001, 6.4, NULL),
-			(2, 'episode-2', 2, 1001, 8.6, NULL)
+		INSERT INTO episodes (id, episode_id, task_id, dc_plan_id, duration_sec, cloud_synced, qa_status, deleted_at) VALUES
+			(1, 'episode-1', 1, 1001, 6.4, TRUE, 'approved', NULL),
+			(2, 'episode-2', 2, 1001, 8.6, FALSE, 'pending_qa', NULL),
+			(3, 'episode-3', 4, 1001, 5, FALSE, 'failed', NULL),
+			(4, 'episode-4', 5, 1001, 7, FALSE, 'manual_review_failed', NULL)
 	`); err != nil {
 		t.Fatalf("seed episodes: %v", err)
 	}
@@ -102,8 +106,8 @@ func TestDCPlanListUsesLocalEpisodeProgress(t *testing.T) {
 	if len(resp.Items) != 1 {
 		t.Fatalf("items=%d want=1 response=%#v", len(resp.Items), resp)
 	}
-	if resp.Items[0].CurCount != 2 || resp.Items[0].CurDuration != 15 {
-		t.Fatalf("progress=(%d,%d) want=(2,15)", resp.Items[0].CurCount, resp.Items[0].CurDuration)
+	if resp.Items[0].CurCount != 3 || resp.Items[0].CurDuration != 29 {
+		t.Fatalf("progress=(%d,%d) want=(3,29)", resp.Items[0].CurCount, resp.Items[0].CurDuration)
 	}
 }
 
@@ -308,6 +312,8 @@ func newTestDCPlanHandlerDB(t *testing.T) *sqlx.DB {
 			task_id INTEGER NOT NULL,
 			dc_plan_id INTEGER,
 			duration_sec REAL,
+			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
+			qa_status TEXT NOT NULL DEFAULT 'pending_qa',
 			deleted_at TIMESTAMP
 		);
 	`); err != nil {

@@ -63,8 +63,12 @@ func TestRefreshOperatorPlansFiltersAssignmentAndReportsProgress(t *testing.T) {
 	if item.ID != 1001 || item.WorkspaceID != 123 || item.DCProjectID != 31 ||
 		item.DCProjectName != "Project A" || item.DCProjectDescription != "Kitchen collection project" || item.DCTaskID != 41 || item.DCTaskName != "Task A" || item.DCTaskDescription != "Stack each item in order" ||
 		item.DCDeviceID != 456 || item.DCDeviceName != "Phone A" ||
-		item.CurCount != 3 || item.TargetCount != 5 || item.CurDuration != 180 || item.TargetDuration != 3600 ||
-		item.CommittedCount != 2 || item.RemainingCount != 2 {
+		item.CurCount != 4 || item.TargetCount != 10 || item.CurDuration != 190 || item.TargetDuration != 3600 ||
+		item.CloudCurCount != 2 || item.LocalCurCount != 2 || item.CloudCurDuration != 120 || item.LocalCurDuration != 70 ||
+		item.LocalPendingCount != 1 || item.LocalPendingDuration != 40 ||
+		item.LocalApprovedCount != 1 || item.LocalApprovedDuration != 30 ||
+		item.LocalFailedCount != 2 || item.LocalFailedDuration != 30 ||
+		item.CommittedCount != 5 || item.RemainingCount != 5 {
 		t.Fatalf("unexpected item: %#v", item)
 	}
 }
@@ -88,6 +92,113 @@ func TestRefreshOperatorPlansFallsBackToStaleProjection(t *testing.T) {
 	}
 	if !response.Stale || len(response.Items) != 1 || response.LastSyncedAt == "" {
 		t.Fatalf("unexpected stale response: %#v", response)
+	}
+}
+
+func TestRefreshOperatorPlansDoesNotCountCompletedTaskAfterSyncedEpisodeDeletion(t *testing.T) {
+	db := newTestOperatorPlanDB(t)
+	defer db.Close()
+	seedOperatorPlanFixture(t, db)
+
+	if _, err := db.Exec(`DELETE FROM tasks WHERE id <> 1`); err != nil {
+		t.Fatalf("remove unrelated tasks: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM episodes`); err != nil {
+		t.Fatalf("delete synced episode: %v", err)
+	}
+
+	router := newTestOperatorPlanRouter(db, &fakeOperatorPlanSyncer{})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/plans/refresh", nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var response OperatorPlanRefreshResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("items=%d want=1 response=%#v", len(response.Items), response)
+	}
+	item := response.Items[0]
+	if item.CloudCurCount != 2 || item.LocalCurCount != 0 || item.CurCount != 2 {
+		t.Fatalf("progress cloud=%d local=%d total=%d want=2/0/2", item.CloudCurCount, item.LocalCurCount, item.CurCount)
+	}
+	if item.CloudCurDuration != 120 || item.LocalCurDuration != 0 || item.CurDuration != 120 {
+		t.Fatalf("duration cloud=%d local=%d total=%d want=120/0/120", item.CloudCurDuration, item.LocalCurDuration, item.CurDuration)
+	}
+}
+
+func TestRefreshOperatorPlansExcludesFailedLocalEpisodes(t *testing.T) {
+	db := newTestOperatorPlanDB(t)
+	defer db.Close()
+	seedOperatorPlanFixture(t, db)
+
+	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'failed' WHERE id = 2`); err != nil {
+		t.Fatalf("mark episode QA failed: %v", err)
+	}
+
+	router := newTestOperatorPlanRouter(db, &fakeOperatorPlanSyncer{})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/plans/refresh", nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var response OperatorPlanRefreshResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("items=%d want=1 response=%#v", len(response.Items), response)
+	}
+	item := response.Items[0]
+	if item.LocalPendingCount != 0 || item.LocalApprovedCount != 1 || item.LocalFailedCount != 3 {
+		t.Fatalf("unexpected local QA buckets: %#v", item)
+	}
+	if item.LocalCurCount != 1 || item.CurCount != 3 {
+		t.Fatalf("progress local=%d total=%d want=1/3", item.LocalCurCount, item.CurCount)
+	}
+	if item.LocalCurDuration != 30 || item.CurDuration != 150 || item.LocalFailedDuration != 70 {
+		t.Fatalf("duration local=%d total=%d failed=%d want=30/150/70", item.LocalCurDuration, item.CurDuration, item.LocalFailedDuration)
+	}
+}
+
+func TestRefreshOperatorPlansLocalDurationMatchesDisplayedBuckets(t *testing.T) {
+	db := newTestOperatorPlanDB(t)
+	defer db.Close()
+	seedOperatorPlanFixture(t, db)
+
+	if _, err := db.Exec(`UPDATE episodes SET duration_sec = 40.6 WHERE id = 2`); err != nil {
+		t.Fatalf("update pending episode duration: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE episodes SET duration_sec = 30.6 WHERE id = 3`); err != nil {
+		t.Fatalf("update approved episode duration: %v", err)
+	}
+
+	router := newTestOperatorPlanRouter(db, &fakeOperatorPlanSyncer{})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/plans/refresh", nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var response OperatorPlanRefreshResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("items=%d want=1 response=%#v", len(response.Items), response)
+	}
+	item := response.Items[0]
+	if item.LocalPendingDuration != 41 || item.LocalApprovedDuration != 31 ||
+		item.LocalCurDuration != 72 || item.CurDuration != 192 {
+		t.Fatalf("duration pending=%d approved=%d local=%d total=%d want=41/31/72/192",
+			item.LocalPendingDuration, item.LocalApprovedDuration, item.LocalCurDuration, item.CurDuration)
 	}
 }
 
@@ -122,7 +233,9 @@ func newTestOperatorPlanDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY, dc_plan_id INTEGER, status TEXT, deleted_at TIMESTAMP
 		);
 		CREATE TABLE episodes (
-			id INTEGER PRIMARY KEY, dc_plan_id INTEGER, duration_sec REAL, deleted_at TIMESTAMP
+			id INTEGER PRIMARY KEY, task_id INTEGER, dc_plan_id INTEGER, duration_sec REAL,
+			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
+			qa_status TEXT NOT NULL DEFAULT 'pending_qa', deleted_at TIMESTAMP
 		);
 	`); err != nil {
 		db.Close()
@@ -135,15 +248,21 @@ func seedOperatorPlanFixture(t *testing.T, db *sqlx.DB) {
 	t.Helper()
 	for _, statement := range []string{
 		`INSERT INTO robots (id, device_id) VALUES (9, '456')`,
-		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, target_count, cur_count, target_duration, cur_duration, last_synced_at) VALUES (1001, 123, 'Plan A', 'collector-a', 31, 'Project A', 'Kitchen collection project', 41, 'Task A', 'Stack each item in order', 456, 'Phone A', 'ego', 5, 2, 3600, 120, '2026-07-21 01:00:00')`,
+		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, target_count, cur_count, target_duration, cur_duration, last_synced_at) VALUES (1001, 123, 'Plan A', 'collector-a', 31, 'Project A', 'Kitchen collection project', 41, 'Task A', 'Stack each item in order', 456, 'Phone A', 'ego', 10, 2, 3600, 120, '2026-07-21 01:00:00')`,
 		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, target_count, cur_count, target_duration, cur_duration, last_synced_at) VALUES (1002, 123, 'Other operator', 'collector-b', 32, 'Project B', 42, 'Task B', 456, 'Phone A', 'ego', 5, 0, 3600, 0, '2026-07-21 01:00:00')`,
 		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, target_count, cur_count, target_duration, cur_duration, last_synced_at) VALUES (1003, 123, 'Other robot', 'collector-a', 33, 'Project C', 43, 'Task C', 999, 'Phone C', 'ego', 5, 0, 3600, 0, '2026-07-21 01:00:00')`,
 		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (1, 1001, 'completed')`,
-		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (2, 1001, 'uploading')`,
-		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (3, 1001, 'pending')`,
-		`INSERT INTO episodes (id, dc_plan_id, duration_sec) VALUES (1, 1001, 60)`,
-		`INSERT INTO episodes (id, dc_plan_id, duration_sec) VALUES (2, 1001, 60)`,
-		`INSERT INTO episodes (id, dc_plan_id, duration_sec) VALUES (3, 1001, 60)`,
+		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (2, 1001, 'completed')`,
+		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (3, 1001, 'uploading')`,
+		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (4, 1001, 'pending')`,
+		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (5, 1001, 'completed')`,
+		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (6, 1001, 'completed')`,
+		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (7, 1001, 'completed')`,
+		`INSERT INTO episodes (id, task_id, dc_plan_id, duration_sec, cloud_synced, qa_status) VALUES (1, 1, 1001, 60, TRUE, 'approved')`,
+		`INSERT INTO episodes (id, task_id, dc_plan_id, duration_sec, cloud_synced, qa_status) VALUES (2, 2, 1001, 40, FALSE, 'pending_qa')`,
+		`INSERT INTO episodes (id, task_id, dc_plan_id, duration_sec, cloud_synced, qa_status) VALUES (3, 5, 1001, 30, FALSE, 'approved')`,
+		`INSERT INTO episodes (id, task_id, dc_plan_id, duration_sec, cloud_synced, qa_status) VALUES (4, 6, 1001, 20, FALSE, 'failed')`,
+		`INSERT INTO episodes (id, task_id, dc_plan_id, duration_sec, cloud_synced, qa_status) VALUES (5, 7, 1001, 10, FALSE, 'manual_review_failed')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed fixture: %v", err)

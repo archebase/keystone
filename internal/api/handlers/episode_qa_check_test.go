@@ -12,6 +12,8 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
+
+	"archebase.com/keystone-edge/internal/services"
 )
 
 func TestEvaluateMcapMagicCheck(t *testing.T) {
@@ -417,6 +419,104 @@ func TestPersistEpisodeQACheckAutoSuccessAutoApprovesEpisode(t *testing.T) {
 	}
 }
 
+func TestPersistEpisodeQACheckPublishesTerminalStatusEvent(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	broker := services.NewDeviceStateBroker()
+	handler := &EpisodeQAHandler{db: db}
+	handler.SetDeviceStateBroker(broker)
+	events, unsubscribe := broker.Subscribe(1)
+	defer unsubscribe()
+
+	for _, statement := range []string{
+		`INSERT INTO robots (id, device_id) VALUES (9, 'robot-1')`,
+		`INSERT INTO workstations (id, robot_id) VALUES (3, 9)`,
+		`INSERT INTO tasks (id, task_id, workstation_id) VALUES (1, 'task-1', 3)`,
+		`INSERT INTO episodes (id, task_id, workstation_id, dc_plan_id, qa_status) VALUES (1, 1, 3, 10, 'qa_running')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed QA event fixture: %v", err)
+		}
+	}
+
+	outcome := episodeQACheckOutcome{
+		CheckName: episodeQACheckMcapMagic,
+		Passed:    false,
+		Score:     0,
+		Details:   "MCAP integrity check failed",
+		Metadata:  map[string]any{},
+	}
+	claim := episodeQARunClaim{
+		EpisodeID:      1,
+		OriginalStatus: qaStatusPendingQA,
+		MutableStatus:  true,
+	}
+	if _, err := handler.persistEpisodeQASuiteResult(
+		context.Background(),
+		claim,
+		qaRunModeAuto,
+		[]episodeQACheckOutcome{outcome},
+		time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("persist qa check: %v", err)
+	}
+
+	select {
+	case event := <-events:
+		if event["type"] != "plan_progress_changed" || event["device_id"] != "robot-1" ||
+			event["task_id"] != "task-1" || event["dc_plan_id"] != int64(10) ||
+			event["qa_status"] != qaStatusFailed || event["reason"] != "qa_status_changed" {
+			t.Fatalf("unexpected QA status event: %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for QA status event")
+	}
+}
+
+func TestManualReviewChangesPublishStatusEvents(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	broker := services.NewDeviceStateBroker()
+	handler := &EpisodeQAHandler{db: db}
+	handler.SetDeviceStateBroker(broker)
+	events, unsubscribe := broker.Subscribe(2)
+	defer unsubscribe()
+
+	for _, statement := range []string{
+		`INSERT INTO robots (id, device_id) VALUES (9, 'robot-1')`,
+		`INSERT INTO workstations (id, robot_id) VALUES (3, 9)`,
+		`INSERT INTO tasks (id, task_id, workstation_id) VALUES (1, 'task-1', 3)`,
+		`INSERT INTO episodes (id, task_id, workstation_id, dc_plan_id, mcap_path, sidecar_path, qa_status)
+		 VALUES (1, 1, 3, 10, 'bucket/task-1.mcap', 'bucket/task-1.json', 'approved')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed manual review event fixture: %v", err)
+		}
+	}
+
+	if _, err := handler.MarkEpisodeManualReviewFailed(context.Background(), 1, "bad data"); err != nil {
+		t.Fatalf("mark manual review failed: %v", err)
+	}
+	assertEpisodeQAStatusEvent(t, events, qaStatusManualReviewFailed)
+
+	if _, err := handler.CancelEpisodeManualReviewFailed(context.Background(), 1, "restore"); err != nil {
+		t.Fatalf("cancel manual review failed: %v", err)
+	}
+	assertEpisodeQAStatusEvent(t, events, qaStatusPendingQA)
+}
+
+func assertEpisodeQAStatusEvent(t *testing.T, events <-chan services.DeviceStateEvent, wantStatus string) {
+	t.Helper()
+	select {
+	case event := <-events:
+		if event["type"] != "plan_progress_changed" || event["device_id"] != "robot-1" ||
+			event["task_id"] != "task-1" || event["dc_plan_id"] != int64(10) ||
+			event["qa_status"] != wantStatus || event["reason"] != "qa_status_changed" {
+			t.Fatalf("unexpected QA status event: %#v", event)
+		}
+	default:
+		t.Fatalf("QA status %q did not publish an event", wantStatus)
+	}
+}
+
 func TestPersistEpisodeQACheckManualFailureMarksApprovedEpisodeFailed(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}
@@ -485,6 +585,33 @@ func TestClaimEpisodeQARunReturnsConflictWhenRunning(t *testing.T) {
 	if _, err := handler.claimEpisodeQARun(context.Background(), row, qaRunModeManual); err != errEpisodeQAAlreadyRunning {
 		t.Fatalf("claim error = %v, want errEpisodeQAAlreadyRunning", err)
 	}
+}
+
+func TestRunEpisodeQASuitePublishesRunningAndReleaseProgressEvents(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	broker := services.NewDeviceStateBroker()
+	handler := &EpisodeQAHandler{db: db, stateBroker: broker}
+	events, unsubscribe := broker.Subscribe(2)
+	defer unsubscribe()
+
+	for _, statement := range []string{
+		`INSERT INTO robots (id, device_id) VALUES (1, 'robot-1')`,
+		`INSERT INTO workstations (id, robot_id) VALUES (1, 1)`,
+		`INSERT INTO tasks (id, task_id, workstation_id) VALUES (1, 'task-1', 1)`,
+		`INSERT INTO episodes (id, task_id, workstation_id, dc_plan_id, mcap_path, qa_status)
+		 VALUES (1, 1, 1, 10, 'bucket/path.mcap', 'failed')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed QA event fixture: %v", err)
+		}
+	}
+
+	if _, err := handler.RunEpisodeQASuite(context.Background(), 1, qaRunModeManual); err == nil {
+		t.Fatal("RunEpisodeQASuite() error = nil, want storage configuration error")
+	}
+
+	assertEpisodeQAStatusEvent(t, events, qaStatusRunning)
+	assertEpisodeQAStatusEvent(t, events, qaStatusFailed)
 }
 
 func TestMarkEpisodeManualReviewFailedUpdatesStatusAndHistory(t *testing.T) {
@@ -611,6 +738,9 @@ func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 	_, err = db.Exec(`
 		CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY,
+			task_id INTEGER,
+			workstation_id INTEGER,
+			dc_plan_id INTEGER,
 			mcap_path TEXT,
 			sidecar_path TEXT,
 			qa_status TEXT,
@@ -618,6 +748,22 @@ func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 			auto_approved BOOLEAN,
 			quality_flag TEXT,
 			metadata TEXT,
+			deleted_at TIMESTAMP NULL
+		);
+		CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY,
+			task_id TEXT,
+			workstation_id INTEGER,
+			deleted_at TIMESTAMP NULL
+		);
+		CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY,
+			robot_id INTEGER,
+			deleted_at TIMESTAMP NULL
+		);
+		CREATE TABLE robots (
+			id INTEGER PRIMARY KEY,
+			device_id TEXT,
 			deleted_at TIMESTAMP NULL
 		);
 		CREATE TABLE qa_checks (

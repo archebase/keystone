@@ -59,7 +59,7 @@ func newTestNextPlanTaskDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY, workspace_id INTEGER, name TEXT, operator TEXT,
 			dc_project_description TEXT,
 			dc_task_description TEXT,
-			dc_device_id INTEGER, dc_type TEXT, target_count INTEGER, target_duration INTEGER,
+			dc_device_id INTEGER, dc_type TEXT, target_count INTEGER, cur_count INTEGER DEFAULT 0, target_duration INTEGER,
 			deleted_at TIMESTAMP
 		);
 		CREATE TABLE data_collectors (
@@ -77,6 +77,11 @@ func newTestNextPlanTaskDB(t *testing.T) *sqlx.DB {
 			organization_id INTEGER, dc_plan_id INTEGER, local_dc_plan_id INTEGER,
 			status TEXT, assigned_at TIMESTAMP, metadata TEXT, created_at TIMESTAMP,
 			updated_at TIMESTAMP, deleted_at TIMESTAMP
+		);
+		CREATE TABLE episodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT, task_id INTEGER,
+			dc_plan_id INTEGER, cloud_synced BOOLEAN DEFAULT FALSE,
+			qa_status TEXT DEFAULT 'pending_qa', deleted_at TIMESTAMP
 		);
 	`); err != nil {
 		db.Close()

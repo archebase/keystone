@@ -29,6 +29,10 @@ func TestUploadCompleteCopiesTaskPlanFieldsToEpisode(t *testing.T) {
 	serverConn, _ := newRecorderHandlerTestWebSocketPair(t)
 	dc := hub.NewTransferConn(serverConn, "robot-001", "127.0.0.1")
 	handler := NewTransferHandler(hub, &config.TransferConfig{WriteTimeout: 1}, db, s3Client, "bucket", "", nil, 0)
+	broker := services.NewDeviceStateBroker()
+	handler.SetDeviceStateBroker(broker)
+	events, unsubscribe := broker.Subscribe(1)
+	defer unsubscribe()
 
 	handler.onUploadComplete(context.Background(), dc, map[string]interface{}{
 		"data": map[string]interface{}{
@@ -54,6 +58,17 @@ func TestUploadCompleteCopiesTaskPlanFieldsToEpisode(t *testing.T) {
 	}
 	if got.BatchID.Valid || got.OrderID.Valid {
 		t.Fatalf("legacy order/batch fields should be null: batch=%#v order=%#v", got.BatchID, got.OrderID)
+	}
+
+	select {
+	case event := <-events:
+		if event["type"] != "plan_progress_changed" || event["device_id"] != "robot-001" ||
+			event["task_id"] != "task-plan-1" || event["dc_plan_id"] != int64(1001) ||
+			event["qa_status"] != qaStatusPendingQA || event["reason"] != "episode_created" {
+			t.Fatalf("unexpected episode progress event: %#v", event)
+		}
+	default:
+		t.Fatal("upload completion did not publish an episode progress event")
 	}
 }
 

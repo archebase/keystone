@@ -87,6 +87,10 @@ func TestTransferProcessesUploadFailedFromCurrentConnection(t *testing.T) {
 
 	hub := services.NewTransferHub(10)
 	handler := NewTransferHandler(hub, &config.TransferConfig{}, db, nil, "", "", nil, 0)
+	broker := services.NewDeviceStateBroker()
+	handler.SetDeviceStateBroker(broker)
+	events, unsubscribe := broker.Subscribe(1)
+	defer unsubscribe()
 	dc := hub.NewTransferConn(&websocket.Conn{}, "robot-001", "127.0.0.1")
 	if !hub.Connect("robot-001", dc) {
 		t.Fatalf("connect failed")
@@ -101,6 +105,15 @@ func TestTransferProcessesUploadFailedFromCurrentConnection(t *testing.T) {
 	})
 
 	assertTransferTakeoverTaskStatus(t, db, "task-current-upload", "failed")
+	select {
+	case event := <-events:
+		if event["type"] != "plan_progress_changed" || event["device_id"] != "robot-001" ||
+			event["task_id"] != "task-current-upload" || event["reason"] != "upload_failed" {
+			t.Fatalf("unexpected plan progress event: %#v", event)
+		}
+	default:
+		t.Fatal("upload failure did not publish a plan progress event")
+	}
 }
 
 func newTransferTakeoverDB(t *testing.T) *sqlx.DB {

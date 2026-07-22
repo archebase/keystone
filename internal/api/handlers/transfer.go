@@ -545,11 +545,12 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	}
 
 	var ownedTask struct {
-		ID     int64  `db:"id"`
-		Status string `db:"status"`
+		ID       int64         `db:"id"`
+		Status   string        `db:"status"`
+		DCPlanID sql.NullInt64 `db:"dc_plan_id"`
 	}
 	if err := h.db.GetContext(ctx, &ownedTask, `
-		SELECT t.id, t.status
+		SELECT t.id, t.status, t.dc_plan_id
 		FROM tasks t
 		JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
@@ -800,6 +801,16 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		logger.Printf("%s DB commit error: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
 	}
+	if createdEpisodePK > 0 && h.stateBroker != nil {
+		h.stateBroker.Publish(dc.DeviceID, services.DeviceStateEvent{
+			"type":       "plan_progress_changed",
+			"episode_id": createdEpisodePK,
+			"task_id":    strings.TrimSpace(taskID),
+			"dc_plan_id": ownedTask.DCPlanID.Int64,
+			"qa_status":  qaStatusPendingQA,
+			"reason":     "episode_created",
+		})
+	}
 	if createdEpisodePK > 0 && h.qaEnqueuer != nil {
 		h.qaEnqueuer.EnqueueEpisode(createdEpisodePK)
 	}
@@ -889,6 +900,13 @@ func (h *TransferHandler) onUploadFailed(ctx context.Context, dc *services.Trans
 	if rows, _ := result.RowsAffected(); rows > 0 {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("%s marked as failed due to upload_failed", transferTaskLogPrefix(dc.DeviceID, taskID))
+		if h.stateBroker != nil {
+			h.stateBroker.Publish(dc.DeviceID, services.DeviceStateEvent{
+				"type":    "plan_progress_changed",
+				"task_id": strings.TrimSpace(taskID),
+				"reason":  "upload_failed",
+			})
+		}
 	}
 }
 

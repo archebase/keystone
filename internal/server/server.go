@@ -113,6 +113,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
 	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.TOSStorage)
+	qaHandler.SetDeviceStateBroker(stateBroker)
 	transferHandler.SetEpisodeQAEnqueuer(qaHandler)
 
 	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)

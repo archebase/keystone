@@ -110,6 +110,14 @@ func TestDCPlanTaskSupplyCancelsPendingWhenTargetReached(t *testing.T) {
 	`, workstationID, plan.WorkspaceID, plan.ID, workstationID, plan.WorkspaceID, plan.ID); err != nil {
 		t.Fatalf("seed tasks: %v", err)
 	}
+	if _, err := db.Exec(`
+		INSERT INTO episodes (episode_id, task_id, dc_plan_id, duration_sec, cloud_synced)
+		SELECT 'episode-completed', id, dc_plan_id, 30, FALSE
+		FROM tasks
+		WHERE task_id = 'task-completed'
+	`); err != nil {
+		t.Fatalf("seed completed episode: %v", err)
+	}
 
 	_, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
 		context.Background(), plan.ID, workstationID, time.Now().UTC(),
@@ -124,6 +132,68 @@ func TestDCPlanTaskSupplyCancelsPendingWhenTargetReached(t *testing.T) {
 	}
 	if status != "cancelled" {
 		t.Fatalf("pending status=%q want cancelled", status)
+	}
+}
+
+func TestDCPlanTaskSupplyAddsUnsyncedProgressToCloudBaseline(t *testing.T) {
+	db := newTestDCPlanTaskSupplyDB(t)
+	defer db.Close()
+
+	plan := testTaskSupplyPlan(1001, 123, 3)
+	plan.CurCount = 2
+	seedTaskSupplyPlan(t, db, plan)
+	seedTaskSupplyResources(t, db, plan)
+	workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+	if _, err := db.Exec(`
+		INSERT INTO tasks (id, task_id, workstation_id, organization_id, dc_plan_id, status)
+		VALUES (1, 'task-local', ?, ?, ?, 'completed')
+	`, workstationID, plan.WorkspaceID, plan.ID); err != nil {
+		t.Fatalf("seed local task: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO episodes (episode_id, task_id, dc_plan_id, duration_sec, cloud_synced)
+		VALUES ('episode-local', 1, ?, 30, FALSE)
+	`, plan.ID); err != nil {
+		t.Fatalf("seed unsynced episode: %v", err)
+	}
+
+	_, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
+		context.Background(), plan.ID, workstationID, time.Now().UTC(),
+	)
+	if !errors.Is(err, ErrDCPlanTaskSupplyTargetReached) {
+		t.Fatalf("EnsureNextTask() error = %v, want target reached", err)
+	}
+}
+
+func TestDCPlanTaskSupplyIgnoresFailedEpisodeForTarget(t *testing.T) {
+	db := newTestDCPlanTaskSupplyDB(t)
+	defer db.Close()
+
+	plan := testTaskSupplyPlan(1001, 123, 1)
+	seedTaskSupplyPlan(t, db, plan)
+	seedTaskSupplyResources(t, db, plan)
+	workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+	if _, err := db.Exec(`
+		INSERT INTO tasks (id, task_id, workstation_id, organization_id, dc_plan_id, status)
+		VALUES (1, 'task-failed', ?, ?, ?, 'completed')
+	`, workstationID, plan.WorkspaceID, plan.ID); err != nil {
+		t.Fatalf("seed failed task: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO episodes (episode_id, task_id, dc_plan_id, duration_sec, cloud_synced, qa_status)
+		VALUES ('episode-failed', 1, ?, 30, FALSE, 'failed')
+	`, plan.ID); err != nil {
+		t.Fatalf("seed failed episode: %v", err)
+	}
+
+	result, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
+		context.Background(), plan.ID, workstationID, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("EnsureNextTask() error = %v", err)
+	}
+	if !result.Created || result.Task.Status != "pending" {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }
 
@@ -221,10 +291,10 @@ func seedTaskSupplyPlan(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
 	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
 			id, workspace_id, name, operator, dc_project_description, dc_task_description, dc_device_id, dc_type,
-			target_count, target_duration, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+			target_count, cur_count, target_duration, deleted_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
 	`, plan.ID, plan.WorkspaceID, plan.Name, plan.Operator, plan.DCProjectDescription, plan.DCTaskDescription, plan.DCDeviceID,
-		plan.DCType, plan.TargetCount, plan.TargetDuration); err != nil {
+		plan.DCType, plan.TargetCount, plan.CurCount, plan.TargetDuration); err != nil {
 		t.Fatalf("seed dc_plan: %v", err)
 	}
 }
@@ -268,6 +338,7 @@ func newTestDCPlanTaskSupplyDB(t *testing.T) *sqlx.DB {
 			dc_device_id INTEGER NOT NULL,
 			dc_type TEXT NOT NULL,
 			target_count INTEGER NOT NULL,
+			cur_count INTEGER NOT NULL DEFAULT 0,
 			target_duration INTEGER NOT NULL,
 			deleted_at TIMESTAMP
 		);
@@ -311,6 +382,16 @@ func newTestDCPlanTaskSupplyDB(t *testing.T) *sqlx.DB {
 			metadata TEXT,
 			created_at TIMESTAMP,
 			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE episodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			episode_id TEXT NOT NULL,
+			task_id INTEGER NOT NULL,
+			dc_plan_id INTEGER,
+			duration_sec REAL,
+			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
+			qa_status TEXT NOT NULL DEFAULT 'pending_qa',
 			deleted_at TIMESTAMP
 		);
 	`); err != nil {

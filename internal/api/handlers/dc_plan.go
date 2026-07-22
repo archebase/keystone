@@ -88,25 +88,35 @@ type DCPlanSyncResponse struct {
 
 // OperatorPlanItem represents one plan currently executable by the logged-in collector.
 type OperatorPlanItem struct {
-	ID                   int64  `json:"id"`
-	WorkspaceID          int64  `json:"workspace_id"`
-	Name                 string `json:"name"`
-	DCProjectID          int64  `json:"dc_project_id"`
-	DCProjectName        string `json:"dc_project_name,omitempty"`
-	DCProjectDescription string `json:"dc_project_description,omitempty"`
-	DCTaskID             int64  `json:"dc_task_id"`
-	DCTaskName           string `json:"dc_task_name,omitempty"`
-	DCTaskDescription    string `json:"dc_task_description,omitempty"`
-	DCDeviceID           int64  `json:"dc_device_id"`
-	DCDeviceName         string `json:"dc_device_name,omitempty"`
-	DCType               string `json:"dc_type"`
-	TargetCount          int64  `json:"target_count"`
-	CurCount             int64  `json:"cur_count"`
-	TargetDuration       int64  `json:"target_duration"`
-	CurDuration          int64  `json:"cur_duration"`
-	CommittedCount       int64  `json:"committed_count"`
-	RemainingCount       int64  `json:"remaining_count"`
-	LastSyncedAt         string `json:"last_synced_at,omitempty"`
+	ID                    int64  `json:"id"`
+	WorkspaceID           int64  `json:"workspace_id"`
+	Name                  string `json:"name"`
+	DCProjectID           int64  `json:"dc_project_id"`
+	DCProjectName         string `json:"dc_project_name,omitempty"`
+	DCProjectDescription  string `json:"dc_project_description,omitempty"`
+	DCTaskID              int64  `json:"dc_task_id"`
+	DCTaskName            string `json:"dc_task_name,omitempty"`
+	DCTaskDescription     string `json:"dc_task_description,omitempty"`
+	DCDeviceID            int64  `json:"dc_device_id"`
+	DCDeviceName          string `json:"dc_device_name,omitempty"`
+	DCType                string `json:"dc_type"`
+	TargetCount           int64  `json:"target_count"`
+	CurCount              int64  `json:"cur_count"`
+	CloudCurCount         int64  `json:"cloud_cur_count"`
+	LocalCurCount         int64  `json:"local_cur_count"`
+	LocalPendingCount     int64  `json:"local_pending_count"`
+	LocalApprovedCount    int64  `json:"local_approved_count"`
+	LocalFailedCount      int64  `json:"local_failed_count"`
+	TargetDuration        int64  `json:"target_duration"`
+	CurDuration           int64  `json:"cur_duration"`
+	CloudCurDuration      int64  `json:"cloud_cur_duration"`
+	LocalCurDuration      int64  `json:"local_cur_duration"`
+	LocalPendingDuration  int64  `json:"local_pending_duration"`
+	LocalApprovedDuration int64  `json:"local_approved_duration"`
+	LocalFailedDuration   int64  `json:"local_failed_duration"`
+	CommittedCount        int64  `json:"committed_count"`
+	RemainingCount        int64  `json:"remaining_count"`
+	LastSyncedAt          string `json:"last_synced_at,omitempty"`
 }
 
 // OperatorPlanRefreshResponse reports the collector's latest assigned plans.
@@ -214,26 +224,30 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 	}
 
 	rows := []struct {
-		ID                   int64        `db:"id"`
-		WorkspaceID          int64        `db:"workspace_id"`
-		Name                 string       `db:"name"`
-		DCProjectID          int64        `db:"dc_project_id"`
-		DCProjectName        string       `db:"dc_project_name"`
-		DCProjectDescription string       `db:"dc_project_description"`
-		DCTaskID             int64        `db:"dc_task_id"`
-		DCTaskName           string       `db:"dc_task_name"`
-		DCTaskDescription    string       `db:"dc_task_description"`
-		DCDeviceID           int64        `db:"dc_device_id"`
-		DCDeviceName         string       `db:"dc_device_name"`
-		DCType               string       `db:"dc_type"`
-		TargetCount          int64        `db:"target_count"`
-		CurCount             int64        `db:"cur_count"`
-		LocalCurCount        int64        `db:"local_cur_count"`
-		TargetDuration       int64        `db:"target_duration"`
-		CurDuration          int64        `db:"cur_duration"`
-		LocalCurDuration     float64      `db:"local_cur_duration"`
-		CommittedCount       int64        `db:"committed_count"`
-		LastSyncedAt         sql.NullTime `db:"last_synced_at"`
+		ID                    int64        `db:"id"`
+		WorkspaceID           int64        `db:"workspace_id"`
+		Name                  string       `db:"name"`
+		DCProjectID           int64        `db:"dc_project_id"`
+		DCProjectName         string       `db:"dc_project_name"`
+		DCProjectDescription  string       `db:"dc_project_description"`
+		DCTaskID              int64        `db:"dc_task_id"`
+		DCTaskName            string       `db:"dc_task_name"`
+		DCTaskDescription     string       `db:"dc_task_description"`
+		DCDeviceID            int64        `db:"dc_device_id"`
+		DCDeviceName          string       `db:"dc_device_name"`
+		DCType                string       `db:"dc_type"`
+		TargetCount           int64        `db:"target_count"`
+		CurCount              int64        `db:"cur_count"`
+		LocalPendingCount     int64        `db:"local_pending_count"`
+		LocalApprovedCount    int64        `db:"local_approved_count"`
+		LocalFailedCount      int64        `db:"local_failed_count"`
+		TargetDuration        int64        `db:"target_duration"`
+		CurDuration           int64        `db:"cur_duration"`
+		LocalPendingDuration  float64      `db:"local_pending_duration"`
+		LocalApprovedDuration float64      `db:"local_approved_duration"`
+		LocalFailedDuration   float64      `db:"local_failed_duration"`
+		ReservedCount         int64        `db:"reserved_count"`
+		LastSyncedAt          sql.NullTime `db:"last_synced_at"`
 	}{}
 	if err := h.db.SelectContext(c.Request.Context(), &rows, `
 		SELECT
@@ -254,24 +268,57 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 			dp.target_duration,
 			dp.cur_duration,
 			dp.last_synced_at,
-			(
-				SELECT COUNT(*)
-				FROM episodes e
-				WHERE e.dc_plan_id = dp.id AND e.deleted_at IS NULL
-			) AS local_cur_count,
-			(
-				SELECT COALESCE(SUM(COALESCE(e.duration_sec, 0)), 0)
-				FROM episodes e
-				WHERE e.dc_plan_id = dp.id AND e.deleted_at IS NULL
-			) AS local_cur_duration,
+			COALESCE(progress.local_pending_count, 0) AS local_pending_count,
+			COALESCE(progress.local_approved_count, 0) AS local_approved_count,
+			COALESCE(progress.local_failed_count, 0) AS local_failed_count,
+			COALESCE(progress.local_pending_duration, 0) AS local_pending_duration,
+			COALESCE(progress.local_approved_duration, 0) AS local_approved_duration,
+			COALESCE(progress.local_failed_duration, 0) AS local_failed_duration,
 			(
 				SELECT COUNT(*)
 				FROM tasks t
 				WHERE t.dc_plan_id = dp.id
+					AND t.status IN ('ready', 'in_progress', 'uploading')
 					AND t.deleted_at IS NULL
-					AND t.status IN ('ready', 'in_progress', 'uploading', 'completed')
-			) AS committed_count
+					AND NOT EXISTS (
+						SELECT 1
+						FROM episodes e
+						WHERE e.task_id = t.id AND e.deleted_at IS NULL
+					)
+			) AS reserved_count
 		FROM dc_plan dp
+		LEFT JOIN (
+			SELECT
+				e.dc_plan_id,
+				SUM(CASE
+					WHEN COALESCE(e.qa_status, 'pending_qa') IN ('pending_qa', 'qa_running') THEN 1
+					ELSE 0
+				END) AS local_pending_count,
+				SUM(CASE WHEN e.qa_status = 'approved' THEN 1 ELSE 0 END) AS local_approved_count,
+				SUM(CASE
+					WHEN e.qa_status IN ('failed', 'manual_review_failed') THEN 1
+					ELSE 0
+				END) AS local_failed_count,
+				SUM(CASE
+					WHEN COALESCE(e.qa_status, 'pending_qa') IN ('pending_qa', 'qa_running')
+						THEN COALESCE(e.duration_sec, 0)
+					ELSE 0
+				END) AS local_pending_duration,
+				SUM(CASE
+					WHEN e.qa_status = 'approved' THEN COALESCE(e.duration_sec, 0)
+					ELSE 0
+				END) AS local_approved_duration,
+				SUM(CASE
+					WHEN e.qa_status IN ('failed', 'manual_review_failed')
+						THEN COALESCE(e.duration_sec, 0)
+					ELSE 0
+				END) AS local_failed_duration
+				FROM episodes e
+				WHERE e.dc_plan_id IS NOT NULL
+					AND COALESCE(e.cloud_synced, FALSE) = FALSE
+					AND e.deleted_at IS NULL
+				GROUP BY e.dc_plan_id
+		) progress ON progress.dc_plan_id = dp.id
 		WHERE dp.workspace_id = ?
 			AND dp.operator = ?
 			AND dp.dc_device_id = ?
@@ -286,42 +333,47 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 	response := OperatorPlanRefreshResponse{Items: []OperatorPlanItem{}, Stale: stale}
 	var latestSync time.Time
 	for _, row := range rows {
-		curCount := row.CurCount
-		if row.LocalCurCount > curCount {
-			curCount = row.LocalCurCount
-		}
-		curDuration := row.CurDuration
-		localDuration := int64(math.Round(row.LocalCurDuration))
-		if localDuration > curDuration {
-			curDuration = localDuration
-		}
-		reservedCount := row.CommittedCount
-		if curCount > reservedCount {
-			reservedCount = curCount
-		}
+		localCount := row.LocalPendingCount + row.LocalApprovedCount
+		curCount := row.CurCount + localCount
+		pendingDuration := int64(math.Round(row.LocalPendingDuration))
+		approvedDuration := int64(math.Round(row.LocalApprovedDuration))
+		failedDuration := int64(math.Round(row.LocalFailedDuration))
+		localDuration := pendingDuration + approvedDuration
+		curDuration := row.CurDuration + localDuration
+		reservedCount := curCount + row.ReservedCount
 		remaining := row.TargetCount - reservedCount
 		if remaining < 0 {
 			remaining = 0
 		}
 		item := OperatorPlanItem{
-			ID:                   row.ID,
-			WorkspaceID:          row.WorkspaceID,
-			Name:                 row.Name,
-			DCProjectID:          row.DCProjectID,
-			DCProjectName:        row.DCProjectName,
-			DCProjectDescription: row.DCProjectDescription,
-			DCTaskID:             row.DCTaskID,
-			DCTaskName:           row.DCTaskName,
-			DCTaskDescription:    row.DCTaskDescription,
-			DCDeviceID:           row.DCDeviceID,
-			DCDeviceName:         row.DCDeviceName,
-			DCType:               row.DCType,
-			TargetCount:          row.TargetCount,
-			CurCount:             curCount,
-			TargetDuration:       row.TargetDuration,
-			CurDuration:          curDuration,
-			CommittedCount:       row.CommittedCount,
-			RemainingCount:       remaining,
+			ID:                    row.ID,
+			WorkspaceID:           row.WorkspaceID,
+			Name:                  row.Name,
+			DCProjectID:           row.DCProjectID,
+			DCProjectName:         row.DCProjectName,
+			DCProjectDescription:  row.DCProjectDescription,
+			DCTaskID:              row.DCTaskID,
+			DCTaskName:            row.DCTaskName,
+			DCTaskDescription:     row.DCTaskDescription,
+			DCDeviceID:            row.DCDeviceID,
+			DCDeviceName:          row.DCDeviceName,
+			DCType:                row.DCType,
+			TargetCount:           row.TargetCount,
+			CurCount:              curCount,
+			CloudCurCount:         row.CurCount,
+			LocalCurCount:         localCount,
+			LocalPendingCount:     row.LocalPendingCount,
+			LocalApprovedCount:    row.LocalApprovedCount,
+			LocalFailedCount:      row.LocalFailedCount,
+			TargetDuration:        row.TargetDuration,
+			CurDuration:           curDuration,
+			CloudCurDuration:      row.CurDuration,
+			LocalCurDuration:      localDuration,
+			LocalPendingDuration:  pendingDuration,
+			LocalApprovedDuration: approvedDuration,
+			LocalFailedDuration:   failedDuration,
+			CommittedCount:        reservedCount,
+			RemainingCount:        remaining,
 		}
 		if row.LastSyncedAt.Valid {
 			item.LastSyncedAt = row.LastSyncedAt.Time.UTC().Format(time.RFC3339)
@@ -457,7 +509,10 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 				COUNT(*) AS local_cur_count,
 				COALESCE(SUM(COALESCE(duration_sec, 0)), 0) AS local_cur_duration
 			FROM episodes
-			WHERE deleted_at IS NULL AND dc_plan_id IS NOT NULL
+			WHERE deleted_at IS NULL
+				AND dc_plan_id IS NOT NULL
+				AND COALESCE(cloud_synced, FALSE) = FALSE
+				AND COALESCE(qa_status, 'pending_qa') NOT IN ('failed', 'manual_review_failed')
 			GROUP BY dc_plan_id
 		) progress ON progress.dc_plan_id = dp.id
 		` + whereClause + `
@@ -559,16 +614,10 @@ func parsePositivePathInt64(c *gin.Context, field string) (int64, bool) {
 }
 
 func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
-	curCount := row.CurCount
-	if row.LocalCurCount > curCount {
-		curCount = row.LocalCurCount
-	}
+	curCount := row.CurCount + row.LocalCurCount
 	curDuration := row.CurDuration
 	if row.LocalCurDuration.Valid {
-		localDuration := int64(math.Round(row.LocalCurDuration.Float64))
-		if localDuration > curDuration {
-			curDuration = localDuration
-		}
+		curDuration += int64(math.Round(row.LocalCurDuration.Float64))
 	}
 	return DCPlanResponse{
 		ID:                   row.ID,
