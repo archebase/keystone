@@ -291,7 +291,7 @@ func TestDataOpsEpisodeIDSnapshotSQLUsesDataOpsOrdering(t *testing.T) {
 
 func TestDataOpsBulkPreviewSQLs(t *testing.T) {
 	qaSQL := dataOpsBulkQAPreviewSQL(dataOpsEpisodeBaseFromSQL(), " WHERE e.deleted_at IS NULL")
-	for _, want := range []string{"matched_count", "qa_running_count"} {
+	for _, want := range []string{"matched_count", "qa_running_count", "cloud_synced_count", "sync_active_count"} {
 		if !strings.Contains(qaSQL, want) {
 			t.Fatalf("QA preview SQL should include %q: %s", want, qaSQL)
 		}
@@ -307,6 +307,41 @@ func TestDataOpsBulkPreviewSQLs(t *testing.T) {
 		if !strings.Contains(syncSQL, want) {
 			t.Fatalf("sync preview SQL should include %q: %s", want, syncSQL)
 		}
+	}
+}
+
+func TestPreviewBulkEpisodeQASkipsCloudSyncedEpisodes(t *testing.T) {
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-03T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 2, "2026-06-02T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 3, "2026-06-01T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 4, "2026-05-31T00:00:00Z")
+	if _, err := db.Exec(`UPDATE episodes SET cloud_synced = TRUE, qa_status = 'approved' WHERE id = 2`); err != nil {
+		t.Fatalf("mark episode synced: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'qa_running' WHERE id = 3`); err != nil {
+		t.Fatalf("mark episode QA running: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO sync_logs (episode_id, status) VALUES (4, 'pending')`); err != nil {
+		t.Fatalf("insert active sync log: %v", err)
+	}
+
+	preview, err := h.previewBulkEpisodeQA(context.Background(), dataOpsEpisodeQuery{})
+	if err != nil {
+		t.Fatalf("previewBulkEpisodeQA returned error: %v", err)
+	}
+
+	if preview.MatchedCount != 4 || preview.EligibleCount != 1 || preview.SkippedCount != 3 {
+		t.Fatalf("preview counts = matched %d eligible %d skipped %d, want 4/1/3",
+			preview.MatchedCount, preview.EligibleCount, preview.SkippedCount)
+	}
+	if len(preview.SkippedBreakdown) != 3 ||
+		preview.SkippedBreakdown[0].Reason != "qa_running" || preview.SkippedBreakdown[0].Count != 1 ||
+		preview.SkippedBreakdown[1].Reason != "already_synced" || preview.SkippedBreakdown[1].Count != 1 ||
+		preview.SkippedBreakdown[2].Reason != "sync_active" || preview.SkippedBreakdown[2].Count != 1 {
+		t.Fatalf("unexpected skipped breakdown: %#v", preview.SkippedBreakdown)
 	}
 }
 

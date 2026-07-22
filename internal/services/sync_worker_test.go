@@ -1259,6 +1259,59 @@ func TestMarkSyncCompleted_WritesExistingCloudFields(t *testing.T) {
 	}
 }
 
+func TestAcquireSyncLogRejectsEpisodeThatIsNoLongerApproved(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{db: db}
+
+	insertEpisodeForSyncWorkerTest(t, db, 27, "manual_review_failed", false)
+	insertSyncLogForSyncWorkerTest(t, db, 27, "pending", 0)
+
+	_, _, err := w.acquireSyncLogWithMode(context.Background(), 27, "bucket/path.mcap", false)
+	if err == nil || !strings.Contains(err.Error(), "must be approved") {
+		t.Fatalf("acquireSyncLogWithMode() error = %v, want QA approval error", err)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 27)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+}
+
+func TestMarkSyncCompletedRejectsEpisodeThatIsNoLongerApproved(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{db: db}
+
+	insertEpisodeForSyncWorkerTest(t, db, 28, "failed", false)
+	insertSyncLogForSyncWorkerTest(t, db, 28, "in_progress", 1)
+	var syncLogID int64
+	if err := db.Get(&syncLogID, "SELECT id FROM sync_logs WHERE episode_id = ?", 28); err != nil {
+		t.Fatalf("query sync log id: %v", err)
+	}
+
+	w.markSyncCompleted(context.Background(), syncLogID, 28, &cloud.UploadResult{
+		LogicalUploadID: "logical-28",
+		UploadID:        "upload-28",
+		ObjectKey:       "cloud/object.mcap",
+		FileSize:        12345,
+	}, 3)
+
+	var cloudSynced bool
+	if err := db.Get(&cloudSynced, "SELECT cloud_synced FROM episodes WHERE id = ?", 28); err != nil {
+		t.Fatalf("query episode cloud_synced: %v", err)
+	}
+	if cloudSynced {
+		t.Fatal("cloud_synced = true, want false")
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 28)
+	if latest.Status != "failed" {
+		t.Fatalf("latest status = %q, want failed", latest.Status)
+	}
+	if latest.NextRetry.Valid {
+		t.Fatal("next_retry_at valid = true, want NULL")
+	}
+}
+
 func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 

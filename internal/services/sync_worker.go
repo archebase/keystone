@@ -1416,9 +1416,12 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 	lockClause := txLockClause(tx)
 
 	// Serialize per episode even when sync_logs is empty for this episode.
-	var lockedEpisodeID int64
-	if err := tx.GetContext(ctx, &lockedEpisodeID, `
-		SELECT id
+	var lockedEpisode struct {
+		ID       int64  `db:"id"`
+		QAStatus string `db:"qa_status"`
+	}
+	if err := tx.GetContext(ctx, &lockedEpisode, `
+		SELECT id, COALESCE(qa_status, '') AS qa_status
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`+lockClause, episodeID); err != nil {
@@ -1426,6 +1429,9 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 			return 0, 0, fmt.Errorf("episode %d not found", episodeID)
 		}
 		return 0, 0, fmt.Errorf("lock episode %d: %w", episodeID, err)
+	}
+	if lockedEpisode.QAStatus != "approved" {
+		return 0, 0, fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, lockedEpisode.QAStatus)
 	}
 
 	var latest struct {
@@ -1561,7 +1567,48 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Update sync_log
+	// Keep cloud_synced and qa_status mutually consistent even if another writer bypasses
+	// the normal sync/QA claim guards.
+	episodeResult, err := tx.ExecContext(ctx, `
+		UPDATE episodes
+		SET cloud_synced = TRUE,
+		    cloud_synced_at = ?,
+		    cloud_mcap_path = ?,
+		    cloud_processed = FALSE
+		WHERE id = ?
+		  AND deleted_at IS NULL
+		  AND qa_status = 'approved'
+	`, now, result.ObjectKey, episodeID)
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to update episode %d cloud status: %v", episodeID, err)
+		return
+	}
+	affected, err := episodeResult.RowsAffected()
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to read episode %d cloud status rows affected: %v", episodeID, err)
+		return
+	}
+	if affected != 1 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sync_logs
+			SET status = 'failed',
+			    error_message = 'episode QA status changed before sync completion',
+			    duration_sec = ?,
+			    completed_at = ?,
+			    next_retry_at = NULL
+			WHERE id = ? AND status = 'in_progress'
+		`, durationSec, now, syncLogID); err != nil {
+			logger.Printf("[SYNC-WORKER] Failed to reject sync completion for episode %d: %v", episodeID, err)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			logger.Printf("[SYNC-WORKER] Failed to commit rejected sync completion for episode %d: %v", episodeID, err)
+			return
+		}
+		logger.Printf("[SYNC-WORKER] Rejected sync completion for episode %d because QA is no longer approved", episodeID)
+		return
+	}
+
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sync_logs
 		SET status = 'completed',
@@ -1572,19 +1619,6 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		WHERE id = ?
 	`, result.ObjectKey, result.FileSize, durationSec, now, syncLogID); err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to update sync log %d: %v", syncLogID, err)
-		return
-	}
-
-	// Update episode
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE episodes
-		SET cloud_synced = TRUE,
-		    cloud_synced_at = ?,
-		    cloud_mcap_path = ?,
-		    cloud_processed = FALSE
-		WHERE id = ? AND deleted_at IS NULL
-	`, now, result.ObjectKey, episodeID); err != nil {
-		logger.Printf("[SYNC-WORKER] Failed to update episode %d cloud status: %v", episodeID, err)
 		return
 	}
 

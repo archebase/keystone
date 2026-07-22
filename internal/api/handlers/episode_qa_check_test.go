@@ -7,6 +7,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -317,6 +318,98 @@ func TestPersistEpisodeQACheckFailureMarksEpisodeFailed(t *testing.T) {
 	}
 }
 
+func TestPersistEpisodeQACheckManualFailureRejectsCloudSyncedEpisode(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, qa_status, cloud_synced, quality_flag, deleted_at)
+		VALUES (1, 'qa_running', TRUE, NULL, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	outcome := episodeQACheckOutcome{
+		CheckName: episodeQACheckMcapMagic,
+		Passed:    false,
+		Score:     0,
+		Details:   "MCAP integrity check failed",
+		Metadata:  map[string]any{},
+	}
+	claim := episodeQARunClaim{
+		EpisodeID:      1,
+		OriginalStatus: qaStatusApproved,
+		Mode:           qaRunModeManual,
+		MutableStatus:  true,
+	}
+	if _, err := handler.persistEpisodeQASuiteResult(
+		context.Background(),
+		claim,
+		qaRunModeManual,
+		[]episodeQACheckOutcome{outcome},
+		time.Now().UTC(),
+	); !errors.Is(err, errEpisodeQACloudSynced) {
+		t.Fatalf("persistEpisodeQASuiteResult() error = %v, want errEpisodeQACloudSynced", err)
+	}
+
+	var checkCount int
+	if err := db.Get(&checkCount, `SELECT COUNT(*) FROM qa_checks WHERE episode_id = 1`); err != nil {
+		t.Fatalf("count qa checks: %v", err)
+	}
+	if checkCount != 0 {
+		t.Fatalf("qa check count = %d, want 0", checkCount)
+	}
+}
+
+func TestPersistEpisodeQACheckManualFailureRejectsActiveCloudSync(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, qa_status, cloud_synced, quality_flag, deleted_at)
+		VALUES (1, 'qa_running', FALSE, NULL, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, status)
+		VALUES (1, 'in_progress')
+	`); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	outcome := episodeQACheckOutcome{
+		CheckName: episodeQACheckMcapMagic,
+		Passed:    false,
+		Score:     0,
+		Details:   "MCAP integrity check failed",
+		Metadata:  map[string]any{},
+	}
+	claim := episodeQARunClaim{
+		EpisodeID:      1,
+		OriginalStatus: qaStatusApproved,
+		Mode:           qaRunModeManual,
+		MutableStatus:  true,
+	}
+	if _, err := handler.persistEpisodeQASuiteResult(
+		context.Background(),
+		claim,
+		qaRunModeManual,
+		[]episodeQACheckOutcome{outcome},
+		time.Now().UTC(),
+	); !errors.Is(err, errEpisodeQASyncActive) {
+		t.Fatalf("persistEpisodeQASuiteResult() error = %v, want errEpisodeQASyncActive", err)
+	}
+
+	var checkCount int
+	if err := db.Get(&checkCount, `SELECT COUNT(*) FROM qa_checks WHERE episode_id = 1`); err != nil {
+		t.Fatalf("count qa checks: %v", err)
+	}
+	if checkCount != 0 {
+		t.Fatalf("qa check count = %d, want 0", checkCount)
+	}
+}
+
 func TestPersistEpisodeQACheckManualSuccessRestoresFailedEpisode(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}
@@ -614,6 +707,60 @@ func TestRunEpisodeQASuitePublishesRunningAndReleaseProgressEvents(t *testing.T)
 	assertEpisodeQAStatusEvent(t, events, qaStatusFailed)
 }
 
+func TestRunEpisodeQASuiteRejectsCloudSyncedEpisode(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, cloud_synced, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', TRUE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	if _, err := handler.RunEpisodeQASuite(context.Background(), 1, qaRunModeManual); !errors.Is(err, errEpisodeQACloudSynced) {
+		t.Fatalf("RunEpisodeQASuite() error = %v, want errEpisodeQACloudSynced", err)
+	}
+
+	var status string
+	if err := db.Get(&status, `SELECT qa_status FROM episodes WHERE id = 1`); err != nil {
+		t.Fatalf("query episode status: %v", err)
+	}
+	if status != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", status)
+	}
+}
+
+func TestRunEpisodeQASuiteRejectsEpisodeWithActiveCloudSync(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, cloud_synced, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', FALSE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, status)
+		VALUES (1, 'pending')
+	`); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	if _, err := handler.RunEpisodeQASuite(context.Background(), 1, qaRunModeManual); !errors.Is(err, errEpisodeQASyncActive) {
+		t.Fatalf("RunEpisodeQASuite() error = %v, want errEpisodeQASyncActive", err)
+	}
+
+	var status string
+	if err := db.Get(&status, `SELECT qa_status FROM episodes WHERE id = 1`); err != nil {
+		t.Fatalf("query episode status: %v", err)
+	}
+	if status != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", status)
+	}
+}
+
 func TestMarkEpisodeManualReviewFailedUpdatesStatusAndHistory(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}
@@ -667,6 +814,74 @@ func TestMarkEpisodeManualReviewFailedUpdatesStatusAndHistory(t *testing.T) {
 	}
 	if check.Metadata == "" {
 		t.Fatalf("check_metadata is empty")
+	}
+}
+
+func TestMarkEpisodeManualReviewFailedRejectsCloudSyncedEpisode(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, cloud_synced, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', TRUE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	if _, err := handler.MarkEpisodeManualReviewFailed(context.Background(), 1, "bad data"); !errors.Is(err, errEpisodeQACloudSynced) {
+		t.Fatalf("MarkEpisodeManualReviewFailed() error = %v, want errEpisodeQACloudSynced", err)
+	}
+
+	var status string
+	if err := db.Get(&status, `SELECT qa_status FROM episodes WHERE id = 1`); err != nil {
+		t.Fatalf("query episode status: %v", err)
+	}
+	if status != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", status)
+	}
+	var checkCount int
+	if err := db.Get(&checkCount, `SELECT COUNT(*) FROM qa_checks WHERE episode_id = 1`); err != nil {
+		t.Fatalf("count qa checks: %v", err)
+	}
+	if checkCount != 0 {
+		t.Fatalf("qa check count = %d, want 0", checkCount)
+	}
+}
+
+func TestMarkEpisodeManualReviewFailedRejectsEpisodeWithActiveCloudSync(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, cloud_synced, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', FALSE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, status)
+		VALUES (1, 'in_progress')
+	`); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	if _, err := handler.MarkEpisodeManualReviewFailed(context.Background(), 1, "bad data"); !errors.Is(err, errEpisodeQASyncActive) {
+		t.Fatalf("MarkEpisodeManualReviewFailed() error = %v, want errEpisodeQASyncActive", err)
+	}
+
+	var status string
+	if err := db.Get(&status, `SELECT qa_status FROM episodes WHERE id = 1`); err != nil {
+		t.Fatalf("query episode status: %v", err)
+	}
+	if status != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", status)
+	}
+	var checkCount int
+	if err := db.Get(&checkCount, `SELECT COUNT(*) FROM qa_checks WHERE episode_id = 1`); err != nil {
+		t.Fatalf("count qa checks: %v", err)
+	}
+	if checkCount != 0 {
+		t.Fatalf("qa check count = %d, want 0", checkCount)
 	}
 }
 
@@ -744,6 +959,7 @@ func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 			mcap_path TEXT,
 			sidecar_path TEXT,
 			qa_status TEXT,
+			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
 			qa_score REAL,
 			auto_approved BOOLEAN,
 			quality_flag TEXT,
@@ -775,6 +991,11 @@ func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 			details TEXT,
 			check_metadata TEXT,
 			checked_at TIMESTAMP
+		);
+		CREATE TABLE sync_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			episode_id INTEGER NOT NULL,
+			status TEXT NOT NULL
 		);
 	`)
 	if err != nil {
