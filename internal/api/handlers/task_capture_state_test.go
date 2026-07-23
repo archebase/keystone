@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -30,15 +31,24 @@ func TestCollectorCaptureStateTransitions(t *testing.T) {
 			task_id TEXT NOT NULL,
 			workstation_id INTEGER NOT NULL,
 			status TEXT NOT NULL,
+			error_message TEXT,
 			started_at TEXT,
 			updated_at TEXT,
+			deleted_at TEXT
+		);
+		CREATE TABLE episodes (
+			id INTEGER PRIMARY KEY,
+			task_id INTEGER NOT NULL,
 			deleted_at TEXT
 		);
 		INSERT INTO tasks (id, task_id, workstation_id, status, deleted_at) VALUES
 			(101, 'task-101', 11, 'pending', NULL),
 			(102, 'task-102', 12, 'pending', NULL),
 			(103, 'task-103', 11, 'completed', NULL),
-			(104, 'task-104', 11, 'pending', '2026-07-21');
+			(104, 'task-104', 11, 'pending', '2026-07-21'),
+			(105, 'task-105', 11, 'uploading', NULL),
+			(106, 'task-106', 11, 'uploading', NULL);
+		INSERT INTO episodes (id, task_id, deleted_at) VALUES (201, 106, NULL);
 	`); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
@@ -52,6 +62,7 @@ func TestCollectorCaptureStateTransitions(t *testing.T) {
 	})
 	router.POST("/tasks/:id/capture/start", handler.StartCollectorCapture)
 	router.POST("/tasks/:id/capture/finish", handler.FinishCollectorCapture)
+	router.POST("/tasks/:id/capture/abandon", handler.AbandonCollectorCapture)
 
 	start := httptest.NewRecorder()
 	router.ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/tasks/101/capture/start", nil))
@@ -104,5 +115,44 @@ func TestCollectorCaptureStateTransitions(t *testing.T) {
 	router.ServeHTTP(deleted, httptest.NewRequest(http.MethodPost, "/tasks/104/capture/start", nil))
 	if deleted.Code != http.StatusNotFound {
 		t.Fatalf("deleted status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+
+	abandon := httptest.NewRecorder()
+	router.ServeHTTP(abandon, httptest.NewRequest(http.MethodPost, "/tasks/105/capture/abandon", nil))
+	if abandon.Code != http.StatusOK {
+		t.Fatalf("abandon status=%d body=%s", abandon.Code, abandon.Body.String())
+	}
+	if body := abandon.Body.String(); body != `{"id":"105","task_id":"task-105","status":"cancelled"}` {
+		t.Fatalf("abandon body=%s", body)
+	}
+	idempotentAbandon := httptest.NewRecorder()
+	router.ServeHTTP(idempotentAbandon, httptest.NewRequest(http.MethodPost, "/tasks/105/capture/abandon", nil))
+	if idempotentAbandon.Code != http.StatusOK {
+		t.Fatalf("idempotent abandon status=%d body=%s", idempotentAbandon.Code, idempotentAbandon.Body.String())
+	}
+
+	otherWorkstationAbandon := httptest.NewRecorder()
+	router.ServeHTTP(otherWorkstationAbandon, httptest.NewRequest(http.MethodPost, "/tasks/102/capture/abandon", nil))
+	if otherWorkstationAbandon.Code != http.StatusNotFound {
+		t.Fatalf("other workstation abandon status=%d body=%s", otherWorkstationAbandon.Code, otherWorkstationAbandon.Body.String())
+	}
+
+	completedWithoutEpisode := httptest.NewRecorder()
+	router.ServeHTTP(completedWithoutEpisode, httptest.NewRequest(http.MethodPost, "/tasks/103/capture/abandon", nil))
+	if completedWithoutEpisode.Code != http.StatusConflict {
+		t.Fatalf("completed abandon status=%d body=%s", completedWithoutEpisode.Code, completedWithoutEpisode.Body.String())
+	}
+
+	alreadyUploaded := httptest.NewRecorder()
+	router.ServeHTTP(alreadyUploaded, httptest.NewRequest(http.MethodPost, "/tasks/106/capture/abandon", nil))
+	if alreadyUploaded.Code != http.StatusConflict {
+		t.Fatalf("already uploaded status=%d body=%s", alreadyUploaded.Code, alreadyUploaded.Body.String())
+	}
+	var errorBody map[string]any
+	if err := json.Unmarshal(alreadyUploaded.Body.Bytes(), &errorBody); err != nil {
+		t.Fatalf("decode already uploaded response: %v", err)
+	}
+	if errorBody["code"] != "task_capture_has_episode" {
+		t.Fatalf("already uploaded code=%v", errorBody["code"])
 	}
 }

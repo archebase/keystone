@@ -107,6 +107,7 @@ func (h *TaskHandler) RegisterCollectorRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks/complete", h.CompleteTasks)
 	apiV1.POST("/tasks/:id/capture/start", h.StartCollectorCapture)
 	apiV1.POST("/tasks/:id/capture/finish", h.FinishCollectorCapture)
+	apiV1.POST("/tasks/:id/capture/abandon", h.AbandonCollectorCapture)
 	apiV1.POST("/dc-plans/:id/tasks/next", h.EnsureNextPlanTask)
 }
 
@@ -149,6 +150,115 @@ func (h *TaskHandler) StartCollectorCapture(c *gin.Context) {
 //	@Router		/tasks/{id}/capture/finish [post]
 func (h *TaskHandler) FinishCollectorCapture(c *gin.Context) {
 	h.transitionCollectorCapture(c, "finish")
+}
+
+// AbandonCollectorCapture releases an unfinished EgoPortal capture task before its local data is discarded.
+//
+//	@Summary	Abandon EgoPortal task capture
+//	@Tags		tasks
+//	@Produce	json
+//	@Param		id	path		int	true	"Numeric task ID"
+//	@Success	200	{object}	CollectorCaptureStateResponse
+//	@Failure	400	{object}	map[string]any
+//	@Failure	401	{object}	map[string]any
+//	@Failure	404	{object}	map[string]any
+//	@Failure	409	{object}	map[string]any
+//	@Failure	500	{object}	map[string]any
+//	@Router		/tasks/{id}/capture/abandon [post]
+func (h *TaskHandler) AbandonCollectorCapture(c *gin.Context) {
+	taskID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || taskID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkstationID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "workstation session is required"})
+		return
+	}
+
+	tx, err := h.db.BeginTxx(c.Request.Context(), nil)
+	if err != nil {
+		logger.Printf("[TASK] Collector capture abandon transaction failed: task=%d err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abandon task capture"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var task struct {
+		ID     int64  `db:"id"`
+		TaskID string `db:"task_id"`
+		Status string `db:"status"`
+	}
+	taskQuery := `
+		SELECT id, task_id, status FROM tasks
+		WHERE id = ? AND workstation_id = ? AND deleted_at IS NULL
+	`
+	if tx.DriverName() != "sqlite" {
+		taskQuery += " FOR UPDATE"
+	}
+	if err := tx.GetContext(c.Request.Context(), &task, taskQuery, taskID, claims.WorkstationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		logger.Printf("[TASK] Collector capture abandon task lookup failed: task=%d err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query task"})
+		return
+	}
+
+	var hasEpisode bool
+	if err := tx.GetContext(c.Request.Context(), &hasEpisode, `
+		SELECT EXISTS(
+			SELECT 1 FROM episodes
+			WHERE task_id = ? AND deleted_at IS NULL
+		)
+	`, task.ID); err != nil {
+		logger.Printf("[TASK] Collector capture abandon episode lookup failed: task=%d err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abandon task capture"})
+		return
+	}
+	if hasEpisode {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":           "task_capture_has_episode",
+			"current_status": task.Status,
+			"error":          "uploaded task capture cannot be abandoned",
+		})
+		return
+	}
+
+	switch task.Status {
+	case "cancelled", "failed":
+	case "pending", "ready", "in_progress", "uploading":
+		now := time.Now().UTC()
+		if _, err := tx.ExecContext(c.Request.Context(), `
+			UPDATE tasks
+			SET status = 'cancelled', error_message = 'collector_abandoned_local_capture', updated_at = ?
+			WHERE id = ? AND deleted_at IS NULL
+		`, now, task.ID); err != nil {
+			logger.Printf("[TASK] Collector capture abandon failed: task=%d err=%v", taskID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abandon task capture"})
+			return
+		}
+		task.Status = "cancelled"
+	default:
+		c.JSON(http.StatusConflict, gin.H{
+			"code":           "task_capture_state_conflict",
+			"current_status": task.Status,
+			"error":          "task capture cannot be abandoned",
+		})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[TASK] Collector capture abandon commit failed: task=%d err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abandon task capture"})
+		return
+	}
+	c.JSON(http.StatusOK, CollectorCaptureStateResponse{
+		ID:     strconv.FormatInt(task.ID, 10),
+		TaskID: task.TaskID,
+		Status: task.Status,
+	})
 }
 
 func (h *TaskHandler) transitionCollectorCapture(c *gin.Context, action string) {

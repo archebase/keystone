@@ -636,11 +636,26 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		}
 	}()
 
-	// Resolve task numeric ID early for status updates.
+	// Serialize upload finalization with collector abandonment. The status check must happen
+	// after taking the task row lock so a cancelled task can never gain an episode.
 	var taskPK int64
-	if err := tx.QueryRowContext(ctx, "SELECT id FROM tasks WHERE task_id = ? AND deleted_at IS NULL", taskID).Scan(&taskPK); err != nil {
+	var lockedTaskStatus string
+	lockClause := " FOR UPDATE"
+	if h.db.DriverName() == "sqlite" {
+		lockClause = ""
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, status
+		FROM tasks
+		WHERE task_id = ? AND deleted_at IS NULL`+lockClause,
+		taskID,
+	).Scan(&taskPK, &lockedTaskStatus); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("%s failed to resolve task id: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
+		logger.Printf("%s failed to lock task for upload completion: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
+		return
+	}
+	if lockedTaskStatus == "failed" || lockedTaskStatus == "cancelled" {
+		logger.Printf("%s upload_complete ignored after task lock for terminal status=%s", transferTaskLogPrefix(dc.DeviceID, taskID), lockedTaskStatus)
 		return
 	}
 
