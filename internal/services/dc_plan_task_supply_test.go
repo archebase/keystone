@@ -220,10 +220,11 @@ func TestDCPlanTaskSupplyMaintainsEgoPortalStereoPendingPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second EnsureEgoPortalPendingPool() error = %v", err)
 	}
-	if !first.Enabled || first.DesiredCount != egoPortalPendingPoolLimit || first.CreatedCount != egoPortalPendingPoolLimit {
+	wantCount := int(plan.TargetCount - plan.CurCount)
+	if !first.Enabled || first.DesiredCount != wantCount || first.CreatedCount != wantCount {
 		t.Fatalf("unexpected first result: %#v", first)
 	}
-	if !second.Enabled || second.CreatedCount != 0 || second.PendingCount != egoPortalPendingPoolLimit {
+	if !second.Enabled || second.CreatedCount != 0 || second.PendingCount != wantCount {
 		t.Fatalf("unexpected second result: %#v", second)
 	}
 }

@@ -27,10 +27,7 @@ var (
 	ErrDCPlanTaskSupplyActiveTask = errors.New("dc plan task supply active task exists")
 )
 
-const (
-	egoPortalStereoDeviceType = "Ego Portal Stereo"
-	egoPortalPendingPoolLimit = 100
-)
+const egoPortalStereoDeviceType = "Ego Portal Stereo"
 
 // DCPlanSuppliedTask is the task returned by on-demand plan task supply.
 type DCPlanSuppliedTask struct {
@@ -257,10 +254,7 @@ func (s *DCPlanTaskSupplyService) EnsureEgoPortalPendingPool(
 	}
 	remaining := plan.TargetCount - plan.CurCount - counts.LocalReserved
 	if remaining > 0 {
-		result.DesiredCount = egoPortalPendingPoolLimit
-		if remaining < int64(result.DesiredCount) {
-			result.DesiredCount = int(remaining)
-		}
+		result.DesiredCount = int(remaining)
 	}
 	if err := tx.GetContext(ctx, &result.PendingCount, `
 		SELECT COUNT(*)
