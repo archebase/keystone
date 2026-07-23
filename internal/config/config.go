@@ -392,9 +392,6 @@ func (c *Config) Validate() error {
 		if c.Sync.WorkerIntervalSec <= 0 {
 			return fmt.Errorf("sync worker interval must be greater than 0 when sync is enabled")
 		}
-		if c.Sync.RequestTimeoutSec <= 0 {
-			return fmt.Errorf("sync request timeout must be greater than 0 when sync is enabled")
-		}
 		if c.Sync.OSSTimeoutSec <= 0 {
 			return fmt.Errorf("sync oss timeout must be greater than 0 when sync is enabled")
 		}
@@ -409,9 +406,6 @@ func (c *Config) Validate() error {
 		}
 		if c.Sync.RetryMaxSec < c.Sync.RetryBaseSec {
 			return fmt.Errorf("sync retry max seconds must be greater than or equal to retry base seconds when sync is enabled")
-		}
-		if c.Sync.MaxRestartCount < 0 {
-			return fmt.Errorf("sync max restart count must be greater than or equal to 0 when sync is enabled")
 		}
 	}
 	return nil

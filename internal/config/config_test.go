@@ -520,6 +520,43 @@ func TestValidateSyncDPConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("sync enabled — direct upload request timeout is not validated", func(t *testing.T) {
+		cfg := validBase
+		cfg.Sync = SyncConfig{
+			Enabled:           true,
+			BatchSize:         10,
+			MaxRetries:        5,
+			MaxConcurrent:     2,
+			WorkerIntervalSec: 60,
+			RequestTimeoutSec: -1,
+			OSSTimeoutSec:     300,
+			RetryBaseSec:      30,
+			RetryMaxSec:       1800,
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error = %v", err)
+		}
+	})
+
+	t.Run("sync enabled — direct upload restart count is not validated", func(t *testing.T) {
+		cfg := validBase
+		cfg.Sync = SyncConfig{
+			Enabled:           true,
+			BatchSize:         10,
+			MaxRetries:        5,
+			MaxConcurrent:     2,
+			WorkerIntervalSec: 60,
+			RequestTimeoutSec: 30,
+			OSSTimeoutSec:     300,
+			RetryBaseSec:      30,
+			RetryMaxSec:       1800,
+			MaxRestartCount:   -1,
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error = %v", err)
+		}
+	})
+
 	t.Run("sync enabled — trims DP config whitespace", func(t *testing.T) {
 		cfg := validBase
 		cfg.Sync = SyncConfig{
