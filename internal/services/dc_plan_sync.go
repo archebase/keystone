@@ -68,6 +68,7 @@ type DCPlanSyncService struct {
 	cfg           *config.HilbertConfig
 	hilbertClient HilbertDCPlanClient
 	projector     *dcPlanWorkstationProjector
+	taskSupply    *DCPlanTaskSupplyService
 }
 
 // NewDCPlanSyncService creates a DCPlanSyncService.
@@ -80,6 +81,7 @@ func NewDCPlanSyncService(db *sqlx.DB, cfg *config.HilbertConfig, hilbertClient 
 		cfg:           cfg,
 		hilbertClient: hilbertClient,
 		projector:     newDCPlanWorkstationProjector(db),
+		taskSupply:    NewDCPlanTaskSupplyService(db),
 	}
 }
 
@@ -113,6 +115,7 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 		return nil, fmt.Errorf("%w: upsert dc plans: %v", ErrDCPlanSyncFailed, err)
 	}
 	projection := s.projector.project(ctx, plans, now)
+	poolPlans, poolTasks, poolFailures := s.maintainEgoPortalPendingPools(ctx, plans, now)
 	logger.Printf("[DC_PLAN] Hilbert dc plan sync committed: workspace_id=%d synced_count=%d page_count=%d", workspaceID, len(plans), pageCount)
 	logger.Printf(
 		"[DC_PLAN] Hilbert workstation projection completed: workspace_id=%d plans=%d created=%d reused=%d blocked=%d",
@@ -122,6 +125,13 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 		projection.ReusedCount,
 		projection.BlockedCount,
 	)
+	logger.Printf(
+		"[DC_PLAN] Ego Portal pending pool maintenance completed: workspace_id=%d plans=%d created=%d failed=%d",
+		workspaceID,
+		poolPlans,
+		poolTasks,
+		poolFailures,
+	)
 
 	return &DCPlanSyncResult{
 		WorkspaceID:           workspaceID,
@@ -130,6 +140,34 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 		LastSyncedAt:          now,
 		WorkstationProjection: projection,
 	}, nil
+}
+
+func (s *DCPlanSyncService) maintainEgoPortalPendingPools(
+	ctx context.Context,
+	plans []auth.HilbertDCPlan,
+	now time.Time,
+) (int, int, int) {
+	enabledCount := 0
+	createdCount := 0
+	failedCount := 0
+	for _, plan := range plans {
+		result, err := s.taskSupply.EnsureEgoPortalPendingPool(ctx, plan.ID, now)
+		if err != nil {
+			failedCount++
+			logger.Printf(
+				"[DC_PLAN] Pending pool maintenance blocked: workspace_id=%d dc_plan_id=%d err=%v",
+				plan.WorkspaceID,
+				plan.ID,
+				err,
+			)
+			continue
+		}
+		if result.Enabled {
+			enabledCount++
+			createdCount += result.CreatedCount
+		}
+	}
+	return enabledCount, createdCount, failedCount
 }
 
 // SyncAllWorkspaces syncs dc_plan projections for every local Hilbert workspace.

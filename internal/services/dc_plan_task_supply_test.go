@@ -95,6 +95,139 @@ func TestDCPlanTaskSupplyCollapsesPrecreatedPendingTasks(t *testing.T) {
 	}
 }
 
+func TestDCPlanTaskSupplyPreservesEgoPortalStereoPendingPool(t *testing.T) {
+	db := newTestDCPlanTaskSupplyDB(t)
+	defer db.Close()
+
+	plan := testTaskSupplyPlan(1001, 123, 10)
+	seedTaskSupplyPlan(t, db, plan)
+	seedTaskSupplyResources(t, db, plan)
+	if _, err := db.Exec("UPDATE robots SET device_type = ? WHERE id = 9", egoPortalStereoDeviceType); err != nil {
+		t.Fatalf("mark stereo robot: %v", err)
+	}
+	workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+	if _, err := db.Exec(`
+		INSERT INTO tasks (task_id, workstation_id, organization_id, dc_plan_id, status) VALUES
+			('task-pool-1', ?, ?, ?, 'pending'),
+			('task-pool-2', ?, ?, ?, 'pending'),
+			('task-pool-3', ?, ?, ?, 'pending')
+	`, workstationID, plan.WorkspaceID, plan.ID, workstationID, plan.WorkspaceID, plan.ID,
+		workstationID, plan.WorkspaceID, plan.ID); err != nil {
+		t.Fatalf("seed pending pool: %v", err)
+	}
+
+	result, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
+		context.Background(), plan.ID, workstationID, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("EnsureNextTask() error = %v", err)
+	}
+	if result.Created || result.Task.TaskID != "task-pool-1" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+
+	var pendingCount int
+	if err := db.Get(&pendingCount, "SELECT COUNT(*) FROM tasks WHERE dc_plan_id = ? AND status = 'pending'", plan.ID); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	var cancelledCount int
+	if err := db.Get(&cancelledCount, "SELECT COUNT(*) FROM tasks WHERE dc_plan_id = ? AND status = 'cancelled'", plan.ID); err != nil {
+		t.Fatalf("count cancelled: %v", err)
+	}
+	if pendingCount != 3 || cancelledCount != 0 {
+		t.Fatalf("pending=%d cancelled=%d want 3/0", pendingCount, cancelledCount)
+	}
+}
+
+func TestDCPlanTaskSupplyPreservesEgoPortalStereoPoolWhenNextTaskIsBlocked(t *testing.T) {
+	tests := []struct {
+		name         string
+		targetCount  int64
+		curCount     int64
+		activeStatus string
+		wantErr      error
+	}{
+		{name: "target reached", targetCount: 2, curCount: 2, wantErr: ErrDCPlanTaskSupplyTargetReached},
+		{name: "active task", targetCount: 10, activeStatus: "ready", wantErr: ErrDCPlanTaskSupplyActiveTask},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := newTestDCPlanTaskSupplyDB(t)
+			defer db.Close()
+
+			plan := testTaskSupplyPlan(1001, 123, test.targetCount)
+			plan.CurCount = test.curCount
+			seedTaskSupplyPlan(t, db, plan)
+			seedTaskSupplyResources(t, db, plan)
+			if _, err := db.Exec("UPDATE robots SET device_type = ? WHERE id = 9", egoPortalStereoDeviceType); err != nil {
+				t.Fatalf("mark stereo robot: %v", err)
+			}
+			workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+			if _, err := db.Exec(`
+				INSERT INTO tasks (task_id, workstation_id, organization_id, dc_plan_id, status) VALUES
+					('task-pool-1', ?, ?, ?, 'pending'),
+					('task-pool-2', ?, ?, ?, 'pending')
+			`, workstationID, plan.WorkspaceID, plan.ID, workstationID, plan.WorkspaceID, plan.ID); err != nil {
+				t.Fatalf("seed pending pool: %v", err)
+			}
+			if test.activeStatus != "" {
+				if _, err := db.Exec(`
+					INSERT INTO tasks (task_id, workstation_id, organization_id, dc_plan_id, status)
+					VALUES ('task-active', ?, ?, ?, ?)
+				`, workstationID, plan.WorkspaceID, plan.ID, test.activeStatus); err != nil {
+					t.Fatalf("seed active task: %v", err)
+				}
+			}
+
+			_, err := NewDCPlanTaskSupplyService(db).EnsureNextTask(
+				context.Background(), plan.ID, workstationID, time.Now().UTC(),
+			)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("EnsureNextTask() error = %v, want %v", err, test.wantErr)
+			}
+			var pendingCount int
+			if err := db.Get(&pendingCount, `
+				SELECT COUNT(*) FROM tasks WHERE dc_plan_id = ? AND status = 'pending'
+			`, plan.ID); err != nil {
+				t.Fatalf("count pending tasks: %v", err)
+			}
+			if pendingCount != 2 {
+				t.Fatalf("pending count=%d want 2", pendingCount)
+			}
+		})
+	}
+}
+
+func TestDCPlanTaskSupplyMaintainsEgoPortalStereoPendingPool(t *testing.T) {
+	db := newTestDCPlanTaskSupplyDB(t)
+	defer db.Close()
+
+	plan := testTaskSupplyPlan(1001, 123, 120)
+	plan.CurCount = 10
+	seedTaskSupplyPlan(t, db, plan)
+	seedTaskSupplyResources(t, db, plan)
+	if _, err := db.Exec("UPDATE robots SET device_type = ? WHERE id = 9", egoPortalStereoDeviceType); err != nil {
+		t.Fatalf("mark stereo robot: %v", err)
+	}
+	seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+
+	service := NewDCPlanTaskSupplyService(db)
+	first, err := service.EnsureEgoPortalPendingPool(context.Background(), plan.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("first EnsureEgoPortalPendingPool() error = %v", err)
+	}
+	second, err := service.EnsureEgoPortalPendingPool(context.Background(), plan.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("second EnsureEgoPortalPendingPool() error = %v", err)
+	}
+	if !first.Enabled || first.DesiredCount != egoPortalPendingPoolLimit || first.CreatedCount != egoPortalPendingPoolLimit {
+		t.Fatalf("unexpected first result: %#v", first)
+	}
+	if !second.Enabled || second.CreatedCount != 0 || second.PendingCount != egoPortalPendingPoolLimit {
+		t.Fatalf("unexpected second result: %#v", second)
+	}
+}
+
 func TestDCPlanTaskSupplyCancelsPendingWhenTargetReached(t *testing.T) {
 	db := newTestDCPlanTaskSupplyDB(t)
 	defer db.Close()
@@ -308,8 +441,8 @@ func seedTaskSupplyResources(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan)
 		t.Fatalf("seed collector: %v", err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO robots (id, device_id, workspace_id, status, deleted_at)
-		VALUES (9, ?, ?, 'active', NULL)
+		INSERT INTO robots (id, device_id, workspace_id, device_type, status, deleted_at)
+		VALUES (9, ?, ?, 'Axon', 'active', NULL)
 	`, plan.DCDeviceID, plan.WorkspaceID); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
@@ -353,6 +486,7 @@ func newTestDCPlanTaskSupplyDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			device_id TEXT NOT NULL,
 			workspace_id INTEGER NOT NULL,
+			device_type TEXT,
 			status TEXT,
 			deleted_at TIMESTAMP
 		);

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,6 +240,47 @@ func TestDCPlanSyncServiceProjectsWorkstationWithoutCreatingTasks(t *testing.T) 
 	}
 }
 
+func TestDCPlanSyncServiceMaintainsEgoPortalStereoPendingPool(t *testing.T) {
+	db := newTestDCPlanSyncDB(t)
+	defer db.Close()
+	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
+	seedDCPlanProjectionResources(t, db, 123, "collector-a", 15)
+	if _, err := db.Exec(`UPDATE robots SET device_type = ? WHERE device_id = '15'`, egoPortalStereoDeviceType); err != nil {
+		t.Fatalf("mark stereo robot: %v", err)
+	}
+
+	client := &fakeHilbertDCPlanClient{
+		pages: []*auth.HilbertDCPlanPage{
+			{
+				Records: []auth.HilbertDCPlan{testHilbertDCPlan(1001, 123, "Plan A")},
+				Total:   1,
+			},
+		},
+	}
+	service := NewDCPlanSyncService(db, testDCPlanSyncHilbertConfig(), client)
+
+	if _, err := service.SyncWorkspace(context.Background(), 123); err != nil {
+		t.Fatalf("SyncWorkspace() error = %v", err)
+	}
+
+	var tasks []struct {
+		WorkstationID int64  `db:"workstation_id"`
+		Status        string `db:"status"`
+		Metadata      string `db:"metadata"`
+	}
+	if err := db.Select(&tasks, `SELECT workstation_id, status, metadata FROM tasks ORDER BY id`); err != nil {
+		t.Fatalf("query pending pool: %v", err)
+	}
+	if len(tasks) != 18 {
+		t.Fatalf("pending task count=%d want 18", len(tasks))
+	}
+	for _, task := range tasks {
+		if task.WorkstationID <= 0 || task.Status != "pending" || !strings.Contains(task.Metadata, `"supply_mode":"ego_portal_pending_pool"`) {
+			t.Fatalf("unexpected pooled task: %#v", task)
+		}
+	}
+}
+
 func TestDCPlanSyncServiceSyncAllWorkspaces(t *testing.T) {
 	db := newTestDCPlanSyncDB(t)
 	defer db.Close()
@@ -416,8 +458,8 @@ func seedDCPlanProjectionResources(
 		t.Fatalf("seed data collector: %v", err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO robots (device_id, device_name, workspace_id, status)
-		VALUES (?, ?, ?, 'active')
+		INSERT INTO robots (device_id, device_name, workspace_id, device_type, status)
+		VALUES (?, ?, ?, 'Axon', 'active')
 	`, strconv.FormatInt(deviceID, 10), "Robot A", workspaceID); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
@@ -507,8 +549,24 @@ func newTestDCPlanSyncDB(t *testing.T) *sqlx.DB {
 		CREATE TABLE tasks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			task_id TEXT NOT NULL,
+			workstation_id INTEGER,
+			organization_id INTEGER,
 			dc_plan_id INTEGER,
+			local_dc_plan_id INTEGER,
 			status TEXT,
+			assigned_at TIMESTAMP,
+			metadata TEXT,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE episodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			episode_id TEXT,
+			task_id INTEGER,
+			dc_plan_id INTEGER,
+			cloud_synced BOOLEAN DEFAULT FALSE,
+			qa_status TEXT DEFAULT 'pending_qa',
 			deleted_at TIMESTAMP
 		);
 		CREATE TABLE data_collectors (
@@ -524,6 +582,7 @@ func newTestDCPlanSyncDB(t *testing.T) *sqlx.DB {
 			device_id TEXT NOT NULL UNIQUE,
 			device_name TEXT,
 			workspace_id INTEGER NOT NULL,
+			device_type TEXT,
 			status TEXT NOT NULL,
 			metadata TEXT,
 			deleted_at TIMESTAMP

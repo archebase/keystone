@@ -66,7 +66,7 @@ func newTestNextPlanTaskDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY, operator_id TEXT, deleted_at TIMESTAMP
 		);
 		CREATE TABLE robots (
-			id INTEGER PRIMARY KEY, device_id TEXT, deleted_at TIMESTAMP
+			id INTEGER PRIMARY KEY, device_id TEXT, device_type TEXT, deleted_at TIMESTAMP
 		);
 		CREATE TABLE workstations (
 			id INTEGER PRIMARY KEY, robot_id INTEGER, data_collector_id INTEGER,
@@ -95,7 +95,7 @@ func seedNextPlanTaskFixture(t *testing.T, db *sqlx.DB) {
 	for _, stmt := range []string{
 		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_device_id, dc_type, target_count, target_duration) VALUES (1001, 123, 'Plan A', 'collector-a', 456, 'ego', 10, 3600)`,
 		`INSERT INTO data_collectors (id, operator_id) VALUES (7, 'collector-a')`,
-		`INSERT INTO robots (id, device_id) VALUES (9, '456')`,
+		`INSERT INTO robots (id, device_id, device_type) VALUES (9, '456', 'Axon')`,
 		`INSERT INTO workstations (id, robot_id, data_collector_id, workspace_id) VALUES (11, 9, 7, 123)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
