@@ -118,13 +118,16 @@ func main() {
 
 	// Initialize cloud sync worker
 	var syncWorker *services.SyncWorker
-	var sourceReader services.SourceObjectReader
-	if cfg.Storage.Type == "tos" {
-		sourceReader = tosstorage.NewReader(cfg.Storage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
-	} else if s3Client != nil {
-		sourceReader = services.NewMinioSourceObjectReader(s3Client)
+	var minioSourceReader services.SourceObjectReader
+	if s3Client != nil {
+		minioSourceReader = services.NewMinioSourceObjectReader(s3Client)
 	}
-	if cfg.Sync.Enabled && cfg.Hilbert.BaseURL != "" && cfg.Hilbert.AccessKey != "" && cfg.Hilbert.SecretKey != "" && sourceReader != nil {
+	var tosSourceReader services.SourceObjectReader
+	if cfg.TOSStorage.Type == "tos" {
+		tosSourceReader = tosstorage.NewReader(cfg.TOSStorage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
+	}
+	if cfg.Sync.Enabled && cfg.Hilbert.BaseURL != "" && cfg.Hilbert.AccessKey != "" && cfg.Hilbert.SecretKey != "" &&
+		(minioSourceReader != nil || tosSourceReader != nil) {
 		syncWorker = services.NewSyncWorker(db.DB, nil, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
 			BatchSize:       cfg.Sync.BatchSize,
 			MaxConcurrent:   cfg.Sync.MaxConcurrent,
@@ -136,7 +139,8 @@ func main() {
 			RetryJitterSec:  cfg.Sync.RetryJitterSec,
 		}, &cfg.Sync)
 		syncWorker.SetHilbertRawDataClient(auth.NewHilbertClient(&cfg.Hilbert))
-		syncWorker.SetSourceObjectReader(sourceReader)
+		syncWorker.SetSourceObjectReader(minioSourceReader)
+		syncWorker.SetTOSSourceObjectReader(cfg.TOSStorage.Bucket, tosSourceReader)
 
 		syncWorker.Start()
 		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s auto_scan=%t", cfg.Hilbert.BaseURL, cfg.Sync.AutoScanEnabled)

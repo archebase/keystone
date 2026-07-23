@@ -216,8 +216,72 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if source.statCount != 1 || source.openCount != 1 {
 		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=1", source.statCount, source.openCount)
 	}
+	if source.statBucket != "source-bucket" || source.statObject != "device/capture.mcap" {
+		t.Fatalf("source stat location=%s/%s", source.statBucket, source.statObject)
+	}
+	if source.openBucket != source.statBucket || source.openObject != source.statObject {
+		t.Fatalf("source open location=%s/%s, want stat location", source.openBucket, source.openObject)
+	}
 	if result.UploadID != "9876" || result.Bucket != "hilbert-bucket" || result.ObjectKey != "raw-data/123/capture.mcap" {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestUploadEpisodeDirectReadsDGWCompatEpisodeFromTOS(t *testing.T) {
+	minioSource := &fakeSourceObjectReader{data: []byte("wrong minio bytes")}
+	tosSource := &fakeSourceObjectReader{data: []byte("tos mcap bytes")}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-s3-cn-beijing.ivolces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
+	}
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	credentials.Credentials.TemporaryToken = "temp-token"
+	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
+	uploader := &fakeTOSObjectUploader{}
+	w := &SyncWorker{
+		minioBucket: "edge-factory-archebase",
+		hilbert:     hilbert,
+		source:      minioSource,
+		tosUploader: uploader,
+	}
+	w.SetTOSSourceObjectReader("archebase-keystone-device-upload-2116584179", tosSource)
+
+	_, err := w.uploadEpisodeDirect(context.Background(), 0, syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "device-uploads/5/capture/capture.mcap",
+		Metadata: sql.NullString{
+			Valid:  true,
+			String: `{"source":"dgwcompat","bucket":"archebase-keystone-device-upload-2116584179","object_key":"device-uploads/5/capture/capture.mcap"}`,
+		},
+		Checksum: sql.NullString{
+			String: strings.Repeat("a", 64),
+			Valid:  true,
+		},
+		CreatedAt: time.Date(2026, 7, 23, 5, 38, 41, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("uploadEpisodeDirect() error = %v", err)
+	}
+
+	if minioSource.statCount != 0 || minioSource.openCount != 0 {
+		t.Fatalf("MinIO source calls stat=%d open=%d, want 0", minioSource.statCount, minioSource.openCount)
+	}
+	if tosSource.statBucket != "archebase-keystone-device-upload-2116584179" || tosSource.statObject != "device-uploads/5/capture/capture.mcap" {
+		t.Fatalf("TOS stat location=%s/%s", tosSource.statBucket, tosSource.statObject)
+	}
+	if tosSource.openBucket != tosSource.statBucket || tosSource.openObject != tosSource.statObject {
+		t.Fatalf("TOS open location=%s/%s, want stat location", tosSource.openBucket, tosSource.openObject)
+	}
+	if string(uploader.body) != string(tosSource.data) {
+		t.Fatalf("uploaded body=%q, want TOS body %q", string(uploader.body), string(tosSource.data))
 	}
 }
 
@@ -292,18 +356,26 @@ func (c *fakeHilbertRawDataClient) FinishRawDataUpload(_ context.Context, worksp
 }
 
 type fakeSourceObjectReader struct {
-	data      []byte
-	statCount int
-	openCount int
+	data       []byte
+	statCount  int
+	openCount  int
+	statBucket string
+	statObject string
+	openBucket string
+	openObject string
 }
 
-func (r *fakeSourceObjectReader) StatObject(context.Context, string, string) (int64, error) {
+func (r *fakeSourceObjectReader) StatObject(_ context.Context, bucket, objectName string) (int64, error) {
 	r.statCount++
+	r.statBucket = bucket
+	r.statObject = objectName
 	return int64(len(r.data)), nil
 }
 
-func (r *fakeSourceObjectReader) OpenObject(context.Context, string, string) (io.ReadCloser, error) {
+func (r *fakeSourceObjectReader) OpenObject(_ context.Context, bucket, objectName string) (io.ReadCloser, error) {
 	r.openCount++
+	r.openBucket = bucket
+	r.openObject = objectName
 	return io.NopCloser(bytes.NewReader(r.data)), nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +65,7 @@ type syncEpisodeUploadRow struct {
 	DataCollectorOperatorID sql.NullString  `db:"data_collector_operator_id"`
 	DataCollectorName       sql.NullString  `db:"data_collector_name"`
 	DurationSec             sql.NullFloat64 `db:"duration_sec"`
+	Metadata                sql.NullString  `db:"metadata"`
 	CreatedAt               time.Time       `db:"created_at"`
 }
 
@@ -170,6 +172,8 @@ type SyncWorker struct {
 	hilbert     hilbertRawDataClient
 	tosUploader tosObjectUploader
 	source      SourceObjectReader
+	tosSource   SourceObjectReader
+	tosBucket   string
 	cfg         SyncWorkerConfig
 	syncCfg     *config.SyncConfig
 
@@ -246,11 +250,22 @@ func (w *SyncWorker) SetTOSObjectUploader(uploader tosObjectUploader) {
 }
 
 // SetSourceObjectReader configures how the worker reads source MCAP objects.
+// It must be called before Start.
 func (w *SyncWorker) SetSourceObjectReader(reader SourceObjectReader) {
 	if w == nil {
 		return
 	}
 	w.source = reader
+}
+
+// SetTOSSourceObjectReader configures how the worker reads DGW compatibility
+// uploads stored in the configured TOS bucket. It must be called before Start.
+func (w *SyncWorker) SetTOSSourceObjectReader(bucket string, reader SourceObjectReader) {
+	if w == nil {
+		return
+	}
+	w.tosBucket = strings.TrimSpace(bucket)
+	w.tosSource = reader
 }
 
 func (w *SyncWorker) sourceReader() SourceObjectReader {
@@ -264,6 +279,60 @@ func (w *SyncWorker) sourceReader() SourceObjectReader {
 		return minioSourceObjectReader{client: w.minioClient}
 	}
 	return nil
+}
+
+type episodeSourceMetadata struct {
+	Source             string `json:"source"`
+	ObjectStoreBackend string `json:"object_store_backend"`
+	Bucket             string `json:"bucket"`
+	ObjectKey          string `json:"object_key"`
+}
+
+func (m episodeSourceMetadata) usesTOS(configuredBucket string) bool {
+	if strings.EqualFold(strings.TrimSpace(m.Source), "dgwcompat") ||
+		strings.EqualFold(strings.TrimSpace(m.ObjectStoreBackend), "volcengine_tos") {
+		return true
+	}
+	bucket := strings.TrimSpace(m.Bucket)
+	return bucket != "" && strings.TrimSpace(configuredBucket) != "" &&
+		strings.EqualFold(bucket, strings.TrimSpace(configuredBucket))
+}
+
+func (w *SyncWorker) mcapSourceObject(ep syncEpisodeUploadRow) (SourceObjectReader, string, string, error) {
+	var metadata episodeSourceMetadata
+	if ep.Metadata.Valid && json.Unmarshal([]byte(ep.Metadata.String), &metadata) == nil && metadata.usesTOS(w.tosBucket) {
+		bucket := strings.TrimSpace(metadata.Bucket)
+		if bucket == "" {
+			bucket = strings.TrimSpace(w.tosBucket)
+		}
+		if configuredBucket := strings.TrimSpace(w.tosBucket); configuredBucket != "" &&
+			!strings.EqualFold(bucket, configuredBucket) {
+			return nil, "", "", newNonRetryableSyncError(
+				"episode %d uses unconfigured TOS bucket %q", ep.ID, bucket,
+			)
+		}
+		key := strings.TrimSpace(metadata.ObjectKey)
+		if key == "" {
+			key = objectKeyFromStoredPath(ep.McapPath, bucket)
+		}
+		if bucket == "" || key == "" {
+			return nil, "", "", newNonRetryableSyncError("episode %d has invalid TOS object location", ep.ID)
+		}
+		if w.tosSource == nil {
+			return nil, "", "", fmt.Errorf("TOS source object reader not available for episode %d", ep.ID)
+		}
+		return w.tosSource, bucket, key, nil
+	}
+
+	key := objectKeyFromStoredPath(ep.McapPath, w.minioBucket)
+	if key == "" {
+		return nil, "", "", newNonRetryableSyncError("episode %d has empty mcap_path", ep.ID)
+	}
+	reader := w.sourceReader()
+	if reader == nil {
+		return nil, "", "", fmt.Errorf("source object reader not available")
+	}
+	return reader, w.minioBucket, key, nil
 }
 
 func (w *SyncWorker) setEpisodeProgress(episodeID int64, uploadedBytes int64, totalBytes int64) {
@@ -1058,6 +1127,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 			e.checksum,
 			e.workstation_id,
 			e.duration_sec,
+			e.metadata,
 			e.created_at,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS data_collector_operator_id,
 			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS data_collector_name
@@ -1112,17 +1182,12 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if w.hilbert == nil {
 		return nil, newNonRetryableSyncError("Hilbert raw-data client is not configured")
 	}
-	source := w.sourceReader()
-	if source == nil {
-		return nil, fmt.Errorf("source object reader not available")
+	source, sourceBucket, mcapKey, err := w.mcapSourceObject(ep)
+	if err != nil {
+		return nil, err
 	}
 
-	mcapKey := objectKeyFromStoredPath(ep.McapPath, w.minioBucket)
-	if mcapKey == "" {
-		return nil, newNonRetryableSyncError("episode %d has empty mcap_path", ep.ID)
-	}
-
-	objectSize, err := source.StatObject(ctx, w.minioBucket, mcapKey)
+	objectSize, err := source.StatObject(ctx, sourceBucket, mcapKey)
 	if err != nil {
 		return nil, fmt.Errorf("stat mcap object %s: %w", mcapKey, err)
 	}
@@ -1167,7 +1232,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		return nil, fmt.Errorf("unsupported Hilbert raw-data provider %q", uploadCredentials.Provider)
 	}
 
-	obj, err := source.OpenObject(ctx, w.minioBucket, mcapKey)
+	obj, err := source.OpenObject(ctx, sourceBucket, mcapKey)
 	if err != nil {
 		return nil, fmt.Errorf("get mcap object %s: %w", mcapKey, err)
 	}
