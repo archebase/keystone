@@ -129,6 +129,9 @@ func TestListEpisodesOmitsMetadata(t *testing.T) {
 	if _, ok := body.Items[0]["metadata"]; ok {
 		t.Fatalf("list item unexpectedly contains metadata: %#v", body.Items[0]["metadata"])
 	}
+	if got := body.Items[0]["robot_device_name"]; got != "Ego iPhone 01" {
+		t.Fatalf("robot_device_name=%v want Ego iPhone 01", got)
+	}
 	assertEpisodePlanFields(t, body.Items[0])
 }
 
@@ -201,6 +204,7 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
 			device_id TEXT,
+			device_name TEXT,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE data_collectors (
@@ -239,13 +243,25 @@ func seedEpisodeMetadataTestRow(t *testing.T, db *sqlx.DB) {
 		t.Fatalf("seed dc plan: %v", err)
 	}
 	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_id, device_name, deleted_at)
+		VALUES (30, 'device-01', 'Ego iPhone 01', NULL)
+	`); err != nil {
+		t.Fatalf("seed robot: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO workstations (id, robot_id, data_collector_id, workspace_id, deleted_at)
+		VALUES (20, 30, NULL, 123, NULL)
+	`); err != nil {
+		t.Fatalf("seed workstation: %v", err)
+	}
+	if _, err := db.Exec(`
 		INSERT INTO episodes (
 			id, episode_id, task_id, dc_plan_id, local_dc_plan_id, workstation_id, mcap_path, sidecar_path,
 			checksum, file_size_bytes, duration_sec, qa_status, qa_score,
 			quality_flag, auto_approved, cloud_synced, cloud_processed,
 			cloud_synced_at, created_at, labels, metadata, deleted_at
 		) VALUES (
-			1, 'episode-public-1', 10, 1001, 2001, NULL, 'bucket/a.mcap', 'bucket/a.json',
+			1, 'episode-public-1', 10, 1001, 2001, 20, 'bucket/a.mcap', 'bucket/a.json',
 			'abc', 1024, 12.5, 'pending_qa', NULL,
 			NULL, FALSE, FALSE, FALSE,
 			NULL, '2026-06-24T00:00:00Z', '[]', ?, NULL

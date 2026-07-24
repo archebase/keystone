@@ -381,6 +381,7 @@ type uploadTaskBinding struct {
 	TaskID          string        `db:"task_id"`
 	Status          string        `db:"status"`
 	WorkstationID   sql.NullInt64 `db:"workstation_id"`
+	RobotID         sql.NullInt64 `db:"robot_id"`
 	WorkspaceID     sql.NullInt64 `db:"workspace_id"`
 	OrganizationID  sql.NullInt64 `db:"organization_id"`
 	DCPlanID        sql.NullInt64 `db:"dc_plan_id"`
@@ -417,6 +418,7 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 			t.task_id,
 			t.status,
 			t.workstation_id,
+			ws.robot_id,
 			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 			t.organization_id,
 			t.dc_plan_id,
@@ -447,6 +449,9 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 	}
 	if row.WorkspaceID.Valid && row.WorkspaceID.Int64 != principal.WorkspaceID {
 		return uploadTaskBinding{}, status.Error(codes.PermissionDenied, "task workspace belongs to another workspace")
+	}
+	if !row.WorkstationID.Valid || !row.RobotID.Valid || row.RobotID.Int64 != principal.RobotID {
+		return uploadTaskBinding{}, status.Error(codes.PermissionDenied, "task workstation does not belong to authenticated device")
 	}
 	switch row.Status {
 	case "pending", "ready", "in_progress", "uploading":

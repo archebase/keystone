@@ -226,6 +226,37 @@ func TestGatewayCreateLogicalUploadRejectsMismatchedPlan(t *testing.T) {
 	}
 }
 
+func TestGatewayCreateLogicalUploadRejectsTaskFromAnotherWorkstation(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	for _, statement := range []string{
+		`INSERT INTO robots (id, device_id, workspace_id, status, auth_epoch) VALUES (2, '202', 10, 'active', 1)`,
+		`INSERT INTO workstations (id, robot_id, workspace_id) VALUES (41, 2, 10)`,
+		`UPDATE tasks SET workstation_id = 41 WHERE id = 1`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed foreign workstation: %v", err)
+		}
+	}
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	_, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"device_id":    "101",
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+		},
+	})
+
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("CreateLogicalUpload() error = %v, want PermissionDenied", err)
+	}
+}
+
 func TestGatewayCreateLogicalUploadRejectsInvalidMD5(t *testing.T) {
 	service := newGatewayService(
 		testGatewayConfig(),

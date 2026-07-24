@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 
+	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
@@ -481,6 +482,25 @@ type TaskDetailResponse struct {
 	EpisodePublicID  sql.NullString     `db:"episode_public_id" json:"-"`
 }
 
+var (
+	errTaskListWorkstationActivationRequired = errors.New("workstation activation required")
+	errTaskListWorkstationScopeMismatch      = errors.New("workstation scope mismatch")
+)
+
+func resolveTaskListWorkstationScope(claims *auth.Claims, requested string) (string, error) {
+	if claims == nil || claims.Role != "data_collector" {
+		return requested, nil
+	}
+	if claims.WorkstationID <= 0 {
+		return "", errTaskListWorkstationActivationRequired
+	}
+	authenticated := strconv.FormatInt(claims.WorkstationID, 10)
+	if requested != "" && requested != authenticated {
+		return "", errTaskListWorkstationScopeMismatch
+	}
+	return authenticated, nil
+}
+
 // ListTasks handles task listing requests with optional filtering.
 //
 // @Summary      List tasks
@@ -494,6 +514,7 @@ type TaskDetailResponse struct {
 // @Param        offset          query     int     false  "Pagination offset" default(0)
 // @Success      200             {object}  ListTasksResponse
 // @Failure      400             {object}  map[string]string
+// @Failure      403             {object}  map[string]string
 // @Failure      500             {object}  map[string]string
 // @Router       /tasks [get]
 func (h *TaskHandler) ListTasks(c *gin.Context) {
@@ -546,6 +567,15 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		}
 	}
 	claims := middleware.GetClaims(c)
+	workstationID, err := resolveTaskListWorkstationScope(claims, workstationID)
+	if err != nil {
+		if errors.Is(err, errTaskListWorkstationScopeMismatch) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "workstation_id does not match authenticated workstation"})
+			return
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": "workstation activation required"})
+		return
+	}
 
 	conditions := []string{"tasks.deleted_at IS NULL"}
 	args := make([]interface{}, 0, 6)
