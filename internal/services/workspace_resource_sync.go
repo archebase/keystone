@@ -284,6 +284,7 @@ func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, account auth.H
 
 func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCDevice, deviceType *auth.HilbertDCDeviceType, syncedAt time.Time) (bool, error) {
 	deviceID := strconv.FormatInt(device.ID, 10)
+	deviceName := strings.TrimSpace(device.Name)
 	deviceTypeName := ""
 	if deviceType != nil {
 		deviceTypeName = strings.TrimSpace(deviceType.Name)
@@ -318,30 +319,32 @@ func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCD
 
 	if tx.DriverName() == "sqlite" {
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO robots (device_id, workspace_id, device_type_id, device_type, status, metadata, created_at, updated_at, deleted_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+			INSERT INTO robots (device_id, device_name, workspace_id, device_type_id, device_type, status, metadata, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
 			ON CONFLICT(device_id) DO UPDATE SET
+				device_name = excluded.device_name,
 				workspace_id = excluded.workspace_id,
 				device_type_id = excluded.device_type_id,
 				device_type = excluded.device_type,
 				metadata = excluded.metadata,
 				updated_at = excluded.updated_at,
 				deleted_at = NULL
-		`, deviceID, device.WorkspaceID, nullablePositiveInt64(device.DCDeviceTypeID), nullableString(deviceTypeName), hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
+		`, deviceID, nullableString(deviceName), device.WorkspaceID, nullablePositiveInt64(device.DCDeviceTypeID), nullableString(deviceTypeName), hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
 		return err == nil, err
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO robots (device_id, workspace_id, device_type_id, device_type, status, metadata, created_at, updated_at, deleted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+		INSERT INTO robots (device_id, device_name, workspace_id, device_type_id, device_type, status, metadata, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
 		ON DUPLICATE KEY UPDATE
+			device_name = VALUES(device_name),
 			workspace_id = VALUES(workspace_id),
 			device_type_id = VALUES(device_type_id),
 			device_type = VALUES(device_type),
 			metadata = VALUES(metadata),
 			updated_at = VALUES(updated_at),
 			deleted_at = NULL
-	`, deviceID, device.WorkspaceID, nullablePositiveInt64(device.DCDeviceTypeID), nullableString(deviceTypeName), hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
+	`, deviceID, nullableString(deviceName), device.WorkspaceID, nullablePositiveInt64(device.DCDeviceTypeID), nullableString(deviceTypeName), hilbertResourceActiveStatus, metadata, syncedAt, syncedAt)
 	return err == nil, err
 }
 

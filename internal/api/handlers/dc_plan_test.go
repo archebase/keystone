@@ -59,7 +59,7 @@ func TestDCPlanListFiltersByWorkspaceAndFields(t *testing.T) {
 	if resp.Items[0].ID != 1001 || resp.Items[0].WorkspaceID != 123 || resp.Items[0].Name != "Ego Kitchen" {
 		t.Fatalf("unexpected item: %#v", resp.Items[0])
 	}
-	if resp.Items[0].DCProjectName != "Project 1001" || resp.Items[0].DCTaskName != "Task 1001" {
+	if resp.Items[0].DCProjectName != "Project 1001" || resp.Items[0].DCProjectDescription != "Project description 1001" || resp.Items[0].DCTaskName != "Task 1001" || resp.Items[0].DCTaskDescription != "Description 1001" {
 		t.Fatalf("unexpected project/task names: %#v", resp.Items[0])
 	}
 	if resp.Items[0].DCDeviceName != "Device 1001" || resp.Items[0].OperatorDisplayName != "Collector 1001" {
@@ -70,19 +70,23 @@ func TestDCPlanListFiltersByWorkspaceAndFields(t *testing.T) {
 func TestDCPlanListUsesLocalEpisodeProgress(t *testing.T) {
 	db := newTestDCPlanHandlerDB(t)
 	defer db.Close()
-	seedDCPlanHandlerPlanWithProgress(t, db, 1001, 123, "Ego Kitchen", "ego", "alice", "2026-07-09", 0, 0)
+	seedDCPlanHandlerPlanWithProgress(t, db, 1001, 123, "Ego Kitchen", "ego", "alice", "2026-07-09", 2, 20)
 	if _, err := db.Exec(`
 		INSERT INTO tasks (id, task_id, dc_plan_id, status, deleted_at) VALUES
 			(1, 'task-1', 1001, 'completed', NULL),
 			(2, 'task-2', 1001, 'completed', NULL),
-			(3, 'task-3', 1001, 'pending', NULL)
+			(3, 'task-3', 1001, 'pending', NULL),
+			(4, 'task-4', 1001, 'completed', NULL),
+			(5, 'task-5', 1001, 'completed', NULL)
 	`); err != nil {
 		t.Fatalf("seed tasks: %v", err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO episodes (id, episode_id, task_id, dc_plan_id, duration_sec, deleted_at) VALUES
-			(1, 'episode-1', 1, 1001, 6.4, NULL),
-			(2, 'episode-2', 2, 1001, 8.6, NULL)
+		INSERT INTO episodes (id, episode_id, task_id, dc_plan_id, duration_sec, cloud_synced, qa_status, deleted_at) VALUES
+			(1, 'episode-1', 1, 1001, 6.4, TRUE, 'approved', NULL),
+			(2, 'episode-2', 2, 1001, 8.6, FALSE, 'pending_qa', NULL),
+			(3, 'episode-3', 4, 1001, 5, FALSE, 'failed', NULL),
+			(4, 'episode-4', 5, 1001, 7, FALSE, 'manual_review_failed', NULL)
 	`); err != nil {
 		t.Fatalf("seed episodes: %v", err)
 	}
@@ -102,8 +106,8 @@ func TestDCPlanListUsesLocalEpisodeProgress(t *testing.T) {
 	if len(resp.Items) != 1 {
 		t.Fatalf("items=%d want=1 response=%#v", len(resp.Items), resp)
 	}
-	if resp.Items[0].CurCount != 2 || resp.Items[0].CurDuration != 15 {
-		t.Fatalf("progress=(%d,%d) want=(2,15)", resp.Items[0].CurCount, resp.Items[0].CurDuration)
+	if resp.Items[0].CurCount != 3 || resp.Items[0].CurDuration != 29 {
+		t.Fatalf("progress=(%d,%d) want=(3,29)", resp.Items[0].CurCount, resp.Items[0].CurDuration)
 	}
 }
 
@@ -239,11 +243,11 @@ func seedDCPlanHandlerPlanWithProgress(t *testing.T, db *sqlx.DB, id int64, work
 	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
 			id, workspace_id, name, dc_factory_id, dc_service_provider_id, operator, operator_display_name,
-			dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, dc_date,
+			dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, dc_date,
 			target_count, cur_count, target_duration, cur_duration, created_by,
 			created_time, last_synced_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, workspaceID, name, 11, 12, operator, "Collector "+strconv.FormatInt(id, 10), 13, "Project "+strconv.FormatInt(id, 10), 14, "Task "+strconv.FormatInt(id, 10), 15, "Device "+strconv.FormatInt(id, 10), dcType, dcDate, 20, curCount, 3600, curDuration, "planner", now, now); err != nil {
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, workspaceID, name, 11, 12, operator, "Collector "+strconv.FormatInt(id, 10), 13, "Project "+strconv.FormatInt(id, 10), "Project description "+strconv.FormatInt(id, 10), 14, "Task "+strconv.FormatInt(id, 10), "Description "+strconv.FormatInt(id, 10), 15, "Device "+strconv.FormatInt(id, 10), dcType, dcDate, 20, curCount, 3600, curDuration, "planner", now, now); err != nil {
 		t.Fatalf("seed dc_plan: %v", err)
 	}
 }
@@ -272,8 +276,10 @@ func newTestDCPlanHandlerDB(t *testing.T) *sqlx.DB {
 			operator_display_name TEXT,
 			dc_project_id INTEGER NOT NULL,
 			dc_project_name TEXT,
+			dc_project_description TEXT,
 			dc_task_id INTEGER NOT NULL,
 			dc_task_name TEXT,
+			dc_task_description TEXT,
 			dc_device_id INTEGER NOT NULL,
 			dc_device_name TEXT,
 			dc_type TEXT NOT NULL,
@@ -306,6 +312,8 @@ func newTestDCPlanHandlerDB(t *testing.T) *sqlx.DB {
 			task_id INTEGER NOT NULL,
 			dc_plan_id INTEGER,
 			duration_sec REAL,
+			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
+			qa_status TEXT NOT NULL DEFAULT 'pending_qa',
 			deleted_at TIMESTAMP
 		);
 	`); err != nil {

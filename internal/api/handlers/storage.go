@@ -26,9 +26,10 @@ import (
 
 // StorageHandler provides MinIO/S3 helper endpoints for the frontend.
 type StorageHandler struct {
-	s3      *s3.Client
-	tos     *episodeQATOSReader
-	authCfg *config.AuthConfig
+	s3        *s3.Client
+	tos       *episodeQATOSReader
+	tosBucket string
+	authCfg   *config.AuthConfig
 }
 
 // NewStorageHandler creates a new StorageHandler.
@@ -36,6 +37,7 @@ func NewStorageHandler(s3Client *s3.Client, authCfg *config.AuthConfig, storageC
 	h := &StorageHandler{s3: s3Client, authCfg: authCfg}
 	if storageCfg != nil && strings.EqualFold(storageCfg.Type, "tos") {
 		h.tos = newEpisodeQATOSReader(*storageCfg)
+		h.tosBucket = strings.TrimSpace(storageCfg.Bucket)
 	}
 	return h
 }
@@ -220,7 +222,7 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 		return
 	}
 
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		h.getTOSObject(c, bucket, objectName, usedDownloadToken)
 		return
 	}
@@ -313,6 +315,10 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 	if _, err := io.Copy(c.Writer, obj); err != nil {
 		logger.Printf("[S3] proxy stream interrupted: bucket=%s, object=%s, err=%v", bucket, objectName, err)
 	}
+}
+
+func (h *StorageHandler) usesTOSBucket(bucket string) bool {
+	return h.tos != nil && h.tosBucket != "" && strings.EqualFold(strings.TrimSpace(bucket), h.tosBucket)
 }
 
 func (h *StorageHandler) getTOSObject(c *gin.Context, bucket, objectName string, usedDownloadToken bool) {

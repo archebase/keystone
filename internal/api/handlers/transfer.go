@@ -106,32 +106,19 @@ func (h *TransferHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 
 // HandleWebSocket handles WebSocket connections using raw http.ResponseWriter
 func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request, deviceID string) {
-
-	// Validate device exists in robots table (if DB is configured)
-	if h.db != nil {
-		// Add independent 5s timeout to avoid blocking on slow DB queries
-		queryTimeout := 5 * time.Second
-		queryCtx, cancel := context.WithTimeout(r.Context(), queryTimeout)
-		defer cancel()
-
-		var count int
-		// #nosec G701 -- Set aside for now
-		if err := h.db.GetContext(queryCtx, &count,
-			"SELECT COUNT(1) FROM robots WHERE device_id = ? AND deleted_at IS NULL", deviceID,
-		); err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
-				logger.Printf("%s DB query timeout after %s (timeout_ms=%d): %v", transferLogPrefix(deviceID), timeoutLogValue(queryTimeout), timeoutLogMilliseconds(queryTimeout), err)
-			} else {
-				logger.Printf("%s DB query error: %v", transferLogPrefix(deviceID), err)
-			}
-		}
-		// Check count regardless of DB error (count defaults to 0 on error)
-		if count == 0 {
-			logger.Printf("%s robot not found in database", transferLogPrefix(deviceID))
+	deviceName := strings.TrimSpace(deviceID)
+	canonicalDeviceID, err := resolveAxonDeviceID(r.Context(), h.db, deviceName)
+	if err != nil {
+		if errors.Is(err, errAxonDeviceNameNotFound) {
+			logger.Printf("%s robot not found in database", transferLogPrefix(deviceName))
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		logger.Printf("%s device lookup failed: %v", transferLogPrefix(deviceName), err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
 	}
+	deviceID = canonicalDeviceID
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true, // allow any origin in dev; tighten in production
@@ -558,11 +545,12 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 	}
 
 	var ownedTask struct {
-		ID     int64  `db:"id"`
-		Status string `db:"status"`
+		ID       int64         `db:"id"`
+		Status   string        `db:"status"`
+		DCPlanID sql.NullInt64 `db:"dc_plan_id"`
 	}
 	if err := h.db.GetContext(ctx, &ownedTask, `
-		SELECT t.id, t.status
+		SELECT t.id, t.status, t.dc_plan_id
 		FROM tasks t
 		JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
 		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
@@ -648,11 +636,26 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		}
 	}()
 
-	// Resolve task numeric ID early for status updates.
+	// Serialize upload finalization with collector abandonment. The status check must happen
+	// after taking the task row lock so a cancelled task can never gain an episode.
 	var taskPK int64
-	if err := tx.QueryRowContext(ctx, "SELECT id FROM tasks WHERE task_id = ? AND deleted_at IS NULL", taskID).Scan(&taskPK); err != nil {
+	var lockedTaskStatus string
+	lockClause := " FOR UPDATE"
+	if h.db.DriverName() == "sqlite" {
+		lockClause = ""
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, status
+		FROM tasks
+		WHERE task_id = ? AND deleted_at IS NULL`+lockClause,
+		taskID,
+	).Scan(&taskPK, &lockedTaskStatus); err != nil {
 		// #nosec G706 -- Set aside for now
-		logger.Printf("%s failed to resolve task id: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
+		logger.Printf("%s failed to lock task for upload completion: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
+		return
+	}
+	if lockedTaskStatus == "failed" || lockedTaskStatus == "cancelled" {
+		logger.Printf("%s upload_complete ignored after task lock for terminal status=%s", transferTaskLogPrefix(dc.DeviceID, taskID), lockedTaskStatus)
 		return
 	}
 
@@ -813,6 +816,16 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		logger.Printf("%s DB commit error: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
 	}
+	if createdEpisodePK > 0 && h.stateBroker != nil {
+		h.stateBroker.Publish(dc.DeviceID, services.DeviceStateEvent{
+			"type":       "plan_progress_changed",
+			"episode_id": createdEpisodePK,
+			"task_id":    strings.TrimSpace(taskID),
+			"dc_plan_id": ownedTask.DCPlanID.Int64,
+			"qa_status":  qaStatusPendingQA,
+			"reason":     "episode_created",
+		})
+	}
 	if createdEpisodePK > 0 && h.qaEnqueuer != nil {
 		h.qaEnqueuer.EnqueueEpisode(createdEpisodePK)
 	}
@@ -902,6 +915,13 @@ func (h *TransferHandler) onUploadFailed(ctx context.Context, dc *services.Trans
 	if rows, _ := result.RowsAffected(); rows > 0 {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("%s marked as failed due to upload_failed", transferTaskLogPrefix(dc.DeviceID, taskID))
+		if h.stateBroker != nil {
+			h.stateBroker.Publish(dc.DeviceID, services.DeviceStateEvent{
+				"type":    "plan_progress_changed",
+				"task_id": strings.TrimSpace(taskID),
+				"reason":  "upload_failed",
+			})
+		}
 	}
 }
 

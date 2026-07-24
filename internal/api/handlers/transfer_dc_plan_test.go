@@ -23,12 +23,16 @@ import (
 func TestUploadCompleteCopiesTaskPlanFieldsToEpisode(t *testing.T) {
 	db := openTransferDCPlanTestDB(t)
 	seedTransferDCPlanTask(t, db)
-	s3Client := newTransferDCPlanTestS3(t)
+	s3Client := newTransferDCPlanTestS3(t, nil)
 
 	hub := services.NewTransferHub(1)
 	serverConn, _ := newRecorderHandlerTestWebSocketPair(t)
 	dc := hub.NewTransferConn(serverConn, "robot-001", "127.0.0.1")
 	handler := NewTransferHandler(hub, &config.TransferConfig{WriteTimeout: 1}, db, s3Client, "bucket", "", nil, 0)
+	broker := services.NewDeviceStateBroker()
+	handler.SetDeviceStateBroker(broker)
+	events, unsubscribe := broker.Subscribe(1)
+	defer unsubscribe()
 
 	handler.onUploadComplete(context.Background(), dc, map[string]interface{}{
 		"data": map[string]interface{}{
@@ -54,6 +58,57 @@ func TestUploadCompleteCopiesTaskPlanFieldsToEpisode(t *testing.T) {
 	}
 	if got.BatchID.Valid || got.OrderID.Valid {
 		t.Fatalf("legacy order/batch fields should be null: batch=%#v order=%#v", got.BatchID, got.OrderID)
+	}
+
+	select {
+	case event := <-events:
+		if event["type"] != "plan_progress_changed" || event["device_id"] != "robot-001" ||
+			event["task_id"] != "task-plan-1" || event["dc_plan_id"] != int64(1001) ||
+			event["qa_status"] != qaStatusPendingQA || event["reason"] != "episode_created" {
+			t.Fatalf("unexpected episode progress event: %#v", event)
+		}
+	default:
+		t.Fatal("upload completion did not publish an episode progress event")
+	}
+}
+
+func TestUploadCompleteDoesNotCreateEpisodeWhenTaskIsCancelledDuringVerification(t *testing.T) {
+	db := openTransferDCPlanTestDB(t)
+	seedTransferDCPlanTask(t, db)
+	if _, err := db.Exec(`UPDATE tasks SET status = 'uploading' WHERE id = 10`); err != nil {
+		t.Fatalf("set task uploading: %v", err)
+	}
+	s3Client := newTransferDCPlanTestS3(t, func() {
+		if _, err := db.Exec(`UPDATE tasks SET status = 'cancelled' WHERE id = 10`); err != nil {
+			t.Errorf("cancel task during S3 verification: %v", err)
+		}
+	})
+
+	hub := services.NewTransferHub(1)
+	serverConn, _ := newRecorderHandlerTestWebSocketPair(t)
+	dc := hub.NewTransferConn(serverConn, "robot-001", "127.0.0.1")
+	handler := NewTransferHandler(hub, &config.TransferConfig{WriteTimeout: 1}, db, s3Client, "bucket", "", nil, 0)
+
+	handler.onUploadComplete(context.Background(), dc, map[string]interface{}{
+		"data": map[string]interface{}{
+			"task_id": "task-plan-1",
+			"s3_key":  "robot-001/task-plan-1.mcap",
+		},
+	})
+
+	var episodeCount int
+	if err := db.Get(&episodeCount, `SELECT COUNT(*) FROM episodes WHERE task_id = 10`); err != nil {
+		t.Fatalf("count episodes: %v", err)
+	}
+	if episodeCount != 0 {
+		t.Fatalf("episode count=%d want 0", episodeCount)
+	}
+	var status string
+	if err := db.Get(&status, `SELECT status FROM tasks WHERE id = 10`); err != nil {
+		t.Fatalf("query task status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("task status=%q want cancelled", status)
 	}
 }
 
@@ -140,9 +195,12 @@ func seedTransferDCPlanTask(t *testing.T, db *sqlx.DB) {
 	}
 }
 
-func newTransferDCPlanTestS3(t *testing.T) *s3.Client {
+func newTransferDCPlanTestS3(t *testing.T, onMCAPHead func()) *s3.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if onMCAPHead != nil && r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, ".mcap") {
+			onMCAPHead()
+		}
 		w.Header().Set("ETag", `"test-etag"`)
 		w.Header().Set("Last-Modified", "Mon, 13 Jul 2026 05:00:00 GMT")
 		if _, ok := r.URL.Query()["location"]; ok {

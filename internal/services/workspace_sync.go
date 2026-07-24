@@ -152,6 +152,21 @@ func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) err
 		return nil
 	}
 
+	// MySQL reports changed rows rather than matched rows by default. A row
+	// that already contains these values therefore produces RowsAffected == 0
+	// and must not be mistaken for a missing default workspace.
+	var existing int
+	if err := db.GetContext(ctx, &existing, `
+		SELECT COUNT(*)
+		FROM workspaces
+		WHERE id = ?
+	`, defaultWorkspaceID); err != nil {
+		return err
+	}
+	if existing > 0 {
+		return nil
+	}
+
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO workspaces (
 			id,

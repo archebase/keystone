@@ -35,6 +35,7 @@ const dcPlanAutoSyncInterval = 5 * time.Minute
 // Server represents the HTTP server
 type Server struct {
 	cfg                 *config.Config
+	db                  *sqlx.DB
 	health              *handlers.HealthHandler
 	auth                *handlers.AuthHandler
 	storage             *handlers.StorageHandler
@@ -92,7 +93,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	}
 	var storageHandler *handlers.StorageHandler
 	if s3Client != nil {
-		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth, &cfg.Storage)
+		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth, &cfg.TOSStorage)
 	}
 
 	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
@@ -111,7 +112,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
-	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.Storage)
+	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.TOSStorage)
+	qaHandler.SetDeviceStateBroker(stateBroker)
 	transferHandler.SetEpisodeQAEnqueuer(qaHandler)
 
 	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)
@@ -160,6 +162,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	s := &Server{
 		cfg:                 cfg,
+		db:                  db,
 		health:              healthHandler,
 		auth:                authHandler,
 		storage:             storageHandler,
@@ -235,12 +238,15 @@ func (s *Server) buildRoutes() http.Handler {
 		s.auth.RegisterRoutes(v1Routes)
 
 		// Authenticated auth routes:
-		//   GET  /auth/me          — any valid token (admin or data_collector)
-		//   POST /auth/me/station/* — data_collector only
-		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
-		meGroup := v1Routes.Group("/auth/me", jwtMw)
-		stationGroup := v1Routes.Group("/auth/me/station", jwtMw, middleware.RequireRole("data_collector"))
-		s.auth.RegisterAuthenticatedRoutes(meGroup, stationGroup)
+		//   GET  /auth/me                    — identity or workstation token
+		//   POST /auth/workstation/activate — data_collector identity token
+		//   POST /auth/me/station/*         — active workstation token
+		identityMw := middleware.IdentityJWTAuth(&s.cfg.Auth)
+		workstationMw := middleware.JWTAuth(&s.cfg.Auth, s.db)
+		meGroup := v1Routes.Group("/auth/me", identityMw)
+		stationGroup := v1Routes.Group("/auth/me/station", workstationMw, middleware.RequireRole("data_collector"))
+		activationGroup := v1Routes.Group("/auth/workstation", identityMw, middleware.RequireRole("data_collector"))
+		s.auth.RegisterAuthenticatedRoutes(meGroup, stationGroup, activationGroup)
 	}
 	if s.storage != nil {
 		s.storage.RegisterRoutes(v1Routes)
@@ -251,7 +257,7 @@ func (s *Server) buildRoutes() http.Handler {
 	s.transfer.RegisterRoutes(v1Transfer)
 
 	// Episodes API
-	v1Episodes := v1Routes.Group("/episodes", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+	v1Episodes := v1Routes.Group("/episodes", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireAnyRole("admin", "data_collector"))
 	s.episode.RegisterReadRoutes(v1Episodes)
 	s.episode.RegisterPresignRoute(v1Routes.Group("/episodes"))
 	if s.qa != nil {
@@ -260,18 +266,18 @@ func (s *Server) buildRoutes() http.Handler {
 
 	// Tasks API
 	v1Tasks := v1Routes.Group("")
-	taskStats := v1Routes.Group("/tasks/statistics", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+	taskStats := v1Routes.Group("/tasks/statistics", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireAnyRole("admin", "data_collector"))
 	taskStats.GET("/breakdown", s.task.GetTaskBreakdown)
-	authenticatedTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+	authenticatedTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireAnyRole("admin", "data_collector"))
 	s.task.RegisterRoutes(authenticatedTasks)
-	collectorTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("data_collector"))
+	collectorTasks := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("data_collector"))
 	s.task.RegisterCollectorRoutes(collectorTasks)
 	if s.robot != nil {
 		s.robot.RegisterRoutes(v1Tasks)
 	}
 	if s.deviceRegistration != nil {
 		s.deviceRegistration.RegisterRoutes(v1Tasks)
-		adminDeviceCredentials := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
+		adminDeviceCredentials := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
 		s.deviceRegistration.RegisterAdminRoutes(adminDeviceCredentials)
 	}
 	if s.dataCollector != nil {
@@ -281,29 +287,29 @@ func (s *Server) buildRoutes() http.Handler {
 		s.station.RegisterRoutes(v1Tasks)
 	}
 	if s.workspace != nil {
-		adminWorkspaces := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
+		adminWorkspaces := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
 		s.workspace.RegisterRoutes(adminWorkspaces)
 	}
 	if s.dcPlan != nil {
-		readDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector"))
+		readDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireAnyRole("admin", "data_collector"))
 		s.dcPlan.RegisterReadRoutes(readDCPlans)
-		adminDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth), middleware.RequireRole("admin"))
+		adminDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
 		s.dcPlan.RegisterAdminRoutes(adminDCPlans)
 	}
 	if s.dataStats != nil {
-		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
+		jwtMw := middleware.JWTAuth(&s.cfg.Auth, s.db)
 		adminStats := v1Routes.Group("/admin/statistics/data-production", jwtMw, middleware.RequireRole("admin"))
 		s.dataStats.RegisterRoutes(adminStats)
 		operatorStats := v1Routes.Group("/operator/statistics/data-production", jwtMw, middleware.RequireRole("data_collector"))
 		s.dataStats.RegisterOperatorRoutes(operatorStats)
 	}
 	if s.dataOps != nil {
-		jwtMw := middleware.JWTAuth(&s.cfg.Auth)
+		jwtMw := middleware.JWTAuth(&s.cfg.Auth, s.db)
 		adminDataOps := v1Routes.Group("/data-ops", jwtMw, middleware.RequireRole("admin"))
 		s.dataOps.RegisterRoutes(adminDataOps)
 	}
 	if s.productionDashboard != nil {
-		dashboard := v1Routes.Group("/production/dashboard", middleware.DashboardAuth(&s.cfg.Auth), middleware.RequireAnyRole("admin", "data_collector", "display"))
+		dashboard := v1Routes.Group("/production/dashboard", middleware.DashboardAuth(&s.cfg.Auth, s.db), middleware.RequireAnyRole("admin", "data_collector", "display"))
 		s.productionDashboard.RegisterRoutes(dashboard)
 	}
 

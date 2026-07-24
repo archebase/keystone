@@ -24,6 +24,7 @@ import (
 	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
@@ -51,6 +52,8 @@ var (
 	errEpisodeQANotFound        = errors.New("episode not found")
 	errEpisodeQAAlreadyRunning  = errors.New("episode qa already running")
 	errEpisodeQAAutoSkipped     = errors.New("episode auto qa skipped")
+	errEpisodeQACloudSynced     = errors.New("cloud-synced episode qa is immutable")
+	errEpisodeQASyncActive      = errors.New("episode cloud sync is active")
 	errEpisodeQANotManualFailed = errors.New("episode is not manual review failed")
 )
 
@@ -59,12 +62,14 @@ type QARunMode string
 
 // EpisodeQAHandler handles QA center APIs and lightweight automatic QA execution.
 type EpisodeQAHandler struct {
-	db      *sqlx.DB
-	s3      *s3.Client
-	tos     *episodeQATOSReader
-	bucket  string
-	authCfg *config.AuthConfig
-	queue   chan int64
+	db          *sqlx.DB
+	s3          *s3.Client
+	tos         *episodeQATOSReader
+	bucket      string
+	tosBucket   string
+	authCfg     *config.AuthConfig
+	queue       chan int64
+	stateBroker *services.DeviceStateBroker
 }
 
 // EpisodeQARunRequest is the request body for running an episode QA suite.
@@ -142,6 +147,8 @@ type episodeQACheckRow struct {
 	McapPath    string         `db:"mcap_path"`
 	SidecarPath string         `db:"sidecar_path"`
 	QAStatus    string         `db:"qa_status"`
+	CloudSynced bool           `db:"cloud_synced"`
+	SyncActive  bool           `db:"sync_active"`
 	Quality     sql.NullString `db:"quality_flag"`
 	Metadata    sql.NullString `db:"metadata"`
 }
@@ -149,6 +156,7 @@ type episodeQACheckRow struct {
 type episodeQARunClaim struct {
 	EpisodeID      int64
 	OriginalStatus string
+	Mode           QARunMode
 	MutableStatus  bool
 }
 
@@ -191,11 +199,21 @@ func NewEpisodeQAHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCf
 	}
 	if storageCfg != nil && strings.EqualFold(storageCfg.Type, "tos") {
 		h.tos = newEpisodeQATOSReader(*storageCfg)
+		h.tosBucket = strings.TrimSpace(storageCfg.Bucket)
 	}
 	if db != nil {
 		go h.runAutoWorker()
 	}
 	return h
+}
+
+// SetDeviceStateBroker enables QA status event publishing for operator clients.
+// It must be called during single-threaded initialization before the handler is used.
+func (h *EpisodeQAHandler) SetDeviceStateBroker(broker *services.DeviceStateBroker) {
+	if h == nil {
+		return
+	}
+	h.stateBroker = broker
 }
 
 // RegisterRoutes registers QA center routes under /api/v1/qa.
@@ -474,6 +492,10 @@ func (h *EpisodeQAHandler) RunEpisodeQASuiteHTTP(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
 		case errors.Is(err, errEpisodeQAAlreadyRunning):
 			c.JSON(http.StatusConflict, gin.H{"error": "qa already running"})
+		case errors.Is(err, errEpisodeQACloudSynced):
+			c.JSON(http.StatusConflict, gin.H{"error": "cloud-synced episode QA status cannot be changed manually"})
+		case errors.Is(err, errEpisodeQASyncActive):
+			c.JSON(http.StatusConflict, gin.H{"error": "episode cloud sync is active; QA status cannot be changed manually"})
 		default:
 			logger.Printf("[EPISODE-QA] Suite failed: episode=%d, mode=%s, err=%v", episodeID, mode, err)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to run qa suite"})
@@ -527,6 +549,10 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailedHTTP(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
 		case errors.Is(err, errEpisodeQAAlreadyRunning):
 			c.JSON(http.StatusConflict, gin.H{"error": "qa already running"})
+		case errors.Is(err, errEpisodeQACloudSynced):
+			c.JSON(http.StatusConflict, gin.H{"error": "cloud-synced episode QA status cannot be changed manually"})
+		case errors.Is(err, errEpisodeQASyncActive):
+			c.JSON(http.StatusConflict, gin.H{"error": "episode cloud sync is active; QA status cannot be changed manually"})
 		default:
 			logger.Printf("[EPISODE-QA] Manual review failed: episode=%d, err=%v", episodeID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark manual review failed"})
@@ -623,6 +649,9 @@ func (h *EpisodeQAHandler) RunEpisodeQASuite(ctx context.Context, episodeID int6
 
 	result, err := h.persistEpisodeQASuiteResult(ctx, claim, mode, outcomes, checkedAt)
 	if err != nil {
+		if errors.Is(err, errEpisodeQACloudSynced) || errors.Is(err, errEpisodeQASyncActive) {
+			h.releaseEpisodeQARun(ctx, claim)
+		}
 		return nil, err
 	}
 	return result, nil
@@ -637,6 +666,12 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, ep
 	row, err := h.loadEpisodeForQACheck(ctx, episodeID)
 	if err != nil {
 		return nil, err
+	}
+	if row.CloudSynced {
+		return nil, errEpisodeQACloudSynced
+	}
+	if row.SyncActive {
+		return nil, errEpisodeQASyncActive
 	}
 	if row.QAStatus == qaStatusRunning {
 		return nil, errEpisodeQAAlreadyRunning
@@ -665,7 +700,16 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, ep
 	res, err := tx.ExecContext(ctx, `
 		UPDATE episodes
 		SET qa_status = ?, qa_score = ?, quality_flag = ?
-		WHERE id = ? AND deleted_at IS NULL AND COALESCE(qa_status, '') <> ?
+		WHERE id = ?
+			AND deleted_at IS NULL
+			AND COALESCE(cloud_synced, FALSE) = FALSE
+			AND NOT EXISTS (
+				SELECT 1
+				FROM sync_logs sl
+				WHERE sl.episode_id = episodes.id
+					AND sl.status IN ('pending', 'in_progress')
+			)
+			AND COALESCE(qa_status, '') <> ?
 	`, qaStatusManualReviewFailed, 0, details, row.ID, qaStatusRunning)
 	if err != nil {
 		return nil, fmt.Errorf("mark episode manual review failed: %w", err)
@@ -678,6 +722,12 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, ep
 		fresh, err := h.loadEpisodeForQACheck(ctx, row.ID)
 		if err != nil {
 			return nil, err
+		}
+		if fresh.CloudSynced {
+			return nil, errEpisodeQACloudSynced
+		}
+		if fresh.SyncActive {
+			return nil, errEpisodeQASyncActive
 		}
 		if fresh.QAStatus == qaStatusRunning {
 			return nil, errEpisodeQAAlreadyRunning
@@ -701,7 +751,7 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, ep
 		return nil, fmt.Errorf("commit manual review transaction: %w", err)
 	}
 
-	return &EpisodeQASuiteResponse{
+	result := &EpisodeQASuiteResponse{
 		EpisodeID: row.ID,
 		QAStatus:  qaStatusManualReviewFailed,
 		Passed:    false,
@@ -716,7 +766,9 @@ func (h *EpisodeQAHandler) MarkEpisodeManualReviewFailed(ctx context.Context, ep
 			CheckMetadata: metadata,
 			CheckedAt:     checkedAt.Format(time.RFC3339),
 		}},
-	}, nil
+	}
+	h.publishEpisodeQAStatusEvent(ctx, result)
+	return result, nil
 }
 
 // CancelEpisodeManualReviewFailed restores a manually failed episode to pending QA.
@@ -792,7 +844,7 @@ func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailed(ctx context.Context, 
 		return nil, fmt.Errorf("commit manual review cancel transaction: %w", err)
 	}
 
-	return &EpisodeQASuiteResponse{
+	result := &EpisodeQASuiteResponse{
 		EpisodeID: row.ID,
 		QAStatus:  qaStatusPendingQA,
 		Passed:    true,
@@ -807,7 +859,9 @@ func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailed(ctx context.Context, 
 			CheckMetadata: metadata,
 			CheckedAt:     checkedAt.Format(time.RFC3339),
 		}},
-	}, nil
+	}
+	h.publishEpisodeQAStatusEvent(ctx, result)
+	return result, nil
 }
 
 func defaultEpisodeQASuite(row episodeQACheckRow) []string {
@@ -834,9 +888,22 @@ func isSupportedEpisodeQACheckName(checkName string) bool {
 func (h *EpisodeQAHandler) loadEpisodeForQACheck(ctx context.Context, episodeID int64) (episodeQACheckRow, error) {
 	var row episodeQACheckRow
 	err := h.db.GetContext(ctx, &row, `
-		SELECT id, mcap_path, COALESCE(sidecar_path, '') AS sidecar_path, COALESCE(qa_status, '') AS qa_status, quality_flag, metadata
-		FROM episodes
-		WHERE id = ? AND deleted_at IS NULL
+		SELECT
+			e.id,
+			e.mcap_path,
+			COALESCE(e.sidecar_path, '') AS sidecar_path,
+			COALESCE(e.qa_status, '') AS qa_status,
+			COALESCE(e.cloud_synced, FALSE) AS cloud_synced,
+			EXISTS (
+				SELECT 1
+				FROM sync_logs sl
+				WHERE sl.episode_id = e.id
+					AND sl.status IN ('pending', 'in_progress')
+			) AS sync_active,
+			e.quality_flag,
+			e.metadata
+		FROM episodes e
+		WHERE e.id = ? AND e.deleted_at IS NULL
 		LIMIT 1
 	`, episodeID)
 	if err == sql.ErrNoRows {
@@ -869,8 +936,21 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 	claim := episodeQARunClaim{
 		EpisodeID:      row.ID,
 		OriginalStatus: row.QAStatus,
+		Mode:           mode,
 	}
 
+	if row.CloudSynced {
+		if mode == qaRunModeManual {
+			return claim, errEpisodeQACloudSynced
+		}
+		return claim, errEpisodeQAAutoSkipped
+	}
+	if row.SyncActive {
+		if mode == qaRunModeManual {
+			return claim, errEpisodeQASyncActive
+		}
+		return claim, errEpisodeQAAutoSkipped
+	}
 	if row.QAStatus == qaStatusRunning {
 		return claim, errEpisodeQAAlreadyRunning
 	}
@@ -881,7 +961,16 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 	res, err := h.db.ExecContext(ctx, `
 		UPDATE episodes
 		SET qa_status = ?
-		WHERE id = ? AND deleted_at IS NULL AND COALESCE(qa_status, '') = ?
+		WHERE id = ?
+			AND deleted_at IS NULL
+			AND COALESCE(cloud_synced, FALSE) = FALSE
+			AND NOT EXISTS (
+				SELECT 1
+				FROM sync_logs sl
+				WHERE sl.episode_id = episodes.id
+					AND sl.status IN ('pending', 'in_progress')
+			)
+			AND COALESCE(qa_status, '') = ?
 	`, qaStatusRunning, row.ID, row.QAStatus)
 	if err != nil {
 		return claim, fmt.Errorf("claim episode qa run: %w", err)
@@ -895,6 +984,18 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 		if err != nil {
 			return claim, err
 		}
+		if fresh.CloudSynced {
+			if mode == qaRunModeManual {
+				return claim, errEpisodeQACloudSynced
+			}
+			return claim, errEpisodeQAAutoSkipped
+		}
+		if fresh.SyncActive {
+			if mode == qaRunModeManual {
+				return claim, errEpisodeQASyncActive
+			}
+			return claim, errEpisodeQAAutoSkipped
+		}
 		if fresh.QAStatus == qaStatusRunning {
 			return claim, errEpisodeQAAlreadyRunning
 		}
@@ -905,6 +1006,11 @@ func (h *EpisodeQAHandler) claimEpisodeQARun(ctx context.Context, row episodeQAC
 	}
 
 	claim.MutableStatus = true
+	h.publishEpisodeQAStatusEvent(ctx, &EpisodeQASuiteResponse{
+		EpisodeID: claim.EpisodeID,
+		QAStatus:  qaStatusRunning,
+		Mode:      claim.Mode,
+	})
 	return claim, nil
 }
 
@@ -913,13 +1019,28 @@ func (h *EpisodeQAHandler) releaseEpisodeQARun(ctx context.Context, claim episod
 		return
 	}
 	// #nosec G701 -- static SQL with placeholder-bound status and episode values.
-	if _, err := h.db.ExecContext(ctx, `
+	res, err := h.db.ExecContext(ctx, `
 		UPDATE episodes
 		SET qa_status = ?
 		WHERE id = ? AND deleted_at IS NULL AND qa_status = ?
-	`, claim.OriginalStatus, claim.EpisodeID, qaStatusRunning); err != nil {
+	`, claim.OriginalStatus, claim.EpisodeID, qaStatusRunning)
+	if err != nil {
 		logger.Printf("[EPISODE-QA] Failed to release QA run: episode=%d, err=%v", claim.EpisodeID, err)
+		return
 	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		logger.Printf("[EPISODE-QA] Failed to read released QA run rows: episode=%d, err=%v", claim.EpisodeID, err)
+		return
+	}
+	if affected == 0 {
+		return
+	}
+	h.publishEpisodeQAStatusEvent(ctx, &EpisodeQASuiteResponse{
+		EpisodeID: claim.EpisodeID,
+		QAStatus:  claim.OriginalStatus,
+		Mode:      claim.Mode,
+	})
 }
 
 func (h *EpisodeQAHandler) runEpisodeQACheck(ctx context.Context, checkName string, row episodeQACheckRow) (episodeQACheckOutcome, error) {
@@ -947,7 +1068,7 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 		return evaluateMcapMagicCheck(0, nil, nil, "invalid mcap_path"), nil
 	}
 
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		return h.runTOSMcapMagicQACheck(ctx, bucket, objectName)
 	}
 
@@ -1050,7 +1171,7 @@ func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row 
 		"object": objectName,
 	}
 
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		data, err := h.readS3Object(ctx, bucket, objectName, maxEpisodeQASidecarBytes)
 		if err != nil {
 			if isStorageNotFound(err) {
@@ -1148,7 +1269,7 @@ func isTOSOnlyEpisode(metadata sql.NullString) bool {
 }
 
 func (h *EpisodeQAHandler) statQAObject(ctx context.Context, bucket, objectName string) (int64, error) {
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		return h.tos.StatObject(ctx, bucket, objectName)
 	}
 	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
@@ -1159,7 +1280,7 @@ func (h *EpisodeQAHandler) statQAObject(ctx context.Context, bucket, objectName 
 }
 
 func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName string, maxBytes int64) ([]byte, error) {
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		object, err := h.tos.GetObjectWithMetadata(ctx, bucket, objectName, &httpRange{start: 0, end: maxBytes})
 		if err != nil {
 			return nil, err
@@ -1195,7 +1316,7 @@ func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName 
 }
 
 func (h *EpisodeQAHandler) readS3ObjectRange(ctx context.Context, bucket, objectName string, start, end int64) ([]byte, error) {
-	if h.tos != nil {
+	if h.usesTOSBucket(bucket) {
 		return h.tos.GetObject(ctx, bucket, objectName, &httpRange{start: start, end: end})
 	}
 
@@ -1215,6 +1336,10 @@ func (h *EpisodeQAHandler) readS3ObjectRange(ctx context.Context, bucket, object
 	}()
 
 	return io.ReadAll(obj)
+}
+
+func (h *EpisodeQAHandler) usesTOSBucket(bucket string) bool {
+	return h.tos != nil && h.tosBucket != "" && strings.EqualFold(strings.TrimSpace(bucket), h.tosBucket)
 }
 
 func evaluateRecordingNotEmptyCheck(data []byte, metadata map[string]any) (episodeQACheckOutcome, error) {
@@ -1454,6 +1579,61 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 					return nil, fmt.Errorf("mark episode qa approved: %w", err)
 				}
 			}
+		} else if mode == qaRunModeManual {
+			// #nosec G701 -- static SQL with placeholder-bound episode QA values.
+			res, err := tx.ExecContext(ctx, `
+				UPDATE episodes
+				SET qa_status = ?, qa_score = ?, quality_flag = ?
+				WHERE id = ?
+					AND deleted_at IS NULL
+					AND qa_status = ?
+					AND COALESCE(cloud_synced, FALSE) = FALSE
+					AND NOT EXISTS (
+						SELECT 1
+						FROM sync_logs sl
+						WHERE sl.episode_id = episodes.id
+							AND sl.status IN ('pending', 'in_progress')
+					)
+			`, qaStatusFailed, score, failureDetails, claim.EpisodeID, qaStatusRunning)
+			if err != nil {
+				return nil, fmt.Errorf("mark episode qa failed: %w", err)
+			}
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return nil, fmt.Errorf("read failed qa rows affected: %w", err)
+			}
+			if affected == 0 {
+				var state struct {
+					QAStatus    string `db:"qa_status"`
+					CloudSynced bool   `db:"cloud_synced"`
+					SyncActive  bool   `db:"sync_active"`
+				}
+				if err := tx.GetContext(ctx, &state, `
+					SELECT
+						COALESCE(e.qa_status, '') AS qa_status,
+						COALESCE(e.cloud_synced, FALSE) AS cloud_synced,
+						EXISTS (
+							SELECT 1
+							FROM sync_logs sl
+							WHERE sl.episode_id = e.id
+								AND sl.status IN ('pending', 'in_progress')
+						) AS sync_active
+					FROM episodes e
+					WHERE e.id = ? AND e.deleted_at IS NULL
+				`, claim.EpisodeID); err != nil {
+					if err == sql.ErrNoRows {
+						return nil, errEpisodeQANotFound
+					}
+					return nil, fmt.Errorf("query blocked episode qa state: %w", err)
+				}
+				if state.CloudSynced {
+					return nil, errEpisodeQACloudSynced
+				}
+				if state.SyncActive {
+					return nil, errEpisodeQASyncActive
+				}
+				return nil, fmt.Errorf("episode qa status changed from %q to %q", qaStatusRunning, state.QAStatus)
+			}
 		} else {
 			// #nosec G701 -- static SQL with placeholder-bound episode QA values.
 			if _, err := tx.ExecContext(ctx, `
@@ -1482,13 +1662,57 @@ func (h *EpisodeQAHandler) persistEpisodeQASuiteResult(ctx context.Context, clai
 		return nil, fmt.Errorf("commit qa check transaction: %w", err)
 	}
 
-	return &EpisodeQASuiteResponse{
+	result := &EpisodeQASuiteResponse{
 		EpisodeID: claim.EpisodeID,
 		QAStatus:  finalStatus,
 		Passed:    allPassed,
 		Mode:      mode,
 		Checks:    checks,
-	}, nil
+	}
+	h.publishEpisodeQAStatusEvent(ctx, result)
+	return result, nil
+}
+
+func (h *EpisodeQAHandler) publishEpisodeQAStatusEvent(ctx context.Context, result *EpisodeQASuiteResponse) {
+	if h == nil || h.db == nil || h.stateBroker == nil || result == nil {
+		return
+	}
+
+	var target struct {
+		DeviceID     string `db:"device_id"`
+		TaskPublicID string `db:"task_public_id"`
+		DCPlanID     int64  `db:"dc_plan_id"`
+	}
+	if err := h.db.GetContext(ctx, &target, `
+		SELECT
+			COALESCE(r.device_id, '') AS device_id,
+			COALESCE(t.task_id, '') AS task_public_id,
+			COALESCE(e.dc_plan_id, 0) AS dc_plan_id
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN workstations ws
+			ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
+		LIMIT 1
+	`, result.EpisodeID); err != nil {
+		logger.Printf("[EPISODE-QA] Failed to resolve QA event target: episode=%d, err=%v", result.EpisodeID, err)
+		return
+	}
+	if strings.TrimSpace(target.DeviceID) == "" {
+		return
+	}
+
+	h.stateBroker.Publish(target.DeviceID, services.DeviceStateEvent{
+		"type":       "plan_progress_changed",
+		"episode_id": result.EpisodeID,
+		"task_id":    strings.TrimSpace(target.TaskPublicID),
+		"dc_plan_id": target.DCPlanID,
+		"qa_status":  result.QAStatus,
+		"passed":     result.Passed,
+		"mode":       result.Mode,
+		"reason":     "qa_status_changed",
+	})
 }
 
 func parsePositiveIntQuery(c *gin.Context, key string, fallback int) int {

@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
+
 	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
-	"github.com/gin-gonic/gin"
 )
 
 // ClaimsKey is the gin.Context key used to store parsed JWT claims.
@@ -23,25 +25,28 @@ const ClaimsKey = "auth_claims"
 // dashboard display token rather than a normal user JWT.
 const DashboardDisplayKey = "dashboard_display_auth"
 
+// IdentityJWTAuth validates a JWT without requiring an active workstation.
+// It is intended for identity-level routes such as /auth/me and workstation activation.
+func IdentityJWTAuth(cfg *config.AuthConfig) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := authenticateBearer(c, cfg)
+		if !ok {
+			return
+		}
+		c.Set(ClaimsKey, claims)
+		c.Next()
+	}
+}
+
 // JWTAuth validates JWT tokens.
 // Header: Authorization: Bearer <jwt_token>
-func JWTAuth(cfg *config.AuthConfig) gin.HandlerFunc {
+func JWTAuth(cfg *config.AuthConfig, dbs ...*sqlx.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		claims, ok := authenticateBearer(c, cfg)
+		if !ok {
 			return
 		}
-
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
-			return
-		}
-
-		claims, err := auth.ParseToken(parts[1], cfg)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		if !validateWorkstationSession(c, claims, dbs...) {
 			return
 		}
 
@@ -50,9 +55,30 @@ func JWTAuth(cfg *config.AuthConfig) gin.HandlerFunc {
 	}
 }
 
+func authenticateBearer(c *gin.Context, cfg *config.AuthConfig) (*auth.Claims, bool) {
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return nil, false
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
+		return nil, false
+	}
+
+	claims, err := auth.ParseToken(parts[1], cfg)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		return nil, false
+	}
+	return claims, true
+}
+
 // DashboardAuth allows a normal Bearer JWT or the optional production dashboard
 // display token. It must only be mounted on production-dashboard read routes.
-func DashboardAuth(cfg *config.AuthConfig) gin.HandlerFunc {
+func DashboardAuth(cfg *config.AuthConfig, dbs ...*sqlx.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if IsDashboardDisplayRequest(c) {
 			if !IsDashboardDisplayToken(c, cfg) {
@@ -82,10 +108,44 @@ func DashboardAuth(cfg *config.AuthConfig) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
 			return
 		}
+		if !validateWorkstationSession(c, claims, dbs...) {
+			return
+		}
 
 		c.Set(ClaimsKey, claims)
 		c.Next()
 	}
+}
+
+func validateWorkstationSession(c *gin.Context, claims *auth.Claims, dbs ...*sqlx.DB) bool {
+	if claims == nil || claims.Role != "data_collector" || len(dbs) == 0 || dbs[0] == nil {
+		return true
+	}
+	if claims.WorkstationID <= 0 {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"code":  "workstation_scope_required",
+			"error": "workstation session is required",
+		})
+		return false
+	}
+	var active bool
+	if err := dbs[0].GetContext(c.Request.Context(), &active, `
+		SELECT EXISTS(
+			SELECT 1 FROM workstations
+			WHERE id = ? AND data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
+		)
+	`, claims.WorkstationID, claims.CollectorID); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to validate workstation session"})
+		return false
+	}
+	if !active {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"code":  "workstation_session_invalid",
+			"error": "workstation session is no longer active",
+		})
+		return false
+	}
+	return true
 }
 
 // IsDashboardDisplayRequest reports whether the request uses the Display auth

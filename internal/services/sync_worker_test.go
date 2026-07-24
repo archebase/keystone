@@ -180,8 +180,8 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
 		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
 		McapPath:          "source-bucket/device/capture.mcap",
-		Metadata: sql.NullString{
-			String: `{"source":"dgwcompat","product":"ego_portal_lite","checksum_md5":"9777442976c95a2f302786b97e60ceb5"}`,
+		Checksum: sql.NullString{
+			String: "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08",
 			Valid:  true,
 		},
 		DurationSec: sql.NullFloat64{Float64: 2.5, Valid: true},
@@ -197,8 +197,8 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if hilbert.register.BagName != "episode-uuid.mcap" || hilbert.register.BagSize != int64(len(source.data)) {
 		t.Fatalf("register bag fields = %+v", hilbert.register)
 	}
-	if hilbert.register.BagDigest != "9777442976c95a2f302786b97e60ceb5" {
-		t.Fatalf("register BagDigest = %q, want content md5", hilbert.register.BagDigest)
+	if hilbert.register.BagDigest != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
+		t.Fatalf("register BagDigest = %q, want persisted SHA-256", hilbert.register.BagDigest)
 	}
 	if !hilbert.register.BagStartTime.Equal(createdAt) || !hilbert.register.BagEndTime.Equal(createdAt.Add(2500*time.Millisecond)) {
 		t.Fatalf("register bag times = %s-%s", hilbert.register.BagStartTime, hilbert.register.BagEndTime)
@@ -216,45 +216,94 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if source.statCount != 1 || source.openCount != 1 {
 		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=1", source.statCount, source.openCount)
 	}
+	if source.statBucket != "source-bucket" || source.statObject != "device/capture.mcap" {
+		t.Fatalf("source stat location=%s/%s", source.statBucket, source.statObject)
+	}
+	if source.openBucket != source.statBucket || source.openObject != source.statObject {
+		t.Fatalf("source open location=%s/%s, want stat location", source.openBucket, source.openObject)
+	}
 	if result.UploadID != "9876" || result.Bucket != "hilbert-bucket" || result.ObjectKey != "raw-data/123/capture.mcap" {
 		t.Fatalf("result = %+v", result)
 	}
 }
 
-func TestEpisodeMCAPMD5HexRejectsDgwcompatEpisodeWithoutPersistedMD5(t *testing.T) {
-	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
-	_, err := episodeMCAPMD5Hex(context.Background(), syncEpisodeUploadRow{
-		ID:       4181,
-		Metadata: sql.NullString{String: `{"source":"dgwcompat","product":"ego_portal_lite"}`, Valid: true},
-	}, source, "source-bucket", "capture.mcap")
-	if err == nil || !strings.Contains(err.Error(), "missing valid dgwcompat checksum_md5") {
-		t.Fatalf("episodeMCAPMD5Hex() error = %v", err)
+func TestUploadEpisodeDirectReadsDGWCompatEpisodeFromTOS(t *testing.T) {
+	minioSource := &fakeSourceObjectReader{data: []byte("wrong minio bytes")}
+	tosSource := &fakeSourceObjectReader{data: []byte("tos mcap bytes")}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-s3-cn-beijing.ivolces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
 	}
-	if !isNonRetryableSyncError(err) {
-		t.Fatalf("episodeMCAPMD5Hex() error = %v, want non-retryable", err)
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	credentials.Credentials.TemporaryToken = "temp-token"
+	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
+	uploader := &fakeTOSObjectUploader{}
+	w := &SyncWorker{
+		minioBucket: "edge-factory-archebase",
+		hilbert:     hilbert,
+		source:      minioSource,
+		tosUploader: uploader,
 	}
-	if source.openCount != 0 {
-		t.Fatalf("source open count = %d, want 0", source.openCount)
+	w.SetTOSSourceObjectReader("archebase-keystone-device-upload-2116584179", tosSource)
+
+	_, err := w.uploadEpisodeDirect(context.Background(), 0, syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "device-uploads/5/capture/capture.mcap",
+		Metadata: sql.NullString{
+			Valid:  true,
+			String: `{"source":"dgwcompat","bucket":"archebase-keystone-device-upload-2116584179","object_key":"device-uploads/5/capture/capture.mcap"}`,
+		},
+		Checksum: sql.NullString{
+			String: strings.Repeat("a", 64),
+			Valid:  true,
+		},
+		CreatedAt: time.Date(2026, 7, 23, 5, 38, 41, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("uploadEpisodeDirect() error = %v", err)
+	}
+
+	if minioSource.statCount != 0 || minioSource.openCount != 0 {
+		t.Fatalf("MinIO source calls stat=%d open=%d, want 0", minioSource.statCount, minioSource.openCount)
+	}
+	if tosSource.statBucket != "archebase-keystone-device-upload-2116584179" || tosSource.statObject != "device-uploads/5/capture/capture.mcap" {
+		t.Fatalf("TOS stat location=%s/%s", tosSource.statBucket, tosSource.statObject)
+	}
+	if tosSource.openBucket != tosSource.statBucket || tosSource.openObject != tosSource.statObject {
+		t.Fatalf("TOS open location=%s/%s, want stat location", tosSource.openBucket, tosSource.openObject)
+	}
+	if string(uploader.body) != string(tosSource.data) {
+		t.Fatalf("uploaded body=%q, want TOS body %q", string(uploader.body), string(tosSource.data))
 	}
 }
 
-func TestEpisodeMCAPMD5HexComputesDigestForNonDgwcompatEpisode(t *testing.T) {
-	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
-	digest, err := episodeMCAPMD5Hex(
-		context.Background(),
-		syncEpisodeUploadRow{ID: 4181},
-		source,
-		"source-bucket",
-		"capture.mcap",
-	)
-	if err != nil {
-		t.Fatalf("episodeMCAPMD5Hex() error = %v", err)
+func TestEpisodeSHA256HexRejectsMissingOrInvalidChecksum(t *testing.T) {
+	tests := []struct {
+		name     string
+		checksum sql.NullString
+	}{
+		{name: "missing"},
+		{name: "wrong length", checksum: sql.NullString{String: "abc", Valid: true}},
+		{name: "non hex", checksum: sql.NullString{String: strings.Repeat("z", 64), Valid: true}},
 	}
-	if digest != "9777442976c95a2f302786b97e60ceb5" {
-		t.Fatalf("episodeMCAPMD5Hex() = %q", digest)
-	}
-	if source.openCount != 1 {
-		t.Fatalf("source open count = %d, want 1", source.openCount)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := episodeSHA256Hex(syncEpisodeUploadRow{ID: 4181, Checksum: tt.checksum})
+			if err == nil || !strings.Contains(err.Error(), "missing valid SHA-256 checksum") {
+				t.Fatalf("episodeSHA256Hex() error = %v", err)
+			}
+			if !isNonRetryableSyncError(err) {
+				t.Fatalf("episodeSHA256Hex() error = %v, want non-retryable", err)
+			}
+		})
 	}
 }
 
@@ -307,18 +356,26 @@ func (c *fakeHilbertRawDataClient) FinishRawDataUpload(_ context.Context, worksp
 }
 
 type fakeSourceObjectReader struct {
-	data      []byte
-	statCount int
-	openCount int
+	data       []byte
+	statCount  int
+	openCount  int
+	statBucket string
+	statObject string
+	openBucket string
+	openObject string
 }
 
-func (r *fakeSourceObjectReader) StatObject(context.Context, string, string) (int64, error) {
+func (r *fakeSourceObjectReader) StatObject(_ context.Context, bucket, objectName string) (int64, error) {
 	r.statCount++
+	r.statBucket = bucket
+	r.statObject = objectName
 	return int64(len(r.data)), nil
 }
 
-func (r *fakeSourceObjectReader) OpenObject(context.Context, string, string) (io.ReadCloser, error) {
+func (r *fakeSourceObjectReader) OpenObject(_ context.Context, bucket, objectName string) (io.ReadCloser, error) {
 	r.openCount++
+	r.openBucket = bucket
+	r.openObject = objectName
 	return io.NopCloser(bytes.NewReader(r.data)), nil
 }
 
@@ -1271,6 +1328,59 @@ func TestMarkSyncCompleted_WritesExistingCloudFields(t *testing.T) {
 	}
 	if logRow.Status != "completed" || logRow.DestinationPath != "cloud/object.mcap" || logRow.BytesTransferred != 12345 {
 		t.Fatalf("sync log completion fields = %+v", logRow)
+	}
+}
+
+func TestAcquireSyncLogRejectsEpisodeThatIsNoLongerApproved(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{db: db}
+
+	insertEpisodeForSyncWorkerTest(t, db, 27, "manual_review_failed", false)
+	insertSyncLogForSyncWorkerTest(t, db, 27, "pending", 0)
+
+	_, _, err := w.acquireSyncLogWithMode(context.Background(), 27, "bucket/path.mcap", false)
+	if err == nil || !strings.Contains(err.Error(), "must be approved") {
+		t.Fatalf("acquireSyncLogWithMode() error = %v, want QA approval error", err)
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 27)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+}
+
+func TestMarkSyncCompletedRejectsEpisodeThatIsNoLongerApproved(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{db: db}
+
+	insertEpisodeForSyncWorkerTest(t, db, 28, "failed", false)
+	insertSyncLogForSyncWorkerTest(t, db, 28, "in_progress", 1)
+	var syncLogID int64
+	if err := db.Get(&syncLogID, "SELECT id FROM sync_logs WHERE episode_id = ?", 28); err != nil {
+		t.Fatalf("query sync log id: %v", err)
+	}
+
+	w.markSyncCompleted(context.Background(), syncLogID, 28, &cloud.UploadResult{
+		LogicalUploadID: "logical-28",
+		UploadID:        "upload-28",
+		ObjectKey:       "cloud/object.mcap",
+		FileSize:        12345,
+	}, 3)
+
+	var cloudSynced bool
+	if err := db.Get(&cloudSynced, "SELECT cloud_synced FROM episodes WHERE id = ?", 28); err != nil {
+		t.Fatalf("query episode cloud_synced: %v", err)
+	}
+	if cloudSynced {
+		t.Fatal("cloud_synced = true, want false")
+	}
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, 28)
+	if latest.Status != "failed" {
+		t.Fatalf("latest status = %q, want failed", latest.Status)
+	}
+	if latest.NextRetry.Valid {
+		t.Fatal("next_retry_at valid = true, want NULL")
 	}
 }
 

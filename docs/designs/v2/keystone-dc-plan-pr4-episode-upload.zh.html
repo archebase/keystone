@@ -567,7 +567,7 @@ dc_plan 1001 has invalid workspace_id 0</pre>
       <div class="section-head"><div class="section-no">09</div><h2>验收标准</h2></div>
       <div class="content">
         <ul>
-          <li>计划生成 task 完成录制后，新 episode 持久化相同的 <code>dc_plan_id</code>。</li>
+          <li>按计划创建的 task 完成录制后，新 episode 持久化相同的 <code>dc_plan_id</code>。</li>
           <li>Episode list/detail 可看到 <code>dc_plan_id</code>、<code>local_dc_plan_id</code>、<code>workspace_id</code>、<code>dc_plan_name</code>、<code>dc_type</code>。</li>
           <li>合法 Hilbert episode 上传时，<code>raw_tags</code> 和 <code>client_hints</code> 都包含计划与 Workspace ID。</li>
           <li>无 Hilbert 计划、计划已删除、计划不存在或 default Workspace 的 episode 均产生不可重试 sync failure。</li>

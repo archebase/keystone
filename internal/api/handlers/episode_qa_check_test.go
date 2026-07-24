@@ -7,11 +7,14 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
+
+	"archebase.com/keystone-edge/internal/services"
 )
 
 func TestEvaluateMcapMagicCheck(t *testing.T) {
@@ -315,6 +318,98 @@ func TestPersistEpisodeQACheckFailureMarksEpisodeFailed(t *testing.T) {
 	}
 }
 
+func TestPersistEpisodeQACheckManualFailureRejectsCloudSyncedEpisode(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, qa_status, cloud_synced, quality_flag, deleted_at)
+		VALUES (1, 'qa_running', TRUE, NULL, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	outcome := episodeQACheckOutcome{
+		CheckName: episodeQACheckMcapMagic,
+		Passed:    false,
+		Score:     0,
+		Details:   "MCAP integrity check failed",
+		Metadata:  map[string]any{},
+	}
+	claim := episodeQARunClaim{
+		EpisodeID:      1,
+		OriginalStatus: qaStatusApproved,
+		Mode:           qaRunModeManual,
+		MutableStatus:  true,
+	}
+	if _, err := handler.persistEpisodeQASuiteResult(
+		context.Background(),
+		claim,
+		qaRunModeManual,
+		[]episodeQACheckOutcome{outcome},
+		time.Now().UTC(),
+	); !errors.Is(err, errEpisodeQACloudSynced) {
+		t.Fatalf("persistEpisodeQASuiteResult() error = %v, want errEpisodeQACloudSynced", err)
+	}
+
+	var checkCount int
+	if err := db.Get(&checkCount, `SELECT COUNT(*) FROM qa_checks WHERE episode_id = 1`); err != nil {
+		t.Fatalf("count qa checks: %v", err)
+	}
+	if checkCount != 0 {
+		t.Fatalf("qa check count = %d, want 0", checkCount)
+	}
+}
+
+func TestPersistEpisodeQACheckManualFailureRejectsActiveCloudSync(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, qa_status, cloud_synced, quality_flag, deleted_at)
+		VALUES (1, 'qa_running', FALSE, NULL, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, status)
+		VALUES (1, 'in_progress')
+	`); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	outcome := episodeQACheckOutcome{
+		CheckName: episodeQACheckMcapMagic,
+		Passed:    false,
+		Score:     0,
+		Details:   "MCAP integrity check failed",
+		Metadata:  map[string]any{},
+	}
+	claim := episodeQARunClaim{
+		EpisodeID:      1,
+		OriginalStatus: qaStatusApproved,
+		Mode:           qaRunModeManual,
+		MutableStatus:  true,
+	}
+	if _, err := handler.persistEpisodeQASuiteResult(
+		context.Background(),
+		claim,
+		qaRunModeManual,
+		[]episodeQACheckOutcome{outcome},
+		time.Now().UTC(),
+	); !errors.Is(err, errEpisodeQASyncActive) {
+		t.Fatalf("persistEpisodeQASuiteResult() error = %v, want errEpisodeQASyncActive", err)
+	}
+
+	var checkCount int
+	if err := db.Get(&checkCount, `SELECT COUNT(*) FROM qa_checks WHERE episode_id = 1`); err != nil {
+		t.Fatalf("count qa checks: %v", err)
+	}
+	if checkCount != 0 {
+		t.Fatalf("qa check count = %d, want 0", checkCount)
+	}
+}
+
 func TestPersistEpisodeQACheckManualSuccessRestoresFailedEpisode(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}
@@ -417,6 +512,104 @@ func TestPersistEpisodeQACheckAutoSuccessAutoApprovesEpisode(t *testing.T) {
 	}
 }
 
+func TestPersistEpisodeQACheckPublishesTerminalStatusEvent(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	broker := services.NewDeviceStateBroker()
+	handler := &EpisodeQAHandler{db: db}
+	handler.SetDeviceStateBroker(broker)
+	events, unsubscribe := broker.Subscribe(1)
+	defer unsubscribe()
+
+	for _, statement := range []string{
+		`INSERT INTO robots (id, device_id) VALUES (9, 'robot-1')`,
+		`INSERT INTO workstations (id, robot_id) VALUES (3, 9)`,
+		`INSERT INTO tasks (id, task_id, workstation_id) VALUES (1, 'task-1', 3)`,
+		`INSERT INTO episodes (id, task_id, workstation_id, dc_plan_id, qa_status) VALUES (1, 1, 3, 10, 'qa_running')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed QA event fixture: %v", err)
+		}
+	}
+
+	outcome := episodeQACheckOutcome{
+		CheckName: episodeQACheckMcapMagic,
+		Passed:    false,
+		Score:     0,
+		Details:   "MCAP integrity check failed",
+		Metadata:  map[string]any{},
+	}
+	claim := episodeQARunClaim{
+		EpisodeID:      1,
+		OriginalStatus: qaStatusPendingQA,
+		MutableStatus:  true,
+	}
+	if _, err := handler.persistEpisodeQASuiteResult(
+		context.Background(),
+		claim,
+		qaRunModeAuto,
+		[]episodeQACheckOutcome{outcome},
+		time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("persist qa check: %v", err)
+	}
+
+	select {
+	case event := <-events:
+		if event["type"] != "plan_progress_changed" || event["device_id"] != "robot-1" ||
+			event["task_id"] != "task-1" || event["dc_plan_id"] != int64(10) ||
+			event["qa_status"] != qaStatusFailed || event["reason"] != "qa_status_changed" {
+			t.Fatalf("unexpected QA status event: %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for QA status event")
+	}
+}
+
+func TestManualReviewChangesPublishStatusEvents(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	broker := services.NewDeviceStateBroker()
+	handler := &EpisodeQAHandler{db: db}
+	handler.SetDeviceStateBroker(broker)
+	events, unsubscribe := broker.Subscribe(2)
+	defer unsubscribe()
+
+	for _, statement := range []string{
+		`INSERT INTO robots (id, device_id) VALUES (9, 'robot-1')`,
+		`INSERT INTO workstations (id, robot_id) VALUES (3, 9)`,
+		`INSERT INTO tasks (id, task_id, workstation_id) VALUES (1, 'task-1', 3)`,
+		`INSERT INTO episodes (id, task_id, workstation_id, dc_plan_id, mcap_path, sidecar_path, qa_status)
+		 VALUES (1, 1, 3, 10, 'bucket/task-1.mcap', 'bucket/task-1.json', 'approved')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed manual review event fixture: %v", err)
+		}
+	}
+
+	if _, err := handler.MarkEpisodeManualReviewFailed(context.Background(), 1, "bad data"); err != nil {
+		t.Fatalf("mark manual review failed: %v", err)
+	}
+	assertEpisodeQAStatusEvent(t, events, qaStatusManualReviewFailed)
+
+	if _, err := handler.CancelEpisodeManualReviewFailed(context.Background(), 1, "restore"); err != nil {
+		t.Fatalf("cancel manual review failed: %v", err)
+	}
+	assertEpisodeQAStatusEvent(t, events, qaStatusPendingQA)
+}
+
+func assertEpisodeQAStatusEvent(t *testing.T, events <-chan services.DeviceStateEvent, wantStatus string) {
+	t.Helper()
+	select {
+	case event := <-events:
+		if event["type"] != "plan_progress_changed" || event["device_id"] != "robot-1" ||
+			event["task_id"] != "task-1" || event["dc_plan_id"] != int64(10) ||
+			event["qa_status"] != wantStatus || event["reason"] != "qa_status_changed" {
+			t.Fatalf("unexpected QA status event: %#v", event)
+		}
+	default:
+		t.Fatalf("QA status %q did not publish an event", wantStatus)
+	}
+}
+
 func TestPersistEpisodeQACheckManualFailureMarksApprovedEpisodeFailed(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}
@@ -487,6 +680,87 @@ func TestClaimEpisodeQARunReturnsConflictWhenRunning(t *testing.T) {
 	}
 }
 
+func TestRunEpisodeQASuitePublishesRunningAndReleaseProgressEvents(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	broker := services.NewDeviceStateBroker()
+	handler := &EpisodeQAHandler{db: db, stateBroker: broker}
+	events, unsubscribe := broker.Subscribe(2)
+	defer unsubscribe()
+
+	for _, statement := range []string{
+		`INSERT INTO robots (id, device_id) VALUES (1, 'robot-1')`,
+		`INSERT INTO workstations (id, robot_id) VALUES (1, 1)`,
+		`INSERT INTO tasks (id, task_id, workstation_id) VALUES (1, 'task-1', 1)`,
+		`INSERT INTO episodes (id, task_id, workstation_id, dc_plan_id, mcap_path, qa_status)
+		 VALUES (1, 1, 1, 10, 'bucket/path.mcap', 'failed')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed QA event fixture: %v", err)
+		}
+	}
+
+	if _, err := handler.RunEpisodeQASuite(context.Background(), 1, qaRunModeManual); err == nil {
+		t.Fatal("RunEpisodeQASuite() error = nil, want storage configuration error")
+	}
+
+	assertEpisodeQAStatusEvent(t, events, qaStatusRunning)
+	assertEpisodeQAStatusEvent(t, events, qaStatusFailed)
+}
+
+func TestRunEpisodeQASuiteRejectsCloudSyncedEpisode(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, cloud_synced, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', TRUE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	if _, err := handler.RunEpisodeQASuite(context.Background(), 1, qaRunModeManual); !errors.Is(err, errEpisodeQACloudSynced) {
+		t.Fatalf("RunEpisodeQASuite() error = %v, want errEpisodeQACloudSynced", err)
+	}
+
+	var status string
+	if err := db.Get(&status, `SELECT qa_status FROM episodes WHERE id = 1`); err != nil {
+		t.Fatalf("query episode status: %v", err)
+	}
+	if status != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", status)
+	}
+}
+
+func TestRunEpisodeQASuiteRejectsEpisodeWithActiveCloudSync(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, cloud_synced, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', FALSE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, status)
+		VALUES (1, 'pending')
+	`); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	if _, err := handler.RunEpisodeQASuite(context.Background(), 1, qaRunModeManual); !errors.Is(err, errEpisodeQASyncActive) {
+		t.Fatalf("RunEpisodeQASuite() error = %v, want errEpisodeQASyncActive", err)
+	}
+
+	var status string
+	if err := db.Get(&status, `SELECT qa_status FROM episodes WHERE id = 1`); err != nil {
+		t.Fatalf("query episode status: %v", err)
+	}
+	if status != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", status)
+	}
+}
+
 func TestMarkEpisodeManualReviewFailedUpdatesStatusAndHistory(t *testing.T) {
 	db := setupEpisodeQACheckTestDB(t)
 	handler := &EpisodeQAHandler{db: db}
@@ -540,6 +814,74 @@ func TestMarkEpisodeManualReviewFailedUpdatesStatusAndHistory(t *testing.T) {
 	}
 	if check.Metadata == "" {
 		t.Fatalf("check_metadata is empty")
+	}
+}
+
+func TestMarkEpisodeManualReviewFailedRejectsCloudSyncedEpisode(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, cloud_synced, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', TRUE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	if _, err := handler.MarkEpisodeManualReviewFailed(context.Background(), 1, "bad data"); !errors.Is(err, errEpisodeQACloudSynced) {
+		t.Fatalf("MarkEpisodeManualReviewFailed() error = %v, want errEpisodeQACloudSynced", err)
+	}
+
+	var status string
+	if err := db.Get(&status, `SELECT qa_status FROM episodes WHERE id = 1`); err != nil {
+		t.Fatalf("query episode status: %v", err)
+	}
+	if status != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", status)
+	}
+	var checkCount int
+	if err := db.Get(&checkCount, `SELECT COUNT(*) FROM qa_checks WHERE episode_id = 1`); err != nil {
+		t.Fatalf("count qa checks: %v", err)
+	}
+	if checkCount != 0 {
+		t.Fatalf("qa check count = %d, want 0", checkCount)
+	}
+}
+
+func TestMarkEpisodeManualReviewFailedRejectsEpisodeWithActiveCloudSync(t *testing.T) {
+	db := setupEpisodeQACheckTestDB(t)
+	handler := &EpisodeQAHandler{db: db}
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, mcap_path, qa_status, cloud_synced, deleted_at)
+		VALUES (1, 'bucket/path.mcap', 'approved', FALSE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, status)
+		VALUES (1, 'in_progress')
+	`); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	if _, err := handler.MarkEpisodeManualReviewFailed(context.Background(), 1, "bad data"); !errors.Is(err, errEpisodeQASyncActive) {
+		t.Fatalf("MarkEpisodeManualReviewFailed() error = %v, want errEpisodeQASyncActive", err)
+	}
+
+	var status string
+	if err := db.Get(&status, `SELECT qa_status FROM episodes WHERE id = 1`); err != nil {
+		t.Fatalf("query episode status: %v", err)
+	}
+	if status != qaStatusApproved {
+		t.Fatalf("qa_status = %q, want approved", status)
+	}
+	var checkCount int
+	if err := db.Get(&checkCount, `SELECT COUNT(*) FROM qa_checks WHERE episode_id = 1`); err != nil {
+		t.Fatalf("count qa checks: %v", err)
+	}
+	if checkCount != 0 {
+		t.Fatalf("qa check count = %d, want 0", checkCount)
 	}
 }
 
@@ -611,13 +953,33 @@ func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 	_, err = db.Exec(`
 		CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY,
+			task_id INTEGER,
+			workstation_id INTEGER,
+			dc_plan_id INTEGER,
 			mcap_path TEXT,
 			sidecar_path TEXT,
 			qa_status TEXT,
+			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
 			qa_score REAL,
 			auto_approved BOOLEAN,
 			quality_flag TEXT,
 			metadata TEXT,
+			deleted_at TIMESTAMP NULL
+		);
+		CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY,
+			task_id TEXT,
+			workstation_id INTEGER,
+			deleted_at TIMESTAMP NULL
+		);
+		CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY,
+			robot_id INTEGER,
+			deleted_at TIMESTAMP NULL
+		);
+		CREATE TABLE robots (
+			id INTEGER PRIMARY KEY,
+			device_id TEXT,
 			deleted_at TIMESTAMP NULL
 		);
 		CREATE TABLE qa_checks (
@@ -629,6 +991,11 @@ func setupEpisodeQACheckTestDB(t *testing.T) *sqlx.DB {
 			details TEXT,
 			check_metadata TEXT,
 			checked_at TIMESTAMP
+		);
+		CREATE TABLE sync_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			episode_id INTEGER NOT NULL,
+			status TEXT NOT NULL
 		);
 	`)
 	if err != nil {

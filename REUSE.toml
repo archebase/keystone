@@ -127,29 +127,6 @@ precedence = "override"
 SPDX-FileCopyrightText = "NO-COPYRIGHT"
 SPDX-License-Identifier = "CC0-1.0"
 
-[[annotations]]
-path = ["Package.resolved", "sdk/swift/Package.resolved"]
-precedence = "override"
-SPDX-FileCopyrightText = "NO-COPYRIGHT"
-SPDX-License-Identifier = "CC0-1.0"
-
-# Swift protobuf output is generated from the canonical ArcheBase protocol.
-[[annotations]]
-path = "sdk/swift/Sources/DGWProto/Generated/**"
-precedence = "override"
-SPDX-FileCopyrightText = "2026 ArcheBase"
-SPDX-License-Identifier = "MulanPSL-2.0"
-
-# Xcode project metadata and asset catalogs cannot carry source comments reliably.
-[[annotations]]
-path = [
-  "sdk/swift/Examples/**/*.xcodeproj/**",
-  "sdk/swift/Examples/**/*.xcassets/**",
-]
-precedence = "override"
-SPDX-FileCopyrightText = "2026 ArcheBase"
-SPDX-License-Identifier = "MulanPSL-2.0"
-
 # Ignore build directories and generated files
 [[annotations]]
 path = "bin/**"

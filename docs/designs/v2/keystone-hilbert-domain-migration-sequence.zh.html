@@ -386,14 +386,14 @@ SPDX-License-Identifier: MulanPSL-2.0
   <main class="page">
     <header class="hero">
       <div class="hero-inner">
-        <span class="kicker">Keystone V2 / Hilbert Alignment / 2026-07-13</span>
+        <span class="kicker">Keystone / Hilbert Domain Alignment</span>
         <h1>领域模型<br>迁移顺序<br>实施计划</h1>
         <p class="lede">
           本计划以新环境为前提，不考虑历史数据、不保留旧 API、不做旧字段兼容。
-          当前实现已经完成 Workspace 投影、Hilbert 数采计划投影、Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除、PR-8A 旧生产元信息 Runtime 停用和 PR-8B 最终清理。
+          当前实现已经完成 Workspace、数采计划和运营资源投影，以及 Episode、上传和旧模型清理。PR-3 的 task 生成策略于 2026-07-21 修订：保留计划投影，移除同步后的批量预生成，改为准备时按需创建下一条 task。
         </p>
         <div class="signal">
-          <div class="signal-card"><b>已落地</b><span>PR-1 / PR-2 / PR-2.5 / PR-3 / PR-4 / PR-5 / PR-6 / PR-7 / PR-8A / PR-8B</span></div>
+          <div class="signal-card"><b>待改造</b><span>PR-3 按需 task 供应</span></div>
           <div class="signal-card"><b>主轴</b><span>dc_plan 是生产主对象</span></div>
           <div class="signal-card"><b>已验收</b><span>task、episode 和上传均锁定计划</span></div>
           <div class="signal-card"><b>清理结果</b><span>旧表、旧 API、旧 UI 和 Axon 兼容层已删除</span></div>
@@ -426,8 +426,8 @@ SPDX-License-Identifier: MulanPSL-2.0
           Keystone 只保存本地投影，并始终保留 <code>id=0</code> 的 default workspace。
           <code>dc_plan</code> 投影、只读查询和单 Workspace 手动同步也已落地。
           PR-2.5 已补齐 Workspace 运营资源投影，<code>dc_plan.operator</code> 和 <code>dc_plan.dc_device_id</code>
-          可解析到本地采集员和机器人。PR-3 已在计划同步后自动按 <code>target_count</code>
-          补齐本地 task，并覆盖多计划共享设备时的工位绑定冲突场景。
+          可解析到本地采集员和机器人。PR-3 当前代码会在计划同步后按 <code>target_count</code>
+          批量补齐本地 task；2026-07-21 已确认将其收缩为“计划保持本地投影、准备时按需创建下一条 task”。
           PR-5 已统一数据采集员、设备和工位的 Workspace 管理语义，并拒绝跨 Workspace 绑定。
           后续不要重复建设这些基础，现在应推进 Workspace Scoped Admin Shell，以及旧 runtime 停用。
         </div>
@@ -594,19 +594,16 @@ SPDX-License-Identifier: MulanPSL-2.0
                 <span class="badge hot">PR-3</span>
                 <span class="badge">替代 order/batch</span>
               </div>
-              <p>这是 PR-2.5 资源投影之后的主干工作。Keystone 已能缓存 Hilbert 数采计划，并已在同步计划后按计划目标数量自动补齐本地 <code>task</code>。<code>task</code> 是执行切片；PR-3 先用兼容 <code>order</code> / <code>batch</code> 壳稳住旧 runtime，但新语义事实来源必须是 <code>dc_plan_id</code>。</p>
+              <p>这是 PR-2.5 资源投影之后的主干工作。Keystone 缓存 Hilbert 数采计划，<code>task</code> 是一次具体执行切片。修订后的 PR-3 不再让计划同步批量制造执行实例，而是在配置或自动衔接下一条时按需创建 task；新语义事实来源始终是 <code>dc_plan_id</code>。</p>
               <ul>
-                <li><span class="badge">已完成</span> <code>POST /workspaces/:workspace_id/dc-plans/sync</code> 成功 upsert 本次计划后，自动逐计划补齐 task。</li>
-                <li><span class="badge">已完成</span> 按 <code>target_count</code> 补齐缺口；重复同步不超额，target 变大只新增，target 变小不删除旧 task。</li>
+                <li><span class="badge hot">待改造</span> 计划同步只更新本地 <code>dc_plan</code> 投影，不再创建 task。</li>
+                <li><span class="badge hot">待改造</span> 点击准备和完成录制后的自动衔接统一调用 <code>EnsureNextTask</code>，每个计划最多保留一条 pending。</li>
+                <li>进入数采任务页面和手动刷新计划时，通过 Keystone 拉取 Workspace 的完整 Hilbert 计划快照。</li>
+                <li>target 变大时后续继续按需供应；target 变小时达到新目标即停止，不修改 ready 及以后任务。</li>
                 <li>PR-3 不在拉取数采计划时创建设备、机器人或采集员；这些应来自 Workspace 级同步。</li>
-                <li><span class="badge">已完成</span> 按 <code>operator + dc_device_id</code> 查找 robot / collector；同一 robot 或 collector 已有 current binding 时，自动创建 plan-specific 非 current workstation，避免多计划共享设备时被当前绑定唯一性阻塞。</li>
-                <li><span class="badge">已完成</span> 每个计划创建 / 复用一个 compat order 和稳定 batch，<code>batch_id = dcplan_&lt;dc_plan_id&gt;</code>。</li>
-                <li><span class="badge">已完成</span> 按 <code>dc_factory_id</code> 创建 / 复用 plan compat factory，满足 task / order / batch / scene runtime 兼容。</li>
-                <li>PR-2.5 的 workspace compat factory 只用于 <code>robots.factory_id</code>；PR-3 自动创建工位和 task 使用 plan compat factory。</li>
-                <li><span class="badge">已完成</span> 按 <code>dc_type</code> 创建 compat SOP / scene / subscene；旧字段只作为 runtime 兼容层。</li>
+                <li>按 <code>operator + dc_device_id</code> 解析 robot、collector 和 workstation；缺资源时 next-task 请求返回业务错误。</li>
                 <li>task list/detail/config 增加 <code>dc_plan_id</code>、<code>workspace_id</code>、<code>dc_type</code> 等计划字段。</li>
-                <li><span class="badge">已完成</span> 单计划缺资源时 blocked，不拖垮整批计划同步；响应返回 per-plan generation summary。</li>
-                <li><span class="badge">已验收</span> 多个计划共享同一设备时，后续计划不再因为 current binding 唯一性出现 <code>binding_conflict</code>。</li>
+                <li>task 进入 ready 后冻结执行配置快照，后续计划同步只影响下一条任务。</li>
                 <li>实施细节见 <a href="./keystone-dc-plan-pr3-task-generation.zh.html">PR-3 Hilbert 数采计划驱动 Task 生成</a>。</li>
               </ul>
             </div>
@@ -819,7 +816,7 @@ SPDX-License-Identifier: MulanPSL-2.0
                 <code>tasks</code> / <code>episodes</code> 已预留 <code>dc_plan_id</code> 和 <code>local_dc_plan_id</code>；
                 Keystone 已提供 <code>GET /dc-plans</code>、<code>POST /workspaces/:workspace_id/dc-plans/sync</code>，
                 并通过 Hilbert <code>/v1/data-collection/dc-plan/query</code> 分页同步和事务化 upsert。
-                当前仍保留本地 order/batch 作为 runtime 兼容壳；PR-3 已把 task 生成切到计划驱动，后续继续切 episode 和上传路径。
+                PR-3 当前代码已让 task 关联计划，但批量生成策略将改为准备时按需创建。
               </td>
             </tr>
             <tr>
@@ -838,26 +835,24 @@ SPDX-License-Identifier: MulanPSL-2.0
                 <span class="badge">已完成</span>：
                 后端已实现 Workspace resource projection，见
                 <a href="./keystone-dc-plan-pr2-5-resource-projection.zh.html">PR-2.5 实施细节文档</a>；
-                <code>POST /workspaces/sync</code> 已返回 <code>resource_sync</code> summary。PR-3 已在数采计划同步入口接上 task 生成。
+                <code>POST /workspaces/sync</code> 已返回 <code>resource_sync</code> summary。PR-3 按需 task 供应依赖这些资源投影。
               </td>
             </tr>
             <tr>
               <td>PR-3</td>
               <td>计划驱动 Task 拆分</td>
               <td>
-                同步 Hilbert 数采计划后自动补齐本地 <code>tasks</code>；
-                task 持有 <code>dc_plan_id</code>、执行配置快照和本地执行状态；
-                创建 / 复用兼容 <code>order</code>、稳定 <code>batch</code>、工位、factory 和旧 SOP/scene/subscene stub。
+                计划同步只更新本地 <code>dc_plan</code> 投影；进入数采页面或手动刷新时获取完整 Workspace 快照；
+                点击准备或完成录制后按需创建下一条 task；task 持有 <code>dc_plan_id</code>、执行配置快照和本地执行状态。
               </td>
               <td>
-                不上传 raw data；不删除 order/batch schema；不改变 Axon 录制回调协议；
-                不在拉计划时创建设备、机器人或采集员主数据；不迁移已存在 task。
+                不上传 raw data；不改变 Axon 录制回调协议；不在拉计划时创建设备、机器人或采集员主数据；
+                不修改 ready / in_progress / uploading / completed task。
               </td>
               <td>
-                <span class="badge">已完成并验收</span>：
-                Keystone 已在数采计划同步后按 <code>target_count</code> 自动补齐 task，
-                并覆盖多计划共享同一设备的生成场景。
-                具体实现规则见
+                <span class="badge hot">方案已修订，待实现</span>：
+                当前代码仍在同步后批量补齐 task；目标方案改为每计划最多一条 pending，并在准备时按需供应。
+                具体规则见
                 <a href="./keystone-dc-plan-pr3-task-generation.zh.html">PR-3 实施细节文档</a>。
               </td>
             </tr>
@@ -957,7 +952,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           </tbody>
         </table>
         <div class="callout">
-          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-3 计划驱动 task 拆分、PR-4 Episode 按计划上传、PR-5 Workspace 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除、PR-8A Runtime 停用和 PR-8B 最终清理均已完成。
+          结合当前代码，PR-1A / PR-1B / PR-1C、PR-2 后端基础、PR-2.5 Workspace 资源投影、PR-4 Episode 按计划上传、PR-5 Workspace 运营实体归属清理、PR-6 Workspace Scoped Admin Shell、PR-7 Order / Batch 主路径删除、PR-8A Runtime 停用和 PR-8B 最终清理均已完成；PR-3 的关联计划能力已存在，但按需 task 供应仍待实现。
           order/batch 及旧生产元信息已退出 runtime；Hilbert 数采计划是生产主对象，
           Keystone task 是计划拆分后的本地执行切片。
         </div>
@@ -982,7 +977,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           PR-1C 也已接入 Synapse 只读 Workspace 状态页和手动同步入口，但仍不引入全局 selector 或当前 workspace。
           PR-2 已接入 Hilbert dc_plan 查询、Keystone <code>dc_plan</code> 投影表、只读列表和单 Workspace 手动同步；
           PR-2.5 已在 Workspace 同步中固定投影采集员、数采设备、设备类型和 workspace compat factory；
-          PR-3 已把 task 生成改为计划驱动；PR-4 已让 episode 在创建时复制计划字段，并让上传链路以计划投影和 Workspace 归属作为业务元信息入口；
+          PR-3 已让 task 关联计划，下一步把同步时批量生成改成准备时按需供应；PR-4 已让 episode 在创建时复制计划字段，并让上传链路以计划投影和 Workspace 归属作为业务元信息入口；
           PR-5 已统一数据采集员、设备和工位的 Workspace 归属接口、筛选和页面，并补齐跨 Workspace 绑定约束；
           PR-6 至 PR-8B 已完成 scoped admin、Order / Batch 主路径删除、旧生产元信息 runtime 停用和最终物理清理。
         </div>
@@ -1022,8 +1017,8 @@ SPDX-License-Identifier: MulanPSL-2.0
             </tr>
             <tr>
               <td>PR-3</td>
-              <td>计划驱动 task 拆分：同步 Hilbert 数采计划后自动补齐 Keystone 本地执行 task。</td>
-              <td><span class="badge">已完成并验收</span></td>
+              <td>计划驱动 task 拆分：保留本地计划投影，在准备执行时按需创建或复用下一条 task。</td>
+              <td><span class="badge hot">修订方案待实现</span></td>
             </tr>
             <tr>
               <td>PR-4</td>
@@ -1122,10 +1117,10 @@ SPDX-License-Identifier: MulanPSL-2.0
           <li>PR-2.5：Workspace sync 固定同步资源，不加开关；Workspace upsert 成功后，逐 Hilbert Workspace 独立事务同步采集员、数采设备、设备类型和 workspace compat factory。</li>
           <li>PR-2.5：Workspace 资源同步后，<code>dc_plan.operator</code> 能匹配 <code>data_collectors.operator_id</code>，<code>dc_plan.dc_device_id</code> 能匹配 <code>robots.device_id</code>。</li>
           <li>PR-2.5：Hilbert workspace 的 <code>admins + members</code> 都可以成为数采员投影，不再加 <code>enabled + external_user + data_supplier</code> 过滤；新建资源默认 active；Hilbert 消失资源不自动软删；冲突资源跳过并进入 response summary。</li>
-          <li>PR-3：同步计划后自动补齐 task；同一 Hilbert 数采计划重复同步或重复触发时不会生成超额 task。</li>
-          <li>PR-3：robot / collector 主数据缺失时不自动创建，单计划 blocked；工位缺失但资源有效且 workspace 一致时可自动创建。</li>
-          <li>PR-3：同一设备被多个计划复用时，后续计划创建 plan-specific 非 current workstation，不应因为 current binding 唯一性产生 <code>binding_conflict</code>。</li>
-          <li>PR-3：自动创建工位和 task 使用 <code>dc_plan.dc_factory_id</code> 对应的 plan compat factory，不使用 PR-2.5 的 workspace compat factory。</li>
+          <li>PR-3：计划同步不创建 task；<code>EnsureNextTask</code> 在准备时创建或复用唯一 pending task。</li>
+          <li>PR-3：target 增减只影响后续供应；ready 及以后 task 保持执行快照不可变。</li>
+          <li>PR-3：robot / collector 主数据缺失时不自动创建，next-task 请求返回明确业务错误；资源有效时解析或创建对应工位。</li>
+          <li>PR-3：并发点击准备和自动准备时锁定 plan，不产生第二条 pending。</li>
           <li>PR-3：Axon 取配置、任务开始/完成回调仍能基于 Keystone task 正常工作，并在 config 中追加计划字段。</li>
           <li>PR-4：episode 创建路径必须从 task 复制 <code>dc_plan_id</code> 与 <code>local_dc_plan_id</code>，不能只依赖 schema 预留，也不能留到上传时再从 task 推导。</li>
           <li>PR-4：上传通过 <code>episodes.dc_plan_id</code> 找到非删除 Hilbert 投影，由 <code>dc_plan.workspace_id</code> 派生 Workspace，并把两个 ID 同时写入 <code>raw_tags</code> 与 <code>client_hints</code>。</li>
@@ -1163,8 +1158,8 @@ SPDX-License-Identifier: MulanPSL-2.0
       </div>
       <div class="content">
         <ul>
-          <li>Hilbert 数采计划除现有单 Workspace 手动同步外，是否还需要启动同步、主动轮询、webhook，或三者并存。</li>
-          <li>计划撤销或关闭后，未执行 task 是否取消，已完成 episode 是否仍允许上传。</li>
+          <li>现有 5 分钟计划周期同步是否长期保留，还是在数采页面刷新稳定后降级为纯兜底。</li>
+          <li>Hilbert failed task 是否计入 target_count；当前目标设计默认不计入并允许补采。</li>
           <li><code>episode</code> 与 Hilbert <code>raw_data</code> / <code>dataset</code> 的同步边界。</li>
           <li>default workspace 数据如何显式补绑到 Hilbert workspace，以及需要记录哪些审计字段。</li>
           <li>Hilbert 不再返回某个 workspace 时，是否新增 <code>access_status</code> 和历史数据可见策略。</li>
@@ -1172,7 +1167,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         </ul>
         <div class="callout">
           这些问题不是不重要，而是不应该挡住数采计划成为生产主对象。
-          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影，PR-3 已完成计划驱动 task 拆分，PR-4 已完成 episode 和上传计划化，PR-5 已完成 Workspace 运营实体管理与归属清理，PR-6 已完成 Workspace Scoped Admin Shell，PR-7 已完成 Order / Batch 主路径删除，PR-8A 已完成旧生产元信息 Runtime 停用，PR-8B 已完成旧表、旧 API、旧 UI 与 Axon 兼容层清理。
+          PR-2 已建立计划投影和字段基础，PR-2.5 已补齐 Workspace 资源投影；PR-3 的批量 task 生成已确认改为准备时按需供应，尚待代码落地。PR-4 至 PR-8B 的计划化上传、Workspace 管理和旧模型清理保持既有结论。
         </div>
       </div>
     </section>
