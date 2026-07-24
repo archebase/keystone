@@ -1,0 +1,28 @@
+{{/* SPDX-FileCopyrightText: 2026 ArcheBase */}}
+{{/* SPDX-License-Identifier: MulanPSL-2.0 */}}
+
+Keystone stack {{ .Release.Name }} has been rendered in namespace {{ .Release.Namespace }}.
+
+Components:
+  Keystone: {{ include "keystone-stack.componentName" (list . "keystone") }}
+  Synapse:  {{ include "keystone-stack.componentName" (list . "synapse") }}
+  MySQL:    {{ include "keystone-stack.componentName" (list . "mysql") }}
+
+{{- if .Values.ingress.enabled }}
+Synapse and the Keystone API: {{ include "keystone-stack.callbackPublicBaseURL" . }}
+{{- if and .Values.ingress.grpc.enabled (eq .Values.storage.type "tos") }}
+DGW gRPC endpoint: {{ include "keystone-stack.host" . }}:{{ .Values.keystone.service.ports.dgwGrpc }}
+{{- end }}
+{{- else }}
+Ingress is disabled. For a local check:
+  kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "keystone-stack.componentName" (list . "synapse") }} 8080:{{ .Values.synapse.service.port }}
+
+Synapse calls /api/v1 on the same browser origin. Enable ingress or provide an
+equivalent reverse proxy that routes /api to the Keystone Service.
+{{- end }}
+
+Admin password:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "keystone-stack.credentialsSecretName" . }} -o jsonpath='{.data.admin-password}' | base64 -d; echo
+
+MySQL data uses a release-specific PVC and is retained by Kubernetes after
+helm uninstall. Delete that PVC explicitly only when its data is no longer needed.

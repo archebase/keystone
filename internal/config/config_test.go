@@ -300,6 +300,24 @@ func TestLoadStorageConfigDoesNotFallbackToUploadSTSRoleForTOSQA(t *testing.T) {
 	}
 }
 
+func TestLoadStorageConfigAllowsTOSWithoutStaticCredentials(t *testing.T) {
+	t.Setenv("KEYSTONE_DGW_COMPAT_ENABLED", "true")
+	t.Setenv("KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
+	t.Setenv("KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
+	t.Setenv("KEYSTONE_DGW_TOS_REGION", "cn-beijing")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "trn:iam::123:role/qa-read")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "")
+	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "")
+
+	cfg := loadStorageConfig()
+	if cfg.Type != "tos" {
+		t.Fatalf("Type = %q, want tos", cfg.Type)
+	}
+	if cfg.AccessKey != "" || cfg.SecretKey != "" {
+		t.Fatalf("TOS static credentials = %q/%q, want empty for default SDK credential chain", cfg.AccessKey, cfg.SecretKey)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -362,6 +380,26 @@ func TestConfigValidate(t *testing.T) {
 					AccessKey: "",
 					SecretKey: "",
 				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "TOS storage allows default credential chain",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing"},
+				Auth:     AuthConfig{JWTSecret: "secret"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "TOS storage rejects partial static credentials",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing", AccessKey: "ak"},
+				Auth:     AuthConfig{JWTSecret: "secret"},
 			},
 			wantErr: true,
 		},

@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+FROM --platform=linux/amd64 archebase-cr-cn-beijing.cr.volces.com/upstream/golang:1.25-bookworm AS builder
+
+ARG BUILD_TIME=unknown
+ARG GOPROXY=https://goproxy.cn,direct
+ARG VERSION=dev
+
+ENV CGO_ENABLED=0 \
+    GO111MODULE=on \
+    GOPROXY=${GOPROXY}
+
+WORKDIR /build
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+RUN go install github.com/swaggo/swag/cmd/swag@v1.16.6
+
+COPY . .
+
+RUN swag init --parseDependency --parseInternal \
+        -g cmd/keystone-edge/main.go \
+        -o docs && \
+    GOOS=linux GOARCH=amd64 go build \
+        -trimpath \
+        -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
+        -o /out/keystone-edge \
+        ./cmd/keystone-edge
+
+FROM --platform=linux/amd64 archebase-cr-cn-beijing.cr.volces.com/upstream/alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -g 1000 keystone && \
+    adduser -D -u 1000 -G keystone -h /app keystone
+
+ENV TZ=Asia/Shanghai
+
+WORKDIR /app
+
+COPY --from=builder --chown=keystone:keystone /out/keystone-edge /app/keystone-edge
+
+USER keystone
+
+EXPOSE 8080 8090 8091 50053
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/v1/health || exit 1
+
+ENTRYPOINT ["/app/keystone-edge"]

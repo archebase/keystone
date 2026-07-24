@@ -56,6 +56,14 @@ docker-compose -f docker/docker-compose.yml logs -f
 docker-compose -f docker/docker-compose.yml down
 ```
 
+### Kubernetes / Helm
+
+[`deploy/helm/keystone-stack`](deploy/helm/keystone-stack) installs one isolated
+Keystone, Synapse, and MySQL stack per Helm release. Use different release names
+to deploy multiple stacks in the same namespace. The chart README documents the
+required application images, credentials, external object storage, and Ingress
+routing contract.
+
 ## Available Endpoints
 
 | Endpoint | Description |

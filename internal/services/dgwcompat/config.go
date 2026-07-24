@@ -99,8 +99,8 @@ func (c Config) Validate() error {
 	if c.STSSessionTTL <= 0 {
 		return fmt.Errorf("KEYSTONE_DGW_STS_SESSION_TTL_SECONDS must be greater than 0")
 	}
-	if c.AccessKeyID == "" || c.AccessKeySecret == "" {
-		return fmt.Errorf("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID and KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET are required")
+	if (c.AccessKeyID == "") != (c.AccessKeySecret == "") {
+		return fmt.Errorf("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID and KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET must both be set or both be empty")
 	}
 	return nil
 }
