@@ -282,6 +282,53 @@ func TestStationHandlerUpdateUsesCurrentWorkspaceFields(t *testing.T) {
 	}
 }
 
+func TestStationHandlerUpdateRejectsRebindingWithPendingTasks(t *testing.T) {
+	db := newTestStationHandlerDB(t)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{sql: `INSERT INTO workspaces (id, name, members, deleted_at) VALUES (60, 'Workspace A', '["C001"]', NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, status, deleted_at) VALUES
+			(1, 'device-a', 60, 'active', NULL),
+			(2, 'device-b', 60, 'active', NULL)`},
+		{sql: `INSERT INTO data_collectors (id, name, operator_id, status, deleted_at) VALUES (100, 'Alice', 'C001', 'active', NULL)`},
+		{
+			sql: `INSERT INTO workstations (
+				id, robot_id, robot_name, robot_serial, data_collector_id,
+				collector_name, collector_operator_id, workspace_id,
+				name, status, is_current, metadata, created_at, updated_at, deleted_at
+			) VALUES (1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-a', 'active', TRUE, '{}', ?, ?, NULL)`,
+			args: []any{now, now},
+		},
+		{sql: `INSERT INTO tasks (id, workstation_id, status, deleted_at) VALUES (1, 1, 'pending', NULL)`},
+	} {
+		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed rebinding fixture: %v", err)
+		}
+	}
+
+	router := newTestStationRouter(t, db)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/stations/1", strings.NewReader(`{"robot_id":"2"}`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status=%d want=%d body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	var robotID int64
+	if err := db.Get(&robotID, `SELECT robot_id FROM workstations WHERE id = 1`); err != nil {
+		t.Fatalf("query station robot: %v", err)
+	}
+	if robotID != 1 {
+		t.Fatalf("robot_id=%d want original robot 1", robotID)
+	}
+}
+
 func TestStationHandlerDeleteUnbindsAndCreateReusesHistoricalBinding(t *testing.T) {
 	db := newTestStationHandlerDB(t)
 	defer db.Close()

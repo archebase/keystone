@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
@@ -902,6 +903,18 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
 		return
 	}
+	ctx := c.Request.Context()
+	tx, err := h.db.BeginTxx(ctx, nil)
+	if err != nil {
+		logger.Printf("[STATION] Failed to begin update transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+	lockClause := " FOR UPDATE"
+	if tx.DriverName() == "sqlite" {
+		lockClause = ""
+	}
 
 	var current struct {
 		RobotID         int64  `db:"robot_id"`
@@ -909,11 +922,11 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		WorkspaceID     int64  `db:"workspace_id"`
 		Status          string `db:"status"`
 	}
-	if err := h.db.Get(&current, `
+	if err := tx.GetContext(ctx, &current, `
 		SELECT robot_id, data_collector_id, workspace_id, status
 		FROM workstations
 		WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL
-	`, stationID); err != nil {
+	`+lockClause, stationID); err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "station not found"})
 			return
@@ -941,7 +954,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	}
 
 	var robot robotInfoRow
-	if err := h.db.Get(&robot, `
+	if err := tx.GetContext(ctx, &robot, `
 		SELECT id, device_id, workspace_id, status
 		FROM robots WHERE id = ? AND deleted_at IS NULL
 	`, robotID); err != nil {
@@ -959,7 +972,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	}
 
 	var collector dataCollectorInfoRow
-	if err := h.db.Get(&collector, `
+	if err := tx.GetContext(ctx, &collector, `
 		SELECT id, name, operator_id, status
 		FROM data_collectors WHERE id = ? AND deleted_at IS NULL
 	`, collectorID); err != nil {
@@ -975,7 +988,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "data_collector status must be active to be paired"})
 		return
 	}
-	allowed, err := services.OperatorHasWorkspaceAccess(c.Request.Context(), h.db, collector.OperatorID, robot.WorkspaceID)
+	allowed, err := services.OperatorHasWorkspaceAccess(ctx, tx, collector.OperatorID, robot.WorkspaceID)
 	if err != nil {
 		logger.Printf("[STATION] Failed to check update collector Workspace access: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
@@ -987,8 +1000,21 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 	}
 
 	if robotID != current.RobotID || collectorID != current.DataCollectorID {
+		hasBlockingTask, taskErr := stationHasBlockingTasks(ctx, tx, stationID)
+		if taskErr != nil {
+			logger.Printf("[STATION] Failed to check tasks before rebinding station %d: %v", stationID, taskErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+			return
+		}
+		if hasBlockingTask {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "cannot change station binding while tasks are pending or active",
+			})
+			return
+		}
+
 		var conflict bool
-		if err := h.db.Get(&conflict, `
+		if err := tx.GetContext(ctx, &conflict, `
 			SELECT EXISTS(
 				SELECT 1 FROM workstations
 				WHERE id != ? AND is_current = TRUE AND deleted_at IS NULL
@@ -1038,9 +1064,14 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		}
 	}
 	args = append(args, stationID)
-	if _, err := h.db.Exec(`UPDATE workstations SET `+strings.Join(setClauses, ", ")+`
+	if _, err := tx.ExecContext(ctx, `UPDATE workstations SET `+strings.Join(setClauses, ", ")+`
 		WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL`, args...); err != nil {
 		logger.Printf("[STATION] Failed to update station: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[STATION] Failed to commit station update: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
 	}
@@ -1061,6 +1092,21 @@ func parseStationBindingID(raw string, prefix string) (int64, error) {
 		return 0, fmt.Errorf("invalid binding id")
 	}
 	return id, nil
+}
+
+func stationHasBlockingTasks(ctx context.Context, q sqlx.QueryerContext, stationID int64) (bool, error) {
+	var hasBlockingTask bool
+	err := sqlx.GetContext(ctx, q, &hasBlockingTask, `
+		SELECT EXISTS(
+			SELECT 1 FROM tasks
+			WHERE workstation_id = ? AND deleted_at IS NULL
+			  AND status IN ('pending', 'ready', 'in_progress', 'uploading')
+		)
+	`, stationID)
+	if err != nil {
+		return false, fmt.Errorf("query blocking station tasks: %w", err)
+	}
+	return hasBlockingTask, nil
 }
 
 // DeleteStation handles station deletion requests by unbinding the current station.
@@ -1100,14 +1146,7 @@ func (h *StationHandler) DeleteStation(c *gin.Context) {
 		return
 	}
 
-	var hasBlockingTask bool
-	err = h.db.Get(&hasBlockingTask, `
-		SELECT EXISTS(
-			SELECT 1 FROM tasks
-			WHERE workstation_id = ? AND deleted_at IS NULL
-			  AND status IN ('pending', 'ready', 'in_progress', 'uploading')
-		)
-	`, stationID)
+	hasBlockingTask, err := stationHasBlockingTasks(c.Request.Context(), h.db, stationID)
 	if err != nil {
 		logger.Printf("[STATION] Failed to check tasks for station %d: %v", stationID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete station"})
