@@ -32,8 +32,13 @@ else
 fi
 
 export PATH="${go_bin_dir}:${PATH}"
+go_path="$(go env GOPATH)"
+go_path_bin="${go_path}/bin"
+mkdir -p "${go_path_bin}"
+export PATH="${go_path_bin}:${PATH}"
 if [ -n "${GITHUB_PATH:-}" ]; then
   echo "${go_bin_dir}" >> "${GITHUB_PATH}"
+  echo "${go_path_bin}" >> "${GITHUB_PATH}"
 fi
 
 go version
