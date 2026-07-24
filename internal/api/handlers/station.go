@@ -1053,6 +1053,7 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 			metadata = metadataJSON
 		}
 	}
+	//nolint:gosec // G701 false positive: the SQL is static and all request values use placeholders.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workstations
 		SET robot_id = ?, robot_name = ?, robot_serial = ?,
