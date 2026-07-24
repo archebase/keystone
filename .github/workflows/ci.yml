@@ -4,9 +4,6 @@
 
 name: CI
 
-env:
-  VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
-
 on:
   push:
     branches: [ main, main-v2 ]
@@ -146,6 +143,7 @@ jobs:
 
       - name: Login to Volcengine CR
         env:
+          VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
           VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
           VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
         run: |
