@@ -19,7 +19,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 |------|---------|
 | `docker-compose.yml` | Infrastructure only (MySQL, MinIO, Redis, Adminer) |
 | `docker-compose.dev.yml` | Development mode with volume mounts |
-| `docker-compose.test.yml` | CI/CD testing with automated tests |
+| `docker-compose.test.yml` | Local smoke-test environment |
 
 ## Development Mode
 
@@ -162,25 +162,17 @@ docker compose -f docker/docker-compose.dev.yml logs -f keystone-edge-dev
 docker exec -it keystone-edge-dev sh
 ```
 
-## Testing
+## Local Smoke Testing
 
-Run the complete test suite:
+The `docker-compose.test.yml` file can be used manually on a machine with a
+Docker daemon:
 
 ```bash
-# Automated testing with build + test
-./scripts/test.sh
+docker compose -f docker/docker-compose.test.yml up -d --build
+curl -f http://localhost:8080/api/v1/health
+curl -f http://localhost:8080/swagger/doc.json
+docker compose -f docker/docker-compose.test.yml down -v
 ```
 
-The test script will:
-1. Build the Docker image
-2. Start all services (MySQL, MinIO, Keystone)
-3. Wait for services to be healthy
-4. Run automated tests against the API
-5. Collect logs
-6. Clean up
-
-Tests include:
-- Health check endpoint (`/api/v1/health`)
-- Swagger documentation (`/swagger/doc.json`)
-- Swagger UI (`/swagger/index.html`)
-- Response JSON validation
+GitHub Actions runs in an ARC/Kubernetes job container and does not run
+docker-compose based integration tests.

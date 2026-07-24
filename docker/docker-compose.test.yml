@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 
-# Docker Compose for CI/CD testing
-# Builds and tests the application in isolated environment
+# Docker Compose for local smoke testing
+# Builds and tests the application in an isolated local environment
 services:
   keystone-edge-test:
     build:
