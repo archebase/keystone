@@ -852,9 +852,7 @@ func TestRecorderWebSocketWithoutAuthResolvesDeviceNameToDeviceID(t *testing.T) 
 		}
 	}()
 
-	if hub.Get("456") == nil {
-		t.Fatalf("recorder was not registered under canonical device_id")
-	}
+	waitForRecorderHubConnected(t, hub, "456")
 	if hub.Get("robot_dc87") != nil {
 		t.Fatalf("recorder was registered under device_name instead of canonical device_id")
 	}
@@ -913,9 +911,7 @@ func TestRecorderWebSocketWithAuthResolvesDeviceNameBeforeTokenValidation(t *tes
 		}
 	}()
 
-	if hub.Get("456") == nil {
-		t.Fatalf("authenticated recorder was not registered under canonical device_id")
-	}
+	waitForRecorderHubConnected(t, hub, "456")
 }
 
 func TestRecorderWebSocketAuthRejectsTokenForDifferentDevice(t *testing.T) {
@@ -2075,6 +2071,18 @@ func waitForRecorderHubDisconnected(t *testing.T, hub *services.RecorderHub, dev
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("recorder %s remained connected", deviceID)
+}
+
+func waitForRecorderHubConnected(t *testing.T, hub *services.RecorderHub, deviceID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hub.Get(deviceID) != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("recorder %s was not registered", deviceID)
 }
 
 func waitForRecorderInteractionTaskStatus(t *testing.T, db *sqlx.DB, taskID string, want string) {
