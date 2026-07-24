@@ -74,14 +74,29 @@ The resulting image is
 `${CR_REGISTRY}/${CR_NAMESPACE}/keystone-edge:${IMAGE_TAG}`. Set
 `CR_REPOSITORY` or `IMAGE_TAG` when the CR repository name or tag differs.
 
-The production Dockerfile pulls both base images directly from the shared
-Volcengine CR `upstream` namespace:
+The production and development Dockerfiles pull base images directly from the
+shared Volcengine CR `upstream` namespace:
 
 - `archebase-cr-cn-beijing.cr.volces.com/upstream/golang:1.25-bookworm`
 - `archebase-cr-cn-beijing.cr.volces.com/upstream/alpine:3.20`
 
 Both mirrored images currently publish a `linux/amd64` manifest, so the
-production Dockerfile explicitly targets that platform.
+Dockerfiles explicitly target that platform.
+
+Compose files also prefer Volcengine CR for mirrored upstream images:
+
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/mysql:8.4.10`
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/alpine:3.20`
+
+MinIO uses the upstream Quay registry until `minio` and `mc` are mirrored into
+Volcengine CR. Optional Redis/Adminer services are behind the `optional` compose
+profile and point at the expected Volcengine CR mirror names; mirror these images
+before enabling that profile:
+
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/minio:latest`
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/mc:latest`
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/redis:7-alpine`
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/adminer:latest`
 
 Run `docker login "${CR_REGISTRY}"` before building when the local Docker
 credential store does not already contain the CR robot credentials.
