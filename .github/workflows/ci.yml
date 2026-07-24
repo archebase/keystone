@@ -4,6 +4,9 @@
 
 name: CI
 
+env:
+  VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
+
 on:
   push:
     branches: [ main, main-v2 ]
@@ -143,11 +146,9 @@ jobs:
 
       - name: Login to Volcengine CR
         env:
-          VOLCENGINE_CR_ENDPOINT: ${{ secrets.VOLCENGINE_CR_ENDPOINT }}
           VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
           VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
         run: |
-          test -n "$VOLCENGINE_CR_ENDPOINT" || (echo "VOLCENGINE_CR_ENDPOINT secret is required"; exit 1)
           test -n "$VOLCENGINE_CR_USERNAME" || (echo "VOLCENGINE_CR_USERNAME secret is required"; exit 1)
           test -n "$VOLCENGINE_CR_PASSWORD" || (echo "VOLCENGINE_CR_PASSWORD secret is required"; exit 1)
           echo "$VOLCENGINE_CR_PASSWORD" | docker login "$VOLCENGINE_CR_ENDPOINT" --username "$VOLCENGINE_CR_USERNAME" --password-stdin
