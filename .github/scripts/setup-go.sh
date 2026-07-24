@@ -41,19 +41,4 @@ if [ -n "${GITHUB_PATH:-}" ]; then
   echo "${go_path_bin}" >> "${GITHUB_PATH}"
 fi
 
-if [ "${GO_INSTALL_RACE_DEPS:-0}" = "1" ] && ! command -v gcc > /dev/null 2>&1; then
-  if [ "$(id -u)" != "0" ]; then
-    echo "GO_INSTALL_RACE_DEPS=1 requires root when gcc is missing" >&2
-    exit 1
-  fi
-  if ! command -v apt-get > /dev/null 2>&1; then
-    echo "apt-get is required to install Go race detector dependencies" >&2
-    exit 1
-  fi
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc libc6-dev
-  apt-get clean
-  rm -rf /var/lib/apt/lists/*
-fi
-
 go version

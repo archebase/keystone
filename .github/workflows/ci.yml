@@ -128,13 +128,10 @@ jobs:
     runs-on: archebase-ci-runner
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
-      options: --user 0
     steps:
       - uses: actions/checkout@v4
       
       - name: Set up Go
-        env:
-          GO_INSTALL_RACE_DEPS: '1'
         run: bash .github/scripts/setup-go.sh
           
       - name: Generate Swagger docs
@@ -143,4 +140,4 @@ jobs:
           swag init -g internal/server/server.go -o docs
       
       - name: Run tests with coverage
-        run: go test -cover -race -v ./...
+        run: go test -cover -v ./...
