@@ -111,6 +111,36 @@ keystone-factory-a.archebase.cn -> alb-1pfcqpoqechs0845wfb1q8bq4.cn-beijing.volc
 To deploy multiple independent stacks, run the same command with different Helm
 release names. MySQL PVCs remain release-specific.
 
+## GitHub Actions Deployment
+
+The `Deploy Keystone Stack` workflow provides the production manual deployment
+entry point. Run it from `main-v2` once the matching Keystone image workflow has
+successfully pushed the selected Keystone commit SHA.
+
+Required repository or `production` environment secrets:
+
+- `PROD_KUBECONFIG`: production kubeconfig content from the `cloud-infra`
+  `ci_kubeconfig` output. It must contain the `volcano-prod-ci` context.
+- `HILBERT_ACCESS_KEY`
+- `HILBERT_SECRET_KEY`
+- `VOLCENGINE_CR_USERNAME`
+- `VOLCENGINE_CR_PASSWORD`
+
+Workflow inputs:
+
+- `releaseName`: the Helm release name and Keystone instance identifier.
+- `keystoneImageTag`: optional full Keystone commit SHA. Empty uses the selected
+  `main-v2` workflow ref SHA.
+- `synapseImageTag`: full Synapse commit SHA.
+- `dnsCnameReady`: must be `true` after
+  `keystone-<releaseName>.archebase.cn` points to the production Keystone ALB.
+- `confirmProduction`: must be exactly `deploy-production`.
+
+The workflow deploys into `archebase-system` with Kubernetes context
+`volcano-prod-ci`. It does not create DNS records or manage cloud-infra
+resources. Keep the GitHub `production` environment protected so production
+deployments require the intended reviewer approval.
+
 ## Routing
 
 Synapse uses the same-origin `/api/v1` path. The chart's HTTP Ingress sends
