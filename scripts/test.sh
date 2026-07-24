@@ -23,6 +23,17 @@ TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
 
+resolve_compose_cmd() {
+    if command -v docker-compose > /dev/null 2>&1; then
+        COMPOSE_CMD=(docker-compose)
+    elif docker compose version > /dev/null 2>&1; then
+        COMPOSE_CMD=(docker compose)
+    else
+        echo "docker compose or docker-compose is required" >&2
+        exit 1
+    fi
+}
+
 # Run test function
 run_test() {
     local name="$1"
@@ -43,7 +54,8 @@ run_test() {
 }
 
 echo "Starting services..."
-docker compose -f docker/docker-compose.test.yml up -d --build
+resolve_compose_cmd
+"${COMPOSE_CMD[@]}" -f docker/docker-compose.test.yml up -d --build
 
 echo "Waiting for services to be ready..."
 sleep 15
@@ -85,10 +97,10 @@ echo "========================================="
 
 echo ""
 echo "Collecting logs..."
-docker compose -f docker/docker-compose.test.yml logs > test-results.log 2>&1
+"${COMPOSE_CMD[@]}" -f docker/docker-compose.test.yml logs > test-results.log 2>&1
 
 echo "Stopping services..."
-docker compose -f docker/docker-compose.test.yml down -v
+"${COMPOSE_CMD[@]}" -f docker/docker-compose.test.yml down -v
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then

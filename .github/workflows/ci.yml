@@ -110,7 +110,7 @@ jobs:
       
       - name: Set up Go
         run: bash .github/scripts/setup-go.sh
-          
+
       - name: Generate Swagger docs
         run: |
           go install github.com/swaggo/swag/cmd/swag@latest
@@ -128,10 +128,13 @@ jobs:
     runs-on: archebase-ci-runner
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      options: --user 0
     steps:
       - uses: actions/checkout@v4
       
       - name: Set up Go
+        env:
+          GO_INSTALL_RACE_DEPS: '1'
         run: bash .github/scripts/setup-go.sh
           
       - name: Generate Swagger docs
@@ -158,6 +161,9 @@ jobs:
         run: |
           go install github.com/swaggo/swag/cmd/swag@latest
           swag init -g internal/server/server.go -o docs
+
+      - name: Set up Docker Compose
+        run: bash .github/scripts/setup-docker-compose.sh
 
       - name: Login to Volcengine CR
         env:
