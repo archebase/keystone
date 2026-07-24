@@ -10,11 +10,17 @@ on:
   pull_request:
     branches: [ main, main-v2 ]
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # 1. gofmt check
   fmt:
     name: Format Check
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
@@ -34,13 +40,42 @@ jobs:
   # 2. REUSE license check
   license:
     name: License Compliance
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      options: --user 0
     steps:
       - uses: actions/checkout@v4
 
       - name: Install fsfe-reuse
+        env:
+          PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
         run: |
-          pip install reuse
+          set -euo pipefail
+
+          reuse_package="reuse[charset-normalizer]"
+          export PATH="${HOME}/.local/bin:${PATH}"
+          if ! command -v reuse > /dev/null 2>&1; then
+            if python3 -m pip --version > /dev/null 2>&1; then
+              python3 -m pip install --user "$reuse_package" || python3 -m pip install --user --break-system-packages "$reuse_package"
+            elif python3 -m ensurepip --user > /dev/null 2>&1; then
+              python3 -m pip install --user "$reuse_package" || python3 -m pip install --user --break-system-packages "$reuse_package"
+            elif [ "$(id -u)" = "0" ] && command -v apt-get > /dev/null 2>&1; then
+              apt-get update
+              apt-get install -y --no-install-recommends file python3-pip
+              python3 -m pip install --user "$reuse_package" || python3 -m pip install --user --break-system-packages "$reuse_package"
+            elif command -v sudo > /dev/null 2>&1 && sudo -n true && command -v apt-get > /dev/null 2>&1; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends file python3-pip
+              python3 -m pip install --user "$reuse_package" || python3 -m pip install --user --break-system-packages "$reuse_package"
+            elif command -v pip > /dev/null 2>&1; then
+              pip install --user "$reuse_package"
+            else
+              echo "python3 pip is required to install reuse" >&2
+              exit 1
+            fi
+          fi
+
           reuse --version
 
       - name: Check REUSE license compliance
@@ -63,7 +98,9 @@ jobs:
   # 3. golangci-lint check
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
@@ -86,7 +123,9 @@ jobs:
   # 4. unit tests + coverage
   test:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
@@ -106,7 +145,9 @@ jobs:
   # 5. integration-test (scripts/test.sh)
   integration-test:
     name: Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       

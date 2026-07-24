@@ -32,9 +32,18 @@ on:
         description: "Type deploy-production to confirm a production deployment."
         required: true
         type: string
+      jobContainerImage:
+        description: "Optional deploy job container image override."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
 
 concurrency:
   group: keystone-stack-${{ inputs.releaseName }}
@@ -52,9 +61,11 @@ env:
 jobs:
   deploy:
     name: Deploy Keystone stack
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main-v2'
     environment: production
+    container:
+      image: ${{ inputs.jobContainerImage || vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     timeout-minutes: 30
 
     steps:
@@ -62,15 +73,26 @@ jobs:
         with:
           ref: main-v2
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v4.1.4
+      - name: Verify deploy tooling
+        run: |
+          set -euo pipefail
 
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: v1.31.0
+          missing=()
+          for tool in docker helm kubectl python3; do
+            if ! command -v "$tool" > /dev/null 2>&1; then
+              missing+=("$tool")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "deploy job container is missing required tools: ${missing[*]}" >&2
+            echo "Set CI_JOB_CONTAINER_IMAGE or jobContainerImage to a deploy runner image that includes docker, helm, kubectl, and python3." >&2
+            exit 1
+          fi
+
+          docker buildx version
+          helm version --short
+          kubectl version --client=true
+          python3 --version
 
       - name: Resolve and validate deployment inputs
         id: inputs
@@ -170,6 +192,7 @@ jobs:
           KUBECONFIG_PATH="${RUNNER_TEMP}/prod-kubeconfig"
           printf '%s' "$PROD_KUBECONFIG" > "$KUBECONFIG_PATH"
           chmod 600 "$KUBECONFIG_PATH"
+          export KUBECONFIG="$KUBECONFIG_PATH"
           echo "KUBECONFIG=${KUBECONFIG_PATH}" >> "$GITHUB_ENV"
 
           kubectl config use-context "$KUBE_CONTEXT"

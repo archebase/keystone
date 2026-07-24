@@ -114,10 +114,11 @@ release names. MySQL PVCs remain release-specific.
 ## GitHub Actions Deployment
 
 The `Deploy Keystone Stack` workflow provides the production manual deployment
-entry point. GitHub requires manual workflows to exist on the repository default
-branch, so the same workflow is mirrored on `main` for discovery and always
-checks out `main-v2` before deploying. Run it only after the matching Keystone
-image workflow has successfully pushed the selected Keystone commit SHA.
+entry point on the repository default branch, `main-v2`. The deployment job
+follows the `data-platform` workflow runtime pattern: it runs on the
+`archebase-ci-runner` self-hosted runner and executes inside the configured
+deploy job container. Run it only after the matching Keystone image workflow has
+successfully pushed the selected Keystone commit SHA.
 
 Required repository or `production` environment secrets:
 
@@ -137,6 +138,9 @@ Workflow inputs:
 - `dnsCnameReady`: must be `true` after
   `keystone-<releaseName>.archebase.cn` points to the production Keystone ALB.
 - `confirmProduction`: must be exactly `deploy-production`.
+- `jobContainerImage`: optional deploy job container image override. Empty uses
+  `CI_JOB_CONTAINER_IMAGE` or the same default deploy image used by
+  `data-platform`.
 
 The workflow deploys into `archebase-system` with Kubernetes context
 `volcano-prod-ci`. It does not create DNS records or manage cloud-infra
