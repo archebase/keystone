@@ -280,6 +280,21 @@ func TestStationHandlerUpdateUsesCurrentWorkspaceFields(t *testing.T) {
 	if got, ok := updated.Metadata.(map[string]interface{})["mode"].(string); !ok || got != "current" {
 		t.Fatalf("metadata not updated: %#v", updated.Metadata)
 	}
+
+	preserveReq := httptest.NewRequest(http.MethodPut, "/api/v1/stations/1", strings.NewReader(`{"status":"offline"}`))
+	preserveReq.Header.Set("Content-Type", "application/json")
+	preserveW := httptest.NewRecorder()
+	r.ServeHTTP(preserveW, preserveReq)
+	if preserveW.Code != http.StatusOK {
+		t.Fatalf("status-only update status=%d body=%s", preserveW.Code, preserveW.Body.String())
+	}
+	var preserved StationResponse
+	if err := json.Unmarshal(preserveW.Body.Bytes(), &preserved); err != nil {
+		t.Fatalf("unmarshal status-only update response: %v", err)
+	}
+	if got, ok := preserved.Metadata.(map[string]interface{})["mode"].(string); !ok || got != "current" {
+		t.Fatalf("status-only update should preserve metadata: %#v", preserved.Metadata)
+	}
 }
 
 func TestStationHandlerUpdateRejectsRebindingWithPendingTasks(t *testing.T) {

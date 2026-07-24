@@ -1040,32 +1040,32 @@ func (h *StationHandler) UpdateStation(c *gin.Context) {
 		}
 	}
 
-	setClauses := []string{
-		"robot_id = ?", "robot_name = ?", "robot_serial = ?",
-		"data_collector_id = ?", "collector_name = ?", "collector_operator_id = ?",
-		"workspace_id = ?", "status = ?", "updated_at = ?",
-	}
-	args := []any{
-		robot.ID, robot.DeviceID, robot.DeviceID,
-		collector.ID, collector.Name, collector.OperatorID,
-		robot.WorkspaceID, status, time.Now().UTC(),
-	}
+	updateMetadata := false
+	var metadata any
 	if len(req.Metadata) > 0 {
-		metadata := strings.TrimSpace(string(req.Metadata))
-		if metadata != "null" && !json.Valid(req.Metadata) {
+		updateMetadata = true
+		metadataJSON := strings.TrimSpace(string(req.Metadata))
+		if metadataJSON != "null" && !json.Valid(req.Metadata) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid metadata JSON"})
 			return
 		}
-		setClauses = append(setClauses, "metadata = ?")
-		if metadata == "null" {
-			args = append(args, nil)
-		} else {
-			args = append(args, metadata)
+		if metadataJSON != "null" {
+			metadata = metadataJSON
 		}
 	}
-	args = append(args, stationID)
-	if _, err := tx.ExecContext(ctx, `UPDATE workstations SET `+strings.Join(setClauses, ", ")+`
-		WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL`, args...); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE workstations
+		SET robot_id = ?, robot_name = ?, robot_serial = ?,
+			data_collector_id = ?, collector_name = ?, collector_operator_id = ?,
+			workspace_id = ?, status = ?, updated_at = ?,
+			metadata = CASE WHEN ? THEN ? ELSE metadata END
+		WHERE id = ? AND is_current = TRUE AND deleted_at IS NULL
+	`,
+		robot.ID, robot.DeviceID, robot.DeviceID,
+		collector.ID, collector.Name, collector.OperatorID,
+		robot.WorkspaceID, status, time.Now().UTC(),
+		updateMetadata, metadata, stationID,
+	); err != nil {
 		logger.Printf("[STATION] Failed to update station: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update station"})
 		return
