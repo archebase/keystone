@@ -1,0 +1,772 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>共享设备工作上下文：Web 与 EgoPortal 登录激活方案</title>
+  <style>
+    :root {
+      --ink: #1D1A2F;
+      --purple: #5F2A62;
+      --green: #8BD450;
+      --cream: #FFF8E7;
+      --black: #09070E;
+      --line: rgba(255, 248, 231, .28);
+      --muted: rgba(255, 248, 231, .72);
+      --content: 1160px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background: var(--ink);
+      color: var(--cream);
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      font-family: "Songti SC", "STSong", "Noto Serif SC", SimSun, serif;
+      line-height: 1.75;
+      background:
+        linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),
+        var(--ink);
+      background-size: 32px 32px;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 20;
+      opacity: .15;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.24'/%3E%3C/svg%3E");
+      mix-blend-mode: soft-light;
+    }
+
+    a { color: inherit; }
+    code, pre, .mono {
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 720px;
+      display: grid;
+      place-items: center;
+      padding: 72px 24px;
+      background: var(--purple);
+      border-bottom: 12px solid var(--black);
+      isolation: isolate;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 62vw;
+      height: 150%;
+      right: -32vw;
+      top: -20%;
+      background: var(--green);
+      transform: rotate(17deg);
+      border: 10px solid var(--black);
+      z-index: -2;
+    }
+
+    .hero-inner {
+      width: min(var(--content), 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(340px, .92fr);
+      gap: 56px;
+      align-items: center;
+    }
+
+    .kicker {
+      display: inline-block;
+      margin-bottom: 22px;
+      padding: 6px 12px;
+      color: var(--black);
+      background: var(--green);
+      border: 4px solid var(--black);
+      box-shadow: 7px 7px 0 var(--black);
+      font-family: Georgia, serif;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      font-weight: 900;
+      line-height: 1.08;
+    }
+
+    h1 {
+      max-width: 800px;
+      font-size: clamp(52px, 8vw, 116px);
+      letter-spacing: -.07em;
+      text-shadow: 7px 7px 0 var(--black);
+    }
+
+    .subtitle {
+      max-width: 720px;
+      margin: 28px 0 0;
+      font-size: clamp(17px, 2vw, 24px);
+      color: var(--cream);
+      font-weight: 700;
+    }
+
+    .separation-device {
+      position: relative;
+      min-height: 430px;
+      padding: 34px;
+      color: var(--black);
+      background: var(--cream);
+      border: 9px solid var(--black);
+      box-shadow: 18px 18px 0 var(--black);
+      transform: rotate(-2deg);
+    }
+
+    .separation-device::before {
+      content: "";
+      position: absolute;
+      inset: 48% -30px auto -30px;
+      height: 14px;
+      background: var(--green);
+      border: 4px solid var(--black);
+      transform: rotate(-6deg);
+    }
+
+    .rail {
+      display: grid;
+      grid-template-columns: 1fr 56px 1fr;
+      gap: 12px;
+      align-items: center;
+      min-height: 142px;
+    }
+
+    .rail + .rail { margin-top: 70px; }
+    .rail-node {
+      padding: 16px 10px;
+      text-align: center;
+      border: 4px solid var(--black);
+      background: var(--cream);
+      font-weight: 900;
+    }
+
+    .rail-node.active { background: var(--green); }
+    .rail-link {
+      height: 8px;
+      background: var(--black);
+      position: relative;
+    }
+
+    .rail-link::after {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      right: -2px;
+      top: -5px;
+      border-top: 6px solid var(--black);
+      border-right: 6px solid var(--black);
+      transform: rotate(45deg);
+    }
+
+    .device-label {
+      margin-top: 18px;
+      font-family: Georgia, serif;
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: .12em;
+      text-align: center;
+    }
+
+    main { display: block; }
+    section {
+      position: relative;
+      padding: 92px 24px;
+      border-bottom: 5px solid var(--black);
+    }
+
+    section:nth-child(even) { background: var(--purple); }
+    .section-inner { width: min(var(--content), 100%); margin: 0 auto; }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 116px minmax(0, 1fr);
+      gap: 28px;
+      align-items: end;
+      margin-bottom: 48px;
+    }
+
+    .section-no {
+      color: var(--green);
+      font-family: Didot, Georgia, serif;
+      font-size: 76px;
+      font-weight: 900;
+      line-height: .8;
+      text-shadow: 4px 4px 0 var(--black);
+    }
+
+    h2 {
+      font-size: clamp(34px, 5vw, 64px);
+      letter-spacing: -.045em;
+    }
+
+    h3 {
+      margin: 30px 0 14px;
+      color: var(--green);
+      font-size: clamp(23px, 3vw, 34px);
+    }
+
+    p { max-width: 880px; margin: 14px 0; }
+    ul, ol { max-width: 920px; padding-left: 1.4em; }
+    li + li { margin-top: 8px; }
+
+    .decision {
+      padding: 28px 32px;
+      color: var(--black);
+      background: var(--green);
+      border: 6px solid var(--black);
+      box-shadow: 12px 12px 0 var(--black);
+      font-size: clamp(22px, 3vw, 36px);
+      font-weight: 900;
+      line-height: 1.38;
+      transform: skewX(-2deg);
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 30px;
+      align-items: start;
+    }
+
+    .panel {
+      min-width: 0;
+      padding: 28px;
+      border: 5px solid var(--cream);
+      background: var(--ink);
+      box-shadow: 10px 10px 0 var(--black);
+    }
+
+    .panel.alert {
+      color: var(--black);
+      background: var(--green);
+      border-color: var(--black);
+    }
+
+    .panel.alert h3 { color: var(--black); }
+
+    .flow {
+      display: grid;
+      gap: 0;
+      margin: 32px 0;
+      border: 6px solid var(--black);
+      box-shadow: 12px 12px 0 var(--black);
+    }
+
+    .flow-row {
+      display: grid;
+      grid-template-columns: 210px minmax(0, 1fr);
+      min-height: 92px;
+      color: var(--black);
+      background: var(--cream);
+      border-bottom: 4px solid var(--black);
+    }
+
+    .flow-row:last-child { border-bottom: 0; }
+    .flow-key {
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      text-align: center;
+      background: var(--green);
+      border-right: 4px solid var(--black);
+      font-weight: 900;
+    }
+
+    .flow-body { padding: 20px 26px; }
+
+    pre {
+      max-width: 100%;
+      overflow: auto;
+      padding: 24px;
+      color: var(--green);
+      background: var(--black);
+      border-left: 10px solid var(--green);
+      font-size: 14px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      margin: 28px 0;
+      border: 5px solid var(--black);
+      box-shadow: 9px 9px 0 var(--black);
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      color: var(--black);
+      background: var(--cream);
+    }
+
+    th, td {
+      padding: 16px 18px;
+      text-align: left;
+      vertical-align: top;
+      border-right: 2px solid var(--black);
+      border-bottom: 2px solid var(--black);
+    }
+
+    th:last-child, td:last-child { border-right: 0; }
+    tr:last-child td { border-bottom: 0; }
+    th { background: var(--green); font-weight: 900; }
+
+    .callout {
+      margin: 30px 0;
+      padding: 22px 26px;
+      border-left: 12px solid var(--green);
+      background: var(--black);
+      font-weight: 700;
+    }
+
+    .token-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 24px;
+      margin: 32px 0;
+    }
+
+    .token {
+      padding: 24px;
+      min-height: 230px;
+      color: var(--black);
+      background: var(--cream);
+      border: 5px solid var(--black);
+      box-shadow: 8px 8px 0 var(--black);
+    }
+
+    .token strong {
+      display: block;
+      margin-bottom: 16px;
+      font-size: 25px;
+    }
+
+    .token.execution { background: var(--green); }
+
+    .sequence {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 3px;
+      margin-top: 30px;
+      background: var(--black);
+      border: 5px solid var(--black);
+    }
+
+    .sequence-step {
+      position: relative;
+      min-height: 148px;
+      padding: 20px;
+      color: var(--black);
+      background: var(--cream);
+    }
+
+    .sequence-step b {
+      display: block;
+      margin-bottom: 10px;
+      color: var(--purple);
+      font-size: 22px;
+    }
+
+    .sequence-step.active { background: var(--green); }
+
+    footer {
+      padding: 72px 24px;
+      color: var(--black);
+      background: var(--green);
+      border-top: 10px solid var(--black);
+    }
+
+    .footer-inner {
+      width: min(var(--content), 100%);
+      margin: 0 auto;
+      font-size: clamp(26px, 4vw, 50px);
+      font-weight: 900;
+      line-height: 1.3;
+    }
+
+    @media (max-width: 900px) {
+      .hero { min-height: auto; padding-top: 54px; }
+      .hero-inner, .split { grid-template-columns: 1fr; }
+      .hero::after { width: 90vw; right: -65vw; }
+      .separation-device { min-height: 360px; transform: none; }
+      .section-head { grid-template-columns: 80px minmax(0, 1fr); }
+      .section-no { font-size: 58px; }
+      .token-grid { grid-template-columns: 1fr; }
+      .sequence { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 620px) {
+      .hero, section { padding-left: 16px; padding-right: 16px; }
+      h1 { font-size: clamp(46px, 15vw, 74px); }
+      .section-head { grid-template-columns: 1fr; gap: 14px; }
+      .section-no { font-size: 46px; }
+      .flow-row { grid-template-columns: 1fr; }
+      .flow-key { border-right: 0; border-bottom: 4px solid var(--black); }
+      .sequence { grid-template-columns: 1fr; }
+      .separation-device { padding: 20px; box-shadow: 10px 10px 0 var(--black); }
+      .rail { grid-template-columns: 1fr 38px 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <div>
+        <div class="kicker">Shared Device / Work Context</div>
+        <h1>共享设备<br>工作上下文</h1>
+        <p class="subtitle">Web 直接选择工位，EgoPortal 自动识别设备；人员身份与设备身份彻底分离。</p>
+      </div>
+      <div class="separation-device" aria-label="身份与工作上下文分离示意">
+        <div class="rail">
+          <div class="rail-node">人员登录</div>
+          <div class="rail-link"></div>
+          <div class="rail-node">identity token</div>
+        </div>
+        <div class="rail">
+          <div class="rail-node">工位激活</div>
+          <div class="rail-link"></div>
+          <div class="rail-node active">workstation token</div>
+        </div>
+        <div class="device-label">IDENTITY IS STABLE · WORKSTATION IS SCOPED</div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">01</div><h2>核心判断</h2></div>
+        <div class="decision">登录只回答“你是谁”；工作上下文激活才回答“你现在操作哪个工位和设备”。</div>
+        <p>当前设备绑定登录把账号认证、工位选择、机器人作用域和会话占用放在同一次登录中。在多人轮班共享设备场景下，这会导致换设备必须重新走设备专属登录、Web 与 EgoPortal 各自维护绑定逻辑，并让人员身份与设备生命周期互相污染。</p>
+        <p>本方案采用最小的两阶段认证：先得到不含工位作用域的人员令牌，再通过统一的工位激活模块换取现有格式的 workstation-scoped JWT。Web 由用户选择工位；EgoPortal 使用已注册 iPhone 的设备凭证自动解析工位。不新增独立租约系统。</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">02</div><h2>范围与边界</h2></div>
+        <div class="split">
+          <article class="panel">
+            <h3>本期目标</h3>
+            <ul>
+              <li>人员登录不再要求提交任意设备 ID。</li>
+              <li>Web 登录后直接展示本人可用工位并完成选择。</li>
+              <li>EgoPortal 保留共享 iPhone 的设备凭证，人员登录后自动激活对应工位。</li>
+              <li>生成包含 canonical workstation、robot、workspace 的工位作用域 JWT。</li>
+              <li>复用 <code>workstations.is_current</code> 和数据库唯一约束保证同一设备只被一人占用。</li>
+              <li>支持正常退出和管理员强制释放；第一版不建设心跳租约系统。</li>
+            </ul>
+          </article>
+          <article class="panel alert">
+            <h3>本期不做</h3>
+            <ul>
+              <li>Web 不做二维码和短码激活。</li>
+              <li>不允许普通数采员抢占仍被其他人员占用的工位。</li>
+              <li>不改变 Axon Recorder / Transfer 的设备认证。</li>
+              <li>不让前端提交 robot_id、workspace_id 作为可信授权事实。</li>
+              <li>不把未上传历史数据改写为下一位数采员的归属。</li>
+              <li>不新增 <code>work_context_sessions</code>、专用 heartbeat 或一次性设备证明。</li>
+              <li>不在本期建设完整企业 SSO 或工牌系统。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">03</div><h2>统一认证模型</h2></div>
+        <div class="token-grid">
+          <div class="token">
+            <strong>identity token</strong>
+            <p>证明人员身份。包含 collector、operator、role，不包含 workstation、robot、workspace。</p>
+            <p>用于查询本人信息、可用工位、计划概览和历史记录。</p>
+          </div>
+          <div class="token">
+            <strong>device credential</strong>
+            <p>证明设备身份。EgoPortal 的共享 iPhone 和 Axon 分别持有自己的长期设备凭证。</p>
+            <p>人员退出时不得删除设备凭证。</p>
+          </div>
+          <div class="token execution">
+            <strong>workstation token</strong>
+            <p>证明人员当前操作某个 canonical 工位。复用现有 JWT claims，包含 workstation、robot、workspace，不引入 context_session_id。</p>
+            <p>用于 next-task、Recorder 控制、正式采集和需要工作作用域的写操作。</p>
+          </div>
+        </div>
+        <pre>identity token claims
+  collector_id
+  operator_id
+  role
+
+workstation-scoped token claims
+  collector_id
+  operator_id
+  workstation_id
+  robot_id
+  workspace_id
+  role</pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">04</div><h2>Web 流程：直接选择工位</h2></div>
+        <div class="flow">
+          <div class="flow-row"><div class="flow-key">人员登录</div><div class="flow-body"><code>POST /api/v1/auth/login</code> 只认证账号密码并返回不含 workstation claims 的 identity token。</div></div>
+          <div class="flow-row"><div class="flow-key">获取候选</div><div class="flow-body"><code>GET /api/v1/auth/me</code> 根据 Hilbert 当前有效计划的 <code>operator + dc_device_id</code> 返回本人可用工位及占用状态；后续如需人工授权，再增加显式授权关系。</div></div>
+          <div class="flow-row"><div class="flow-key">选择工位</div><div class="flow-body">页面展示工位名称、机器人名称、设备名称、在线状态和占用状态。前端只提交 <code>workstation_id</code> 候选值。</div></div>
+          <div class="flow-row"><div class="flow-key">服务端激活</div><div class="flow-body"><code>POST /api/v1/auth/workstation/activate</code> 在事务内重新验证计划资格、Workspace 访问权和设备占用状态，并切换 <code>is_current</code>。</div></div>
+          <div class="flow-row"><div class="flow-key">进入工作台</div><div class="flow-body">前端使用返回的 workstation-scoped access token，计划刷新、任务准备和设备控制继续走现有鉴权链路。</div></div>
+        </div>
+        <div class="callout"><code>workstation_id</code> 是用户选择，不是授权事实；<code>is_current</code> 是占用状态，也不是长期授权。Keystone 必须从 Hilbert 计划或显式授权验证资格，并从数据库解析 robot_id 与 workspace_id。</div>
+        <pre>POST /api/v1/auth/workstation/activate
+Authorization: Bearer &lt;identity token&gt;
+
+{
+  "workstation_id": 11
+}
+
+200 OK
+{
+  "access_token": "...",
+  "expires_in": 28800,
+  "context": {
+    "workstation_id": 11,
+    "robot_id": 9,
+    "workspace_id": 123,
+    "device_name": "robot_dc87"
+  }
+}</pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">05</div><h2>EgoPortal：设备自动激活</h2></div>
+        <p>共享 iPhone 在首次部署时使用 device_auth_token 完成设备注册，并将长期设备凭证保存在 Keychain。每位数采员接班时只登录自己的账号；App 不展示其他工位，也不要求扫码。</p>
+        <div class="sequence">
+          <div class="sequence-step"><b>01 · 设备常驻</b>设备凭证跨班次保留，人员退出不会清除。</div>
+          <div class="sequence-step"><b>02 · 人员登录</b>账号密码换取不含设备作用域的 identity token。</div>
+          <div class="sequence-step active"><b>03 · 自动定位</b>App 调用统一激活接口，同时提交人员令牌和 Keychain 中的设备凭证。</div>
+          <div class="sequence-step"><b>04 · 激活工位</b>Keystone 验证人员计划资格与设备身份，返回 workstation-scoped token。</div>
+        </div>
+        <pre>POST /api/v1/auth/workstation/activate
+Authorization: Bearer &lt;identity token&gt;
+Device-Authorization: &lt;device credential&gt;
+
+Keystone resolves:
+   device -> robot -> workstation -> workspace
+   then validates current Hilbert plan/operator eligibility
+   and activates the canonical workstation</pre>
+        <div class="callout">第一版由 Keystone 在一次 HTTPS 请求中同时验证人员令牌和设备凭证。只有未来设备凭证被封装在不可导出的 SDK 或安全模块中时，才增加一次性 device proof。</div>
+        <h3>共享 iPhone 交班规则</h3>
+        <ul>
+          <li>允许用户主动勾选“记住密码”；密码保存在 iOS Keychain，App 重启后重新执行人员登录与设备自动激活。未勾选时不保存密码。</li>
+          <li>设备凭证、设备配置和未上传 capture_session 保留。</li>
+          <li>已有 capture_session 继续保存采集开始时的 operator 快照。</li>
+          <li>后台上传使用设备凭证和 manifest 快照，不要求上一位数采员继续登录。</li>
+          <li>人员随时可以退出；active capture 继续保留原 operator 快照并由设备凭证完成上传。</li>
+          <li>active capture 存在时禁止下一位人员普通接管工位；管理员强制接管必须记录原因。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">06</div><h2>占用与交班控制</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>场景</th><th>Keystone 行为</th><th>客户端表现</th></tr></thead>
+            <tbody>
+              <tr><td>工位无人占用</td><td>事务内把对应 workstation 设为 <code>is_current=true</code>。</td><td>进入工作台。</td></tr>
+              <tr><td>同一人员重复激活同一工位</td><td>幂等返回新的 workstation-scoped token。</td><td>恢复工作台。</td></tr>
+              <tr><td>其他人员正在占用</td><td>依赖 current robot 唯一约束并返回 409 <code>workstation_occupied</code>。</td><td>显示占用人员并等待或联系管理员。</td></tr>
+              <tr><td>人员正常退出</td><td>立即删除客户端人员令牌，并将当前 workstation 释放；退出本身不被 active capture 阻止。</td><td>回到登录页，设备凭证和本地数据保留。</td></tr>
+              <tr><td>存在 active capture</td><td>阻止下一人普通接管，但不阻止上一人登出。</td><td>等待采集完成或请求管理员处理。</td></tr>
+              <tr><td>管理员强制释放</td><td>清除 <code>is_current</code> 并记录操作者、原因和时间。</td><td>旧 token 在下一次请求时立即失效。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>第一版时效策略</h3>
+        <ul>
+          <li>人员 identity token 和 workstation token 按一个班次配置，建议 8 小时；仍由现有 JWT 配置统一控制。</li>
+          <li>每次 workstation-scoped 请求继续查询 <code>is_current</code>，因此管理员释放可立即生效，无需等待 JWT 过期。</li>
+          <li>第一版不做专用 heartbeat 和自动超时接管，避免浏览器后台与 iOS 挂起造成假掉线。</li>
+          <li>如果实际运营出现大量异常退出，再增加 <code>last_seen_at</code>，仅在无 active task/capture 且长时间无业务请求时允许安全回收。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">07</div><h2>接口与数据模型</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>接口</th><th>令牌</th><th>职责</th></tr></thead>
+            <tbody>
+              <tr><td><code>POST /auth/login</code></td><td>无</td><td>人员认证，返回不含 workstation claims 的 identity token。</td></tr>
+              <tr><td><code>GET /auth/me</code></td><td>identity / workstation</td><td>返回身份，以及由 Hilbert 当前计划或显式授权推导的可用工位。</td></tr>
+              <tr><td><code>POST /auth/workstation/activate</code></td><td>identity；EgoPortal 额外带 device</td><td>Web 按 workstation_id 激活；EgoPortal 按设备凭证自动解析并激活。</td></tr>
+              <tr><td><code>POST /tasks/:id/capture/start</code></td><td>workstation</td><td>EgoPortal 正式开始本地录制后，将任务原子更新为 in_progress，用于阻止换班接管。</td></tr>
+              <tr><td><code>POST /tasks/:id/capture/finish</code></td><td>workstation</td><td>本地录制结束且 MCAP/manifest 完整性验证通过后将任务更新为 uploading；上传仍使用设备凭证和 operator 快照。</td></tr>
+              <tr><td><code>POST /auth/logout</code></td><td>identity / workstation</td><td>删除人员登录状态并尽力释放当前工位；不删除设备凭证和本地 capture。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre>资格与状态必须分开
+
+eligible workstation
+  = Hilbert 当前有效 dc_plan(operator + dc_device_id)
+    OR 未来新增的显式授权关系
+
+current occupancy
+  = workstations.is_current
+
+historical ownership
+  = task / capture / episode operator snapshot</pre>
+        <p>第一版不新增 <code>work_context_sessions</code>。激活事务锁定 robot/workstation 相关行，复用现有 current robot 唯一索引处理并发；可选增加 <code>activated_at</code>、<code>last_seen_at</code>、<code>client_type</code>，但不要求建立独立状态机。</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">08</div><h2>权限与中间件</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>能力</th><th>identity token</th><th>workstation token</th><th>device credential</th></tr></thead>
+            <tbody>
+              <tr><td>查看本人身份与工位</td><td>允许</td><td>允许</td><td>不允许</td></tr>
+              <tr><td>刷新本人计划</td><td>可允许只读</td><td>允许并绑定当前设备</td><td>不允许</td></tr>
+              <tr><td>选择/激活工位</td><td>允许</td><td>幂等恢复</td><td>EgoPortal 激活时与 identity token 联合验证</td></tr>
+              <tr><td>获取 next task</td><td>拒绝</td><td>允许</td><td>拒绝</td></tr>
+              <tr><td>Recorder 控制</td><td>拒绝</td><td>允许</td><td>Axon 使用独立链路</td></tr>
+              <tr><td>EgoPortal 上传</td><td>不依赖</td><td>采集时建立快照</td><td>实际上传认证</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>现有 JWT 解析和 claims 结构继续复用，但中间件需要拆成两层：基础认证层只校验签名、过期时间和人员身份，供 <code>/auth/me</code> 与激活接口使用；工位作用域层额外要求 workstation claims，并继续按 workstation_id、collector_id 和 <code>is_current</code> 查询数据库。这样无需新增 session 中间件，管理员释放和重新分配仍可即时使旧 token 失效。</p>
+        <pre>IdentityAuth
+  parse JWT
+  validate collector / role
+
+RequireWorkstationScope
+  require workstation_id / robot_id / workspace_id
+  validate workstation belongs to collector and is_current = true</pre>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">09</div><h2>错误语义与恢复</h2></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>code</th><th>HTTP</th><th>含义</th><th>恢复动作</th></tr></thead>
+            <tbody>
+              <tr><td><code>workstation_not_assigned</code></td><td>403</td><td>当前人员无权使用候选工位。</td><td>刷新可用工位。</td></tr>
+              <tr><td><code>workstation_occupied</code></td><td>409</td><td>其他活跃人员正在占用。</td><td>等待、选择其他工位或联系管理员。</td></tr>
+              <tr><td><code>device_workstation_missing</code></td><td>409</td><td>EgoPortal 设备未绑定有效工位。</td><td>停止正式采集并联系管理员。</td></tr>
+              <tr><td><code>invalid_device_credential</code></td><td>401</td><td>EgoPortal 设备凭证无效或已轮换。</td><td>阻止正式采集并联系管理员重新注册设备。</td></tr>
+              <tr><td><code>workstation_session_invalid</code></td><td>401</td><td>工位已被释放或重新分配。</td><td>保留人员身份，返回工位选择或重新自动激活。</td></tr>
+              <tr><td><code>recording_active</code></td><td>409</td><td>上一位人员已退出但设备仍有 active capture。</td><td>禁止普通接管；等待完成或由管理员处理。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">10</div><h2>迁移与兼容</h2></div>
+        <ol>
+          <li><strong>Keystone 两阶段认证：</strong>登录先签发不含 workstation claims 的 identity token；新增统一工位激活接口并复用现有 workstation-scoped JWT。</li>
+          <li><strong>Synapse Web：</strong>登录页只收账号密码；登录成功进入工位选择页；只有一个可用工位时可自动激活，但仍展示确认结果。</li>
+          <li><strong>Web 写操作收口：</strong>next-task、Recorder RPC、任务配置等接口继续要求带 workstation claims 的 token。</li>
+          <li><strong>EgoPortal：</strong>激活请求同时携带 identity token 与设备凭证；可选记住密码只保存在 Keychain；采集开始/结束同步任务状态，上传继续使用 operator 快照与设备身份。</li>
+          <li><strong>失效联动：</strong>工位重新分配、管理员释放和正常退出统一更新 <code>workstations.is_current</code>，现有中间件立即拒绝旧 token。</li>
+          <li><strong>清理兼容逻辑：</strong>两个客户端稳定后，移除登录请求中的 device_id；不再维护登录即绑定设备的分支。</li>
+        </ol>
+        <div class="callout">迁移期新旧路径必须共用 <code>workstations.is_current</code> 和 current robot 唯一约束，不能建立第二套会话事实来源。</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">11</div><h2>测试与验收</h2></div>
+        <ul>
+          <li>Web 用户登录后只能看到服务端分配给自己的工位。</li>
+          <li>修改请求中的 workstation_id 不能激活未分配工位。</li>
+          <li>候选工位由 Hilbert 当前计划或显式授权产生，不依赖 <code>is_current</code>。</li>
+          <li>同一工位被另一人员占用时返回明确 409，数据库中不会出现第二条 current robot 绑定。</li>
+          <li>Web 关闭并重新打开页面时，可用 identity token 重新选择工位；异常占用可由管理员释放。</li>
+          <li>EgoPortal 人员登录后自动解析当前 iPhone 对应工位，不展示其他工位。</li>
+          <li>EgoPortal 设备凭证无效时阻止正式采集，不回退到人工选择其他设备。</li>
+          <li>人员退出后 identity/workstation token 被删除，但设备凭证和未上传采集不丢失。</li>
+          <li>换班后历史 capture、manifest、episode 仍保留原 operator 快照。</li>
+          <li>录制中允许人员退出，但下一位人员无法普通接管；管理员强制接管产生审计记录。</li>
+          <li>Axon Recorder / Transfer 连接不受人员登录变化影响。</li>
+          <li>旧登录路径在迁移期与新激活路径共用同一 <code>is_current</code> 互斥规则。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <div class="section-head"><div class="section-no">12</div><h2>风险与取舍</h2></div>
+        <div class="split">
+          <article class="panel">
+            <h3>选择本方案的原因</h3>
+            <ul>
+              <li>Web 无需摄像头、扫码或设备短码。</li>
+              <li>EgoPortal 不允许用户手动选择不属于当前 iPhone 的工位。</li>
+              <li>人、设备、工位三类身份生命周期互不污染。</li>
+              <li>服务端通过现有 <code>is_current</code> 校验即时撤销工位权限，不必等待 JWT 自然过期。</li>
+              <li>未来增加短码、工牌或 SSO 时，只需增加激活适配器。</li>
+            </ul>
+          </article>
+          <article class="panel alert">
+            <h3>主要风险</h3>
+            <ul>
+              <li>计划数据短暂不可用：保留最近一次 Hilbert 投影用于展示，但激活前必须重新验证本地有效投影。</li>
+              <li>异常退出残留占用：第一版由管理员释放；确认频率足够高后再引入安全的 idle 回收。</li>
+              <li>资格与占用混淆：代码和查询必须坚持计划/授权决定 eligibility，<code>is_current</code> 只决定 occupancy。</li>
+              <li>设备凭证泄漏：只存 Keychain，走 HTTPS，服务端保存哈希并支持轮换。</li>
+              <li>强制接管影响 active capture：默认禁止，管理员操作必须带原因并保留原 operator 快照。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">最终决策：两阶段认证但不建设独立租约系统；Web 选择工位，EgoPortal 用设备凭证自动定位，Keystone 复用现有 workstation-scoped JWT 与 is_current 互斥。</div>
+  </footer>
+</body>
+</html>

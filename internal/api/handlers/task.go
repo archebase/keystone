@@ -38,6 +38,7 @@ type TaskHandler struct {
 	recorderRPCTimeout   time.Duration
 	transferWriteTimeout time.Duration
 	callbackURLs         callbackURLs
+	taskSupply           *services.DCPlanTaskSupplyService
 }
 
 // NewTaskHandler creates a new TaskHandler.
@@ -52,6 +53,7 @@ func NewTaskHandler(db *sqlx.DB, hub *services.TransferHub, recorderHub *service
 		recorderHub:          recorderHub,
 		recorderRPCTimeout:   recorderRPCTimeout,
 		transferWriteTimeout: writeTimeout,
+		taskSupply:           services.NewDCPlanTaskSupplyService(db),
 	}
 }
 
@@ -72,21 +74,24 @@ func (h *TaskHandler) axonTransferWriteTimeout() time.Duration {
 
 // TaskConfig represents the task configuration response
 type TaskConfig struct {
-	TaskID             string   `json:"task_id"`
-	DeviceID           string   `json:"device_id"`
-	DataCollectorID    string   `json:"data_collector_id"`
-	WorkstationID      string   `json:"workstation_id"`
-	OperatorName       string   `json:"operator_name,omitempty"`
-	Topics             []string `json:"topics"`
-	StartCallbackURL   string   `json:"start_callback_url"`
-	FinishCallbackURL  string   `json:"finish_callback_url"`
-	UserToken          string   `json:"user_token"`
-	WorkspaceID        *int64   `json:"workspace_id,omitempty"`
-	DCPlanID           *int64   `json:"dc_plan_id,omitempty"`
-	DCType             string   `json:"dc_type,omitempty"`
-	DCDeviceID         *int64   `json:"dc_device_id,omitempty"`
-	PlanTargetCount    *int64   `json:"plan_target_count,omitempty"`
-	PlanTargetDuration *int64   `json:"plan_target_duration,omitempty"`
+	TaskID               string   `json:"task_id"`
+	DeviceID             string   `json:"device_id"`
+	DataCollectorID      string   `json:"data_collector_id"`
+	WorkstationID        string   `json:"workstation_id"`
+	OperatorName         string   `json:"operator_name,omitempty"`
+	Topics               []string `json:"topics"`
+	StartCallbackURL     string   `json:"start_callback_url"`
+	FinishCallbackURL    string   `json:"finish_callback_url"`
+	UserToken            string   `json:"user_token"`
+	WorkspaceID          *int64   `json:"workspace_id,omitempty"`
+	DCPlanID             *int64   `json:"dc_plan_id,omitempty"`
+	DCPlanName           string   `json:"dc_plan_name,omitempty"`
+	DCProjectDescription string   `json:"dc_project_description,omitempty"`
+	DCTaskDescription    string   `json:"dc_task_description,omitempty"`
+	DCType               string   `json:"dc_type,omitempty"`
+	DCDeviceID           *int64   `json:"dc_device_id,omitempty"`
+	PlanTargetCount      *int64   `json:"plan_target_count,omitempty"`
+	PlanTargetDuration   *int64   `json:"plan_target_duration,omitempty"`
 }
 
 // RegisterRoutes registers task-related routes
@@ -100,6 +105,289 @@ func (h *TaskHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // RegisterCollectorRoutes registers task operations restricted to data collectors.
 func (h *TaskHandler) RegisterCollectorRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/tasks/complete", h.CompleteTasks)
+	apiV1.POST("/tasks/:id/capture/start", h.StartCollectorCapture)
+	apiV1.POST("/tasks/:id/capture/finish", h.FinishCollectorCapture)
+	apiV1.POST("/tasks/:id/capture/abandon", h.AbandonCollectorCapture)
+	apiV1.POST("/dc-plans/:id/tasks/next", h.EnsureNextPlanTask)
+}
+
+// CollectorCaptureStateResponse reports the server-side task state for an EgoPortal capture.
+type CollectorCaptureStateResponse struct {
+	ID     string `json:"id"`
+	TaskID string `json:"task_id"`
+	Status string `json:"status"`
+}
+
+// StartCollectorCapture marks the authenticated workstation task as actively recording.
+//
+//	@Summary	Start EgoPortal task capture
+//	@Tags		tasks
+//	@Produce	json
+//	@Param		id	path		int	true	"Numeric task ID"
+//	@Success	200	{object}	CollectorCaptureStateResponse
+//	@Failure	400	{object}	map[string]any
+//	@Failure	401	{object}	map[string]any
+//	@Failure	404	{object}	map[string]any
+//	@Failure	409	{object}	map[string]any
+//	@Failure	500	{object}	map[string]any
+//	@Router		/tasks/{id}/capture/start [post]
+func (h *TaskHandler) StartCollectorCapture(c *gin.Context) {
+	h.transitionCollectorCapture(c, "start")
+}
+
+// FinishCollectorCapture marks local recording complete and ready for device-authenticated upload.
+//
+//	@Summary	Finish EgoPortal task capture
+//	@Tags		tasks
+//	@Produce	json
+//	@Param		id	path		int	true	"Numeric task ID"
+//	@Success	200	{object}	CollectorCaptureStateResponse
+//	@Failure	400	{object}	map[string]any
+//	@Failure	401	{object}	map[string]any
+//	@Failure	404	{object}	map[string]any
+//	@Failure	409	{object}	map[string]any
+//	@Failure	500	{object}	map[string]any
+//	@Router		/tasks/{id}/capture/finish [post]
+func (h *TaskHandler) FinishCollectorCapture(c *gin.Context) {
+	h.transitionCollectorCapture(c, "finish")
+}
+
+// AbandonCollectorCapture releases an unfinished EgoPortal capture task before its local data is discarded.
+//
+//	@Summary	Abandon EgoPortal task capture
+//	@Tags		tasks
+//	@Produce	json
+//	@Param		id	path		int	true	"Numeric task ID"
+//	@Success	200	{object}	CollectorCaptureStateResponse
+//	@Failure	400	{object}	map[string]any
+//	@Failure	401	{object}	map[string]any
+//	@Failure	404	{object}	map[string]any
+//	@Failure	409	{object}	map[string]any
+//	@Failure	500	{object}	map[string]any
+//	@Router		/tasks/{id}/capture/abandon [post]
+func (h *TaskHandler) AbandonCollectorCapture(c *gin.Context) {
+	taskID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || taskID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkstationID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "workstation session is required"})
+		return
+	}
+
+	tx, err := h.db.BeginTxx(c.Request.Context(), nil)
+	if err != nil {
+		logger.Printf("[TASK] Collector capture abandon transaction failed: task=%d err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abandon task capture"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var task struct {
+		ID     int64  `db:"id"`
+		TaskID string `db:"task_id"`
+		Status string `db:"status"`
+	}
+	taskQuery := `
+		SELECT id, task_id, status FROM tasks
+		WHERE id = ? AND workstation_id = ? AND deleted_at IS NULL
+	`
+	if tx.DriverName() != "sqlite" {
+		taskQuery += " FOR UPDATE"
+	}
+	if err := tx.GetContext(c.Request.Context(), &task, taskQuery, taskID, claims.WorkstationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		logger.Printf("[TASK] Collector capture abandon task lookup failed: task=%d err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query task"})
+		return
+	}
+
+	var hasEpisode bool
+	if err := tx.GetContext(c.Request.Context(), &hasEpisode, `
+		SELECT EXISTS(
+			SELECT 1 FROM episodes
+			WHERE task_id = ? AND deleted_at IS NULL
+		)
+	`, task.ID); err != nil {
+		logger.Printf("[TASK] Collector capture abandon episode lookup failed: task=%d err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abandon task capture"})
+		return
+	}
+	if hasEpisode {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":           "task_capture_has_episode",
+			"current_status": task.Status,
+			"error":          "uploaded task capture cannot be abandoned",
+		})
+		return
+	}
+
+	switch task.Status {
+	case "cancelled", "failed":
+	case "pending", "ready", "in_progress", "uploading":
+		now := time.Now().UTC()
+		// #nosec G701 -- static SQL with placeholder-bound timestamp and task ID.
+		if _, err := tx.ExecContext(c.Request.Context(), `
+			UPDATE tasks
+			SET status = 'cancelled', error_message = 'collector_abandoned_local_capture', updated_at = ?
+			WHERE id = ? AND deleted_at IS NULL
+		`, now, task.ID); err != nil {
+			logger.Printf("[TASK] Collector capture abandon failed: task=%d err=%v", taskID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abandon task capture"})
+			return
+		}
+		task.Status = "cancelled"
+	default:
+		c.JSON(http.StatusConflict, gin.H{
+			"code":           "task_capture_state_conflict",
+			"current_status": task.Status,
+			"error":          "task capture cannot be abandoned",
+		})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		logger.Printf("[TASK] Collector capture abandon commit failed: task=%d err=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abandon task capture"})
+		return
+	}
+	c.JSON(http.StatusOK, CollectorCaptureStateResponse{
+		ID:     strconv.FormatInt(task.ID, 10),
+		TaskID: task.TaskID,
+		Status: task.Status,
+	})
+}
+
+func (h *TaskHandler) transitionCollectorCapture(c *gin.Context, action string) {
+	taskID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || taskID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkstationID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "workstation session is required"})
+		return
+	}
+
+	fromStatuses := []string{"pending", "ready"}
+	targetStatus := "in_progress"
+	if action == "finish" {
+		fromStatuses = []string{"in_progress"}
+		targetStatus = "uploading"
+	}
+	query, args, err := sqlx.In(`
+		UPDATE tasks
+		SET status = ?,
+			started_at = CASE WHEN ? = 'in_progress' THEN COALESCE(started_at, ?) ELSE started_at END,
+			updated_at = ?
+		WHERE id = ? AND workstation_id = ? AND status IN (?) AND deleted_at IS NULL
+	`, targetStatus, targetStatus, time.Now().UTC(), time.Now().UTC(), taskID, claims.WorkstationID, fromStatuses)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update task"})
+		return
+	}
+	// #nosec G701 -- sqlx.In only expands placeholders; all values remain bound after Rebind.
+	result, err := h.db.ExecContext(c.Request.Context(), h.db.Rebind(query), args...)
+	if err != nil {
+		logger.Printf("[TASK] Collector capture %s failed: task=%d err=%v", action, taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update task"})
+		return
+	}
+	affected, _ := result.RowsAffected()
+
+	var task struct {
+		ID     int64  `db:"id"`
+		TaskID string `db:"task_id"`
+		Status string `db:"status"`
+	}
+	if err := h.db.GetContext(c.Request.Context(), &task, `
+		SELECT id, task_id, status FROM tasks
+		WHERE id = ? AND workstation_id = ? AND deleted_at IS NULL
+	`, taskID, claims.WorkstationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query task"})
+		return
+	}
+	if affected == 0 {
+		if (action == "start" && task.Status != "in_progress") ||
+			(action == "finish" && task.Status != "uploading" && task.Status != "completed") {
+			c.JSON(http.StatusConflict, gin.H{
+				"code":           "task_capture_state_conflict",
+				"current_status": task.Status,
+				"error":          "task capture state cannot be changed",
+			})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, CollectorCaptureStateResponse{
+		ID:     strconv.FormatInt(task.ID, 10),
+		TaskID: task.TaskID,
+		Status: task.Status,
+	})
+}
+
+// EnsureNextPlanTask creates or reuses the pending task for a collector plan.
+//
+// @Summary      Ensure next plan task
+// @Description  Creates or reuses the single pending task for the authenticated collector workstation.
+// @Tags         tasks
+// @Produce      json
+// @Param        id path int true "DC plan ID"
+// @Success      200 {object} services.DCPlanTaskSupplyResult
+// @Failure      400 {object} map[string]string
+// @Failure      403 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /dc-plans/{id}/tasks/next [post]
+func (h *TaskHandler) EnsureNextPlanTask(c *gin.Context) {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkstationID <= 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "data collector workstation required"})
+		return
+	}
+
+	planID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || planID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid dc plan id"})
+		return
+	}
+
+	result, err := h.taskSupply.EnsureNextTask(
+		c.Request.Context(), planID, claims.WorkstationID, time.Now().UTC(),
+	)
+	if err == nil {
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	switch {
+	case errors.Is(err, services.ErrDCPlanTaskSupplyNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"code": "plan_not_found", "error": "dc plan not found"})
+	case errors.Is(err, services.ErrDCPlanTaskSupplyWorkstationMismatch):
+		c.JSON(http.StatusForbidden, gin.H{
+			"code": "plan_workstation_mismatch", "error": "dc plan is not assigned to this workstation",
+		})
+	case errors.Is(err, services.ErrDCPlanTaskSupplyTargetReached):
+		c.JSON(http.StatusConflict, gin.H{
+			"code": "plan_target_reached", "error": "dc plan target has been reached",
+		})
+	case errors.Is(err, services.ErrDCPlanTaskSupplyActiveTask):
+		c.JSON(http.StatusConflict, gin.H{
+			"code": "task_already_active", "error": "another task is already active",
+		})
+	default:
+		logger.Printf("[TASK] Ensure next plan task failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to ensure next task"})
+	}
 }
 
 // CompleteTasksRequest identifies pending tasks to complete for the current workstation.
@@ -136,19 +424,22 @@ var validTaskStatuses = map[string]struct{}{
 
 // TaskListItem represents a task item in list responses.
 type TaskListItem struct {
-	ID                  int64   `json:"id" db:"id"`
-	TaskID              string  `json:"task_id" db:"task_id"`
-	WorkstationID       *string `json:"workstation_id" db:"workstation_id"`
-	RobotDeviceID       *string `json:"robot_device_id" db:"robot_device_id"`
-	CollectorOperatorID *string `json:"collector_operator_id" db:"collector_operator_id"`
-	Status              string  `json:"status" db:"status"`
-	ErrorMessage        *string `json:"error_message" db:"error_message"`
-	AssignedAt          *string `json:"assigned_at" db:"assigned_at"`
-	DCPlanID            *int64  `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
-	WorkspaceID         *int64  `json:"workspace_id,omitempty" db:"workspace_id"`
-	DCPlanName          *string `json:"dc_plan_name,omitempty" db:"dc_plan_name"`
-	DCType              *string `json:"dc_type,omitempty" db:"dc_type"`
-	DCDeviceID          *int64  `json:"dc_device_id,omitempty" db:"dc_device_id"`
+	ID                   int64          `json:"id" db:"id"`
+	TaskID               string         `json:"task_id" db:"task_id"`
+	WorkstationID        *string        `json:"workstation_id" db:"workstation_id"`
+	RobotDeviceID        *string        `json:"robot_device_id" db:"robot_device_id"`
+	CollectorOperatorID  *string        `json:"collector_operator_id" db:"collector_operator_id"`
+	Status               string         `json:"status" db:"status"`
+	ErrorMessage         *string        `json:"error_message" db:"error_message"`
+	AssignedAt           *string        `json:"assigned_at" db:"assigned_at"`
+	DCPlanID             *int64         `json:"dc_plan_id,omitempty" db:"dc_plan_id"`
+	WorkspaceID          *int64         `json:"workspace_id,omitempty" db:"workspace_id"`
+	DCPlanName           *string        `json:"dc_plan_name,omitempty" db:"dc_plan_name"`
+	DCProjectDescription string         `json:"dc_project_description,omitempty"`
+	DCTaskDescription    string         `json:"dc_task_description,omitempty"`
+	DCType               *string        `json:"dc_type,omitempty" db:"dc_type"`
+	DCDeviceID           *int64         `json:"dc_device_id,omitempty" db:"dc_device_id"`
+	PlanSnapshotRaw      sql.NullString `json:"-" db:"plan_snapshot_raw"`
 }
 
 // ListTasksResponse represents the response body for listing tasks.
@@ -321,6 +612,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		NULLIF(TRIM(COALESCE(ws.collector_operator_id, '')), '') AS collector_operator_id,
 		tasks.status,
 		tasks.error_message,
+		tasks.metadata AS plan_snapshot_raw,
 		CASE WHEN tasks.assigned_at IS NULL THEN NULL ELSE DATE_FORMAT(CONVERT_TZ(tasks.assigned_at, @@session.time_zone, '+00:00'), '%%Y-%%m-%%dT%%H:%%i:%%sZ') END AS assigned_at,
 		tasks.dc_plan_id AS dc_plan_id,
 		COALESCE(tasks.organization_id, ws.workspace_id) AS workspace_id,
@@ -339,6 +631,9 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		logger.Printf("[TASK] Failed to query tasks: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list tasks"})
 		return
+	}
+	for index := range items {
+		applyTaskPlanSnapshot(&items[index], items[index].PlanSnapshotRaw.String)
 	}
 
 	hasNext := (offset + limit) < total
@@ -1039,6 +1334,7 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 		return
 	}
 	executionConfig := taskExecutionConfigFromMetadata(row.Metadata.String)
+	planSnapshot := taskPlanSnapshotFromMetadata(row.Metadata.String)
 
 	taskConfig := TaskConfig{
 		TaskID:            row.TaskID,
@@ -1057,6 +1353,15 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	if row.DCPlanID.Valid {
 		taskConfig.DCPlanID = &row.DCPlanID.Int64
 	}
+	if planSnapshot.DCPlanName != nil {
+		taskConfig.DCPlanName = strings.TrimSpace(*planSnapshot.DCPlanName)
+	}
+	if planSnapshot.DCProjectDescription != nil {
+		taskConfig.DCProjectDescription = strings.TrimSpace(*planSnapshot.DCProjectDescription)
+	}
+	if planSnapshot.DCTaskDescription != nil {
+		taskConfig.DCTaskDescription = strings.TrimSpace(*planSnapshot.DCTaskDescription)
+	}
 	if row.DCType.Valid {
 		taskConfig.DCType = strings.TrimSpace(row.DCType.String)
 	}
@@ -1068,6 +1373,21 @@ func (h *TaskHandler) GetTaskConfig(c *gin.Context) {
 	}
 	if row.TargetDuration.Valid {
 		taskConfig.PlanTargetDuration = &row.TargetDuration.Int64
+	}
+	if planSnapshot.Operator != nil {
+		taskConfig.OperatorName = strings.TrimSpace(*planSnapshot.Operator)
+	}
+	if planSnapshot.DCType != nil {
+		taskConfig.DCType = strings.TrimSpace(*planSnapshot.DCType)
+	}
+	if planSnapshot.DCDeviceID != nil {
+		taskConfig.DCDeviceID = planSnapshot.DCDeviceID
+	}
+	if planSnapshot.TargetCount != nil {
+		taskConfig.PlanTargetCount = planSnapshot.TargetCount
+	}
+	if planSnapshot.TargetDuration != nil {
+		taskConfig.PlanTargetDuration = planSnapshot.TargetDuration
 	}
 
 	c.JSON(http.StatusOK, taskConfig)
@@ -1118,6 +1438,17 @@ type taskExecutionConfig struct {
 	Topics []string `json:"topics"`
 }
 
+type taskPlanSnapshot struct {
+	DCPlanName           *string `json:"dc_plan_name"`
+	DCProjectDescription *string `json:"dc_project_description"`
+	DCTaskDescription    *string `json:"dc_task_description"`
+	Operator             *string `json:"operator"`
+	DCType               *string `json:"dc_type"`
+	DCDeviceID           *int64  `json:"dc_device_id"`
+	TargetCount          *int64  `json:"target_count"`
+	TargetDuration       *int64  `json:"target_duration"`
+}
+
 func taskExecutionConfigFromMetadata(raw string) taskExecutionConfig {
 	config := taskExecutionConfig{Topics: []string{}}
 	if strings.TrimSpace(raw) == "" {
@@ -1133,4 +1464,32 @@ func taskExecutionConfigFromMetadata(raw string) taskExecutionConfig {
 		config.Topics = metadata.ExecutionConfig.Topics
 	}
 	return config
+}
+
+func taskPlanSnapshotFromMetadata(raw string) taskPlanSnapshot {
+	snapshot := taskPlanSnapshot{}
+	if strings.TrimSpace(raw) == "" {
+		return snapshot
+	}
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		return taskPlanSnapshot{}
+	}
+	return snapshot
+}
+
+func applyTaskPlanSnapshot(item *TaskListItem, raw string) {
+	if item == nil {
+		return
+	}
+	snapshot := taskPlanSnapshotFromMetadata(raw)
+	if snapshot.DCPlanName != nil {
+		value := strings.TrimSpace(*snapshot.DCPlanName)
+		item.DCPlanName = &value
+	}
+	if snapshot.DCProjectDescription != nil {
+		item.DCProjectDescription = strings.TrimSpace(*snapshot.DCProjectDescription)
+	}
+	if snapshot.DCTaskDescription != nil {
+		item.DCTaskDescription = strings.TrimSpace(*snapshot.DCTaskDescription)
+	}
 }

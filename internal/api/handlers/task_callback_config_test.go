@@ -51,6 +51,67 @@ func TestGetTaskConfigUsesConfiguredCallbackPublicBaseURL(t *testing.T) {
 	}
 }
 
+func TestGetTaskConfigUsesTaskPlanSnapshot(t *testing.T) {
+	db := newTestTaskConfigCallbackDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`
+		UPDATE tasks
+		SET metadata = '{"dc_plan_name":"Snapshot Plan","dc_project_description":"Snapshot project instructions","dc_task_description":"Snapshot task instructions","operator":"snapshot-collector","dc_type":"snapshot-type","dc_device_id":654,"target_count":8,"target_duration":90,"execution_config":{"topics":[]}}'
+		WHERE id = 1
+	`); err != nil {
+		t.Fatalf("update task snapshot: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE dc_plan
+		SET operator = 'new-collector', dc_type = 'new-type', dc_device_id = 999,
+			target_count = 20, target_duration = 180
+		WHERE id = 1001
+	`); err != nil {
+		t.Fatalf("update live plan: %v", err)
+	}
+
+	handler := NewTaskHandler(db, nil, nil, 0)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/tasks/:id/config", handler.GetTaskConfig)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/tasks/1/config", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var response TaskConfig
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if response.OperatorName != "snapshot-collector" || response.DCType != "snapshot-type" ||
+		response.DCPlanName != "Snapshot Plan" ||
+		response.DCProjectDescription != "Snapshot project instructions" ||
+		response.DCTaskDescription != "Snapshot task instructions" ||
+		response.DCDeviceID == nil || *response.DCDeviceID != 654 ||
+		response.PlanTargetCount == nil || *response.PlanTargetCount != 8 ||
+		response.PlanTargetDuration == nil || *response.PlanTargetDuration != 90 {
+		t.Fatalf("task config did not preserve snapshot: %#v", response)
+	}
+}
+
+func TestTaskListItemUsesTaskPlanSnapshot(t *testing.T) {
+	livePlanName := "Live Plan"
+	item := TaskListItem{DCPlanName: &livePlanName}
+
+	applyTaskPlanSnapshot(&item, `{
+		"dc_plan_name":"Snapshot Plan",
+		"dc_project_description":"Snapshot project instructions",
+		"dc_task_description":"Snapshot task instructions"
+	}`)
+
+	if item.DCPlanName == nil || *item.DCPlanName != "Snapshot Plan" ||
+		item.DCProjectDescription != "Snapshot project instructions" ||
+		item.DCTaskDescription != "Snapshot task instructions" {
+		t.Fatalf("task list item did not preserve snapshot: %#v", item)
+	}
+}
+
 func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 	t.Helper()
 	db, err := sqlx.Open("sqlite", ":memory:")

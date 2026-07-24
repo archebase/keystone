@@ -296,7 +296,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	}
 }
 
-func TestLoadStorageConfigUsesTOSWhenDGWCompatEnabled(t *testing.T) {
+func TestLoadStorageConfigKeepsAxonOnMinIOWhenDGWCompatEnabled(t *testing.T) {
 	cleanStorageConfigEnv(t)
 	setStorageConfigEnv(t, "KEYSTONE_DGW_COMPAT_ENABLED", "true")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
@@ -313,29 +313,28 @@ func TestLoadStorageConfigUsesTOSWhenDGWCompatEnabled(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_MINIO_BUCKET", "minio-bucket")
 
 	cfg := loadStorageConfig()
-	if cfg.Type != "tos" {
-		t.Fatalf("Type = %q, want tos (%s)", cfg.Type, tosStorageEnvDebug())
+	if cfg.Type != "s3" {
+		t.Fatalf("Type = %q, want s3", cfg.Type)
 	}
-	if cfg.Endpoint != "tos-cn-beijing.volces.com" {
-		t.Fatalf("Endpoint = %q, want tos-cn-beijing.volces.com", cfg.Endpoint)
+	if cfg.Endpoint != "192.168.119.4:9000" {
+		t.Fatalf("Endpoint = %q, want 192.168.119.4:9000", cfg.Endpoint)
 	}
-	if cfg.Region != "cn-beijing" {
-		t.Fatalf("Region = %q, want cn-beijing", cfg.Region)
+	if cfg.Bucket != "minio-bucket" {
+		t.Fatalf("Bucket = %q, want minio-bucket", cfg.Bucket)
 	}
-	if cfg.STSRoleTRN != "trn:iam::123:role/qa-read" || cfg.STSEndpoint != "https://sts.volcengineapi.com" {
-		t.Fatalf("STS config = role %q endpoint %q", cfg.STSRoleTRN, cfg.STSEndpoint)
+	if cfg.AccessKey != "minio-ak" || cfg.SecretKey != "minio-sk" {
+		t.Fatalf("unexpected MinIO credentials selected")
 	}
-	if cfg.Bucket != "tos-bucket" {
-		t.Fatalf("Bucket = %q, want tos-bucket", cfg.Bucket)
+	if cfg.UseSSL {
+		t.Fatalf("UseSSL = true, want false")
 	}
-	if cfg.AccessKey != "tos-ak" || cfg.SecretKey != "tos-sk" {
-		t.Fatalf("unexpected TOS credentials selected")
+	if !cfg.EnsureBucket {
+		t.Fatalf("EnsureBucket = false, want true for MinIO")
 	}
-	if !cfg.UseSSL {
-		t.Fatalf("UseSSL = false, want true")
-	}
-	if cfg.EnsureBucket {
-		t.Fatalf("EnsureBucket = true, want false for TOS")
+
+	tosCfg := loadTOSStorageConfig()
+	if tosCfg.Type != "tos" || tosCfg.Bucket != "tos-bucket" {
+		t.Fatalf("TOS storage = type %q bucket %q, want tos/tos-bucket", tosCfg.Type, tosCfg.Bucket)
 	}
 }
 
@@ -350,7 +349,7 @@ func TestLoadStorageConfigDoesNotFallbackToUploadSTSRoleForTOSQA(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
 
-	cfg := loadStorageConfig()
+	cfg := loadTOSStorageConfig()
 	if cfg.Type != "tos" {
 		t.Fatalf("Type = %q, want tos (%s)", cfg.Type, tosStorageEnvDebug())
 	}
@@ -369,7 +368,7 @@ func TestLoadStorageConfigAllowsTOSWithoutStaticCredentials(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "")
 
-	cfg := loadStorageConfig()
+	cfg := loadTOSStorageConfig()
 	if cfg.Type != "tos" {
 		t.Fatalf("Type = %q, want tos (%s)", cfg.Type, tosStorageEnvDebug())
 	}
@@ -616,6 +615,43 @@ func TestValidateSyncDPConfig(t *testing.T) {
 		}
 		if cfg.Sync.AuthEndpoint != "" || cfg.Sync.GatewayEndpoint != "" || cfg.Sync.APIKey != "" {
 			t.Fatalf("legacy cloud config should remain optional and empty: %+v", cfg.Sync)
+		}
+	})
+
+	t.Run("sync enabled — direct upload request timeout is not validated", func(t *testing.T) {
+		cfg := validBase
+		cfg.Sync = SyncConfig{
+			Enabled:           true,
+			BatchSize:         10,
+			MaxRetries:        5,
+			MaxConcurrent:     2,
+			WorkerIntervalSec: 60,
+			RequestTimeoutSec: -1,
+			OSSTimeoutSec:     300,
+			RetryBaseSec:      30,
+			RetryMaxSec:       1800,
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error = %v", err)
+		}
+	})
+
+	t.Run("sync enabled — direct upload restart count is not validated", func(t *testing.T) {
+		cfg := validBase
+		cfg.Sync = SyncConfig{
+			Enabled:           true,
+			BatchSize:         10,
+			MaxRetries:        5,
+			MaxConcurrent:     2,
+			WorkerIntervalSec: 60,
+			RequestTimeoutSec: 30,
+			OSSTimeoutSec:     300,
+			RetryBaseSec:      30,
+			RetryMaxSec:       1800,
+			MaxRestartCount:   -1,
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error = %v", err)
 		}
 	})
 

@@ -107,39 +107,42 @@ type HilbertWorkspace struct {
 
 // HilbertDCPlan stores one Hilbert data collection plan projection.
 type HilbertDCPlan struct {
-	ID                  int64             `json:"id"`
-	WorkspaceID         int64             `json:"workspaceId"`
-	Name                string            `json:"name"`
-	Description         *string           `json:"description"`
-	DCFactoryID         int64             `json:"dcFactoryId"`
-	DCServiceProviderID int64             `json:"dcServiceProviderId"`
-	Operator            string            `json:"operator"`
-	OperatorDisplayName string            `json:"operatorDisplayName,omitempty"`
-	DCProjectID         int64             `json:"dcProjectId"`
-	DCProjectName       string            `json:"dcProjectName,omitempty"`
-	DCProject           *HilbertDCPlanRef `json:"dcProject,omitempty"`
-	DCTaskID            int64             `json:"dcTaskId"`
-	DCTaskName          string            `json:"dcTaskName,omitempty"`
-	DCTask              *HilbertDCPlanRef `json:"dcTask,omitempty"`
-	DCDeviceID          int64             `json:"dcDeviceId"`
-	DCDeviceName        string            `json:"dcDeviceName,omitempty"`
-	DCDevice            *HilbertDCPlanRef `json:"dcDevice,omitempty"`
-	DCType              string            `json:"dcType"`
-	DCDate              string            `json:"dcDate"`
-	TargetCount         int64             `json:"targetCount"`
-	CurCount            int64             `json:"curCount"`
-	TargetDuration      int64             `json:"targetDuration"`
-	CurDuration         int64             `json:"curDuration"`
-	CreatedBy           string            `json:"createdBy"`
-	CreatedTime         time.Time         `json:"createdTime"`
-	UpdatedBy           *string           `json:"updatedBy"`
-	UpdatedTime         *time.Time        `json:"updatedTime"`
+	ID                   int64             `json:"id"`
+	WorkspaceID          int64             `json:"workspaceId"`
+	Name                 string            `json:"name"`
+	Description          *string           `json:"description"`
+	DCFactoryID          int64             `json:"dcFactoryId"`
+	DCServiceProviderID  int64             `json:"dcServiceProviderId"`
+	Operator             string            `json:"operator"`
+	OperatorDisplayName  string            `json:"operatorDisplayName,omitempty"`
+	DCProjectID          int64             `json:"dcProjectId"`
+	DCProjectName        string            `json:"dcProjectName,omitempty"`
+	DCProjectDescription string            `json:"dcProjectDescription,omitempty"`
+	DCProject            *HilbertDCPlanRef `json:"dcProject,omitempty"`
+	DCTaskID             int64             `json:"dcTaskId"`
+	DCTaskName           string            `json:"dcTaskName,omitempty"`
+	DCTaskDescription    string            `json:"dcTaskDescription,omitempty"`
+	DCTask               *HilbertDCPlanRef `json:"dcTask,omitempty"`
+	DCDeviceID           int64             `json:"dcDeviceId"`
+	DCDeviceName         string            `json:"dcDeviceName,omitempty"`
+	DCDevice             *HilbertDCPlanRef `json:"dcDevice,omitempty"`
+	DCType               string            `json:"dcType"`
+	DCDate               string            `json:"dcDate"`
+	TargetCount          int64             `json:"targetCount"`
+	CurCount             int64             `json:"curCount"`
+	TargetDuration       int64             `json:"targetDuration"`
+	CurDuration          int64             `json:"curDuration"`
+	CreatedBy            string            `json:"createdBy"`
+	CreatedTime          time.Time         `json:"createdTime"`
+	UpdatedBy            *string           `json:"updatedBy"`
+	UpdatedTime          *time.Time        `json:"updatedTime"`
 }
 
 // HilbertDCPlanRef stores the association shape embedded in Hilbert dc_plan responses.
 type HilbertDCPlanRef struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID          int64   `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
 }
 
 // UnmarshalJSON accepts Hilbert's nested dcProject/dcTask association objects
@@ -149,7 +152,9 @@ func (p *HilbertDCPlan) UnmarshalJSON(data []byte) error {
 	aux := struct {
 		*alias
 		ProjectName string `json:"projectName"`
+		ProjectDesc string `json:"projectDescription"`
 		TaskName    string `json:"taskName"`
+		TaskDesc    string `json:"taskDescription"`
 		DeviceName  string `json:"deviceName"`
 	}{
 		alias: (*alias)(p),
@@ -163,11 +168,23 @@ func (p *HilbertDCPlan) UnmarshalJSON(data []byte) error {
 	if p.DCProjectName == "" && p.DCProject != nil {
 		p.DCProjectName = p.DCProject.Name
 	}
+	if p.DCProjectDescription == "" {
+		p.DCProjectDescription = aux.ProjectDesc
+	}
+	if p.DCProjectDescription == "" && p.DCProject != nil && p.DCProject.Description != nil {
+		p.DCProjectDescription = *p.DCProject.Description
+	}
 	if p.DCTaskName == "" {
 		p.DCTaskName = aux.TaskName
 	}
 	if p.DCTaskName == "" && p.DCTask != nil {
 		p.DCTaskName = p.DCTask.Name
+	}
+	if p.DCTaskDescription == "" {
+		p.DCTaskDescription = aux.TaskDesc
+	}
+	if p.DCTaskDescription == "" && p.DCTask != nil && p.DCTask.Description != nil {
+		p.DCTaskDescription = *p.DCTask.Description
 	}
 	if p.DCDeviceName == "" {
 		p.DCDeviceName = aux.DeviceName

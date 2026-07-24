@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,15 +70,17 @@ func TestDCPlanSyncServiceSyncsPagedPlans(t *testing.T) {
 		Name          string `db:"name"`
 		OperatorName  string `db:"operator_display_name"`
 		DCProjectName string `db:"dc_project_name"`
+		DCProjectDesc string `db:"dc_project_description"`
 		DCTaskName    string `db:"dc_task_name"`
+		DCTaskDesc    string `db:"dc_task_description"`
 		DCDeviceName  string `db:"dc_device_name"`
 		DCType        string `db:"dc_type"`
 		RawPayload    string `db:"raw_payload"`
 	}
-	if err := db.Select(&rows, "SELECT id, workspace_id, name, operator_display_name, dc_project_name, dc_task_name, dc_device_name, dc_type, raw_payload FROM dc_plan ORDER BY id"); err != nil {
+	if err := db.Select(&rows, "SELECT id, workspace_id, name, operator_display_name, dc_project_name, dc_project_description, dc_task_name, dc_task_description, dc_device_name, dc_type, raw_payload FROM dc_plan ORDER BY id"); err != nil {
 		t.Fatalf("query dc_plan: %v", err)
 	}
-	if len(rows) != 2 || rows[0].ID != 1001 || rows[0].WorkspaceID != 123 || rows[0].Name != "Plan A" || rows[0].OperatorName != "Collector 1001" || rows[0].DCProjectName != "Project 1001" || rows[0].DCTaskName != "Task 1001" || rows[0].DCDeviceName != "Device 1001" || rows[0].DCType != "ego" || rows[0].RawPayload == "" {
+	if len(rows) != 2 || rows[0].ID != 1001 || rows[0].WorkspaceID != 123 || rows[0].Name != "Plan A" || rows[0].OperatorName != "Collector 1001" || rows[0].DCProjectName != "Project 1001" || rows[0].DCProjectDesc != "Project description 1001" || rows[0].DCTaskName != "Task 1001" || rows[0].DCTaskDesc != "Description 1001" || rows[0].DCDeviceName != "Device 1001" || rows[0].DCType != "ego" || rows[0].RawPayload == "" {
 		t.Fatalf("unexpected rows: %#v", rows)
 	}
 }
@@ -142,7 +145,7 @@ func TestDCPlanSyncServiceRejectsPlanIDOwnedByAnotherWorkspace(t *testing.T) {
 	}
 }
 
-func TestDCPlanSyncServiceDoesNotDeleteMissingPlans(t *testing.T) {
+func TestDCPlanSyncServiceDeactivatesMissingPlansWithoutCreatingTasks(t *testing.T) {
 	db := newTestDCPlanSyncDB(t)
 	defer db.Close()
 	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
@@ -159,12 +162,122 @@ func TestDCPlanSyncServiceDoesNotDeleteMissingPlans(t *testing.T) {
 		t.Fatalf("SyncWorkspace() error = %v", err)
 	}
 
-	var count int
-	if err := db.Get(&count, "SELECT COUNT(*) FROM dc_plan WHERE workspace_id = ?", 123); err != nil {
-		t.Fatalf("count dc_plan: %v", err)
+	var rows []struct {
+		ID        int64      `db:"id"`
+		DeletedAt *time.Time `db:"deleted_at"`
 	}
-	if count != 2 {
-		t.Fatalf("count=%d want 2", count)
+	if err := db.Select(&rows, "SELECT id, deleted_at FROM dc_plan WHERE workspace_id = ? ORDER BY id", 123); err != nil {
+		t.Fatalf("query dc_plan: %v", err)
+	}
+	if len(rows) != 2 || rows[0].ID != 1001 || rows[0].DeletedAt == nil || rows[1].ID != 1002 || rows[1].DeletedAt != nil {
+		t.Fatalf("unexpected rows: %#v", rows)
+	}
+
+	var taskCount int
+	if err := db.Get(&taskCount, "SELECT COUNT(*) FROM tasks"); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("taskCount=%d want 0", taskCount)
+	}
+}
+
+func TestDCPlanSyncServiceProjectsWorkstationWithoutCreatingTasks(t *testing.T) {
+	db := newTestDCPlanSyncDB(t)
+	defer db.Close()
+	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
+	seedDCPlanProjectionResources(t, db, 123, "collector-a", 15)
+
+	client := &fakeHilbertDCPlanClient{
+		pages: []*auth.HilbertDCPlanPage{
+			{
+				Records: []auth.HilbertDCPlan{
+					testHilbertDCPlan(1001, 123, "Plan A"),
+					testHilbertDCPlan(1002, 123, "Plan B"),
+				},
+				Total:    2,
+				PageNum:  1,
+				PageSize: dcPlanSyncPageSize,
+			},
+		},
+	}
+	service := NewDCPlanSyncService(db, testDCPlanSyncHilbertConfig(), client)
+
+	if _, err := service.SyncWorkspace(context.Background(), 123); err != nil {
+		t.Fatalf("SyncWorkspace() error = %v", err)
+	}
+
+	var workstationCount int
+	if err := db.Get(&workstationCount, `
+		SELECT COUNT(*) FROM workstations WHERE workspace_id = ? AND deleted_at IS NULL
+	`, 123); err != nil {
+		t.Fatalf("query projected workstation: %v", err)
+	}
+	if workstationCount != 1 {
+		t.Fatalf("projected workstation count=%d want 1", workstationCount)
+	}
+	var workstation struct {
+		Status    string `db:"status"`
+		IsCurrent bool   `db:"is_current"`
+	}
+	if err := db.Get(&workstation, `
+		SELECT status, is_current
+		FROM workstations
+		WHERE workspace_id = ? AND deleted_at IS NULL
+	`, 123); err != nil {
+		t.Fatalf("read projected workstation: %v", err)
+	}
+	if workstation.Status != "offline" || workstation.IsCurrent {
+		t.Fatalf("projected workstation=%+v want offline non-current binding", workstation)
+	}
+
+	var taskCount int
+	if err := db.Get(&taskCount, "SELECT COUNT(*) FROM tasks"); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("taskCount=%d want 0", taskCount)
+	}
+}
+
+func TestDCPlanSyncServiceMaintainsEgoPortalStereoPendingPool(t *testing.T) {
+	db := newTestDCPlanSyncDB(t)
+	defer db.Close()
+	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
+	seedDCPlanProjectionResources(t, db, 123, "collector-a", 15)
+	if _, err := db.Exec(`UPDATE robots SET device_type = ? WHERE device_id = '15'`, egoPortalStereoDeviceType); err != nil {
+		t.Fatalf("mark stereo robot: %v", err)
+	}
+
+	client := &fakeHilbertDCPlanClient{
+		pages: []*auth.HilbertDCPlanPage{
+			{
+				Records: []auth.HilbertDCPlan{testHilbertDCPlan(1001, 123, "Plan A")},
+				Total:   1,
+			},
+		},
+	}
+	service := NewDCPlanSyncService(db, testDCPlanSyncHilbertConfig(), client)
+
+	if _, err := service.SyncWorkspace(context.Background(), 123); err != nil {
+		t.Fatalf("SyncWorkspace() error = %v", err)
+	}
+
+	var tasks []struct {
+		WorkstationID int64  `db:"workstation_id"`
+		Status        string `db:"status"`
+		Metadata      string `db:"metadata"`
+	}
+	if err := db.Select(&tasks, `SELECT workstation_id, status, metadata FROM tasks ORDER BY id`); err != nil {
+		t.Fatalf("query pending pool: %v", err)
+	}
+	if len(tasks) != 18 {
+		t.Fatalf("pending task count=%d want 18", len(tasks))
+	}
+	for _, task := range tasks {
+		if task.WorkstationID <= 0 || task.Status != "pending" || !strings.Contains(task.Metadata, `"supply_mode":"ego_portal_pending_pool"`) {
+			t.Fatalf("unexpected pooled task: %#v", task)
+		}
 	}
 }
 
@@ -290,38 +403,65 @@ func (f *fakeHilbertDCPlanClient) QueryDCPlans(_ context.Context, workspaceID in
 func testHilbertDCPlan(id int64, workspaceID int64, name string) auth.HilbertDCPlan {
 	createdAt := time.Date(2026, 7, 9, 3, 4, 5, 0, time.UTC)
 	return auth.HilbertDCPlan{
-		ID:                  id,
-		WorkspaceID:         workspaceID,
-		Name:                name,
-		Description:         nil,
-		DCFactoryID:         11,
-		DCServiceProviderID: 12,
-		Operator:            "collector-a",
-		OperatorDisplayName: "Collector " + strconv.FormatInt(id, 10),
-		DCProjectID:         13,
-		DCProjectName:       "Project " + strconv.FormatInt(id, 10),
-		DCTaskID:            14,
-		DCTaskName:          "Task " + strconv.FormatInt(id, 10),
-		DCDeviceID:          15,
-		DCDeviceName:        "Device " + strconv.FormatInt(id, 10),
-		DCType:              "ego",
-		DCDate:              "2026-07-09",
-		TargetCount:         20,
-		CurCount:            2,
-		TargetDuration:      3600,
-		CurDuration:         120,
-		CreatedBy:           "planner",
-		CreatedTime:         createdAt,
+		ID:                   id,
+		WorkspaceID:          workspaceID,
+		Name:                 name,
+		Description:          nil,
+		DCFactoryID:          11,
+		DCServiceProviderID:  12,
+		Operator:             "collector-a",
+		OperatorDisplayName:  "Collector " + strconv.FormatInt(id, 10),
+		DCProjectID:          13,
+		DCProjectName:        "Project " + strconv.FormatInt(id, 10),
+		DCProjectDescription: "Project description " + strconv.FormatInt(id, 10),
+		DCTaskID:             14,
+		DCTaskName:           "Task " + strconv.FormatInt(id, 10),
+		DCTaskDescription:    "Description " + strconv.FormatInt(id, 10),
+		DCDeviceID:           15,
+		DCDeviceName:         "Device " + strconv.FormatInt(id, 10),
+		DCType:               "ego",
+		DCDate:               "2026-07-09",
+		TargetCount:          20,
+		CurCount:             2,
+		TargetDuration:       3600,
+		CurDuration:          120,
+		CreatedBy:            "planner",
+		CreatedTime:          createdAt,
 	}
 }
 
 func seedDCPlanWorkspace(t *testing.T, db *sqlx.DB, id int64, source string) {
 	t.Helper()
 	if _, err := db.Exec(`
-		INSERT INTO workspaces (id, name, source, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO workspaces (id, name, source, admins, members, created_at, updated_at)
+		VALUES (?, ?, ?, '[]', '[]', ?, ?)
 	`, id, "Workspace", source, time.Now().UTC(), time.Now().UTC()); err != nil {
 		t.Fatalf("seed workspace: %v", err)
+	}
+}
+
+func seedDCPlanProjectionResources(
+	t *testing.T,
+	db *sqlx.DB,
+	workspaceID int64,
+	operatorID string,
+	deviceID int64,
+) {
+	t.Helper()
+	if _, err := db.Exec("UPDATE workspaces SET members = ? WHERE id = ?", `["`+operatorID+`"]`, workspaceID); err != nil {
+		t.Fatalf("seed workspace member: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (name, operator_id, status)
+		VALUES (?, ?, 'active')
+	`, "Collector A", operatorID); err != nil {
+		t.Fatalf("seed data collector: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO robots (device_id, device_name, workspace_id, device_type, status)
+		VALUES (?, ?, ?, 'Axon', 'active')
+	`, strconv.FormatInt(deviceID, 10), "Robot A", workspaceID); err != nil {
+		t.Fatalf("seed robot: %v", err)
 	}
 }
 
@@ -330,12 +470,12 @@ func seedDCPlanRow(t *testing.T, db *sqlx.DB, plan auth.HilbertDCPlan) {
 	if _, err := db.Exec(`
 		INSERT INTO dc_plan (
 			id, workspace_id, name, dc_factory_id, dc_service_provider_id, operator, operator_display_name,
-			dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, dc_date,
+			dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, dc_date,
 			target_count, cur_count, target_duration, cur_duration, created_by,
 			created_time, raw_payload, last_synced_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, plan.ID, plan.WorkspaceID, plan.Name, plan.DCFactoryID, plan.DCServiceProviderID, plan.Operator,
-		plan.OperatorDisplayName, plan.DCProjectID, plan.DCProjectName, plan.DCTaskID, plan.DCTaskName, plan.DCDeviceID, plan.DCDeviceName, plan.DCType, plan.DCDate,
+		plan.OperatorDisplayName, plan.DCProjectID, plan.DCProjectName, plan.DCProjectDescription, plan.DCTaskID, plan.DCTaskName, plan.DCTaskDescription, plan.DCDeviceID, plan.DCDeviceName, plan.DCType, plan.DCDate,
 		plan.TargetCount, plan.CurCount, plan.TargetDuration, plan.CurDuration, plan.CreatedBy,
 		plan.CreatedTime, "{}", time.Now().UTC()); err != nil {
 		t.Fatalf("seed dc_plan: %v", err)
@@ -383,8 +523,10 @@ func newTestDCPlanSyncDB(t *testing.T) *sqlx.DB {
 			operator_display_name TEXT,
 			dc_project_id INTEGER NOT NULL,
 			dc_project_name TEXT,
+			dc_project_description TEXT,
 			dc_task_id INTEGER NOT NULL,
 			dc_task_name TEXT,
+			dc_task_description TEXT,
 			dc_device_id INTEGER NOT NULL,
 			dc_device_name TEXT,
 			dc_type TEXT NOT NULL,
@@ -403,6 +545,66 @@ func newTestDCPlanSyncDB(t *testing.T) *sqlx.DB {
 			local_created_at TIMESTAMP,
 			local_updated_at TIMESTAMP,
 			deleted_at TIMESTAMP
+		);
+		CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id TEXT NOT NULL,
+			workstation_id INTEGER,
+			organization_id INTEGER,
+			dc_plan_id INTEGER,
+			local_dc_plan_id INTEGER,
+			status TEXT,
+			assigned_at TIMESTAMP,
+			metadata TEXT,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE episodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			episode_id TEXT,
+			task_id INTEGER,
+			dc_plan_id INTEGER,
+			cloud_synced BOOLEAN DEFAULT FALSE,
+			qa_status TEXT DEFAULT 'pending_qa',
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE data_collectors (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			operator_id TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL,
+			metadata TEXT,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE robots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			device_id TEXT NOT NULL UNIQUE,
+			device_name TEXT,
+			workspace_id INTEGER NOT NULL,
+			device_type TEXT,
+			status TEXT NOT NULL,
+			metadata TEXT,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			robot_id INTEGER NOT NULL,
+			robot_name TEXT,
+			robot_serial TEXT,
+			data_collector_id INTEGER NOT NULL,
+			collector_name TEXT,
+			collector_operator_id TEXT,
+			workspace_id INTEGER NOT NULL,
+			name TEXT,
+			status TEXT NOT NULL,
+			metadata TEXT,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
+			deleted_at TIMESTAMP,
+			is_current BOOLEAN NOT NULL DEFAULT FALSE,
+			superseded_at TIMESTAMP,
+			superseded_by INTEGER
 		);
 	`); err != nil {
 		db.Close()

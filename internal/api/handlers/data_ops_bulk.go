@@ -79,8 +79,10 @@ type DataOpsBulkEpisodeQAActionResponse struct {
 }
 
 type dataOpsBulkQAPreviewRow struct {
-	MatchedCount   int64 `db:"matched_count"`
-	QARunningCount int64 `db:"qa_running_count"`
+	MatchedCount     int64 `db:"matched_count"`
+	QARunningCount   int64 `db:"qa_running_count"`
+	CloudSyncedCount int64 `db:"cloud_synced_count"`
+	SyncActiveCount  int64 `db:"sync_active_count"`
 }
 
 type dataOpsBulkSyncPreviewRow struct {
@@ -468,14 +470,23 @@ func (h *DataOpsHandler) previewBulkEpisodeQA(ctx context.Context, q dataOpsEpis
 
 	matched := int(row.MatchedCount)
 	qaRunning := int(row.QARunningCount)
-	eligible := matched - qaRunning
+	cloudSynced := int(row.CloudSyncedCount)
+	syncActive := int(row.SyncActiveCount)
+	eligible := matched - qaRunning - cloudSynced - syncActive
 	if eligible < 0 {
 		eligible = 0
 	}
+	skipped := matched - eligible
 
 	breakdown := []DataOpsBulkSkippedBreakdownItem{}
 	if qaRunning > 0 {
 		breakdown = append(breakdown, DataOpsBulkSkippedBreakdownItem{Reason: "qa_running", Count: qaRunning})
+	}
+	if cloudSynced > 0 {
+		breakdown = append(breakdown, DataOpsBulkSkippedBreakdownItem{Reason: "already_synced", Count: cloudSynced})
+	}
+	if syncActive > 0 {
+		breakdown = append(breakdown, DataOpsBulkSkippedBreakdownItem{Reason: "sync_active", Count: syncActive})
 	}
 	warnings := []string{}
 
@@ -484,7 +495,7 @@ func (h *DataOpsHandler) previewBulkEpisodeQA(ctx context.Context, q dataOpsEpis
 		Action:           "bulk_qa",
 		MatchedCount:     matched,
 		EligibleCount:    eligible,
-		SkippedCount:     qaRunning,
+		SkippedCount:     skipped,
 		SkippedBreakdown: breakdown,
 		Warnings:         warnings,
 	}, nil
@@ -494,7 +505,23 @@ func dataOpsBulkQAPreviewSQL(fromSQL string, where string) string {
 	return `
 		SELECT
 			COUNT(1) AS matched_count,
-			COALESCE(SUM(CASE WHEN COALESCE(e.qa_status, '') = 'qa_running' THEN 1 ELSE 0 END), 0) AS qa_running_count
+			COALESCE(SUM(CASE
+				WHEN COALESCE(e.cloud_synced, FALSE) = FALSE
+					AND COALESCE(e.qa_status, '') = 'qa_running' THEN 1
+				ELSE 0
+			END), 0) AS qa_running_count,
+			COALESCE(SUM(CASE WHEN COALESCE(e.cloud_synced, FALSE) = TRUE THEN 1 ELSE 0 END), 0) AS cloud_synced_count,
+			COALESCE(SUM(CASE
+				WHEN COALESCE(e.cloud_synced, FALSE) = FALSE
+					AND COALESCE(e.qa_status, '') <> 'qa_running'
+					AND EXISTS (
+						SELECT 1
+						FROM sync_logs sl
+						WHERE sl.episode_id = e.id
+							AND sl.status IN ('pending', 'in_progress')
+					) THEN 1
+				ELSE 0
+			END), 0) AS sync_active_count
 	` + fromSQL + where
 }
 
@@ -697,7 +724,9 @@ func (h *DataOpsHandler) runBulkEpisodeQA(runID string, ids []int64) {
 func isBulkQASkippedError(err error) bool {
 	return errors.Is(err, errEpisodeQAAlreadyRunning) ||
 		errors.Is(err, errEpisodeQANotFound) ||
-		errors.Is(err, errEpisodeQAAutoSkipped)
+		errors.Is(err, errEpisodeQAAutoSkipped) ||
+		errors.Is(err, errEpisodeQACloudSynced) ||
+		errors.Is(err, errEpisodeQASyncActive)
 }
 
 func (h *DataOpsHandler) runBulkEpisodeSync(ids []int64) {

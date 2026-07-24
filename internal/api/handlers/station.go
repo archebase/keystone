@@ -515,6 +515,7 @@ func (h *StationHandler) getStationResponseRow(stationID int64, currentOnly bool
 // @Param        collector_name        query string false "Filter by collector name(s), comma-separated"
 // @Param        collector_operator_id query string false "Filter by collector operator ID(s), comma-separated"
 // @Param        status                query string false "Filter by status(es), comma-separated (active, inactive, break, offline)"
+// @Param        is_current            query bool   false "Filter by current login binding state"
 // @Param        keyword         query string false "Search by name, robot serial, robot name, collector operator ID, or collector name"
 // @Param        q               query string false "Alias of keyword"
 // @Param        search          query string false "Alias of keyword"
@@ -564,11 +565,24 @@ func (h *StationHandler) ListStations(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	var isCurrent *bool
+	if raw := strings.TrimSpace(c.Query("is_current")); raw != "" {
+		parsed, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid is_current format"})
+			return
+		}
+		isCurrent = &parsed
+	}
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 	stationSearchFields := []string{"ws.name", "ws.robot_serial", "ws.collector_operator_id", "ws.robot_name", "ws.collector_name", "r.metadata"}
 
-	whereClause := "WHERE ws.deleted_at IS NULL AND ws.is_current = TRUE"
+	whereClause := "WHERE ws.deleted_at IS NULL AND ws.superseded_at IS NULL"
 	args := []any{}
+	if isCurrent != nil {
+		whereClause += " AND ws.is_current = ?"
+		args = append(args, *isCurrent)
+	}
 	whereClause, args = appendInt64InFilter(whereClause, args, "ws.workspace_id", workspaceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "ws.status", statuses)
 	whereClause, args = appendStringInFilter(whereClause, args, "ws.robot_serial", deviceIDs)

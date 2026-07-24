@@ -6,7 +6,6 @@ package services
 
 import (
 	"context"
-	"crypto/md5" // #nosec G501 -- Hilbert raw-data API requires an MD5 bagDigest field.
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -61,11 +60,12 @@ type syncEpisodeUploadRow struct {
 	McapPath                string          `db:"mcap_path"`
 	SidecarPath             string          `db:"sidecar_path"`
 	CloudSynced             bool            `db:"cloud_synced"`
-	Metadata                sql.NullString  `db:"metadata"`
+	Checksum                sql.NullString  `db:"checksum"`
 	WorkstationID           sql.NullInt64   `db:"workstation_id"`
 	DataCollectorOperatorID sql.NullString  `db:"data_collector_operator_id"`
 	DataCollectorName       sql.NullString  `db:"data_collector_name"`
 	DurationSec             sql.NullFloat64 `db:"duration_sec"`
+	Metadata                sql.NullString  `db:"metadata"`
 	CreatedAt               time.Time       `db:"created_at"`
 }
 
@@ -172,6 +172,8 @@ type SyncWorker struct {
 	hilbert     hilbertRawDataClient
 	tosUploader tosObjectUploader
 	source      SourceObjectReader
+	tosSource   SourceObjectReader
+	tosBucket   string
 	cfg         SyncWorkerConfig
 	syncCfg     *config.SyncConfig
 
@@ -248,11 +250,22 @@ func (w *SyncWorker) SetTOSObjectUploader(uploader tosObjectUploader) {
 }
 
 // SetSourceObjectReader configures how the worker reads source MCAP objects.
+// It must be called before Start.
 func (w *SyncWorker) SetSourceObjectReader(reader SourceObjectReader) {
 	if w == nil {
 		return
 	}
 	w.source = reader
+}
+
+// SetTOSSourceObjectReader configures how the worker reads DGW compatibility
+// uploads stored in the configured TOS bucket. It must be called before Start.
+func (w *SyncWorker) SetTOSSourceObjectReader(bucket string, reader SourceObjectReader) {
+	if w == nil {
+		return
+	}
+	w.tosBucket = strings.TrimSpace(bucket)
+	w.tosSource = reader
 }
 
 func (w *SyncWorker) sourceReader() SourceObjectReader {
@@ -266,6 +279,60 @@ func (w *SyncWorker) sourceReader() SourceObjectReader {
 		return minioSourceObjectReader{client: w.minioClient}
 	}
 	return nil
+}
+
+type episodeSourceMetadata struct {
+	Source             string `json:"source"`
+	ObjectStoreBackend string `json:"object_store_backend"`
+	Bucket             string `json:"bucket"`
+	ObjectKey          string `json:"object_key"`
+}
+
+func (m episodeSourceMetadata) usesTOS(configuredBucket string) bool {
+	if strings.EqualFold(strings.TrimSpace(m.Source), "dgwcompat") ||
+		strings.EqualFold(strings.TrimSpace(m.ObjectStoreBackend), "volcengine_tos") {
+		return true
+	}
+	bucket := strings.TrimSpace(m.Bucket)
+	return bucket != "" && strings.TrimSpace(configuredBucket) != "" &&
+		strings.EqualFold(bucket, strings.TrimSpace(configuredBucket))
+}
+
+func (w *SyncWorker) mcapSourceObject(ep syncEpisodeUploadRow) (SourceObjectReader, string, string, error) {
+	var metadata episodeSourceMetadata
+	if ep.Metadata.Valid && json.Unmarshal([]byte(ep.Metadata.String), &metadata) == nil && metadata.usesTOS(w.tosBucket) {
+		bucket := strings.TrimSpace(metadata.Bucket)
+		if bucket == "" {
+			bucket = strings.TrimSpace(w.tosBucket)
+		}
+		if configuredBucket := strings.TrimSpace(w.tosBucket); configuredBucket != "" &&
+			!strings.EqualFold(bucket, configuredBucket) {
+			return nil, "", "", newNonRetryableSyncError(
+				"episode %d uses unconfigured TOS bucket %q", ep.ID, bucket,
+			)
+		}
+		key := strings.TrimSpace(metadata.ObjectKey)
+		if key == "" {
+			key = objectKeyFromStoredPath(ep.McapPath, bucket)
+		}
+		if bucket == "" || key == "" {
+			return nil, "", "", newNonRetryableSyncError("episode %d has invalid TOS object location", ep.ID)
+		}
+		if w.tosSource == nil {
+			return nil, "", "", fmt.Errorf("TOS source object reader not available for episode %d", ep.ID)
+		}
+		return w.tosSource, bucket, key, nil
+	}
+
+	key := objectKeyFromStoredPath(ep.McapPath, w.minioBucket)
+	if key == "" {
+		return nil, "", "", newNonRetryableSyncError("episode %d has empty mcap_path", ep.ID)
+	}
+	reader := w.sourceReader()
+	if reader == nil {
+		return nil, "", "", fmt.Errorf("source object reader not available")
+	}
+	return reader, w.minioBucket, key, nil
 }
 
 func (w *SyncWorker) setEpisodeProgress(episodeID int64, uploadedBytes int64, totalBytes int64) {
@@ -1057,9 +1124,10 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 			e.mcap_path,
 			e.sidecar_path,
 			e.cloud_synced,
-			e.metadata,
+			e.checksum,
 			e.workstation_id,
 			e.duration_sec,
+			e.metadata,
 			e.created_at,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS data_collector_operator_id,
 			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS data_collector_name
@@ -1114,28 +1182,18 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if w.hilbert == nil {
 		return nil, newNonRetryableSyncError("Hilbert raw-data client is not configured")
 	}
-	source := w.sourceReader()
-	if source == nil {
-		return nil, fmt.Errorf("source object reader not available")
+	source, sourceBucket, mcapKey, err := w.mcapSourceObject(ep)
+	if err != nil {
+		return nil, err
 	}
 
-	mcapKey := objectKeyFromStoredPath(ep.McapPath, w.minioBucket)
-	if mcapKey == "" {
-		return nil, newNonRetryableSyncError("episode %d has empty mcap_path", ep.ID)
-	}
-
-	objectSize, err := source.StatObject(ctx, w.minioBucket, mcapKey)
+	objectSize, err := source.StatObject(ctx, sourceBucket, mcapKey)
 	if err != nil {
 		return nil, fmt.Errorf("stat mcap object %s: %w", mcapKey, err)
 	}
 	if objectSize <= 0 {
 		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
 	}
-	mcapMD5Hex, err := episodeMCAPMD5Hex(ctx, ep, source, w.minioBucket, mcapKey)
-	if err != nil {
-		return nil, fmt.Errorf("resolve mcap md5 %s: %w", mcapKey, err)
-	}
-
 	rawDataID, err := w.hilbertRawDataIDFromSyncLog(ctx, syncLogID)
 	if err != nil {
 		return nil, err
@@ -1144,6 +1202,10 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		logger.Printf("[SYNC-WORKER] Episode %d reusing Hilbert raw-data registration: raw_data_id=%d sync_log_id=%d",
 			ep.ID, rawDataID, syncLogID)
 	} else {
+		bagDigest, err := episodeSHA256Hex(ep)
+		if err != nil {
+			return nil, err
+		}
 		rawDataID, err = w.hilbert.RegisterRawData(ctx, auth.HilbertRawDataRegisterRequest{
 			WorkspaceID:  uploadContext.WorkspaceID,
 			DCPlanID:     uploadContext.DCPlanID,
@@ -1151,7 +1213,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 			BagStartTime: ep.bagStartTime(),
 			BagEndTime:   ep.bagEndTime(),
 			BagSize:      objectSize,
-			BagDigest:    mcapMD5Hex,
+			BagDigest:    bagDigest,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("register Hilbert raw data: %w", err)
@@ -1170,7 +1232,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		return nil, fmt.Errorf("unsupported Hilbert raw-data provider %q", uploadCredentials.Provider)
 	}
 
-	obj, err := source.OpenObject(ctx, w.minioBucket, mcapKey)
+	obj, err := source.OpenObject(ctx, sourceBucket, mcapKey)
 	if err != nil {
 		return nil, fmt.Errorf("get mcap object %s: %w", mcapKey, err)
 	}
@@ -1313,59 +1375,15 @@ func (w *SyncWorker) persistHilbertRawDataID(ctx context.Context, syncLogID int6
 	return nil
 }
 
-func objectMD5Hex(ctx context.Context, source SourceObjectReader, bucket, key string) (string, error) {
-	if source == nil {
-		return "", fmt.Errorf("source object reader not available")
+func episodeSHA256Hex(ep syncEpisodeUploadRow) (string, error) {
+	checksum := strings.ToLower(strings.TrimSpace(ep.Checksum.String))
+	if !ep.Checksum.Valid || len(checksum) != 64 {
+		return "", newNonRetryableSyncError("episode %d missing valid SHA-256 checksum", ep.ID)
 	}
-	obj, err := source.OpenObject(ctx, bucket, key)
-	if err != nil {
-		return "", fmt.Errorf("open object %s: %w", key, err)
+	if _, err := hex.DecodeString(checksum); err != nil {
+		return "", newNonRetryableSyncError("episode %d missing valid SHA-256 checksum", ep.ID)
 	}
-	defer func() {
-		_ = obj.Close()
-	}()
-	hash := md5.New() // #nosec G401 -- Hilbert raw-data API requires MD5.
-	if _, err := io.Copy(hash, obj); err != nil {
-		return "", fmt.Errorf("read object %s: %w", key, err)
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func episodeMCAPMD5Hex(
-	ctx context.Context,
-	ep syncEpisodeUploadRow,
-	source SourceObjectReader,
-	bucket string,
-	key string,
-) (string, error) {
-	if ep.Metadata.Valid {
-		var metadata struct {
-			Source      string `json:"source"`
-			Product     string `json:"product"`
-			ChecksumMD5 string `json:"checksum_md5"`
-			ClientHints struct {
-				Product string `json:"product"`
-			} `json:"client_hints"`
-		}
-		if err := json.Unmarshal([]byte(ep.Metadata.String), &metadata); err == nil &&
-			metadata.Source == "dgwcompat" &&
-			(metadata.Product == "ego_portal_lite" || metadata.ClientHints.Product == "ego_portal_lite") {
-			checksumMD5 := strings.ToLower(strings.TrimSpace(metadata.ChecksumMD5))
-			if !isMD5HexDigest(checksumMD5) {
-				return "", newNonRetryableSyncError("episode %d missing valid dgwcompat checksum_md5", ep.ID)
-			}
-			return checksumMD5, nil
-		}
-	}
-	return objectMD5Hex(ctx, source, bucket, key)
-}
-
-func isMD5HexDigest(value string) bool {
-	if len(value) != md5.Size*2 {
-		return false
-	}
-	_, err := hex.DecodeString(value)
-	return err == nil
+	return checksum, nil
 }
 
 func hilbertUploadTarget(credentials *auth.HilbertRawDataUploadCredentials) cloud.TOSS3UploadTarget {
@@ -1463,9 +1481,12 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 	lockClause := txLockClause(tx)
 
 	// Serialize per episode even when sync_logs is empty for this episode.
-	var lockedEpisodeID int64
-	if err := tx.GetContext(ctx, &lockedEpisodeID, `
-		SELECT id
+	var lockedEpisode struct {
+		ID       int64  `db:"id"`
+		QAStatus string `db:"qa_status"`
+	}
+	if err := tx.GetContext(ctx, &lockedEpisode, `
+		SELECT id, COALESCE(qa_status, '') AS qa_status
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`+lockClause, episodeID); err != nil {
@@ -1473,6 +1494,9 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 			return 0, 0, fmt.Errorf("episode %d not found", episodeID)
 		}
 		return 0, 0, fmt.Errorf("lock episode %d: %w", episodeID, err)
+	}
+	if lockedEpisode.QAStatus != "approved" {
+		return 0, 0, fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, lockedEpisode.QAStatus)
 	}
 
 	var latest struct {
@@ -1608,7 +1632,48 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Update sync_log
+	// Keep cloud_synced and qa_status mutually consistent even if another writer bypasses
+	// the normal sync/QA claim guards.
+	episodeResult, err := tx.ExecContext(ctx, `
+		UPDATE episodes
+		SET cloud_synced = TRUE,
+		    cloud_synced_at = ?,
+		    cloud_mcap_path = ?,
+		    cloud_processed = FALSE
+		WHERE id = ?
+		  AND deleted_at IS NULL
+		  AND qa_status = 'approved'
+	`, now, result.ObjectKey, episodeID)
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to update episode %d cloud status: %v", episodeID, err)
+		return
+	}
+	affected, err := episodeResult.RowsAffected()
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to read episode %d cloud status rows affected: %v", episodeID, err)
+		return
+	}
+	if affected != 1 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sync_logs
+			SET status = 'failed',
+			    error_message = 'episode QA status changed before sync completion',
+			    duration_sec = ?,
+			    completed_at = ?,
+			    next_retry_at = NULL
+			WHERE id = ? AND status = 'in_progress'
+		`, durationSec, now, syncLogID); err != nil {
+			logger.Printf("[SYNC-WORKER] Failed to reject sync completion for episode %d: %v", episodeID, err)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			logger.Printf("[SYNC-WORKER] Failed to commit rejected sync completion for episode %d: %v", episodeID, err)
+			return
+		}
+		logger.Printf("[SYNC-WORKER] Rejected sync completion for episode %d because QA is no longer approved", episodeID)
+		return
+	}
+
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE sync_logs
 		SET status = 'completed',
@@ -1619,19 +1684,6 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		WHERE id = ?
 	`, result.ObjectKey, result.FileSize, durationSec, now, syncLogID); err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to update sync log %d: %v", syncLogID, err)
-		return
-	}
-
-	// Update episode
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE episodes
-		SET cloud_synced = TRUE,
-		    cloud_synced_at = ?,
-		    cloud_mcap_path = ?,
-		    cloud_processed = FALSE
-		WHERE id = ? AND deleted_at IS NULL
-	`, now, result.ObjectKey, episodeID); err != nil {
-		logger.Printf("[SYNC-WORKER] Failed to update episode %d cloud status: %v", episodeID, err)
 		return
 	}
 

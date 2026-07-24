@@ -39,11 +39,11 @@ type HilbertDCPlanClient interface {
 
 // DCPlanSyncResult summarizes one Hilbert dc plan sync run.
 type DCPlanSyncResult struct {
-	WorkspaceID    int64
-	SyncedCount    int
-	PageCount      int
-	LastSyncedAt   time.Time
-	TaskGeneration *DCPlanTaskGenerationSummary
+	WorkspaceID           int64
+	SyncedCount           int
+	PageCount             int
+	LastSyncedAt          time.Time
+	WorkstationProjection *DCPlanWorkstationProjectionSummary
 }
 
 // DCPlanSyncAllResult summarizes a sync run across every Hilbert workspace.
@@ -67,7 +67,8 @@ type DCPlanSyncService struct {
 	db            *sqlx.DB
 	cfg           *config.HilbertConfig
 	hilbertClient HilbertDCPlanClient
-	taskGenerator *DCPlanTaskGenerationService
+	projector     *dcPlanWorkstationProjector
+	taskSupply    *DCPlanTaskSupplyService
 }
 
 // NewDCPlanSyncService creates a DCPlanSyncService.
@@ -75,7 +76,13 @@ func NewDCPlanSyncService(db *sqlx.DB, cfg *config.HilbertConfig, hilbertClient 
 	if hilbertClient == nil {
 		hilbertClient = auth.NewHilbertClient(cfg)
 	}
-	return &DCPlanSyncService{db: db, cfg: cfg, hilbertClient: hilbertClient, taskGenerator: NewDCPlanTaskGenerationService(db)}
+	return &DCPlanSyncService{
+		db:            db,
+		cfg:           cfg,
+		hilbertClient: hilbertClient,
+		projector:     newDCPlanWorkstationProjector(db),
+		taskSupply:    NewDCPlanTaskSupplyService(db),
+	}
 }
 
 // Configured reports whether sync has the required Hilbert service identity settings.
@@ -107,16 +114,60 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 	if err := s.upsertDCPlans(ctx, workspaceID, plans, now); err != nil {
 		return nil, fmt.Errorf("%w: upsert dc plans: %v", ErrDCPlanSyncFailed, err)
 	}
-	taskGeneration := s.taskGenerator.GenerateForPlans(ctx, plans, now)
+	projection := s.projector.project(ctx, plans, now)
+	poolPlans, poolTasks, poolFailures := s.maintainEgoPortalPendingPools(ctx, plans, now)
 	logger.Printf("[DC_PLAN] Hilbert dc plan sync committed: workspace_id=%d synced_count=%d page_count=%d", workspaceID, len(plans), pageCount)
+	logger.Printf(
+		"[DC_PLAN] Hilbert workstation projection completed: workspace_id=%d plans=%d created=%d reused=%d blocked=%d",
+		workspaceID,
+		projection.TotalPlans,
+		projection.CreatedCount,
+		projection.ReusedCount,
+		projection.BlockedCount,
+	)
+	logger.Printf(
+		"[DC_PLAN] Ego Portal pending pool maintenance completed: workspace_id=%d plans=%d created=%d failed=%d",
+		workspaceID,
+		poolPlans,
+		poolTasks,
+		poolFailures,
+	)
 
 	return &DCPlanSyncResult{
-		WorkspaceID:    workspaceID,
-		SyncedCount:    len(plans),
-		PageCount:      pageCount,
-		LastSyncedAt:   now,
-		TaskGeneration: taskGeneration,
+		WorkspaceID:           workspaceID,
+		SyncedCount:           len(plans),
+		PageCount:             pageCount,
+		LastSyncedAt:          now,
+		WorkstationProjection: projection,
 	}, nil
+}
+
+func (s *DCPlanSyncService) maintainEgoPortalPendingPools(
+	ctx context.Context,
+	plans []auth.HilbertDCPlan,
+	now time.Time,
+) (int, int, int) {
+	enabledCount := 0
+	createdCount := 0
+	failedCount := 0
+	for _, plan := range plans {
+		result, err := s.taskSupply.EnsureEgoPortalPendingPool(ctx, plan.ID, now)
+		if err != nil {
+			failedCount++
+			logger.Printf(
+				"[DC_PLAN] Pending pool maintenance blocked: workspace_id=%d dc_plan_id=%d err=%v",
+				plan.WorkspaceID,
+				plan.ID,
+				err,
+			)
+			continue
+		}
+		if result.Enabled {
+			enabledCount++
+			createdCount += result.CreatedCount
+		}
+	}
+	return enabledCount, createdCount, failedCount
 }
 
 // SyncAllWorkspaces syncs dc_plan projections for every local Hilbert workspace.
@@ -271,6 +322,13 @@ func (s *DCPlanSyncService) upsertDCPlans(ctx context.Context, workspaceID int64
 			return fmt.Errorf("dc plan %d already belongs to workspace %d", plan.ID, existingWorkspaceID)
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE dc_plan
+		SET deleted_at = ?, local_updated_at = ?
+		WHERE workspace_id = ? AND deleted_at IS NULL
+	`, syncedAt, syncedAt, workspaceID); err != nil {
+		return err
+	}
 
 	for _, plan := range plans {
 		if err := upsertDCPlan(ctx, tx, plan, syncedAt); err != nil {
@@ -309,8 +367,10 @@ func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syn
 		nullableString(plan.OperatorDisplayName),
 		plan.DCProjectID,
 		nullableString(plan.DCProjectName),
+		nullableString(plan.DCProjectDescription),
 		plan.DCTaskID,
 		nullableString(plan.DCTaskName),
+		nullableString(plan.DCTaskDescription),
 		plan.DCDeviceID,
 		nullableString(plan.DCDeviceName),
 		strings.TrimSpace(plan.DCType),
@@ -334,11 +394,11 @@ func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syn
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO dc_plan (
 				id, workspace_id, name, description, dc_factory_id, dc_service_provider_id,
-				operator, operator_display_name, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, dc_date,
+				operator, operator_display_name, dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, dc_date,
 				target_count, cur_count, target_duration, cur_duration, created_by, created_time,
 				updated_by, updated_time, raw_payload, last_synced_at, sync_error,
 				local_created_at, local_updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				workspace_id = excluded.workspace_id,
 				name = excluded.name,
@@ -349,8 +409,10 @@ func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syn
 				operator_display_name = excluded.operator_display_name,
 				dc_project_id = excluded.dc_project_id,
 				dc_project_name = excluded.dc_project_name,
+				dc_project_description = excluded.dc_project_description,
 				dc_task_id = excluded.dc_task_id,
 				dc_task_name = excluded.dc_task_name,
+				dc_task_description = excluded.dc_task_description,
 				dc_device_id = excluded.dc_device_id,
 				dc_device_name = excluded.dc_device_name,
 				dc_type = excluded.dc_type,
@@ -375,11 +437,11 @@ func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syn
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO dc_plan (
 			id, workspace_id, name, description, dc_factory_id, dc_service_provider_id,
-			operator, operator_display_name, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, dc_date,
+			operator, operator_display_name, dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, dc_date,
 			target_count, cur_count, target_duration, cur_duration, created_by, created_time,
 			updated_by, updated_time, raw_payload, last_synced_at, sync_error,
 			local_created_at, local_updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			workspace_id = VALUES(workspace_id),
 			name = VALUES(name),
@@ -390,8 +452,10 @@ func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syn
 			operator_display_name = VALUES(operator_display_name),
 			dc_project_id = VALUES(dc_project_id),
 			dc_project_name = VALUES(dc_project_name),
+			dc_project_description = VALUES(dc_project_description),
 			dc_task_id = VALUES(dc_task_id),
 			dc_task_name = VALUES(dc_task_name),
+			dc_task_description = VALUES(dc_task_description),
 			dc_device_id = VALUES(dc_device_id),
 			dc_device_name = VALUES(dc_device_name),
 			dc_type = VALUES(dc_type),

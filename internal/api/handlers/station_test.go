@@ -138,6 +138,74 @@ func TestStationHandlerListStations_SearchesRobotDeviceName(t *testing.T) {
 	}
 }
 
+func TestStationHandlerListStations_IncludesAvailableNonCurrentBindings(t *testing.T) {
+	db := newTestStationHandlerDB(t)
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{sql: `INSERT INTO workspaces (id, name, deleted_at) VALUES (60, 'Org A', NULL)`},
+		{sql: `INSERT INTO robots (id, device_id, workspace_id, deleted_at) VALUES (1, 'device-a', 60, NULL), (2, 'device-b', 60, NULL), (3, 'device-c', 60, NULL)`},
+		{
+			sql: `INSERT INTO workstations (
+				id, robot_id, robot_name, robot_serial, data_collector_id,
+				collector_name, collector_operator_id, workspace_id,
+				name, status, is_current, superseded_at, metadata, created_at, updated_at, deleted_at
+			) VALUES
+				(1, 1, 'device-a', 'device-a', 100, 'Alice', 'C001', 60, 'ws-current', 'active', TRUE, NULL, '{}', ?, ?, NULL),
+				(2, 2, 'device-b', 'device-b', 100, 'Alice', 'C001', 60, 'ws-planned', 'offline', FALSE, NULL, '{}', ?, ?, NULL),
+				(3, 3, 'device-c', 'device-c', 100, 'Alice', 'C001', 60, 'ws-old', 'offline', FALSE, ?, '{}', ?, ?, NULL)`,
+			args: []any{now, now, now, now, now, now, now},
+		},
+	} {
+		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed station fixture failed: %v", err)
+		}
+	}
+
+	r := newTestStationRouter(t, db)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/stations?workspace_id=60", nil)
+	listW := httptest.NewRecorder()
+	r.ServeHTTP(listW, listReq)
+	if listW.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listW.Code, listW.Body.String())
+	}
+	var listResp struct {
+		Items []StationResponse `json:"items"`
+		Total int               `json:"total"`
+	}
+	if err := json.Unmarshal(listW.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("unmarshal list response: %v body=%s", err, listW.Body.String())
+	}
+	if listResp.Total != 2 || len(listResp.Items) != 2 {
+		t.Fatalf("available current and planned stations should appear: %#v", listResp)
+	}
+	if listResp.Items[0].ID != "2" || listResp.Items[0].IsCurrent || listResp.Items[1].ID != "1" || !listResp.Items[1].IsCurrent {
+		t.Fatalf("unexpected available station ordering or state: %#v", listResp.Items)
+	}
+
+	currentReq := httptest.NewRequest(http.MethodGet, "/api/v1/stations?workspace_id=60&is_current=true", nil)
+	currentW := httptest.NewRecorder()
+	r.ServeHTTP(currentW, currentReq)
+	if currentW.Code != http.StatusOK {
+		t.Fatalf("current list status=%d body=%s", currentW.Code, currentW.Body.String())
+	}
+	var currentResp struct {
+		Items []StationResponse `json:"items"`
+		Total int               `json:"total"`
+	}
+	if err := json.Unmarshal(currentW.Body.Bytes(), &currentResp); err != nil {
+		t.Fatalf("unmarshal current response: %v body=%s", err, currentW.Body.String())
+	}
+	if currentResp.Total != 1 || len(currentResp.Items) != 1 || currentResp.Items[0].ID != "1" {
+		t.Fatalf("current filter should only return current station: %#v", currentResp)
+	}
+}
+
 func TestStationHandlerCreateRejectsCrossWorkspaceBinding(t *testing.T) {
 	db := newTestStationHandlerDB(t)
 	defer db.Close()

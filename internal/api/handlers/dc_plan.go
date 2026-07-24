@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"math"
@@ -23,41 +24,48 @@ import (
 // DCPlanHandler handles Hilbert dc_plan projection requests.
 type DCPlanHandler struct {
 	db          *sqlx.DB
-	syncService *services.DCPlanSyncService
+	syncService dcPlanWorkspaceSyncer
+}
+
+type dcPlanWorkspaceSyncer interface {
+	Configured() bool
+	SyncWorkspace(context.Context, int64) (*services.DCPlanSyncResult, error)
 }
 
 // NewDCPlanHandler creates a new DCPlanHandler.
-func NewDCPlanHandler(db *sqlx.DB, syncService *services.DCPlanSyncService) *DCPlanHandler {
+func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer) *DCPlanHandler {
 	return &DCPlanHandler{db: db, syncService: syncService}
 }
 
 // DCPlanResponse represents one Hilbert dc_plan projection.
 type DCPlanResponse struct {
-	ID                  int64  `json:"id"`
-	WorkspaceID         int64  `json:"workspace_id"`
-	Name                string `json:"name"`
-	Description         string `json:"description,omitempty"`
-	DCFactoryID         int64  `json:"dc_factory_id"`
-	DCServiceProviderID int64  `json:"dc_service_provider_id"`
-	Operator            string `json:"operator"`
-	OperatorDisplayName string `json:"operator_display_name,omitempty"`
-	DCProjectID         int64  `json:"dc_project_id"`
-	DCProjectName       string `json:"dc_project_name,omitempty"`
-	DCTaskID            int64  `json:"dc_task_id"`
-	DCTaskName          string `json:"dc_task_name,omitempty"`
-	DCDeviceID          int64  `json:"dc_device_id"`
-	DCDeviceName        string `json:"dc_device_name,omitempty"`
-	DCType              string `json:"dc_type"`
-	DCDate              string `json:"dc_date"`
-	TargetCount         int64  `json:"target_count"`
-	CurCount            int64  `json:"cur_count"`
-	TargetDuration      int64  `json:"target_duration"`
-	CurDuration         int64  `json:"cur_duration"`
-	CreatedBy           string `json:"created_by"`
-	CreatedTime         string `json:"created_time"`
-	UpdatedBy           string `json:"updated_by,omitempty"`
-	UpdatedTime         string `json:"updated_time,omitempty"`
-	LastSyncedAt        string `json:"last_synced_at,omitempty"`
+	ID                   int64  `json:"id"`
+	WorkspaceID          int64  `json:"workspace_id"`
+	Name                 string `json:"name"`
+	Description          string `json:"description,omitempty"`
+	DCFactoryID          int64  `json:"dc_factory_id"`
+	DCServiceProviderID  int64  `json:"dc_service_provider_id"`
+	Operator             string `json:"operator"`
+	OperatorDisplayName  string `json:"operator_display_name,omitempty"`
+	DCProjectID          int64  `json:"dc_project_id"`
+	DCProjectName        string `json:"dc_project_name,omitempty"`
+	DCProjectDescription string `json:"dc_project_description,omitempty"`
+	DCTaskID             int64  `json:"dc_task_id"`
+	DCTaskName           string `json:"dc_task_name,omitempty"`
+	DCTaskDescription    string `json:"dc_task_description,omitempty"`
+	DCDeviceID           int64  `json:"dc_device_id"`
+	DCDeviceName         string `json:"dc_device_name,omitempty"`
+	DCType               string `json:"dc_type"`
+	DCDate               string `json:"dc_date"`
+	TargetCount          int64  `json:"target_count"`
+	CurCount             int64  `json:"cur_count"`
+	TargetDuration       int64  `json:"target_duration"`
+	CurDuration          int64  `json:"cur_duration"`
+	CreatedBy            string `json:"created_by"`
+	CreatedTime          string `json:"created_time"`
+	UpdatedBy            string `json:"updated_by,omitempty"`
+	UpdatedTime          string `json:"updated_time,omitempty"`
+	LastSyncedAt         string `json:"last_synced_at,omitempty"`
 }
 
 // DCPlanListResponse represents a paginated dc_plan list response.
@@ -72,41 +80,82 @@ type DCPlanListResponse struct {
 
 // DCPlanSyncResponse represents a manual dc_plan sync result.
 type DCPlanSyncResponse struct {
-	WorkspaceID    int64                                 `json:"workspace_id"`
-	SyncedCount    int                                   `json:"synced_count"`
-	PageCount      int                                   `json:"page_count"`
-	LastSyncedAt   string                                `json:"last_synced_at"`
-	TaskGeneration *services.DCPlanTaskGenerationSummary `json:"task_generation,omitempty"`
+	WorkspaceID  int64  `json:"workspace_id"`
+	SyncedCount  int    `json:"synced_count"`
+	PageCount    int    `json:"page_count"`
+	LastSyncedAt string `json:"last_synced_at"`
+}
+
+// OperatorPlanItem represents one plan currently executable by the logged-in collector.
+type OperatorPlanItem struct {
+	ID                    int64  `json:"id"`
+	WorkspaceID           int64  `json:"workspace_id"`
+	Name                  string `json:"name"`
+	DCProjectID           int64  `json:"dc_project_id"`
+	DCProjectName         string `json:"dc_project_name,omitempty"`
+	DCProjectDescription  string `json:"dc_project_description,omitempty"`
+	DCTaskID              int64  `json:"dc_task_id"`
+	DCTaskName            string `json:"dc_task_name,omitempty"`
+	DCTaskDescription     string `json:"dc_task_description,omitempty"`
+	DCDeviceID            int64  `json:"dc_device_id"`
+	DCDeviceName          string `json:"dc_device_name,omitempty"`
+	DCType                string `json:"dc_type"`
+	TargetCount           int64  `json:"target_count"`
+	CurCount              int64  `json:"cur_count"`
+	CloudCurCount         int64  `json:"cloud_cur_count"`
+	LocalCurCount         int64  `json:"local_cur_count"`
+	LocalPendingCount     int64  `json:"local_pending_count"`
+	LocalApprovedCount    int64  `json:"local_approved_count"`
+	LocalFailedCount      int64  `json:"local_failed_count"`
+	TargetDuration        int64  `json:"target_duration"`
+	CurDuration           int64  `json:"cur_duration"`
+	CloudCurDuration      int64  `json:"cloud_cur_duration"`
+	LocalCurDuration      int64  `json:"local_cur_duration"`
+	LocalPendingDuration  int64  `json:"local_pending_duration"`
+	LocalApprovedDuration int64  `json:"local_approved_duration"`
+	LocalFailedDuration   int64  `json:"local_failed_duration"`
+	CommittedCount        int64  `json:"committed_count"`
+	RemainingCount        int64  `json:"remaining_count"`
+	LastSyncedAt          string `json:"last_synced_at,omitempty"`
+}
+
+// OperatorPlanRefreshResponse reports the collector's latest assigned plans.
+type OperatorPlanRefreshResponse struct {
+	Items        []OperatorPlanItem `json:"items"`
+	Stale        bool               `json:"stale"`
+	LastSyncedAt string             `json:"last_synced_at,omitempty"`
 }
 
 type dcPlanRow struct {
-	ID                  int64           `db:"id"`
-	WorkspaceID         int64           `db:"workspace_id"`
-	Name                string          `db:"name"`
-	Description         sql.NullString  `db:"description"`
-	DCFactoryID         int64           `db:"dc_factory_id"`
-	DCServiceProviderID int64           `db:"dc_service_provider_id"`
-	Operator            string          `db:"operator"`
-	OperatorDisplayName sql.NullString  `db:"operator_display_name"`
-	DCProjectID         int64           `db:"dc_project_id"`
-	DCProjectName       sql.NullString  `db:"dc_project_name"`
-	DCTaskID            int64           `db:"dc_task_id"`
-	DCTaskName          sql.NullString  `db:"dc_task_name"`
-	DCDeviceID          int64           `db:"dc_device_id"`
-	DCDeviceName        sql.NullString  `db:"dc_device_name"`
-	DCType              string          `db:"dc_type"`
-	DCDate              string          `db:"dc_date"`
-	TargetCount         int64           `db:"target_count"`
-	CurCount            int64           `db:"cur_count"`
-	LocalCurCount       int64           `db:"local_cur_count"`
-	TargetDuration      int64           `db:"target_duration"`
-	CurDuration         int64           `db:"cur_duration"`
-	LocalCurDuration    sql.NullFloat64 `db:"local_cur_duration"`
-	CreatedBy           string          `db:"created_by"`
-	CreatedTime         sql.NullTime    `db:"created_time"`
-	UpdatedBy           sql.NullString  `db:"updated_by"`
-	UpdatedTime         sql.NullTime    `db:"updated_time"`
-	LastSyncedAt        sql.NullTime    `db:"last_synced_at"`
+	ID                   int64           `db:"id"`
+	WorkspaceID          int64           `db:"workspace_id"`
+	Name                 string          `db:"name"`
+	Description          sql.NullString  `db:"description"`
+	DCFactoryID          int64           `db:"dc_factory_id"`
+	DCServiceProviderID  int64           `db:"dc_service_provider_id"`
+	Operator             string          `db:"operator"`
+	OperatorDisplayName  sql.NullString  `db:"operator_display_name"`
+	DCProjectID          int64           `db:"dc_project_id"`
+	DCProjectName        sql.NullString  `db:"dc_project_name"`
+	DCProjectDescription sql.NullString  `db:"dc_project_description"`
+	DCTaskID             int64           `db:"dc_task_id"`
+	DCTaskName           sql.NullString  `db:"dc_task_name"`
+	DCTaskDescription    sql.NullString  `db:"dc_task_description"`
+	DCDeviceID           int64           `db:"dc_device_id"`
+	DCDeviceName         sql.NullString  `db:"dc_device_name"`
+	DCType               string          `db:"dc_type"`
+	DCDate               string          `db:"dc_date"`
+	TargetCount          int64           `db:"target_count"`
+	CurCount             int64           `db:"cur_count"`
+	LocalCurCount        int64           `db:"local_cur_count"`
+	TargetDuration       int64           `db:"target_duration"`
+	CurDuration          int64           `db:"cur_duration"`
+	LocalCurDuration     sql.NullFloat64 `db:"local_cur_duration"`
+	CreatedBy            string          `db:"created_by"`
+	CreatedTime          sql.NullTime    `db:"created_time"`
+	UpdatedBy            sql.NullString  `db:"updated_by"`
+	UpdatedTime          sql.NullTime    `db:"updated_time"`
+	LastSyncedAt         sql.NullTime    `db:"last_synced_at"`
 }
 
 // RegisterRoutes registers dc_plan routes.
@@ -118,6 +167,226 @@ func (h *DCPlanHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // RegisterReadRoutes registers dc_plan routes available to authenticated readers.
 func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/dc-plans", h.ListDCPlans)
+	apiV1.POST("/operator/plans/refresh", h.RefreshOperatorPlans)
+}
+
+// RefreshOperatorPlans synchronizes and returns plans assigned to the authenticated workstation.
+//
+// @Summary      Refresh operator plans
+// @Description  Synchronizes Hilbert plans and returns plans assigned to the authenticated collector workstation.
+// @Tags         dc-plans
+// @Produce      json
+// @Success      200 {object} OperatorPlanRefreshResponse
+// @Failure      403 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Failure      409 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /operator/plans/refresh [post]
+func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkspaceID <= 0 ||
+		claims.RobotID <= 0 || claims.WorkstationID <= 0 || strings.TrimSpace(claims.OperatorID) == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "data collector workstation required"})
+		return
+	}
+
+	var robotDeviceID string
+	if err := h.db.GetContext(c.Request.Context(), &robotDeviceID, `
+		SELECT device_id
+		FROM robots
+		WHERE id = ? AND deleted_at IS NULL
+	`, claims.RobotID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "robot not found"})
+			return
+		}
+		logger.Printf("[DC_PLAN] Failed to resolve collector robot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh operator plans"})
+		return
+	}
+	dcDeviceID, err := strconv.ParseInt(strings.TrimSpace(robotDeviceID), 10, 64)
+	if err != nil || dcDeviceID <= 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "robot is not linked to a Hilbert device"})
+		return
+	}
+
+	stale := false
+	if h.syncService == nil {
+		stale = true
+	} else if _, err := h.syncService.SyncWorkspace(c.Request.Context(), claims.WorkspaceID); err != nil {
+		stale = true
+		logger.Printf(
+			"[DC_PLAN] Operator plan refresh using stale projection: workspace_id=%d operator=%s error=%v",
+			claims.WorkspaceID,
+			claims.OperatorID,
+			err,
+		)
+	}
+
+	rows := []struct {
+		ID                    int64        `db:"id"`
+		WorkspaceID           int64        `db:"workspace_id"`
+		Name                  string       `db:"name"`
+		DCProjectID           int64        `db:"dc_project_id"`
+		DCProjectName         string       `db:"dc_project_name"`
+		DCProjectDescription  string       `db:"dc_project_description"`
+		DCTaskID              int64        `db:"dc_task_id"`
+		DCTaskName            string       `db:"dc_task_name"`
+		DCTaskDescription     string       `db:"dc_task_description"`
+		DCDeviceID            int64        `db:"dc_device_id"`
+		DCDeviceName          string       `db:"dc_device_name"`
+		DCType                string       `db:"dc_type"`
+		TargetCount           int64        `db:"target_count"`
+		CurCount              int64        `db:"cur_count"`
+		LocalPendingCount     int64        `db:"local_pending_count"`
+		LocalApprovedCount    int64        `db:"local_approved_count"`
+		LocalFailedCount      int64        `db:"local_failed_count"`
+		TargetDuration        int64        `db:"target_duration"`
+		CurDuration           int64        `db:"cur_duration"`
+		LocalPendingDuration  float64      `db:"local_pending_duration"`
+		LocalApprovedDuration float64      `db:"local_approved_duration"`
+		LocalFailedDuration   float64      `db:"local_failed_duration"`
+		ReservedCount         int64        `db:"reserved_count"`
+		LastSyncedAt          sql.NullTime `db:"last_synced_at"`
+	}{}
+	if err := h.db.SelectContext(c.Request.Context(), &rows, `
+		SELECT
+			dp.id,
+			dp.workspace_id,
+			dp.name,
+			dp.dc_project_id,
+			COALESCE(dp.dc_project_name, '') AS dc_project_name,
+			COALESCE(dp.dc_project_description, '') AS dc_project_description,
+			dp.dc_task_id,
+			COALESCE(dp.dc_task_name, '') AS dc_task_name,
+			COALESCE(dp.dc_task_description, '') AS dc_task_description,
+			dp.dc_device_id,
+			COALESCE(dp.dc_device_name, '') AS dc_device_name,
+			dp.dc_type,
+			dp.target_count,
+			dp.cur_count,
+			dp.target_duration,
+			dp.cur_duration,
+			dp.last_synced_at,
+			COALESCE(progress.local_pending_count, 0) AS local_pending_count,
+			COALESCE(progress.local_approved_count, 0) AS local_approved_count,
+			COALESCE(progress.local_failed_count, 0) AS local_failed_count,
+			COALESCE(progress.local_pending_duration, 0) AS local_pending_duration,
+			COALESCE(progress.local_approved_duration, 0) AS local_approved_duration,
+			COALESCE(progress.local_failed_duration, 0) AS local_failed_duration,
+			(
+				SELECT COUNT(*)
+				FROM tasks t
+				WHERE t.dc_plan_id = dp.id
+					AND t.status IN ('ready', 'in_progress', 'uploading')
+					AND t.deleted_at IS NULL
+					AND NOT EXISTS (
+						SELECT 1
+						FROM episodes e
+						WHERE e.task_id = t.id AND e.deleted_at IS NULL
+					)
+			) AS reserved_count
+		FROM dc_plan dp
+		LEFT JOIN (
+			SELECT
+				e.dc_plan_id,
+				SUM(CASE
+					WHEN COALESCE(e.qa_status, 'pending_qa') IN ('pending_qa', 'qa_running') THEN 1
+					ELSE 0
+				END) AS local_pending_count,
+				SUM(CASE WHEN e.qa_status = 'approved' THEN 1 ELSE 0 END) AS local_approved_count,
+				SUM(CASE
+					WHEN e.qa_status IN ('failed', 'manual_review_failed') THEN 1
+					ELSE 0
+				END) AS local_failed_count,
+				SUM(CASE
+					WHEN COALESCE(e.qa_status, 'pending_qa') IN ('pending_qa', 'qa_running')
+						THEN COALESCE(e.duration_sec, 0)
+					ELSE 0
+				END) AS local_pending_duration,
+				SUM(CASE
+					WHEN e.qa_status = 'approved' THEN COALESCE(e.duration_sec, 0)
+					ELSE 0
+				END) AS local_approved_duration,
+				SUM(CASE
+					WHEN e.qa_status IN ('failed', 'manual_review_failed')
+						THEN COALESCE(e.duration_sec, 0)
+					ELSE 0
+				END) AS local_failed_duration
+				FROM episodes e
+				WHERE e.dc_plan_id IS NOT NULL
+					AND COALESCE(e.cloud_synced, FALSE) = FALSE
+					AND e.deleted_at IS NULL
+				GROUP BY e.dc_plan_id
+		) progress ON progress.dc_plan_id = dp.id
+		WHERE dp.workspace_id = ?
+			AND dp.operator = ?
+			AND dp.dc_device_id = ?
+			AND dp.deleted_at IS NULL
+		ORDER BY dp.id
+	`, claims.WorkspaceID, strings.TrimSpace(claims.OperatorID), dcDeviceID); err != nil {
+		logger.Printf("[DC_PLAN] Failed to list operator plans: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh operator plans"})
+		return
+	}
+
+	response := OperatorPlanRefreshResponse{Items: []OperatorPlanItem{}, Stale: stale}
+	var latestSync time.Time
+	for _, row := range rows {
+		localCount := row.LocalPendingCount + row.LocalApprovedCount
+		curCount := row.CurCount + localCount
+		pendingDuration := int64(math.Round(row.LocalPendingDuration))
+		approvedDuration := int64(math.Round(row.LocalApprovedDuration))
+		failedDuration := int64(math.Round(row.LocalFailedDuration))
+		localDuration := pendingDuration + approvedDuration
+		curDuration := row.CurDuration + localDuration
+		reservedCount := curCount + row.ReservedCount
+		remaining := row.TargetCount - reservedCount
+		if remaining < 0 {
+			remaining = 0
+		}
+		item := OperatorPlanItem{
+			ID:                    row.ID,
+			WorkspaceID:           row.WorkspaceID,
+			Name:                  row.Name,
+			DCProjectID:           row.DCProjectID,
+			DCProjectName:         row.DCProjectName,
+			DCProjectDescription:  row.DCProjectDescription,
+			DCTaskID:              row.DCTaskID,
+			DCTaskName:            row.DCTaskName,
+			DCTaskDescription:     row.DCTaskDescription,
+			DCDeviceID:            row.DCDeviceID,
+			DCDeviceName:          row.DCDeviceName,
+			DCType:                row.DCType,
+			TargetCount:           row.TargetCount,
+			CurCount:              curCount,
+			CloudCurCount:         row.CurCount,
+			LocalCurCount:         localCount,
+			LocalPendingCount:     row.LocalPendingCount,
+			LocalApprovedCount:    row.LocalApprovedCount,
+			LocalFailedCount:      row.LocalFailedCount,
+			TargetDuration:        row.TargetDuration,
+			CurDuration:           curDuration,
+			CloudCurDuration:      row.CurDuration,
+			LocalCurDuration:      localDuration,
+			LocalPendingDuration:  pendingDuration,
+			LocalApprovedDuration: approvedDuration,
+			LocalFailedDuration:   failedDuration,
+			CommittedCount:        reservedCount,
+			RemainingCount:        remaining,
+		}
+		if row.LastSyncedAt.Valid {
+			item.LastSyncedAt = row.LastSyncedAt.Time.UTC().Format(time.RFC3339)
+			if row.LastSyncedAt.Time.After(latestSync) {
+				latestSync = row.LastSyncedAt.Time
+			}
+		}
+		response.Items = append(response.Items, item)
+	}
+	if !latestSync.IsZero() {
+		response.LastSyncedAt = latestSync.UTC().Format(time.RFC3339)
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // RegisterAdminRoutes registers dc_plan admin-only routes.
@@ -229,7 +498,7 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 	query := `
 		SELECT
 			dp.id, dp.workspace_id, dp.name, dp.description, dp.dc_factory_id, dp.dc_service_provider_id,
-			dp.operator, dp.operator_display_name, dp.dc_project_id, dp.dc_project_name, dp.dc_task_id, dp.dc_task_name, dp.dc_device_id, dp.dc_device_name, dp.dc_type, CAST(dp.dc_date AS CHAR) AS dc_date,
+			dp.operator, dp.operator_display_name, dp.dc_project_id, dp.dc_project_name, dp.dc_project_description, dp.dc_task_id, dp.dc_task_name, dp.dc_task_description, dp.dc_device_id, dp.dc_device_name, dp.dc_type, CAST(dp.dc_date AS CHAR) AS dc_date,
 			dp.target_count, dp.cur_count, COALESCE(progress.local_cur_count, 0) AS local_cur_count,
 			dp.target_duration, dp.cur_duration, COALESCE(progress.local_cur_duration, 0) AS local_cur_duration,
 			dp.created_by, dp.created_time, dp.updated_by, dp.updated_time, dp.last_synced_at
@@ -240,7 +509,10 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 				COUNT(*) AS local_cur_count,
 				COALESCE(SUM(COALESCE(duration_sec, 0)), 0) AS local_cur_duration
 			FROM episodes
-			WHERE deleted_at IS NULL AND dc_plan_id IS NOT NULL
+			WHERE deleted_at IS NULL
+				AND dc_plan_id IS NOT NULL
+				AND COALESCE(cloud_synced, FALSE) = FALSE
+				AND COALESCE(qa_status, 'pending_qa') NOT IN ('failed', 'manual_review_failed')
 			GROUP BY dc_plan_id
 		) progress ON progress.dc_plan_id = dp.id
 		` + whereClause + `
@@ -310,11 +582,10 @@ func (h *DCPlanHandler) SyncWorkspaceDCPlans(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, DCPlanSyncResponse{
-		WorkspaceID:    result.WorkspaceID,
-		SyncedCount:    result.SyncedCount,
-		PageCount:      result.PageCount,
-		LastSyncedAt:   result.LastSyncedAt.UTC().Format(time.RFC3339),
-		TaskGeneration: result.TaskGeneration,
+		WorkspaceID:  result.WorkspaceID,
+		SyncedCount:  result.SyncedCount,
+		PageCount:    result.PageCount,
+		LastSyncedAt: result.LastSyncedAt.UTC().Format(time.RFC3339),
 	})
 }
 
@@ -343,43 +614,39 @@ func parsePositivePathInt64(c *gin.Context, field string) (int64, bool) {
 }
 
 func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
-	curCount := row.CurCount
-	if row.LocalCurCount > curCount {
-		curCount = row.LocalCurCount
-	}
+	curCount := row.CurCount + row.LocalCurCount
 	curDuration := row.CurDuration
 	if row.LocalCurDuration.Valid {
-		localDuration := int64(math.Round(row.LocalCurDuration.Float64))
-		if localDuration > curDuration {
-			curDuration = localDuration
-		}
+		curDuration += int64(math.Round(row.LocalCurDuration.Float64))
 	}
 	return DCPlanResponse{
-		ID:                  row.ID,
-		WorkspaceID:         row.WorkspaceID,
-		Name:                row.Name,
-		Description:         row.Description.String,
-		DCFactoryID:         row.DCFactoryID,
-		DCServiceProviderID: row.DCServiceProviderID,
-		Operator:            row.Operator,
-		OperatorDisplayName: row.OperatorDisplayName.String,
-		DCProjectID:         row.DCProjectID,
-		DCProjectName:       row.DCProjectName.String,
-		DCTaskID:            row.DCTaskID,
-		DCTaskName:          row.DCTaskName.String,
-		DCDeviceID:          row.DCDeviceID,
-		DCDeviceName:        row.DCDeviceName.String,
-		DCType:              row.DCType,
-		DCDate:              row.DCDate,
-		TargetCount:         row.TargetCount,
-		CurCount:            curCount,
-		TargetDuration:      row.TargetDuration,
-		CurDuration:         curDuration,
-		CreatedBy:           row.CreatedBy,
-		CreatedTime:         formatWorkspaceNullableTime(row.CreatedTime),
-		UpdatedBy:           row.UpdatedBy.String,
-		UpdatedTime:         formatWorkspaceNullableTime(row.UpdatedTime),
-		LastSyncedAt:        formatWorkspaceNullableTime(row.LastSyncedAt),
+		ID:                   row.ID,
+		WorkspaceID:          row.WorkspaceID,
+		Name:                 row.Name,
+		Description:          row.Description.String,
+		DCFactoryID:          row.DCFactoryID,
+		DCServiceProviderID:  row.DCServiceProviderID,
+		Operator:             row.Operator,
+		OperatorDisplayName:  row.OperatorDisplayName.String,
+		DCProjectID:          row.DCProjectID,
+		DCProjectName:        row.DCProjectName.String,
+		DCProjectDescription: row.DCProjectDescription.String,
+		DCTaskID:             row.DCTaskID,
+		DCTaskName:           row.DCTaskName.String,
+		DCTaskDescription:    row.DCTaskDescription.String,
+		DCDeviceID:           row.DCDeviceID,
+		DCDeviceName:         row.DCDeviceName.String,
+		DCType:               row.DCType,
+		DCDate:               row.DCDate,
+		TargetCount:          row.TargetCount,
+		CurCount:             curCount,
+		TargetDuration:       row.TargetDuration,
+		CurDuration:          curDuration,
+		CreatedBy:            row.CreatedBy,
+		CreatedTime:          formatWorkspaceNullableTime(row.CreatedTime),
+		UpdatedBy:            row.UpdatedBy.String,
+		UpdatedTime:          formatWorkspaceNullableTime(row.UpdatedTime),
+		LastSyncedAt:         formatWorkspaceNullableTime(row.LastSyncedAt),
 	}
 }
 
