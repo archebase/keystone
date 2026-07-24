@@ -1,0 +1,1058 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Keystone × 火山引擎 TOS 部署设计</title>
+  <style>
+    :root {
+      --ink: #1D1A2F;
+      --signal: #8BD450;
+      --warning: #F5C024;
+      --paper: #FFF8E7;
+      --black: #000000;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--paper);
+      background: var(--ink);
+      font-family: "Songti SC", "STSong", SimSun, Georgia, serif;
+      line-height: 1.75;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      pointer-events: none;
+      content: "";
+      opacity: 0.09;
+      background-image:
+        repeating-linear-gradient(0deg, transparent 0 3px, var(--black) 3px 4px),
+        repeating-linear-gradient(90deg, transparent 0 7px, var(--paper) 7px 8px);
+      mix-blend-mode: overlay;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 92vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+      align-items: center;
+      gap: clamp(2rem, 5vw, 6rem);
+      padding: clamp(3rem, 8vw, 8rem) max(6vw, calc((100vw - 1500px) / 2));
+      border-bottom: 12px solid var(--black);
+      isolation: isolate;
+    }
+
+    .hero::after {
+      position: absolute;
+      right: -12vw;
+      bottom: -18vh;
+      z-index: -1;
+      width: 58vw;
+      height: 44vh;
+      content: "";
+      background: var(--signal);
+      border: 8px solid var(--black);
+      transform: skewX(-24deg) rotate(-6deg);
+      box-shadow: 18px 18px 0 var(--black);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      margin: 0 0 1.5rem;
+      padding: 0.35rem 0.8rem;
+      color: var(--black);
+      background: var(--warning);
+      border: 4px solid var(--black);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 0.82rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      transform: rotate(-1deg);
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin-top: 0;
+      font-weight: 900;
+      line-height: 1.05;
+    }
+
+    h1 {
+      max-width: 850px;
+      margin-bottom: 1.5rem;
+      font-size: clamp(3.4rem, 8vw, 8.8rem);
+      letter-spacing: -0.08em;
+      text-shadow: 8px 8px 0 var(--black);
+    }
+
+    h1 span {
+      display: block;
+      color: var(--signal);
+    }
+
+    .subtitle {
+      max-width: 760px;
+      margin: 0;
+      font-size: clamp(1.05rem, 1.8vw, 1.4rem);
+      font-weight: 700;
+    }
+
+    .permission-rail {
+      position: relative;
+      min-height: 430px;
+      color: var(--black);
+      transform: perspective(900px) rotateY(-7deg) rotateZ(1deg);
+    }
+
+    .rail-line {
+      position: absolute;
+      top: 50%;
+      left: 6%;
+      width: 88%;
+      height: 18px;
+      background: var(--warning);
+      border: 5px solid var(--black);
+      transform: translateY(-50%) skewX(-18deg);
+    }
+
+    .rail-node {
+      position: absolute;
+      width: min(250px, 72%);
+      padding: 1rem 1.15rem;
+      background: var(--paper);
+      border: 6px solid var(--black);
+      box-shadow: 12px 12px 0 var(--black);
+      clip-path: polygon(0 0, 92% 0, 100% 30%, 100% 100%, 8% 100%, 0 70%);
+    }
+
+    .rail-node b {
+      display: block;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 0.76rem;
+      letter-spacing: 0.12em;
+    }
+
+    .rail-node strong {
+      display: block;
+      font-size: 1.25rem;
+      line-height: 1.2;
+    }
+
+    .rail-node:nth-of-type(2) {
+      top: 3%;
+      left: 0;
+    }
+
+    .rail-node:nth-of-type(3) {
+      top: 37%;
+      left: 31%;
+      background: var(--warning);
+    }
+
+    .rail-node:nth-of-type(4) {
+      right: 0;
+      bottom: 2%;
+      background: var(--signal);
+    }
+
+    .main {
+      width: min(1180px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: clamp(4rem, 8vw, 8rem) 0;
+    }
+
+    .judgment {
+      position: relative;
+      margin-bottom: clamp(5rem, 10vw, 10rem);
+      padding: clamp(2rem, 5vw, 4.5rem);
+      color: var(--black);
+      background: var(--signal);
+      border: 8px solid var(--black);
+      box-shadow: 18px 18px 0 var(--black);
+      clip-path: polygon(0 0, 96% 0, 100% 16%, 100% 100%, 4% 100%, 0 84%);
+    }
+
+    .judgment p {
+      max-width: 980px;
+      margin: 0;
+      font-size: clamp(1.6rem, 4vw, 3.2rem);
+      font-weight: 900;
+      line-height: 1.2;
+    }
+
+    section {
+      margin-bottom: clamp(5rem, 10vw, 9rem);
+      scroll-margin-top: 2rem;
+    }
+
+    .section-heading {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: end;
+      gap: 1.3rem;
+      margin-bottom: 2.5rem;
+      border-bottom: 8px solid var(--signal);
+    }
+
+    .section-number {
+      color: var(--warning);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(4rem, 9vw, 8rem);
+      font-weight: 900;
+      line-height: 0.8;
+      text-shadow: 5px 5px 0 var(--black);
+    }
+
+    h2 {
+      margin-bottom: 0.55rem;
+      font-size: clamp(2rem, 5vw, 4.3rem);
+      letter-spacing: -0.045em;
+    }
+
+    h3 {
+      margin: 3rem 0 1rem;
+      color: var(--signal);
+      font-size: clamp(1.35rem, 2.8vw, 2rem);
+    }
+
+    p,
+    li {
+      font-size: 1.04rem;
+    }
+
+    .lead {
+      max-width: 880px;
+      font-size: 1.18rem;
+    }
+
+    .scope-grid,
+    .risk-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1.5rem;
+      margin-top: 2rem;
+    }
+
+    .hard-panel {
+      padding: 1.5rem;
+      color: var(--black);
+      background: var(--paper);
+      border: 5px solid var(--black);
+      box-shadow: 9px 9px 0 var(--signal);
+    }
+
+    .hard-panel.warning {
+      background: var(--warning);
+      box-shadow: 9px 9px 0 var(--black);
+    }
+
+    .hard-panel h3 {
+      margin-top: 0;
+      color: var(--black);
+    }
+
+    ul,
+    ol {
+      padding-left: 1.4rem;
+    }
+
+    li + li {
+      margin-top: 0.45rem;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(7, auto);
+      align-items: center;
+      gap: 0.6rem;
+      margin: 2.5rem 0;
+      overflow-x: auto;
+      padding: 1.2rem 0.5rem 1.8rem;
+    }
+
+    .flow-box {
+      min-width: 135px;
+      padding: 1rem;
+      color: var(--black);
+      background: var(--paper);
+      border: 4px solid var(--black);
+      box-shadow: 7px 7px 0 var(--signal);
+      text-align: center;
+      font-weight: 900;
+      line-height: 1.25;
+    }
+
+    .flow-box.active {
+      background: var(--warning);
+    }
+
+    .flow-arrow {
+      color: var(--warning);
+      font-family: Georgia, serif;
+      font-size: 2rem;
+      font-weight: 900;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin: 2rem 0;
+      border: 5px solid var(--black);
+      box-shadow: 10px 10px 0 var(--signal);
+    }
+
+    table {
+      width: 100%;
+      min-width: 780px;
+      border-collapse: collapse;
+      color: var(--black);
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      padding: 0.9rem 1rem;
+      border: 2px solid var(--black);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--warning);
+      font-size: 0.9rem;
+      letter-spacing: 0.06em;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    code {
+      padding: 0.08rem 0.3rem;
+      color: var(--black);
+      background: var(--warning);
+      border: 1px solid var(--black);
+    }
+
+    .code-block {
+      position: relative;
+      margin: 1.5rem 0 2.5rem;
+      border: 5px solid var(--signal);
+      box-shadow: 10px 10px 0 var(--black);
+    }
+
+    .code-label {
+      padding: 0.45rem 0.8rem;
+      color: var(--black);
+      background: var(--signal);
+      border-bottom: 4px solid var(--black);
+      font-family: Georgia, serif;
+      font-size: 0.78rem;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    pre {
+      margin: 0;
+      overflow-x: auto;
+      padding: 1.25rem;
+      color: var(--paper);
+      background: var(--black);
+      font-size: 0.88rem;
+      line-height: 1.65;
+      white-space: pre;
+    }
+
+    pre code {
+      padding: 0;
+      color: inherit;
+      background: transparent;
+      border: 0;
+    }
+
+    .callout {
+      margin: 2rem 0;
+      padding: 1.3rem 1.5rem;
+      color: var(--black);
+      background: var(--warning);
+      border: 5px solid var(--black);
+      box-shadow: 9px 9px 0 var(--signal);
+      font-weight: 800;
+    }
+
+    .checklist {
+      display: grid;
+      gap: 0.7rem;
+      padding: 0;
+      list-style: none;
+    }
+
+    .checklist li {
+      position: relative;
+      padding: 0.8rem 1rem 0.8rem 3.2rem;
+      color: var(--black);
+      background: var(--paper);
+      border: 3px solid var(--black);
+    }
+
+    .checklist li::before {
+      position: absolute;
+      top: 0.7rem;
+      left: 0.9rem;
+      width: 1.25rem;
+      height: 1.25rem;
+      content: "";
+      background: var(--signal);
+      border: 3px solid var(--black);
+      transform: rotate(45deg);
+    }
+
+    .footer-decision {
+      padding: clamp(2rem, 5vw, 4rem);
+      color: var(--black);
+      background: var(--signal);
+      border: 8px solid var(--black);
+      box-shadow: 16px 16px 0 var(--warning);
+    }
+
+    .footer-decision strong {
+      display: block;
+      margin-bottom: 0.7rem;
+      font-size: clamp(2rem, 5vw, 4rem);
+      line-height: 1.05;
+    }
+
+    @media (max-width: 900px) {
+      .hero {
+        min-height: auto;
+        grid-template-columns: 1fr;
+        padding: 4rem 1.25rem 6rem;
+      }
+
+      .hero::after {
+        width: 78vw;
+        height: 30vh;
+        right: -25vw;
+        bottom: -8vh;
+      }
+
+      .permission-rail {
+        min-height: 370px;
+        transform: none;
+      }
+
+      .scope-grid,
+      .risk-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 620px) {
+      h1 {
+        font-size: clamp(3rem, 17vw, 5rem);
+        text-shadow: 5px 5px 0 var(--black);
+      }
+
+      .main {
+        width: min(100% - 1.25rem, 1180px);
+      }
+
+      .section-heading {
+        grid-template-columns: 1fr;
+        gap: 0.2rem;
+      }
+
+      .section-number {
+        font-size: 4rem;
+      }
+
+      .judgment {
+        box-shadow: 10px 10px 0 var(--black);
+      }
+
+      .rail-node {
+        width: 72%;
+      }
+
+      .rail-node:nth-of-type(3) {
+        left: 18%;
+      }
+
+      pre {
+        font-size: 0.78rem;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Deployment Design / Volcengine TOS</p>
+      <h1>Keystone<span>接入 TOS</span>部署设计</h1>
+      <p class="subtitle">用两级最小权限把长期身份压缩成单对象、短时效的上传与 QA 读取凭据。</p>
+    </div>
+    <div class="permission-rail" aria-label="运行身份经过 STS 角色收窄后访问 TOS 的权限轨道">
+      <div class="rail-line"></div>
+      <div class="rail-node">
+        <b>01 / LONG-LIVED</b>
+        <strong>运行 IAM 用户</strong>
+        只允许 AssumeRole
+      </div>
+      <div class="rail-node">
+        <b>02 / COMPRESS</b>
+        <strong>STS 双角色</strong>
+        上传与读取分离
+      </div>
+      <div class="rail-node">
+        <b>03 / TARGET</b>
+        <strong>私有 TOS 对象</strong>
+        单 bucket / 单 prefix
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <aside class="judgment">
+      <p>长期 AK/SK 不直接读写 TOS；它只负责扮演两个受限 Role，Keystone 再用 Session Policy 把每次凭据压缩到单个对象。</p>
+    </aside>
+
+    <section id="scope">
+      <div class="section-heading">
+        <span class="section-number">01</span>
+        <h2>目标与边界</h2>
+      </div>
+      <p class="lead">本文说明全新部署 Keystone 并启用火山引擎 TOS 时，云上必须创建的资源、推荐的最小权限策略、CLI 创建顺序，以及每项资源在 <code>.env</code> 中的对应配置。</p>
+      <div class="scope-grid">
+        <div class="hard-panel">
+          <h3>本次覆盖</h3>
+          <ul>
+            <li>设备通过 Keystone 获取短期 STS，直传单个 TOS 对象。</li>
+            <li>Keystone 使用独立只读 Role 对 MCAP 做 QA Range Read。</li>
+            <li>运行 IAM 用户、Role、Policy、Bucket、AK/SK 与环境变量。</li>
+            <li>创建后的权限核验、部署验收和安全回滚。</li>
+          </ul>
+        </div>
+        <div class="hard-panel warning">
+          <h3>不在范围</h3>
+          <ul>
+            <li>Hilbert 服务、MySQL、MinIO 的部署。</li>
+            <li>已有 TOS 数据迁移和历史 multipart 会话恢复。</li>
+            <li>浏览器直传所需 CORS；当前数据面是原生 Swift SDK。</li>
+            <li>把管理员或 root AK/SK 放入 Keystone 运行环境。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <div class="section-heading">
+        <span class="section-number">02</span>
+        <h2>权限架构</h2>
+      </div>
+      <p class="lead">授权有两道门：运行用户必须被允许扮演目标 Role，目标 Role 的信任策略也必须接受该用户。两者同时成立后，STS 才签发临时凭据。</p>
+      <div class="flow" aria-label="Keystone TOS 权限流程">
+        <div class="flow-box">Keystone<br>运行进程</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">IAM User<br>keystone-tos-sts</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box active">STS<br>AssumeRole</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">Upload Role<br>或 QA Role</div>
+      </div>
+      <div class="flow" aria-label="STS 临时凭据到 TOS 对象的数据流">
+        <div class="flow-box">Session Policy<br>单对象范围</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box active">临时 AK / SK<br>Session Token</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">TOS Bucket<br>device-uploads/*</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">上传或<br>Range Read</div>
+      </div>
+      <div class="callout">有效权限 = Role 基础权限 ∩ Keystone 传入的 Session Policy。Session Policy 只能收窄，不能扩大 Role 权限。</div>
+    </section>
+
+    <section id="inventory">
+      <div class="section-heading">
+        <span class="section-number">03</span>
+        <h2>云资源清单</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>资源</th>
+              <th>推荐名称</th>
+              <th>数量</th>
+              <th>职责与约束</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>TOS Bucket</td>
+              <td><code>archebase-keystone-device-upload-&lt;account-id&gt;</code></td>
+              <td>1</td>
+              <td>私有桶；设备数据写入 <code>device-uploads/*</code>。</td>
+            </tr>
+            <tr>
+              <td>IAM User</td>
+              <td><code>keystone-tos-sts</code></td>
+              <td>1</td>
+              <td>Keystone 长期运行身份；只允许扮演下面两个 Role，不直接访问 TOS。</td>
+            </tr>
+            <tr>
+              <td>IAM Role</td>
+              <td><code>keystone-device-upload-role</code></td>
+              <td>1</td>
+              <td>允许指定 prefix 下的对象上传、multipart、HEAD。</td>
+            </tr>
+            <tr>
+              <td>IAM Role</td>
+              <td><code>keystone-qa-read-role</code></td>
+              <td>1</td>
+              <td>只允许指定 prefix 下的 <code>tos:GetObject</code>。</td>
+            </tr>
+            <tr>
+              <td>用户 Policy</td>
+              <td><code>keystone-assume-upload-role-policy</code></td>
+              <td>1</td>
+              <td>只允许运行用户 Assume 上传 Role。</td>
+            </tr>
+            <tr>
+              <td>用户 Policy</td>
+              <td><code>keystone-assume-qa-read-role-policy</code></td>
+              <td>1</td>
+              <td>只允许运行用户 Assume QA Role。</td>
+            </tr>
+            <tr>
+              <td>Role Policy</td>
+              <td><code>keystone-device-upload-tos-policy</code></td>
+              <td>1</td>
+              <td>绑定上传 Role，范围锁定 bucket/prefix。</td>
+            </tr>
+            <tr>
+              <td>Role Policy</td>
+              <td><code>KeystoneTOSQAReadPolicy</code></td>
+              <td>1</td>
+              <td>绑定 QA Role，范围锁定 bucket/prefix。</td>
+            </tr>
+            <tr>
+              <td>Access Key</td>
+              <td>由 IAM 为 <code>keystone-tos-sts</code> 生成</td>
+              <td>1 组</td>
+              <td>仅写入秘密管理系统和 Keystone 环境；创建时只显示一次。</td>
+            </tr>
+            <tr>
+              <td>STS</td>
+              <td><code>https://sts.volcengineapi.com</code></td>
+              <td>0</td>
+              <td>STS 是公共云服务端点，不需要创建持久化资源。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="preflight">
+      <div class="section-heading">
+        <span class="section-number">04</span>
+        <h2>创建前准备</h2>
+      </div>
+      <p>以下命令以 zsh/bash、火山引擎 CLI <code>ve</code>、<code>tosutil</code> 和 <code>jq</code> 为例。管理员 profile 仅用于建资源，不得用于运行 Keystone。</p>
+      <div class="code-block">
+        <div class="code-label">Deployment parameters</div>
+        <pre><code>KEYSTONE_ADMIN_PROFILE=iam-admin-audit
+KEYSTONE_CLOUD_ACCOUNT_ID=2116584179
+KEYSTONE_CLOUD_REGION=cn-beijing
+KEYSTONE_TOS_ENDPOINT=tos-cn-beijing.volces.com
+KEYSTONE_TOS_BUCKET=archebase-keystone-device-upload-${KEYSTONE_CLOUD_ACCOUNT_ID}
+KEYSTONE_TOS_PREFIX=device-uploads
+KEYSTONE_RUNTIME_USER=keystone-tos-sts
+KEYSTONE_UPLOAD_ROLE=keystone-device-upload-role
+KEYSTONE_QA_ROLE=keystone-qa-read-role
+KEYSTONE_TOSUTIL_CONFIG=/secure/path/tosutil-admin.conf</code></pre>
+      </div>
+      <div class="code-block">
+        <div class="code-label">Verify administrator identity</div>
+        <pre><code>ve sts GetCallerIdentity \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" \
+  ---region "$KEYSTONE_CLOUD_REGION"
+
+# 使用交互模式写入独立 tosutil 配置，避免 AK/SK 进入 shell history。
+tosutil config -interactive -conf="$KEYSTONE_TOSUTIL_CONFIG"</code></pre>
+      </div>
+      <div class="callout">不要使用 <code>ve configure list</code> 做验收：部分 CLI 版本会明文输出已保存的 AK/SK。使用 <code>GetCallerIdentity</code> 确认身份。</div>
+    </section>
+
+    <section id="create">
+      <div class="section-heading">
+        <span class="section-number">05</span>
+        <h2>资源创建步骤</h2>
+      </div>
+
+      <h3>5.1 创建私有 TOS Bucket</h3>
+      <div class="code-block">
+        <div class="code-label">Create and verify bucket</div>
+        <pre><code>tosutil mb "tos://${KEYSTONE_TOS_BUCKET}" \
+  -acl=private \
+  -sc=STANDARD \
+  -az=single-az \
+  -e="$KEYSTONE_TOS_ENDPOINT" \
+  -re="$KEYSTONE_CLOUD_REGION" \
+  -conf="$KEYSTONE_TOSUTIL_CONFIG"
+
+tosutil ls "tos://${KEYSTONE_TOS_BUCKET}" \
+  -e="$KEYSTONE_TOS_ENDPOINT" \
+  -re="$KEYSTONE_CLOUD_REGION" \
+  -conf="$KEYSTONE_TOSUTIL_CONFIG"</code></pre>
+      </div>
+      <p><code>device-uploads</code> 是对象 key prefix，不是独立目录资源，无需提前创建。可选配置生命周期规则，自动清理长期未完成的 multipart；不要自动删除已完成的 MCAP，除非数据保留策略明确要求。</p>
+
+      <h3>5.2 创建 Keystone 运行 IAM 用户</h3>
+      <div class="code-block">
+        <div class="code-label">Create runtime identity</div>
+        <pre><code>ve iam CreateUser \
+  --UserName "$KEYSTONE_RUNTIME_USER" \
+  --DisplayName "Keystone TOS STS Runtime" \
+  --Description "Runtime identity used by Keystone to assume TOS roles" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" \
+  ---region "$KEYSTONE_CLOUD_REGION"</code></pre>
+      </div>
+
+      <h3>5.3 创建两个 Role 与信任策略</h3>
+      <div class="code-block">
+        <div class="code-label">Build trust policy</div>
+        <pre><code>KEYSTONE_RUNTIME_USER_TRN="trn:iam::${KEYSTONE_CLOUD_ACCOUNT_ID}:user/${KEYSTONE_RUNTIME_USER}"
+
+KEYSTONE_TRUST_POLICY="$(jq -cn \
+  --arg principal "$KEYSTONE_RUNTIME_USER_TRN" \
+  '{Statement:[{Effect:"Allow",Action:["sts:AssumeRole"],Principal:{IAM:[$principal]}}]}')"</code></pre>
+      </div>
+      <div class="code-block">
+        <div class="code-label">Create upload and QA roles</div>
+        <pre><code>ve iam CreateRole \
+  --RoleName "$KEYSTONE_UPLOAD_ROLE" \
+  --DisplayName "Keystone Device Upload Role" \
+  --Description "Temporary TOS upload role assumed by Keystone" \
+  --MaxSessionDuration 3600 \
+  --TrustPolicyDocument "$KEYSTONE_TRUST_POLICY" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" \
+  ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam CreateRole \
+  --RoleName "$KEYSTONE_QA_ROLE" \
+  --DisplayName "Keystone QA Read Role" \
+  --Description "Temporary TOS read role used for MCAP QA checks" \
+  --MaxSessionDuration 3600 \
+  --TrustPolicyDocument "$KEYSTONE_TRUST_POLICY" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" \
+  ---region "$KEYSTONE_CLOUD_REGION"</code></pre>
+      </div>
+
+      <h3>5.4 创建四个最小权限 Policy</h3>
+      <div class="code-block">
+        <div class="code-label">Build policy documents</div>
+        <pre><code>KEYSTONE_UPLOAD_ROLE_TRN="trn:iam::${KEYSTONE_CLOUD_ACCOUNT_ID}:role/${KEYSTONE_UPLOAD_ROLE}"
+KEYSTONE_QA_ROLE_TRN="trn:iam::${KEYSTONE_CLOUD_ACCOUNT_ID}:role/${KEYSTONE_QA_ROLE}"
+KEYSTONE_TOS_RESOURCE="trn:tos:::${KEYSTONE_TOS_BUCKET}/${KEYSTONE_TOS_PREFIX}/*"
+
+KEYSTONE_ASSUME_UPLOAD_POLICY="$(jq -cn --arg resource "$KEYSTONE_UPLOAD_ROLE_TRN" \
+  '{Statement:[{Effect:"Allow",Action:["sts:AssumeRole"],Resource:[$resource]}]}')"
+
+KEYSTONE_ASSUME_QA_POLICY="$(jq -cn --arg resource "$KEYSTONE_QA_ROLE_TRN" \
+  '{Statement:[{Effect:"Allow",Action:["sts:AssumeRole"],Resource:[$resource]}]}')"
+
+KEYSTONE_UPLOAD_TOS_POLICY="$(jq -cn --arg resource "$KEYSTONE_TOS_RESOURCE" \
+  '{Statement:[{Effect:"Allow",Action:[
+    "tos:PutObject","tos:CreateMultipartUpload","tos:UploadPart",
+    "tos:CompleteMultipartUpload","tos:AbortMultipartUpload",
+    "tos:ListParts","tos:HeadObject"
+  ],Resource:[$resource]}]}')"
+
+KEYSTONE_QA_TOS_POLICY="$(jq -cn --arg resource "$KEYSTONE_TOS_RESOURCE" \
+  '{Statement:[{Effect:"Allow",Action:["tos:GetObject"],Resource:[$resource]}]}')"</code></pre>
+      </div>
+      <div class="code-block">
+        <div class="code-label">Create custom policies</div>
+        <pre><code>ve iam CreatePolicy \
+  --PolicyName keystone-assume-upload-role-policy \
+  --Description "Allow Keystone runtime to assume only the upload role" \
+  --PolicyDocument "$KEYSTONE_ASSUME_UPLOAD_POLICY" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam CreatePolicy \
+  --PolicyName keystone-assume-qa-read-role-policy \
+  --Description "Allow Keystone runtime to assume only the QA read role" \
+  --PolicyDocument "$KEYSTONE_ASSUME_QA_POLICY" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam CreatePolicy \
+  --PolicyName keystone-device-upload-tos-policy \
+  --Description "Allow device sessions to upload below the configured TOS prefix" \
+  --PolicyDocument "$KEYSTONE_UPLOAD_TOS_POLICY" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam CreatePolicy \
+  --PolicyName KeystoneTOSQAReadPolicy \
+  --Description "Allow Keystone QA to range-read uploaded MCAP objects" \
+  --PolicyDocument "$KEYSTONE_QA_TOS_POLICY" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"</code></pre>
+      </div>
+
+      <h3>5.5 绑定 Policy</h3>
+      <div class="code-block">
+        <div class="code-label">Attach policies</div>
+        <pre><code>ve iam AttachUserPolicy \
+  --UserName "$KEYSTONE_RUNTIME_USER" \
+  --PolicyName keystone-assume-upload-role-policy --PolicyType Custom \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam AttachUserPolicy \
+  --UserName "$KEYSTONE_RUNTIME_USER" \
+  --PolicyName keystone-assume-qa-read-role-policy --PolicyType Custom \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam AttachRolePolicy \
+  --RoleName "$KEYSTONE_UPLOAD_ROLE" \
+  --PolicyName keystone-device-upload-tos-policy --PolicyType Custom \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam AttachRolePolicy \
+  --RoleName "$KEYSTONE_QA_ROLE" \
+  --PolicyName KeystoneTOSQAReadPolicy --PolicyType Custom \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"</code></pre>
+      </div>
+
+      <h3>5.6 最后创建运行 Access Key</h3>
+      <div class="code-block">
+        <div class="code-label">Create runtime AK/SK once</div>
+        <pre><code>ve iam CreateAccessKey \
+  --UserName "$KEYSTONE_RUNTIME_USER" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" \
+  ---region "$KEYSTONE_CLOUD_REGION"</code></pre>
+      </div>
+      <div class="callout">该命令会返回敏感 AK/SK，Secret Key 通常只显示一次。立即写入秘密管理系统；不要粘贴到聊天、工单、Git、日志或共享终端记录。</div>
+    </section>
+
+    <section id="permissions">
+      <div class="section-heading">
+        <span class="section-number">06</span>
+        <h2>权限边界</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>身份/会话</th>
+              <th>允许</th>
+              <th>明确不允许</th>
+              <th>资源范围</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>运行 IAM 用户</td>
+              <td>对两个指定 Role 执行 <code>sts:AssumeRole</code></td>
+              <td>直接 Get/Put TOS；枚举 IAM；扮演其他 Role</td>
+              <td>两个精确 Role TRN</td>
+            </tr>
+            <tr>
+              <td>上传 Role</td>
+              <td>Put、Create/Upload/Complete/Abort Multipart、ListParts、Head</td>
+              <td>GetObject、ListBucket、DeleteObject、访问其他 prefix</td>
+              <td>指定 bucket 的 <code>device-uploads/*</code></td>
+            </tr>
+            <tr>
+              <td>QA Role</td>
+              <td><code>tos:GetObject</code>，包含 Range GET</td>
+              <td>上传、删除、列桶、读取其他 prefix</td>
+              <td>指定 bucket 的 <code>device-uploads/*</code></td>
+            </tr>
+            <tr>
+              <td>单次 STS Session</td>
+              <td>本次 object key 所需操作</td>
+              <td>同 prefix 下的其他对象</td>
+              <td>Keystone 动态生成的单对象 TRN</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Keystone 的上传 Session Policy 在 <code>internal/services/dgwcompat/sts_client.go</code> 中生成；QA Session Policy 在 <code>internal/api/handlers/episode_qa_tos.go</code> 中生成。云上 Role Policy 给出 prefix 上限，应用 Session Policy 再缩到单对象。</p>
+    </section>
+
+    <section id="env">
+      <div class="section-heading">
+        <span class="section-number">07</span>
+        <h2>.env 配置映射</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>环境变量</th>
+              <th>对应资源/含义</th>
+              <th>推荐值或来源</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>KEYSTONE_DGW_COMPAT_ENABLED</code></td><td>启用设备数据网关兼容服务与 TOS 配置加载</td><td><code>true</code></td></tr>
+            <tr><td><code>KEYSTONE_DGW_GRPC_ADDR</code></td><td>设备 SDK 连接的 gRPC 监听地址</td><td><code>:50053</code></td></tr>
+            <tr><td><code>KEYSTONE_DGW_TOS_BUCKET</code></td><td>私有 TOS Bucket</td><td>创建的 bucket 名</td></tr>
+            <tr><td><code>KEYSTONE_DGW_TOS_ENDPOINT</code></td><td>TOS 服务端点</td><td><code>https://tos-cn-beijing.volces.com</code></td></tr>
+            <tr><td><code>KEYSTONE_DGW_TOS_REGION</code></td><td>Bucket 与 STS 签名地域</td><td><code>cn-beijing</code></td></tr>
+            <tr><td><code>KEYSTONE_DGW_TOS_KEY_PREFIX</code></td><td>设备对象 key 前缀</td><td><code>device-uploads</code></td></tr>
+            <tr><td><code>KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES</code></td><td>multipart 分片大小</td><td><code>8388608</code>（8 MiB）</td></tr>
+            <tr><td><code>KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN</code></td><td>设备上传 Role</td><td>上传 Role 的完整 TRN</td></tr>
+            <tr><td><code>KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN</code></td><td>Keystone QA 只读 Role</td><td>QA Role 的完整 TRN</td></tr>
+            <tr><td><code>KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT</code></td><td>火山引擎公共 STS 端点</td><td><code>https://sts.volcengineapi.com</code></td></tr>
+            <tr><td><code>KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID</code></td><td>运行 IAM 用户 AK</td><td>秘密管理系统注入</td></tr>
+            <tr><td><code>KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET</code></td><td>运行 IAM 用户 SK</td><td>秘密管理系统注入</td></tr>
+            <tr><td><code>KEYSTONE_DGW_STS_SESSION_TTL_SECONDS</code></td><td>设备上传 STS 有效期</td><td><code>3600</code>，不得超过 Role 上限</td></tr>
+            <tr><td><code>KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS</code></td><td>设备业务 JWT 有效期</td><td><code>900</code></td></tr>
+            <tr><td><code>KEYSTONE_DGW_MOCK_STS</code></td><td>是否使用 mock STS</td><td>生产固定为 <code>false</code></td></tr>
+            <tr><td><code>KEYSTONE_SYNC_OSS_TIMEOUT</code></td><td>Keystone 从 TOS 读取源对象的超时</td><td>按 MCAP 大小与网络调整，例如 <code>600</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label">Production .env template</div>
+        <pre><code>KEYSTONE_DGW_COMPAT_ENABLED=true
+KEYSTONE_DGW_GRPC_ADDR=:50053
+
+KEYSTONE_DGW_TOS_BUCKET=archebase-keystone-device-upload-2116584179
+KEYSTONE_DGW_TOS_ENDPOINT=https://tos-cn-beijing.volces.com
+KEYSTONE_DGW_TOS_REGION=cn-beijing
+KEYSTONE_DGW_TOS_KEY_PREFIX=device-uploads
+KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES=8388608
+
+KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN=trn:iam::2116584179:role/keystone-device-upload-role
+KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN=trn:iam::2116584179:role/keystone-qa-read-role
+KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT=https://sts.volcengineapi.com
+KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID=&lt;secret-manager:keystone-tos-sts-ak&gt;
+KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET=&lt;secret-manager:keystone-tos-sts-sk&gt;
+KEYSTONE_DGW_STS_SESSION_TTL_SECONDS=3600
+KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS=900
+KEYSTONE_DGW_MOCK_STS=false
+
+# TOS QA/同步读取超时；名称保留 OSS 是历史兼容。
+KEYSTONE_SYNC_OSS_TIMEOUT=600</code></pre>
+      </div>
+
+      <h3>关联但不属于 TOS 云资源的必需配置</h3>
+      <p>启用 DGW 时，Keystone 还需要设备 JWT 与 Hilbert 服务身份。这些配置不是火山云资源，但缺失时 DGW 配置校验或设备认证会失败。</p>
+      <div class="code-block">
+        <div class="code-label">Application dependencies</div>
+        <pre><code>KEYSTONE_JWT_SECRET=&lt;strong-random-secret&gt;
+KEYSTONE_HILBERT_BASE_URL=&lt;hilbert-base-url&gt;
+KEYSTONE_HILBERT_ACCESS_KEY=&lt;hilbert-service-ak&gt;
+KEYSTONE_HILBERT_SECRET_KEY=&lt;hilbert-service-sk&gt;</code></pre>
+      </div>
+    </section>
+
+    <section id="verify">
+      <div class="section-heading">
+        <span class="section-number">08</span>
+        <h2>验证与验收</h2>
+      </div>
+      <h3>8.1 云资源静态核验</h3>
+      <div class="code-block">
+        <div class="code-label">IAM audit</div>
+        <pre><code>ve iam GetUser --UserName "$KEYSTONE_RUNTIME_USER" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam ListAttachedUserPolicies --UserName "$KEYSTONE_RUNTIME_USER" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam GetRole --RoleName "$KEYSTONE_UPLOAD_ROLE" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam ListAttachedRolePolicies --RoleName "$KEYSTONE_UPLOAD_ROLE" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam GetRole --RoleName "$KEYSTONE_QA_ROLE" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"
+
+ve iam ListAttachedRolePolicies --RoleName "$KEYSTONE_QA_ROLE" \
+  ---profile "$KEYSTONE_ADMIN_PROFILE" ---region "$KEYSTONE_CLOUD_REGION"</code></pre>
+      </div>
+
+      <h3>8.2 部署验收标准</h3>
+      <ul class="checklist">
+        <li>用运行 AK/SK 调用 <code>sts:GetCallerIdentity</code>，身份是 <code>keystone-tos-sts</code>，不是 root。</li>
+        <li>Keystone 启动时 DGW 配置校验通过，gRPC 服务监听预期端口。</li>
+        <li>小文件通过 PutObject 上传成功，对象 key 位于 <code>device-uploads/*</code>。</li>
+        <li>大文件 multipart 可创建、上传分片、ListParts、完成；取消时可 Abort。</li>
+        <li>上传会话不能 GetObject，也不能访问同 prefix 下的另一个对象。</li>
+        <li>QA 会话可以 Range Get 本次 MCAP，但不能 PutObject 或读取另一个对象。</li>
+        <li>Keystone、设备和日志中均不出现长期 SK、Session Token 或完整临时 AK。</li>
+      </ul>
+    </section>
+
+    <section id="risks">
+      <div class="section-heading">
+        <span class="section-number">09</span>
+        <h2>风险与回滚</h2>
+      </div>
+      <div class="risk-grid">
+        <div class="hard-panel">
+          <h3>关键风险</h3>
+          <ul>
+            <li>把 root/admin AK 写入 <code>.env</code>，导致运行面权限失控。</li>
+            <li>Role Resource 写成 <code>*</code>，绕过 bucket/prefix 隔离。</li>
+            <li>上传与 QA 共用 Role，使设备获得读取能力。</li>
+            <li>Bucket 地域、Endpoint 和签名 Region 不一致。</li>
+            <li>日志或 CLI 命令把 AK/SK 暴露到历史记录。</li>
+          </ul>
+        </div>
+        <div class="hard-panel warning">
+          <h3>回滚顺序</h3>
+          <ol>
+            <li>先停用或轮换运行 IAM 用户的 Access Key，停止新 STS 签发。</li>
+            <li>关闭 <code>KEYSTONE_DGW_COMPAT_ENABLED</code> 并停止设备上传入口。</li>
+            <li>确认已完成对象的保留与迁移策略，不直接删除 bucket。</li>
+            <li>依次解绑用户/Role Policy，再删除 Policy、Role 和 IAM User。</li>
+            <li>只有确认数据可删除或已迁移后，才清空并删除 TOS Bucket。</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section id="decision">
+      <div class="footer-decision">
+        <strong>最终部署判断</strong>
+        云上边界固定为“一桶、一用户、双角色、四策略”；运行用户只有 AssumeRole，上传与 QA 权限分离，Session Policy 每次再收窄到单对象。任何更宽授权都应视为部署偏差。
+      </div>
+    </section>
+  </main>
+</body>
+</html>
