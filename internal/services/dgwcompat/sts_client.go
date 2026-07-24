@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/volcengineauth"
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
 	"github.com/volcengine/volcengine-go-sdk/volcengine"
-	"github.com/volcengine/volcengine-go-sdk/volcengine/credentials"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/request"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/session"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/volcengineerr"
@@ -67,12 +67,7 @@ func newSTSProvider(cfg Config) (stsProvider, error) {
 	if cfg.MockSTS {
 		return mockSTSProvider{ttl: cfg.STSSessionTTL}, nil
 	}
-	sdkConfig := volcengine.NewConfig().
-		WithRegion(cfg.TOSRegion).
-		WithCredentials(credentials.NewStaticCredentials(cfg.AccessKeyID, cfg.AccessKeySecret, ""))
-	if cfg.STSEndpoint != "" {
-		sdkConfig = sdkConfig.WithEndpoint(cfg.STSEndpoint)
-	}
+	sdkConfig := volcengineauth.NewConfig(cfg.TOSRegion, cfg.STSEndpoint, cfg.AccessKeyID, cfg.AccessKeySecret)
 	sess, err := session.NewSession(sdkConfig)
 	if err != nil {
 		return nil, fmt.Errorf("create Volcengine STS session: %w", err)

@@ -12,6 +12,63 @@ import (
 	"testing"
 )
 
+var storageConfigEnvKeys = []string{
+	"KEYSTONE_DGW_COMPAT_ENABLED",
+	"KEYSTONE_DGW_TOS_ENDPOINT",
+	"KEYSTONE_DGW_TOS_BUCKET",
+	"KEYSTONE_DGW_TOS_REGION",
+	"KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN",
+	"KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN",
+	"KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT",
+	"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID",
+	"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET",
+	"KEYSTONE_MINIO_ENDPOINT",
+	"KEYSTONE_MINIO_USE_SSL",
+	"KEYSTONE_MINIO_ACCESS_KEY",
+	"KEYSTONE_MINIO_SECRET_KEY",
+	"KEYSTONE_MINIO_BUCKET",
+	"KEYSTONE_MINIO_REGION",
+	"KEYSTONE_FACTORY_ID",
+}
+
+func cleanStorageConfigEnv(t *testing.T) {
+	t.Helper()
+
+	originalEnv := make(map[string]string, len(storageConfigEnvKeys))
+	originalSet := make(map[string]bool, len(storageConfigEnvKeys))
+	for _, key := range storageConfigEnvKeys {
+		value, ok := os.LookupEnv(key)
+		originalEnv[key] = value
+		originalSet[key] = ok
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+	}
+
+	t.Cleanup(func() {
+		for _, key := range storageConfigEnvKeys {
+			if !originalSet[key] {
+				_ = os.Unsetenv(key)
+				continue
+			}
+			_ = os.Setenv(key, originalEnv[key])
+		}
+	})
+}
+
+func setStorageConfigEnv(t *testing.T, key string, value string) {
+	t.Helper()
+	if err := os.Setenv(key, value); err != nil {
+		t.Fatalf("set %s: %v", key, err)
+	}
+}
+
+func tosStorageEnvDebug() string {
+	return "compat=" + os.Getenv("KEYSTONE_DGW_COMPAT_ENABLED") +
+		" endpoint=" + os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT") +
+		" bucket=" + os.Getenv("KEYSTONE_DGW_TOS_BUCKET")
+}
+
 func TestLoad(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
@@ -240,19 +297,20 @@ func TestLoadWithCustomEnv(t *testing.T) {
 }
 
 func TestLoadStorageConfigKeepsAxonOnMinIOWhenDGWCompatEnabled(t *testing.T) {
-	t.Setenv("KEYSTONE_DGW_COMPAT_ENABLED", "true")
-	t.Setenv("KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
-	t.Setenv("KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
-	t.Setenv("KEYSTONE_DGW_TOS_REGION", "cn-beijing")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN", "trn:iam::123:role/upload")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "trn:iam::123:role/qa-read")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT", "https://sts.volcengineapi.com")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
-	t.Setenv("KEYSTONE_MINIO_ENDPOINT", "192.168.119.4:9000")
-	t.Setenv("KEYSTONE_MINIO_ACCESS_KEY", "minio-ak")
-	t.Setenv("KEYSTONE_MINIO_SECRET_KEY", "minio-sk")
-	t.Setenv("KEYSTONE_MINIO_BUCKET", "minio-bucket")
+	cleanStorageConfigEnv(t)
+	setStorageConfigEnv(t, "KEYSTONE_DGW_COMPAT_ENABLED", "true")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_REGION", "cn-beijing")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN", "trn:iam::123:role/upload")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "trn:iam::123:role/qa-read")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT", "https://sts.volcengineapi.com")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
+	setStorageConfigEnv(t, "KEYSTONE_MINIO_ENDPOINT", "192.168.119.4:9000")
+	setStorageConfigEnv(t, "KEYSTONE_MINIO_ACCESS_KEY", "minio-ak")
+	setStorageConfigEnv(t, "KEYSTONE_MINIO_SECRET_KEY", "minio-sk")
+	setStorageConfigEnv(t, "KEYSTONE_MINIO_BUCKET", "minio-bucket")
 
 	cfg := loadStorageConfig()
 	if cfg.Type != "s3" {
@@ -281,21 +339,41 @@ func TestLoadStorageConfigKeepsAxonOnMinIOWhenDGWCompatEnabled(t *testing.T) {
 }
 
 func TestLoadStorageConfigDoesNotFallbackToUploadSTSRoleForTOSQA(t *testing.T) {
-	t.Setenv("KEYSTONE_DGW_COMPAT_ENABLED", "true")
-	t.Setenv("KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
-	t.Setenv("KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
-	t.Setenv("KEYSTONE_DGW_TOS_REGION", "cn-beijing")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN", "trn:iam::123:role/upload")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
-	t.Setenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
+	cleanStorageConfigEnv(t)
+	setStorageConfigEnv(t, "KEYSTONE_DGW_COMPAT_ENABLED", "true")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_REGION", "cn-beijing")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN", "trn:iam::123:role/upload")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
 
 	cfg := loadTOSStorageConfig()
 	if cfg.Type != "tos" {
-		t.Fatalf("Type = %q, want tos", cfg.Type)
+		t.Fatalf("Type = %q, want tos (%s)", cfg.Type, tosStorageEnvDebug())
 	}
 	if cfg.STSRoleTRN != "" {
 		t.Fatalf("STSRoleTRN = %q, want empty when QA read role is not configured", cfg.STSRoleTRN)
+	}
+}
+
+func TestLoadStorageConfigAllowsTOSWithoutStaticCredentials(t *testing.T) {
+	cleanStorageConfigEnv(t)
+	setStorageConfigEnv(t, "KEYSTONE_DGW_COMPAT_ENABLED", "true")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_REGION", "cn-beijing")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "trn:iam::123:role/qa-read")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "")
+
+	cfg := loadTOSStorageConfig()
+	if cfg.Type != "tos" {
+		t.Fatalf("Type = %q, want tos (%s)", cfg.Type, tosStorageEnvDebug())
+	}
+	if cfg.AccessKey != "" || cfg.SecretKey != "" {
+		t.Fatalf("TOS static credentials = %q/%q, want empty for default SDK credential chain", cfg.AccessKey, cfg.SecretKey)
 	}
 }
 
@@ -361,6 +439,26 @@ func TestConfigValidate(t *testing.T) {
 					AccessKey: "",
 					SecretKey: "",
 				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "TOS storage allows default credential chain",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing"},
+				Auth:     AuthConfig{JWTSecret: "secret"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "TOS storage rejects partial static credentials",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing", AccessKey: "ak"},
+				Auth:     AuthConfig{JWTSecret: "secret"},
 			},
 			wantErr: true,
 		},

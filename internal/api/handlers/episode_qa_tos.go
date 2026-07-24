@@ -24,9 +24,9 @@ import (
 
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/volcengineauth"
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
 	"github.com/volcengine/volcengine-go-sdk/volcengine"
-	"github.com/volcengine/volcengine-go-sdk/volcengine/credentials"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/request"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/session"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/volcengineerr"
@@ -97,12 +97,7 @@ func newEpisodeQATOSReader(cfg config.StorageConfig) *episodeQATOSReader {
 		client:    &http.Client{Timeout: defaultEpisodeQATimeout},
 	}
 	if reader.roleTRN != "" {
-		sdkConfig := volcengine.NewConfig().
-			WithRegion(reader.region).
-			WithCredentials(credentials.NewStaticCredentials(reader.accessKey, reader.secretKey, ""))
-		if strings.TrimSpace(cfg.STSEndpoint) != "" {
-			sdkConfig = sdkConfig.WithEndpoint(strings.TrimSpace(cfg.STSEndpoint))
-		}
+		sdkConfig := volcengineauth.NewConfig(reader.region, cfg.STSEndpoint, reader.accessKey, reader.secretKey)
 		if sess, err := session.NewSession(sdkConfig); err == nil {
 			reader.stsClient = sts.New(sess)
 		}

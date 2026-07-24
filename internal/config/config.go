@@ -299,7 +299,7 @@ func loadTOSStorageConfig() StorageConfig {
 		tosBucket := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET"))
 		tosAccessKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"))
 		tosSecretKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"))
-		if tosEndpoint != "" && tosBucket != "" && tosAccessKey != "" && tosSecretKey != "" {
+		if tosEndpoint != "" && tosBucket != "" {
 			endpoint, useSSL := normalizeObjectStorageEndpoint(tosEndpoint, true)
 			return StorageConfig{
 				Type:         "tos",
@@ -348,7 +348,10 @@ func (c *Config) Validate() error {
 	if c.Database.DSN == "" {
 		return fmt.Errorf("database DSN is required")
 	}
-	if c.Storage.AccessKey == "" || c.Storage.SecretKey == "" {
+	if c.Storage.Type == "tos" && ((strings.TrimSpace(c.Storage.AccessKey) == "") != (strings.TrimSpace(c.Storage.SecretKey) == "")) {
+		return fmt.Errorf("TOS static access key and secret key must both be set or both be empty")
+	}
+	if c.Storage.Type != "tos" && (c.Storage.AccessKey == "" || c.Storage.SecretKey == "") {
 		return fmt.Errorf("storage access key and secret key are required")
 	}
 	if strings.TrimSpace(c.Auth.JWTSecret) == "" {

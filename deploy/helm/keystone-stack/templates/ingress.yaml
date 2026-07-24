@@ -1,0 +1,60 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "keystone-stack.componentName" (list . "ingress") }}
+  labels:
+    {{- include "keystone-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ include "keystone-stack.host" . | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+                port:
+                  name: http
+          - path: /swagger
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+                port:
+                  name: http
+          - path: /transfer
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+                port:
+                  name: transfer-ws
+          - path: /recorder
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+                port:
+                  name: recorder-ws
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "synapse") }}
+                port:
+                  name: http
+{{- end }}

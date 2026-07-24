@@ -1,0 +1,6 @@
+apiVersion: v2
+name: keystone-stack
+description: One isolated Keystone instance with Synapse and MySQL.
+type: application
+version: 0.1.0
+appVersion: "main-v2"

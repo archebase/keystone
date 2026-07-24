@@ -1,0 +1,189 @@
+# One Helm release represents one isolated Keystone + Synapse + MySQL stack.
+
+fullnameOverride: ""
+
+commonLabels: {}
+imagePullSecrets:
+  - name: keystone-production-registry
+
+serviceAccount:
+  # Production uses the cloud-infra managed ServiceAccount
+  # archebase-system/keystone, annotated for Volcengine IRSA.
+  create: false
+  name: keystone
+  annotations: {}
+
+credentials:
+  # When set, the chart does not create a Secret. See README.md for required keys.
+  existingSecret: ""
+  # Empty mysql/jwt/admin values are generated on first install and reused on upgrades.
+  # Hilbert values cannot be generated; set them or use existingSecret for production.
+  mysqlRootPassword: ""
+  mysqlPassword: ""
+  jwtSecret: ""
+  adminPassword: ""
+  # Used only when storage.type=s3. TOS production uses IRSA instead of static storage AK/SK.
+  storageAccessKey: ""
+  storageSecretKey: ""
+  hilbertAccessKey: ""
+  hilbertSecretKey: ""
+
+keystone:
+  image:
+    repository: archebase-cr-cn-beijing.cr.volces.com/prod/keystone
+    # Required at deploy time. Use the Keystone source commit id that produced the image.
+    tag: ""
+    digest: ""
+    pullPolicy: Always
+
+  factoryId: ""
+  callbackPublicBaseURL: ""
+  adminUsername: admin
+  syncEnabled: false
+  qaEnabled: true
+
+  hilbert:
+    baseURL: https://hilbert.archebase.cn
+    timeoutSeconds: 5
+
+  service:
+    type: ClusterIP
+    annotations: {}
+    ports:
+      http: 8080
+      transferWebSocket: 8090
+      recorderWebSocket: 8091
+      dgwGrpc: 50053
+
+  podAnnotations: {}
+  podLabels: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  tolerations: []
+  affinity: {}
+  podSecurityContext: {}
+  securityContext: {}
+  extraEnv: []
+  extraEnvFrom: []
+
+  startupProbe:
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 36
+  readinessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 6
+  livenessProbe:
+    periodSeconds: 30
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+synapse:
+  image:
+    repository: archebase-cr-cn-beijing.cr.volces.com/prod/synapse
+    # Required at deploy time. Use the Synapse source commit id that produced the image.
+    tag: ""
+    digest: ""
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+  podAnnotations: {}
+  podLabels: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  tolerations: []
+  affinity: {}
+  podSecurityContext: {}
+  securityContext: {}
+  extraEnv: []
+  extraEnvFrom: []
+
+storage:
+  # Object storage is external to this three-workload stack.
+  # Production uses Volcengine TOS and VKE IRSA, not static storage AK/SK.
+  type: tos
+  s3:
+    endpoint: ""
+    bucket: ""
+    useSSL: true
+    region: ""
+  tos:
+    endpoint: https://tos-cn-beijing.volces.com
+    bucket: archebase-prod-keystone-2117611051
+    region: cn-beijing
+    keyPrefix: device-uploads
+    uploadPartSizeBytes: 8388608
+    stsRoleTRN: trn:iam::2117611051:role/archebase-prod-keystone-upload
+    qaReadSTSRoleTRN: trn:iam::2117611051:role/archebase-prod-keystone-read
+    stsEndpoint: https://sts.volcengineapi.com
+    stsSessionTTLSeconds: 3600
+    deviceJWTTTLSeconds: 900
+    mockSTS: false
+
+mysql:
+  image:
+    # Verified in Volcengine CR on 2026-07-23; currently publishes linux/amd64.
+    repository: archebase-cr-cn-beijing.cr.volces.com/upstream/mysql
+    tag: "8.4.10"
+    digest: ""
+    pullPolicy: IfNotPresent
+  database: keystone
+  username: keystone
+  service:
+    port: 3306
+    annotations: {}
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 20Gi
+  podAnnotations: {}
+  podLabels: {}
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  tolerations: []
+  affinity: {}
+  podSecurityContext:
+    fsGroup: 999
+  securityContext: {}
+
+ingress:
+  enabled: true
+  className: keystone-prod
+  annotations:
+    ingress.vke.volcengine.com/loadbalancer-port: "443"
+    ingress.vke.volcengine.com/loadbalancer-protocol: https
+    ingress.vke.volcengine.com/loadbalancer-backend-protocol: http
+  host: ""
+  tls: []
+  grpc:
+    enabled: true
+    annotations:
+      ingress.vke.volcengine.com/loadbalancer-port: "50053"
+      ingress.vke.volcengine.com/loadbalancer-protocol: https
+      ingress.vke.volcengine.com/loadbalancer-backend-protocol: grpc
