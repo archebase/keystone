@@ -98,8 +98,8 @@ helm upgrade --install factory-a deploy/helm/keystone-stack \
   --namespace archebase-system \
   --set keystone.image.tag="${KEYSTONE_COMMIT}" \
   --set synapse.image.tag="${SYNAPSE_COMMIT}" \
-  --set credentials.hilbertAccessKey="${HILBERT_ACCESS_KEY}" \
-  --set credentials.hilbertSecretKey="${HILBERT_SECRET_KEY}"
+  --set credentials.hilbertAccessKey="${KEYSTONE_HILBERT_ACCESS_KEY}" \
+  --set credentials.hilbertSecretKey="${KEYSTONE_HILBERT_SECRET_KEY}"
 ```
 
 Before exposing the release publicly, create the DNS CNAME:
@@ -114,23 +114,25 @@ release names. MySQL PVCs remain release-specific.
 ## GitHub Actions Deployment
 
 The `Deploy Keystone Stack` workflow provides the production manual deployment
-entry point. Run it from `main-v2` once the matching Keystone image workflow has
-successfully pushed the selected Keystone commit SHA.
+entry point. GitHub requires manual workflows to exist on the repository default
+branch, so the same workflow is mirrored on `main` for discovery and always
+checks out `main-v2` before deploying. Run it only after the matching Keystone
+image workflow has successfully pushed the selected Keystone commit SHA.
 
 Required repository or `production` environment secrets:
 
 - `PROD_KUBECONFIG`: production kubeconfig content from the `cloud-infra`
   `ci_kubeconfig` output. It must contain the `volcano-prod-ci` context.
-- `HILBERT_ACCESS_KEY`
-- `HILBERT_SECRET_KEY`
+- `KEYSTONE_HILBERT_ACCESS_KEY`
+- `KEYSTONE_HILBERT_SECRET_KEY`
 - `VOLCENGINE_CR_USERNAME`
 - `VOLCENGINE_CR_PASSWORD`
 
 Workflow inputs:
 
 - `releaseName`: the Helm release name and Keystone instance identifier.
-- `keystoneImageTag`: optional full Keystone commit SHA. Empty uses the selected
-  `main-v2` workflow ref SHA.
+- `keystoneImageTag`: optional full Keystone commit SHA. Empty uses the
+  checked-out `main-v2` HEAD.
 - `synapseImageTag`: full Synapse commit SHA.
 - `dnsCnameReady`: must be `true` after
   `keystone-<releaseName>.archebase.cn` points to the production Keystone ALB.
