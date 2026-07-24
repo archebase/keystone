@@ -31,7 +31,8 @@ credentials:
 keystone:
   image:
     repository: archebase-cr-cn-beijing.cr.volces.com/prod/keystone
-    tag: main-v2-latest
+    # Required at deploy time. Use the Keystone source commit id that produced the image.
+    tag: ""
     digest: ""
     pullPolicy: Always
 
@@ -88,7 +89,8 @@ keystone:
 synapse:
   image:
     repository: archebase-cr-cn-beijing.cr.volces.com/prod/synapse
-    tag: main-v2-latest
+    # Required at deploy time. Use the Synapse source commit id that produced the image.
+    tag: ""
     digest: ""
     pullPolicy: Always
   service:

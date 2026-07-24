@@ -15,13 +15,17 @@ independent Keystone instances.
 The chart is production-first for Volcengine prod. Defaults assume the
 `cloud-infra` Keystone shared resources have already been applied.
 
-Default images:
+Default image repositories:
 
 ```text
-archebase-cr-cn-beijing.cr.volces.com/prod/keystone:main-v2-latest
-archebase-cr-cn-beijing.cr.volces.com/prod/synapse:main-v2-latest
+archebase-cr-cn-beijing.cr.volces.com/prod/keystone:<keystoneCommit>
+archebase-cr-cn-beijing.cr.volces.com/prod/synapse:<synapseCommit>
 archebase-cr-cn-beijing.cr.volces.com/upstream/mysql:8.4.10
 ```
+
+Keystone and Synapse tags are required at deploy time. Use the Git commit id
+that produced each image; do not use mutable tags such as `latest` or
+`main-v2-latest`.
 
 Default infrastructure contract:
 
@@ -90,6 +94,8 @@ Production install example:
 ```bash
 helm upgrade --install factory-a deploy/helm/keystone-stack \
   --namespace archebase-system \
+  --set keystone.image.tag="${KEYSTONE_COMMIT}" \
+  --set synapse.image.tag="${SYNAPSE_COMMIT}" \
   --set credentials.hilbertAccessKey="${HILBERT_ACCESS_KEY}" \
   --set credentials.hilbertSecretKey="${HILBERT_SECRET_KEY}"
 ```

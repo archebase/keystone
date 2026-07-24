@@ -77,10 +77,14 @@ lint:
 helm-lint:
 	helm lint deploy/helm/keystone-stack \
 		--namespace archebase-system \
+		--set keystone.image.tag=e062c27a6617 \
+		--set synapse.image.tag=4f294f56bfb1 \
 		--set credentials.hilbertAccessKey=lint-ak \
 		--set credentials.hilbertSecretKey=lint-sk
 	helm template smoke deploy/helm/keystone-stack \
 		--namespace archebase-system \
+		--set keystone.image.tag=e062c27a6617 \
+		--set synapse.image.tag=4f294f56bfb1 \
 		--set credentials.hilbertAccessKey=lint-ak \
 		--set credentials.hilbertSecretKey=lint-sk >/dev/null
 
