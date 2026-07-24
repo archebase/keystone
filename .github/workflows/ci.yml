@@ -25,7 +25,7 @@ jobs:
     name: Format Check
     runs-on: archebase-ci-runner
     container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
@@ -45,7 +45,7 @@ jobs:
     name: License Compliance
     runs-on: archebase-ci-runner
     container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
       options: --user 0
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +104,7 @@ jobs:
     name: Lint
     runs-on: archebase-ci-runner
     container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
@@ -127,7 +127,7 @@ jobs:
     name: Unit Tests
     runs-on: archebase-ci-runner
     container:
-      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'dev-acr-registry.cn-shanghai.cr.aliyuncs.com/third-party/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
