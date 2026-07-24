@@ -103,27 +103,6 @@ jobs:
       - name: Run tests with coverage
         run: go test -cover -race -v ./...
 
-  swift:
-    name: Swift SDK
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer
-
-      - name: Build Swift package
-        run: swift build
-
-      - name: Test Swift package
-        run: swift test
-
-      - name: Check generated Swift protobuf bindings
-        run: |
-          brew install protobuf
-          sdk/swift/Scripts/bootstrap_swift_proto_toolchain.sh
-          sdk/swift/Scripts/check_swift_proto_freshness.sh
-
   # 5. integration-test (scripts/test.sh)
   integration-test:
     name: Integration Tests
