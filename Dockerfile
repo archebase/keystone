@@ -5,6 +5,8 @@
 FROM --platform=linux/amd64 archebase-cr-cn-beijing.cr.volces.com/upstream/golang:1.25-bookworm AS builder
 
 ARG BUILD_TIME=unknown
+ARG DEBIAN_MIRROR=http://mirrors.aliyun.com/debian
+ARG DEBIAN_SECURITY_MIRROR=http://mirrors.aliyun.com/debian-security
 ARG GOPROXY=https://goproxy.cn,direct
 ARG VERSION=dev
 
@@ -14,7 +16,11 @@ ENV CGO_ENABLED=0 \
 
 WORKDIR /build
 
-RUN apt-get update && \
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf 'deb %s bookworm main\n' "$DEBIAN_MIRROR" > /etc/apt/sources.list && \
+    printf 'deb %s bookworm-updates main\n' "$DEBIAN_MIRROR" >> /etc/apt/sources.list && \
+    printf 'deb %s bookworm-security main\n' "$DEBIAN_SECURITY_MIRROR" >> /etc/apt/sources.list && \
+    apt-get update && \
     apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
@@ -36,7 +42,11 @@ RUN swag init --parseDependency --parseInternal \
 
 FROM --platform=linux/amd64 archebase-cr-cn-beijing.cr.volces.com/upstream/alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata && \
+ARG ALPINE_MIRROR=http://mirrors.aliyun.com/alpine
+
+RUN printf '%s/v3.20/main\n' "$ALPINE_MIRROR" > /etc/apk/repositories && \
+    printf '%s/v3.20/community\n' "$ALPINE_MIRROR" >> /etc/apk/repositories && \
+    apk add --no-cache ca-certificates tzdata && \
     addgroup -g 1000 keystone && \
     adduser -D -u 1000 -G keystone -h /app keystone
 
