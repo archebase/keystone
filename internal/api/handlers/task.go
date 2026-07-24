@@ -231,6 +231,7 @@ func (h *TaskHandler) AbandonCollectorCapture(c *gin.Context) {
 	case "cancelled", "failed":
 	case "pending", "ready", "in_progress", "uploading":
 		now := time.Now().UTC()
+		// #nosec G701 -- static SQL with placeholder-bound timestamp and task ID.
 		if _, err := tx.ExecContext(c.Request.Context(), `
 			UPDATE tasks
 			SET status = 'cancelled', error_message = 'collector_abandoned_local_capture', updated_at = ?
@@ -290,6 +291,7 @@ func (h *TaskHandler) transitionCollectorCapture(c *gin.Context, action string) 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update task"})
 		return
 	}
+	// #nosec G701 -- sqlx.In only expands placeholders; all values remain bound after Rebind.
 	result, err := h.db.ExecContext(c.Request.Context(), h.db.Rebind(query), args...)
 	if err != nil {
 		logger.Printf("[TASK] Collector capture %s failed: task=%d err=%v", action, taskID, err)
