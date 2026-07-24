@@ -23,9 +23,11 @@ archebase-cr-cn-beijing.cr.volces.com/prod/synapse:<synapseCommit>
 archebase-cr-cn-beijing.cr.volces.com/upstream/mysql:8.4.10
 ```
 
-Keystone and Synapse tags are required at deploy time. Use the Git commit id
-that produced each image; do not use mutable tags such as `latest` or
-`main-v2-latest`.
+Keystone and Synapse tags are required at deploy time. Use the full Git commit
+SHA that produced each image; do not use mutable tags such as `latest` or
+`main-v2-latest`. The production image workflow publishes Keystone as
+`archebase-cr-cn-beijing.cr.volces.com/prod/keystone:${GITHUB_SHA}` after a
+successful `main-v2` push.
 
 Default infrastructure contract:
 

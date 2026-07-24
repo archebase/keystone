@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+name: Keystone Image
+
+on:
+  push:
+    branches: [main-v2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
+  IMAGE_REPOSITORY: prod/keystone
+
+jobs:
+  build-and-push:
+    name: Build and push Keystone image
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main-v2'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Volcengine CR
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          test -n "$VOLCENGINE_CR_USERNAME" || (echo "VOLCENGINE_CR_USERNAME secret is required"; exit 1)
+          test -n "$VOLCENGINE_CR_PASSWORD" || (echo "VOLCENGINE_CR_PASSWORD secret is required"; exit 1)
+          echo "$VOLCENGINE_CR_PASSWORD" | docker login "$VOLCENGINE_CR_ENDPOINT" --username "$VOLCENGINE_CR_USERNAME" --password-stdin
+
+      - name: Set image metadata
+        run: |
+          echo "IMAGE=${VOLCENGINE_CR_ENDPOINT}/${IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+
+      - name: Build and push image
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg VERSION="$GITHUB_SHA" \
+            --build-arg BUILD_TIME="$BUILD_TIME" \
+            --tag "$IMAGE" \
+            --push \
+            .
+
+      - name: Inspect pushed image
+        run: docker buildx imagetools inspect "$IMAGE"
