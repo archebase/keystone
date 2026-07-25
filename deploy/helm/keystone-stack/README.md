@@ -189,6 +189,9 @@ cluster.
 
 - MySQL credentials initialize a fresh data directory only. Changing them after
   the PVC contains data does not alter existing MySQL accounts.
+- The default MySQL memory request is intentionally small for the current
+  resource-constrained Volcengine prod node pool; raise
+  `mysql.resources.requests.memory` for larger dedicated deployments.
 - StatefulSet PVCs are retained after `helm uninstall`. Remove them explicitly
   only when the stack data is no longer needed.
 - The default amd64 node selectors match the currently verified CR images.
