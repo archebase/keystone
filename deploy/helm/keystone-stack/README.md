@@ -196,6 +196,9 @@ cluster.
 - The default MySQL memory request is intentionally small for the current
   resource-constrained Volcengine prod node pool; raise
   `mysql.resources.requests.memory` for larger dedicated deployments.
+- Keystone uses a no-surge rolling update strategy by default so upgrades fit
+  the current resource-constrained Volcengine prod node pool. This can create a
+  short Keystone API/WebSocket interruption during image updates.
 - StatefulSet PVCs are retained after `helm uninstall`. Remove them explicitly
   only when the stack data is no longer needed.
 - The default amd64 node selectors match the currently verified CR images.
