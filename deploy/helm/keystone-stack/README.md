@@ -166,10 +166,12 @@ deployments require the intended reviewer approval.
 ## Routing
 
 Synapse uses the same-origin `/api/v1` path. The chart's HTTP Ingress sends
-`/api/v1`, `/api`, `/swagger/`, and `/swagger` to Keystone HTTP, `/transfer/`,
-`/transfer`, `/recorder/`, and `/recorder` to Keystone's WebSocket ports, and
-all remaining paths to Synapse. The slash and non-slash variants are rendered
-explicitly for VKE ALB path matching.
+`/api/v1/*`, `/api/v1`, `/api/*`, `/api`, `/swagger/*`, and `/swagger` to
+Keystone HTTP, `/transfer/*` and `/transfer` to Keystone's transfer WebSocket
+port, `/recorder/*` and `/recorder` to Keystone's recorder WebSocket port, and
+`/*` plus `/` to Synapse. Volcengine Standard ALB treats `paths.pathType` as
+validation-only and defaults to exact path matching, so wildcard paths are
+rendered explicitly where prefix matching is required.
 
 Keystone also serves root and `/api` health responses for ALB backend health
 checks. The public root path still routes to Synapse because the HTTP Ingress

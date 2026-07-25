@@ -22,7 +22,21 @@ spec:
     - host: {{ include "keystone-stack.host" . | quote }}
       http:
         paths:
+          - path: /api/v1/*
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+                port:
+                  number: {{ .Values.keystone.service.ports.http }}
           - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+                port:
+                  number: {{ .Values.keystone.service.ports.http }}
+          - path: /api/*
             pathType: Prefix
             backend:
               service:
@@ -36,7 +50,7 @@ spec:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
                   number: {{ .Values.keystone.service.ports.http }}
-          - path: /swagger/
+          - path: /swagger/*
             pathType: Prefix
             backend:
               service:
@@ -50,7 +64,7 @@ spec:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
                   number: {{ .Values.keystone.service.ports.http }}
-          - path: /transfer/
+          - path: /transfer/*
             pathType: Prefix
             backend:
               service:
@@ -64,7 +78,7 @@ spec:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
                   number: {{ .Values.keystone.service.ports.transferWebSocket }}
-          - path: /recorder/
+          - path: /recorder/*
             pathType: Prefix
             backend:
               service:
@@ -78,6 +92,13 @@ spec:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
                   number: {{ .Values.keystone.service.ports.recorderWebSocket }}
+          - path: /*
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "synapse") }}
+                port:
+                  number: {{ .Values.synapse.service.port }}
           - path: /
             pathType: Prefix
             backend:
