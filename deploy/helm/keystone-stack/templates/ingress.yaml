@@ -2,11 +2,11 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "keystone-stack.componentName" (list . "ingress") }}
+  name: {{ include "keystone-stack.componentName" (list . "keystone-ingress") }}
   labels:
     {{- include "keystone-stack.labels" . | nindent 4 }}
-    app.kubernetes.io/component: ingress
-  {{- with .Values.ingress.annotations }}
+    app.kubernetes.io/component: keystone-ingress
+  {{- with .Values.ingress.keystoneAnnotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -50,6 +50,30 @@ spec:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
                   number: {{ .Values.keystone.service.ports.recorderWebSocket }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "keystone-stack.componentName" (list . "ingress") }}
+  labels:
+    {{- include "keystone-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ include "keystone-stack.host" . | quote }}
+      http:
+        paths:
           - path: /
             pathType: Prefix
             backend:

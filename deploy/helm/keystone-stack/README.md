@@ -169,6 +169,11 @@ Synapse uses the same-origin `/api/v1` path. The chart's HTTP Ingress sends
 `/api` and `/swagger` to Keystone, `/transfer` and `/recorder` to Keystone's
 WebSocket ports, and all remaining paths to Synapse.
 
+The chart renders Keystone HTTP paths and the Synapse root path as separate
+Ingress resources because the Volcengine ALB health check is configured per
+Ingress/server group. Keystone uses `/api/v1/health`; Synapse keeps the default
+root health check.
+
 The gRPC Ingress is separate so the VKE ALB annotations can select listener
 `50053` and backend protocol `grpc` without affecting browser/API routing.
 gRPC clients connect to:
