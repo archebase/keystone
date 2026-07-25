@@ -152,7 +152,7 @@ spec:
             - name: KEYSTONE_DGW_TOS_KEY_PREFIX
               value: {{ .Values.storage.tos.keyPrefix | quote }}
             - name: KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES
-              value: {{ .Values.storage.tos.uploadPartSizeBytes | quote }}
+              value: {{ .Values.storage.tos.uploadPartSizeBytes | int64 | quote }}
             - name: KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN
               value: {{ .Values.storage.tos.stsRoleTRN | quote }}
             - name: KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN
@@ -160,9 +160,9 @@ spec:
             - name: KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT
               value: {{ .Values.storage.tos.stsEndpoint | quote }}
             - name: KEYSTONE_DGW_STS_SESSION_TTL_SECONDS
-              value: {{ .Values.storage.tos.stsSessionTTLSeconds | quote }}
+              value: {{ .Values.storage.tos.stsSessionTTLSeconds | int64 | quote }}
             - name: KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS
-              value: {{ .Values.storage.tos.deviceJWTTTLSeconds | quote }}
+              value: {{ .Values.storage.tos.deviceJWTTTLSeconds | int64 | quote }}
             - name: KEYSTONE_DGW_MOCK_STS
               value: {{ .Values.storage.tos.mockSTS | quote }}
             {{- end }}
