@@ -195,10 +195,32 @@ jobs:
           export KUBECONFIG="$KUBECONFIG_PATH"
           echo "KUBECONFIG=${KUBECONFIG_PATH}" >> "$GITHUB_ENV"
 
+          AVAILABLE_CONTEXTS="$(kubectl config get-contexts -o name || true)"
+          if ! printf '%s\n' "$AVAILABLE_CONTEXTS" | grep -Fx "$KUBE_CONTEXT" > /dev/null; then
+            echo "PROD_KUBECONFIG must contain the ${KUBE_CONTEXT} context." >&2
+            echo "Available kubeconfig contexts:" >&2
+            printf '%s\n' "$AVAILABLE_CONTEXTS" | sed 's/^/- /' >&2
+            exit 1
+          fi
+
           kubectl config use-context "$KUBE_CONTEXT"
           CURRENT_CONTEXT="$(kubectl config current-context)"
           if [ "$CURRENT_CONTEXT" != "$KUBE_CONTEXT" ]; then
             echo "Unexpected Kubernetes context: ${CURRENT_CONTEXT}" >&2
+            exit 1
+          fi
+
+          PROD_CI_USERNAME="$(
+            kubectl auth whoami -o jsonpath='{.status.userInfo.username}'
+          )"
+          if [ "$PROD_CI_USERNAME" != "system:serviceaccount:kube-system:ci-deployer" ]; then
+            echo "PROD_KUBECONFIG must authenticate as system:serviceaccount:kube-system:ci-deployer." >&2
+            echo "Actual Kubernetes username: ${PROD_CI_USERNAME}" >&2
+            exit 1
+          fi
+
+          if ! kubectl auth can-i '*' '*' --all-namespaces --quiet; then
+            echo "PROD_KUBECONFIG must use the cloud-infra managed production CI deployer identity." >&2
             exit 1
           fi
 

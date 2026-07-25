@@ -122,8 +122,10 @@ successfully pushed the selected Keystone commit SHA.
 
 Required repository or `production` environment secrets:
 
-- `PROD_KUBECONFIG`: production kubeconfig content from the `cloud-infra`
-  `ci_kubeconfig` output. It must contain the `volcano-prod-ci` context.
+- `PROD_KUBECONFIG`: raw multiline production kubeconfig content from the
+  `cloud-infra` `ci_kubeconfig` output, not a file path, base64 wrapper, or
+  escaped JSON string. It must contain and select the `volcano-prod-ci` context
+  and authenticate as `system:serviceaccount:kube-system:ci-deployer`.
 - `KEYSTONE_HILBERT_ACCESS_KEY`
 - `KEYSTONE_HILBERT_SECRET_KEY`
 - `VOLCENGINE_CR_USERNAME`
