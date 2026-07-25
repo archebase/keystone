@@ -75,6 +75,20 @@ func axonTransferWriteTimeout(cfg *config.TransferConfig) time.Duration {
 	return time.Duration(cfg.WriteTimeout) * time.Second
 }
 
+func loadBalancerHealthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write([]byte("ok\n"))
+	}
+}
+
 // New creates a new server instance.
 // db and s3Client are optional; pass nil to disable Verified ACK.
 // syncWorker is optional; pass nil to disable cloud sync APIs.
@@ -231,6 +245,8 @@ func (s *Server) buildRoutes() http.Handler {
 
 	// Root health check for load balancers that probe "/" on the Keystone backend.
 	s.engine.GET("/", s.health.Handler)
+	// Prefix health check for load balancers that probe the Ingress backend path.
+	s.engine.GET("/api", s.health.Handler)
 
 	// Health check
 	s.health.RegisterAPI(v1)
@@ -344,6 +360,7 @@ func (s *Server) buildRoutes() http.Handler {
 func (s *Server) buildTransferWSRoutes(transferHandler *handlers.TransferHandler) http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/transfer", loadBalancerHealthHandler)
 	mux.HandleFunc("/transfer/", func(w http.ResponseWriter, r *http.Request) {
 		// Extract device_id from URL path
 		deviceID := strings.TrimPrefix(r.URL.Path, "/transfer/")
@@ -361,6 +378,7 @@ func (s *Server) buildTransferWSRoutes(transferHandler *handlers.TransferHandler
 func (s *Server) buildRecorderWSRoutes(recorderHandler *handlers.RecorderHandler) http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/recorder", loadBalancerHealthHandler)
 	mux.HandleFunc("/recorder/", func(w http.ResponseWriter, r *http.Request) {
 		deviceID := strings.TrimPrefix(r.URL.Path, "/recorder/")
 		if deviceID == "" || deviceID == r.URL.Path {
