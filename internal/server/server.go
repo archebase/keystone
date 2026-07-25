@@ -229,7 +229,10 @@ func (s *Server) buildRoutes() http.Handler {
 	// API v1 group
 	v1 := s.engine.Group("/api/v1")
 
-	// Health check - register only in API v1 group
+	// Root health check for load balancers that probe "/" on the Keystone backend.
+	s.engine.GET("/", s.health.Handler)
+
+	// Health check
 	s.health.RegisterAPI(v1)
 
 	v1Routes := v1.Group("")
