@@ -151,7 +151,7 @@ mysql:
     annotations: {}
   persistence:
     enabled: true
-    storageClass: ""
+    storageClass: ebs-ssd
     accessModes:
       - ReadWriteOnce
     size: 20Gi

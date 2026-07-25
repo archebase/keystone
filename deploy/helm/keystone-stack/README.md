@@ -39,6 +39,7 @@ ingressClass: keystone-prod
 keystone service type: NodePort
 synapse service type: NodePort
 object storage: TOS bucket archebase-prod-keystone-2117611051
+mysql storageClass: ebs-ssd
 HTTP/WebSocket/API listener: 443
 gRPC listener: 50053
 ```
