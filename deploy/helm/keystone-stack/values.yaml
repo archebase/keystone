@@ -47,7 +47,7 @@ keystone:
     timeoutSeconds: 5
 
   service:
-    type: ClusterIP
+    type: NodePort
     annotations: {}
     ports:
       http: 8080
@@ -94,7 +94,7 @@ synapse:
     digest: ""
     pullPolicy: Always
   service:
-    type: ClusterIP
+    type: NodePort
     port: 8080
     annotations: {}
   podAnnotations: {}

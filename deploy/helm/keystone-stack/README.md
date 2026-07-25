@@ -36,10 +36,16 @@ namespace: archebase-system
 imagePullSecret: keystone-production-registry
 serviceAccount: keystone
 ingressClass: keystone-prod
+keystone service type: NodePort
+synapse service type: NodePort
 object storage: TOS bucket archebase-prod-keystone-2117611051
 HTTP/WebSocket/API listener: 443
 gRPC listener: 50053
 ```
+
+VKE ALB Ingress validates non-pass-through backends and rejects `ClusterIP`
+Services. The chart therefore defaults the externally routed Keystone and
+Synapse Services to `NodePort`; MySQL remains internal.
 
 The MySQL image manifest was verified in Volcengine CR on 2026-07-23 and
 contains `linux/amd64` with manifest digest
