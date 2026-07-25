@@ -19,6 +19,15 @@ defaults:
 env:
   VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
   IMAGE_REPOSITORY: prod/keystone
+  BUILDKIT_NAMESPACE: buildkit
+  BUILDKIT_IMAGE: ${{ vars.CI_BUILDKIT_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/buildkit:buildx-stable-1' }}
+  BUILDKIT_PULL_SECRET: keystone-buildkit-registry-secret
+  BUILDKIT_STORAGE: 40Gi
+  BUILDKIT_CPU_REQUEST: "2"
+  BUILDKIT_MEMORY_REQUEST: 2Gi
+  BUILDKIT_CPU_LIMIT: "4"
+  BUILDKIT_MEMORY_LIMIT: 4Gi
+  BUILDKIT_PROGRESS: plain
 
 jobs:
   build-and-push:
@@ -30,23 +39,253 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Login to Volcengine CR
+      - name: Configure Docker config path
+        run: |
+          set -euo pipefail
+
+          docker_config="${RUNNER_TEMP:-/tmp}/docker-config"
+          mkdir -p "${docker_config}"
+          printf 'DOCKER_CONFIG=%s\n' "${docker_config}" >> "${GITHUB_ENV}"
+
+      - name: Validate build tooling and configuration
+        run: |
+          set -euo pipefail
+
+          reject_docker_hub_ref() {
+            local name="$1"
+            local value="$2"
+            local registry="${value%%/*}"
+
+            if [[ -z "${value}" ]]; then
+              echo "${name} must be set to a non-Docker-Hub image reference" >&2
+              exit 1
+            fi
+            if [[ "${value}" != */* || "${value}" == docker.io/* || "${value}" == index.docker.io/* || "${value}" == registry-1.docker.io/* ]]; then
+              echo "${name} must be a non-Docker-Hub image reference with an explicit registry: ${value}" >&2
+              exit 1
+            fi
+            if [[ "${registry}" != *.* && "${registry}" != *:* && "${registry}" != "localhost" ]]; then
+              echo "${name} looks like an implicit Docker Hub image reference: ${value}" >&2
+              exit 1
+            fi
+          }
+
+          command -v docker >/dev/null 2>&1 || (echo "docker client is required" >&2; exit 1)
+          docker buildx version
+          command -v kubectl >/dev/null 2>&1 || (echo "kubectl is required" >&2; exit 1)
+          kubectl version --client=true
+          reject_docker_hub_ref BUILDKIT_IMAGE "${BUILDKIT_IMAGE}"
+
+      - name: Prepare BuildKit image pull secret
         env:
           VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
           VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
         run: |
+          set -euo pipefail
+
           test -n "$VOLCENGINE_CR_USERNAME" || (echo "VOLCENGINE_CR_USERNAME secret is required"; exit 1)
           test -n "$VOLCENGINE_CR_PASSWORD" || (echo "VOLCENGINE_CR_PASSWORD secret is required"; exit 1)
-          echo "$VOLCENGINE_CR_PASSWORD" | docker login "$VOLCENGINE_CR_ENDPOINT" --username "$VOLCENGINE_CR_USERNAME" --password-stdin
+          test -n "$BUILDKIT_NAMESPACE" || (echo "BUILDKIT_NAMESPACE is required"; exit 1)
+          test -n "$BUILDKIT_PULL_SECRET" || (echo "BUILDKIT_PULL_SECRET is required"; exit 1)
+
+          kubectl -n "$BUILDKIT_NAMESPACE" get serviceaccount default >/dev/null
+          kubectl -n "$BUILDKIT_NAMESPACE" create secret docker-registry "$BUILDKIT_PULL_SECRET" \
+            --docker-server="$VOLCENGINE_CR_ENDPOINT" \
+            --docker-username="$VOLCENGINE_CR_USERNAME" \
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          existing_pull_secrets="$(kubectl -n "$BUILDKIT_NAMESPACE" get serviceaccount default -o jsonpath='{range .imagePullSecrets[*]}{.name}{"\n"}{end}')"
+          if ! grep -Fxq "$BUILDKIT_PULL_SECRET" <<<"$existing_pull_secrets"; then
+            if [[ -n "$existing_pull_secrets" ]]; then
+              kubectl -n "$BUILDKIT_NAMESPACE" patch serviceaccount default \
+                --type=json \
+                -p="[{\"op\":\"add\",\"path\":\"/imagePullSecrets/-\",\"value\":{\"name\":\"$BUILDKIT_PULL_SECRET\"}}]"
+            else
+              kubectl -n "$BUILDKIT_NAMESPACE" patch serviceaccount default \
+                --type=json \
+                -p="[{\"op\":\"add\",\"path\":\"/imagePullSecrets\",\"value\":[{\"name\":\"$BUILDKIT_PULL_SECRET\"}]}]"
+            fi
+          fi
+
+      - name: Configure registry auth
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          test -n "$VOLCENGINE_CR_USERNAME" || (echo "VOLCENGINE_CR_USERNAME secret is required"; exit 1)
+          test -n "$VOLCENGINE_CR_PASSWORD" || (echo "VOLCENGINE_CR_PASSWORD secret is required"; exit 1)
+          docker_config="${DOCKER_CONFIG:?DOCKER_CONFIG must be configured before registry auth}"
+          mkdir -p "$docker_config"
+          auth="$(printf '%s:%s' "$VOLCENGINE_CR_USERNAME" "$VOLCENGINE_CR_PASSWORD" | base64 | tr -d '\n')"
+          umask 077
+          printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$VOLCENGINE_CR_ENDPOINT" "$auth" > "$docker_config/config.json"
 
       - name: Set image metadata
         run: |
           echo "IMAGE=${VOLCENGINE_CR_ENDPOINT}/${IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
 
+      - name: Create Kubernetes BuildKit builder
+        id: buildkit
+        run: |
+          set -euo pipefail
+
+          builder="keystone-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          builder_resource="${builder}0"
+
+          cleanup_kubernetes_builder_resources() {
+            local ordinal
+            docker buildx rm "$builder" >/dev/null 2>&1 || true
+            kubectl -n "$BUILDKIT_NAMESPACE" delete statefulset,service "$builder_resource" \
+              --ignore-not-found=true \
+              --wait=false >/dev/null 2>&1 || true
+            kubectl -n "$BUILDKIT_NAMESPACE" delete pvc \
+              -l "archebase.dev/ci-buildkit-resource=$builder_resource" \
+              --ignore-not-found=true \
+              --wait=false >/dev/null 2>&1 || true
+            for ((ordinal=0; ordinal<1; ordinal++)); do
+              kubectl -n "$BUILDKIT_NAMESPACE" delete pvc "buildkit-state-$builder_resource-$ordinal" \
+                --ignore-not-found=true \
+                --wait=false >/dev/null 2>&1 || true
+            done
+          }
+
+          create_kubernetes_builder_resources() {
+            kubectl -n "$BUILDKIT_NAMESPACE" apply -f - <<EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: $builder_resource
+            labels:
+              app.kubernetes.io/name: buildkit
+              app.kubernetes.io/managed-by: keystone-ci
+              archebase.dev/ci-buildkit-builder: "true"
+              archebase.dev/ci-buildkit-resource: $builder_resource
+          spec:
+            ports:
+              - name: buildkit
+                port: 1234
+                targetPort: buildkit
+            selector:
+              app.kubernetes.io/name: buildkit
+              archebase.dev/ci-buildkit-resource: $builder_resource
+          ---
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: $builder_resource
+            labels:
+              app.kubernetes.io/name: buildkit
+              app.kubernetes.io/managed-by: keystone-ci
+              archebase.dev/ci-buildkit-builder: "true"
+              archebase.dev/ci-buildkit-resource: $builder_resource
+          spec:
+            serviceName: $builder_resource
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: buildkit
+                archebase.dev/ci-buildkit-resource: $builder_resource
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: buildkit
+                  app.kubernetes.io/managed-by: keystone-ci
+                  archebase.dev/ci-buildkit-builder: "true"
+                  archebase.dev/ci-buildkit-resource: $builder_resource
+              spec:
+                nodeSelector:
+                  ci.archebase.io/arc-runner: "true"
+                serviceAccountName: default
+                containers:
+                  - name: buildkitd
+                    image: $BUILDKIT_IMAGE
+                    imagePullPolicy: IfNotPresent
+                    resources:
+                      requests:
+                        cpu: $BUILDKIT_CPU_REQUEST
+                        memory: $BUILDKIT_MEMORY_REQUEST
+                      limits:
+                        cpu: $BUILDKIT_CPU_LIMIT
+                        memory: $BUILDKIT_MEMORY_LIMIT
+                    args:
+                      - --addr=tcp://0.0.0.0:1234
+                      - --allow-insecure-entitlement=network.host
+                      - --allow-insecure-entitlement=security.insecure
+                    ports:
+                      - name: buildkit
+                        containerPort: 1234
+                    readinessProbe:
+                      exec:
+                        command:
+                          - buildctl
+                          - --addr
+                          - tcp://127.0.0.1:1234
+                          - debug
+                          - workers
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                      timeoutSeconds: 5
+                    securityContext:
+                      privileged: true
+                    volumeMounts:
+                      - name: buildkit-state
+                        mountPath: /var/lib/buildkit
+            volumeClaimTemplates:
+              - metadata:
+                  name: buildkit-state
+                  labels:
+                    app.kubernetes.io/name: buildkit
+                    app.kubernetes.io/managed-by: keystone-ci
+                    archebase.dev/ci-buildkit-builder: "true"
+                    archebase.dev/ci-buildkit-resource: $builder_resource
+                spec:
+                  accessModes:
+                    - ReadWriteOnce
+                  storageClassName: local-path
+                  resources:
+                    requests:
+                      storage: $BUILDKIT_STORAGE
+          EOF
+          }
+
+          create_output=""
+          create_kubernetes_builder() {
+            local attempt endpoint
+            endpoint="tcp://${builder_resource}.${BUILDKIT_NAMESPACE}.svc.cluster.local:1234"
+            for attempt in 1 2 3; do
+              if [[ "$attempt" -gt 1 ]]; then
+                echo "::warning::retrying Kubernetes BuildKit builder creation for $builder ($attempt/3)"
+                cleanup_kubernetes_builder_resources
+                sleep 20
+              fi
+              if create_output="$(create_kubernetes_builder_resources 2>&1 \
+                && kubectl -n "$BUILDKIT_NAMESPACE" rollout status "statefulset/$builder_resource" --timeout=5m 2>&1 \
+                && docker buildx create --name "$builder" --driver remote "$endpoint" --use 2>&1 \
+                && docker buildx inspect "$builder" --bootstrap 2>&1)"; then
+                return 0
+              fi
+              echo "::warning::Kubernetes BuildKit builder creation failed for $builder ($attempt/3): $create_output"
+            done
+            cleanup_kubernetes_builder_resources
+            return 1
+          }
+
+          if ! create_kubernetes_builder; then
+            echo "failed to create Kubernetes BuildKit builder in namespace $BUILDKIT_NAMESPACE after 3 attempts: $create_output" >&2
+            exit 1
+          fi
+
+          echo "builder=$builder" >> "$GITHUB_OUTPUT"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image
         run: |
           docker buildx build \
+            --builder "${{ steps.buildkit.outputs.builder }}" \
             --platform linux/amd64 \
             --build-arg VERSION="$GITHUB_SHA" \
             --build-arg BUILD_TIME="$BUILD_TIME" \
@@ -56,3 +295,22 @@ jobs:
 
       - name: Inspect pushed image
         run: docker buildx imagetools inspect "$IMAGE"
+
+      - name: Remove temporary Kubernetes BuildKit builder
+        if: always() && steps.buildkit.outputs.created == 'true'
+        run: |
+          set -euo pipefail
+
+          builder="${{ steps.buildkit.outputs.builder }}"
+          builder_resource="${builder}0"
+          docker buildx rm "$builder" || true
+          kubectl -n "$BUILDKIT_NAMESPACE" delete statefulset,service "$builder_resource" \
+            --ignore-not-found=true \
+            --wait=false || true
+          kubectl -n "$BUILDKIT_NAMESPACE" delete pvc \
+            -l "archebase.dev/ci-buildkit-resource=$builder_resource" \
+            --ignore-not-found=true \
+            --wait=false || true
+          kubectl -n "$BUILDKIT_NAMESPACE" delete pvc "buildkit-state-$builder_resource-0" \
+            --ignore-not-found=true \
+            --wait=false || true
