@@ -5,6 +5,8 @@
 package server
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -27,6 +29,39 @@ func TestAxonTransferWriteTimeoutFromConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := axonTransferWriteTimeout(tt.cfg); got != tt.want {
 				t.Fatalf("axonTransferWriteTimeout()=%s want=%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHTTPHealthRoutes(t *testing.T) {
+	srv := New(&config.Config{
+		Server: config.ServerConfig{
+			BindAddr: ":8080",
+		},
+		AxonTransfer: config.TransferConfig{
+			WSPort:    8090,
+			MaxEvents: 10,
+		},
+		AxonRecorder: config.RecorderConfig{
+			WSPort:          8091,
+			ResponseTimeout: 1,
+		},
+	}, nil, nil, nil)
+
+	tests := []string{
+		"/",
+		"/api/v1/health",
+	}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+
+			srv.httpServer.Handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET %s status=%d want=%d body=%s", path, w.Code, http.StatusOK, w.Body.String())
 			}
 		})
 	}

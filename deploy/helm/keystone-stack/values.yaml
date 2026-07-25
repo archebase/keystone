@@ -179,11 +179,6 @@ ingress:
     ingress.vke.volcengine.com/loadbalancer-port: "443"
     ingress.vke.volcengine.com/loadbalancer-protocol: https
     ingress.vke.volcengine.com/loadbalancer-backend-protocol: http
-  keystoneAnnotations:
-    ingress.vke.volcengine.com/loadbalancer-port: "443"
-    ingress.vke.volcengine.com/loadbalancer-protocol: https
-    ingress.vke.volcengine.com/loadbalancer-backend-protocol: http
-    ingress.vke.volcengine.com/loadbalancer-healthcheck-path: /api/v1/health
   host: ""
   tls: []
   grpc:
