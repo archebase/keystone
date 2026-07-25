@@ -28,33 +28,33 @@ spec:
               service:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
-                  name: http
+                  number: {{ .Values.keystone.service.ports.http }}
           - path: /swagger
             pathType: Prefix
             backend:
               service:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
-                  name: http
+                  number: {{ .Values.keystone.service.ports.http }}
           - path: /transfer
             pathType: Prefix
             backend:
               service:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
-                  name: transfer-ws
+                  number: {{ .Values.keystone.service.ports.transferWebSocket }}
           - path: /recorder
             pathType: Prefix
             backend:
               service:
                 name: {{ include "keystone-stack.componentName" (list . "keystone") }}
                 port:
-                  name: recorder-ws
+                  number: {{ .Values.keystone.service.ports.recorderWebSocket }}
           - path: /
             pathType: Prefix
             backend:
               service:
                 name: {{ include "keystone-stack.componentName" (list . "synapse") }}
                 port:
-                  name: http
+                  number: {{ .Values.synapse.service.port }}
 {{- end }}

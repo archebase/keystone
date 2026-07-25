@@ -46,6 +46,8 @@ gRPC listener: 50053
 VKE ALB Ingress validates non-pass-through backends and rejects `ClusterIP`
 Services. The chart therefore defaults the externally routed Keystone and
 Synapse Services to `NodePort`; MySQL remains internal.
+Ingress backend ports are rendered as numeric Service ports instead of named
+ports because the same VKE ALB webhook validates the referenced numeric port.
 
 The MySQL image manifest was verified in Volcengine CR on 2026-07-23 and
 contains `linux/amd64` with manifest digest
