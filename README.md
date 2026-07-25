@@ -84,6 +84,7 @@ Configuration is loaded from environment variables. See [`docker/.env.example`](
 | `KEYSTONE_MINIO_ENDPOINT` | `http://localhost:9000` | MinIO endpoint |
 | `KEYSTONE_MYSQL_HOST` | `localhost` | MySQL host |
 | `KEYSTONE_MYSQL_PASSWORD` | *required* | MySQL password |
+| `KEYSTONE_LOG_OUTPUT` | `stdout` | Log destination; use `stderr`, a file path, or a directory path for file logging |
 | `KEYSTONE_SYNC_ENABLED` | `true` | Enable cloud sync capability, worker, and manual sync APIs when cloud endpoints and credentials are configured |
 | `KEYSTONE_SYNC_AUTO_SCAN_ENABLED` | `false` | Enable periodic automatic discovery of newly eligible approved unsynced episodes |
 
