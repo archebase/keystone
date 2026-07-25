@@ -32,9 +32,18 @@ on:
         description: "Type deploy-production to confirm a production deployment."
         required: true
         type: string
+      jobContainerImage:
+        description: "Optional deploy job container image override."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
 
 concurrency:
   group: keystone-stack-${{ inputs.releaseName }}
@@ -42,7 +51,6 @@ concurrency:
 
 env:
   CHART_PATH: deploy/helm/keystone-stack
-  KUBE_CONTEXT: volcano-prod-ci
   PROD_NAMESPACE: archebase-system
   VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
   KEYSTONE_IMAGE_REPOSITORY: prod/keystone
@@ -52,9 +60,11 @@ env:
 jobs:
   deploy:
     name: Deploy Keystone stack
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main-v2'
     environment: production
+    container:
+      image: ${{ inputs.jobContainerImage || vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     timeout-minutes: 30
 
     steps:
@@ -62,15 +72,26 @@ jobs:
         with:
           ref: main-v2
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v4.1.4
+      - name: Verify deploy tooling
+        run: |
+          set -euo pipefail
 
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: v1.31.0
+          missing=()
+          for tool in docker helm kubectl python3; do
+            if ! command -v "$tool" > /dev/null 2>&1; then
+              missing+=("$tool")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "deploy job container is missing required tools: ${missing[*]}" >&2
+            echo "Set CI_JOB_CONTAINER_IMAGE or jobContainerImage to a deploy runner image that includes docker, helm, kubectl, and python3." >&2
+            exit 1
+          fi
+
+          docker buildx version
+          helm version --short
+          kubectl version --client=true
+          python3 --version
 
       - name: Resolve and validate deployment inputs
         id: inputs
@@ -134,7 +155,7 @@ jobs:
 
       - name: Validate required secrets
         env:
-          PROD_KUBECONFIG: ${{ secrets.PROD_KUBECONFIG }}
+          PROD_KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
           KEYSTONE_HILBERT_ACCESS_KEY: ${{ secrets.KEYSTONE_HILBERT_ACCESS_KEY }}
           KEYSTONE_HILBERT_SECRET_KEY: ${{ secrets.KEYSTONE_HILBERT_SECRET_KEY }}
           VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
@@ -142,7 +163,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -n "$PROD_KUBECONFIG" || (echo "PROD_KUBECONFIG secret is required" >&2; exit 1)
+          test -n "$PROD_KUBECONFIG_B64" || (echo "PROD_KUBECONFIG_B64 secret is required" >&2; exit 1)
           test -n "$KEYSTONE_HILBERT_ACCESS_KEY" || (echo "KEYSTONE_HILBERT_ACCESS_KEY secret is required" >&2; exit 1)
           test -n "$KEYSTONE_HILBERT_SECRET_KEY" || (echo "KEYSTONE_HILBERT_SECRET_KEY secret is required" >&2; exit 1)
           test -n "$VOLCENGINE_CR_USERNAME" || (echo "VOLCENGINE_CR_USERNAME secret is required" >&2; exit 1)
@@ -163,19 +184,29 @@ jobs:
 
       - name: Configure production kubeconfig
         env:
-          PROD_KUBECONFIG: ${{ secrets.PROD_KUBECONFIG }}
+          PROD_KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
         run: |
           set -euo pipefail
 
           KUBECONFIG_PATH="${RUNNER_TEMP}/prod-kubeconfig"
-          printf '%s' "$PROD_KUBECONFIG" > "$KUBECONFIG_PATH"
+          if ! printf '%s' "$PROD_KUBECONFIG_B64" | base64 -d > "$KUBECONFIG_PATH"; then
+            echo "PROD_KUBECONFIG_B64 must be a base64-encoded kubeconfig." >&2
+            exit 1
+          fi
           chmod 600 "$KUBECONFIG_PATH"
+          export KUBECONFIG="$KUBECONFIG_PATH"
           echo "KUBECONFIG=${KUBECONFIG_PATH}" >> "$GITHUB_ENV"
 
-          kubectl config use-context "$KUBE_CONTEXT"
           CURRENT_CONTEXT="$(kubectl config current-context)"
-          if [ "$CURRENT_CONTEXT" != "$KUBE_CONTEXT" ]; then
-            echo "Unexpected Kubernetes context: ${CURRENT_CONTEXT}" >&2
+          if [ -z "$CURRENT_CONTEXT" ]; then
+            echo "PROD_KUBECONFIG_B64 must decode to a kubeconfig with current-context set." >&2
+            exit 1
+          fi
+          echo "Using Kubernetes context: ${CURRENT_CONTEXT}"
+          kubectl auth whoami
+
+          if ! kubectl auth can-i '*' '*' --all-namespaces --quiet; then
+            echo "PROD_KUBECONFIG_B64 must grant production deployment permissions." >&2
             exit 1
           fi
 

@@ -114,19 +114,28 @@ release names. MySQL PVCs remain release-specific.
 ## GitHub Actions Deployment
 
 The `Deploy Keystone Stack` workflow provides the production manual deployment
-entry point. GitHub requires manual workflows to exist on the repository default
-branch, so the same workflow is mirrored on `main` for discovery and always
-checks out `main-v2` before deploying. Run it only after the matching Keystone
-image workflow has successfully pushed the selected Keystone commit SHA.
+entry point on the repository default branch, `main-v2`. The deployment job runs
+on the `archebase-ci-runner` self-hosted runner and executes inside the
+configured deploy job container. Run it only after the matching Keystone image
+workflow has successfully pushed the selected Keystone commit SHA.
 
 Required repository or `production` environment secrets:
 
-- `PROD_KUBECONFIG`: production kubeconfig content from the `cloud-infra`
-  `ci_kubeconfig` output. It must contain the `volcano-prod-ci` context.
+- `PROD_KUBECONFIG_B64`: one-line base64 encoding of a production kubeconfig
+  that can deploy to the Volcengine production cluster. The workflow uses the
+  kubeconfig's own `current-context`; it does not require a fixed context name
+  or a fixed Kubernetes user identity.
 - `KEYSTONE_HILBERT_ACCESS_KEY`
 - `KEYSTONE_HILBERT_SECRET_KEY`
 - `VOLCENGINE_CR_USERNAME`
 - `VOLCENGINE_CR_PASSWORD`
+
+Generate `PROD_KUBECONFIG_B64` from the kubeconfig file without printing the
+raw token in logs:
+
+```sh
+base64 < prod-kubeconfig.yaml | tr -d '\n'
+```
 
 Workflow inputs:
 
@@ -137,9 +146,11 @@ Workflow inputs:
 - `dnsCnameReady`: must be `true` after
   `keystone-<releaseName>.archebase.cn` points to the production Keystone ALB.
 - `confirmProduction`: must be exactly `deploy-production`.
+- `jobContainerImage`: optional deploy job container image override. Empty uses
+  `CI_JOB_CONTAINER_IMAGE` or the workflow default deploy image.
 
-The workflow deploys into `archebase-system` with Kubernetes context
-`volcano-prod-ci`. It does not create DNS records or manage cloud-infra
+The workflow deploys into `archebase-system` using the kubeconfig's
+`current-context`. It does not create DNS records or manage cloud-infra
 resources. Keep the GitHub `production` environment protected so production
 deployments require the intended reviewer approval.
 

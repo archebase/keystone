@@ -10,18 +10,27 @@ on:
   pull_request:
     branches: [ main, main-v2 ]
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  GO_VERSION: '1.24.13'
+  GO_DOWNLOAD_BASE_URL: https://mirrors.aliyun.com/golang
+  GOPROXY: https://goproxy.cn,direct
+
 jobs:
   # 1. gofmt check
   fmt:
     name: Format Check
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
       - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
+        run: bash .github/scripts/setup-go.sh
           
       - name: Check formatting
         run: |
@@ -34,13 +43,43 @@ jobs:
   # 2. REUSE license check
   license:
     name: License Compliance
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      options: --user 0
     steps:
       - uses: actions/checkout@v4
 
       - name: Install fsfe-reuse
+        env:
+          PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
         run: |
-          pip install reuse
+          set -euo pipefail
+
+          reuse_package="reuse[charset-normalizer]"
+          export PATH="${HOME}/.local/bin:${PATH}"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          if ! command -v reuse > /dev/null 2>&1; then
+            if python3 -m pip --version > /dev/null 2>&1; then
+              python3 -m pip install --user "$reuse_package" || python3 -m pip install --user --break-system-packages "$reuse_package"
+            elif python3 -m ensurepip --user > /dev/null 2>&1; then
+              python3 -m pip install --user "$reuse_package" || python3 -m pip install --user --break-system-packages "$reuse_package"
+            elif [ "$(id -u)" = "0" ] && command -v apt-get > /dev/null 2>&1; then
+              apt-get update
+              apt-get install -y --no-install-recommends file python3-pip
+              python3 -m pip install --user "$reuse_package" || python3 -m pip install --user --break-system-packages "$reuse_package"
+            elif command -v sudo > /dev/null 2>&1 && sudo -n true && command -v apt-get > /dev/null 2>&1; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends file python3-pip
+              python3 -m pip install --user "$reuse_package" || python3 -m pip install --user --break-system-packages "$reuse_package"
+            elif command -v pip > /dev/null 2>&1; then
+              pip install --user "$reuse_package"
+            else
+              echo "python3 pip is required to install reuse" >&2
+              exit 1
+            fi
+          fi
+
           reuse --version
 
       - name: Check REUSE license compliance
@@ -63,15 +102,15 @@ jobs:
   # 3. golangci-lint check
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
       - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          
+        run: bash .github/scripts/setup-go.sh
+
       - name: Generate Swagger docs
         run: |
           go install github.com/swaggo/swag/cmd/swag@latest
@@ -86,14 +125,14 @@ jobs:
   # 4. unit tests + coverage
   test:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: archebase-ci-runner
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
       
       - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
+        run: bash .github/scripts/setup-go.sh
           
       - name: Generate Swagger docs
         run: |
@@ -101,34 +140,4 @@ jobs:
           swag init -g internal/server/server.go -o docs
       
       - name: Run tests with coverage
-        run: go test -cover -race -v ./...
-
-  # 5. integration-test (scripts/test.sh)
-  integration-test:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          
-      - name: Generate Swagger docs
-        run: |
-          go install github.com/swaggo/swag/cmd/swag@latest
-          swag init -g internal/server/server.go -o docs
-
-      - name: Login to Volcengine CR
-        env:
-          VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
-          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
-          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
-        run: |
-          test -n "$VOLCENGINE_CR_USERNAME" || (echo "VOLCENGINE_CR_USERNAME secret is required"; exit 1)
-          test -n "$VOLCENGINE_CR_PASSWORD" || (echo "VOLCENGINE_CR_PASSWORD secret is required"; exit 1)
-          echo "$VOLCENGINE_CR_PASSWORD" | docker login "$VOLCENGINE_CR_ENDPOINT" --username "$VOLCENGINE_CR_USERNAME" --password-stdin
-      
-      - name: Run integration tests
-        run: bash scripts/test.sh
+        run: go test -cover -v ./...

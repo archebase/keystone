@@ -19,7 +19,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 |------|---------|
 | `docker-compose.yml` | Infrastructure only (MySQL, MinIO, Redis, Adminer) |
 | `docker-compose.dev.yml` | Development mode with volume mounts |
-| `docker-compose.test.yml` | CI/CD testing with automated tests |
+| `docker-compose.test.yml` | Local smoke-test environment |
 
 ## Development Mode
 
@@ -74,14 +74,29 @@ The resulting image is
 `${CR_REGISTRY}/${CR_NAMESPACE}/keystone-edge:${IMAGE_TAG}`. Set
 `CR_REPOSITORY` or `IMAGE_TAG` when the CR repository name or tag differs.
 
-The production Dockerfile pulls both base images directly from the shared
-Volcengine CR `upstream` namespace:
+The production and development Dockerfiles pull base images directly from the
+shared Volcengine CR `upstream` namespace:
 
 - `archebase-cr-cn-beijing.cr.volces.com/upstream/golang:1.25-bookworm`
 - `archebase-cr-cn-beijing.cr.volces.com/upstream/alpine:3.20`
 
 Both mirrored images currently publish a `linux/amd64` manifest, so the
-production Dockerfile explicitly targets that platform.
+Dockerfiles explicitly target that platform.
+
+Compose files also prefer Volcengine CR for mirrored upstream images:
+
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/mysql:8.4.10`
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/alpine:3.20`
+
+MinIO uses the upstream Quay registry until `minio` and `mc` are mirrored into
+Volcengine CR. Optional Redis/Adminer services are behind the `optional` compose
+profile and point at the expected Volcengine CR mirror names; mirror these images
+before enabling that profile:
+
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/minio:latest`
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/mc:latest`
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/redis:7-alpine`
+- `archebase-cr-cn-beijing.cr.volces.com/upstream/adminer:latest`
 
 Run `docker login "${CR_REGISTRY}"` before building when the local Docker
 credential store does not already contain the CR robot credentials.
@@ -147,25 +162,17 @@ docker compose -f docker/docker-compose.dev.yml logs -f keystone-edge-dev
 docker exec -it keystone-edge-dev sh
 ```
 
-## Testing
+## Local Smoke Testing
 
-Run the complete test suite:
+The `docker-compose.test.yml` file can be used manually on a machine with a
+Docker daemon:
 
 ```bash
-# Automated testing with build + test
-./scripts/test.sh
+docker compose -f docker/docker-compose.test.yml up -d --build
+curl -f http://localhost:8080/api/v1/health
+curl -f http://localhost:8080/swagger/doc.json
+docker compose -f docker/docker-compose.test.yml down -v
 ```
 
-The test script will:
-1. Build the Docker image
-2. Start all services (MySQL, MinIO, Keystone)
-3. Wait for services to be healthy
-4. Run automated tests against the API
-5. Collect logs
-6. Clean up
-
-Tests include:
-- Health check endpoint (`/api/v1/health`)
-- Swagger documentation (`/swagger/doc.json`)
-- Swagger UI (`/swagger/index.html`)
-- Response JSON validation
+GitHub Actions runs in an ARC/Kubernetes job container and does not run
+docker-compose based integration tests.
