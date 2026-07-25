@@ -96,6 +96,10 @@ app.kubernetes.io/component: {{ $component | quote }}
 {{- end -}}
 {{- if and .Values.storage.type (eq .Values.storage.type "tos") (not .Values.serviceAccount.create) (empty .Values.serviceAccount.name) -}}{{ fail "serviceAccount.name is required when storage.type=tos and serviceAccount.create=false" }}{{- end -}}
 {{- if and (eq .Values.storage.type "tos") (not .Values.serviceAccount.create) (eq .Values.serviceAccount.name "keystone") (ne .Release.Namespace "archebase-system") -}}{{ fail "production TOS defaults require --namespace archebase-system because cloud-infra manages archebase-system/keystone" }}{{- end -}}
+{{- if .Values.ingress.enabled -}}
+  {{- if and (ne .Values.keystone.service.type "NodePort") (ne .Values.keystone.service.type "LoadBalancer") -}}{{ fail "keystone.service.type must be NodePort or LoadBalancer when ingress.enabled=true because Volcengine ALB rejects ClusterIP backends" }}{{- end -}}
+  {{- if and (ne .Values.synapse.service.type "NodePort") (ne .Values.synapse.service.type "LoadBalancer") -}}{{ fail "synapse.service.type must be NodePort or LoadBalancer when ingress.enabled=true because Volcengine ALB rejects ClusterIP backends" }}{{- end -}}
+{{- end -}}
 {{- if empty .Values.credentials.existingSecret -}}
   {{- if eq .Values.storage.type "s3" -}}
     {{- if empty .Values.credentials.storageAccessKey -}}{{ fail "credentials.storageAccessKey is required when storage.type=s3 and credentials.existingSecret is empty" }}{{- end -}}
