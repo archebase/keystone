@@ -78,6 +78,12 @@ func (h *SyncHandler) enqueueSyncErrorResponse(c *gin.Context, episodeID int64, 
 			"episode_id": episodeID,
 			"status":     "already_queued",
 		})
+	case errors.Is(err, services.ErrEpisodeAlreadySynced):
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      err.Error(),
+			"episode_id": episodeID,
+			"status":     "already_synced",
+		})
 	case errors.Is(err, services.ErrSyncQueueFull):
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":      err.Error(),
@@ -90,14 +96,14 @@ func (h *SyncHandler) enqueueSyncErrorResponse(c *gin.Context, episodeID int64, 
 	}
 }
 
-// TriggerEpisodeResync queues a new cloud upload for an already-synced episode.
+// TriggerEpisodeResync rejects a legacy resync request for an already-synced episode.
 //
-// @Summary      Resync episode to cloud
-// @Description  Enqueues a new cloud upload for an already-synced episode without clearing previous sync history
+// @Summary      Reject episode cloud resync
+// @Description  Already-synced episodes are immutable and cannot be uploaded again
+// @Deprecated
 // @Tags         sync
 // @Produce      json
 // @Param        id   path      int  true  "Episode ID"
-// @Success      202  {object}  map[string]interface{}
 // @Failure      400  {object}  map[string]string
 // @Failure      404  {object}  map[string]string
 // @Failure      409  {object}  map[string]string
@@ -134,11 +140,6 @@ func (h *SyncHandler) TriggerEpisodeResync(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusAccepted, gin.H{
-		"status":     "accepted",
-		"episode_id": episodeID,
-		"message":    "episode enqueued for cloud resync",
-	})
 }
 
 // syncLogRow represents a row from the sync_logs table.
