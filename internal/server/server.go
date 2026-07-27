@@ -106,8 +106,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		authHandler = handlers.NewAuthHandler(db, &cfg.Auth, &cfg.Hilbert)
 	}
 	var storageHandler *handlers.StorageHandler
-	if s3Client != nil || cfg.Storage.Type == "tos" {
-		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth, &cfg.Storage)
+	if s3Client != nil || cfg.TOSStorage.Type == "tos" {
+		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth, &cfg.TOSStorage)
 	}
 
 	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
@@ -126,7 +126,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
-	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.Storage)
+	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.TOSStorage)
 	qaHandler.SetDeviceStateBroker(stateBroker)
 	transferHandler.SetEpisodeQAEnqueuer(qaHandler)
 
