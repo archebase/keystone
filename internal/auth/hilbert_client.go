@@ -43,6 +43,8 @@ const (
 	hilbertNonceKeyLengthBytes = 32
 	hilbertNonceIVLengthBytes  = 12
 	hilbertNonceLengthBytes    = hilbertNonceKeyLengthBytes + hilbertNonceIVLengthBytes
+
+	hilbertDCDeviceQueryPageSize int64 = 200
 )
 
 var (
@@ -436,10 +438,38 @@ func (c *HilbertClient) QueryDCDevices(ctx context.Context, workspaceID int64) (
 		return nil, fmt.Errorf("%w: invalid dc device workspace id", ErrHilbertUnavailable)
 	}
 
+	devices := make([]HilbertDCDevice, 0)
+	var total int64
+	for pageNum := int64(1); ; pageNum++ {
+		page, err := c.queryDCDevicesPage(ctx, workspaceID, pageNum, hilbertDCDeviceQueryPageSize)
+		if err != nil {
+			return nil, err
+		}
+		devices = append(devices, page.Records...)
+		if page.Total > total {
+			total = page.Total
+		}
+		if int64(len(devices)) > total {
+			total = int64(len(devices))
+		}
+		if len(page.Records) == 0 || int64(len(devices)) >= total {
+			break
+		}
+	}
+
+	return &HilbertDCDevicePage{
+		Records:  devices,
+		Total:    total,
+		PageNum:  1,
+		PageSize: hilbertDCDeviceQueryPageSize,
+	}, nil
+}
+
+func (c *HilbertClient) queryDCDevicesPage(ctx context.Context, workspaceID int64, pageNum int64, pageSize int64) (*HilbertDCDevicePage, error) {
 	query := url.Values{}
 	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))
-	query.Set("pageNum", "1")
-	query.Set("pageSize", "-1")
+	query.Set("pageNum", strconv.FormatInt(pageNum, 10))
+	query.Set("pageSize", strconv.FormatInt(pageSize, 10))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertDCDeviceQueryPath+"?"+query.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create dc device query request", ErrHilbertUnavailable)
