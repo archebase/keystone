@@ -187,3 +187,5 @@ ingress:
       ingress.vke.volcengine.com/loadbalancer-port: "50053"
       ingress.vke.volcengine.com/loadbalancer-protocol: https
       ingress.vke.volcengine.com/loadbalancer-backend-protocol: grpc
+      ingress.vke.volcengine.com/loadbalancer-healthcheck-enabled: "true"
+      ingress.vke.volcengine.com/loadbalancer-healthcheck-protocol: tcp
