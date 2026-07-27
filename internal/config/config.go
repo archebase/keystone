@@ -19,6 +19,7 @@ type Config struct {
 	Server       ServerConfig
 	Database     DatabaseConfig
 	Storage      StorageConfig
+	TOSStorage   StorageConfig
 	QA           QAConfig
 	Sync         SyncConfig
 	Auth         AuthConfig
@@ -187,7 +188,8 @@ func Load() (*Config, error) {
 			MaxIdleConns:    getEnvInt("KEYSTONE_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: getEnvInt("KEYSTONE_DB_CONN_MAX_LIFETIME", 300),
 		},
-		Storage: loadStorageConfig(),
+		Storage:    loadStorageConfig(),
+		TOSStorage: loadTOSStorageConfig(),
 		QA: QAConfig{
 			Enabled:              getEnvBool("KEYSTONE_QA_ENABLED", true),
 			AutoApproveThreshold: getEnvFloat("KEYSTONE_QA_AUTO_APPROVE_THRESHOLD", 0.90),
@@ -275,10 +277,6 @@ func Load() (*Config, error) {
 }
 
 func loadStorageConfig() StorageConfig {
-	if tosCfg := loadTOSStorageConfig(); tosCfg.Type == "tos" {
-		return tosCfg
-	}
-
 	endpoint, useSSL := normalizeObjectStorageEndpoint(
 		getEnv("KEYSTONE_MINIO_ENDPOINT", "http://localhost:9000"),
 		getEnvBool("KEYSTONE_MINIO_USE_SSL", false),
@@ -299,9 +297,12 @@ func loadTOSStorageConfig() StorageConfig {
 	if getEnvBool("KEYSTONE_DGW_COMPAT_ENABLED", false) {
 		tosEndpoint := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT"))
 		tosBucket := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET"))
+		tosRegion := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION"))
 		tosAccessKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"))
 		tosSecretKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"))
-		if tosEndpoint != "" && tosBucket != "" {
+		tosSTSRoleTRN := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN"))
+		tosSTSEndpoint := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT"))
+		if tosEndpoint != "" || tosBucket != "" || tosRegion != "" || tosAccessKey != "" || tosSecretKey != "" || tosSTSRoleTRN != "" || tosSTSEndpoint != "" {
 			endpoint, useSSL := normalizeObjectStorageEndpoint(tosEndpoint, true)
 			return StorageConfig{
 				Type:         "tos",
@@ -311,9 +312,9 @@ func loadTOSStorageConfig() StorageConfig {
 				Bucket:       tosBucket,
 				UseSSL:       useSSL,
 				EnsureBucket: false,
-				Region:       strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION")),
-				STSRoleTRN:   strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN")),
-				STSEndpoint:  strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT")),
+				Region:       tosRegion,
+				STSRoleTRN:   tosSTSRoleTRN,
+				STSEndpoint:  tosSTSEndpoint,
 			}
 		}
 	}
@@ -354,21 +355,43 @@ func (c *Config) Validate() error {
 	if c.Storage.Type == "" {
 		c.Storage.Type = "s3"
 	}
-	if c.Storage.Type == "tos" {
-		c.Storage.Endpoint = strings.TrimSpace(c.Storage.Endpoint)
-		c.Storage.Bucket = strings.TrimSpace(c.Storage.Bucket)
-		c.Storage.Region = strings.TrimSpace(c.Storage.Region)
-		c.Storage.AccessKey = strings.TrimSpace(c.Storage.AccessKey)
-		c.Storage.SecretKey = strings.TrimSpace(c.Storage.SecretKey)
-		if c.Storage.Endpoint == "" || c.Storage.Bucket == "" || c.Storage.Region == "" {
+	if c.Storage.Type != "s3" {
+		return fmt.Errorf("invalid MinIO storage type: %s, must be 's3'", c.Storage.Type)
+	}
+	c.Storage.AccessKey = strings.TrimSpace(c.Storage.AccessKey)
+	c.Storage.SecretKey = strings.TrimSpace(c.Storage.SecretKey)
+	if (c.Storage.AccessKey == "") != (c.Storage.SecretKey == "") {
+		return fmt.Errorf("MinIO access key and secret key must both be set or both be empty")
+	}
+	minioConfigured := c.Storage.AccessKey != ""
+
+	tosConfigured := strings.TrimSpace(c.TOSStorage.Type) != "" ||
+		strings.TrimSpace(c.TOSStorage.Endpoint) != "" ||
+		strings.TrimSpace(c.TOSStorage.Bucket) != "" ||
+		strings.TrimSpace(c.TOSStorage.Region) != "" ||
+		strings.TrimSpace(c.TOSStorage.AccessKey) != "" ||
+		strings.TrimSpace(c.TOSStorage.SecretKey) != "" ||
+		strings.TrimSpace(c.TOSStorage.STSRoleTRN) != "" ||
+		strings.TrimSpace(c.TOSStorage.STSEndpoint) != ""
+	if tosConfigured {
+		c.TOSStorage.Type = strings.ToLower(strings.TrimSpace(c.TOSStorage.Type))
+		if c.TOSStorage.Type != "tos" {
+			return fmt.Errorf("invalid TOS storage type: %s, must be 'tos'", c.TOSStorage.Type)
+		}
+		c.TOSStorage.Endpoint = strings.TrimSpace(c.TOSStorage.Endpoint)
+		c.TOSStorage.Bucket = strings.TrimSpace(c.TOSStorage.Bucket)
+		c.TOSStorage.Region = strings.TrimSpace(c.TOSStorage.Region)
+		c.TOSStorage.AccessKey = strings.TrimSpace(c.TOSStorage.AccessKey)
+		c.TOSStorage.SecretKey = strings.TrimSpace(c.TOSStorage.SecretKey)
+		if c.TOSStorage.Endpoint == "" || c.TOSStorage.Bucket == "" || c.TOSStorage.Region == "" {
 			return fmt.Errorf("TOS endpoint, bucket and region are required")
 		}
-		if (c.Storage.AccessKey == "") != (c.Storage.SecretKey == "") {
+		if (c.TOSStorage.AccessKey == "") != (c.TOSStorage.SecretKey == "") {
 			return fmt.Errorf("TOS static access key and secret key must both be set or both be empty")
 		}
 	}
-	if c.Storage.Type != "tos" && (c.Storage.AccessKey == "" || c.Storage.SecretKey == "") {
-		return fmt.Errorf("storage access key and secret key are required")
+	if !minioConfigured && !tosConfigured {
+		return fmt.Errorf("at least one object storage backend must be configured")
 	}
 	if strings.TrimSpace(c.Auth.JWTSecret) == "" {
 		return fmt.Errorf("KEYSTONE_JWT_SECRET is required")

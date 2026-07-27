@@ -309,7 +309,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	}
 }
 
-func TestLoadStorageConfigUsesTOSWhenDGWCompatEnabled(t *testing.T) {
+func TestLoadStorageConfigKeepsAxonOnMinIOWhenDGWCompatEnabled(t *testing.T) {
 	cleanStorageConfigEnv(t)
 	setStorageConfigEnv(t, "KEYSTONE_DGW_COMPAT_ENABLED", "true")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
@@ -325,27 +325,35 @@ func TestLoadStorageConfigUsesTOSWhenDGWCompatEnabled(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_MINIO_SECRET_KEY", "minio-sk")
 	setStorageConfigEnv(t, "KEYSTONE_MINIO_BUCKET", "minio-bucket")
 
-	cfg := loadStorageConfig()
-	if cfg.Type != "tos" {
-		t.Fatalf("Type = %q, want tos", cfg.Type)
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Endpoint != "tos-cn-beijing.volces.com" {
-		t.Fatalf("Endpoint = %q, want tos-cn-beijing.volces.com", cfg.Endpoint)
+	if loaded.Storage.Type != "s3" {
+		t.Fatalf("Storage.Type = %q, want s3", loaded.Storage.Type)
 	}
-	if cfg.Bucket != "tos-bucket" {
-		t.Fatalf("Bucket = %q, want tos-bucket", cfg.Bucket)
+	if loaded.Storage.Endpoint != "192.168.119.4:9000" {
+		t.Fatalf("Storage.Endpoint = %q, want 192.168.119.4:9000", loaded.Storage.Endpoint)
 	}
-	if cfg.AccessKey != "tos-ak" || cfg.SecretKey != "tos-sk" {
-		t.Fatalf("unexpected TOS credentials selected")
+	if loaded.Storage.Bucket != "minio-bucket" {
+		t.Fatalf("Storage.Bucket = %q, want minio-bucket", loaded.Storage.Bucket)
 	}
-	if !cfg.UseSSL {
-		t.Fatalf("UseSSL = false, want true")
+	if loaded.Storage.AccessKey != "minio-ak" || loaded.Storage.SecretKey != "minio-sk" {
+		t.Fatalf("unexpected MinIO credentials selected")
 	}
-	if cfg.EnsureBucket {
-		t.Fatalf("EnsureBucket = true, want false for TOS")
+	if loaded.Storage.UseSSL {
+		t.Fatalf("Storage.UseSSL = true, want false")
 	}
-	if cfg.STSRoleTRN != "trn:iam::123:role/qa-read" {
-		t.Fatalf("STSRoleTRN = %q, want QA read role", cfg.STSRoleTRN)
+	if !loaded.Storage.EnsureBucket {
+		t.Fatalf("Storage.EnsureBucket = false, want true for MinIO")
+	}
+
+	tosCfg := loaded.TOSStorage
+	if tosCfg.Type != "tos" || tosCfg.Bucket != "tos-bucket" {
+		t.Fatalf("TOS storage = type %q bucket %q, want tos/tos-bucket", tosCfg.Type, tosCfg.Bucket)
+	}
+	if tosCfg.STSRoleTRN != "trn:iam::123:role/qa-read" {
+		t.Fatalf("TOS STSRoleTRN = %q, want QA read role", tosCfg.STSRoleTRN)
 	}
 }
 
@@ -360,7 +368,7 @@ func TestLoadStorageConfigDoesNotFallbackToUploadSTSRoleForTOSQA(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
 
-	cfg := loadStorageConfig()
+	cfg := loadTOSStorageConfig()
 	if cfg.Type != "tos" {
 		t.Fatalf("Type = %q, want tos (%s)", cfg.Type, tosStorageEnvDebug())
 	}
@@ -379,7 +387,7 @@ func TestLoadStorageConfigAllowsTOSWithoutStaticCredentials(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "")
 
-	cfg := loadStorageConfig()
+	cfg := loadTOSStorageConfig()
 	if cfg.Type != "tos" {
 		t.Fatalf("Type = %q, want tos (%s)", cfg.Type, tosStorageEnvDebug())
 	}
@@ -406,11 +414,17 @@ func TestLoadValidateTOSIRSAWithoutMinIOCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Storage.Type != "tos" {
-		t.Fatalf("Load().Storage.Type = %q, want tos", cfg.Storage.Type)
+	if cfg.Storage.Type != "s3" {
+		t.Fatalf("Load().Storage.Type = %q, want s3", cfg.Storage.Type)
 	}
 	if cfg.Storage.AccessKey != "" || cfg.Storage.SecretKey != "" {
 		t.Fatalf("Load().Storage static credentials = %q/%q, want empty", cfg.Storage.AccessKey, cfg.Storage.SecretKey)
+	}
+	if cfg.TOSStorage.Type != "tos" {
+		t.Fatalf("Load().TOSStorage.Type = %q, want tos", cfg.TOSStorage.Type)
+	}
+	if cfg.TOSStorage.AccessKey != "" || cfg.TOSStorage.SecretKey != "" {
+		t.Fatalf("Load().TOSStorage static credentials = %q/%q, want empty", cfg.TOSStorage.AccessKey, cfg.TOSStorage.SecretKey)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -485,20 +499,32 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "TOS storage allows default credential chain",
 			cfg: &Config{
-				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
-				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
-				Storage:  StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing"},
-				Auth:     AuthConfig{JWTSecret: "secret"},
+				Server:     ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database:   DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				TOSStorage: StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing"},
+				Auth:       AuthConfig{JWTSecret: "secret"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "TOS storage rejects partial static credentials",
 			cfg: &Config{
-				Server:   ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
-				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
-				Storage:  StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing", AccessKey: "ak"},
-				Auth:     AuthConfig{JWTSecret: "secret"},
+				Server:     ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database:   DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:    StorageConfig{AccessKey: "minio-ak", SecretKey: "minio-sk"},
+				TOSStorage: StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing", AccessKey: "ak"},
+				Auth:       AuthConfig{JWTSecret: "secret"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "MinIO storage rejects partial credentials even with TOS",
+			cfg: &Config{
+				Server:     ServerConfig{Mode: "edge", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database:   DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:    StorageConfig{AccessKey: "minio-ak"},
+				TOSStorage: StorageConfig{Type: "tos", Endpoint: "tos-cn-beijing.volces.com", Bucket: "tos-bucket", Region: "cn-beijing"},
+				Auth:       AuthConfig{JWTSecret: "secret"},
 			},
 			wantErr: true,
 		},

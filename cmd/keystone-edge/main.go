@@ -94,9 +94,10 @@ func main() {
 		logger.Fatalf("[DATABASE] Failed to run database migrations: %v", err)
 	}
 
-	// Initialize object storage client when Keystone is configured for S3/MinIO.
+	// Initialize S3/MinIO independently from TOS. TOS-only deployments may use
+	// the default Volcengine credential chain and leave MinIO credentials empty.
 	var s3Client *s3.Client
-	if cfg.Storage.Type == "s3" {
+	if cfg.Storage.AccessKey != "" && cfg.Storage.SecretKey != "" {
 		s3Client, err = s3.Connect(&s3.Config{
 			Endpoint:     cfg.Storage.Endpoint,
 			AccessKey:    cfg.Storage.AccessKey,
@@ -110,7 +111,7 @@ func main() {
 			s3Client = nil
 		}
 	} else {
-		logger.Printf("[STORAGE] S3/MinIO client disabled: storage_type=%s", cfg.Storage.Type)
+		logger.Printf("[STORAGE] S3/MinIO client disabled: credentials not configured")
 	}
 
 	// TODO: Start QA worker
@@ -122,8 +123,8 @@ func main() {
 		minioSourceReader = services.NewMinioSourceObjectReader(s3Client)
 	}
 	var tosSourceReader services.SourceObjectReader
-	if cfg.Storage.Type == "tos" {
-		tosSourceReader = tosstorage.NewReader(cfg.Storage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
+	if cfg.TOSStorage.Type == "tos" {
+		tosSourceReader = tosstorage.NewReader(cfg.TOSStorage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
 	}
 	if cfg.Sync.Enabled && cfg.Hilbert.BaseURL != "" && cfg.Hilbert.AccessKey != "" && cfg.Hilbert.SecretKey != "" &&
 		(minioSourceReader != nil || tosSourceReader != nil) {
@@ -139,7 +140,7 @@ func main() {
 		}, &cfg.Sync)
 		syncWorker.SetHilbertRawDataClient(auth.NewHilbertClient(&cfg.Hilbert))
 		syncWorker.SetSourceObjectReader(minioSourceReader)
-		syncWorker.SetTOSSourceObjectReader(cfg.Storage.Bucket, tosSourceReader)
+		syncWorker.SetTOSSourceObjectReader(cfg.TOSStorage.Bucket, tosSourceReader)
 
 		syncWorker.Start()
 		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s auto_scan=%t", cfg.Hilbert.BaseURL, cfg.Sync.AutoScanEnabled)
