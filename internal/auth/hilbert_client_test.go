@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -161,6 +162,75 @@ func TestGetCurrentAccountUsesDigestAuth(t *testing.T) {
 	}
 	if account == nil || account.Code != "shanghai-keystone" {
 		t.Fatalf("account=%#v want shanghai-keystone", account)
+	}
+}
+
+func TestQueryDCDevicesUsesPositivePaginationAndCollectsEveryPage(t *testing.T) {
+	now := time.Unix(1700000000, 123000000)
+	millis := "1700000000123"
+	sum := sha256.Sum256([]byte("hilbert-sk," + millis))
+	wantAuth := "Digest hilbert-ak;" + millis + ";" + hex.EncodeToString(sum[:])
+	var requestCount atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != hilbertDCDeviceQueryPath {
+			http.NotFound(w, r)
+			return
+		}
+		requestCount.Add(1)
+		if got := r.Header.Get("Authorization"); got != wantAuth {
+			t.Fatalf("authorization = %q", got)
+		}
+		query := r.URL.Query()
+		if got := query.Get("workspaceId"); got != "42" {
+			t.Fatalf("workspaceId=%q want 42", got)
+		}
+		if got := query.Get("pageSize"); got != "200" {
+			t.Fatalf("pageSize=%q want 200", got)
+		}
+
+		switch query.Get("pageNum") {
+		case "1":
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"records":  []map[string]any{{"id": 101, "workspaceId": 42}, {"id": 102, "workspaceId": 42}},
+					"total":    3,
+					"pageNum":  1,
+					"pageSize": 200,
+				},
+			})
+		case "2":
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"records":  []map[string]any{{"id": 103, "workspaceId": 42}},
+					"total":    3,
+					"pageNum":  2,
+					"pageSize": 200,
+				},
+			})
+		default:
+			t.Fatalf("unexpected pageNum=%q", query.Get("pageNum"))
+		}
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	client.now = func() time.Time { return now }
+	page, err := client.QueryDCDevices(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("QueryDCDevices() error = %v", err)
+	}
+	if requestCount.Load() != 2 {
+		t.Fatalf("requestCount=%d want 2", requestCount.Load())
+	}
+	if page.Total != 3 || len(page.Records) != 3 {
+		t.Fatalf("page=%#v want total=3 records=3", page)
+	}
+	for index, wantID := range []int64{101, 102, 103} {
+		if page.Records[index].ID != wantID {
+			t.Fatalf("records[%d].ID=%d want %d", index, page.Records[index].ID, wantID)
+		}
 	}
 }
 
