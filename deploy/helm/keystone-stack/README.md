@@ -179,6 +179,9 @@ sends `/` to the Synapse Service.
 
 The gRPC Ingress is separate so the VKE ALB annotations can select listener
 `50053` and backend protocol `grpc` without affecting browser/API routing.
+It renders the wildcard path `/*` because Volcengine Standard ALB treats
+Kubernetes `pathType: Prefix` as validation-only. It also uses TCP health
+checks because Keystone's DGW gRPC listener is not an HTTP health endpoint.
 gRPC clients connect to:
 
 ```text
