@@ -43,7 +43,7 @@ keystone:
   qaEnabled: true
 
   hilbert:
-    baseURL: https://hilbert.archebase.cn
+    baseURL: https://hilbert.archebase.cn/hilbert-be-backend
     timeoutSeconds: 5
 
   service:
