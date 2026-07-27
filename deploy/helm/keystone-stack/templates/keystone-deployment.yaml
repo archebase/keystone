@@ -1,0 +1,209 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+  labels:
+    {{- include "keystone-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keystone
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "keystone-stack.selectorLabels" (list . "keystone") | nindent 6 }}
+  template:
+    metadata:
+      {{- if or (empty .Values.credentials.existingSecret) .Values.keystone.podAnnotations }}
+      annotations:
+        {{- if empty .Values.credentials.existingSecret }}
+        checksum/credentials: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.keystone.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- include "keystone-stack.selectorLabels" (list . "keystone") | nindent 8 }}
+        {{- with .Values.keystone.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "keystone-stack.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.keystone.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: keystone
+          image: {{ include "keystone-stack.image" (list .Values.keystone.image) | quote }}
+          imagePullPolicy: {{ .Values.keystone.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.keystone.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.keystone.service.ports.http }}
+              protocol: TCP
+            - name: transfer-ws
+              containerPort: {{ .Values.keystone.service.ports.transferWebSocket }}
+              protocol: TCP
+            - name: recorder-ws
+              containerPort: {{ .Values.keystone.service.ports.recorderWebSocket }}
+              protocol: TCP
+            {{- if eq .Values.storage.type "tos" }}
+            - name: dgw-grpc
+              containerPort: {{ .Values.keystone.service.ports.dgwGrpc }}
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: KEYSTONE_MODE
+              value: edge
+            - name: KEYSTONE_BIND_ADDR
+              value: {{ printf ":%v" .Values.keystone.service.ports.http | quote }}
+            - name: KEYSTONE_CALLBACK_PUBLIC_BASE_URL
+              value: {{ include "keystone-stack.callbackPublicBaseURL" . | quote }}
+            - name: KEYSTONE_FACTORY_ID
+              value: {{ default .Release.Name .Values.keystone.factoryId | quote }}
+            - name: KEYSTONE_MYSQL_HOST
+              value: {{ include "keystone-stack.componentName" (list . "mysql") | quote }}
+            - name: KEYSTONE_MYSQL_PORT
+              value: {{ .Values.mysql.service.port | quote }}
+            - name: KEYSTONE_MYSQL_USER
+              value: {{ .Values.mysql.username | quote }}
+            - name: KEYSTONE_MYSQL_DATABASE
+              value: {{ .Values.mysql.database | quote }}
+            - name: KEYSTONE_MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keystone-stack.credentialsSecretName" . }}
+                  key: mysql-password
+            - name: KEYSTONE_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keystone-stack.credentialsSecretName" . }}
+                  key: jwt-secret
+            - name: KEYSTONE_ADMIN_USERNAME
+              value: {{ .Values.keystone.adminUsername | quote }}
+            {{- if .Values.keystone.adminUsername }}
+            - name: KEYSTONE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keystone-stack.credentialsSecretName" . }}
+                  key: admin-password
+            {{- end }}
+            - name: KEYSTONE_SYNC_ENABLED
+              value: {{ .Values.keystone.syncEnabled | quote }}
+            - name: KEYSTONE_QA_ENABLED
+              value: {{ .Values.keystone.qaEnabled | quote }}
+            - name: KEYSTONE_AXON_TRANSFER_WS_PORT
+              value: {{ .Values.keystone.service.ports.transferWebSocket | quote }}
+            - name: KEYSTONE_AXON_RECORDER_WS_PORT
+              value: {{ .Values.keystone.service.ports.recorderWebSocket | quote }}
+            {{- if or (eq .Values.storage.type "tos") .Values.keystone.syncEnabled }}
+            - name: KEYSTONE_HILBERT_BASE_URL
+              value: {{ .Values.keystone.hilbert.baseURL | quote }}
+            - name: KEYSTONE_HILBERT_TIMEOUT_SECONDS
+              value: {{ .Values.keystone.hilbert.timeoutSeconds | quote }}
+            - name: KEYSTONE_HILBERT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keystone-stack.credentialsSecretName" . }}
+                  key: hilbert-access-key
+            - name: KEYSTONE_HILBERT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keystone-stack.credentialsSecretName" . }}
+                  key: hilbert-secret-key
+            {{- end }}
+            {{- if eq .Values.storage.type "s3" }}
+            - name: KEYSTONE_DGW_COMPAT_ENABLED
+              value: "false"
+            - name: KEYSTONE_MINIO_ENDPOINT
+              value: {{ .Values.storage.s3.endpoint | quote }}
+            - name: KEYSTONE_MINIO_BUCKET
+              value: {{ .Values.storage.s3.bucket | quote }}
+            - name: KEYSTONE_MINIO_USE_SSL
+              value: {{ .Values.storage.s3.useSSL | quote }}
+            - name: KEYSTONE_MINIO_REGION
+              value: {{ .Values.storage.s3.region | quote }}
+            - name: KEYSTONE_MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keystone-stack.credentialsSecretName" . }}
+                  key: storage-access-key
+            - name: KEYSTONE_MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keystone-stack.credentialsSecretName" . }}
+                  key: storage-secret-key
+            {{- else }}
+            - name: KEYSTONE_DGW_COMPAT_ENABLED
+              value: "true"
+            - name: KEYSTONE_DGW_GRPC_ADDR
+              value: {{ printf ":%v" .Values.keystone.service.ports.dgwGrpc | quote }}
+            - name: KEYSTONE_DGW_TOS_ENDPOINT
+              value: {{ .Values.storage.tos.endpoint | quote }}
+            - name: KEYSTONE_DGW_TOS_BUCKET
+              value: {{ .Values.storage.tos.bucket | quote }}
+            - name: KEYSTONE_DGW_TOS_REGION
+              value: {{ .Values.storage.tos.region | quote }}
+            - name: KEYSTONE_DGW_TOS_KEY_PREFIX
+              value: {{ .Values.storage.tos.keyPrefix | quote }}
+            - name: KEYSTONE_DGW_UPLOAD_PART_SIZE_BYTES
+              value: {{ .Values.storage.tos.uploadPartSizeBytes | int64 | quote }}
+            - name: KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN
+              value: {{ .Values.storage.tos.stsRoleTRN | quote }}
+            - name: KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN
+              value: {{ .Values.storage.tos.qaReadSTSRoleTRN | quote }}
+            - name: KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT
+              value: {{ .Values.storage.tos.stsEndpoint | quote }}
+            - name: KEYSTONE_DGW_STS_SESSION_TTL_SECONDS
+              value: {{ .Values.storage.tos.stsSessionTTLSeconds | int64 | quote }}
+            - name: KEYSTONE_DGW_DEVICE_JWT_TTL_SECONDS
+              value: {{ .Values.storage.tos.deviceJWTTTLSeconds | int64 | quote }}
+            - name: KEYSTONE_DGW_MOCK_STS
+              value: {{ .Values.storage.tos.mockSTS | quote }}
+            {{- end }}
+            {{- with .Values.keystone.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.keystone.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            {{- toYaml .Values.keystone.startupProbe | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            {{- toYaml .Values.keystone.readinessProbe | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            {{- toYaml .Values.keystone.livenessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.keystone.resources | nindent 12 }}
+      {{- with .Values.keystone.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.keystone.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.keystone.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

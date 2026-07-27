@@ -8,7 +8,7 @@
 services:
   # MySQL database
   mysql:
-    image: mysql:8.0
+    image: archebase-cr-cn-beijing.cr.volces.com/upstream/mysql:8.4.10
     container_name: keystone-mysql
     restart: unless-stopped
     environment:
@@ -29,7 +29,7 @@ services:
 
   # MinIO object storage
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: keystone-minio
     restart: unless-stopped
     environment:
@@ -49,7 +49,7 @@ services:
 
   # MinIO client (for bucket creation)
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: keystone-minio-init
     depends_on:
       minio:
@@ -91,7 +91,8 @@ services:
 
   # Redis (optional, for caching)
   redis:
-    image: redis:7-alpine
+    profiles: ["optional"]
+    image: archebase-cr-cn-beijing.cr.volces.com/upstream/redis:7-alpine
     container_name: keystone-redis
     restart: unless-stopped
     ports:
@@ -106,7 +107,8 @@ services:
 
   # Adminer (database management tool)
   adminer:
-    image: adminer:latest
+    profiles: ["optional"]
+    image: archebase-cr-cn-beijing.cr.volces.com/upstream/adminer:latest
     container_name: keystone-adminer
     restart: unless-stopped
     ports:

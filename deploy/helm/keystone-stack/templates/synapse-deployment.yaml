@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "keystone-stack.componentName" (list . "synapse") }}
+  labels:
+    {{- include "keystone-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: synapse
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      {{- include "keystone-stack.selectorLabels" (list . "synapse") | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.synapse.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "keystone-stack.selectorLabels" (list . "synapse") | nindent 8 }}
+        {{- with .Values.synapse.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.synapse.podSecurityContext | nindent 8 }}
+      containers:
+        - name: synapse
+          image: {{ include "keystone-stack.image" (list .Values.synapse.image) | quote }}
+          imagePullPolicy: {{ .Values.synapse.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.synapse.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.synapse.service.port }}
+              protocol: TCP
+          {{- with .Values.synapse.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.synapse.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.synapse.resources | nindent 12 }}
+      {{- with .Values.synapse.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.synapse.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.synapse.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

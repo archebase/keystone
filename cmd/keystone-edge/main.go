@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,16 +51,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	logFile, err := os.OpenFile("keystone-edge.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open keystone-edge.log: %v\n", err)
-		os.Exit(1)
-	}
-	defer func() {
-		_ = logFile.Close()
-	}()
-
-	logger.InitWithWriter(logFile, logger.DefaultOptions())
+	closeLog := initLoggerFromEnv()
+	defer closeLog()
 
 	if err := godotenv.Load(); err != nil {
 		logger.Printf("[SERVER] Failed to load .env file: %v", err)
@@ -100,18 +94,23 @@ func main() {
 		logger.Fatalf("[DATABASE] Failed to run database migrations: %v", err)
 	}
 
-	// Initialize S3/MinIO storage
-	s3Client, err := s3.Connect(&s3.Config{
-		Endpoint:     cfg.Storage.Endpoint,
-		AccessKey:    cfg.Storage.AccessKey,
-		SecretKey:    cfg.Storage.SecretKey,
-		Bucket:       cfg.Storage.Bucket,
-		UseSSL:       cfg.Storage.UseSSL,
-		EnsureBucket: cfg.Storage.EnsureBucket,
-	})
-	if err != nil {
-		logger.Printf("[S3] Failed to connect to S3/MinIO: %v", err)
-		s3Client = nil
+	// Initialize object storage client when Keystone is configured for S3/MinIO.
+	var s3Client *s3.Client
+	if cfg.Storage.Type == "s3" {
+		s3Client, err = s3.Connect(&s3.Config{
+			Endpoint:     cfg.Storage.Endpoint,
+			AccessKey:    cfg.Storage.AccessKey,
+			SecretKey:    cfg.Storage.SecretKey,
+			Bucket:       cfg.Storage.Bucket,
+			UseSSL:       cfg.Storage.UseSSL,
+			EnsureBucket: cfg.Storage.EnsureBucket,
+		})
+		if err != nil {
+			logger.Printf("[S3] Failed to connect to S3/MinIO: %v", err)
+			s3Client = nil
+		}
+	} else {
+		logger.Printf("[STORAGE] S3/MinIO client disabled: storage_type=%s", cfg.Storage.Type)
 	}
 
 	// TODO: Start QA worker
@@ -123,8 +122,8 @@ func main() {
 		minioSourceReader = services.NewMinioSourceObjectReader(s3Client)
 	}
 	var tosSourceReader services.SourceObjectReader
-	if cfg.TOSStorage.Type == "tos" {
-		tosSourceReader = tosstorage.NewReader(cfg.TOSStorage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
+	if cfg.Storage.Type == "tos" {
+		tosSourceReader = tosstorage.NewReader(cfg.Storage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
 	}
 	if cfg.Sync.Enabled && cfg.Hilbert.BaseURL != "" && cfg.Hilbert.AccessKey != "" && cfg.Hilbert.SecretKey != "" &&
 		(minioSourceReader != nil || tosSourceReader != nil) {
@@ -140,7 +139,7 @@ func main() {
 		}, &cfg.Sync)
 		syncWorker.SetHilbertRawDataClient(auth.NewHilbertClient(&cfg.Hilbert))
 		syncWorker.SetSourceObjectReader(minioSourceReader)
-		syncWorker.SetTOSSourceObjectReader(cfg.TOSStorage.Bucket, tosSourceReader)
+		syncWorker.SetTOSSourceObjectReader(cfg.Storage.Bucket, tosSourceReader)
 
 		syncWorker.Start()
 		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s auto_scan=%t", cfg.Hilbert.BaseURL, cfg.Sync.AutoScanEnabled)
@@ -181,4 +180,32 @@ func main() {
 	dgwCompatServer.Stop(ctx)
 
 	logger.Println("[SERVER] Keystone Edge stopped")
+}
+
+func initLoggerFromEnv() func() {
+	output := strings.TrimSpace(os.Getenv("KEYSTONE_LOG_OUTPUT"))
+	switch strings.ToLower(output) {
+	case "", "stdout":
+		logger.InitWithWriter(os.Stdout, logger.DefaultOptions())
+		return func() {}
+	case "stderr":
+		logger.InitWithWriter(os.Stderr, logger.DefaultOptions())
+		return func() {}
+	}
+
+	if strings.HasSuffix(output, string(os.PathSeparator)) {
+		output = filepath.Join(output, "keystone-edge.log")
+	}
+	if info, err := os.Stat(output); err == nil && info.IsDir() { // #nosec G703 -- log destination is an operator-controlled environment setting.
+		output = filepath.Join(output, "keystone-edge.log")
+	}
+	logFile, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) // #nosec G304,G703 -- log destination is an operator-controlled write-only path.
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open log output %q: %v\n", output, err)
+		os.Exit(1)
+	}
+	logger.InitWithWriter(logFile, logger.DefaultOptions())
+	return func() {
+		_ = logFile.Close()
+	}
 }

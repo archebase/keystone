@@ -19,7 +19,6 @@ type Config struct {
 	Server       ServerConfig
 	Database     DatabaseConfig
 	Storage      StorageConfig
-	TOSStorage   StorageConfig
 	QA           QAConfig
 	Sync         SyncConfig
 	Auth         AuthConfig
@@ -188,8 +187,7 @@ func Load() (*Config, error) {
 			MaxIdleConns:    getEnvInt("KEYSTONE_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: getEnvInt("KEYSTONE_DB_CONN_MAX_LIFETIME", 300),
 		},
-		Storage:    loadStorageConfig(),
-		TOSStorage: loadTOSStorageConfig(),
+		Storage: loadStorageConfig(),
 		QA: QAConfig{
 			Enabled:              getEnvBool("KEYSTONE_QA_ENABLED", true),
 			AutoApproveThreshold: getEnvFloat("KEYSTONE_QA_AUTO_APPROVE_THRESHOLD", 0.90),
@@ -245,7 +243,7 @@ func Load() (*Config, error) {
 			MetricsPort:         getEnvInt("KEYSTONE_METRICS_PORT", 9090),
 			HealthCheckInterval: getEnvInt("KEYSTONE_HEALTH_CHECK_INTERVAL", 10),
 			LogLevel:            getEnv("KEYSTONE_LOG_LEVEL", "info"),
-			LogOutput:           getEnv("KEYSTONE_LOG_OUTPUT", "/var/log/keystone-edge/"),
+			LogOutput:           getEnv("KEYSTONE_LOG_OUTPUT", "stdout"),
 		},
 		Resources: ResourceLimitsConfig{
 			MaxMemoryMB:       getEnvInt("KEYSTONE_MAX_MEMORY_MB", 6144),
@@ -277,6 +275,10 @@ func Load() (*Config, error) {
 }
 
 func loadStorageConfig() StorageConfig {
+	if tosCfg := loadTOSStorageConfig(); tosCfg.Type == "tos" {
+		return tosCfg
+	}
+
 	endpoint, useSSL := normalizeObjectStorageEndpoint(
 		getEnv("KEYSTONE_MINIO_ENDPOINT", "http://localhost:9000"),
 		getEnvBool("KEYSTONE_MINIO_USE_SSL", false),
@@ -299,7 +301,7 @@ func loadTOSStorageConfig() StorageConfig {
 		tosBucket := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_BUCKET"))
 		tosAccessKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"))
 		tosSecretKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"))
-		if tosEndpoint != "" && tosBucket != "" && tosAccessKey != "" && tosSecretKey != "" {
+		if tosEndpoint != "" && tosBucket != "" {
 			endpoint, useSSL := normalizeObjectStorageEndpoint(tosEndpoint, true)
 			return StorageConfig{
 				Type:         "tos",
@@ -348,7 +350,24 @@ func (c *Config) Validate() error {
 	if c.Database.DSN == "" {
 		return fmt.Errorf("database DSN is required")
 	}
-	if c.Storage.AccessKey == "" || c.Storage.SecretKey == "" {
+	c.Storage.Type = strings.ToLower(strings.TrimSpace(c.Storage.Type))
+	if c.Storage.Type == "" {
+		c.Storage.Type = "s3"
+	}
+	if c.Storage.Type == "tos" {
+		c.Storage.Endpoint = strings.TrimSpace(c.Storage.Endpoint)
+		c.Storage.Bucket = strings.TrimSpace(c.Storage.Bucket)
+		c.Storage.Region = strings.TrimSpace(c.Storage.Region)
+		c.Storage.AccessKey = strings.TrimSpace(c.Storage.AccessKey)
+		c.Storage.SecretKey = strings.TrimSpace(c.Storage.SecretKey)
+		if c.Storage.Endpoint == "" || c.Storage.Bucket == "" || c.Storage.Region == "" {
+			return fmt.Errorf("TOS endpoint, bucket and region are required")
+		}
+		if (c.Storage.AccessKey == "") != (c.Storage.SecretKey == "") {
+			return fmt.Errorf("TOS static access key and secret key must both be set or both be empty")
+		}
+	}
+	if c.Storage.Type != "tos" && (c.Storage.AccessKey == "" || c.Storage.SecretKey == "") {
 		return fmt.Errorf("storage access key and secret key are required")
 	}
 	if strings.TrimSpace(c.Auth.JWTSecret) == "" {

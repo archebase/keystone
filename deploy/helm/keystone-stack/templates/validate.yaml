@@ -1,0 +1,1 @@
+{{- include "keystone-stack.validateValues" . -}}

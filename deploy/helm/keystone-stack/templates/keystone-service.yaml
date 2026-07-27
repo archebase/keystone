@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+  labels:
+    {{- include "keystone-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keystone
+  {{- with .Values.keystone.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.keystone.service.type }}
+  selector:
+    {{- include "keystone-stack.selectorLabels" (list . "keystone") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.keystone.service.ports.http }}
+      targetPort: http
+      protocol: TCP
+    - name: transfer-ws
+      port: {{ .Values.keystone.service.ports.transferWebSocket }}
+      targetPort: transfer-ws
+      protocol: TCP
+    - name: recorder-ws
+      port: {{ .Values.keystone.service.ports.recorderWebSocket }}
+      targetPort: recorder-ws
+      protocol: TCP
+    {{- if eq .Values.storage.type "tos" }}
+    - name: dgw-grpc
+      port: {{ .Values.keystone.service.ports.dgwGrpc }}
+      targetPort: dgw-grpc
+      protocol: TCP
+    {{- end }}

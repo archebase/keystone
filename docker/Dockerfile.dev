@@ -1,8 +1,17 @@
 # Development Dockerfile - uses volume mount for live coding
-FROM golang:1.24-alpine
+FROM --platform=linux/amd64 archebase-cr-cn-beijing.cr.volces.com/upstream/golang:1.25-bookworm
 
 # Install dependencies
-RUN apk add --no-cache git ca-certificates tzdata && \
+ARG DEBIAN_MIRROR=http://mirrors.aliyun.com/debian
+ARG DEBIAN_SECURITY_MIRROR=http://mirrors.aliyun.com/debian-security
+
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf 'deb %s bookworm main\n' "$DEBIAN_MIRROR" > /etc/apt/sources.list && \
+    printf 'deb %s bookworm-updates main\n' "$DEBIAN_MIRROR" >> /etc/apt/sources.list && \
+    printf 'deb %s bookworm-security main\n' "$DEBIAN_SECURITY_MIRROR" >> /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates tzdata && \
+    rm -rf /var/lib/apt/lists/* && \
     go install github.com/swaggo/swag/cmd/swag@latest
 
 # Add go bin to PATH

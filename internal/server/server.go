@@ -75,6 +75,20 @@ func axonTransferWriteTimeout(cfg *config.TransferConfig) time.Duration {
 	return time.Duration(cfg.WriteTimeout) * time.Second
 }
 
+func loadBalancerHealthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write([]byte("ok\n"))
+	}
+}
+
 // New creates a new server instance.
 // db and s3Client are optional; pass nil to disable Verified ACK.
 // syncWorker is optional; pass nil to disable cloud sync APIs.
@@ -92,8 +106,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		authHandler = handlers.NewAuthHandler(db, &cfg.Auth, &cfg.Hilbert)
 	}
 	var storageHandler *handlers.StorageHandler
-	if s3Client != nil {
-		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth, &cfg.TOSStorage)
+	if s3Client != nil || cfg.Storage.Type == "tos" {
+		storageHandler = handlers.NewStorageHandler(s3Client, &cfg.Auth, &cfg.Storage)
 	}
 
 	// Recorder hub must exist before TransferHandler (transfer disconnect notifies recorder via RPC).
@@ -112,7 +126,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create EpisodeHandler for episode listing
 	episodeHandler := handlers.NewEpisodeHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth)
-	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.TOSStorage)
+	qaHandler := handlers.NewEpisodeQAHandler(db, s3Client, cfg.Storage.Bucket, &cfg.Auth, &cfg.Storage)
 	qaHandler.SetDeviceStateBroker(stateBroker)
 	transferHandler.SetEpisodeQAEnqueuer(qaHandler)
 
@@ -229,7 +243,12 @@ func (s *Server) buildRoutes() http.Handler {
 	// API v1 group
 	v1 := s.engine.Group("/api/v1")
 
-	// Health check - register only in API v1 group
+	// Root health check for load balancers that probe "/" on the Keystone backend.
+	s.engine.GET("/", s.health.Handler)
+	// Prefix health check for load balancers that probe the Ingress backend path.
+	s.engine.GET("/api", s.health.Handler)
+
+	// Health check
 	s.health.RegisterAPI(v1)
 
 	v1Routes := v1.Group("")
@@ -341,6 +360,7 @@ func (s *Server) buildRoutes() http.Handler {
 func (s *Server) buildTransferWSRoutes(transferHandler *handlers.TransferHandler) http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/transfer", loadBalancerHealthHandler)
 	mux.HandleFunc("/transfer/", func(w http.ResponseWriter, r *http.Request) {
 		// Extract device_id from URL path
 		deviceID := strings.TrimPrefix(r.URL.Path, "/transfer/")
@@ -358,6 +378,7 @@ func (s *Server) buildTransferWSRoutes(transferHandler *handlers.TransferHandler
 func (s *Server) buildRecorderWSRoutes(recorderHandler *handlers.RecorderHandler) http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/recorder", loadBalancerHealthHandler)
 	mux.HandleFunc("/recorder/", func(w http.ResponseWriter, r *http.Request) {
 		deviceID := strings.TrimPrefix(r.URL.Path, "/recorder/")
 		if deviceID == "" || deviceID == r.URL.Path {

@@ -1,0 +1,147 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "fullnameOverride": { "type": "string" },
+    "commonLabels": { "type": "object" },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "name"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object" }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "mysqlRootPassword", "mysqlPassword", "jwtSecret", "adminPassword", "storageAccessKey", "storageSecretKey", "hilbertAccessKey", "hilbertSecretKey"],
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "mysqlRootPassword": { "type": "string" },
+        "mysqlPassword": { "type": "string" },
+        "jwtSecret": { "type": "string" },
+        "adminPassword": { "type": "string" },
+        "storageAccessKey": { "type": "string" },
+        "storageSecretKey": { "type": "string" },
+        "hilbertAccessKey": { "type": "string" },
+        "hilbertSecretKey": { "type": "string" }
+      }
+    },
+    "keystone": { "$ref": "#/definitions/keystone" },
+    "synapse": { "$ref": "#/definitions/synapse" },
+    "storage": { "$ref": "#/definitions/storage" },
+    "mysql": { "$ref": "#/definitions/mysql" },
+    "ingress": { "$ref": "#/definitions/ingress" }
+  },
+  "required": ["credentials", "serviceAccount", "keystone", "synapse", "storage", "mysql", "ingress"],
+  "definitions": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "digest", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" },
+        "digest": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "servicePorts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["http", "transferWebSocket", "recorderWebSocket", "dgwGrpc"],
+      "properties": {
+        "http": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "transferWebSocket": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "recorderWebSocket": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "dgwGrpc": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "keystone": {
+      "type": "object",
+      "required": ["image", "factoryId", "callbackPublicBaseURL", "adminUsername", "syncEnabled", "qaEnabled", "hilbert", "service"],
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "factoryId": { "type": "string" },
+        "callbackPublicBaseURL": { "type": "string" },
+        "adminUsername": { "type": "string" },
+        "syncEnabled": { "type": "boolean" },
+        "qaEnabled": { "type": "boolean" },
+        "hilbert": {
+          "type": "object",
+          "required": ["baseURL", "timeoutSeconds"],
+          "properties": {
+            "baseURL": { "type": "string" },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "service": {
+          "type": "object",
+          "required": ["type", "ports"],
+          "properties": {
+            "type": { "type": "string" },
+            "ports": { "$ref": "#/definitions/servicePorts" }
+          }
+        }
+      }
+    },
+    "synapse": {
+      "type": "object",
+      "required": ["image", "service"],
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "service": {
+          "type": "object",
+          "required": ["type", "port"],
+          "properties": {
+            "type": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "required": ["type", "s3", "tos"],
+      "properties": {
+        "type": { "type": "string", "enum": ["s3", "tos"] },
+        "s3": { "type": "object" },
+        "tos": { "type": "object" }
+      }
+    },
+    "mysql": {
+      "type": "object",
+      "required": ["image", "database", "username", "service", "persistence"],
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "database": { "type": "string", "minLength": 1 },
+        "username": { "type": "string", "minLength": 1 },
+        "service": { "type": "object" },
+        "persistence": { "type": "object" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "required": ["enabled", "className", "annotations", "host", "tls"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "type": "object" },
+        "host": { "type": "string" },
+        "tls": { "type": "array" }
+      }
+    }
+  }
+}

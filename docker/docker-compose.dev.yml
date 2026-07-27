@@ -33,7 +33,7 @@ services:
       - keystone-net
 
   mysql:
-    image: mysql:8.0
+    image: archebase-cr-cn-beijing.cr.volces.com/upstream/mysql:8.4.10
     container_name: keystone-mysql-dev
     environment:
       - MYSQL_ROOT_PASSWORD=root
@@ -46,7 +46,7 @@ services:
       - keystone-net
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: keystone-minio-dev
     command: server /data --console-address ":9001"
     environment:

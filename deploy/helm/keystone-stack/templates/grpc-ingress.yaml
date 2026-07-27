@@ -1,0 +1,28 @@
+{{- if and .Values.ingress.enabled .Values.ingress.grpc.enabled (eq .Values.storage.type "tos") }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "keystone-stack.componentName" (list . "grpc") }}
+  labels:
+    {{- include "keystone-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grpc
+  {{- with .Values.ingress.grpc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  rules:
+    - host: {{ include "keystone-stack.host" . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "keystone-stack.componentName" (list . "keystone") }}
+                port:
+                  number: {{ .Values.keystone.service.ports.dgwGrpc }}
+{{- end }}
