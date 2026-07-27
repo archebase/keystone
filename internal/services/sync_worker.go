@@ -1194,7 +1194,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if objectSize <= 0 {
 		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
 	}
-	rawDataID, err := w.hilbertRawDataIDFromSyncLog(ctx, syncLogID)
+	rawDataID, err := w.resolveHilbertRawDataIDFromSyncLogs(ctx, syncLogID)
 	if err != nil {
 		return nil, err
 	}
@@ -1342,26 +1342,72 @@ func sanitizeHilbertBagNamePart(value string) string {
 	return strings.Trim(b.String(), "_")
 }
 
-func (w *SyncWorker) hilbertRawDataIDFromSyncLog(ctx context.Context, syncLogID int64) (int64, error) {
+func (w *SyncWorker) resolveHilbertRawDataIDFromSyncLogs(ctx context.Context, syncLogID int64) (int64, error) {
 	if w == nil || w.db == nil || syncLogID <= 0 {
 		return 0, nil
 	}
-	var destination sql.NullString
-	if err := w.db.GetContext(ctx, &destination, "SELECT destination_path FROM sync_logs WHERE id = ?", syncLogID); err != nil {
+	var current struct {
+		EpisodeID       int64          `db:"episode_id"`
+		DestinationPath sql.NullString `db:"destination_path"`
+	}
+	if err := w.db.GetContext(ctx, &current, "SELECT episode_id, destination_path FROM sync_logs WHERE id = ?", syncLogID); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("load Hilbert raw-data id from sync_log %d: %w", syncLogID, err)
 	}
+	rawDataID, found, err := parseHilbertRawDataIDDestination(syncLogID, current.DestinationPath)
+	if err != nil || found {
+		return rawDataID, err
+	}
+
+	var historical []struct {
+		ID              int64          `db:"id"`
+		DestinationPath sql.NullString `db:"destination_path"`
+	}
+	if err := w.db.SelectContext(ctx, &historical, `
+		SELECT id, destination_path
+		FROM sync_logs
+		WHERE episode_id = ?
+		  AND id <> ?
+		  AND destination_path IS NOT NULL
+		ORDER BY id DESC
+	`, current.EpisodeID, syncLogID); err != nil {
+		return 0, fmt.Errorf("load historical Hilbert raw-data ids for episode %d: %w", current.EpisodeID, err)
+	}
+
+	for _, candidate := range historical {
+		rawDataID, found, err = parseHilbertRawDataIDDestination(candidate.ID, candidate.DestinationPath)
+		if err != nil {
+			return 0, err
+		}
+		if !found {
+			continue
+		}
+		if err := w.persistHilbertRawDataID(ctx, syncLogID, rawDataID); err != nil {
+			return 0, err
+		}
+		logger.Printf("[SYNC-WORKER] Recovered Hilbert raw-data registration for episode %d: raw_data_id=%d historical_sync_log_id=%d sync_log_id=%d",
+			current.EpisodeID, rawDataID, candidate.ID, syncLogID)
+		return rawDataID, nil
+	}
+
+	return 0, nil
+}
+
+func parseHilbertRawDataIDDestination(syncLogID int64, destination sql.NullString) (int64, bool, error) {
+	if !destination.Valid {
+		return 0, false, nil
+	}
 	value := strings.TrimSpace(destination.String)
-	if !destination.Valid || !strings.HasPrefix(value, hilbertRawDataIDDestinationPrefix) {
-		return 0, nil
+	if !strings.HasPrefix(value, hilbertRawDataIDDestinationPrefix) {
+		return 0, false, nil
 	}
-	rawID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(value, hilbertRawDataIDDestinationPrefix)), 10, 64)
-	if err != nil || rawID <= 0 {
-		return 0, fmt.Errorf("invalid Hilbert raw-data id in sync_log %d: %q", syncLogID, value)
+	rawDataID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(value, hilbertRawDataIDDestinationPrefix)), 10, 64)
+	if err != nil || rawDataID <= 0 {
+		return 0, false, fmt.Errorf("invalid Hilbert raw-data id in sync_log %d: %q", syncLogID, value)
 	}
-	return rawID, nil
+	return rawDataID, true, nil
 }
 
 func (w *SyncWorker) persistHilbertRawDataID(ctx context.Context, syncLogID int64, rawDataID int64) error {

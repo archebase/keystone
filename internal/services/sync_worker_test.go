@@ -488,6 +488,69 @@ func TestUploadEpisodeDirectReusesPersistedHilbertRawDataID(t *testing.T) {
 	}
 }
 
+func TestUploadEpisodeDirectRecoversHilbertRawDataIDFromHistoricalSyncLog(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (id, episode_id, status, attempt_count, destination_path, started_at)
+		VALUES
+			(121, 4181, 'failed', 3, ?, ?),
+			(122, 4181, 'failed', 1, NULL, ?),
+			(123, 4181, 'in_progress', 1, NULL, ?)
+	`,
+		hilbertRawDataIDDestinationPrefix+"9876",
+		time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 15, 1, 1, 0, 0, time.UTC),
+		time.Date(2026, 7, 15, 1, 2, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("insert sync logs: %v", err)
+	}
+
+	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-cn-beijing.volces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
+	}
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
+	w := &SyncWorker{
+		db:          db,
+		minioBucket: "source-bucket",
+		hilbert:     hilbert,
+		source:      source,
+		tosUploader: &fakeTOSObjectUploader{},
+	}
+
+	result, err := w.uploadEpisodeDirect(context.Background(), 123, syncEpisodeUploadRow{
+		ID:                4181,
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("uploadEpisodeDirect() error = %v", err)
+	}
+	if hilbert.registerCount != 0 {
+		t.Fatalf("RegisterRawData calls = %d, want 0", hilbert.registerCount)
+	}
+	if hilbert.credentialsRawDataID != 9876 || result.UploadID != "9876" {
+		t.Fatalf("recovered raw data IDs = credentials:%d upload:%q, want 9876", hilbert.credentialsRawDataID, result.UploadID)
+	}
+
+	var destinationPath string
+	if err := db.Get(&destinationPath, "SELECT destination_path FROM sync_logs WHERE id = 123"); err != nil {
+		t.Fatalf("query current sync log destination: %v", err)
+	}
+	if destinationPath != hilbertRawDataIDDestinationPrefix+"9876" {
+		t.Fatalf("current sync log destination = %q, want recovered Hilbert raw-data ID", destinationPath)
+	}
+}
+
 func TestEnqueueEpisode_DeduplicatesPendingEpisode(t *testing.T) {
 	w := &SyncWorker{
 		enqueueCh:       make(chan syncEnqueueRequest, 2),
