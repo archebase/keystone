@@ -45,7 +45,6 @@ type SyncWorkerConfig struct {
 type syncEnqueueRequest struct {
 	episodeID int64
 	manual    bool
-	resync    bool
 }
 
 type syncEpisodeUploadRow struct {
@@ -76,7 +75,7 @@ type hilbertRawDataClient interface {
 }
 
 type tosObjectUploader interface {
-	PutObject(ctx context.Context, target cloud.TOSS3UploadTarget, reader io.Reader, size int64, progress cloud.UploadProgressFunc) (string, error)
+	PutObject(ctx context.Context, target cloud.TOSS3UploadTarget, reader io.Reader, size int64, payloadHash string, progress cloud.UploadProgressFunc) (string, error)
 }
 
 // SourceObjectReader reads source MCAP objects for Hilbert sync.
@@ -207,6 +206,8 @@ var (
 	ErrSyncQueueFull = errors.New("sync enqueue channel full")
 	// ErrSyncAlreadyInProgress is returned when a conflicting sync operation is active.
 	ErrSyncAlreadyInProgress = errors.New("sync already in progress")
+	// ErrEpisodeAlreadySynced is returned when an already-synced episode is submitted again.
+	ErrEpisodeAlreadySynced = errors.New("episode already synced to cloud")
 	// ErrSyncWorkerNotRunning is returned when Start has not been called or after Stop.
 	ErrSyncWorkerNotRunning = errors.New("sync worker is not running")
 
@@ -500,23 +501,17 @@ func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) 
 	if !w.running.Load() {
 		return ErrSyncWorkerNotRunning
 	}
-	if err := w.persistPendingSyncLog(ctx, episodeID, true, false); err != nil {
+	if err := w.persistPendingSyncLog(ctx, episodeID, true); err != nil {
 		return err
 	}
 	w.enqueuePersistedEpisode(ctx, syncEnqueueRequest{episodeID: episodeID, manual: true})
 	return nil
 }
 
-// EnqueueEpisodeResync queues a new upload attempt for an episode that has already synced.
-func (w *SyncWorker) EnqueueEpisodeResync(ctx context.Context, episodeID int64) error {
-	if !w.running.Load() {
-		return ErrSyncWorkerNotRunning
-	}
-	if err := w.persistResyncSyncLog(ctx, episodeID); err != nil {
-		return err
-	}
-	w.enqueuePersistedEpisode(ctx, syncEnqueueRequest{episodeID: episodeID, manual: true, resync: true})
-	return nil
+// EnqueueEpisodeResync rejects already-synced episodes because Hilbert does not
+// issue upload credentials after a raw-data record reaches uploaded status.
+func (w *SyncWorker) EnqueueEpisodeResync(_ context.Context, episodeID int64) error {
+	return fmt.Errorf("%w: episode %d", ErrEpisodeAlreadySynced, episodeID)
 }
 
 func (w *SyncWorker) enqueueEpisode(ctx context.Context, episodeID int64, manual bool) error {
@@ -555,7 +550,7 @@ func (w *SyncWorker) enqueuePersistedEpisode(ctx context.Context, req syncEnqueu
 	}
 }
 
-func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64, manual bool, allowSynced bool) error {
+func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64, manual bool) error {
 	if w.db == nil {
 		return nil
 	}
@@ -582,8 +577,8 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 		}
 		return fmt.Errorf("lock episode %d: %w", episodeID, err)
 	}
-	if episode.CloudSynced && !allowSynced {
-		return fmt.Errorf("episode %d already synced", episodeID)
+	if episode.CloudSynced {
+		return fmt.Errorf("%w: episode %d", ErrEpisodeAlreadySynced, episodeID)
 	}
 	if episode.QaStatus != "approved" {
 		return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QaStatus)
@@ -657,59 +652,6 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	}
 }
 
-func (w *SyncWorker) persistResyncSyncLog(ctx context.Context, episodeID int64) error {
-	if w.db == nil {
-		return nil
-	}
-
-	tx, err := w.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin resync sync_log transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	lockClause := txLockClause(tx)
-	var episode struct {
-		ID          int64  `db:"id"`
-		CloudSynced bool   `db:"cloud_synced"`
-		QaStatus    string `db:"qa_status"`
-	}
-	if err := tx.GetContext(ctx, &episode, `
-		SELECT id, cloud_synced, COALESCE(qa_status, '') AS qa_status
-		FROM episodes
-		WHERE id = ? AND deleted_at IS NULL
-	`+lockClause, episodeID); err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("episode %d not found", episodeID)
-		}
-		return fmt.Errorf("lock episode %d for resync: %w", episodeID, err)
-	}
-	if !episode.CloudSynced {
-		return fmt.Errorf("episode %d has not completed cloud sync", episodeID)
-	}
-	if episode.QaStatus != "approved" {
-		return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QaStatus)
-	}
-
-	var activeCount int
-	if err := tx.GetContext(ctx, &activeCount, `
-		SELECT COUNT(*)
-		FROM sync_logs
-		WHERE episode_id = ?
-		  AND status IN ('pending', 'in_progress')
-	`, episodeID); err != nil {
-		return fmt.Errorf("query active resync sync_log count: %w", err)
-	}
-	if activeCount > 0 {
-		return fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
-	}
-
-	if err := insertPendingSyncLog(ctx, tx, episodeID, time.Now().UTC(), 0); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func insertPendingSyncLog(ctx context.Context, tx *sqlx.Tx, episodeID int64, queuedAt time.Time, attemptCount int) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO sync_logs (episode_id, status, attempt_count, started_at)
@@ -754,6 +696,7 @@ func txLockClause(tx *sqlx.Tx) string {
 
 func isSkippablePendingError(err error) bool {
 	return errors.Is(err, ErrSyncAlreadyInProgress) ||
+		errors.Is(err, ErrEpisodeAlreadySynced) ||
 		errors.Is(err, errSyncRetryBackoffActive) ||
 		errors.Is(err, errSyncRetryExhausted) ||
 		errors.Is(err, errSyncAlreadyCompleted) ||
@@ -773,7 +716,7 @@ func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
 	}
 	count := 0
 	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false, false); err != nil {
+		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
@@ -843,12 +786,12 @@ func (w *SyncWorker) worker(ctx context.Context, jobCh <-chan syncEnqueueRequest
 }
 
 func (w *SyncWorker) processEnqueuedEpisode(ctx context.Context, req syncEnqueueRequest) {
-	w.processEnqueuedEpisodeWith(ctx, req, w.processEpisodeWithMode)
+	w.processEnqueuedEpisodeWith(ctx, req, w.processEpisode)
 }
 
-func (w *SyncWorker) processEnqueuedEpisodeWith(ctx context.Context, req syncEnqueueRequest, process func(context.Context, int64, bool, bool)) {
+func (w *SyncWorker) processEnqueuedEpisodeWith(ctx context.Context, req syncEnqueueRequest, process func(context.Context, int64, bool)) {
 	defer w.unmarkEnqueued(req.episodeID)
-	process(ctx, req.episodeID, req.manual, req.resync)
+	process(ctx, req.episodeID, req.manual)
 }
 
 func (w *SyncWorker) dispatchJob(ctx context.Context, req syncEnqueueRequest) {
@@ -939,7 +882,7 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 	logger.Printf("[SYNC-WORKER] Found %d episodes to sync", len(ids))
 
 	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false, false); err != nil {
+		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
@@ -970,11 +913,10 @@ func (w *SyncWorker) dispatchPersistedJob(ctx context.Context, req syncEnqueueRe
 
 func (w *SyncWorker) findPendingSyncLogEpisodes(ctx context.Context) ([]syncEnqueueRequest, error) {
 	var rows []struct {
-		EpisodeID   int64 `db:"episode_id"`
-		CloudSynced bool  `db:"cloud_synced"`
+		EpisodeID int64 `db:"episode_id"`
 	}
 	if err := w.db.SelectContext(ctx, &rows, `
-		SELECT latest_log.episode_id, e.cloud_synced
+		SELECT latest_log.episode_id
 		FROM sync_logs latest_log
 		INNER JOIN (
 		  SELECT episode_id, MAX(id) AS latest_id
@@ -984,6 +926,7 @@ func (w *SyncWorker) findPendingSyncLogEpisodes(ctx context.Context) ([]syncEnqu
 		INNER JOIN episodes e ON e.id = latest_log.episode_id
 		WHERE latest_log.status = 'pending'
 		  AND e.deleted_at IS NULL
+		  AND e.cloud_synced = FALSE
 		ORDER BY latest_log.started_at ASC, latest_log.id ASC
 		LIMIT ?
 	`, w.cfg.BatchSize); err != nil {
@@ -991,7 +934,7 @@ func (w *SyncWorker) findPendingSyncLogEpisodes(ctx context.Context) ([]syncEnqu
 	}
 	reqs := make([]syncEnqueueRequest, len(rows))
 	for i, row := range rows {
-		reqs[i] = syncEnqueueRequest{episodeID: row.EpisodeID, resync: row.CloudSynced}
+		reqs[i] = syncEnqueueRequest{episodeID: row.EpisodeID}
 	}
 	return reqs, nil
 }
@@ -1062,12 +1005,11 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFa
 
 func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 	var rows []struct {
-		EpisodeID   int64 `db:"episode_id"`
-		CloudSynced bool  `db:"cloud_synced"`
+		EpisodeID int64 `db:"episode_id"`
 	}
 	now := time.Now().UTC()
 	err := w.db.SelectContext(ctx, &rows, `
-		SELECT sl.episode_id, e.cloud_synced
+		SELECT sl.episode_id
 		FROM sync_logs sl
 		INNER JOIN (
 		  SELECT episode_id, MAX(id) AS latest_id
@@ -1077,6 +1019,7 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 		INNER JOIN episodes e ON e.id = sl.episode_id
 		WHERE sl.status = 'failed'
 		  AND e.deleted_at IS NULL
+		  AND e.cloud_synced = FALSE
 		  AND sl.attempt_count < ?
 		  AND sl.next_retry_at IS NOT NULL
 		  AND sl.next_retry_at <= ?
@@ -1098,18 +1041,18 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 	}
 
 	for _, row := range rows {
-		if err := w.persistPendingSyncLog(ctx, row.EpisodeID, false, row.CloudSynced); err != nil {
+		if err := w.persistPendingSyncLog(ctx, row.EpisodeID, false); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
 			logger.Printf("[SYNC-WORKER] Failed to queue retry for episode %d: %v", row.EpisodeID, err)
 			continue
 		}
-		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: row.EpisodeID, manual: false, resync: row.CloudSynced})
+		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: row.EpisodeID, manual: false})
 	}
 }
 
-func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64, manual bool, resync bool) {
+func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual bool) {
 	var ep syncEpisodeUploadRow
 	err := w.db.GetContext(ctx, &ep, `
 		SELECT
@@ -1147,7 +1090,7 @@ func (w *SyncWorker) processEpisodeWithMode(ctx context.Context, episodeID int64
 		return
 	}
 
-	if ep.CloudSynced && !resync {
+	if ep.CloudSynced {
 		//logger.Printf("[SYNC-WORKER] Episode %d already synced, skipping", episodeID)
 		return
 	}
@@ -1194,6 +1137,10 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if objectSize <= 0 {
 		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
 	}
+	bagDigest, err := episodeSHA256Hex(ep)
+	if err != nil {
+		return nil, err
+	}
 	rawDataID, err := w.resolveHilbertRawDataIDFromSyncLogs(ctx, syncLogID)
 	if err != nil {
 		return nil, err
@@ -1202,10 +1149,6 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		logger.Printf("[SYNC-WORKER] Episode %d reusing Hilbert raw-data registration: raw_data_id=%d sync_log_id=%d",
 			ep.ID, rawDataID, syncLogID)
 	} else {
-		bagDigest, err := episodeSHA256Hex(ep)
-		if err != nil {
-			return nil, err
-		}
 		rawDataID, err = w.hilbert.RegisterRawData(ctx, auth.HilbertRawDataRegisterRequest{
 			WorkspaceID:  uploadContext.WorkspaceID,
 			DCPlanID:     uploadContext.DCPlanID,
@@ -1246,10 +1189,13 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	}
 	logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data upload start: raw_data_id=%d endpoint=%s bucket=%s object_key=%s size=%d",
 		ep.ID, rawDataID, uploadCredentials.Endpoint, uploadCredentials.Bucket, uploadCredentials.Key, objectSize)
-	objectETag, err := tosUploader.PutObject(ctx, hilbertUploadTarget(uploadCredentials), obj, objectSize, func(uploadedBytes int64, totalBytes int64) {
+	objectETag, err := tosUploader.PutObject(ctx, hilbertUploadTarget(uploadCredentials), obj, objectSize, bagDigest, func(uploadedBytes int64, totalBytes int64) {
 		w.setEpisodeProgress(ep.ID, uploadedBytes, totalBytes)
 	})
 	if err != nil {
+		if errors.Is(err, cloud.ErrTOSPayloadChecksumMismatch) {
+			return nil, wrapNonRetryableSyncError(err, "upload Hilbert raw-data object")
+		}
 		return nil, fmt.Errorf("upload Hilbert raw-data object: %w", err)
 	}
 	if err := w.hilbert.FinishRawDataUpload(ctx, uploadContext.WorkspaceID, rawDataID); err != nil {

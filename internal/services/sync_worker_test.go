@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"strings"
@@ -213,6 +214,9 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if uploader.size != int64(len(source.data)) || string(uploader.body) != string(source.data) {
 		t.Fatalf("uploaded size/body = %d/%q", uploader.size, string(uploader.body))
 	}
+	if uploader.payloadHash != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
+		t.Fatalf("uploaded payload hash = %q, want persisted SHA-256", uploader.payloadHash)
+	}
 	if source.statCount != 1 || source.openCount != 1 {
 		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=1", source.statCount, source.openCount)
 	}
@@ -224,6 +228,43 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	}
 	if result.UploadID != "9876" || result.Bucket != "hilbert-bucket" || result.ObjectKey != "raw-data/123/capture.mcap" {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestUploadEpisodeDirectTreatsPayloadChecksumMismatchAsNonRetryable(t *testing.T) {
+	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-cn-beijing.volces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
+	}
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
+	w := &SyncWorker{
+		minioBucket: "source-bucket",
+		hilbert:     hilbert,
+		source:      source,
+		tosUploader: &fakeTOSObjectUploader{err: fmt.Errorf("%w: changed source", cloud.ErrTOSPayloadChecksumMismatch)},
+	}
+
+	_, err := w.uploadEpisodeDirect(context.Background(), 0, syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		Checksum:          sql.NullString{String: strings.Repeat("a", 64), Valid: true},
+		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if !isNonRetryableSyncError(err) || !errors.Is(err, cloud.ErrTOSPayloadChecksumMismatch) {
+		t.Fatalf("uploadEpisodeDirect() error = %v, want non-retryable checksum mismatch", err)
+	}
+	if hilbert.finished {
+		t.Fatal("FinishRawDataUpload called after checksum mismatch")
 	}
 }
 
@@ -380,19 +421,25 @@ func (r *fakeSourceObjectReader) OpenObject(_ context.Context, bucket, objectNam
 }
 
 type fakeTOSObjectUploader struct {
-	target cloud.TOSS3UploadTarget
-	size   int64
-	body   []byte
+	target      cloud.TOSS3UploadTarget
+	size        int64
+	payloadHash string
+	body        []byte
+	err         error
 }
 
-func (u *fakeTOSObjectUploader) PutObject(_ context.Context, target cloud.TOSS3UploadTarget, reader io.Reader, size int64, progress cloud.UploadProgressFunc) (string, error) {
+func (u *fakeTOSObjectUploader) PutObject(_ context.Context, target cloud.TOSS3UploadTarget, reader io.Reader, size int64, payloadHash string, progress cloud.UploadProgressFunc) (string, error) {
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return "", err
 	}
 	u.target = target
 	u.size = size
+	u.payloadHash = payloadHash
 	u.body = data
+	if u.err != nil {
+		return "", u.err
+	}
 	if progress != nil {
 		progress(size, size)
 	}
@@ -472,6 +519,7 @@ func TestUploadEpisodeDirectReusesPersistedHilbertRawDataID(t *testing.T) {
 		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
 		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
 		McapPath:          "source-bucket/device/capture.mcap",
+		Checksum:          sql.NullString{String: strings.Repeat("a", 64), Valid: true},
 		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
 	})
 	if err != nil {
@@ -530,6 +578,7 @@ func TestUploadEpisodeDirectRecoversHilbertRawDataIDFromHistoricalSyncLog(t *tes
 		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
 		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
 		McapPath:          "source-bucket/device/capture.mcap",
+		Checksum:          sql.NullString{String: strings.Repeat("a", 64), Valid: true},
 		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
 	})
 	if err != nil {
@@ -770,7 +819,7 @@ func TestEnqueueEpisodeManual_PromotesDueFailureToPending(t *testing.T) {
 	}
 }
 
-func TestEnqueueEpisodeResync_AllowsAlreadySyncedEpisode(t *testing.T) {
+func TestEnqueueEpisodeResyncRejectsAlreadySyncedEpisode(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
 		db:              db,
@@ -783,32 +832,26 @@ func TestEnqueueEpisodeResync_AllowsAlreadySyncedEpisode(t *testing.T) {
 	insertEpisodeForSyncWorkerTest(t, db, 27, "approved", true)
 	insertSyncLogForSyncWorkerTest(t, db, 27, "completed", 1)
 
-	if err := w.EnqueueEpisodeResync(context.Background(), 27); err != nil {
-		t.Fatalf("resync enqueue failed: %v", err)
+	if err := w.EnqueueEpisodeResync(context.Background(), 27); !errors.Is(err, ErrEpisodeAlreadySynced) {
+		t.Fatalf("resync enqueue error = %v, want ErrEpisodeAlreadySynced", err)
 	}
 
 	latest := latestSyncLogForSyncWorkerTest(t, db, 27)
-	if latest.Status != "pending" {
-		t.Fatalf("latest status = %q, want pending", latest.Status)
+	if latest.Status != "completed" {
+		t.Fatalf("latest status = %q, want completed", latest.Status)
 	}
-	if count := countSyncLogsForSyncWorkerTest(t, db, 27); count != 2 {
-		t.Fatalf("sync log count = %d, want completed history plus resync pending", count)
+	if count := countSyncLogsForSyncWorkerTest(t, db, 27); count != 1 {
+		t.Fatalf("sync log count = %d, want unchanged completed history", count)
 	}
 
 	select {
 	case got := <-w.enqueueCh:
-		if got.episodeID != 27 {
-			t.Fatalf("unexpected episode id: got %d want 27", got.episodeID)
-		}
-		if !got.manual || !got.resync {
-			t.Fatalf("enqueue flags = manual:%t resync:%t, want both true", got.manual, got.resync)
-		}
+		t.Fatalf("unexpected resync enqueue: %+v", got)
 	default:
-		t.Fatal("expected resync episode to be enqueued")
 	}
 }
 
-func TestDispatchPendingSyncLogs_TreatsSyncedPendingRowsAsResync(t *testing.T) {
+func TestDispatchPendingSyncLogsSkipsAlreadySyncedEpisodes(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
 		db:              db,
@@ -824,11 +867,8 @@ func TestDispatchPendingSyncLogs_TreatsSyncedPendingRowsAsResync(t *testing.T) {
 
 	select {
 	case got := <-w.jobCh:
-		if got.episodeID != 28 || !got.resync {
-			t.Fatalf("dispatched request = %+v, want episode 28 resync", got)
-		}
+		t.Fatalf("unexpected synced episode dispatch: %+v", got)
 	default:
-		t.Fatal("expected synced pending row to be dispatched as resync")
 	}
 }
 
@@ -1110,7 +1150,7 @@ func TestRetryFailedEpisodes_PromotesDueFailureToPendingBeforeDispatch(t *testin
 	}
 }
 
-func TestRetryFailedEpisodes_IgnoresMissingDeletedAndRetriesSyncedEpisodesAsResync(t *testing.T) {
+func TestRetryFailedEpisodesIgnoresMissingDeletedAndAlreadySyncedEpisodes(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
 		db:              db,
@@ -1141,20 +1181,21 @@ func TestRetryFailedEpisodes_IgnoresMissingDeletedAndRetriesSyncedEpisodesAsResy
 		t.Fatalf("unexpected retry queue failure log: %s", logs.String())
 	}
 
-	for _, episodeID := range []int64{4, 5} {
-		latest := latestSyncLogForSyncWorkerTest(t, db, episodeID)
-		if latest.Status != "pending" {
-			t.Fatalf("episode %d latest status = %q, want pending", episodeID, latest.Status)
-		}
+	if latest := latestSyncLogForSyncWorkerTest(t, db, 4); latest.Status != "failed" {
+		t.Fatalf("synced episode latest status = %q, want failed unchanged", latest.Status)
+	}
+	if latest := latestSyncLogForSyncWorkerTest(t, db, 5); latest.Status != "pending" {
+		t.Fatalf("unsynced episode latest status = %q, want pending", latest.Status)
 	}
 
-	gotSynced := <-w.jobCh
-	if gotSynced.episodeID != 4 || !gotSynced.resync {
-		t.Fatalf("unexpected synced retry dispatch: got %+v want episode 4 resync", gotSynced)
-	}
 	gotUnsynced := <-w.jobCh
-	if gotUnsynced.episodeID != 5 || gotUnsynced.resync {
-		t.Fatalf("unexpected unsynced retry dispatch: got %+v want episode 5 non-resync", gotUnsynced)
+	if gotUnsynced.episodeID != 5 {
+		t.Fatalf("unexpected unsynced retry dispatch: got %+v want episode 5", gotUnsynced)
+	}
+	select {
+	case got := <-w.jobCh:
+		t.Fatalf("unexpected additional retry dispatch: %+v", got)
+	default:
 	}
 }
 
@@ -1227,7 +1268,7 @@ func TestProcessEnqueuedEpisode_HoldsMarkerUntilProcessingReturns(t *testing.T) 
 		w.processEnqueuedEpisodeWith(
 			context.Background(),
 			syncEnqueueRequest{episodeID: 77, manual: true},
-			func(context.Context, int64, bool, bool) {
+			func(context.Context, int64, bool) {
 				close(started)
 				<-release
 			},

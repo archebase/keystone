@@ -66,6 +66,55 @@ func TestGetSyncConfigIncludesAutoScanEnabled(t *testing.T) {
 	}
 }
 
+func TestTriggerEpisodeResyncRejectsAlreadySyncedEpisode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupSyncHandlerTestDB(t)
+
+	if _, err := db.Exec(`
+		INSERT INTO episodes (id, episode_id, qa_status, cloud_synced, deleted_at)
+		VALUES (4181, 'episode-synced', 'approved', TRUE, NULL)
+	`); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (id, episode_id, status, attempt_count, started_at, completed_at)
+		VALUES (1, 4181, 'completed', 1, ?, ?)
+	`, time.Now().Add(-time.Minute), time.Now()); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	worker := services.NewSyncWorker(db, nil, nil, "", services.SyncWorkerConfig{}, nil)
+	router := gin.New()
+	handler := NewSyncHandler(db, worker)
+	handler.RegisterRoutes(router.Group("/api/v1"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sync/episodes/4181/resync", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		EpisodeID int64  `json:"episode_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.EpisodeID != 4181 || got.Status != "already_synced" {
+		t.Fatalf("response = %+v, want episode 4181 already_synced", got)
+	}
+
+	var syncLogCount int
+	if err := db.Get(&syncLogCount, "SELECT COUNT(*) FROM sync_logs WHERE episode_id = ?", 4181); err != nil {
+		t.Fatalf("count sync logs: %v", err)
+	}
+	if syncLogCount != 1 {
+		t.Fatalf("sync log count = %d, want unchanged count 1", syncLogCount)
+	}
+}
+
 func TestListEpisodeSyncSummariesGroupsByEpisode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupSyncHandlerTestDB(t)
@@ -309,6 +358,7 @@ func setupSyncHandlerTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY,
 			episode_id TEXT,
+			qa_status TEXT DEFAULT '',
 			cloud_synced BOOLEAN DEFAULT FALSE,
 			cloud_processed BOOLEAN DEFAULT FALSE,
 			cloud_synced_at TIMESTAMP NULL,
