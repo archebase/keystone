@@ -156,12 +156,14 @@ func validateS3Location(bucket, objectName string) (string, string, error) {
 	return bucket, cleaned, nil
 }
 
-// PresignGetObject returns a presigned GET URL for an object.
-// The returned URL is formatted for the frontend's /s3 proxy:
+// PresignGetObject returns a short-lived GET URL for an object.
+// S3/MinIO buckets return a frontend /s3 proxy presigned URL:
 //
 //	/s3/<bucket>/<object>?X-Amz-...
+//
+// TOS buckets return Keystone's storage proxy URL with a signed download token.
 func (h *StorageHandler) PresignGetObject(c *gin.Context) {
-	if h.s3 == nil {
+	if h.s3 == nil && h.tos == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
 		return
 	}
@@ -184,6 +186,24 @@ func (h *StorageHandler) PresignGetObject(c *gin.Context) {
 			return
 		}
 		expSeconds = v
+	}
+	if h.usesTOSBucket(bucket) {
+		params := url.Values{}
+		params.Set("bucket", bucket)
+		params.Set("object", objectName)
+		dlTok, err := auth.SignStorageDownloadToken(bucket, objectName, time.Duration(expSeconds)*time.Second, h.authCfg)
+		if err != nil {
+			logger.Printf("[STORAGE] TOS download token sign failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue download token"})
+			return
+		}
+		params.Set("dl_token", dlTok)
+		c.JSON(http.StatusOK, presignResponse{URL: "/api/v1/storage/object?" + params.Encode()})
+		return
+	}
+	if h.s3 == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
+		return
 	}
 
 	u, err := h.s3.PresignedGetObject(c.Request.Context(), bucket, objectName, time.Duration(expSeconds)*time.Second, nil)

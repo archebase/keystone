@@ -9,8 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
@@ -89,6 +91,113 @@ func TestStorageHandlerProxiesTOSRangeResponse(t *testing.T) {
 	}
 	if got := w.Body.String(); got != "x" {
 		t.Fatalf("body = %q, want x", got)
+	}
+}
+
+func TestStorageHandlerGetObjectAllowsTOSWithoutS3(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	authCfg := &config.AuthConfig{JWTSecret: "test-secret"}
+	handler := NewStorageHandler(nil, authCfg, &config.StorageConfig{
+		Type:       "tos",
+		Endpoint:   "tos-cn-beijing.volces.com",
+		Bucket:     "tos-bucket",
+		Region:     "cn-beijing",
+		AccessKey:  "test-ak",
+		SecretKey:  "test-sk",
+		UseSSL:     true,
+		STSRoleTRN: "trn:iam::123:role/qa-read",
+	})
+	handler.tos.stsClient = fakeEpisodeQASTSClient{}
+	handler.tos.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.Host; got != "tos-bucket.tos-cn-beijing.volces.com" {
+			t.Fatalf("host = %q, want tos-bucket.tos-cn-beijing.volces.com", got)
+		}
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(strings.NewReader("mcap")),
+			ContentLength: 4,
+		}, nil
+	})}
+
+	token, err := auth.SignStorageDownloadToken("tos-bucket", "device-uploads/capture.mcap", time.Minute, authCfg)
+	if err != nil {
+		t.Fatalf("sign download token: %v", err)
+	}
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/storage/object?bucket=tos-bucket&object=device-uploads/capture.mcap&dl_token="+url.QueryEscape(token),
+		nil,
+	)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Request = req
+
+	handler.GetObject(ctx)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if got := w.Body.String(); got != "mcap" {
+		t.Fatalf("body = %q, want mcap", got)
+	}
+}
+
+func TestStorageHandlerPresignReturnsProxyURLForTOSWithoutS3(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	authCfg := &config.AuthConfig{JWTSecret: "test-secret", JWTExpiryHours: 1}
+	handler := NewStorageHandler(nil, authCfg, &config.StorageConfig{
+		Type:       "tos",
+		Endpoint:   "tos-cn-beijing.volces.com",
+		Bucket:     "tos-bucket",
+		Region:     "cn-beijing",
+		AccessKey:  "test-ak",
+		SecretKey:  "test-sk",
+		UseSSL:     true,
+		STSRoleTRN: "trn:iam::123:role/qa-read",
+	})
+	token, err := auth.GenerateToken(auth.NewCollectorClaims(1, "operator-1"), authCfg)
+	if err != nil {
+		t.Fatalf("sign bearer token: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/storage/presign?bucket=tos-bucket&object=device-uploads/capture.mcap&expires_seconds=60",
+		nil,
+	)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Request = req
+
+	handler.PresignGetObject(ctx)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var body presignResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	parsed, err := url.Parse(body.URL)
+	if err != nil {
+		t.Fatalf("parse proxy url: %v", err)
+	}
+	if got := parsed.Path; got != "/api/v1/storage/object" {
+		t.Fatalf("path = %q, want /api/v1/storage/object", got)
+	}
+	values := parsed.Query()
+	if got := values.Get("bucket"); got != "tos-bucket" {
+		t.Fatalf("bucket = %q, want tos-bucket", got)
+	}
+	if got := values.Get("object"); got != "device-uploads/capture.mcap" {
+		t.Fatalf("object = %q, want device-uploads/capture.mcap", got)
+	}
+	if err := auth.ParseStorageDownloadToken(values.Get("dl_token"), authCfg, "tos-bucket", "device-uploads/capture.mcap"); err != nil {
+		t.Fatalf("download token invalid: %v", err)
 	}
 }
 
