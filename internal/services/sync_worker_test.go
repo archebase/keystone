@@ -7,6 +7,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -231,6 +232,64 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	}
 }
 
+func TestUploadEpisodeDirectComputesAndPersistsMissingSHA256(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
+
+	source := &fakeSourceObjectReader{data: []byte("ego portal mcap bytes")}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-s3-cn-beijing.ivolces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
+	}
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	credentials.Credentials.TemporaryToken = "temp-token"
+	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
+	uploader := &fakeTOSObjectUploader{}
+	w := &SyncWorker{
+		db:          db,
+		minioBucket: "source-bucket",
+		hilbert:     hilbert,
+		source:      source,
+		tosUploader: uploader,
+	}
+
+	_, err := w.uploadEpisodeDirect(context.Background(), 0, syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("uploadEpisodeDirect() error = %v", err)
+	}
+
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(source.data))
+	if hilbert.register.BagDigest != wantDigest {
+		t.Fatalf("register BagDigest = %q, want computed SHA-256 %q", hilbert.register.BagDigest, wantDigest)
+	}
+	if uploader.payloadHash != wantDigest {
+		t.Fatalf("uploaded payload hash = %q, want computed SHA-256 %q", uploader.payloadHash, wantDigest)
+	}
+	if source.statCount != 1 || source.openCount != 2 {
+		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=2", source.statCount, source.openCount)
+	}
+
+	var storedDigest string
+	if err := db.Get(&storedDigest, "SELECT checksum FROM episodes WHERE id = ?", 4181); err != nil {
+		t.Fatalf("query episode checksum: %v", err)
+	}
+	if storedDigest != wantDigest {
+		t.Fatalf("stored episode checksum = %q, want %q", storedDigest, wantDigest)
+	}
+}
+
 func TestUploadEpisodeDirectTreatsPayloadChecksumMismatchAsNonRetryable(t *testing.T) {
 	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
 	credentials := &auth.HilbertRawDataUploadCredentials{
@@ -302,10 +361,6 @@ func TestUploadEpisodeDirectReadsDGWCompatEpisodeFromTOS(t *testing.T) {
 			Valid:  true,
 			String: `{"source":"dgwcompat","bucket":"archebase-keystone-device-upload-2116584179","object_key":"device-uploads/5/capture/capture.mcap"}`,
 		},
-		Checksum: sql.NullString{
-			String: strings.Repeat("a", 64),
-			Valid:  true,
-		},
 		CreatedAt: time.Date(2026, 7, 23, 5, 38, 41, 0, time.UTC),
 	})
 	if err != nil {
@@ -315,6 +370,9 @@ func TestUploadEpisodeDirectReadsDGWCompatEpisodeFromTOS(t *testing.T) {
 	if minioSource.statCount != 0 || minioSource.openCount != 0 {
 		t.Fatalf("MinIO source calls stat=%d open=%d, want 0", minioSource.statCount, minioSource.openCount)
 	}
+	if tosSource.statCount != 1 || tosSource.openCount != 2 {
+		t.Fatalf("TOS source calls stat=%d open=%d, want stat=1 open=2", tosSource.statCount, tosSource.openCount)
+	}
 	if tosSource.statBucket != "archebase-keystone-device-upload-2116584179" || tosSource.statObject != "device-uploads/5/capture/capture.mcap" {
 		t.Fatalf("TOS stat location=%s/%s", tosSource.statBucket, tosSource.statObject)
 	}
@@ -323,6 +381,10 @@ func TestUploadEpisodeDirectReadsDGWCompatEpisodeFromTOS(t *testing.T) {
 	}
 	if string(uploader.body) != string(tosSource.data) {
 		t.Fatalf("uploaded body=%q, want TOS body %q", string(uploader.body), string(tosSource.data))
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(tosSource.data))
+	if hilbert.register.BagDigest != wantDigest || uploader.payloadHash != wantDigest {
+		t.Fatalf("computed TOS digest register=%q upload=%q, want %q", hilbert.register.BagDigest, uploader.payloadHash, wantDigest)
 	}
 }
 
@@ -1500,6 +1562,7 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY,
 			qa_status TEXT NOT NULL,
+			checksum TEXT,
 			cloud_synced BOOLEAN NOT NULL DEFAULT 0,
 			cloud_synced_at TIMESTAMP NULL,
 			cloud_mcap_path TEXT,

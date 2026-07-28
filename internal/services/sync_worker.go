@@ -6,6 +6,7 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -1137,7 +1138,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if objectSize <= 0 {
 		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
 	}
-	bagDigest, err := episodeSHA256Hex(ep)
+	bagDigest, err := w.resolveEpisodeSHA256Hex(ctx, ep, source, sourceBucket, mcapKey)
 	if err != nil {
 		return nil, err
 	}
@@ -1375,6 +1376,44 @@ func episodeSHA256Hex(ep syncEpisodeUploadRow) (string, error) {
 	if _, err := hex.DecodeString(checksum); err != nil {
 		return "", newNonRetryableSyncError("episode %d missing valid SHA-256 checksum", ep.ID)
 	}
+	return checksum, nil
+}
+
+func (w *SyncWorker) resolveEpisodeSHA256Hex(
+	ctx context.Context,
+	ep syncEpisodeUploadRow,
+	source SourceObjectReader,
+	sourceBucket string,
+	mcapKey string,
+) (string, error) {
+	if ep.Checksum.Valid && strings.TrimSpace(ep.Checksum.String) != "" {
+		return episodeSHA256Hex(ep)
+	}
+
+	obj, err := source.OpenObject(ctx, sourceBucket, mcapKey)
+	if err != nil {
+		return "", fmt.Errorf("get mcap object %s to calculate SHA-256: %w", mcapKey, err)
+	}
+	hasher := sha256.New()
+	_, copyErr := io.Copy(hasher, obj)
+	closeErr := obj.Close()
+	if copyErr != nil {
+		if closeErr != nil {
+			copyErr = errors.Join(copyErr, fmt.Errorf("close mcap object %s: %w", mcapKey, closeErr))
+		}
+		return "", fmt.Errorf("calculate SHA-256 for mcap object %s: %w", mcapKey, copyErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("close mcap object %s after calculating SHA-256: %w", mcapKey, closeErr)
+	}
+
+	checksum := hex.EncodeToString(hasher.Sum(nil))
+	if w != nil && w.db != nil {
+		if _, err := w.db.ExecContext(ctx, "UPDATE episodes SET checksum = ? WHERE id = ?", checksum, ep.ID); err != nil {
+			return "", fmt.Errorf("persist calculated SHA-256 for episode %d: %w", ep.ID, err)
+		}
+	}
+	logger.Printf("[SYNC-WORKER] Episode %d calculated missing SHA-256 checksum from %s/%s", ep.ID, sourceBucket, mcapKey)
 	return checksum, nil
 }
 

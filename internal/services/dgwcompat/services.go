@@ -492,6 +492,7 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	if err := requireMatchingRawTag(rawTags, "workspace_id", fmt.Sprintf("%d", principal.WorkspaceID)); err != nil {
 		return "", 0, false, err
 	}
+	var episodeChecksumSHA256 sql.NullString
 	if session.ClientHints["product"] == "ego_portal_lite" {
 		if err := requireMatchingDigestRawTag(rawTags, "checksum_md5", session.ClientHints["checksum_md5"]); err != nil {
 			return "", 0, false, err
@@ -506,6 +507,15 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 		checksumSHA256 := strings.ToLower(strings.TrimSpace(rawTags["checksum_sha256"]))
 		if !isSHA256Hex(checksumSHA256) {
 			return "", 0, false, status.Error(codes.InvalidArgument, "checksum_sha256 must be a 64-character hexadecimal SHA-256 digest")
+		}
+		episodeChecksumSHA256 = sql.NullString{String: checksumSHA256, Valid: true}
+	} else if isEgoPortalUpload(session) {
+		checksumSHA256 := strings.ToLower(strings.TrimSpace(rawTags["recording.checksum_sha256"]))
+		if checksumSHA256 != "" {
+			if !isSHA256Hex(checksumSHA256) {
+				return "", 0, false, status.Error(codes.InvalidArgument, "recording.checksum_sha256 must be a 64-character hexadecimal SHA-256 digest")
+			}
+			episodeChecksumSHA256 = sql.NullString{String: checksumSHA256, Valid: true}
 		}
 	}
 
@@ -555,7 +565,7 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 		LIMIT 1
 	`, task.TaskPK)
 	if err == nil {
-		if err := validateIdempotentComplete(existing, session, req); err != nil {
+		if err := validateIdempotentComplete(existing, session, req, episodeChecksumSHA256); err != nil {
 			return "", 0, false, err
 		}
 		now := s.now()
@@ -591,13 +601,6 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	if err != nil {
 		return "", 0, false, err
 	}
-	var checksumSHA256 sql.NullString
-	if session.ClientHints["product"] == "ego_portal_lite" {
-		checksumSHA256 = sql.NullString{
-			String: strings.ToLower(strings.TrimSpace(req.GetRawTags()["checksum_sha256"])),
-			Valid:  true,
-		}
-	}
 	insertRes, err := tx.ExecContext(ctx, `
 		INSERT INTO episodes (
 			episode_id,
@@ -617,7 +620,7 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
 	`, episodeID, task.TaskPK, task.WorkstationID, task.OrganizationID, task.DCPlanID, task.LocalDCPlanID,
-		session.ObjectKey, "", req.GetFileSize(), durationSec, checksumSHA256, metadata, now, now)
+		session.ObjectKey, "", req.GetFileSize(), durationSec, episodeChecksumSHA256, metadata, now, now)
 	if err != nil {
 		return "", 0, false, status.Error(codes.Unavailable, "episode creation failed")
 	}
@@ -694,7 +697,17 @@ func isSHA256Hex(value string) bool {
 	return err == nil
 }
 
-func validateIdempotentComplete(episode completedUploadEpisode, session *uploadSession, req *cloudpb.CompleteUploadRequest) error {
+func isEgoPortalUpload(session *uploadSession) bool {
+	return session.ClientHints["product"] != "ego_portal_lite" &&
+		strings.EqualFold(strings.TrimSpace(session.ClientHints["source"]), "ego-portal")
+}
+
+func validateIdempotentComplete(
+	episode completedUploadEpisode,
+	session *uploadSession,
+	req *cloudpb.CompleteUploadRequest,
+	episodeChecksumSHA256 sql.NullString,
+) error {
 	if episode.MCAPPath != session.ObjectKey {
 		return status.Error(codes.FailedPrecondition, "object key differs from completed upload")
 	}
@@ -710,8 +723,18 @@ func validateIdempotentComplete(episode completedUploadEpisode, session *uploadS
 			return status.Error(codes.FailedPrecondition, "duration_sec differs from completed upload")
 		}
 	}
-	if episode.Checksum.Valid && episode.Checksum.String != strings.ToLower(strings.TrimSpace(req.GetRawTags()["checksum_sha256"])) {
-		return status.Error(codes.FailedPrecondition, "checksum_sha256 differs from completed upload")
+	if episode.Checksum.Valid {
+		checksumTag := "checksum_sha256"
+		requestChecksum := strings.ToLower(strings.TrimSpace(req.GetRawTags()[checksumTag]))
+		compareChecksum := true
+		if isEgoPortalUpload(session) {
+			checksumTag = "recording.checksum_sha256"
+			requestChecksum = episodeChecksumSHA256.String
+			compareChecksum = episodeChecksumSHA256.Valid
+		}
+		if compareChecksum && episode.Checksum.String != requestChecksum {
+			return status.Errorf(codes.FailedPrecondition, "%s differs from completed upload", checksumTag)
+		}
 	}
 	if !episode.Metadata.Valid {
 		return status.Error(codes.FailedPrecondition, "completed upload metadata is missing")

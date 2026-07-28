@@ -204,6 +204,201 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	}
 }
 
+func TestGatewayCompleteUploadPersistsEgoPortalRecordingSHA256(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"source":       "ego-portal",
+			"device_id":    "101",
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	complete := &cloudpb.CompleteUploadRequest{
+		UploadId:           created.GetUploadId(),
+		FileSize:           1024,
+		CompletedPartCount: 1,
+		ObjectEtag:         "etag-1",
+		RawTags: map[string]string{
+			"source":                    "ego-portal",
+			"capture_id":                "capture-1",
+			"task_id":                   "task-1",
+			"dc_plan_id":                "1001",
+			"workspace_id":              "10",
+			"device_id":                 "101",
+			"recording.checksum_sha256": "11285128952F5BE76F0780C62974788C40BF3E2514DE941F0F1706A1F1D6105E",
+		},
+	}
+	_, err = service.CompleteUpload(ctx, complete)
+	if err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("second CompleteUpload() error = %v", err)
+	}
+
+	var checksum string
+	if err := db.Get(&checksum, `SELECT checksum FROM episodes WHERE task_id = 1`); err != nil {
+		t.Fatalf("query episode checksum: %v", err)
+	}
+	const wantChecksum = "11285128952f5be76f0780c62974788c40bf3e2514de941f0f1706a1f1d6105e"
+	if checksum != wantChecksum {
+		t.Fatalf("episode checksum = %q, want %q", checksum, wantChecksum)
+	}
+	complete.RawTags["recording.checksum_sha256"] = strings.Repeat("a", 64)
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CompleteUpload() with changed checksum error = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestGatewayCompleteUploadRejectsInvalidEgoPortalRecordingSHA256(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"source":       "ego-portal",
+			"device_id":    "101",
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	_, err = service.CompleteUpload(ctx, &cloudpb.CompleteUploadRequest{
+		UploadId:           created.GetUploadId(),
+		FileSize:           1024,
+		CompletedPartCount: 1,
+		ObjectEtag:         "etag-1",
+		RawTags: map[string]string{
+			"source":                    "ego-portal",
+			"capture_id":                "capture-1",
+			"task_id":                   "task-1",
+			"dc_plan_id":                "1001",
+			"workspace_id":              "10",
+			"device_id":                 "101",
+			"recording.checksum_sha256": "not-a-sha256",
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("CompleteUpload() error = %v, want InvalidArgument", err)
+	}
+}
+
+func TestGatewayCompleteUploadRejectsInvalidEgoPortalRecordingSHA256OnRetry(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"source":       "ego-portal",
+			"device_id":    "101",
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	complete := &cloudpb.CompleteUploadRequest{
+		UploadId:           created.GetUploadId(),
+		FileSize:           1024,
+		CompletedPartCount: 1,
+		ObjectEtag:         "etag-1",
+		RawTags: map[string]string{
+			"source":       "ego-portal",
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+			"device_id":    "101",
+		},
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+
+	complete.RawTags["recording.checksum_sha256"] = "not-a-sha256"
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("second CompleteUpload() error = %v, want InvalidArgument", err)
+	}
+}
+
+func TestGatewayCompleteUploadAllowsLegacyEgoPortalRetryAfterChecksumBackfill(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"source":       "ego-portal",
+			"device_id":    "101",
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	complete := &cloudpb.CompleteUploadRequest{
+		UploadId:           created.GetUploadId(),
+		FileSize:           1024,
+		CompletedPartCount: 1,
+		ObjectEtag:         "etag-1",
+		RawTags: map[string]string{
+			"source":       "ego-portal",
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+			"device_id":    "101",
+		},
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+	var missingChecksumCount int
+	if err := db.Get(&missingChecksumCount, `SELECT COUNT(1) FROM episodes WHERE task_id = 1 AND checksum IS NULL`); err != nil {
+		t.Fatalf("query episodes missing checksum: %v", err)
+	}
+	if missingChecksumCount != 1 {
+		t.Fatalf("episodes missing checksum = %d, want 1", missingChecksumCount)
+	}
+
+	const backfilledChecksum = "11285128952f5be76f0780c62974788c40bf3e2514de941f0f1706a1f1d6105e"
+	if _, err := db.Exec(`UPDATE episodes SET checksum = ? WHERE task_id = 1`, backfilledChecksum); err != nil {
+		t.Fatalf("backfill episode checksum: %v", err)
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("CompleteUpload() after checksum backfill error = %v", err)
+	}
+}
+
 func TestGatewayCreateLogicalUploadRejectsMismatchedPlan(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
