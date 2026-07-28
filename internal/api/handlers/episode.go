@@ -23,22 +23,19 @@ import (
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
-	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
 // EpisodeHandler handles episode-related HTTP requests
 type EpisodeHandler struct {
 	db      *sqlx.DB
-	s3      *s3.Client
 	bucket  string
 	authCfg *config.AuthConfig
 }
 
 // NewEpisodeHandler creates a new EpisodeHandler
-func NewEpisodeHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCfg *config.AuthConfig) *EpisodeHandler {
+func NewEpisodeHandler(db *sqlx.DB, bucket string, authCfg *config.AuthConfig) *EpisodeHandler {
 	return &EpisodeHandler{
 		db:      db,
-		s3:      s3Client,
 		bucket:  strings.TrimSpace(bucket),
 		authCfg: authCfg,
 	}
@@ -564,10 +561,6 @@ func resolveEpisodeMcapLocation(configuredBucket, storedPath string) (string, st
 
 // GetEpisodePresignedURL returns a presigned GET URL for an episode's MCAP or sidecar object.
 func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
-	if h.s3 == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
-		return
-	}
 	episodeID, ok := parseEpisodeIDParam(c)
 	if !ok {
 		return
@@ -590,8 +583,9 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 		SidecarPath string         `db:"sidecar_path"`
 		QaStatus    string         `db:"qa_status"`
 		QualityFlag sql.NullString `db:"quality_flag"`
+		Metadata    sql.NullString `db:"metadata"`
 	}
-	err := h.db.Get(&row, "SELECT mcap_path, sidecar_path, COALESCE(qa_status, '') AS qa_status, quality_flag FROM episodes WHERE id = ? AND deleted_at IS NULL LIMIT 1", episodeID)
+	err := h.db.Get(&row, "SELECT mcap_path, sidecar_path, COALESCE(qa_status, '') AS qa_status, quality_flag, metadata FROM episodes WHERE id = ? AND deleted_at IS NULL LIMIT 1", episodeID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "episode not found"})
 		return
@@ -617,7 +611,12 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 		return
 	}
 
-	bucket, objectName, ok := resolveEpisodeMcapLocation(h.bucket, selectedPath)
+	var bucket, objectName string
+	if kind == "mcap" {
+		bucket, objectName, ok = resolveEpisodeMcapObjectLocation(h.bucket, selectedPath, row.Metadata)
+	} else {
+		bucket, objectName, ok = resolveEpisodeObjectLocation(h.bucket, selectedPath, row.Metadata)
+	}
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + fieldName})
 		return
