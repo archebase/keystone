@@ -35,6 +35,8 @@ type episodeQAEnqueuer interface {
 	EnqueueEpisode(episodeID int64)
 }
 
+const transferWebSocketReadLimit = 2 << 20 // 2 MiB
+
 // TransferHandler handles WebSocket connections and REST API for Transfer Service
 type TransferHandler struct {
 	hub       *services.TransferHub
@@ -127,6 +129,7 @@ func (h *TransferHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		logger.Printf("%s WebSocket accept error: %v", transferLogPrefix(deviceID), err)
 		return
 	}
+	conn.SetReadLimit(transferWebSocketReadLimit)
 
 	remoteIP := extractIP(r.RemoteAddr)
 	dc := h.hub.NewTransferConn(conn, deviceID, remoteIP)
