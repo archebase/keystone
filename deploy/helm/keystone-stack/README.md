@@ -107,6 +107,7 @@ helm upgrade --install factory-a deploy/helm/keystone-stack \
   --namespace archebase-system \
   --set keystone.image.tag="${KEYSTONE_COMMIT}" \
   --set synapse.image.tag="${SYNAPSE_COMMIT}" \
+  --set keystone.syncEnabled=true \
   --set credentials.hilbertAccessKey="${KEYSTONE_HILBERT_ACCESS_KEY}" \
   --set credentials.hilbertSecretKey="${KEYSTONE_HILBERT_SECRET_KEY}"
 ```
@@ -127,6 +128,8 @@ entry point on the repository default branch, `main-v2`. The deployment job runs
 on the `archebase-ci-runner` self-hosted runner and executes inside the
 configured deploy job container. Run it only after the matching Keystone image
 workflow has successfully pushed the selected Keystone commit SHA.
+The workflow enables Keystone sync for production by passing
+`keystone.syncEnabled=true` to the Helm release.
 
 Required repository or `production` environment secrets:
 

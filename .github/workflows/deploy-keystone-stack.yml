@@ -231,6 +231,7 @@ jobs:
             --namespace "$PROD_NAMESPACE" \
             --set-string keystone.image.tag="$KEYSTONE_IMAGE_TAG" \
             --set-string synapse.image.tag="$SYNAPSE_IMAGE_TAG" \
+            --set keystone.syncEnabled=true \
             --set-string credentials.hilbertAccessKey=placeholder \
             --set-string credentials.hilbertSecretKey=placeholder \
             > /dev/null
@@ -271,7 +272,8 @@ jobs:
             --history-max 20 \
             --values "$SECRET_VALUES_FILE" \
             --set-string keystone.image.tag="$KEYSTONE_IMAGE_TAG" \
-            --set-string synapse.image.tag="$SYNAPSE_IMAGE_TAG"
+            --set-string synapse.image.tag="$SYNAPSE_IMAGE_TAG" \
+            --set keystone.syncEnabled=true
 
       - name: Report release endpoints
         env:
@@ -291,6 +293,7 @@ jobs:
             echo "- Namespace: \`${PROD_NAMESPACE}\`"
             echo "- HTTP/WebSocket/API: \`https://${HOST}\`"
             echo "- gRPC: \`${HOST}:50053\`"
+            echo "- Keystone sync enabled: \`true\`"
             echo "- Keystone image: \`${KEYSTONE_IMAGE}\`"
             echo "- Synapse image: \`${SYNAPSE_IMAGE}\`"
             echo
