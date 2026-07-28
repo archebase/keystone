@@ -161,7 +161,7 @@ func validateS3Location(bucket, objectName string) (string, string, error) {
 //
 //	/s3/<bucket>/<object>?X-Amz-...
 func (h *StorageHandler) PresignGetObject(c *gin.Context) {
-	if h.s3 == nil {
+	if h.s3 == nil && h.tos == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
 		return
 	}
@@ -185,6 +185,24 @@ func (h *StorageHandler) PresignGetObject(c *gin.Context) {
 		}
 		expSeconds = v
 	}
+	if h.usesTOSBucket(bucket) {
+		params := url.Values{}
+		params.Set("bucket", bucket)
+		params.Set("object", objectName)
+		dlTok, err := auth.SignStorageDownloadToken(bucket, objectName, time.Duration(expSeconds)*time.Second, h.authCfg)
+		if err != nil {
+			logger.Printf("[STORAGE] TOS download token sign failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue download token"})
+			return
+		}
+		params.Set("dl_token", dlTok)
+		c.JSON(http.StatusOK, presignResponse{URL: "/api/v1/storage/object?" + params.Encode()})
+		return
+	}
+	if h.s3 == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
+		return
+	}
 
 	u, err := h.s3.PresignedGetObject(c.Request.Context(), bucket, objectName, time.Duration(expSeconds)*time.Second, nil)
 	if err != nil {
@@ -206,7 +224,7 @@ func (h *StorageHandler) PresignGetObject(c *gin.Context) {
 // GetObject proxies object download through Keystone so frontend does not
 // directly depend on MinIO endpoint/proxy target configuration.
 func (h *StorageHandler) GetObject(c *gin.Context) {
-	if h.s3 == nil {
+	if h.s3 == nil && h.tos == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
 		return
 	}
@@ -224,6 +242,10 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 
 	if h.usesTOSBucket(bucket) {
 		h.getTOSObject(c, bucket, objectName, usedDownloadToken)
+		return
+	}
+	if h.s3 == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
 		return
 	}
 

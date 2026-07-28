@@ -193,7 +193,7 @@ func NewEpisodeQAHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCf
 	h := &EpisodeQAHandler{
 		db:      db,
 		s3:      s3Client,
-		bucket:  strings.TrimSpace(bucket),
+		bucket:  defaultObjectStorageBucket(s3Client, bucket, storageCfg),
 		authCfg: authCfg,
 		queue:   make(chan int64, defaultEpisodeQAQueueSize),
 	}
@@ -1059,7 +1059,7 @@ func (h *EpisodeQAHandler) runEpisodeQACheck(ctx context.Context, checkName stri
 }
 
 func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQACheckRow) (episodeQACheckOutcome, error) {
-	if h.s3 == nil {
+	if h.s3 == nil && h.tos == nil {
 		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
 	}
 
@@ -1070,6 +1070,9 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 
 	if h.usesTOSBucket(bucket) {
 		return h.runTOSMcapMagicQACheck(ctx, bucket, objectName)
+	}
+	if h.s3 == nil {
+		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
 	}
 
 	size, err := h.statQAObject(ctx, bucket, objectName)
@@ -1155,7 +1158,7 @@ func (h *EpisodeQAHandler) runTOSMcapMagicQACheck(ctx context.Context, bucket, o
 }
 
 func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row episodeQACheckRow) (episodeQACheckOutcome, error) {
-	if h.s3 == nil {
+	if h.s3 == nil && h.tos == nil {
 		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
 	}
 
@@ -1181,6 +1184,9 @@ func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row 
 		}
 		metadata["sidecar_size_bytes"] = len(data)
 		return evaluateRecordingNotEmptyCheck(data, metadata)
+	}
+	if h.s3 == nil {
+		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
 	}
 
 	sidecarSize, err := h.statQAObject(ctx, bucket, objectName)
@@ -1272,6 +1278,9 @@ func (h *EpisodeQAHandler) statQAObject(ctx context.Context, bucket, objectName 
 	if h.usesTOSBucket(bucket) {
 		return h.tos.StatObject(ctx, bucket, objectName)
 	}
+	if h.s3 == nil {
+		return 0, fmt.Errorf("storage is not configured")
+	}
 	stat, err := h.s3.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
 	if err != nil {
 		return 0, err
@@ -1292,6 +1301,9 @@ func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName 
 			return nil, fmt.Errorf("object exceeds max size %d bytes", maxBytes)
 		}
 		return object.Data, nil
+	}
+	if h.s3 == nil {
+		return nil, fmt.Errorf("storage is not configured")
 	}
 
 	obj, err := h.s3.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
@@ -1318,6 +1330,9 @@ func (h *EpisodeQAHandler) readS3Object(ctx context.Context, bucket, objectName 
 func (h *EpisodeQAHandler) readS3ObjectRange(ctx context.Context, bucket, objectName string, start, end int64) ([]byte, error) {
 	if h.usesTOSBucket(bucket) {
 		return h.tos.GetObject(ctx, bucket, objectName, &httpRange{start: start, end: end})
+	}
+	if h.s3 == nil {
+		return nil, fmt.Errorf("storage is not configured")
 	}
 
 	var opts minio.GetObjectOptions

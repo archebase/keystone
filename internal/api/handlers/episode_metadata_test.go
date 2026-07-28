@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
+	"archebase.com/keystone-edge/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
@@ -22,7 +24,7 @@ func TestGetEpisodeReturnsMetadata(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil)
+	handler := NewEpisodeHandler(db, nil, "", nil, nil)
 	router.GET("/episodes/:id", handler.GetEpisode)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes/1", nil)
@@ -80,7 +82,7 @@ func TestGetEpisodeReturnsDefaultWorkspaceFromTask(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil)
+	handler := NewEpisodeHandler(db, nil, "", nil, nil)
 	router.GET("/episodes/:id", handler.GetEpisode)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes/1", nil)
@@ -106,7 +108,7 @@ func TestListEpisodesOmitsMetadata(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil)
+	handler := NewEpisodeHandler(db, nil, "", nil, nil)
 	router.GET("/episodes", handler.ListEpisodes)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes", nil)
@@ -133,6 +135,52 @@ func TestListEpisodesOmitsMetadata(t *testing.T) {
 		t.Fatalf("robot_device_name=%v want Ego iPhone 01", got)
 	}
 	assertEpisodePlanFields(t, body.Items[0])
+}
+
+func TestGetEpisodePresignedURLUsesTOSBucketWithoutS3(t *testing.T) {
+	db := openEpisodeMetadataTestDB(t)
+	defer db.Close()
+	seedEpisodeMetadataTestRow(t, db)
+	if _, err := db.Exec(`
+		UPDATE episodes
+		SET mcap_path = 'device-uploads/capture.mcap',
+			metadata = '{"source":"dgwcompat","object_store_backend":"volcengine_tos","bucket":"tos-bucket","object_key":"device-uploads/capture.mcap"}'
+		WHERE id = 1
+	`); err != nil {
+		t.Fatalf("update episode TOS metadata: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewEpisodeHandler(db, nil, "edge-mercury", nil, &config.StorageConfig{
+		Type:   "tos",
+		Bucket: "tos-bucket",
+	})
+	router.GET("/episodes/:id/presign", handler.GetEpisodePresignedURL)
+
+	req := httptest.NewRequest(http.MethodGet, "/episodes/1/presign?kind=mcap", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body presignResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	parsed, err := url.Parse(body.URL)
+	if err != nil {
+		t.Fatalf("parse presign url: %v", err)
+	}
+	values := parsed.Query()
+	if got := values.Get("bucket"); got != "tos-bucket" {
+		t.Fatalf("bucket = %q, want tos-bucket url=%s", got, body.URL)
+	}
+	if got := values.Get("object"); got != "device-uploads/capture.mcap" {
+		t.Fatalf("object = %q, want device-uploads/capture.mcap url=%s", got, body.URL)
+	}
 }
 
 func assertEpisodePlanFields(t *testing.T, episode map[string]any) {

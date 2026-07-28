@@ -8,13 +8,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/services"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
-
-	"archebase.com/keystone-edge/internal/services"
 )
 
 func TestEvaluateMcapMagicCheck(t *testing.T) {
@@ -226,6 +230,101 @@ func TestSizeFromTOSRangeResponse(t *testing.T) {
 	})
 	if got != 1024 {
 		t.Fatalf("size = %d, want 1024", got)
+	}
+}
+
+func TestRunMcapMagicQACheckUsesTOSWithoutS3(t *testing.T) {
+	handler := NewEpisodeQAHandler(nil, nil, "edge-mercury", nil, &config.StorageConfig{
+		Type:       "tos",
+		Endpoint:   "tos-cn-beijing.volces.com",
+		Bucket:     "tos-bucket",
+		Region:     "cn-beijing",
+		AccessKey:  "test-ak",
+		SecretKey:  "test-sk",
+		UseSSL:     true,
+		STSRoleTRN: "trn:iam::123:role/qa-read",
+	})
+	handler.tos.stsClient = fakeEpisodeQASTSClient{}
+	handler.tos.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.Host; got != "tos-bucket.tos-cn-beijing.volces.com" {
+			t.Fatalf("host = %q, want tos-bucket.tos-cn-beijing.volces.com", got)
+		}
+		var contentRange string
+		switch got := req.Header.Get("Range"); got {
+		case "bytes=0-7":
+			contentRange = "bytes 0-7/16"
+		case "bytes=8-15":
+			contentRange = "bytes 8-15/16"
+		default:
+			t.Fatalf("Range = %q, want MCAP head or tail range", got)
+		}
+		resp := &http.Response{
+			StatusCode:    http.StatusPartialContent,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(strings.NewReader(string(mcapMagicBytes))),
+			ContentLength: int64(len(mcapMagicBytes)),
+		}
+		resp.Header.Set("Content-Range", contentRange)
+		return resp, nil
+	})}
+
+	outcome, err := handler.runMcapMagicQACheck(context.Background(), episodeQACheckRow{
+		McapPath: "device-uploads/capture.mcap",
+		Metadata: sql.NullString{
+			Valid:  true,
+			String: `{"source":"dgwcompat","object_store_backend":"volcengine_tos","bucket":"tos-bucket","object_key":"device-uploads/capture.mcap"}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("run MCAP QA check: %v", err)
+	}
+	if !outcome.Passed {
+		t.Fatalf("outcome passed = false, details=%s metadata=%#v", outcome.Details, outcome.Metadata)
+	}
+}
+
+func TestRunRecordingNotEmptyQACheckUsesTOSWithoutS3(t *testing.T) {
+	handler := NewEpisodeQAHandler(nil, nil, "edge-mercury", nil, &config.StorageConfig{
+		Type:       "tos",
+		Endpoint:   "tos-cn-beijing.volces.com",
+		Bucket:     "tos-bucket",
+		Region:     "cn-beijing",
+		AccessKey:  "test-ak",
+		SecretKey:  "test-sk",
+		UseSSL:     true,
+		STSRoleTRN: "trn:iam::123:role/qa-read",
+	})
+	handler.tos.stsClient = fakeEpisodeQASTSClient{}
+	body := `{"recording":{"message_count":1,"topics_recorded":["/camera"]}}`
+	handler.tos.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.Host; got != "tos-bucket.tos-cn-beijing.volces.com" {
+			t.Fatalf("host = %q, want tos-bucket.tos-cn-beijing.volces.com", got)
+		}
+		if got := req.Header.Get("Range"); got == "" {
+			t.Fatal("Range header is empty")
+		}
+		resp := &http.Response{
+			StatusCode:    http.StatusPartialContent,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(strings.NewReader(body)),
+			ContentLength: int64(len(body)),
+		}
+		resp.Header.Set("Content-Range", "bytes 0-"+strconv.Itoa(len(body)-1)+"/"+strconv.Itoa(len(body)))
+		return resp, nil
+	})}
+
+	outcome, err := handler.runRecordingNotEmptyQACheck(context.Background(), episodeQACheckRow{
+		SidecarPath: "device-uploads/capture.json",
+		Metadata: sql.NullString{
+			Valid:  true,
+			String: `{"source":"dgwcompat","object_store_backend":"volcengine_tos","bucket":"tos-bucket","object_key":"device-uploads/capture.mcap"}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("run recording QA check: %v", err)
+	}
+	if !outcome.Passed {
+		t.Fatalf("outcome passed = false, details=%s metadata=%#v", outcome.Details, outcome.Metadata)
 	}
 }
 
