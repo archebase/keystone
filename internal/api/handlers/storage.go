@@ -206,7 +206,7 @@ func (h *StorageHandler) PresignGetObject(c *gin.Context) {
 // GetObject proxies object download through Keystone so frontend does not
 // directly depend on MinIO endpoint/proxy target configuration.
 func (h *StorageHandler) GetObject(c *gin.Context) {
-	if h.s3 == nil {
+	if h.s3 == nil && h.tos == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
 		return
 	}
@@ -224,6 +224,10 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 
 	if h.usesTOSBucket(bucket) {
 		h.getTOSObject(c, bucket, objectName, usedDownloadToken)
+		return
+	}
+	if h.s3 == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
 		return
 	}
 

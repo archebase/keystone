@@ -22,7 +22,7 @@ func TestGetEpisodeReturnsMetadata(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil)
+	handler := NewEpisodeHandler(db, "", nil)
 	router.GET("/episodes/:id", handler.GetEpisode)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes/1", nil)
@@ -80,7 +80,7 @@ func TestGetEpisodeReturnsDefaultWorkspaceFromTask(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil)
+	handler := NewEpisodeHandler(db, "", nil)
 	router.GET("/episodes/:id", handler.GetEpisode)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes/1", nil)
@@ -106,7 +106,7 @@ func TestListEpisodesOmitsMetadata(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil)
+	handler := NewEpisodeHandler(db, "", nil)
 	router.GET("/episodes", handler.ListEpisodes)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes", nil)
