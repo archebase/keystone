@@ -120,7 +120,7 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.10.1
-          args: --timeout=5m
+          args: --timeout=10m
 
   # 4. unit tests + coverage
   test:

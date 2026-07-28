@@ -156,10 +156,12 @@ func validateS3Location(bucket, objectName string) (string, string, error) {
 	return bucket, cleaned, nil
 }
 
-// PresignGetObject returns a presigned GET URL for an object.
-// The returned URL is formatted for the frontend's /s3 proxy:
+// PresignGetObject returns a short-lived GET URL for an object.
+// S3/MinIO buckets return a frontend /s3 proxy presigned URL:
 //
 //	/s3/<bucket>/<object>?X-Amz-...
+//
+// TOS buckets return Keystone's storage proxy URL with a signed download token.
 func (h *StorageHandler) PresignGetObject(c *gin.Context) {
 	if h.s3 == nil && h.tos == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
