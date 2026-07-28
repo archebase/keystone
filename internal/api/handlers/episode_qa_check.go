@@ -1063,7 +1063,7 @@ func (h *EpisodeQAHandler) runMcapMagicQACheck(ctx context.Context, row episodeQ
 		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
 	}
 
-	bucket, objectName, ok := resolveEpisodeQAObjectLocation(h.bucket, row.McapPath, row.Metadata)
+	bucket, objectName, ok := resolveEpisodeMcapObjectLocation(h.bucket, row.McapPath, row.Metadata)
 	if !ok {
 		return evaluateMcapMagicCheck(0, nil, nil, "invalid mcap_path"), nil
 	}
@@ -1162,7 +1162,7 @@ func (h *EpisodeQAHandler) runRecordingNotEmptyQACheck(ctx context.Context, row 
 		return episodeQACheckOutcome{}, fmt.Errorf("storage is not configured")
 	}
 
-	bucket, objectName, ok := resolveEpisodeQAObjectLocation(h.bucket, row.SidecarPath, row.Metadata)
+	bucket, objectName, ok := resolveEpisodeObjectLocation(h.bucket, row.SidecarPath, row.Metadata)
 	if !ok {
 		return recordingNotEmptyFailure("Recording sidecar check failed: invalid sidecar_path", map[string]any{
 			"sidecar_path": row.SidecarPath,
@@ -1231,12 +1231,23 @@ func sizeFromTOSRangeResponse(object episodeQATOSObject) int64 {
 	return int64(len(object.Data))
 }
 
-func resolveEpisodeQAObjectLocation(configuredBucket, storedPath string, metadata sql.NullString) (string, string, bool) {
-	bucket := episodeStorageBucketFromMetadata(metadata)
-	if bucket == "" {
-		bucket = configuredBucket
+func resolveEpisodeObjectLocation(configuredBucket, storedPath string, metadata sql.NullString) (string, string, bool) {
+	bucket := configuredBucket
+	if isTOSOnlyEpisode(metadata) {
+		if metadataBucket := episodeStorageBucketFromMetadata(metadata); metadataBucket != "" {
+			bucket = metadataBucket
+		}
 	}
 	return resolveEpisodeMcapLocation(bucket, storedPath)
+}
+
+func resolveEpisodeMcapObjectLocation(configuredBucket, storedPath string, metadata sql.NullString) (string, string, bool) {
+	if isTOSOnlyEpisode(metadata) {
+		if objectKey := episodeStorageObjectKeyFromMetadata(metadata); objectKey != "" {
+			storedPath = objectKey
+		}
+	}
+	return resolveEpisodeObjectLocation(configuredBucket, storedPath, metadata)
 }
 
 func episodeStorageBucketFromMetadata(metadata sql.NullString) string {
@@ -1250,6 +1261,19 @@ func episodeStorageBucketFromMetadata(metadata sql.NullString) string {
 		return ""
 	}
 	return strings.TrimSpace(raw.Bucket)
+}
+
+func episodeStorageObjectKeyFromMetadata(metadata sql.NullString) string {
+	if !metadata.Valid || strings.TrimSpace(metadata.String) == "" {
+		return ""
+	}
+	var raw struct {
+		ObjectKey string `json:"object_key"`
+	}
+	if err := json.Unmarshal([]byte(metadata.String), &raw); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw.ObjectKey)
 }
 
 func isTOSOnlyEpisode(metadata sql.NullString) bool {

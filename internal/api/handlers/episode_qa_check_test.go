@@ -328,15 +328,15 @@ func TestRunRecordingNotEmptyQACheckUsesTOSWithoutS3(t *testing.T) {
 	}
 }
 
-func TestResolveEpisodeQAObjectLocationUsesMetadataBucket(t *testing.T) {
+func TestResolveEpisodeObjectLocationUsesMetadataBucket(t *testing.T) {
 	metadata := sql.NullString{
 		Valid:  true,
 		String: `{"source":"dgwcompat","bucket":"tos-bucket","object_key":"device-uploads/capture.mcap"}`,
 	}
 
-	bucket, objectName, ok := resolveEpisodeQAObjectLocation("edge-factory-test", "device-uploads/capture.mcap", metadata)
+	bucket, objectName, ok := resolveEpisodeObjectLocation("edge-factory-test", "device-uploads/capture.mcap", metadata)
 	if !ok {
-		t.Fatal("resolveEpisodeQAObjectLocation() ok = false, want true")
+		t.Fatal("resolveEpisodeObjectLocation() ok = false, want true")
 	}
 	if bucket != "tos-bucket" {
 		t.Fatalf("bucket = %q, want tos-bucket", bucket)
@@ -346,10 +346,10 @@ func TestResolveEpisodeQAObjectLocationUsesMetadataBucket(t *testing.T) {
 	}
 }
 
-func TestResolveEpisodeQAObjectLocationFallsBackToConfiguredBucket(t *testing.T) {
-	bucket, objectName, ok := resolveEpisodeQAObjectLocation("edge-factory-test", "device-uploads/capture.mcap", sql.NullString{})
+func TestResolveEpisodeObjectLocationFallsBackToConfiguredBucket(t *testing.T) {
+	bucket, objectName, ok := resolveEpisodeObjectLocation("edge-factory-test", "device-uploads/capture.mcap", sql.NullString{})
 	if !ok {
-		t.Fatal("resolveEpisodeQAObjectLocation() ok = false, want true")
+		t.Fatal("resolveEpisodeObjectLocation() ok = false, want true")
 	}
 	if bucket != "edge-factory-test" {
 		t.Fatalf("bucket = %q, want edge-factory-test", bucket)

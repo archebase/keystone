@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"testing"
 
-	"archebase.com/keystone-edge/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
@@ -24,7 +23,7 @@ func TestGetEpisodeReturnsMetadata(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil, nil)
+	handler := NewEpisodeHandler(db, "", nil)
 	router.GET("/episodes/:id", handler.GetEpisode)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes/1", nil)
@@ -82,7 +81,7 @@ func TestGetEpisodeReturnsDefaultWorkspaceFromTask(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil, nil)
+	handler := NewEpisodeHandler(db, "", nil)
 	router.GET("/episodes/:id", handler.GetEpisode)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes/1", nil)
@@ -108,7 +107,7 @@ func TestListEpisodesOmitsMetadata(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "", nil, nil)
+	handler := NewEpisodeHandler(db, "", nil)
 	router.GET("/episodes", handler.ListEpisodes)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes", nil)
@@ -152,10 +151,7 @@ func TestGetEpisodePresignedURLUsesTOSBucketWithoutS3(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewEpisodeHandler(db, nil, "edge-mercury", nil, &config.StorageConfig{
-		Type:   "tos",
-		Bucket: "tos-bucket",
-	})
+	handler := NewEpisodeHandler(db, "edge-mercury", nil)
 	router.GET("/episodes/:id/presign", handler.GetEpisodePresignedURL)
 
 	req := httptest.NewRequest(http.MethodGet, "/episodes/1/presign?kind=mcap", nil)

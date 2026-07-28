@@ -297,7 +297,7 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Transf
 
 	switch msgType {
 	case "connected":
-		h.onConnected(dc, msg)
+		h.onConnected(ctx, dc, msg)
 	case "upload_started":
 		h.onUploadStarted(ctx, dc, msg)
 	case "upload_progress":
@@ -309,7 +309,7 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Transf
 	case "upload_not_found":
 		h.onUploadNotFound(dc, msg)
 	case "status":
-		h.onStatus(dc, msg)
+		h.onStatus(ctx, dc, msg)
 	default:
 		// #nosec G706 -- Set aside for now
 		logger.Printf("%s unknown message type %q", transferLogPrefix(dc.DeviceID), msgType)
@@ -317,7 +317,7 @@ func (h *TransferHandler) handleMessage(ctx context.Context, dc *services.Transf
 }
 
 // onConnected handles the initial "connected" message from the device
-func (h *TransferHandler) onConnected(dc *services.TransferConn, msg map[string]interface{}) {
+func (h *TransferHandler) onConnected(ctx context.Context, dc *services.TransferConn, msg map[string]interface{}) {
 	data, _ := msg["data"].(map[string]interface{})
 	if data == nil {
 		return
@@ -340,6 +340,7 @@ func (h *TransferHandler) onConnected(dc *services.TransferConn, msg map[string]
 	// #nosec G706 -- Set aside for now
 	logger.Printf("%s connected: version=%s pending=%d uploading=%d failed=%d",
 		transferLogPrefix(dc.DeviceID), s.Version, s.PendingCount, s.UploadingCount, s.FailedCount)
+	h.reconcileWaitingACKsFromStatus(ctx, dc)
 	h.reconcileUploadRequestsFromStatus(dc)
 }
 
@@ -1074,7 +1075,7 @@ func (h *TransferHandler) onUploadNotFound(dc *services.TransferConn, msg map[st
 }
 
 // onStatus handles "status" message and updates the device status snapshot
-func (h *TransferHandler) onStatus(dc *services.TransferConn, msg map[string]interface{}) {
+func (h *TransferHandler) onStatus(ctx context.Context, dc *services.TransferConn, msg map[string]interface{}) {
 	// #nosec G706 -- Set aside for now
 	logger.Printf("%s received status update", transferLogPrefix(dc.DeviceID))
 	data, _ := msg["data"].(map[string]interface{})
@@ -1096,7 +1097,64 @@ func (h *TransferHandler) onStatus(dc *services.TransferConn, msg map[string]int
 		Uploads:           transferUploadsVal(data, "uploads"),
 	}
 	dc.UpdateStatus(s)
+	h.reconcileWaitingACKsFromStatus(ctx, dc)
 	h.reconcileUploadRequestsFromStatus(dc)
+}
+
+// reconcileWaitingACKsFromStatus replays the existing Verified ACK flow for
+// uploads whose ACK may have been lost when the previous connection dropped.
+func (h *TransferHandler) reconcileWaitingACKsFromStatus(ctx context.Context, dc *services.TransferConn) {
+	if h == nil || dc == nil {
+		return
+	}
+
+	status := dc.GetStatus()
+	if len(status.WaitingACKTaskIDs) == 0 {
+		return
+	}
+
+	uploadsByTaskID := make(map[string]services.Upload, len(status.Uploads))
+	for _, upload := range status.Uploads {
+		taskID := strings.TrimSpace(upload.TaskID)
+		if taskID != "" {
+			uploadsByTaskID[taskID] = upload
+		}
+	}
+
+	reconciled := make(map[string]struct{}, len(status.WaitingACKTaskIDs))
+	for _, rawTaskID := range status.WaitingACKTaskIDs {
+		taskID := strings.TrimSpace(rawTaskID)
+		if taskID == "" {
+			continue
+		}
+		if _, ok := reconciled[taskID]; ok {
+			continue
+		}
+		reconciled[taskID] = struct{}{}
+
+		upload, ok := uploadsByTaskID[taskID]
+		if !ok {
+			logger.Printf("%s waiting ACK recovery skipped: upload status not found", transferTaskLogPrefix(dc.DeviceID, taskID))
+			continue
+		}
+		s3Key := strings.TrimSpace(upload.S3Key)
+		if s3Key == "" {
+			s3Key = strings.TrimSpace(upload.ObjectKey)
+		}
+		if s3Key == "" {
+			logger.Printf("%s waiting ACK recovery skipped: object key is empty", transferTaskLogPrefix(dc.DeviceID, taskID))
+			continue
+		}
+
+		logger.Printf("%s replaying Verified ACK flow from transfer status", transferTaskLogPrefix(dc.DeviceID, taskID))
+		h.onUploadComplete(ctx, dc, map[string]interface{}{
+			"type": "upload_complete",
+			"data": map[string]interface{}{
+				"task_id": taskID,
+				"s3_key":  s3Key,
+			},
+		})
+	}
 }
 
 const transferReconcileCooldown = 30 * time.Second

@@ -23,31 +23,22 @@ import (
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
-	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
 // EpisodeHandler handles episode-related HTTP requests
 type EpisodeHandler struct {
-	db        *sqlx.DB
-	s3        *s3.Client
-	bucket    string
-	tosBucket string
-	authCfg   *config.AuthConfig
+	db      *sqlx.DB
+	bucket  string
+	authCfg *config.AuthConfig
 }
 
 // NewEpisodeHandler creates a new EpisodeHandler
-func NewEpisodeHandler(db *sqlx.DB, s3Client *s3.Client, bucket string, authCfg *config.AuthConfig, storageCfg *config.StorageConfig) *EpisodeHandler {
+func NewEpisodeHandler(db *sqlx.DB, bucket string, authCfg *config.AuthConfig) *EpisodeHandler {
 	return &EpisodeHandler{
-		db:        db,
-		s3:        s3Client,
-		bucket:    defaultObjectStorageBucket(s3Client, bucket, storageCfg),
-		tosBucket: configuredTOSBucket(storageCfg),
-		authCfg:   authCfg,
+		db:      db,
+		bucket:  strings.TrimSpace(bucket),
+		authCfg: authCfg,
 	}
-}
-
-func (h *EpisodeHandler) hasObjectStorage() bool {
-	return h.s3 != nil || h.tosBucket != ""
 }
 
 func (h *EpisodeHandler) requireBearerJWT(c *gin.Context) bool {
@@ -570,10 +561,6 @@ func resolveEpisodeMcapLocation(configuredBucket, storedPath string) (string, st
 
 // GetEpisodePresignedURL returns a presigned GET URL for an episode's MCAP or sidecar object.
 func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
-	if !h.hasObjectStorage() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage is not configured"})
-		return
-	}
 	episodeID, ok := parseEpisodeIDParam(c)
 	if !ok {
 		return
@@ -624,7 +611,12 @@ func (h *EpisodeHandler) GetEpisodePresignedURL(c *gin.Context) {
 		return
 	}
 
-	bucket, objectName, ok := resolveEpisodeQAObjectLocation(h.bucket, selectedPath, row.Metadata)
+	var bucket, objectName string
+	if kind == "mcap" {
+		bucket, objectName, ok = resolveEpisodeMcapObjectLocation(h.bucket, selectedPath, row.Metadata)
+	} else {
+		bucket, objectName, ok = resolveEpisodeObjectLocation(h.bucket, selectedPath, row.Metadata)
+	}
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + fieldName})
 		return
