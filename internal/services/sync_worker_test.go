@@ -250,11 +250,12 @@ func TestUploadEpisodeDirectComputesAndPersistsMissingSHA256(t *testing.T) {
 	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
 	uploader := &fakeTOSObjectUploader{}
 	w := &SyncWorker{
-		db:          db,
-		minioBucket: "source-bucket",
-		hilbert:     hilbert,
-		source:      source,
-		tosUploader: uploader,
+		db:                    db,
+		minioBucket:           "source-bucket",
+		hilbert:               hilbert,
+		source:                source,
+		tosUploader:           uploader,
+		sourceObjectRangeSize: 4,
 	}
 
 	_, err := w.uploadEpisodeDirect(context.Background(), 0, syncEpisodeUploadRow{
@@ -277,8 +278,22 @@ func TestUploadEpisodeDirectComputesAndPersistsMissingSHA256(t *testing.T) {
 	if uploader.payloadHash != wantDigest {
 		t.Fatalf("uploaded payload hash = %q, want computed SHA-256 %q", uploader.payloadHash, wantDigest)
 	}
-	if source.statCount != 1 || source.openCount != 2 {
-		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=2", source.statCount, source.openCount)
+	wantRangesPerPass := (len(source.data) + int(w.sourceObjectRangeSize) - 1) / int(w.sourceObjectRangeSize)
+	if source.statCount != 1 || source.openCount != 2*wantRangesPerPass {
+		t.Fatalf("source reader calls stat=%d open=%d, want stat=1 open=%d", source.statCount, source.openCount, 2*wantRangesPerPass)
+	}
+	for pass := 0; pass < 2; pass++ {
+		for part := 0; part < wantRangesPerPass; part++ {
+			call := source.ranges[pass*wantRangesPerPass+part]
+			wantOffset := int64(part) * w.sourceObjectRangeSize
+			wantLength := min(w.sourceObjectRangeSize, int64(len(source.data))-wantOffset)
+			if call.offset != wantOffset || call.length != wantLength ||
+				call.totalSize != int64(len(source.data)) || call.etag != source.objectETag() {
+				t.Fatalf("pass %d range %d = offset:%d length:%d total:%d etag:%q, want offset:%d length:%d total:%d etag:%q",
+					pass, part, call.offset, call.length, call.totalSize, call.etag,
+					wantOffset, wantLength, len(source.data), source.objectETag())
+			}
+		}
 	}
 
 	var storedDigest string
@@ -287,6 +302,52 @@ func TestUploadEpisodeDirectComputesAndPersistsMissingSHA256(t *testing.T) {
 	}
 	if storedDigest != wantDigest {
 		t.Fatalf("stored episode checksum = %q, want %q", storedDigest, wantDigest)
+	}
+}
+
+func TestUploadEpisodeDirectFailsWhenSourceChangesBetweenRanges(t *testing.T) {
+	source := &changingSourceObjectReader{
+		data:       []byte("abcdefgh"),
+		etag:       "original-etag",
+		changeAt:   1,
+		changedErr: errors.New("source object no longer matches ETag"),
+	}
+	credentials := &auth.HilbertRawDataUploadCredentials{
+		Provider: "TOS",
+		Endpoint: "tos-s3-cn-beijing.ivolces.com",
+		Region:   "cn-beijing",
+		Bucket:   "hilbert-bucket",
+		Key:      "raw-data/123/capture.mcap",
+	}
+	credentials.Credentials.AccessKeyID = "temp-ak"
+	credentials.Credentials.SecretAccessKey = "temp-sk"
+	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
+	w := &SyncWorker{
+		minioBucket:           "source-bucket",
+		hilbert:               hilbert,
+		source:                source,
+		tosUploader:           &fakeTOSObjectUploader{},
+		sourceObjectRangeSize: 4,
+	}
+
+	_, err := w.uploadEpisodeDirect(context.Background(), 0, syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		Checksum:          sql.NullString{String: strings.Repeat("a", 64), Valid: true},
+		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if !errors.Is(err, source.changedErr) {
+		t.Fatalf("uploadEpisodeDirect() error = %v, want source ETag change error", err)
+	}
+	if source.openCount != 2 {
+		t.Fatalf("source range calls = %d, want first range followed by rejected second range", source.openCount)
+	}
+	if hilbert.finished {
+		t.Fatal("FinishRawDataUpload called after source object changed")
 	}
 }
 
@@ -460,26 +521,80 @@ func (c *fakeHilbertRawDataClient) FinishRawDataUpload(_ context.Context, worksp
 
 type fakeSourceObjectReader struct {
 	data       []byte
+	etag       string
 	statCount  int
 	openCount  int
 	statBucket string
 	statObject string
 	openBucket string
 	openObject string
+	ranges     []sourceObjectRangeCall
 }
 
-func (r *fakeSourceObjectReader) StatObject(_ context.Context, bucket, objectName string) (int64, error) {
+type sourceObjectRangeCall struct {
+	ctx       context.Context
+	offset    int64
+	length    int64
+	totalSize int64
+	etag      string
+}
+
+func (r *fakeSourceObjectReader) StatObject(_ context.Context, bucket, objectName string) (int64, string, error) {
 	r.statCount++
 	r.statBucket = bucket
 	r.statObject = objectName
-	return int64(len(r.data)), nil
+	return int64(len(r.data)), r.objectETag(), nil
 }
 
-func (r *fakeSourceObjectReader) OpenObject(_ context.Context, bucket, objectName string) (io.ReadCloser, error) {
+func (r *fakeSourceObjectReader) OpenObjectRange(ctx context.Context, bucket, objectName string, offset, length, totalSize int64, etag string) (io.ReadCloser, error) {
 	r.openCount++
 	r.openBucket = bucket
 	r.openObject = objectName
-	return io.NopCloser(bytes.NewReader(r.data)), nil
+	r.ranges = append(r.ranges, sourceObjectRangeCall{ctx: ctx, offset: offset, length: length, totalSize: totalSize, etag: etag})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if totalSize != int64(len(r.data)) || etag != r.objectETag() {
+		return nil, fmt.Errorf("fake source snapshot mismatch size=%d etag=%q", totalSize, etag)
+	}
+	if offset < 0 || length <= 0 || offset > int64(len(r.data)) || length > int64(len(r.data))-offset {
+		return nil, fmt.Errorf("invalid fake source range offset=%d length=%d size=%d", offset, length, len(r.data))
+	}
+	return io.NopCloser(bytes.NewReader(r.data[offset : offset+length])), nil
+}
+
+func (r *fakeSourceObjectReader) objectETag() string {
+	if r.etag != "" {
+		return r.etag
+	}
+	return "fake-source-etag"
+}
+
+type changingSourceObjectReader struct {
+	data       []byte
+	etag       string
+	openCount  int
+	changeAt   int
+	changedErr error
+}
+
+func (r *changingSourceObjectReader) StatObject(context.Context, string, string) (int64, string, error) {
+	return int64(len(r.data)), r.etag, nil
+}
+
+func (r *changingSourceObjectReader) OpenObjectRange(ctx context.Context, _, _ string, offset, length, totalSize int64, etag string) (io.ReadCloser, error) {
+	call := r.openCount
+	r.openCount++
+	if call >= r.changeAt {
+		return nil, r.changedErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if totalSize != int64(len(r.data)) || etag != r.etag {
+		return nil, fmt.Errorf("unexpected source snapshot size=%d etag=%q", totalSize, etag)
+	}
+	return io.NopCloser(bytes.NewReader(r.data[offset : offset+length])), nil
 }
 
 type fakeTOSObjectUploader struct {

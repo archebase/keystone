@@ -26,6 +26,7 @@ import (
 	"archebase.com/keystone-edge/internal/cloud"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/storage/objectrange"
 	"archebase.com/keystone-edge/internal/storage/s3"
 	"github.com/jmoiron/sqlx"
 	"github.com/minio/minio-go/v7"
@@ -81,8 +82,8 @@ type tosObjectUploader interface {
 
 // SourceObjectReader reads source MCAP objects for Hilbert sync.
 type SourceObjectReader interface {
-	StatObject(ctx context.Context, bucket, objectName string) (int64, error)
-	OpenObject(ctx context.Context, bucket, objectName string) (io.ReadCloser, error)
+	StatObject(ctx context.Context, bucket, objectName string) (size int64, etag string, err error)
+	OpenObjectRange(ctx context.Context, bucket, objectName string, offset, length, totalSize int64, etag string) (io.ReadCloser, error)
 }
 
 type minioSourceObjectReader struct {
@@ -97,22 +98,53 @@ func NewMinioSourceObjectReader(client *s3.Client) SourceObjectReader {
 	return minioSourceObjectReader{client: client}
 }
 
-func (r minioSourceObjectReader) StatObject(ctx context.Context, bucket, objectName string) (int64, error) {
+func (r minioSourceObjectReader) StatObject(ctx context.Context, bucket, objectName string) (int64, string, error) {
 	if r.client == nil {
-		return 0, fmt.Errorf("minio client not available")
+		return 0, "", fmt.Errorf("minio client not available")
 	}
 	objInfo, err := r.client.StatObject(ctx, bucket, objectName, minio.StatObjectOptions{})
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return objInfo.Size, nil
+	etag := objectrange.NormalizeETag(objInfo.ETag)
+	if etag == "" {
+		return 0, "", fmt.Errorf("minio object metadata missing ETag")
+	}
+	return objInfo.Size, etag, nil
 }
 
-func (r minioSourceObjectReader) OpenObject(ctx context.Context, bucket, objectName string) (io.ReadCloser, error) {
+func (r minioSourceObjectReader) OpenObjectRange(ctx context.Context, bucket, objectName string, offset, length, totalSize int64, etag string) (io.ReadCloser, error) {
 	if r.client == nil {
 		return nil, fmt.Errorf("minio client not available")
 	}
-	return r.client.GetObject(ctx, bucket, objectName, minio.GetObjectOptions{})
+	if offset < 0 || length <= 0 {
+		return nil, fmt.Errorf("invalid minio object range offset=%d length=%d", offset, length)
+	}
+	end := offset + length - 1
+	if end < offset {
+		return nil, fmt.Errorf("minio object range overflows offset=%d length=%d", offset, length)
+	}
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(offset, end); err != nil {
+		return nil, fmt.Errorf("set minio object range offset=%d length=%d: %w", offset, length, err)
+	}
+	if err := opts.SetMatchETag(etag); err != nil {
+		return nil, fmt.Errorf("set minio object ETag precondition: %w", err)
+	}
+	core := minio.Core{Client: r.client.Client}
+	body, objectInfo, header, err := core.GetObject(ctx, bucket, objectName, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := objectrange.ValidateResponse(header, offset, length, totalSize, etag); err != nil {
+		_ = body.Close()
+		return nil, fmt.Errorf("validate minio object range: %w", err)
+	}
+	if objectInfo.Size != length {
+		_ = body.Close()
+		return nil, fmt.Errorf("minio object range size %d, want %d", objectInfo.Size, length)
+	}
+	return body, nil
 }
 
 type hilbertEpisodeUploadContext struct {
@@ -176,6 +208,10 @@ type SyncWorker struct {
 	tosBucket   string
 	cfg         SyncWorkerConfig
 	syncCfg     *config.SyncConfig
+
+	// sourceObjectRangeSize is overridden only by small deterministic tests.
+	// Production reads use defaultSourceObjectRangeSize.
+	sourceObjectRangeSize int64
 
 	mu              sync.Mutex
 	enqueuedEpisode map[int64]struct{}
@@ -1131,14 +1167,14 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		return nil, err
 	}
 
-	objectSize, err := source.StatObject(ctx, sourceBucket, mcapKey)
+	objectSize, sourceETag, err := source.StatObject(ctx, sourceBucket, mcapKey)
 	if err != nil {
 		return nil, fmt.Errorf("stat mcap object %s: %w", mcapKey, err)
 	}
 	if objectSize <= 0 {
 		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
 	}
-	bagDigest, err := w.resolveEpisodeSHA256Hex(ctx, ep, source, sourceBucket, mcapKey)
+	bagDigest, err := w.resolveEpisodeSHA256Hex(ctx, ep, source, sourceBucket, mcapKey, objectSize, sourceETag)
 	if err != nil {
 		return nil, err
 	}
@@ -1176,9 +1212,9 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		return nil, fmt.Errorf("unsupported Hilbert raw-data provider %q", uploadCredentials.Provider)
 	}
 
-	obj, err := source.OpenObject(ctx, sourceBucket, mcapKey)
+	obj, err := w.openSourceObjectRangeStream(ctx, source, sourceBucket, mcapKey, objectSize, sourceETag)
 	if err != nil {
-		return nil, fmt.Errorf("get mcap object %s: %w", mcapKey, err)
+		return nil, fmt.Errorf("open ranged mcap object %s: %w", mcapKey, err)
 	}
 	defer func() {
 		_ = obj.Close()
@@ -1385,14 +1421,16 @@ func (w *SyncWorker) resolveEpisodeSHA256Hex(
 	source SourceObjectReader,
 	sourceBucket string,
 	mcapKey string,
+	objectSize int64,
+	sourceETag string,
 ) (string, error) {
 	if ep.Checksum.Valid && strings.TrimSpace(ep.Checksum.String) != "" {
 		return episodeSHA256Hex(ep)
 	}
 
-	obj, err := source.OpenObject(ctx, sourceBucket, mcapKey)
+	obj, err := w.openSourceObjectRangeStream(ctx, source, sourceBucket, mcapKey, objectSize, sourceETag)
 	if err != nil {
-		return "", fmt.Errorf("get mcap object %s to calculate SHA-256: %w", mcapKey, err)
+		return "", fmt.Errorf("open ranged mcap object %s to calculate SHA-256: %w", mcapKey, err)
 	}
 	hasher := sha256.New()
 	_, copyErr := io.Copy(hasher, obj)
@@ -1415,6 +1453,25 @@ func (w *SyncWorker) resolveEpisodeSHA256Hex(
 	}
 	logger.Printf("[SYNC-WORKER] Episode %d calculated missing SHA-256 checksum from %s/%s", ep.ID, sourceBucket, mcapKey)
 	return checksum, nil
+}
+
+func (w *SyncWorker) openSourceObjectRangeStream(
+	ctx context.Context,
+	source SourceObjectReader,
+	bucket string,
+	objectName string,
+	objectSize int64,
+	sourceETag string,
+) (io.ReadCloser, error) {
+	rangeSize := defaultSourceObjectRangeSize
+	timeout := 300 * time.Second
+	if w != nil {
+		if w.sourceObjectRangeSize > 0 {
+			rangeSize = w.sourceObjectRangeSize
+		}
+		timeout = w.syncOSSTimeout()
+	}
+	return newSourceObjectRangeReader(ctx, source, bucket, objectName, objectSize, sourceETag, rangeSize, timeout)
 }
 
 func hilbertUploadTarget(credentials *auth.HilbertRawDataUploadCredentials) cloud.TOSS3UploadTarget {

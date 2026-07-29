@@ -21,10 +21,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/storage/objectrange"
 	"archebase.com/keystone-edge/internal/volcengineauth"
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
 	"github.com/volcengine/volcengine-go-sdk/volcengine"
@@ -34,9 +36,10 @@ import (
 )
 
 const (
-	algorithm   = "TOS4-HMAC-SHA256"
-	service     = "tos"
-	requestTerm = "request"
+	algorithm                = "TOS4-HMAC-SHA256"
+	service                  = "tos"
+	requestTerm              = "request"
+	credentialsRefreshBefore = time.Minute
 )
 
 type volcengineSTSClient interface {
@@ -60,6 +63,9 @@ type Reader struct {
 	stsClient volcengineSTSClient
 	useSSL    bool
 	client    *http.Client
+
+	credentialsMu    sync.Mutex
+	credentialsCache map[string]credentialsSet
 }
 
 // Error is a parsed TOS HTTP error response.
@@ -101,25 +107,29 @@ func NewReader(cfg config.StorageConfig, timeout time.Duration) *Reader {
 	return reader
 }
 
-// StatObject returns the object size.
-func (r *Reader) StatObject(ctx context.Context, bucket, objectName string) (int64, error) {
+// StatObject returns the object size and ETag used to pin subsequent ranges.
+func (r *Reader) StatObject(ctx context.Context, bucket, objectName string) (int64, string, error) {
 	req, err := r.newRequest(ctx, http.MethodHead, bucket, objectName, nil)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	resp, err := r.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and objectURL validation.
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, errorFromResponse(resp)
+		return 0, "", errorFromResponse(resp)
 	}
 	size, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("Content-Length")), 10, 64)
 	if err != nil || size < 0 {
-		return 0, fmt.Errorf("tos head missing valid content length")
+		return 0, "", fmt.Errorf("tos head missing valid content length")
 	}
-	return size, nil
+	etag := objectrange.NormalizeETag(resp.Header.Get("ETag"))
+	if etag == "" {
+		return 0, "", fmt.Errorf("tos head missing object ETag")
+	}
+	return size, etag, nil
 }
 
 // OpenObject opens the object body for streaming.
@@ -137,6 +147,43 @@ func (r *Reader) OpenObject(ctx context.Context, bucket, objectName string) (io.
 		logger.Printf("[TOS] GetObject failed bucket=%s object=%s status=%d request_id=%s",
 			bucket, objectName, resp.StatusCode, resp.Header.Get("x-tos-request-id"))
 		return nil, errorFromResponse(resp)
+	}
+	return resp.Body, nil
+}
+
+// OpenObjectRange opens one bounded byte range. The caller is expected to use
+// a fresh context for every range so large-object reads do not share one
+// whole-object deadline.
+func (r *Reader) OpenObjectRange(ctx context.Context, bucket, objectName string, offset, length, totalSize int64, etag string) (io.ReadCloser, error) {
+	if offset < 0 || length <= 0 {
+		return nil, fmt.Errorf("invalid tos object range offset=%d length=%d", offset, length)
+	}
+	end := offset + length - 1
+	if end < offset {
+		return nil, fmt.Errorf("tos object range overflows offset=%d length=%d", offset, length)
+	}
+	req, err := r.newRequest(ctx, http.MethodGet, bucket, objectName, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
+	req.Header.Set("If-Match", objectrange.QuoteETag(etag))
+	resp, err := r.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and objectURL validation.
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		defer func() { _ = resp.Body.Close() }()
+		logger.Printf("[TOS] GetObject range failed bucket=%s object=%s offset=%d length=%d status=%d request_id=%s",
+			bucket, objectName, offset, length, resp.StatusCode, resp.Header.Get("x-tos-request-id"))
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, errorFromResponse(resp)
+		}
+		return nil, fmt.Errorf("tos range get returned status %d, want %d", resp.StatusCode, http.StatusPartialContent)
+	}
+	if err := objectrange.ValidateResponse(resp.Header, offset, length, totalSize, etag); err != nil {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("validate tos object range: %w", err)
 	}
 	return resp.Body, nil
 }
@@ -169,6 +216,11 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 	}
 	if r.stsClient == nil {
 		return credentialsSet{}, fmt.Errorf("volcengine STS client is not configured for TOS reads")
+	}
+	cacheKey := bucket + "\x00" + objectName
+	now := time.Now().UTC()
+	if cached, ok := r.cachedCredentials(cacheKey, now); ok {
+		return cached, nil
 	}
 	policy, err := readPolicy(bucket, objectName)
 	if err != nil {
@@ -211,9 +263,40 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 	if result.accessKeyID == "" || result.accessKeySecret == "" || result.securityToken == "" {
 		return credentialsSet{}, fmt.Errorf("volcengine STS response contains empty TOS read credentials")
 	}
+	r.cacheCredentials(cacheKey, result, now)
 	logger.Printf("[TOS] AssumeRole success role_trn=%s bucket=%s object=%s expires_at=%s access_key_suffix=%s",
 		r.roleTRN, bucket, objectName, result.expiration.Format(time.RFC3339), suffix(result.accessKeyID, 6))
 	return result, nil
+}
+
+func (r *Reader) cachedCredentials(key string, now time.Time) (credentialsSet, bool) {
+	r.credentialsMu.Lock()
+	defer r.credentialsMu.Unlock()
+	cached, ok := r.credentialsCache[key]
+	if !ok || cached.expiration.IsZero() || !cached.expiration.After(now.Add(credentialsRefreshBefore)) {
+		if ok {
+			delete(r.credentialsCache, key)
+		}
+		return credentialsSet{}, false
+	}
+	return cached, true
+}
+
+func (r *Reader) cacheCredentials(key string, credentials credentialsSet, now time.Time) {
+	if credentials.expiration.IsZero() || !credentials.expiration.After(now.Add(credentialsRefreshBefore)) {
+		return
+	}
+	r.credentialsMu.Lock()
+	defer r.credentialsMu.Unlock()
+	if r.credentialsCache == nil {
+		r.credentialsCache = make(map[string]credentialsSet)
+	}
+	for cachedKey, cached := range r.credentialsCache {
+		if cached.expiration.IsZero() || !cached.expiration.After(now.Add(credentialsRefreshBefore)) {
+			delete(r.credentialsCache, cachedKey)
+		}
+	}
+	r.credentialsCache[key] = credentials
 }
 
 func (r *Reader) objectURL(bucket, objectName string) (string, error) {
