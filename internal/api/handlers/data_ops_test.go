@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
+
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
 func TestParseDataOpsEpisodeQuery(t *testing.T) {
@@ -422,6 +426,115 @@ func TestFindBulkMP4OutputAcceptsCodecSubdirectory(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("findBulkMP4Output = %q, want %q", got, want)
+	}
+}
+
+func TestResolveDataOpsMP4LocationUsesEpisodeStorageMetadata(t *testing.T) {
+	const objectName = "device-uploads/5/capture_20260728T053142Z_5e20cc0b/0bfc08b5-710b-495c-a890-123c3692bc02/capture.mcap"
+	row := dataOpsBulkMP4EpisodeRow{
+		ID:       11,
+		McapPath: objectName,
+		Metadata: sql.NullString{
+			Valid:  true,
+			String: `{"source":"dgwcompat","object_store_backend":"volcengine_tos","bucket":"archebase-keystone-device-upload-2116584179","object_key":"` + objectName + `"}`,
+		},
+	}
+
+	bucket, gotObjectName, ok := resolveDataOpsMP4Location("edge-factory-archebase", row)
+	if !ok {
+		t.Fatal("resolveDataOpsMP4Location() ok = false, want true")
+	}
+	if bucket != "archebase-keystone-device-upload-2116584179" {
+		t.Fatalf("bucket = %q, want episode metadata bucket", bucket)
+	}
+	if gotObjectName != objectName {
+		t.Fatalf("objectName = %q, want %q", gotObjectName, objectName)
+	}
+}
+
+func TestResolveDataOpsMP4LocationKeepsAxonTransferOnMinIO(t *testing.T) {
+	row := dataOpsBulkMP4EpisodeRow{
+		ID:       12,
+		McapPath: "minio-bucket/axon-transfer/capture.mcap",
+		Metadata: sql.NullString{
+			Valid:  true,
+			String: `{"asset_id":"asset-12","recorder":{"recording":{"recorder_version":"axon_recorder 0.5.0"}}}`,
+		},
+	}
+
+	bucket, objectName, ok := resolveDataOpsMP4Location("minio-bucket", row)
+	if !ok {
+		t.Fatal("resolveDataOpsMP4Location() ok = false, want true")
+	}
+	if bucket != "minio-bucket" {
+		t.Fatalf("bucket = %q, want minio-bucket", bucket)
+	}
+	if objectName != "axon-transfer/capture.mcap" {
+		t.Fatalf("objectName = %q, want axon-transfer/capture.mcap", objectName)
+	}
+}
+
+func TestOpenBulkMP4ObjectKeepsMinIOAndTOSRoutesSeparate(t *testing.T) {
+	minioClient, err := s3.Connect(&s3.Config{
+		Endpoint:     "127.0.0.1:1",
+		AccessKey:    "minio-ak",
+		SecretKey:    "minio-sk",
+		Bucket:       "minio-bucket",
+		EnsureBucket: false,
+	})
+	if err != nil {
+		t.Fatalf("create MinIO client: %v", err)
+	}
+
+	qa := NewEpisodeQAHandler(nil, minioClient, "minio-bucket", nil, &config.StorageConfig{
+		Type:       "tos",
+		Endpoint:   "tos-cn-beijing.volces.com",
+		Bucket:     "tos-bucket",
+		Region:     "cn-beijing",
+		AccessKey:  "tos-ak",
+		SecretKey:  "tos-sk",
+		UseSSL:     true,
+		STSRoleTRN: "trn:iam::123:role/qa-read",
+	})
+	qa.tos.stsClient = fakeEpisodeQASTSClient{}
+	var tosRequests int
+	qa.tos.client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		tosRequests++
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Body:          io.NopCloser(strings.NewReader("tos-mcap")),
+			ContentLength: int64(len("tos-mcap")),
+		}, nil
+	})}
+	h := &DataOpsHandler{qa: qa}
+
+	minioObject, err := h.openBulkMP4Object(context.Background(), "minio-bucket", "axon/capture.mcap")
+	if err != nil {
+		t.Fatalf("open MinIO object: %v", err)
+	}
+	if closeErr := minioObject.Close(); closeErr != nil {
+		t.Fatalf("close MinIO object: %v", closeErr)
+	}
+	if tosRequests != 0 {
+		t.Fatalf("opening MinIO object made %d TOS requests, want 0", tosRequests)
+	}
+
+	tosObject, err := h.openBulkMP4Object(context.Background(), "tos-bucket", "sdk/capture.mcap")
+	if err != nil {
+		t.Fatalf("open TOS object: %v", err)
+	}
+	tosBody, err := io.ReadAll(tosObject)
+	if closeErr := tosObject.Close(); closeErr != nil {
+		t.Fatalf("close TOS object: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("read TOS object: %v", err)
+	}
+	if string(tosBody) != "tos-mcap" {
+		t.Fatalf("TOS body = %q, want tos-mcap", tosBody)
+	}
+	if tosRequests != 1 {
+		t.Fatalf("TOS requests = %d, want 1", tosRequests)
 	}
 }
 

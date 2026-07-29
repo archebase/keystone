@@ -35,10 +35,11 @@ type dataOpsBulkMP4PreviewRow struct {
 }
 
 type dataOpsBulkMP4EpisodeRow struct {
-	ID        int64  `db:"id"`
-	EpisodeID string `db:"episode_id"`
-	McapPath  string `db:"mcap_path"`
-	QAStatus  string `db:"qa_status"`
+	ID        int64          `db:"id"`
+	EpisodeID string         `db:"episode_id"`
+	McapPath  string         `db:"mcap_path"`
+	QAStatus  string         `db:"qa_status"`
+	Metadata  sql.NullString `db:"metadata"`
 }
 
 // PreviewBulkEpisodeMP4 previews a filtered bulk MP4 export.
@@ -209,7 +210,7 @@ func (h *DataOpsHandler) selectBulkMP4EpisodeRows(ctx context.Context, q dataOps
 	}
 
 	query := `
-		SELECT e.id, e.episode_id, e.mcap_path, COALESCE(e.qa_status, '') AS qa_status
+		SELECT e.id, e.episode_id, e.mcap_path, COALESCE(e.qa_status, '') AS qa_status, e.metadata
 	` + fromSQL + where + `
 		AND COALESCE(e.qa_status, '') <> 'failed'
 		ORDER BY e.created_at DESC, e.id DESC
@@ -361,7 +362,7 @@ func (h *DataOpsHandler) DownloadEpisodeMP4(c *gin.Context) {
 
 	var row dataOpsBulkMP4EpisodeRow
 	err := h.db.GetContext(c.Request.Context(), &row, `
-		SELECT e.id, e.episode_id, e.mcap_path, COALESCE(e.qa_status, '') AS qa_status
+		SELECT e.id, e.episode_id, e.mcap_path, COALESCE(e.qa_status, '') AS qa_status, e.metadata
 		FROM episodes e
 		WHERE e.id = ? AND e.deleted_at IS NULL
 		LIMIT 1
@@ -404,7 +405,7 @@ func (h *DataOpsHandler) DownloadEpisodeMP4(c *gin.Context) {
 }
 
 func (h *DataOpsHandler) convertEpisodeMP4(ctx context.Context, row dataOpsBulkMP4EpisodeRow, workDir string, mp4Dir string) (string, func(), error) {
-	bucket, objectName, ok := resolveEpisodeMcapLocation(h.qa.bucket, row.McapPath)
+	bucket, objectName, ok := resolveDataOpsMP4Location(h.qa.bucket, row)
 	if !ok {
 		return "", nil, fmt.Errorf("invalid mcap_path")
 	}
@@ -436,6 +437,10 @@ func (h *DataOpsHandler) convertEpisodeMP4(ctx context.Context, row dataOpsBulkM
 		return "", cleanup, fmt.Errorf("mp4 output not found: %w", err)
 	}
 	return mp4Path, cleanup, nil
+}
+
+func resolveDataOpsMP4Location(configuredBucket string, row dataOpsBulkMP4EpisodeRow) (string, string, bool) {
+	return resolveEpisodeMcapObjectLocation(configuredBucket, row.McapPath, row.Metadata)
 }
 
 func (h *DataOpsHandler) downloadBulkMP4Object(ctx context.Context, bucket string, objectName string, dst string) error {
@@ -470,7 +475,7 @@ func (h *DataOpsHandler) openBulkMP4Object(ctx context.Context, bucket string, o
 	if h == nil || h.qa == nil {
 		return nil, fmt.Errorf("data ops qa handler is not configured")
 	}
-	if h.qa.tos != nil {
+	if h.qa.usesTOSBucket(bucket) {
 		return h.qa.tos.OpenObject(ctx, bucket, objectName)
 	}
 	if h.qa.s3 == nil {
