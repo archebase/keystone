@@ -73,6 +73,9 @@ func main() {
 	}
 
 	logger.Printf("[SERVER] Config loaded: mode=%s, bind=%s", cfg.Server.Mode, cfg.Server.BindAddr)
+	// All in-process TOS readers use the mode-specific network route. DGW
+	// independently reads its device-facing endpoint from the environment.
+	cfg.TOSStorage = tosstorage.InternalStorageConfig(cfg.TOSStorage, cfg.Server.Mode)
 
 	// Initialize database connection
 	db, err := database.Connect(&database.Config{

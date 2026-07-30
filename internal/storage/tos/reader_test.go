@@ -15,7 +15,88 @@ import (
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
 	"github.com/volcengine/volcengine-go-sdk/volcengine"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/request"
+
+	"archebase.com/keystone-edge/internal/config"
 )
+
+func TestInternalStorageConfigRoutesSourceEndpointUsingMode(t *testing.T) {
+	tests := []struct {
+		name            string
+		mode            string
+		endpoint        string
+		wantRequestHost string
+	}{
+		{
+			name:            "cloud routes configured public endpoint privately",
+			mode:            config.ModeCloud,
+			endpoint:        "tos-cn-beijing.volces.com",
+			wantRequestHost: "source-bucket.tos-cn-beijing.ivolces.com",
+		},
+		{
+			name:            "cloud routes mixed case public endpoint privately",
+			mode:            config.ModeCloud,
+			endpoint:        "TOS-CN-BEIJING.VOLCES.COM",
+			wantRequestHost: "source-bucket.tos-cn-beijing.ivolces.com",
+		},
+		{
+			name:            "edge keeps configured public endpoint",
+			mode:            config.ModeEdge,
+			endpoint:        "tos-cn-beijing.volces.com",
+			wantRequestHost: "source-bucket.tos-cn-beijing.volces.com",
+		},
+		{
+			name:            "edge routes configured private endpoint publicly",
+			mode:            config.ModeEdge,
+			endpoint:        "tos-cn-beijing.ivolces.com",
+			wantRequestHost: "source-bucket.tos-cn-beijing.volces.com",
+		},
+		{
+			name:            "cloud leaves custom endpoint unchanged",
+			mode:            config.ModeCloud,
+			endpoint:        "tos.internal.example",
+			wantRequestHost: "source-bucket.tos.internal.example",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotRequest *http.Request
+			storageCfg := config.StorageConfig{
+				Endpoint:  tt.endpoint,
+				Region:    "cn-beijing",
+				AccessKey: "test-ak",
+				SecretKey: "test-sk",
+				UseSSL:    true,
+			}
+			reader := NewReader(InternalStorageConfig(storageCfg, tt.mode), time.Minute)
+			reader.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				gotRequest = req
+				header := make(http.Header)
+				header.Set("Content-Length", "100")
+				header.Set("ETag", `"source-etag"`)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     header,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Request:    req,
+				}, nil
+			})}
+
+			if _, _, err := reader.StatObject(context.Background(), "source-bucket", "path/capture.mcap"); err != nil {
+				t.Fatalf("StatObject() error = %v", err)
+			}
+			if gotRequest == nil {
+				t.Fatal("StatObject() did not send a request")
+			}
+			if gotRequest.URL.Host != tt.wantRequestHost {
+				t.Fatalf("request host = %q, want %q", gotRequest.URL.Host, tt.wantRequestHost)
+			}
+			if storageCfg.Endpoint != tt.endpoint {
+				t.Fatalf("device-facing endpoint = %q, want unchanged %q", storageCfg.Endpoint, tt.endpoint)
+			}
+		})
+	}
+}
 
 func TestOpenObjectRangeSendsBoundedRangeRequest(t *testing.T) {
 	var gotRequest *http.Request

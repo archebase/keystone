@@ -84,6 +84,19 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("tos status=%d code=%s message=%s request_id=%s ec=%s", e.StatusCode, e.Code, e.Message, e.RequestID, e.EC)
 }
 
+// InternalStorageConfig returns the server-side TOS configuration for mode.
+// The input remains unchanged so device-facing configuration can keep using
+// the endpoint supplied through KEYSTONE_DGW_TOS_ENDPOINT.
+func InternalStorageConfig(cfg config.StorageConfig, mode string) config.StorageConfig {
+	configuredEndpoint := strings.TrimSpace(cfg.Endpoint)
+	cfg.Endpoint = sourceEndpointForMode(configuredEndpoint, mode)
+	if cfg.Endpoint != configuredEndpoint {
+		logger.Printf("[TOS] Source read endpoint resolved: mode=%s configured_endpoint=%s endpoint=%s",
+			mode, configuredEndpoint, cfg.Endpoint)
+	}
+	return cfg
+}
+
 // NewReader creates a native TOS reader from Keystone storage config.
 func NewReader(cfg config.StorageConfig, timeout time.Duration) *Reader {
 	if timeout <= 0 {
@@ -105,6 +118,30 @@ func NewReader(cfg config.StorageConfig, timeout time.Duration) *Reader {
 		}
 	}
 	return reader
+}
+
+func sourceEndpointForMode(endpoint, mode string) string {
+	endpoint = strings.TrimSuffix(strings.TrimSpace(endpoint), ".")
+	host := strings.ToLower(endpoint)
+	if !strings.HasPrefix(host, "tos-") {
+		return endpoint
+	}
+
+	const (
+		publicSuffix  = ".volces.com"
+		privateSuffix = ".ivolces.com"
+	)
+	switch mode {
+	case config.ModeCloud:
+		if strings.HasSuffix(host, publicSuffix) {
+			return strings.TrimSuffix(host, publicSuffix) + privateSuffix
+		}
+	case config.ModeEdge:
+		if strings.HasSuffix(host, privateSuffix) {
+			return strings.TrimSuffix(host, privateSuffix) + publicSuffix
+		}
+	}
+	return endpoint
 }
 
 // StatObject returns the object size and ETag used to pin subsequent ranges.
