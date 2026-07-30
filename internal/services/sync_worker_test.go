@@ -152,6 +152,8 @@ func TestUploadEpisodeDirectStopsAtHilbertGuard(t *testing.T) {
 }
 
 func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
 	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
 	credentials := &auth.HilbertRawDataUploadCredentials{
 		Provider: "TOS",
@@ -168,6 +170,7 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	}
 	uploader := &fakeTOSObjectUploader{}
 	w := &SyncWorker{
+		db:          db,
 		minioBucket: "source-bucket",
 		hilbert:     hilbert,
 		source:      source,
@@ -306,6 +309,8 @@ func TestUploadEpisodeDirectComputesAndPersistsMissingSHA256(t *testing.T) {
 }
 
 func TestUploadEpisodeDirectFailsWhenSourceChangesBetweenRanges(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
 	source := &changingSourceObjectReader{
 		data:       []byte("abcdefgh"),
 		etag:       "original-etag",
@@ -323,6 +328,7 @@ func TestUploadEpisodeDirectFailsWhenSourceChangesBetweenRanges(t *testing.T) {
 	credentials.Credentials.SecretAccessKey = "temp-sk"
 	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
 	w := &SyncWorker{
+		db:                    db,
 		minioBucket:           "source-bucket",
 		hilbert:               hilbert,
 		source:                source,
@@ -352,6 +358,8 @@ func TestUploadEpisodeDirectFailsWhenSourceChangesBetweenRanges(t *testing.T) {
 }
 
 func TestUploadEpisodeDirectTreatsPayloadChecksumMismatchAsNonRetryable(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
 	source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
 	credentials := &auth.HilbertRawDataUploadCredentials{
 		Provider: "TOS",
@@ -364,6 +372,7 @@ func TestUploadEpisodeDirectTreatsPayloadChecksumMismatchAsNonRetryable(t *testi
 	credentials.Credentials.SecretAccessKey = "temp-sk"
 	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
 	w := &SyncWorker{
+		db:          db,
 		minioBucket: "source-bucket",
 		hilbert:     hilbert,
 		source:      source,
@@ -389,6 +398,8 @@ func TestUploadEpisodeDirectTreatsPayloadChecksumMismatchAsNonRetryable(t *testi
 }
 
 func TestUploadEpisodeDirectReadsDGWCompatEpisodeFromTOS(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
 	minioSource := &fakeSourceObjectReader{data: []byte("wrong minio bytes")}
 	tosSource := &fakeSourceObjectReader{data: []byte("tos mcap bytes")}
 	credentials := &auth.HilbertRawDataUploadCredentials{
@@ -404,6 +415,7 @@ func TestUploadEpisodeDirectReadsDGWCompatEpisodeFromTOS(t *testing.T) {
 	hilbert := &fakeHilbertRawDataClient{credentials: credentials}
 	uploader := &fakeTOSObjectUploader{}
 	w := &SyncWorker{
+		db:          db,
 		minioBucket: "edge-factory-archebase",
 		hilbert:     hilbert,
 		source:      minioSource,
@@ -495,6 +507,7 @@ type fakeHilbertRawDataClient struct {
 	credentials            *auth.HilbertRawDataUploadCredentials
 	credentialsWorkspaceID int64
 	credentialsRawDataID   int64
+	credentialsErr         error
 	finishWorkspaceID      int64
 	finishRawDataID        int64
 	finished               bool
@@ -509,6 +522,9 @@ func (c *fakeHilbertRawDataClient) RegisterRawData(_ context.Context, request au
 func (c *fakeHilbertRawDataClient) GetRawDataUploadCredentials(_ context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawDataUploadCredentials, error) {
 	c.credentialsWorkspaceID = workspaceID
 	c.credentialsRawDataID = rawDataID
+	if c.credentialsErr != nil {
+		return nil, c.credentialsErr
+	}
 	return c.credentials, nil
 }
 
@@ -663,10 +679,14 @@ func TestHilbertBagNameFallsBackToEpisodeID(t *testing.T) {
 
 func TestUploadEpisodeDirectReusesPersistedHilbertRawDataID(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
+	if _, err := db.Exec(`UPDATE episodes SET hilbert_raw_data_id = 9876 WHERE id = 4181`); err != nil {
+		t.Fatalf("set episode Hilbert raw data ID: %v", err)
+	}
 	if _, err := db.Exec(`
-		INSERT INTO sync_logs (id, episode_id, status, attempt_count, destination_path, started_at)
-		VALUES (123, 4181, 'in_progress', 2, ?, ?)
-	`, hilbertRawDataIDDestinationPrefix+"9876", time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)); err != nil {
+		INSERT INTO sync_logs (id, episode_id, status, attempt_count, started_at)
+		VALUES (123, 4181, 'in_progress', 2, ?)
+	`, time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("insert sync log: %v", err)
 	}
 
@@ -692,6 +712,7 @@ func TestUploadEpisodeDirectReusesPersistedHilbertRawDataID(t *testing.T) {
 
 	result, err := w.uploadEpisodeDirect(context.Background(), 123, syncEpisodeUploadRow{
 		ID:                4181,
+		HilbertRawDataID:  sql.NullInt64{Int64: 9876, Valid: true},
 		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
 		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
 		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
@@ -713,8 +734,110 @@ func TestUploadEpisodeDirectReusesPersistedHilbertRawDataID(t *testing.T) {
 	}
 }
 
+func TestUploadEpisodeDirectPersistsHilbertRawDataIDBeforeCredentials(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (id, episode_id, status, attempt_count, started_at)
+		VALUES (123, 4181, 'in_progress', 1, ?)
+	`, time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	w := &SyncWorker{
+		db:          db,
+		minioBucket: "source-bucket",
+		hilbert: &fakeHilbertRawDataClient{
+			credentialsErr: errors.New("credentials unavailable"),
+		},
+		source:      &fakeSourceObjectReader{data: []byte("mcap bytes")},
+		tosUploader: &fakeTOSObjectUploader{},
+	}
+
+	_, err := w.uploadEpisodeDirect(context.Background(), 123, syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		Checksum:          sql.NullString{String: strings.Repeat("a", 64), Valid: true},
+		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if err == nil || !strings.Contains(err.Error(), "credentials unavailable") {
+		t.Fatalf("uploadEpisodeDirect() error = %v, want credentials failure", err)
+	}
+
+	var rawDataID sql.NullInt64
+	if err := db.Get(&rawDataID, `SELECT hilbert_raw_data_id FROM episodes WHERE id = 4181`); err != nil {
+		t.Fatalf("query episode Hilbert raw data ID: %v", err)
+	}
+	if !rawDataID.Valid || rawDataID.Int64 != 9876 {
+		t.Fatalf("hilbert_raw_data_id=%#v want 9876", rawDataID)
+	}
+	var destinationPath string
+	if err := db.Get(&destinationPath, `SELECT destination_path FROM sync_logs WHERE id = 123`); err != nil {
+		t.Fatalf("query sync log destination: %v", err)
+	}
+	if destinationPath != hilbertRawDataIDDestinationPrefix+"9876" {
+		t.Fatalf("sync log destination=%q want durable recovery prefix", destinationPath)
+	}
+}
+
+func TestUploadEpisodeDirectRejectsConflictingHilbertRawDataID(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
+	if _, err := db.Exec(`UPDATE episodes SET hilbert_raw_data_id = 12345 WHERE id = 4181`); err != nil {
+		t.Fatalf("set existing Hilbert raw data ID: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (id, episode_id, status, attempt_count, started_at)
+		VALUES (123, 4181, 'in_progress', 1, ?)
+	`, time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("insert sync log: %v", err)
+	}
+
+	hilbert := &fakeHilbertRawDataClient{}
+	w := &SyncWorker{
+		db:          db,
+		minioBucket: "source-bucket",
+		hilbert:     hilbert,
+		source:      &fakeSourceObjectReader{data: []byte("mcap bytes")},
+		tosUploader: &fakeTOSObjectUploader{},
+	}
+
+	_, err := w.uploadEpisodeDirect(context.Background(), 123, syncEpisodeUploadRow{
+		ID:                4181,
+		EpisodeUUID:       "episode-uuid",
+		DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+		ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+		WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+		McapPath:          "source-bucket/device/capture.mcap",
+		Checksum:          sql.NullString{String: strings.Repeat("a", 64), Valid: true},
+		CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+	})
+	if err == nil || !strings.Contains(err.Error(), "existing=12345 incoming=9876") {
+		t.Fatalf("uploadEpisodeDirect() error = %v, want ID conflict", err)
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("uploadEpisodeDirect() error = %v, want non-retryable", err)
+	}
+	if hilbert.credentialsRawDataID != 0 {
+		t.Fatalf("credentials raw data ID = %d, want no credentials request", hilbert.credentialsRawDataID)
+	}
+
+	var rawDataID int64
+	if err := db.Get(&rawDataID, `SELECT hilbert_raw_data_id FROM episodes WHERE id = 4181`); err != nil {
+		t.Fatalf("query episode Hilbert raw data ID: %v", err)
+	}
+	if rawDataID != 12345 {
+		t.Fatalf("hilbert_raw_data_id=%d want unchanged 12345", rawDataID)
+	}
+}
+
 func TestUploadEpisodeDirectRecoversHilbertRawDataIDFromHistoricalSyncLog(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
 	if _, err := db.Exec(`
 		INSERT INTO sync_logs (id, episode_id, status, attempt_count, destination_path, started_at)
 		VALUES
@@ -774,6 +897,13 @@ func TestUploadEpisodeDirectRecoversHilbertRawDataIDFromHistoricalSyncLog(t *tes
 	}
 	if destinationPath != hilbertRawDataIDDestinationPrefix+"9876" {
 		t.Fatalf("current sync log destination = %q, want recovered Hilbert raw-data ID", destinationPath)
+	}
+	var rawDataID sql.NullInt64
+	if err := db.Get(&rawDataID, `SELECT hilbert_raw_data_id FROM episodes WHERE id = 4181`); err != nil {
+		t.Fatalf("query episode Hilbert raw data ID: %v", err)
+	}
+	if !rawDataID.Valid || rawDataID.Int64 != 9876 {
+		t.Fatalf("hilbert_raw_data_id=%#v want recovered ID 9876", rawDataID)
 	}
 }
 
@@ -1678,6 +1808,7 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			qa_status TEXT NOT NULL,
 			checksum TEXT,
+			hilbert_raw_data_id INTEGER,
 			cloud_synced BOOLEAN NOT NULL DEFAULT 0,
 			cloud_synced_at TIMESTAMP NULL,
 			cloud_mcap_path TEXT,

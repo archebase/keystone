@@ -25,6 +25,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const (
+	dataGatewayEpisodeIngestionChannel = "data_gateway"
+	dataGatewayEpisodeStorageBackend   = "keystone_tos"
+)
+
 type uploadSession struct {
 	LogicalUploadID        string
 	UploadID               string
@@ -462,13 +467,15 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 }
 
 type completedUploadEpisode struct {
-	ID        int64           `db:"id"`
-	EpisodeID string          `db:"episode_id"`
-	MCAPPath  string          `db:"mcap_path"`
-	FileSize  sql.NullInt64   `db:"file_size_bytes"`
-	Duration  sql.NullFloat64 `db:"duration_sec"`
-	Checksum  sql.NullString  `db:"checksum"`
-	Metadata  sql.NullString  `db:"metadata"`
+	ID               int64           `db:"id"`
+	EpisodeID        string          `db:"episode_id"`
+	IngestionChannel string          `db:"ingestion_channel"`
+	StorageBackend   string          `db:"storage_backend"`
+	MCAPPath         string          `db:"mcap_path"`
+	FileSize         sql.NullInt64   `db:"file_size_bytes"`
+	Duration         sql.NullFloat64 `db:"duration_sec"`
+	Checksum         sql.NullString  `db:"checksum"`
+	Metadata         sql.NullString  `db:"metadata"`
 }
 
 func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *uploadSession, req *cloudpb.CompleteUploadRequest) (string, int64, bool, error) {
@@ -559,12 +566,24 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 
 	var existing completedUploadEpisode
 	err = tx.GetContext(ctx, &existing, `
-		SELECT id, episode_id, mcap_path, file_size_bytes, duration_sec, checksum, metadata
+		SELECT id, episode_id, ingestion_channel, storage_backend,
+			mcap_path, file_size_bytes, duration_sec, checksum, metadata
 		FROM episodes
 		WHERE task_id = ? AND deleted_at IS NULL
 		LIMIT 1
 	`, task.TaskPK)
 	if err == nil {
+		if existing.IngestionChannel != dataGatewayEpisodeIngestionChannel ||
+			existing.StorageBackend != dataGatewayEpisodeStorageBackend {
+			return "", 0, false, status.Errorf(
+				codes.FailedPrecondition,
+				"episode provenance differs from upload path: existing=%s/%s expected=%s/%s",
+				existing.IngestionChannel,
+				existing.StorageBackend,
+				dataGatewayEpisodeIngestionChannel,
+				dataGatewayEpisodeStorageBackend,
+			)
+		}
 		if err := validateIdempotentComplete(existing, session, req, episodeChecksumSHA256); err != nil {
 			return "", 0, false, err
 		}
@@ -609,6 +628,8 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			organization_id,
 			dc_plan_id,
 			local_dc_plan_id,
+			ingestion_channel,
+			storage_backend,
 			mcap_path,
 			sidecar_path,
 			file_size_bytes,
@@ -618,8 +639,9 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			metadata,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
 	`, episodeID, task.TaskPK, task.WorkstationID, task.OrganizationID, task.DCPlanID, task.LocalDCPlanID,
+		dataGatewayEpisodeIngestionChannel, dataGatewayEpisodeStorageBackend,
 		session.ObjectKey, "", req.GetFileSize(), durationSec, episodeChecksumSHA256, metadata, now, now)
 	if err != nil {
 		return "", 0, false, status.Error(codes.Unavailable, "episode creation failed")
