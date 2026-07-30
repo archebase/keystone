@@ -84,21 +84,26 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("tos status=%d code=%s message=%s request_id=%s ec=%s", e.StatusCode, e.Code, e.Message, e.RequestID, e.EC)
 }
 
+// InternalStorageConfig returns the server-side TOS configuration for mode.
+// The input remains unchanged so device-facing configuration can keep using
+// the endpoint supplied through KEYSTONE_DGW_TOS_ENDPOINT.
+func InternalStorageConfig(cfg config.StorageConfig, mode string) config.StorageConfig {
+	configuredEndpoint := strings.TrimSpace(cfg.Endpoint)
+	cfg.Endpoint = sourceEndpointForMode(configuredEndpoint, mode)
+	if cfg.Endpoint != configuredEndpoint {
+		logger.Printf("[TOS] Source read endpoint resolved: mode=%s configured_endpoint=%s endpoint=%s",
+			mode, configuredEndpoint, cfg.Endpoint)
+	}
+	return cfg
+}
+
 // NewReader creates a native TOS reader from Keystone storage config.
-// Cloud deployments route standard Volcengine TOS endpoints through the
-// private network without changing the device-facing storage configuration.
-func NewReader(cfg config.StorageConfig, mode string, timeout time.Duration) *Reader {
+func NewReader(cfg config.StorageConfig, timeout time.Duration) *Reader {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	configuredEndpoint := strings.TrimSpace(cfg.Endpoint)
-	endpoint := sourceEndpointForMode(configuredEndpoint, mode)
-	if endpoint != configuredEndpoint {
-		logger.Printf("[TOS] Source read endpoint resolved: mode=%s configured_endpoint=%s endpoint=%s",
-			mode, configuredEndpoint, endpoint)
-	}
 	reader := &Reader{
-		endpoint:  endpoint,
+		endpoint:  strings.TrimSpace(cfg.Endpoint),
 		region:    strings.TrimSpace(cfg.Region),
 		accessKey: strings.TrimSpace(cfg.AccessKey),
 		secretKey: strings.TrimSpace(cfg.SecretKey),
@@ -129,11 +134,11 @@ func sourceEndpointForMode(endpoint, mode string) string {
 	switch mode {
 	case config.ModeCloud:
 		if strings.HasSuffix(host, publicSuffix) {
-			return strings.TrimSuffix(endpoint, publicSuffix) + privateSuffix
+			return strings.TrimSuffix(host, publicSuffix) + privateSuffix
 		}
 	case config.ModeEdge:
 		if strings.HasSuffix(host, privateSuffix) {
-			return strings.TrimSuffix(endpoint, privateSuffix) + publicSuffix
+			return strings.TrimSuffix(host, privateSuffix) + publicSuffix
 		}
 	}
 	return endpoint

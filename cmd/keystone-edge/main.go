@@ -73,6 +73,9 @@ func main() {
 	}
 
 	logger.Printf("[SERVER] Config loaded: mode=%s, bind=%s", cfg.Server.Mode, cfg.Server.BindAddr)
+	// All in-process TOS readers use the mode-specific network route. DGW
+	// independently reads its device-facing endpoint from the environment.
+	cfg.TOSStorage = tosstorage.InternalStorageConfig(cfg.TOSStorage, cfg.Server.Mode)
 
 	// Initialize database connection
 	db, err := database.Connect(&database.Config{
@@ -125,7 +128,7 @@ func main() {
 	}
 	var tosSourceReader services.SourceObjectReader
 	if cfg.TOSStorage.Type == "tos" {
-		tosSourceReader = tosstorage.NewReader(cfg.TOSStorage, cfg.Server.Mode, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
+		tosSourceReader = tosstorage.NewReader(cfg.TOSStorage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
 	}
 	if cfg.Sync.Enabled && cfg.Hilbert.BaseURL != "" && cfg.Hilbert.AccessKey != "" && cfg.Hilbert.SecretKey != "" &&
 		(minioSourceReader != nil || tosSourceReader != nil) {
