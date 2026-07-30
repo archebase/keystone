@@ -144,7 +144,7 @@ func main() {
 		syncWorker.SetTOSSourceObjectReader(cfg.TOSStorage.Bucket, tosSourceReader)
 		syncWorker.SetTOSObjectUploader(cloud.NewTOSS3Uploader(
 			time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second,
-			cfg.TOSStorage.Endpoint,
+			cfg.Server.Mode,
 		))
 
 		syncWorker.Start()

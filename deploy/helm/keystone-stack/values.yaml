@@ -29,6 +29,8 @@ credentials:
   hilbertSecretKey: ""
 
 keystone:
+  # cloud routes Hilbert TOS uploads privately; edge uses the public endpoint.
+  mode: cloud
   image:
     repository: archebase-cr-cn-beijing.cr.volces.com/prod/keystone
     # Required at deploy time. Use the Keystone source commit id that produced the image.
@@ -125,7 +127,7 @@ storage:
     useSSL: true
     region: ""
   tos:
-    endpoint: https://tos-cn-beijing.ivolces.com
+    endpoint: https://tos-cn-beijing.volces.com
     bucket: archebase-prod-keystone-2117611051
     region: cn-beijing
     keyPrefix: device-uploads

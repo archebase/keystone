@@ -88,6 +88,7 @@ app.kubernetes.io/component: {{ $component | quote }}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Name) -}}{{ fail "releaseName must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" }}{{- end -}}
 {{- if gt (len .Release.Name) 53 -}}{{ fail "releaseName must have length of 1-53 characters" }}{{- end -}}
 {{- if gt (len (printf "keystone-%s" .Release.Name)) 63 -}}{{ fail "derived keystone-<releaseName> DNS label must be no longer than 63 characters" }}{{- end -}}
+{{- if and (ne .Values.keystone.mode "edge") (ne .Values.keystone.mode "cloud") -}}{{ fail "keystone.mode must be edge or cloud" }}{{- end -}}
 {{- include "keystone-stack.validateImage" (list "keystone" .Values.keystone.image) -}}
 {{- include "keystone-stack.validateImage" (list "synapse" .Values.synapse.image) -}}
 {{- include "keystone-stack.validateImage" (list "mysql" .Values.mysql.image) -}}
