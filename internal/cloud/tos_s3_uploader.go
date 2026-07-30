@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"archebase.com/keystone-edge/internal/logger"
 )
 
 const (
@@ -54,6 +56,9 @@ type TOSS3UploadTarget struct {
 // TOSS3Uploader uploads objects to Volcengine TOS through native TOS endpoints.
 type TOSS3Uploader struct {
 	timeout time.Duration
+	// configuredEndpoint selects the public or private TOS network only.
+	// Hilbert remains authoritative for the upload region and object target.
+	configuredEndpoint string
 
 	// The remaining fields allow small, deterministic unit tests while the
 	// production constructor continues to use the constants above.
@@ -64,9 +69,13 @@ type TOSS3Uploader struct {
 	retryBaseDelay     time.Duration
 }
 
-// NewTOSS3Uploader creates a native TOS uploader.
-func NewTOSS3Uploader(timeout time.Duration) *TOSS3Uploader {
-	return &TOSS3Uploader{timeout: timeout}
+// NewTOSS3Uploader creates a native TOS uploader. configuredEndpoint selects
+// the network route without replacing the Hilbert-issued upload target.
+func NewTOSS3Uploader(timeout time.Duration, configuredEndpoint string) *TOSS3Uploader {
+	return &TOSS3Uploader{
+		timeout:            timeout,
+		configuredEndpoint: configuredEndpoint,
+	}
 }
 
 // PutObject streams one object to the Hilbert-issued target and returns the object ETag.
@@ -76,10 +85,11 @@ func (u *TOSS3Uploader) PutObject(ctx context.Context, target TOSS3UploadTarget,
 	if size <= 0 {
 		return "", fmt.Errorf("tos upload size must be positive")
 	}
-	endpoint, secure, err := normalizeTOSNativeEndpoint(target.Endpoint)
+	endpoint, secure, err := resolveTOSUploadEndpoint(target.Endpoint, target.Region, u.configuredEndpoint)
 	if err != nil {
 		return "", err
 	}
+	logger.Printf("[TOS] Hilbert upload target resolved: endpoint=%s secure=%t", endpoint, secure)
 	if strings.TrimSpace(target.Bucket) == "" || strings.TrimSpace(target.Key) == "" {
 		return "", fmt.Errorf("tos upload target missing bucket or key")
 	}
@@ -106,7 +116,7 @@ func (u *TOSS3Uploader) putObject(ctx context.Context, endpoint string, secure b
 		return "", err
 	}
 
-	resp, err := u.httpClient().Do(req) // #nosec G704 -- target endpoint is Hilbert-issued and normalized before request creation.
+	resp, err := u.httpClient().Do(req) // #nosec G704 -- endpoint is derived from trusted Hilbert and deployment inputs.
 	if err != nil {
 		return "", fmt.Errorf("put tos object: %w", err)
 	}
@@ -201,7 +211,7 @@ func (u *TOSS3Uploader) createMultipartUpload(ctx context.Context, endpoint stri
 	if err := signTOSRequest(req, target, payloadHash, time.Now().UTC()); err != nil {
 		return "", err
 	}
-	resp, err := u.httpClient().Do(req) // #nosec G704 -- target endpoint is Hilbert-issued and normalized before request creation.
+	resp, err := u.httpClient().Do(req) // #nosec G704 -- endpoint is derived from trusted Hilbert and deployment inputs.
 	if err != nil {
 		return "", fmt.Errorf("create tos multipart upload: %w", err)
 	}
@@ -238,7 +248,7 @@ func (u *TOSS3Uploader) uploadMultipartPart(ctx context.Context, endpoint string
 			return "", err
 		}
 
-		resp, err := u.httpClient().Do(req) // #nosec G704 -- target endpoint is Hilbert-issued and normalized before request creation.
+		resp, err := u.httpClient().Do(req) // #nosec G704 -- endpoint is derived from trusted Hilbert and deployment inputs.
 		if err != nil {
 			lastErr = fmt.Errorf("upload tos multipart part %d attempt=%d: %w", partNumber, attempt, err)
 		} else {
@@ -279,7 +289,7 @@ func (u *TOSS3Uploader) completeMultipartUpload(ctx context.Context, endpoint st
 	if err := signTOSRequest(req, target, payloadHash, time.Now().UTC()); err != nil {
 		return "", err
 	}
-	resp, err := u.httpClient().Do(req) // #nosec G704 -- target endpoint is Hilbert-issued and normalized before request creation.
+	resp, err := u.httpClient().Do(req) // #nosec G704 -- endpoint is derived from trusted Hilbert and deployment inputs.
 	if err != nil {
 		return "", fmt.Errorf("complete tos multipart upload: %w", err)
 	}
@@ -313,7 +323,7 @@ func (u *TOSS3Uploader) abortMultipartUpload(ctx context.Context, endpoint strin
 	if err := signTOSRequest(req, target, payloadHash, time.Now().UTC()); err != nil {
 		return err
 	}
-	resp, err := u.httpClient().Do(req) // #nosec G704 -- target endpoint is Hilbert-issued and normalized before request creation.
+	resp, err := u.httpClient().Do(req) // #nosec G704 -- endpoint is derived from trusted Hilbert and deployment inputs.
 	if err != nil {
 		return fmt.Errorf("abort tos multipart upload: %w", err)
 	}
@@ -426,7 +436,7 @@ func normalizeTOSSHA256(value string) (string, error) {
 	return value, nil
 }
 
-func normalizeTOSNativeEndpoint(raw string) (endpoint string, secure bool, err error) {
+func normalizeTOSEndpoint(raw string) (endpoint string, secure bool, err error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return "", false, fmt.Errorf("tos endpoint is empty")
@@ -443,13 +453,55 @@ func normalizeTOSNativeEndpoint(raw string) (endpoint string, secure bool, err e
 		secure = parsed.Scheme != "http"
 		value = parsed.Host
 	}
-	if strings.HasPrefix(value, "tos-s3-") && strings.HasSuffix(value, ".ivolces.com") {
-		region := strings.TrimSuffix(strings.TrimPrefix(value, "tos-s3-"), ".ivolces.com")
-		if region != "" {
-			value = "tos-" + region + ".volces.com"
-		}
-	}
 	return value, secure, nil
+}
+
+func resolveTOSUploadEndpoint(hilbertEndpoint, region, configuredEndpoint string) (endpoint string, secure bool, err error) {
+	endpoint, secure, err = normalizeTOSEndpoint(hilbertEndpoint)
+	if err != nil {
+		return "", false, err
+	}
+	if strings.TrimSpace(configuredEndpoint) == "" {
+		if endpointRegion := privateS3CompatibleTOSRegion(endpoint); endpointRegion != "" {
+			return "tos-" + endpointRegion + ".volces.com", secure, nil
+		}
+		return endpoint, secure, nil
+	}
+	configuredHost, _, err := normalizeTOSEndpoint(configuredEndpoint)
+	if err != nil {
+		return "", false, fmt.Errorf("normalize configured tos endpoint: %w", err)
+	}
+	if !isVolcengineTOSEndpoint(configuredHost) || !isVolcengineTOSEndpoint(endpoint) {
+		return endpoint, secure, nil
+	}
+	region = strings.TrimSpace(region)
+	if region == "" {
+		return endpoint, secure, nil
+	}
+	domain := "volces.com"
+	if isPrivateTOSEndpoint(configuredHost) {
+		domain = "ivolces.com"
+	}
+	return "tos-" + region + "." + domain, secure, nil
+}
+
+func isPrivateTOSEndpoint(endpoint string) bool {
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(endpoint), "."))
+	return strings.HasSuffix(host, ".ivolces.com")
+}
+
+func isVolcengineTOSEndpoint(endpoint string) bool {
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(endpoint), "."))
+	return strings.HasPrefix(host, "tos-") &&
+		(strings.HasSuffix(host, ".volces.com") || strings.HasSuffix(host, ".ivolces.com"))
+}
+
+func privateS3CompatibleTOSRegion(endpoint string) string {
+	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(endpoint), "."))
+	if !strings.HasPrefix(host, "tos-s3-") || !strings.HasSuffix(host, ".ivolces.com") {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(host, "tos-s3-"), ".ivolces.com")
 }
 
 func newTOSPutObjectRequest(ctx context.Context, endpoint string, secure bool, target TOSS3UploadTarget, payloadHash string, body io.Reader, size int64) (*http.Request, error) {
