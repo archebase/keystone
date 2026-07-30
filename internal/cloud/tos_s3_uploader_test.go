@@ -99,42 +99,36 @@ func TestTOSNativePutRequestUsesNativeHostAndTOSSignature(t *testing.T) {
 	}
 }
 
-func TestTOSS3UploaderRoutesHilbertEndpointUsingConfiguredNetwork(t *testing.T) {
+func TestTOSS3UploaderRoutesHilbertEndpointUsingMode(t *testing.T) {
 	tests := []struct {
-		name               string
-		configuredEndpoint string
-		hilbertEndpoint    string
-		wantRequestHost    string
+		name            string
+		mode            string
+		hilbertEndpoint string
+		wantRequestHost string
 	}{
 		{
-			name:               "private config routes Hilbert public endpoint privately",
-			configuredEndpoint: "https://tos-cn-shanghai.ivolces.com",
-			hilbertEndpoint:    "tos-cn-beijing.volces.com",
-			wantRequestHost:    "bucket-a.tos-cn-beijing.ivolces.com",
+			name:            "cloud routes Hilbert public endpoint privately",
+			mode:            "cloud",
+			hilbertEndpoint: "tos-cn-beijing.volces.com",
+			wantRequestHost: "bucket-a.tos-cn-beijing.ivolces.com",
 		},
 		{
-			name:               "private config converts Hilbert s3 endpoint to native private endpoint",
-			configuredEndpoint: "tos-cn-shanghai.ivolces.com",
-			hilbertEndpoint:    "tos-s3-cn-beijing.ivolces.com",
-			wantRequestHost:    "bucket-a.tos-cn-beijing.ivolces.com",
+			name:            "cloud converts Hilbert s3 endpoint to native private endpoint",
+			mode:            "cloud",
+			hilbertEndpoint: "tos-s3-cn-beijing.ivolces.com",
+			wantRequestHost: "bucket-a.tos-cn-beijing.ivolces.com",
 		},
 		{
-			name:               "public config selects Hilbert region public endpoint",
-			configuredEndpoint: "tos-cn-shanghai.volces.com",
-			hilbertEndpoint:    "tos-s3-cn-beijing.ivolces.com",
-			wantRequestHost:    "bucket-a.tos-cn-beijing.volces.com",
+			name:            "edge selects Hilbert region public endpoint",
+			mode:            "edge",
+			hilbertEndpoint: "tos-s3-cn-beijing.ivolces.com",
+			wantRequestHost: "bucket-a.tos-cn-beijing.volces.com",
 		},
 		{
-			name:               "empty config retains public fallback",
-			configuredEndpoint: "",
-			hilbertEndpoint:    "tos-s3-cn-beijing.ivolces.com",
-			wantRequestHost:    "bucket-a.tos-cn-beijing.volces.com",
-		},
-		{
-			name:               "custom Hilbert endpoint remains unchanged",
-			configuredEndpoint: "tos-cn-shanghai.ivolces.com",
-			hilbertEndpoint:    "https://upload.hilbert.example",
-			wantRequestHost:    "bucket-a.upload.hilbert.example",
+			name:            "custom Hilbert endpoint remains unchanged in cloud",
+			mode:            "cloud",
+			hilbertEndpoint: "https://upload.hilbert.example",
+			wantRequestHost: "bucket-a.upload.hilbert.example",
 		},
 	}
 
@@ -142,7 +136,7 @@ func TestTOSS3UploaderRoutesHilbertEndpointUsingConfiguredNetwork(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			payload := []byte("body")
 			var requestHost string
-			uploader := NewTOSS3Uploader(time.Minute, tt.configuredEndpoint)
+			uploader := NewTOSS3Uploader(time.Minute, tt.mode)
 			uploader.client = &http.Client{Transport: tosRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 				requestHost = req.URL.Host
 				return testTOSResponse(http.StatusOK, "", map[string]string{"ETag": `"object-etag"`}), nil
@@ -168,7 +162,7 @@ func TestTOSS3UploaderRoutesHilbertEndpointUsingConfiguredNetwork(t *testing.T) 
 }
 
 func TestTOSS3UploaderProductionMultipartDefaults(t *testing.T) {
-	uploader := NewTOSS3Uploader(time.Minute, "")
+	uploader := NewTOSS3Uploader(time.Minute, "edge")
 	if got := uploader.effectiveMultipartThreshold(); got != 128*1024*1024 {
 		t.Fatalf("multipart threshold = %d, want 128 MiB", got)
 	}

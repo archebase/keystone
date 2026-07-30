@@ -64,7 +64,7 @@ spec:
             {{- end }}
           env:
             - name: KEYSTONE_MODE
-              value: edge
+              value: {{ .Values.keystone.mode | quote }}
             - name: KEYSTONE_BIND_ADDR
               value: {{ printf ":%v" .Values.keystone.service.ports.http | quote }}
             - name: KEYSTONE_CALLBACK_PUBLIC_BASE_URL

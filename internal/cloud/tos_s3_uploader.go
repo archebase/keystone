@@ -29,6 +29,7 @@ const (
 	tosNativeAlgorithm   = "TOS4-HMAC-SHA256"
 	tosNativeService     = "tos"
 	tosNativeRequestTerm = "request"
+	tosUploadModeCloud   = "cloud"
 
 	tosMultipartThreshold      int64 = 128 * 1024 * 1024
 	tosMultipartBasePartSize   int64 = 64 * 1024 * 1024
@@ -56,9 +57,9 @@ type TOSS3UploadTarget struct {
 // TOSS3Uploader uploads objects to Volcengine TOS through native TOS endpoints.
 type TOSS3Uploader struct {
 	timeout time.Duration
-	// configuredEndpoint selects the public or private TOS network only.
+	// mode selects the public or private TOS network only.
 	// Hilbert remains authoritative for the upload region and object target.
-	configuredEndpoint string
+	mode string
 
 	// The remaining fields allow small, deterministic unit tests while the
 	// production constructor continues to use the constants above.
@@ -69,12 +70,12 @@ type TOSS3Uploader struct {
 	retryBaseDelay     time.Duration
 }
 
-// NewTOSS3Uploader creates a native TOS uploader. configuredEndpoint selects
+// NewTOSS3Uploader creates a native TOS uploader. mode selects
 // the network route without replacing the Hilbert-issued upload target.
-func NewTOSS3Uploader(timeout time.Duration, configuredEndpoint string) *TOSS3Uploader {
+func NewTOSS3Uploader(timeout time.Duration, mode string) *TOSS3Uploader {
 	return &TOSS3Uploader{
-		timeout:            timeout,
-		configuredEndpoint: configuredEndpoint,
+		timeout: timeout,
+		mode:    mode,
 	}
 }
 
@@ -85,7 +86,7 @@ func (u *TOSS3Uploader) PutObject(ctx context.Context, target TOSS3UploadTarget,
 	if size <= 0 {
 		return "", fmt.Errorf("tos upload size must be positive")
 	}
-	endpoint, secure, err := resolveTOSUploadEndpoint(target.Endpoint, target.Region, u.configuredEndpoint)
+	endpoint, secure, err := resolveTOSUploadEndpoint(target.Endpoint, target.Region, u.mode)
 	if err != nil {
 		return "", err
 	}
@@ -456,38 +457,26 @@ func normalizeTOSEndpoint(raw string) (endpoint string, secure bool, err error) 
 	return value, secure, nil
 }
 
-func resolveTOSUploadEndpoint(hilbertEndpoint, region, configuredEndpoint string) (endpoint string, secure bool, err error) {
+func resolveTOSUploadEndpoint(hilbertEndpoint, region, mode string) (endpoint string, secure bool, err error) {
 	endpoint, secure, err = normalizeTOSEndpoint(hilbertEndpoint)
 	if err != nil {
 		return "", false, err
 	}
-	if strings.TrimSpace(configuredEndpoint) == "" {
-		if endpointRegion := privateS3CompatibleTOSRegion(endpoint); endpointRegion != "" {
-			return "tos-" + endpointRegion + ".volces.com", secure, nil
-		}
-		return endpoint, secure, nil
-	}
-	configuredHost, _, err := normalizeTOSEndpoint(configuredEndpoint)
-	if err != nil {
-		return "", false, fmt.Errorf("normalize configured tos endpoint: %w", err)
-	}
-	if !isVolcengineTOSEndpoint(configuredHost) || !isVolcengineTOSEndpoint(endpoint) {
+	if !isVolcengineTOSEndpoint(endpoint) {
 		return endpoint, secure, nil
 	}
 	region = strings.TrimSpace(region)
 	if region == "" {
-		return endpoint, secure, nil
+		region = privateS3CompatibleTOSRegion(endpoint)
+		if region == "" {
+			return endpoint, secure, nil
+		}
 	}
 	domain := "volces.com"
-	if isPrivateTOSEndpoint(configuredHost) {
+	if mode == tosUploadModeCloud {
 		domain = "ivolces.com"
 	}
 	return "tos-" + region + "." + domain, secure, nil
-}
-
-func isPrivateTOSEndpoint(endpoint string) bool {
-	host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(endpoint), "."))
-	return strings.HasSuffix(host, ".ivolces.com")
 }
 
 func isVolcengineTOSEndpoint(endpoint string) bool {

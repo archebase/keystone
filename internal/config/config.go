@@ -14,6 +14,13 @@ import (
 	"strings"
 )
 
+const (
+	// ModeEdge runs Keystone outside the cloud private network.
+	ModeEdge = "edge"
+	// ModeCloud runs Keystone inside the cloud private network.
+	ModeCloud = "cloud"
+)
+
 // Config represents the complete configuration for Keystone Edge
 type Config struct {
 	Server       ServerConfig
@@ -169,7 +176,7 @@ type HilbertConfig struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
-			Mode:                  getEnv("KEYSTONE_MODE", "edge"),
+			Mode:                  getEnv("KEYSTONE_MODE", ModeEdge),
 			BindAddr:              getEnv("KEYSTONE_BIND_ADDR", ":8080"),
 			CallbackPublicBaseURL: getEnv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL", ""),
 			ReadTimeout:           getEnvInt("KEYSTONE_READ_TIMEOUT", 30),
@@ -340,8 +347,8 @@ func normalizeObjectStorageEndpoint(raw string, fallbackUseSSL bool) (string, bo
 
 // Validate validates the configuration
 func (c *Config) Validate() error {
-	if c.Server.Mode != "edge" {
-		return fmt.Errorf("invalid mode: %s, must be 'edge'", c.Server.Mode)
+	if c.Server.Mode != ModeEdge && c.Server.Mode != ModeCloud {
+		return fmt.Errorf("invalid mode: %s, must be 'edge' or 'cloud'", c.Server.Mode)
 	}
 	callbackPublicBaseURL, err := normalizeCallbackPublicBaseURL(c.Server.CallbackPublicBaseURL)
 	if err != nil {

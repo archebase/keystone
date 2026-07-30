@@ -455,7 +455,7 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "Invalid mode",
+			name: "Valid cloud mode",
 			cfg: &Config{
 				Server: ServerConfig{Mode: "cloud", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
 				Database: DatabaseConfig{
@@ -465,6 +465,17 @@ func TestConfigValidate(t *testing.T) {
 					AccessKey: "key",
 					SecretKey: "secret",
 				},
+				Auth: AuthConfig{JWTSecret: "test-secret"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "Invalid mode",
+			cfg: &Config{
+				Server:   ServerConfig{Mode: "hybrid", CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database: DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				Storage:  StorageConfig{AccessKey: "key", SecretKey: "secret"},
+				Auth:     AuthConfig{JWTSecret: "test-secret"},
 			},
 			wantErr: true,
 		},
