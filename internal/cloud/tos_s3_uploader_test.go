@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-func TestNormalizeTOSNativeEndpoint(t *testing.T) {
+func TestNormalizeTOSEndpoint(t *testing.T) {
 	tests := []struct {
 		name         string
 		raw          string
@@ -25,15 +25,15 @@ func TestNormalizeTOSNativeEndpoint(t *testing.T) {
 		wantSecure   bool
 	}{
 		{
-			name:         "s3-compatible endpoint rewrites to public native endpoint",
+			name:         "s3-compatible endpoint remains unchanged",
 			raw:          "tos-s3-cn-beijing.ivolces.com",
-			wantEndpoint: "tos-cn-beijing.volces.com",
+			wantEndpoint: "tos-s3-cn-beijing.ivolces.com",
 			wantSecure:   true,
 		},
 		{
-			name:         "https s3-compatible endpoint rewrites to public native endpoint",
+			name:         "https s3-compatible endpoint remains unchanged",
 			raw:          "https://tos-s3-cn-beijing.ivolces.com",
-			wantEndpoint: "tos-cn-beijing.volces.com",
+			wantEndpoint: "tos-s3-cn-beijing.ivolces.com",
 			wantSecure:   true,
 		},
 		{
@@ -52,12 +52,12 @@ func TestNormalizeTOSNativeEndpoint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotEndpoint, gotSecure, err := normalizeTOSNativeEndpoint(tt.raw)
+			gotEndpoint, gotSecure, err := normalizeTOSEndpoint(tt.raw)
 			if err != nil {
-				t.Fatalf("normalizeTOSNativeEndpoint() error = %v", err)
+				t.Fatalf("normalizeTOSEndpoint() error = %v", err)
 			}
 			if gotEndpoint != tt.wantEndpoint || gotSecure != tt.wantSecure {
-				t.Fatalf("normalizeTOSNativeEndpoint() = %q, %t; want %q, %t", gotEndpoint, gotSecure, tt.wantEndpoint, tt.wantSecure)
+				t.Fatalf("normalizeTOSEndpoint() = %q, %t; want %q, %t", gotEndpoint, gotSecure, tt.wantEndpoint, tt.wantSecure)
 			}
 		})
 	}
@@ -73,9 +73,9 @@ func TestTOSNativePutRequestUsesNativeHostAndTOSSignature(t *testing.T) {
 		SecretAccessKey: "temp-sk",
 		TemporaryToken:  "temp-token",
 	}
-	endpoint, secure, err := normalizeTOSNativeEndpoint(target.Endpoint)
+	endpoint, secure, err := resolveTOSUploadEndpoint(target.Endpoint, target.Region, "")
 	if err != nil {
-		t.Fatalf("normalizeTOSNativeEndpoint() error = %v", err)
+		t.Fatalf("resolveTOSUploadEndpoint() error = %v", err)
 	}
 	req, err := newTOSPutObjectRequest(context.Background(), endpoint, secure, target, strings.Repeat("a", 64), strings.NewReader("body"), 4)
 	if err != nil {
@@ -99,8 +99,76 @@ func TestTOSNativePutRequestUsesNativeHostAndTOSSignature(t *testing.T) {
 	}
 }
 
+func TestTOSS3UploaderRoutesHilbertEndpointUsingConfiguredNetwork(t *testing.T) {
+	tests := []struct {
+		name               string
+		configuredEndpoint string
+		hilbertEndpoint    string
+		wantRequestHost    string
+	}{
+		{
+			name:               "private config routes Hilbert public endpoint privately",
+			configuredEndpoint: "https://tos-cn-shanghai.ivolces.com",
+			hilbertEndpoint:    "tos-cn-beijing.volces.com",
+			wantRequestHost:    "bucket-a.tos-cn-beijing.ivolces.com",
+		},
+		{
+			name:               "private config converts Hilbert s3 endpoint to native private endpoint",
+			configuredEndpoint: "tos-cn-shanghai.ivolces.com",
+			hilbertEndpoint:    "tos-s3-cn-beijing.ivolces.com",
+			wantRequestHost:    "bucket-a.tos-cn-beijing.ivolces.com",
+		},
+		{
+			name:               "public config selects Hilbert region public endpoint",
+			configuredEndpoint: "tos-cn-shanghai.volces.com",
+			hilbertEndpoint:    "tos-s3-cn-beijing.ivolces.com",
+			wantRequestHost:    "bucket-a.tos-cn-beijing.volces.com",
+		},
+		{
+			name:               "empty config retains public fallback",
+			configuredEndpoint: "",
+			hilbertEndpoint:    "tos-s3-cn-beijing.ivolces.com",
+			wantRequestHost:    "bucket-a.tos-cn-beijing.volces.com",
+		},
+		{
+			name:               "custom Hilbert endpoint remains unchanged",
+			configuredEndpoint: "tos-cn-shanghai.ivolces.com",
+			hilbertEndpoint:    "https://upload.hilbert.example",
+			wantRequestHost:    "bucket-a.upload.hilbert.example",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte("body")
+			var requestHost string
+			uploader := NewTOSS3Uploader(time.Minute, tt.configuredEndpoint)
+			uploader.client = &http.Client{Transport: tosRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				requestHost = req.URL.Host
+				return testTOSResponse(http.StatusOK, "", map[string]string{"ETag": `"object-etag"`}), nil
+			})}
+			target := testTOSUploadTarget()
+			target.Endpoint = tt.hilbertEndpoint
+
+			if _, err := uploader.PutObject(
+				context.Background(),
+				target,
+				bytes.NewReader(payload),
+				int64(len(payload)),
+				sha256Hex(payload),
+				nil,
+			); err != nil {
+				t.Fatalf("PutObject() error = %v", err)
+			}
+			if requestHost != tt.wantRequestHost {
+				t.Fatalf("request host = %q, want %q", requestHost, tt.wantRequestHost)
+			}
+		})
+	}
+}
+
 func TestTOSS3UploaderProductionMultipartDefaults(t *testing.T) {
-	uploader := NewTOSS3Uploader(time.Minute)
+	uploader := NewTOSS3Uploader(time.Minute, "")
 	if got := uploader.effectiveMultipartThreshold(); got != 128*1024*1024 {
 		t.Fatalf("multipart threshold = %d, want 128 MiB", got)
 	}

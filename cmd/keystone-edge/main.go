@@ -20,6 +20,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/cloud"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/server"
@@ -141,6 +142,10 @@ func main() {
 		syncWorker.SetHilbertRawDataClient(auth.NewHilbertClient(&cfg.Hilbert))
 		syncWorker.SetSourceObjectReader(minioSourceReader)
 		syncWorker.SetTOSSourceObjectReader(cfg.TOSStorage.Bucket, tosSourceReader)
+		syncWorker.SetTOSObjectUploader(cloud.NewTOSS3Uploader(
+			time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second,
+			cfg.TOSStorage.Endpoint,
+		))
 
 		syncWorker.Start()
 		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s auto_scan=%t", cfg.Hilbert.BaseURL, cfg.Sync.AutoScanEnabled)

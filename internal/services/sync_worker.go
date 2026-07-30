@@ -1243,7 +1243,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 
 	tosUploader := w.tosUploader
 	if tosUploader == nil {
-		tosUploader = cloud.NewTOSS3Uploader(w.syncOSSTimeout())
+		tosUploader = cloud.NewTOSS3Uploader(w.syncOSSTimeout(), "")
 	}
 	logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data upload start: raw_data_id=%d endpoint=%s bucket=%s object_key=%s size=%d",
 		ep.ID, rawDataID, uploadCredentials.Endpoint, uploadCredentials.Bucket, uploadCredentials.Key, objectSize)
