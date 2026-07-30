@@ -85,12 +85,20 @@ func (e *Error) Error() string {
 }
 
 // NewReader creates a native TOS reader from Keystone storage config.
-func NewReader(cfg config.StorageConfig, timeout time.Duration) *Reader {
+// Cloud deployments route standard Volcengine TOS endpoints through the
+// private network without changing the device-facing storage configuration.
+func NewReader(cfg config.StorageConfig, mode string, timeout time.Duration) *Reader {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	configuredEndpoint := strings.TrimSpace(cfg.Endpoint)
+	endpoint := sourceEndpointForMode(configuredEndpoint, mode)
+	if endpoint != configuredEndpoint {
+		logger.Printf("[TOS] Source read endpoint resolved: mode=%s configured_endpoint=%s endpoint=%s",
+			mode, configuredEndpoint, endpoint)
+	}
 	reader := &Reader{
-		endpoint:  strings.TrimSpace(cfg.Endpoint),
+		endpoint:  endpoint,
 		region:    strings.TrimSpace(cfg.Region),
 		accessKey: strings.TrimSpace(cfg.AccessKey),
 		secretKey: strings.TrimSpace(cfg.SecretKey),
@@ -105,6 +113,30 @@ func NewReader(cfg config.StorageConfig, timeout time.Duration) *Reader {
 		}
 	}
 	return reader
+}
+
+func sourceEndpointForMode(endpoint, mode string) string {
+	endpoint = strings.TrimSuffix(strings.TrimSpace(endpoint), ".")
+	host := strings.ToLower(endpoint)
+	if !strings.HasPrefix(host, "tos-") {
+		return endpoint
+	}
+
+	const (
+		publicSuffix  = ".volces.com"
+		privateSuffix = ".ivolces.com"
+	)
+	switch mode {
+	case config.ModeCloud:
+		if strings.HasSuffix(host, publicSuffix) {
+			return strings.TrimSuffix(endpoint, publicSuffix) + privateSuffix
+		}
+	case config.ModeEdge:
+		if strings.HasSuffix(host, privateSuffix) {
+			return strings.TrimSuffix(endpoint, privateSuffix) + publicSuffix
+		}
+	}
+	return endpoint
 }
 
 // StatObject returns the object size and ETag used to pin subsequent ranges.
