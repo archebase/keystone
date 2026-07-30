@@ -12,10 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"archebase.com/keystone-edge/internal/config"
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
 	"github.com/volcengine/volcengine-go-sdk/volcengine"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/request"
+
+	"archebase.com/keystone-edge/internal/config"
 )
 
 func TestNewReaderRoutesSourceEndpointUsingMode(t *testing.T) {
