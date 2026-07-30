@@ -67,6 +67,7 @@ type syncEpisodeUploadRow struct {
 	DataCollectorName       sql.NullString  `db:"data_collector_name"`
 	DurationSec             sql.NullFloat64 `db:"duration_sec"`
 	Metadata                sql.NullString  `db:"metadata"`
+	HilbertRawDataID        sql.NullInt64   `db:"hilbert_raw_data_id"`
 	CreatedAt               time.Time       `db:"created_at"`
 }
 
@@ -1108,6 +1109,7 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual
 			e.workstation_id,
 			e.duration_sec,
 			e.metadata,
+			e.hilbert_raw_data_id,
 			e.created_at,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS data_collector_operator_id,
 			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS data_collector_name
@@ -1178,11 +1180,28 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if err != nil {
 		return nil, err
 	}
-	rawDataID, err := w.resolveHilbertRawDataIDFromSyncLogs(ctx, syncLogID)
-	if err != nil {
-		return nil, err
+	rawDataID := int64(0)
+	if ep.HilbertRawDataID.Valid {
+		if ep.HilbertRawDataID.Int64 <= 0 {
+			return nil, newNonRetryableSyncError(
+				"episode %d has invalid Hilbert raw-data id %d",
+				ep.ID,
+				ep.HilbertRawDataID.Int64,
+			)
+		}
+		rawDataID = ep.HilbertRawDataID.Int64
+	} else {
+		rawDataID, err = w.resolveHilbertRawDataIDFromSyncLogs(ctx, syncLogID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if rawDataID > 0 {
+		if !ep.HilbertRawDataID.Valid {
+			if err := w.persistEpisodeHilbertRawDataID(ctx, syncLogID, ep.ID, rawDataID); err != nil {
+				return nil, err
+			}
+		}
 		logger.Printf("[SYNC-WORKER] Episode %d reusing Hilbert raw-data registration: raw_data_id=%d sync_log_id=%d",
 			ep.ID, rawDataID, syncLogID)
 	} else {
@@ -1198,11 +1217,13 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		if err != nil {
 			return nil, fmt.Errorf("register Hilbert raw data: %w", err)
 		}
-		if err := w.persistHilbertRawDataID(ctx, syncLogID, rawDataID); err != nil {
-			return nil, err
-		}
 		logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data registered: raw_data_id=%d workspace_id=%d dc_plan_id=%d size=%d object_key=%s",
 			ep.ID, rawDataID, uploadContext.WorkspaceID, uploadContext.DCPlanID, objectSize, mcapKey)
+		if err := w.persistEpisodeHilbertRawDataID(ctx, syncLogID, ep.ID, rawDataID); err != nil {
+			logger.Printf("[SYNC-WORKER] Episode %d failed to persist Hilbert raw-data registration: raw_data_id=%d sync_log_id=%d err=%v",
+				ep.ID, rawDataID, syncLogID, err)
+			return nil, err
+		}
 	}
 	uploadCredentials, err := w.hilbert.GetRawDataUploadCredentials(ctx, uploadContext.WorkspaceID, rawDataID)
 	if err != nil {
@@ -1339,9 +1360,14 @@ func (w *SyncWorker) resolveHilbertRawDataIDFromSyncLogs(ctx context.Context, sy
 		}
 		return 0, fmt.Errorf("load Hilbert raw-data id from sync_log %d: %w", syncLogID, err)
 	}
-	rawDataID, found, err := parseHilbertRawDataIDDestination(syncLogID, current.DestinationPath)
-	if err != nil || found {
-		return rawDataID, err
+	recoveredID, found, err := parseHilbertRawDataIDDestination(syncLogID, current.DestinationPath)
+	if err != nil {
+		return 0, err
+	}
+	recoveredSyncLogID := syncLogID
+	if !found {
+		recoveredID = 0
+		recoveredSyncLogID = 0
 	}
 
 	var historical []struct {
@@ -1360,22 +1386,31 @@ func (w *SyncWorker) resolveHilbertRawDataIDFromSyncLogs(ctx context.Context, sy
 	}
 
 	for _, candidate := range historical {
-		rawDataID, found, err = parseHilbertRawDataIDDestination(candidate.ID, candidate.DestinationPath)
+		rawDataID, candidateFound, err := parseHilbertRawDataIDDestination(candidate.ID, candidate.DestinationPath)
 		if err != nil {
 			return 0, err
 		}
-		if !found {
+		if !candidateFound {
 			continue
 		}
-		if err := w.persistHilbertRawDataID(ctx, syncLogID, rawDataID); err != nil {
-			return 0, err
+		if recoveredID > 0 && recoveredID != rawDataID {
+			return 0, newNonRetryableSyncError(
+				"episode %d has conflicting historical Hilbert raw-data ids %d and %d",
+				current.EpisodeID,
+				recoveredID,
+				rawDataID,
+			)
 		}
-		logger.Printf("[SYNC-WORKER] Recovered Hilbert raw-data registration for episode %d: raw_data_id=%d historical_sync_log_id=%d sync_log_id=%d",
-			current.EpisodeID, rawDataID, candidate.ID, syncLogID)
-		return rawDataID, nil
+		recoveredID = rawDataID
+		recoveredSyncLogID = candidate.ID
 	}
 
-	return 0, nil
+	if recoveredID > 0 && recoveredSyncLogID != syncLogID {
+		logger.Printf("[SYNC-WORKER] Recovered Hilbert raw-data registration for episode %d: raw_data_id=%d historical_sync_log_id=%d sync_log_id=%d",
+			current.EpisodeID, recoveredID, recoveredSyncLogID, syncLogID)
+	}
+
+	return recoveredID, nil
 }
 
 func parseHilbertRawDataIDDestination(syncLogID int64, destination sql.NullString) (int64, bool, error) {
@@ -1393,13 +1428,97 @@ func parseHilbertRawDataIDDestination(syncLogID int64, destination sql.NullStrin
 	return rawDataID, true, nil
 }
 
-func (w *SyncWorker) persistHilbertRawDataID(ctx context.Context, syncLogID int64, rawDataID int64) error {
-	if w == nil || w.db == nil || syncLogID <= 0 || rawDataID <= 0 {
-		return nil
+func (w *SyncWorker) persistEpisodeHilbertRawDataID(ctx context.Context, syncLogID, episodeID, rawDataID int64) error {
+	if w == nil || w.db == nil {
+		return fmt.Errorf("persist Hilbert raw-data id: database is not configured")
 	}
+	if episodeID <= 0 || rawDataID <= 0 {
+		return fmt.Errorf("persist Hilbert raw-data id: invalid episode_id=%d raw_data_id=%d", episodeID, rawDataID)
+	}
+
+	tx, err := w.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Hilbert raw-data id transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE episodes
+		SET hilbert_raw_data_id = ?
+		WHERE id = ?
+		  AND hilbert_raw_data_id IS NULL
+		  AND deleted_at IS NULL
+	`, rawDataID, episodeID)
+	if err != nil {
+		return fmt.Errorf("persist Hilbert raw-data id %d for episode %d: %w", rawDataID, episodeID, err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read Hilbert raw-data id update result for episode %d: %w", episodeID, err)
+	}
+	if rowsAffected == 0 {
+		var existing sql.NullInt64
+		if err := tx.GetContext(ctx, &existing, `
+			SELECT hilbert_raw_data_id
+			FROM episodes
+			WHERE id = ? AND deleted_at IS NULL
+		`, episodeID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("persist Hilbert raw-data id: episode %d not found", episodeID)
+			}
+			return fmt.Errorf("load Hilbert raw-data id for episode %d: %w", episodeID, err)
+		}
+		if !existing.Valid || existing.Int64 <= 0 {
+			return fmt.Errorf("episode %d has invalid persisted Hilbert raw-data id", episodeID)
+		}
+		if existing.Int64 != rawDataID {
+			return newNonRetryableSyncError(
+				"episode %d Hilbert raw-data id conflict: existing=%d incoming=%d",
+				episodeID,
+				existing.Int64,
+				rawDataID,
+			)
+		}
+	}
+
 	value := hilbertRawDataIDDestinationPrefix + strconv.FormatInt(rawDataID, 10)
-	if _, err := w.db.ExecContext(ctx, "UPDATE sync_logs SET destination_path = ? WHERE id = ?", value, syncLogID); err != nil {
-		return fmt.Errorf("persist Hilbert raw-data id %d to sync_log %d: %w", rawDataID, syncLogID, err)
+	if syncLogID > 0 {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE sync_logs
+			SET destination_path = ?
+			WHERE id = ? AND episode_id = ?
+		`, value, syncLogID, episodeID)
+		if err != nil {
+			return fmt.Errorf("persist Hilbert raw-data id %d to sync_log %d: %w", rawDataID, syncLogID, err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read Hilbert raw-data sync_log update result for sync_log %d: %w", syncLogID, err)
+		}
+		if rowsAffected == 0 {
+			var existing struct {
+				EpisodeID       int64          `db:"episode_id"`
+				DestinationPath sql.NullString `db:"destination_path"`
+			}
+			if err := tx.GetContext(ctx, &existing, `
+				SELECT episode_id, destination_path
+				FROM sync_logs
+				WHERE id = ?
+			`, syncLogID); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("persist Hilbert raw-data id: sync_log %d not found", syncLogID)
+				}
+				return fmt.Errorf("load sync_log %d after Hilbert raw-data id update: %w", syncLogID, err)
+			}
+			if existing.EpisodeID != episodeID || !existing.DestinationPath.Valid ||
+				strings.TrimSpace(existing.DestinationPath.String) != value {
+				return fmt.Errorf("persist Hilbert raw-data id: sync_log %d does not belong to episode %d", syncLogID, episodeID)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit Hilbert raw-data id %d for episode %d: %w", rawDataID, episodeID, err)
 	}
 	return nil
 }

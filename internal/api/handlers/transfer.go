@@ -35,7 +35,11 @@ type episodeQAEnqueuer interface {
 	EnqueueEpisode(episodeID int64)
 }
 
-const transferWebSocketReadLimit = 2 << 20 // 2 MiB
+const (
+	transferWebSocketReadLimit      = 2 << 20 // 2 MiB
+	transferEpisodeIngestionChannel = "axon_transfer"
+	transferEpisodeStorageBackend   = "minio"
+)
 
 // TransferHandler handles WebSocket connections and REST API for Transfer Service
 type TransferHandler struct {
@@ -663,18 +667,40 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		return
 	}
 
-	// Check if mcap_path and sidecar_path already exist in database
-	var count int
-	err = tx.QueryRowContext(ctx,
-		"SELECT COUNT(1) FROM episodes WHERE mcap_path = ? OR sidecar_path = ?",
-		mcapPath, sidecarPath,
-	).Scan(&count)
+	// Check if mcap_path and sidecar_path already exist in database. Every row
+	// accepted as an idempotent match must belong to this ingestion path.
+	var pathMatches struct {
+		Total     int
+		Conflicts int
+	}
+	err = tx.QueryRowContext(ctx, `
+		SELECT
+			COUNT(1),
+			COALESCE(SUM(CASE
+				WHEN ingestion_channel = ? AND storage_backend = ? THEN 0
+				ELSE 1
+			END), 0)
+		FROM episodes
+		WHERE mcap_path = ? OR sidecar_path = ?
+	`, transferEpisodeIngestionChannel, transferEpisodeStorageBackend, mcapPath, sidecarPath).Scan(
+		&pathMatches.Total,
+		&pathMatches.Conflicts,
+	)
 	if err != nil {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("%s DB query error: %v", transferTaskLogPrefix(dc.DeviceID, taskID), err)
 		return
 	}
-	if count > 0 {
+	if pathMatches.Conflicts > 0 {
+		logger.Printf("%s upload_complete provenance conflict for existing object: expected=%s/%s conflicts=%d",
+			transferTaskLogPrefix(dc.DeviceID, taskID),
+			transferEpisodeIngestionChannel,
+			transferEpisodeStorageBackend,
+			pathMatches.Conflicts,
+		)
+		return
+	}
+	if pathMatches.Total > 0 {
 		// #nosec G706 -- Set aside for now
 		logger.Printf("%s already exists in DB (by mcap_path or sidecar_path), skipping insert", transferTaskLogPrefix(dc.DeviceID, taskID))
 	} else {
@@ -706,18 +732,22 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 
 		// Idempotency: avoid creating duplicate episodes for the same task.
 		var existingEpisode struct {
-			ID        int64          `db:"id"`
-			EpisodeID string         `db:"episode_id"`
-			Metadata  sql.NullString `db:"metadata"`
+			ID               int64          `db:"id"`
+			EpisodeID        string         `db:"episode_id"`
+			IngestionChannel string         `db:"ingestion_channel"`
+			StorageBackend   string         `db:"storage_backend"`
+			Metadata         sql.NullString `db:"metadata"`
 		}
 		err := tx.QueryRowContext(ctx, `
-			SELECT id, episode_id, metadata
+			SELECT id, episode_id, ingestion_channel, storage_backend, metadata
 			FROM episodes
 			WHERE task_id = ? AND deleted_at IS NULL
 			LIMIT 1
 		`, taskRow.ID).Scan(
 			&existingEpisode.ID,
 			&existingEpisode.EpisodeID,
+			&existingEpisode.IngestionChannel,
+			&existingEpisode.StorageBackend,
 			&existingEpisode.Metadata,
 		)
 
@@ -729,6 +759,18 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			// #nosec G706 -- Set aside for now
 			logger.Printf("%s DB query failed for existing episode check task_pk=%d: %v", transferTaskLogPrefix(dc.DeviceID, taskID), taskRow.ID, err)
+			return
+		}
+		if err == nil && (existingEpisode.IngestionChannel != transferEpisodeIngestionChannel ||
+			existingEpisode.StorageBackend != transferEpisodeStorageBackend) {
+			logger.Printf("%s upload_complete provenance conflict for task_pk=%d: existing=%s/%s expected=%s/%s",
+				transferTaskLogPrefix(dc.DeviceID, taskID),
+				taskRow.ID,
+				existingEpisode.IngestionChannel,
+				existingEpisode.StorageBackend,
+				transferEpisodeIngestionChannel,
+				transferEpisodeStorageBackend,
+			)
 			return
 		}
 
@@ -778,6 +820,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					organization_id,
 					dc_plan_id,
 					local_dc_plan_id,
+					ingestion_channel,
+					storage_backend,
 					mcap_path,
 					sidecar_path,
 					duration_sec,
@@ -785,13 +829,15 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					checksum,
 					qa_status,
 					metadata
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				episodeID,
 				taskRow.ID,
 				taskRow.WorkstationID,
 				taskRow.OrganizationID,
 				taskRow.DCPlanID,
 				taskRow.LocalDCPlanID,
+				transferEpisodeIngestionChannel,
+				transferEpisodeStorageBackend,
 				mcapPath,
 				sidecarPath,
 				durationSec,

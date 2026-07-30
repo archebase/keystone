@@ -6,6 +6,7 @@ package dgwcompat
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -166,12 +167,20 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 		t.Fatalf("task status=%q episode_id=%d, want completed with episode", task.Status, task.EpisodeID)
 	}
 	var episode struct {
-		Metadata    string  `db:"metadata"`
-		SidecarPath string  `db:"sidecar_path"`
-		Checksum    string  `db:"checksum"`
-		DurationSec float64 `db:"duration_sec"`
+		Metadata         string        `db:"metadata"`
+		SidecarPath      string        `db:"sidecar_path"`
+		Checksum         string        `db:"checksum"`
+		DurationSec      float64       `db:"duration_sec"`
+		IngestionChannel string        `db:"ingestion_channel"`
+		StorageBackend   string        `db:"storage_backend"`
+		HilbertRawDataID sql.NullInt64 `db:"hilbert_raw_data_id"`
 	}
-	if err := db.Get(&episode, `SELECT metadata, sidecar_path, checksum, duration_sec FROM episodes WHERE id = ?`, task.EpisodeID); err != nil {
+	if err := db.Get(&episode, `
+		SELECT metadata, sidecar_path, checksum, duration_sec,
+			ingestion_channel, storage_backend, hilbert_raw_data_id
+		FROM episodes
+		WHERE id = ?
+	`, task.EpisodeID); err != nil {
 		t.Fatalf("query episode metadata: %v", err)
 	}
 	if episode.Checksum != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
@@ -199,8 +208,62 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	if episode.DurationSec != 6.4 {
 		t.Fatalf("duration_sec = %v, want 6.4", episode.DurationSec)
 	}
+	if episode.IngestionChannel != "data_gateway" || episode.StorageBackend != "keystone_tos" {
+		t.Fatalf("episode provenance=%q/%q want data_gateway/keystone_tos", episode.IngestionChannel, episode.StorageBackend)
+	}
+	if episode.HilbertRawDataID.Valid {
+		t.Fatalf("hilbert_raw_data_id=%#v want NULL", episode.HilbertRawDataID)
+	}
 	if len(qa.episodes) != 1 || qa.episodes[0] != task.EpisodeID {
 		t.Fatalf("qa enqueued episodes = %v, want [%d]", qa.episodes, task.EpisodeID)
+	}
+}
+
+func TestGatewayCompleteUploadRejectsExistingEpisodeFromAnotherProvenance(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"device_id":    "101",
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	complete := &cloudpb.CompleteUploadRequest{
+		UploadId:           created.GetUploadId(),
+		FileSize:           1024,
+		CompletedPartCount: 1,
+		ObjectEtag:         "etag-1",
+		RawTags: map[string]string{
+			"capture_id":   "capture-1",
+			"task_id":      "task-1",
+			"dc_plan_id":   "1001",
+			"workspace_id": "10",
+			"device_id":    "101",
+		},
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE episodes
+		SET ingestion_channel = 'axon_transfer', storage_backend = 'minio'
+		WHERE task_id = 1
+	`); err != nil {
+		t.Fatalf("change episode provenance: %v", err)
+	}
+
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("second CompleteUpload() error = %v, want FailedPrecondition", err)
 	}
 }
 
@@ -568,6 +631,9 @@ func newGatewayServiceTestDB(t *testing.T) *sqlx.DB {
 			organization_id INTEGER,
 			dc_plan_id INTEGER,
 			local_dc_plan_id INTEGER,
+			ingestion_channel TEXT NOT NULL,
+			storage_backend TEXT NOT NULL,
+			hilbert_raw_data_id INTEGER,
 			mcap_path TEXT NOT NULL,
 			sidecar_path TEXT NOT NULL,
 			file_size_bytes INTEGER,
@@ -577,7 +643,13 @@ func newGatewayServiceTestDB(t *testing.T) *sqlx.DB {
 			metadata TEXT,
 			created_at TIMESTAMP NULL,
 			updated_at TIMESTAMP NULL,
-			deleted_at TIMESTAMP NULL
+			deleted_at TIMESTAMP NULL,
+			CHECK (
+				(ingestion_channel = 'axon_transfer' AND storage_backend = 'minio')
+				OR
+				(ingestion_channel = 'data_gateway' AND storage_backend = 'keystone_tos')
+			),
+			CHECK (hilbert_raw_data_id IS NULL OR hilbert_raw_data_id > 0)
 		)`,
 		`INSERT INTO robots (id, device_id, workspace_id, status, auth_epoch) VALUES (1, '101', 10, 'active', 1)`,
 		`INSERT INTO workstations (id, robot_id, workspace_id) VALUES (40, 1, 10)`,
