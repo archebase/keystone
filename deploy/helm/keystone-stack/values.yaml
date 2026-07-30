@@ -125,7 +125,7 @@ storage:
     useSSL: true
     region: ""
   tos:
-    endpoint: https://tos-cn-beijing.volces.com
+    endpoint: https://tos-cn-beijing.ivolces.com
     bucket: archebase-prod-keystone-2117611051
     region: cn-beijing
     keyPrefix: device-uploads
