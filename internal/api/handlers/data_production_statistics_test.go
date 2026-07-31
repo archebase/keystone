@@ -77,6 +77,16 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 	}
 }
 
+func TestProductionRecordsSQLPreservesMissingEpisodeDuration(t *testing.T) {
+	sql := productionRecordsSQL()
+	if !strings.Contains(sql, "CAST(e.duration_sec * 1000 AS SIGNED) AS duration_ms") {
+		t.Fatalf("production records SQL should derive duration only from episode metadata: %s", sql)
+	}
+	if strings.Contains(sql, "TIMESTAMPDIFF") {
+		t.Fatalf("production records SQL should not use task elapsed time as recording duration: %s", sql)
+	}
+}
+
 func TestDataProductionDetailsSQLSelectsCurrentFields(t *testing.T) {
 	querySQL := dataProductionDetailsSQL("SELECT 1", "time", "DESC")
 	for _, want := range []string{
