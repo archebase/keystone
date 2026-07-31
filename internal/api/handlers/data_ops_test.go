@@ -751,6 +751,20 @@ func TestCancelBulkRunRequestsCancellationIdempotently(t *testing.T) {
 		if got["cancel_requested_at"] == nil {
 			t.Fatalf("attempt %d cancel_requested_at = nil", attempt)
 		}
+		if attempt == 1 {
+			// Simulate MySQL reporting zero changed rows when the repeated cancel
+			// writes the same status and second-truncated timestamps.
+			if _, err := db.Exec(`
+				CREATE TRIGGER ignore_unchanged_bulk_run_cancel
+				BEFORE UPDATE ON bulk_runs
+				WHEN OLD.status = 'cancel_requested'
+				BEGIN
+					SELECT RAISE(IGNORE);
+				END
+			`); err != nil {
+				t.Fatalf("create unchanged cancel trigger: %v", err)
+			}
+		}
 	}
 }
 

@@ -333,7 +333,7 @@ func (h *DataOpsHandler) CancelBulkRun(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load bulk run"})
 		return
 	}
-	if affected == 0 && run.Status != dataOpsBulkRunStatusCanceled {
+	if affected == 0 && run.Status != dataOpsBulkRunStatusCancelRequested && run.Status != dataOpsBulkRunStatusCanceled {
 		c.JSON(http.StatusConflict, gin.H{"error": "bulk run is already finished", "run": run})
 		return
 	}
