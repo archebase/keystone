@@ -554,21 +554,56 @@ func (h *DataOpsHandler) bulkRunCancellationRequested(ctx context.Context, runID
 	return run.Status == dataOpsBulkRunStatusCancelRequested || run.Status == dataOpsBulkRunStatusCanceled
 }
 
-// InterruptActiveBulkRuns marks stale in-flight bulk runs as interrupted on service startup.
-func (h *DataOpsHandler) InterruptActiveBulkRuns(ctx context.Context) error {
+// InterruptActiveBulkRuns cancels queued work for cancel-requested sync runs, then marks all
+// stale in-flight bulk runs as interrupted on service startup.
+func (h *DataOpsHandler) InterruptActiveBulkRuns(ctx context.Context, maxSyncRetries int) error {
 	if h == nil || h.db == nil {
 		return nil
 	}
 	now := h.dataOpsBulkRunNow()
+	tx, err := h.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin bulk run startup recovery: %w", err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			logger.Printf("[DATA_OPS] bulk run startup recovery rollback failed: %v", err)
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE sync_logs
+		SET status = 'canceled',
+		    error_message = COALESCE(error_message, 'bulk run cancellation recovered after service restart'),
+		    next_retry_at = NULL,
+		    completed_at = COALESCE(completed_at, ?)
+		WHERE bulk_run_id IN (
+		    SELECT run_id
+		    FROM bulk_runs
+		    WHERE action = ? AND status = ?
+		)
+		  AND (
+		    status = 'pending'
+		    OR (status = 'failed' AND next_retry_at IS NOT NULL AND attempt_count < ?)
+		  )
+	`, now, dataOpsBulkRunActionSync, dataOpsBulkRunStatusCancelRequested, maxSyncRetries); err != nil {
+		return fmt.Errorf("cancel queued sync work during bulk run startup recovery: %w", err)
+	}
+
 	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
-	_, err := h.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
 		WHERE action IN (?, ?, ?) AND status IN (?, ?, ?)
 	`, dataOpsBulkRunStatusInterrupted, "service restarted before bulk action completed", now, now,
 		dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync,
-		dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning, dataOpsBulkRunStatusCancelRequested)
-	return err
+		dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning, dataOpsBulkRunStatusCancelRequested); err != nil {
+		return fmt.Errorf("interrupt active bulk runs during startup recovery: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit bulk run startup recovery: %w", err)
+	}
+	return nil
 }
 
 // GetBulkRun returns the latest stored snapshot for one bulk run.

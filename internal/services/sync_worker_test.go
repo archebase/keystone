@@ -1150,6 +1150,30 @@ func TestEnqueueEpisodeManualForBulkRunCanCancelPendingWork(t *testing.T) {
 	}
 }
 
+func TestCancelBulkRunPreservesExhaustedFailure(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 31, "approved", false)
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, bulk_run_id, status, attempt_count, next_retry_at)
+		VALUES (?, ?, 'failed', 3, ?)
+	`, 31, "bulk_sync_exhausted", time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatalf("insert exhausted bulk sync failure: %v", err)
+	}
+
+	w := NewSyncWorker(db, nil, nil, "", SyncWorkerConfig{MaxRetries: 3}, nil)
+	canceled, err := w.CancelBulkRun(context.Background(), "bulk_sync_exhausted")
+	if err != nil {
+		t.Fatalf("cancel bulk run: %v", err)
+	}
+	if canceled != 0 {
+		t.Fatalf("canceled count = %d, want 0", canceled)
+	}
+	got := latestSyncLogForSyncWorkerTest(t, db, 31)
+	if got.Status != "failed" || !got.NextRetry.Valid {
+		t.Fatalf("exhausted bulk sync log = %+v, want failed with next_retry_at preserved", got)
+	}
+}
+
 func TestEnqueueEpisodeManual_PromotesDueFailureToPending(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{

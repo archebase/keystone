@@ -1083,8 +1083,19 @@ func TestInterruptActiveBulkRunsMarksInFlightRunsInterrupted(t *testing.T) {
 	if _, err := db.Exec(`UPDATE bulk_runs SET action = 'bulk_sync' WHERE run_id = 'bulk_sync_canceling'`); err != nil {
 		t.Fatalf("mark sync run action: %v", err)
 	}
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (id, episode_id, bulk_run_id, status, attempt_count, next_retry_at)
+		VALUES
+			(1, 101, 'bulk_sync_canceling', 'pending', 0, NULL),
+			(2, 102, 'bulk_sync_canceling', 'failed', 1, '2026-08-01 00:00:00'),
+			(3, 103, 'bulk_sync_canceling', 'completed', 1, NULL),
+			(4, 104, NULL, 'pending', 0, NULL),
+			(5, 105, 'bulk_sync_canceling', 'failed', 3, '2026-08-01 00:00:00')
+	`); err != nil {
+		t.Fatalf("insert sync recovery logs: %v", err)
+	}
 
-	if err := h.InterruptActiveBulkRuns(context.Background()); err != nil {
+	if err := h.InterruptActiveBulkRuns(context.Background(), 3); err != nil {
 		t.Fatalf("InterruptActiveBulkRuns returned error: %v", err)
 	}
 
@@ -1104,6 +1115,30 @@ func TestInterruptActiveBulkRunsMarksInFlightRunsInterrupted(t *testing.T) {
 	}
 	if completed.Status != dataOpsBulkRunStatusCompleted {
 		t.Fatalf("completed status = %s, want completed", completed.Status)
+	}
+
+	var syncLogs []struct {
+		ID          int64        `db:"id"`
+		Status      string       `db:"status"`
+		CompletedAt sql.NullTime `db:"completed_at"`
+	}
+	if err := db.Select(&syncLogs, `SELECT id, status, completed_at FROM sync_logs ORDER BY id`); err != nil {
+		t.Fatalf("load recovered sync logs: %v", err)
+	}
+	if syncLogs[0].Status != "canceled" || !syncLogs[0].CompletedAt.Valid {
+		t.Fatalf("pending canceled-run log = %+v, want canceled with completed_at", syncLogs[0])
+	}
+	if syncLogs[1].Status != "canceled" || !syncLogs[1].CompletedAt.Valid {
+		t.Fatalf("retryable canceled-run log = %+v, want canceled with completed_at", syncLogs[1])
+	}
+	if syncLogs[2].Status != "completed" {
+		t.Fatalf("completed canceled-run log status = %s, want completed", syncLogs[2].Status)
+	}
+	if syncLogs[3].Status != "pending" {
+		t.Fatalf("unrelated sync log status = %s, want pending", syncLogs[3].Status)
+	}
+	if syncLogs[4].Status != "failed" {
+		t.Fatalf("exhausted canceled-run log status = %s, want failed", syncLogs[4].Status)
 	}
 }
 

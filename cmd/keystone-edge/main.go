@@ -150,14 +150,21 @@ func main() {
 			cfg.Server.Mode,
 		))
 
-		syncWorker.Start()
-		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s auto_scan=%t", cfg.Hilbert.BaseURL, cfg.Sync.AutoScanEnabled)
 	} else {
 		logger.Println("[SYNC] Cloud sync disabled (KEYSTONE_SYNC_ENABLED=false, missing Hilbert config, or source object reader unavailable)")
 	}
 
-	// Initialize and start HTTP server
-	srv := server.New(cfg, db.DB, s3Client, syncWorker)
+	// Recover durable bulk state before the sync worker can scan persisted jobs.
+	srv, err := server.New(cfg, db.DB, s3Client, syncWorker)
+	if err != nil {
+		logger.Fatalf("[SERVER] Failed to initialize server: %v", err)
+	}
+	if syncWorker != nil {
+		syncWorker.Start()
+		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s auto_scan=%t", cfg.Hilbert.BaseURL, cfg.Sync.AutoScanEnabled)
+	}
+
+	// Start HTTP server after background workers are ready.
 	if err := srv.Start(); err != nil {
 		logger.Fatalf("[SERVER] Failed to start server: %v", err)
 	}

@@ -573,8 +573,11 @@ func (w *SyncWorker) CancelBulkRun(ctx context.Context, bulkRunID string) (int64
 		    next_retry_at = NULL,
 		    completed_at = COALESCE(completed_at, ?)
 		WHERE bulk_run_id = ?
-		  AND (status = 'pending' OR (status = 'failed' AND next_retry_at IS NOT NULL))
-	`, time.Now().UTC(), bulkRunID)
+		  AND (
+		    status = 'pending'
+		    OR (status = 'failed' AND next_retry_at IS NOT NULL AND attempt_count < ?)
+		  )
+	`, time.Now().UTC(), bulkRunID, w.cfg.MaxRetries)
 	if err != nil {
 		return 0, fmt.Errorf("cancel bulk sync logs: %w", err)
 	}
