@@ -892,6 +892,23 @@ func TestBulkSyncUsesCancelableBulkRun(t *testing.T) {
 	}
 }
 
+func TestWaitForBulkSyncPollDisablesCancellationWakeAfterRequest(t *testing.T) {
+	ticker := make(chan time.Time, 1)
+	ticker <- time.Now()
+	cancelWake := make(chan struct{})
+	close(cancelWake)
+
+	remainingCancelWake := waitForBulkSyncPoll(ticker, cancelWake, true)
+	if remainingCancelWake != nil {
+		t.Fatal("cancel wake channel remains enabled after cancellation request")
+	}
+	select {
+	case <-ticker:
+		t.Fatal("poll returned through the closed cancellation channel instead of waiting for the ticker")
+	default:
+	}
+}
+
 func TestCancelBulkMP4RunKeepsCompletedPartialArchive(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

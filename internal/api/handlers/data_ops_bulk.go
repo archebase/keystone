@@ -838,6 +838,7 @@ func (h *DataOpsHandler) runBulkEpisodeSync(runID string, ids []int64) {
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	cancelWake := runCtx.Done()
 	for {
 		cancellationRequested := runCtx.Err() != nil || h.bulkRunCancellationRequested(context.Background(), runID)
 		if cancellationRequested {
@@ -877,11 +878,19 @@ func (h *DataOpsHandler) runBulkEpisodeSync(runID string, ids []int64) {
 			}
 		}
 
-		select {
-		case <-ticker.C:
-		case <-runCtx.Done():
-		}
+		cancelWake = waitForBulkSyncPoll(ticker.C, cancelWake, cancellationRequested)
 	}
+}
+
+func waitForBulkSyncPoll(ticker <-chan time.Time, cancelWake <-chan struct{}, cancellationRequested bool) <-chan struct{} {
+	if cancellationRequested {
+		cancelWake = nil
+	}
+	select {
+	case <-ticker:
+	case <-cancelWake:
+	}
+	return cancelWake
 }
 
 type dataOpsBulkSyncCounts struct {
