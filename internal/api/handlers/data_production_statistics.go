@@ -977,7 +977,7 @@ func productionRecordsSQL() string {
 			COALESCE(e.qa_status, '') AS qa_status,
 			e.cloud_synced AS cloud_synced,
 			1 AS count_value,
-			CAST(COALESCE(e.duration_sec * 1000, TIMESTAMPDIFF(MICROSECOND, t.started_at, t.completed_at) / 1000) AS SIGNED) AS duration_ms,
+			CAST(e.duration_sec * 1000 AS SIGNED) AS duration_ms,
 			e.file_size_bytes AS size_bytes,
 			'' AS error_code,
 			'' AS error_message
