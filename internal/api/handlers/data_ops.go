@@ -74,7 +74,10 @@ func (h *DataOpsHandler) SetBulkActionDeps(qa *EpisodeQAHandler, syncWorker *ser
 	}
 	h.qa = qa
 	h.qaRunner = qa
-	h.syncWorker = syncWorker
+	h.syncWorker = nil
+	if syncWorker != nil {
+		h.syncWorker = syncWorker
+	}
 }
 
 // RegisterRoutes registers data operations routes under /data-ops.

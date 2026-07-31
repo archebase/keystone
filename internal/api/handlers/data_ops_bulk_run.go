@@ -554,8 +554,8 @@ func (h *DataOpsHandler) bulkRunCancellationRequested(ctx context.Context, runID
 	return run.Status == dataOpsBulkRunStatusCancelRequested || run.Status == dataOpsBulkRunStatusCanceled
 }
 
-// InterruptActiveBulkRuns cancels queued work for cancel-requested sync runs, then marks all
-// stale in-flight bulk runs as interrupted on service startup.
+// InterruptActiveBulkRuns recovers canceled sync runs, then marks the remaining stale
+// in-flight bulk runs as interrupted on service startup.
 func (h *DataOpsHandler) InterruptActiveBulkRuns(ctx context.Context, maxSyncRetries int) error {
 	if h == nil || h.db == nil {
 		return nil
@@ -588,6 +588,20 @@ func (h *DataOpsHandler) InterruptActiveBulkRuns(ctx context.Context, maxSyncRet
 		  )
 	`, now, dataOpsBulkRunActionSync, dataOpsBulkRunStatusCancelRequested, maxSyncRetries); err != nil {
 		return fmt.Errorf("cancel queued sync work during bulk run startup recovery: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE bulk_runs
+		SET status = ?,
+		    canceled_count = CASE
+		        WHEN total_count > processed_count THEN total_count - processed_count
+		        ELSE 0
+		    END,
+		    finished_at = COALESCE(finished_at, ?),
+		    updated_at = ?
+		WHERE action = ? AND status = ?
+	`, dataOpsBulkRunStatusCanceled, now, now, dataOpsBulkRunActionSync, dataOpsBulkRunStatusCancelRequested); err != nil {
+		return fmt.Errorf("finalize canceled sync runs during bulk run startup recovery: %w", err)
 	}
 
 	// #nosec G701 -- static SQL with placeholder-bound bulk run values.

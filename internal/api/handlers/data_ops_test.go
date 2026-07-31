@@ -384,6 +384,39 @@ func TestPreviewBulkEpisodeSyncTreatsMissingSyncLogAsEligible(t *testing.T) {
 	}
 }
 
+func TestBulkSyncEndpointsHandleUnconfiguredWorker(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := NewDataOpsHandler(db)
+	h.SetBulkActionDeps(nil, nil)
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	previewRec := httptest.NewRecorder()
+	previewReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-sync/preview", bytes.NewBufferString(`{"filters":{"workspace_id":"12"}}`))
+	previewReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(previewRec, previewReq)
+	if previewRec.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, body = %s", previewRec.Code, previewRec.Body.String())
+	}
+	var preview DataOpsBulkEpisodePreviewResponse
+	if err := json.Unmarshal(previewRec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("decode preview response: %v", err)
+	}
+	if preview.SyncWorkerRunning == nil || *preview.SyncWorkerRunning {
+		t.Fatalf("sync_worker_running = %v, want false", preview.SyncWorkerRunning)
+	}
+
+	executeRec := httptest.NewRecorder()
+	executeReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-sync", bytes.NewBufferString(`{"confirm":true,"filters":{"workspace_id":"12"}}`))
+	executeReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(executeRec, executeReq)
+	if executeRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("execute status = %d, body = %s", executeRec.Code, executeRec.Body.String())
+	}
+}
+
 func TestPreviewBulkEpisodeMP4SkipsFailedQA(t *testing.T) {
 	db := setupDataOpsBulkPreviewTestDB(t)
 	h := &DataOpsHandler{db: db}
@@ -1086,7 +1119,7 @@ func TestBulkRunEpisodeQAUpdatesRunProgressFromSuiteResults(t *testing.T) {
 	}
 }
 
-func TestInterruptActiveBulkRunsMarksInFlightRunsInterrupted(t *testing.T) {
+func TestInterruptActiveBulkRunsRecoversCancellationBeforeInterruptingActiveRuns(t *testing.T) {
 	db := setupDataOpsBulkPreviewTestDB(t)
 	h := &DataOpsHandler{db: db}
 
@@ -1094,7 +1127,11 @@ func TestInterruptActiveBulkRunsMarksInFlightRunsInterrupted(t *testing.T) {
 	insertDataOpsBulkRunForTest(t, db, "bulk_qa_running", dataOpsBulkRunStatusRunning)
 	insertDataOpsBulkRunForTest(t, db, "bulk_qa_completed", dataOpsBulkRunStatusCompleted)
 	insertDataOpsBulkRunForTest(t, db, "bulk_sync_canceling", dataOpsBulkRunStatusCancelRequested)
-	if _, err := db.Exec(`UPDATE bulk_runs SET action = 'bulk_sync' WHERE run_id = 'bulk_sync_canceling'`); err != nil {
+	if _, err := db.Exec(`
+		UPDATE bulk_runs
+		SET action = 'bulk_sync', processed_count = 2, passed_count = 1, processing_failed_count = 1
+		WHERE run_id = 'bulk_sync_canceling'
+	`); err != nil {
 		t.Fatalf("mark sync run action: %v", err)
 	}
 	if _, err := db.Exec(`
@@ -1113,7 +1150,7 @@ func TestInterruptActiveBulkRunsMarksInFlightRunsInterrupted(t *testing.T) {
 		t.Fatalf("InterruptActiveBulkRuns returned error: %v", err)
 	}
 
-	for _, runID := range []string{"bulk_qa_queued", "bulk_qa_running", "bulk_sync_canceling"} {
+	for _, runID := range []string{"bulk_qa_queued", "bulk_qa_running"} {
 		run, err := h.loadBulkRun(context.Background(), runID)
 		if err != nil {
 			t.Fatalf("load %s: %v", runID, err)
@@ -1121,6 +1158,13 @@ func TestInterruptActiveBulkRunsMarksInFlightRunsInterrupted(t *testing.T) {
 		if run.Status != dataOpsBulkRunStatusInterrupted || run.FinishedAt == nil {
 			t.Fatalf("run %s = %+v, want interrupted with finished_at", runID, run)
 		}
+	}
+	canceled, err := h.loadBulkRun(context.Background(), "bulk_sync_canceling")
+	if err != nil {
+		t.Fatalf("load recovered canceled sync run: %v", err)
+	}
+	if canceled.Status != dataOpsBulkRunStatusCanceled || canceled.ProcessedCount != 2 || canceled.CanceledCount != 8 || canceled.FinishedAt == nil {
+		t.Fatalf("recovered canceled sync run = %+v, want canceled with processed=2 canceled=8 and finished_at", canceled)
 	}
 
 	completed, err := h.loadBulkRun(context.Background(), "bulk_qa_completed")
