@@ -412,7 +412,7 @@ func (h *SyncHandler) TriggerEpisodeSync(c *gin.Context) {
 // @Description  Returns sync log entries with optional status filter
 // @Tags         sync
 // @Produce      json
-// @Param        status  query     string  false  "Filter by status (pending, in_progress, completed, failed)"
+// @Param        status  query     string  false  "Filter by status (pending, in_progress, completed, failed, canceled)"
 // @Param        limit   query     int     false  "Max results (default 50)"
 // @Param        offset  query     int     false  "Pagination offset (default 0)"
 // @Success      200     {object}  SyncJobListResponse
@@ -500,7 +500,7 @@ func (h *SyncHandler) ListSyncJobs(c *gin.Context) {
 // @Description  Returns one row per episode using latest sync log as current state
 // @Tags         sync
 // @Produce      json
-// @Param        status  query     string  false  "Filter by latest status (pending, in_progress, completed, failed)"
+// @Param        status  query     string  false  "Filter by latest status (pending, in_progress, completed, failed, canceled)"
 // @Param        limit   query     int     false  "Max results (default 50)"
 // @Param        offset  query     int     false  "Pagination offset (default 0)"
 // @Success      200     {object}  SyncEpisodeSummaryListResponse

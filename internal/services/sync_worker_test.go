@@ -1097,6 +1097,59 @@ func TestEnqueueEpisodeManual_AllowsExhaustedRetryEpisode(t *testing.T) {
 	}
 }
 
+func TestEnqueueEpisodeManualForBulkRunCanCancelPendingWork(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 30, "approved", false)
+
+	w := NewSyncWorker(db, nil, nil, "", SyncWorkerConfig{MaxRetries: 3}, nil)
+	w.running.Store(true)
+
+	if err := w.EnqueueEpisodeManualForBulkRun(context.Background(), 30, "bulk_sync_001"); err != nil {
+		t.Fatalf("bulk manual enqueue failed: %v", err)
+	}
+
+	var queued struct {
+		Status    string `db:"status"`
+		BulkRunID string `db:"bulk_run_id"`
+	}
+	if err := db.Get(&queued, `SELECT status, bulk_run_id FROM sync_logs WHERE episode_id = 30`); err != nil {
+		t.Fatalf("query queued sync log: %v", err)
+	}
+	if queued.Status != "pending" || queued.BulkRunID != "bulk_sync_001" {
+		t.Fatalf("queued sync log = %+v, want pending bulk_sync_001", queued)
+	}
+
+	canceled, err := w.CancelBulkRun(context.Background(), "bulk_sync_001")
+	if err != nil {
+		t.Fatalf("cancel bulk run: %v", err)
+	}
+	if canceled != 1 {
+		t.Fatalf("canceled count = %d, want 1", canceled)
+	}
+	if got := latestSyncLogForSyncWorkerTest(t, db, 30); got.Status != "canceled" {
+		t.Fatalf("latest status = %q, want canceled", got.Status)
+	}
+	if _, _, err := w.acquireSyncLogWithMode(context.Background(), 30, "local/episode.mcap", true); !errors.Is(err, errSyncCanceled) {
+		t.Fatalf("claim canceled bulk work error = %v, want %v", err, errSyncCanceled)
+	}
+
+	retryWorker := NewSyncWorker(db, nil, nil, "", SyncWorkerConfig{BatchSize: 10, MaxRetries: 3}, nil)
+	retryWorker.running.Store(true)
+	autoQueued, err := retryWorker.EnqueuePendingEpisodes(context.Background())
+	if err != nil {
+		t.Fatalf("scan canceled episode: %v", err)
+	}
+	if autoQueued != 0 {
+		t.Fatalf("auto queued canceled episode count = %d, want 0", autoQueued)
+	}
+	if err := retryWorker.EnqueueEpisodeManual(context.Background(), 30); err != nil {
+		t.Fatalf("manual retry after cancellation failed: %v", err)
+	}
+	if got := latestSyncLogForSyncWorkerTest(t, db, 30); got.Status != "pending" {
+		t.Fatalf("manual retry latest status = %q, want pending", got.Status)
+	}
+}
+
 func TestEnqueueEpisodeManual_PromotesDueFailureToPending(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
@@ -1819,6 +1872,7 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE sync_logs (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				episode_id INTEGER NOT NULL,
+				bulk_run_id TEXT,
 				source_path TEXT,
 				status TEXT NOT NULL,
 				destination_path TEXT,

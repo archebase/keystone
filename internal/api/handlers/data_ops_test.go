@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -722,6 +723,266 @@ func TestCurrentBulkRunReturnsNoContentWhenNoRunIsActive(t *testing.T) {
 	}
 }
 
+func TestCancelBulkRunRequestsCancellationIdempotently(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkRunForTest(t, db, "bulk_qa_cancel", dataOpsBulkRunStatusRunning)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/bulk-runs/bulk_qa_cancel/cancel", nil)
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d status = %d, body = %s", attempt, rec.Code, rec.Body.String())
+		}
+		var got map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("attempt %d decode response: %v", attempt, err)
+		}
+		if got["run_id"] != "bulk_qa_cancel" || got["status"] != "cancel_requested" {
+			t.Fatalf("attempt %d response = %+v, want cancel_requested run", attempt, got)
+		}
+		if got["cancel_requested_at"] == nil {
+			t.Fatalf("attempt %d cancel_requested_at = nil", attempt)
+		}
+	}
+}
+
+func TestBulkRunTerminalUpdateFinalizesConcurrentCancellation(t *testing.T) {
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := NewDataOpsHandler(db)
+	insertDataOpsBulkRunForTest(t, db, "bulk_qa_cancel_race", dataOpsBulkRunStatusCancelRequested)
+	if _, err := db.Exec(`
+		UPDATE bulk_runs
+		SET total_count = 5, processed_count = 2
+		WHERE run_id = 'bulk_qa_cancel_race'
+	`); err != nil {
+		t.Fatalf("prepare cancel race run: %v", err)
+	}
+
+	run, err := h.markBulkRunTerminal(context.Background(), "bulk_qa_cancel_race", dataOpsBulkRunStatusCompleted, "")
+	if err != nil {
+		t.Fatalf("mark terminal after cancellation: %v", err)
+	}
+	if run.Status != dataOpsBulkRunStatusCanceled || run.ProcessedCount != 2 || run.CanceledCount != 3 {
+		t.Fatalf("terminal cancellation run = %+v, want canceled with processed=2 canceled=3", run)
+	}
+}
+
+func TestCancelBulkQARunStopsUndispatchedEpisodes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	started := make(chan int64, 6)
+	release := make(chan struct{})
+	h := &DataOpsHandler{db: db, qaRunner: cancelableDataOpsQARunner{started: started, release: release}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	for id := int64(1); id <= 6; id++ {
+		insertDataOpsBulkTestEpisode(t, db, id, fmt.Sprintf("2026-06-%02dT00:00:00Z", id))
+	}
+
+	postRec := httptest.NewRecorder()
+	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-qa", bytes.NewBufferString(`{"confirm":true,"filters":{}}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d, body = %s", postRec.Code, postRec.Body.String())
+	}
+	var accepted struct {
+		Run DataOpsBulkRunResponse `json:"run"`
+	}
+	if err := json.Unmarshal(postRec.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+
+	for count := 0; count < dataOpsBulkQAConcurrency; count++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("only %d QA episodes started", count)
+		}
+	}
+
+	cancelRec := httptest.NewRecorder()
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/bulk-runs/"+accepted.Run.RunID+"/cancel", nil)
+	router.ServeHTTP(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body = %s", cancelRec.Code, cancelRec.Body.String())
+	}
+	close(release)
+
+	got := waitForBulkRunStatus(t, router, accepted.Run.RunID, dataOpsBulkRunStatusCanceled)
+	if got.TotalCount != 6 || got.ProcessedCount != 4 || got.CanceledCount != 2 || got.PassedCount != 4 {
+		t.Fatalf("canceled run counts = %+v, want total=6 processed=4 canceled=2 passed=4", got)
+	}
+	select {
+	case episodeID := <-started:
+		t.Fatalf("episode %d started after cancellation", episodeID)
+	default:
+	}
+}
+
+func TestBulkSyncUsesCancelableBulkRun(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	if _, err := db.Exec(`INSERT INTO tasks (id, task_id, organization_id) VALUES (100, 'task-100', 12)`); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	for id := int64(1); id <= 2; id++ {
+		if _, err := db.Exec(`
+			INSERT INTO episodes (id, episode_id, task_id, qa_status, cloud_synced, deleted_at, created_at)
+			VALUES (?, ?, 100, 'approved', 0, NULL, ?)
+		`, id, fmt.Sprintf("episode-%d", id), fmt.Sprintf("2026-06-%02dT00:00:00Z", id)); err != nil {
+			t.Fatalf("insert episode %d: %v", id, err)
+		}
+	}
+
+	h := &DataOpsHandler{db: db, syncWorker: &fakeDataOpsBulkSyncWorker{db: db}}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	postRec := httptest.NewRecorder()
+	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/episodes/bulk-sync", bytes.NewBufferString(`{"confirm":true,"filters":{"workspace_id":"12"}}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d, body = %s", postRec.Code, postRec.Body.String())
+	}
+	var accepted struct {
+		Run DataOpsBulkRunResponse `json:"run"`
+	}
+	if err := json.Unmarshal(postRec.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	if accepted.Run.Action != "bulk_sync" || accepted.Run.TotalCount != 2 {
+		t.Fatalf("accepted run = %+v, want bulk_sync total=2", accepted.Run)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		var pending int
+		if err := db.Get(&pending, `SELECT COUNT(*) FROM sync_logs WHERE bulk_run_id = ? AND status = 'pending'`, accepted.Run.RunID); err != nil {
+			t.Fatalf("count pending sync logs: %v", err)
+		}
+		if pending == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelRec := httptest.NewRecorder()
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/bulk-runs/"+accepted.Run.RunID+"/cancel", nil)
+	router.ServeHTTP(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body = %s", cancelRec.Code, cancelRec.Body.String())
+	}
+
+	got := waitForBulkRunStatus(t, router, accepted.Run.RunID, dataOpsBulkRunStatusCanceled)
+	if got.ProcessedCount != 0 || got.CanceledCount != 2 {
+		t.Fatalf("canceled sync run = %+v, want processed=0 canceled=2", got)
+	}
+}
+
+func TestCancelBulkMP4RunKeepsCompletedPartialArchive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	started := make(chan int64, 2)
+	release := make(chan struct{})
+	h := &DataOpsHandler{
+		db: db,
+		bulkMP4Converter: func(_ context.Context, row dataOpsBulkMP4EpisodeRow, _ string, mp4Dir string) (string, func(), error) {
+			started <- row.ID
+			<-release
+			path := filepath.Join(mp4Dir, fmt.Sprintf("episode-%d.mp4", row.ID))
+			if err := os.WriteFile(path, []byte("mp4"), 0o600); err != nil {
+				return "", nil, err
+			}
+			return path, func() {}, nil
+		},
+	}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	run, err := h.createBulkRun(context.Background(), dataOpsBulkRunActionMP4, 2)
+	if err != nil {
+		t.Fatalf("create MP4 run: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(h.bulkMP4ZipPath(run.RunID)); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove partial MP4 archive: %v", err)
+		}
+	})
+	go h.runBulkEpisodeMP4(run.RunID, []dataOpsBulkMP4EpisodeRow{
+		{ID: 1, EpisodeID: "episode-1"},
+		{ID: 2, EpisodeID: "episode-2"},
+	})
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first MP4 conversion did not start")
+	}
+	cancelRec := httptest.NewRecorder()
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/bulk-runs/"+run.RunID+"/cancel", nil)
+	router.ServeHTTP(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body = %s", cancelRec.Code, cancelRec.Body.String())
+	}
+	close(release)
+
+	got := waitForBulkRunStatus(t, router, run.RunID, dataOpsBulkRunStatusCanceled)
+	if got.ProcessedCount != 1 || got.CanceledCount != 1 || got.DownloadURL == "" {
+		t.Fatalf("canceled MP4 run = %+v, want one generated, one canceled, and partial download", got)
+	}
+	if _, err := os.Stat(h.bulkMP4ZipPath(run.RunID)); err != nil {
+		t.Fatalf("partial MP4 archive missing: %v", err)
+	}
+	select {
+	case episodeID := <-started:
+		t.Fatalf("episode %d started after cancellation", episodeID)
+	default:
+	}
+}
+
+func TestCancelQueuedBulkMP4RunCreatesDownloadableEmptyArchive(t *testing.T) {
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := NewDataOpsHandler(db)
+	run, err := h.createBulkRun(context.Background(), dataOpsBulkRunActionMP4, 2)
+	if err != nil {
+		t.Fatalf("create MP4 run: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(h.bulkMP4ZipPath(run.RunID)); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove empty MP4 archive: %v", err)
+		}
+	})
+	if _, err := db.Exec(`UPDATE bulk_runs SET status = ? WHERE run_id = ?`, dataOpsBulkRunStatusCancelRequested, run.RunID); err != nil {
+		t.Fatalf("request queued cancellation: %v", err)
+	}
+
+	h.runBulkEpisodeMP4(run.RunID, []dataOpsBulkMP4EpisodeRow{{ID: 1}, {ID: 2}})
+	got, err := h.loadBulkRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("load canceled MP4 run: %v", err)
+	}
+	if got.Status != dataOpsBulkRunStatusCanceled || got.CanceledCount != 2 || got.DownloadURL == "" {
+		t.Fatalf("queued canceled MP4 run = %+v, want canceled=2 with download", got)
+	}
+	if _, err := os.Stat(h.bulkMP4ZipPath(run.RunID)); err != nil {
+		t.Fatalf("empty MP4 archive missing: %v", err)
+	}
+}
+
 func TestBulkRunEpisodeQAWithNoMatchedEpisodesCompletesImmediately(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -794,19 +1055,23 @@ func TestBulkRunEpisodeQAUpdatesRunProgressFromSuiteResults(t *testing.T) {
 	}
 }
 
-func TestInterruptActiveBulkQARunsMarksQueuedAndRunningRunsInterrupted(t *testing.T) {
+func TestInterruptActiveBulkRunsMarksInFlightRunsInterrupted(t *testing.T) {
 	db := setupDataOpsBulkPreviewTestDB(t)
 	h := &DataOpsHandler{db: db}
 
 	insertDataOpsBulkRunForTest(t, db, "bulk_qa_queued", dataOpsBulkRunStatusQueued)
 	insertDataOpsBulkRunForTest(t, db, "bulk_qa_running", dataOpsBulkRunStatusRunning)
 	insertDataOpsBulkRunForTest(t, db, "bulk_qa_completed", dataOpsBulkRunStatusCompleted)
-
-	if err := h.InterruptActiveBulkQARuns(context.Background()); err != nil {
-		t.Fatalf("InterruptActiveBulkQARuns returned error: %v", err)
+	insertDataOpsBulkRunForTest(t, db, "bulk_sync_canceling", dataOpsBulkRunStatusCancelRequested)
+	if _, err := db.Exec(`UPDATE bulk_runs SET action = 'bulk_sync' WHERE run_id = 'bulk_sync_canceling'`); err != nil {
+		t.Fatalf("mark sync run action: %v", err)
 	}
 
-	for _, runID := range []string{"bulk_qa_queued", "bulk_qa_running"} {
+	if err := h.InterruptActiveBulkRuns(context.Background()); err != nil {
+		t.Fatalf("InterruptActiveBulkRuns returned error: %v", err)
+	}
+
+	for _, runID := range []string{"bulk_qa_queued", "bulk_qa_running", "bulk_sync_canceling"} {
 		run, err := h.loadBulkRun(context.Background(), runID)
 		if err != nil {
 			t.Fatalf("load %s: %v", runID, err)
@@ -958,6 +1223,7 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			robot_id INTEGER,
 			data_collector_id INTEGER,
+			workspace_id INTEGER,
 			deleted_at TEXT
 		)`,
 		`CREATE TABLE robots (
@@ -968,7 +1234,12 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE sync_logs (
 			id INTEGER PRIMARY KEY,
 			episode_id INTEGER NOT NULL,
-			status TEXT NOT NULL
+			bulk_run_id TEXT,
+			status TEXT NOT NULL,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			next_retry_at TIMESTAMP NULL,
+			error_message TEXT,
+			completed_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE bulk_runs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -981,8 +1252,10 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 			qa_failed_count INTEGER NOT NULL DEFAULT 0,
 			processing_failed_count INTEGER NOT NULL DEFAULT 0,
 			skipped_count INTEGER NOT NULL DEFAULT 0,
+			canceled_count INTEGER NOT NULL DEFAULT 0,
 			error_message TEXT,
 			started_at TIMESTAMP NULL,
+			cancel_requested_at TIMESTAMP NULL,
 			finished_at TIMESTAMP NULL,
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL
@@ -1025,6 +1298,48 @@ func insertDataOpsBulkRunForTest(t *testing.T, db *sqlx.DB, runID string, status
 
 type controlledDataOpsQARunner struct {
 	release <-chan struct{}
+}
+
+type cancelableDataOpsQARunner struct {
+	started chan<- int64
+	release <-chan struct{}
+}
+
+type fakeDataOpsBulkSyncWorker struct {
+	db *sqlx.DB
+}
+
+func (w *fakeDataOpsBulkSyncWorker) IsRunning() bool {
+	return true
+}
+
+func (w *fakeDataOpsBulkSyncWorker) MaxRetries() int {
+	return 3
+}
+
+func (w *fakeDataOpsBulkSyncWorker) EnqueueEpisodeManualForBulkRun(ctx context.Context, episodeID int64, bulkRunID string) error {
+	_, err := w.db.ExecContext(ctx, `
+		INSERT INTO sync_logs (episode_id, bulk_run_id, status, attempt_count)
+		VALUES (?, ?, 'pending', 0)
+	`, episodeID, bulkRunID)
+	return err
+}
+
+func (w *fakeDataOpsBulkSyncWorker) CancelBulkRun(ctx context.Context, bulkRunID string) (int64, error) {
+	res, err := w.db.ExecContext(ctx, `
+		UPDATE sync_logs SET status = 'canceled', completed_at = ?
+		WHERE bulk_run_id = ? AND status = 'pending'
+	`, time.Now().UTC(), bulkRunID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (r cancelableDataOpsQARunner) RunEpisodeQASuite(_ context.Context, episodeID int64, mode QARunMode) (*EpisodeQASuiteResponse, error) {
+	r.started <- episodeID
+	<-r.release
+	return &EpisodeQASuiteResponse{EpisodeID: episodeID, Passed: true, Mode: mode}, nil
 }
 
 func (r controlledDataOpsQARunner) RunEpisodeQASuite(ctx context.Context, episodeID int64, mode QARunMode) (*EpisodeQASuiteResponse, error) {
