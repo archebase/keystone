@@ -350,6 +350,148 @@ func TestPreviewBulkEpisodeQASkipsCloudSyncedEpisodes(t *testing.T) {
 	}
 }
 
+func TestPreviewBulkEpisodeQAExcludesDeselectedEpisodes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-02T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 2, "2026-06-01T00:00:00Z")
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/data-ops/episodes/bulk-qa/preview",
+		bytes.NewBufferString(`{"filters":{},"selection":{"mode":"all_matching","excluded_episode_ids":[2]}}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var preview DataOpsBulkEpisodePreviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("decode preview response: %v", err)
+	}
+	if preview.MatchedCount != 1 || preview.EligibleCount != 1 || preview.SkippedCount != 0 {
+		t.Fatalf("preview counts = matched %d eligible %d skipped %d, want 1/1/0",
+			preview.MatchedCount, preview.EligibleCount, preview.SkippedCount)
+	}
+}
+
+func TestPreviewBulkEpisodeQASupportsExplicitSelection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkTestEpisode(t, db, 1, "2026-06-02T00:00:00Z")
+	insertDataOpsBulkTestEpisode(t, db, 2, "2026-06-01T00:00:00Z")
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/data-ops/episodes/bulk-qa/preview",
+		bytes.NewBufferString(`{"filters":{},"selection":{"mode":"explicit","episode_ids":[2]}}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var preview DataOpsBulkEpisodePreviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("decode preview response: %v", err)
+	}
+	if preview.MatchedCount != 1 || preview.EligibleCount != 1 || preview.SkippedCount != 0 {
+		t.Fatalf("preview counts = matched %d eligible %d skipped %d, want 1/1/0",
+			preview.MatchedCount, preview.EligibleCount, preview.SkippedCount)
+	}
+}
+
+func TestPreviewBulkEpisodeQARejectsUnknownSelectionMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/data-ops/episodes/bulk-qa/preview",
+		bytes.NewBufferString(`{"filters":{},"selection":{"mode":"current_page","episode_ids":[1]}}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPreviewBulkEpisodeQARejectsInvalidSelectionIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/data-ops/episodes/bulk-qa/preview",
+		bytes.NewBufferString(`{"filters":{},"selection":{"mode":"all_matching","excluded_episode_ids":[0]}}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPreviewBulkEpisodeQARejectsSelectionFieldsForOtherMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, body := range []string{
+		`{"filters":{},"selection":{"mode":"all_matching","episode_ids":[1]}}`,
+		`{"filters":{},"selection":{"mode":"explicit","excluded_episode_ids":[1]}}`,
+	} {
+		db := setupDataOpsBulkPreviewTestDB(t)
+		h := &DataOpsHandler{db: db}
+		router := gin.New()
+		h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/data-ops/episodes/bulk-qa/preview",
+			bytes.NewBufferString(body),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body = %s: status = %d, response = %s, want 400", body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestPreviewBulkEpisodeSyncTreatsMissingSyncLogAsEligible(t *testing.T) {
 	db := setupDataOpsBulkPreviewTestDB(t)
 	h := &DataOpsHandler{db: db}

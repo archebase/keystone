@@ -100,22 +100,25 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 }
 
 type dataOpsEpisodeQuery struct {
-	Pagination           PaginationParams
-	WorkspaceIDs         []int64
-	CreatedAtFrom        time.Time
-	CreatedAtTo          time.Time
-	HasCreatedAtFrom     bool
-	HasCreatedAtTo       bool
-	Keyword              string
-	QAStatuses           []string
-	SyncStatuses         []string
-	RobotDeviceIDs       []string
-	CollectorOperatorIDs []string
-	DCProjectIDs         []int64
-	DCTaskIDs            []int64
-	DCProjectName        string
-	DCTaskName           string
-	Label                string
+	Pagination            PaginationParams
+	HasExplicitEpisodeIDs bool
+	IncludedEpisodeIDs    []int64
+	ExcludedEpisodeIDs    []int64
+	WorkspaceIDs          []int64
+	CreatedAtFrom         time.Time
+	CreatedAtTo           time.Time
+	HasCreatedAtFrom      bool
+	HasCreatedAtTo        bool
+	Keyword               string
+	QAStatuses            []string
+	SyncStatuses          []string
+	RobotDeviceIDs        []string
+	CollectorOperatorIDs  []string
+	DCProjectIDs          []int64
+	DCTaskIDs             []int64
+	DCProjectName         string
+	DCTaskName            string
+	Label                 string
 }
 
 type dataOpsEpisodeRow struct {
@@ -380,6 +383,15 @@ func dataOpsEpisodeBaseFromSQL() string {
 func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 	where := " WHERE e.deleted_at IS NULL"
 	args := []interface{}{}
+	if q.HasExplicitEpisodeIDs {
+		if len(q.IncludedEpisodeIDs) == 0 {
+			where += " AND 1 = 0"
+		} else {
+			where, args = appendInt64InFilter(where, args, "e.id", q.IncludedEpisodeIDs)
+		}
+	} else {
+		where, args = appendInt64NotInFilter(where, args, "e.id", q.ExcludedEpisodeIDs)
+	}
 
 	if q.HasCreatedAtFrom {
 		where += " AND e.created_at >= ?"
@@ -417,6 +429,19 @@ func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 	}
 
 	return where, args
+}
+
+func appendInt64NotInFilter(whereClause string, args []interface{}, column string, values []int64) (string, []interface{}) {
+	if len(values) == 0 {
+		return whereClause, args
+	}
+
+	placeholders := make([]string, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	return whereClause + " AND " + column + " NOT IN (" + strings.Join(placeholders, ",") + ")", args
 }
 
 func dataOpsSyncStatusWhere(statuses []string) (string, []interface{}) {

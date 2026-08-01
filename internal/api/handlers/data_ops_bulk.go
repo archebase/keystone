@@ -22,6 +22,11 @@ import (
 
 const dataOpsBulkQAConcurrency = 4
 
+const (
+	dataOpsBulkSelectionModeAllMatching = "all_matching"
+	dataOpsBulkSelectionModeExplicit    = "explicit"
+)
+
 // DataOpsBulkEpisodeFilters contains data-ops filters for bulk episode actions.
 type DataOpsBulkEpisodeFilters struct {
 	WorkspaceID         string `json:"workspace_id,omitempty"`
@@ -41,10 +46,18 @@ type DataOpsBulkEpisodeFilters struct {
 	Offset              string `json:"offset,omitempty"`
 }
 
+// DataOpsBulkEpisodeSelection narrows a filtered bulk operation to the current UI selection.
+type DataOpsBulkEpisodeSelection struct {
+	Mode               string  `json:"mode,omitempty"`
+	EpisodeIDs         []int64 `json:"episode_ids,omitempty"`
+	ExcludedEpisodeIDs []int64 `json:"excluded_episode_ids,omitempty"`
+}
+
 // DataOpsBulkEpisodeActionRequest is the request body for bulk preview and execute calls.
 type DataOpsBulkEpisodeActionRequest struct {
-	Confirm bool                      `json:"confirm,omitempty"`
-	Filters DataOpsBulkEpisodeFilters `json:"filters,omitempty"`
+	Confirm   bool                        `json:"confirm,omitempty"`
+	Filters   DataOpsBulkEpisodeFilters   `json:"filters,omitempty"`
+	Selection DataOpsBulkEpisodeSelection `json:"selection,omitempty"`
 }
 
 // DataOpsBulkSkippedBreakdownItem summarizes one skipped reason in a bulk preview.
@@ -339,7 +352,51 @@ func (h *DataOpsHandler) parseBulkEpisodeActionRequest(c *gin.Context, requireCo
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return req, dataOpsEpisodeQuery{}, false
 	}
+	switch req.Selection.Mode {
+	case "", dataOpsBulkSelectionModeAllMatching:
+		if len(req.Selection.EpisodeIDs) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "selection.episode_ids requires explicit mode"})
+			return req, dataOpsEpisodeQuery{}, false
+		}
+		q.ExcludedEpisodeIDs, err = normalizeDataOpsBulkSelectionIDs(
+			req.Selection.ExcludedEpisodeIDs,
+			"selection.excluded_episode_ids",
+		)
+	case dataOpsBulkSelectionModeExplicit:
+		if len(req.Selection.ExcludedEpisodeIDs) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "selection.excluded_episode_ids requires all_matching mode"})
+			return req, dataOpsEpisodeQuery{}, false
+		}
+		q.HasExplicitEpisodeIDs = true
+		q.IncludedEpisodeIDs, err = normalizeDataOpsBulkSelectionIDs(
+			req.Selection.EpisodeIDs,
+			"selection.episode_ids",
+		)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "selection.mode must be one of all_matching, explicit"})
+		return req, dataOpsEpisodeQuery{}, false
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return req, dataOpsEpisodeQuery{}, false
+	}
 	return req, q, true
+}
+
+func normalizeDataOpsBulkSelectionIDs(values []int64, fieldName string) ([]int64, error) {
+	seen := make(map[int64]struct{}, len(values))
+	out := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			return nil, fmt.Errorf("%s must contain positive integers", fieldName)
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsEpisodeQuery, error) {
