@@ -110,7 +110,7 @@ func (h *DataOpsHandler) BulkExportEpisodeMP4(c *gin.Context) {
 		go h.runBulkEpisodeMP4(run.RunID, rows)
 	}
 
-	c.JSON(http.StatusAccepted, DataOpsBulkEpisodeQAActionResponse{
+	c.JSON(http.StatusAccepted, DataOpsBulkEpisodeActionResponse{
 		Run:     run,
 		Message: fmt.Sprintf("%d episodes accepted for bulk MP4 export", len(rows)),
 	})
@@ -135,7 +135,7 @@ func (h *DataOpsHandler) DownloadBulkMP4(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bulk run is not an mp4 export"})
 		return
 	}
-	if run.Status != dataOpsBulkRunStatusCompleted {
+	if run.Status != dataOpsBulkRunStatusCompleted && run.Status != dataOpsBulkRunStatusCanceled {
 		c.JSON(http.StatusConflict, gin.H{"error": "bulk mp4 export is not completed"})
 		return
 	}
@@ -223,14 +223,31 @@ func (h *DataOpsHandler) selectBulkMP4EpisodeRows(ctx context.Context, q dataOps
 }
 
 func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4EpisodeRow) {
-	if _, err := h.markBulkRunRunning(context.Background(), runID); err != nil {
+	runCtx, finishRun := h.beginBulkRunExecution(runID)
+	defer finishRun()
+
+	startedRun, err := h.markBulkRunRunning(context.Background(), runID)
+	if err != nil {
 		logger.Printf("[DATA_OPS] Bulk MP4 failed to start: run_id=%s, err=%v", runID, err)
+		return
+	}
+	if startedRun.Status == dataOpsBulkRunStatusCancelRequested {
+		if err := h.writeEmptyBulkMP4Archive(runID); err != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 empty partial archive failed: run_id=%s err=%v", runID, err)
+			if _, updateErr := h.markBulkRunCancellationFailed(context.Background(), runID, fmt.Sprintf("failed to preserve partial MP4 archive: %v", err)); updateErr != nil {
+				logger.Printf("[DATA_OPS] Bulk MP4 cancellation failure update failed: run_id=%s err=%v", runID, updateErr)
+			}
+			return
+		}
+		if _, err := h.markBulkRunCanceled(context.Background(), runID); err != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 pre-start cancellation update failed: run_id=%s err=%v", runID, err)
+		}
 		return
 	}
 
 	workDir, err := os.MkdirTemp("", "keystone-bulk-mp4-*")
 	if err != nil {
-		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
+		h.markBulkMP4Failed(runID, err.Error())
 		return
 	}
 	defer func() {
@@ -241,24 +258,28 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 
 	mp4Dir := filepath.Join(workDir, "mp4")
 	if err := os.MkdirAll(mp4Dir, 0o750); err != nil {
-		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
+		h.markBulkMP4Failed(runID, err.Error())
 		return
 	}
 
 	zipPath := h.bulkMP4ZipPath(runID)
 	if err := os.MkdirAll(filepath.Dir(zipPath), 0o750); err != nil { // #nosec G703 -- zipPath is internally generated from run ID and os.TempDir.
-		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
+		h.markBulkMP4Failed(runID, err.Error())
 		return
 	}
 	// #nosec G703 -- zipPath is derived from an internally generated bulk run ID and os.TempDir.
-	_ = os.Remove(zipPath)
+	if err := os.Remove(zipPath); err != nil && !os.IsNotExist(err) {
+		logger.Printf("[DATA_OPS] Bulk MP4 stale archive cleanup failed: run_id=%s path=%s err=%v", runID, zipPath, err)
+	}
 
 	zipTempPath := zipPath + ".tmp"
 	// #nosec G703 -- zipTempPath is derived from an internally generated bulk run ID and os.TempDir.
-	_ = os.Remove(zipTempPath)
+	if err := os.Remove(zipTempPath); err != nil && !os.IsNotExist(err) {
+		logger.Printf("[DATA_OPS] Bulk MP4 stale temporary archive cleanup failed: run_id=%s path=%s err=%v", runID, zipTempPath, err)
+	}
 	zipFile, err := os.Create(zipTempPath) // #nosec G304,G703 -- zipTempPath is an internal temp file path, not user supplied.
 	if err != nil {
-		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
+		h.markBulkMP4Failed(runID, err.Error())
 		return
 	}
 	zipWriter := zip.NewWriter(zipFile)
@@ -269,24 +290,36 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		}
 		zipClosed = true
 		if err := zipWriter.Close(); err != nil {
-			_ = zipFile.Close()
+			if closeErr := zipFile.Close(); closeErr != nil {
+				return fmt.Errorf("close bulk MP4 zip writer: %w (file close also failed: %v)", err, closeErr)
+			}
 			return err
 		}
 		return zipFile.Close()
 	}
 	defer func() {
 		if !zipClosed {
-			_ = zipWriter.Close()
-			_ = zipFile.Close()
+			if err := zipWriter.Close(); err != nil {
+				logger.Printf("[DATA_OPS] Bulk MP4 deferred zip writer close failed: run_id=%s err=%v", runID, err)
+			}
+			if err := zipFile.Close(); err != nil {
+				logger.Printf("[DATA_OPS] Bulk MP4 deferred zip file close failed: run_id=%s err=%v", runID, err)
+			}
 		}
-		_ = os.Remove(zipTempPath)
+		if err := os.Remove(zipTempPath); err != nil && !os.IsNotExist(err) {
+			logger.Printf("[DATA_OPS] Bulk MP4 temporary archive cleanup failed: run_id=%s path=%s err=%v", runID, zipTempPath, err)
+		}
 	}()
 
 	mp4Count := 0
 	archiveNames := map[string]struct{}{}
 	var lastProgressPublishedAt time.Time
 	for _, row := range rows {
-		mp4Path, cleanup, err := h.convertEpisodeMP4(context.Background(), row, workDir, mp4Dir)
+		if runCtx.Err() != nil || !h.reserveBulkRunItem(runID) {
+			break
+		}
+
+		mp4Path, cleanup, err := h.convertBulkMP4Episode(context.Background(), row, workDir, mp4Dir)
 		outcome := dataOpsBulkQAEpisodePassed
 		if err != nil {
 			logger.Printf("[DATA_OPS] Bulk MP4 episode failed: run_id=%s episode=%d err=%v", runID, row.ID, err)
@@ -312,26 +345,71 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		}
 	}
 
+	cancellationRequested := runCtx.Err() != nil || h.bulkRunCancellationRequested(context.Background(), runID)
+	if cancellationRequested {
+		archiveErr := closeZip()
+		if archiveErr == nil {
+			// #nosec G703 -- both paths are internal temp paths derived from the generated bulk run ID.
+			if err := os.Rename(zipTempPath, zipPath); err != nil {
+				archiveErr = err
+			}
+		}
+		if archiveErr != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 partial archive finalize failed: run_id=%s err=%v", runID, archiveErr)
+			if _, updateErr := h.markBulkRunCancellationFailed(context.Background(), runID, fmt.Sprintf("failed to preserve partial MP4 archive: %v", archiveErr)); updateErr != nil {
+				logger.Printf("[DATA_OPS] Bulk MP4 cancellation failure update failed: run_id=%s err=%v", runID, updateErr)
+			}
+			return
+		}
+		finalRun, err := h.markBulkRunCanceled(context.Background(), runID)
+		if err != nil {
+			logger.Printf("[DATA_OPS] Bulk MP4 cancellation update failed: run_id=%s err=%v", runID, err)
+			return
+		}
+		logger.Printf("[DATA_OPS] Bulk MP4 canceled: run_id=%s total=%d processed=%d canceled=%d generated=%d", runID, len(rows), finalRun.ProcessedCount, finalRun.CanceledCount, mp4Count)
+		return
+	}
+
 	if mp4Count == 0 {
-		finalRun, err := h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, "no mp4 files generated")
-		if err == nil {
-			h.publishBulkRunEvent("bulk_run_failed", finalRun)
+		archiveErr := closeZip()
+		if archiveErr == nil {
+			// #nosec G703 -- both paths are internal temp paths derived from the generated bulk run ID.
+			archiveErr = os.Rename(zipTempPath, zipPath)
+		}
+		if archiveErr != nil {
+			h.markBulkMP4Failed(runID, fmt.Sprintf("no mp4 files generated; empty archive finalize failed: %v", archiveErr))
+			return
+		}
+		if h.bulkRunCancellationRequested(context.Background(), runID) {
+			if _, err := h.markBulkRunCanceled(context.Background(), runID); err != nil {
+				logger.Printf("[DATA_OPS] Bulk MP4 empty cancellation update failed: run_id=%s err=%v", runID, err)
+			}
+			return
+		}
+		h.markBulkMP4Failed(runID, "no mp4 files generated")
+		// #nosec G703 -- zipPath uses a server-generated bulk MP4 run ID and os.TempDir.
+		if err := os.Remove(zipPath); err != nil && !os.IsNotExist(err) {
+			logger.Printf("[DATA_OPS] Bulk MP4 empty failed archive cleanup failed: run_id=%s path=%s err=%v", runID, zipPath, err)
 		}
 		return
 	}
 	if err := closeZip(); err != nil {
-		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
+		h.markBulkMP4Failed(runID, err.Error())
 		return
 	}
 	// #nosec G703 -- both paths are internal temp paths derived from the generated bulk run ID.
 	if err := os.Rename(zipTempPath, zipPath); err != nil {
-		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, err.Error())
+		h.markBulkMP4Failed(runID, err.Error())
 		return
 	}
 
 	finalRun, err := h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusCompleted, "")
 	if err != nil {
 		logger.Printf("[DATA_OPS] Bulk MP4 completion update failed: run_id=%s err=%v", runID, err)
+		return
+	}
+	if finalRun.Status == dataOpsBulkRunStatusCanceled {
+		logger.Printf("[DATA_OPS] Bulk MP4 canceled while completing: run_id=%s total=%d processed=%d canceled=%d generated=%d", runID, len(rows), finalRun.ProcessedCount, finalRun.CanceledCount, mp4Count)
 		return
 	}
 	logger.Printf(
@@ -344,6 +422,53 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 		finalRun.ProcessingFailedCount,
 		zipPath,
 	)
+}
+
+func (h *DataOpsHandler) markBulkMP4Failed(runID string, errorMessage string) {
+	if _, err := h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, errorMessage); err != nil {
+		logger.Printf("[DATA_OPS] Bulk MP4 failure update failed: run_id=%s err=%v", runID, err)
+	}
+}
+
+func (h *DataOpsHandler) writeEmptyBulkMP4Archive(runID string) error {
+	zipPath := h.bulkMP4ZipPath(runID)
+	// #nosec G703 -- zipPath uses a server-generated bulk MP4 run ID and os.TempDir.
+	if err := os.MkdirAll(filepath.Dir(zipPath), 0o750); err != nil {
+		return fmt.Errorf("create bulk MP4 archive directory: %w", err)
+	}
+	zipFile, err := os.CreateTemp(filepath.Dir(zipPath), "keystone-bulk-mp4-empty-*.zip")
+	if err != nil {
+		return fmt.Errorf("create empty bulk MP4 archive: %w", err)
+	}
+	tempPath := zipFile.Name()
+	defer func() {
+		if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+			logger.Printf("[DATA_OPS] Empty bulk MP4 temporary archive cleanup failed: run_id=%s path=%s err=%v", runID, tempPath, err)
+		}
+	}()
+
+	zipWriter := zip.NewWriter(zipFile)
+	if err := zipWriter.Close(); err != nil {
+		if closeErr := zipFile.Close(); closeErr != nil {
+			return fmt.Errorf("close empty bulk MP4 archive: %w (file close also failed: %v)", err, closeErr)
+		}
+		return fmt.Errorf("close empty bulk MP4 archive: %w", err)
+	}
+	if err := zipFile.Close(); err != nil {
+		return fmt.Errorf("close empty bulk MP4 archive file: %w", err)
+	}
+	// #nosec G703 -- both paths are internal temp paths derived from the generated bulk run ID.
+	if err := os.Rename(tempPath, zipPath); err != nil {
+		return fmt.Errorf("finalize empty bulk MP4 archive: %w", err)
+	}
+	return nil
+}
+
+func (h *DataOpsHandler) convertBulkMP4Episode(ctx context.Context, row dataOpsBulkMP4EpisodeRow, workDir string, mp4Dir string) (string, func(), error) {
+	if h.bulkMP4Converter != nil {
+		return h.bulkMP4Converter(ctx, row, workDir, mp4Dir)
+	}
+	return h.convertEpisodeMP4(ctx, row, workDir, mp4Dir)
 }
 
 // DownloadEpisodeMP4 converts one episode MCAP and returns the generated MP4.

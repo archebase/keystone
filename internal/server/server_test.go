@@ -35,7 +35,7 @@ func TestAxonTransferWriteTimeoutFromConfig(t *testing.T) {
 }
 
 func TestHTTPHealthRoutes(t *testing.T) {
-	srv := New(&config.Config{
+	srv, err := New(&config.Config{
 		Server: config.ServerConfig{
 			BindAddr: ":8080",
 		},
@@ -48,6 +48,9 @@ func TestHTTPHealthRoutes(t *testing.T) {
 			ResponseTimeout: 1,
 		},
 	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	tests := []string{
 		"/",
@@ -69,7 +72,7 @@ func TestHTTPHealthRoutes(t *testing.T) {
 }
 
 func TestWebSocketHealthRoutes(t *testing.T) {
-	srv := New(&config.Config{
+	srv, err := New(&config.Config{
 		Server: config.ServerConfig{
 			BindAddr: ":8080",
 		},
@@ -82,6 +85,9 @@ func TestWebSocketHealthRoutes(t *testing.T) {
 			ResponseTimeout: 1,
 		},
 	}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 
 	tests := []struct {
 		name    string

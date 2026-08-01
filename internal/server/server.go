@@ -89,10 +89,10 @@ func loadBalancerHealthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// New creates a new server instance.
+// New creates a new server instance after recovering stale bulk runs.
 // db and s3Client are optional; pass nil to disable Verified ACK.
 // syncWorker is optional; pass nil to disable cloud sync APIs.
-func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *services.SyncWorker) *Server {
+func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *services.SyncWorker) (*Server, error) {
 	// Create Gin engine
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -165,8 +165,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		dcPlanHandler = handlers.NewDCPlanHandler(db, dcPlanSyncService)
 		dataOpsHandler = handlers.NewDataOpsHandler(db)
 		dataOpsHandler.SetBulkActionDeps(qaHandler, syncWorker)
-		if err := dataOpsHandler.InterruptActiveBulkQARuns(context.Background()); err != nil {
-			logger.Printf("[DATA_OPS] Failed to interrupt stale bulk QA runs: %v", err)
+		if err := dataOpsHandler.InterruptActiveBulkRuns(context.Background(), cfg.Sync.MaxRetries); err != nil {
+			return nil, fmt.Errorf("recover stale bulk runs: %w", err)
 		}
 		dataStatsHandler = handlers.NewDataProductionStatisticsHandler(db)
 		productionDashboardHandler = handlers.NewProductionDashboardHandler(db, recorderHub, transferHub)
@@ -229,7 +229,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		Handler:      s.buildRecorderWSRoutes(recorderHandler),
 	}
 
-	return s
+	return s, nil
 }
 
 // buildRoutes constructs the HTTP router

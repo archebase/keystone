@@ -253,6 +253,7 @@ var (
 	errSyncRetryExhausted     = errors.New("sync retry max retries exceeded")
 	errSyncAlreadyCompleted   = errors.New("sync already completed")
 	errSyncNonRetryableFailed = errors.New("sync latest failure is non-retryable")
+	errSyncCanceled           = errors.New("sync was canceled")
 
 	hilbertRawDataIDDestinationPrefix = "hilbert:raw_data_id:"
 )
@@ -536,14 +537,55 @@ func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error 
 // EnqueueEpisodeManual adds a specific episode ID for immediate sync processing,
 // allowing explicit API-triggered retries even after automatic retries are exhausted.
 func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisodeManual(ctx, episodeID, "")
+}
+
+// EnqueueEpisodeManualForBulkRun persists a manual sync request with its originating bulk run.
+func (w *SyncWorker) EnqueueEpisodeManualForBulkRun(ctx context.Context, episodeID int64, bulkRunID string) error {
+	bulkRunID = strings.TrimSpace(bulkRunID)
+	if bulkRunID == "" {
+		return fmt.Errorf("bulk run ID is required")
+	}
+	return w.enqueueEpisodeManual(ctx, episodeID, bulkRunID)
+}
+
+func (w *SyncWorker) enqueueEpisodeManual(ctx context.Context, episodeID int64, bulkRunID string) error {
 	if !w.running.Load() {
 		return ErrSyncWorkerNotRunning
 	}
-	if err := w.persistPendingSyncLog(ctx, episodeID, true); err != nil {
+	if err := w.persistPendingSyncLog(ctx, episodeID, true, bulkRunID); err != nil {
 		return err
 	}
 	w.enqueuePersistedEpisode(ctx, syncEnqueueRequest{episodeID: episodeID, manual: true})
 	return nil
+}
+
+// CancelBulkRun cancels durable sync work that has not started uploading yet.
+func (w *SyncWorker) CancelBulkRun(ctx context.Context, bulkRunID string) (int64, error) {
+	bulkRunID = strings.TrimSpace(bulkRunID)
+	if bulkRunID == "" {
+		return 0, fmt.Errorf("bulk run ID is required")
+	}
+	res, err := w.db.ExecContext(ctx, `
+		UPDATE sync_logs
+		SET status = 'canceled',
+		    error_message = COALESCE(error_message, 'bulk run canceled before upload started'),
+		    next_retry_at = NULL,
+		    completed_at = COALESCE(completed_at, ?)
+		WHERE bulk_run_id = ?
+		  AND (
+		    status = 'pending'
+		    OR (status = 'failed' AND next_retry_at IS NOT NULL AND attempt_count < ?)
+		  )
+	`, time.Now().UTC(), bulkRunID, w.cfg.MaxRetries)
+	if err != nil {
+		return 0, fmt.Errorf("cancel bulk sync logs: %w", err)
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read canceled bulk sync log count: %w", err)
+	}
+	return count, nil
 }
 
 // EnqueueEpisodeResync rejects already-synced episodes because Hilbert does not
@@ -588,7 +630,7 @@ func (w *SyncWorker) enqueuePersistedEpisode(ctx context.Context, req syncEnqueu
 	}
 }
 
-func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64, manual bool) error {
+func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64, manual bool, bulkRunID string) error {
 	if w.db == nil {
 		return nil
 	}
@@ -649,7 +691,7 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 		LIMIT 1
 	`+lockClause, episodeID)
 	if err == sql.ErrNoRows {
-		if err := insertPendingSyncLog(ctx, tx, episodeID, time.Now().UTC(), 0); err != nil {
+		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, time.Now().UTC(), 0); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -666,7 +708,7 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 		return fmt.Errorf("%w for episode %d", errSyncAlreadyCompleted, episodeID)
 	case "failed":
 		retryDue := latest.NextRetry.Valid && !latest.NextRetry.Time.After(now)
-		if latest.AttemptCount < w.cfg.MaxRetries && retryDue {
+		if bulkRunID == "" && latest.AttemptCount < w.cfg.MaxRetries && retryDue {
 			if err := promoteFailedSyncLogToPending(ctx, tx, latest.ID, now); err != nil {
 				return err
 			}
@@ -681,7 +723,15 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 		if !manual && !retryDue {
 			return fmt.Errorf("%w for episode %d", errSyncRetryBackoffActive, episodeID)
 		}
-		if err := insertPendingSyncLog(ctx, tx, episodeID, now, 0); err != nil {
+		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, now, 0); err != nil {
+			return err
+		}
+		return tx.Commit()
+	case "canceled":
+		if !manual {
+			return fmt.Errorf("%w for episode %d", errSyncCanceled, episodeID)
+		}
+		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, now, 0); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -690,11 +740,15 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	}
 }
 
-func insertPendingSyncLog(ctx context.Context, tx *sqlx.Tx, episodeID int64, queuedAt time.Time, attemptCount int) error {
+func insertPendingSyncLog(ctx context.Context, tx *sqlx.Tx, episodeID int64, bulkRunID string, queuedAt time.Time, attemptCount int) error {
+	var bulkRunValue interface{}
+	if strings.TrimSpace(bulkRunID) != "" {
+		bulkRunValue = strings.TrimSpace(bulkRunID)
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sync_logs (episode_id, status, attempt_count, started_at)
-		VALUES (?, 'pending', ?, ?)
-	`, episodeID, attemptCount, queuedAt); err != nil {
+		INSERT INTO sync_logs (episode_id, bulk_run_id, status, attempt_count, started_at)
+		VALUES (?, ?, 'pending', ?, ?)
+	`, episodeID, bulkRunValue, attemptCount, queuedAt); err != nil {
 		return fmt.Errorf("insert pending sync_log: %w", err)
 	}
 	return nil
@@ -738,7 +792,8 @@ func isSkippablePendingError(err error) bool {
 		errors.Is(err, errSyncRetryBackoffActive) ||
 		errors.Is(err, errSyncRetryExhausted) ||
 		errors.Is(err, errSyncAlreadyCompleted) ||
-		errors.Is(err, errSyncNonRetryableFailed)
+		errors.Is(err, errSyncNonRetryableFailed) ||
+		errors.Is(err, errSyncCanceled)
 }
 
 // EnqueuePendingEpisodes scans for all approved but un-synced episodes and enqueues them.
@@ -754,7 +809,7 @@ func (w *SyncWorker) EnqueuePendingEpisodes(ctx context.Context) (int, error) {
 	}
 	count := 0
 	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
+		if err := w.persistPendingSyncLog(ctx, id, false, ""); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
@@ -920,7 +975,7 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 	logger.Printf("[SYNC-WORKER] Found %d episodes to sync", len(ids))
 
 	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false); err != nil {
+		if err := w.persistPendingSyncLog(ctx, id, false, ""); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
@@ -1002,6 +1057,16 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFa
 		    WHERE sl.episode_id = e.id
 		      AND sl.status IN ('pending', 'in_progress')
 		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM sync_logs sl
+		    INNER JOIN (
+		      SELECT episode_id, MAX(id) AS latest_id
+		      FROM sync_logs
+		      GROUP BY episode_id
+		    ) t ON sl.episode_id = t.episode_id AND sl.id = t.latest_id
+		    WHERE sl.episode_id = e.id
+		      AND sl.status = 'canceled'
+		  )
 		  %s
 		ORDER BY e.created_at ASC
 		LIMIT ?
@@ -1079,7 +1144,7 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 	}
 
 	for _, row := range rows {
-		if err := w.persistPendingSyncLog(ctx, row.EpisodeID, false); err != nil {
+		if err := w.persistPendingSyncLog(ctx, row.EpisodeID, false, ""); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}
@@ -1762,6 +1827,8 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 			return 0, 0, fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
 		case "completed":
 			return 0, 0, fmt.Errorf("episode %d already has completed sync_log", episodeID)
+		case "canceled":
+			return 0, 0, fmt.Errorf("%w for episode %d", errSyncCanceled, episodeID)
 		case "failed":
 			retryDue := latest.NextRetry.Valid && !latest.NextRetry.Time.After(now)
 			if latest.AttemptCount < w.cfg.MaxRetries && retryDue {

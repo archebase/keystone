@@ -28,23 +28,44 @@ var validDataOpsSyncStatuses = map[string]struct{}{
 	"in_progress":        {},
 	"completed":          {},
 	"failed":             {},
+	"canceled":           {},
 }
 
 // DataOpsHandler handles data operations APIs for the admin workbench.
 type DataOpsHandler struct {
-	db            *sqlx.DB
-	qa            *EpisodeQAHandler
-	qaRunner      dataOpsEpisodeQARunner
-	syncWorker    *services.SyncWorker
-	bulkRunMu     sync.Mutex
-	bulkRunBroker *dataOpsBulkRunBroker
+	db         *sqlx.DB
+	qa         *EpisodeQAHandler
+	qaRunner   dataOpsEpisodeQARunner
+	syncWorker dataOpsBulkSyncWorker
+	bulkRunMu  sync.Mutex
+	// bulkRunBrokerMu protects lazy initialization of bulkRunBroker.
+	bulkRunBrokerMu sync.Mutex
+	bulkRunBroker   *dataOpsBulkRunBroker
+	// bulkRunCancelMu protects the in-memory execution state for active runs.
+	bulkRunCancelMu   sync.Mutex
+	bulkRunExecutions map[string]*dataOpsBulkRunExecution
+	bulkMP4Converter  func(context.Context, dataOpsBulkMP4EpisodeRow, string, string) (string, func(), error)
+}
+
+type dataOpsBulkRunExecution struct {
+	mu              sync.Mutex
+	cancel          context.CancelFunc
+	cancelRequested bool
+}
+
+type dataOpsBulkSyncWorker interface {
+	IsRunning() bool
+	MaxRetries() int
+	EnqueueEpisodeManualForBulkRun(ctx context.Context, episodeID int64, bulkRunID string) error
+	CancelBulkRun(ctx context.Context, bulkRunID string) (int64, error)
 }
 
 // NewDataOpsHandler creates a data operations handler.
 func NewDataOpsHandler(db *sqlx.DB) *DataOpsHandler {
 	return &DataOpsHandler{
-		db:            db,
-		bulkRunBroker: newDataOpsBulkRunBroker(),
+		db:                db,
+		bulkRunBroker:     newDataOpsBulkRunBroker(),
+		bulkRunExecutions: make(map[string]*dataOpsBulkRunExecution),
 	}
 }
 
@@ -55,7 +76,10 @@ func (h *DataOpsHandler) SetBulkActionDeps(qa *EpisodeQAHandler, syncWorker *ser
 	}
 	h.qa = qa
 	h.qaRunner = qa
-	h.syncWorker = syncWorker
+	h.syncWorker = nil
+	if syncWorker != nil {
+		h.syncWorker = syncWorker
+	}
 }
 
 // RegisterRoutes registers data operations routes under /data-ops.
@@ -70,27 +94,31 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/episodes/:id/mp4", h.DownloadEpisodeMP4)
 	apiV1.GET("/bulk-runs/current", h.GetCurrentBulkRun)
 	apiV1.GET("/bulk-runs/:run_id", h.GetBulkRun)
+	apiV1.POST("/bulk-runs/:run_id/cancel", h.CancelBulkRun)
 	apiV1.GET("/bulk-runs/:run_id/download", h.DownloadBulkMP4)
 	apiV1.GET("/bulk-runs/:run_id/stream", h.StreamBulkRun)
 }
 
 type dataOpsEpisodeQuery struct {
-	Pagination           PaginationParams
-	WorkspaceIDs         []int64
-	CreatedAtFrom        time.Time
-	CreatedAtTo          time.Time
-	HasCreatedAtFrom     bool
-	HasCreatedAtTo       bool
-	Keyword              string
-	QAStatuses           []string
-	SyncStatuses         []string
-	RobotDeviceIDs       []string
-	CollectorOperatorIDs []string
-	DCProjectIDs         []int64
-	DCTaskIDs            []int64
-	DCProjectName        string
-	DCTaskName           string
-	Label                string
+	Pagination            PaginationParams
+	HasExplicitEpisodeIDs bool
+	IncludedEpisodeIDs    []int64
+	ExcludedEpisodeIDs    []int64
+	WorkspaceIDs          []int64
+	CreatedAtFrom         time.Time
+	CreatedAtTo           time.Time
+	HasCreatedAtFrom      bool
+	HasCreatedAtTo        bool
+	Keyword               string
+	QAStatuses            []string
+	SyncStatuses          []string
+	RobotDeviceIDs        []string
+	CollectorOperatorIDs  []string
+	DCProjectIDs          []int64
+	DCTaskIDs             []int64
+	DCProjectName         string
+	DCTaskName            string
+	Label                 string
 }
 
 type dataOpsEpisodeRow struct {
@@ -164,7 +192,7 @@ type DataOpsEpisodeListResponse struct {
 // @Param        created_at_to          query     string  false  "created_at <= RFC3339"
 // @Param        q                      query     string  false  "Search episode/task/quality text"
 // @Param        qa_status              query     string  false  "Comma-separated QA statuses"
-// @Param        sync_status            query     string  false  "Comma-separated sync statuses: not_started,pending,in_progress,completed,failed"
+// @Param        sync_status            query     string  false  "Comma-separated sync statuses: not_started,pending,in_progress,completed,failed,canceled"
 // @Param        robot_device_id        query     string  false  "Comma-separated robot device IDs"
 // @Param        collector_operator_id  query     string  false  "Comma-separated collector operator IDs"
 // @Param        dc_project_id          query     string  false  "Comma-separated Hilbert project IDs"
@@ -273,7 +301,7 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 	}
 	for _, status := range syncStatuses {
 		if _, ok := validDataOpsSyncStatuses[status]; !ok {
-			return dataOpsEpisodeQuery{}, fmt.Errorf("sync_status must be one of not_started, pending, in_progress, completed, failed")
+			return dataOpsEpisodeQuery{}, fmt.Errorf("sync_status must be one of not_started, pending, in_progress, completed, failed, canceled")
 		}
 	}
 
@@ -355,6 +383,15 @@ func dataOpsEpisodeBaseFromSQL() string {
 func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 	where := " WHERE e.deleted_at IS NULL"
 	args := []interface{}{}
+	if q.HasExplicitEpisodeIDs {
+		if len(q.IncludedEpisodeIDs) == 0 {
+			where += " AND 1 = 0"
+		} else {
+			where, args = appendInt64InFilter(where, args, "e.id", q.IncludedEpisodeIDs)
+		}
+	} else {
+		where, args = appendInt64NotInFilter(where, args, "e.id", q.ExcludedEpisodeIDs)
+	}
 
 	if q.HasCreatedAtFrom {
 		where += " AND e.created_at >= ?"
@@ -392,6 +429,19 @@ func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 	}
 
 	return where, args
+}
+
+func appendInt64NotInFilter(whereClause string, args []interface{}, column string, values []int64) (string, []interface{}) {
+	if len(values) == 0 {
+		return whereClause, args
+	}
+
+	placeholders := make([]string, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	return whereClause + " AND " + column + " NOT IN (" + strings.Join(placeholders, ",") + ")", args
 }
 
 func dataOpsSyncStatusWhere(statuses []string) (string, []interface{}) {

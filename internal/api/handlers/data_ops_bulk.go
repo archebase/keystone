@@ -22,6 +22,11 @@ import (
 
 const dataOpsBulkQAConcurrency = 4
 
+const (
+	dataOpsBulkSelectionModeAllMatching = "all_matching"
+	dataOpsBulkSelectionModeExplicit    = "explicit"
+)
+
 // DataOpsBulkEpisodeFilters contains data-ops filters for bulk episode actions.
 type DataOpsBulkEpisodeFilters struct {
 	WorkspaceID         string `json:"workspace_id,omitempty"`
@@ -41,10 +46,18 @@ type DataOpsBulkEpisodeFilters struct {
 	Offset              string `json:"offset,omitempty"`
 }
 
+// DataOpsBulkEpisodeSelection narrows a filtered bulk operation to the current UI selection.
+type DataOpsBulkEpisodeSelection struct {
+	Mode               string  `json:"mode,omitempty"`
+	EpisodeIDs         []int64 `json:"episode_ids,omitempty"`
+	ExcludedEpisodeIDs []int64 `json:"excluded_episode_ids,omitempty"`
+}
+
 // DataOpsBulkEpisodeActionRequest is the request body for bulk preview and execute calls.
 type DataOpsBulkEpisodeActionRequest struct {
-	Confirm bool                      `json:"confirm,omitempty"`
-	Filters DataOpsBulkEpisodeFilters `json:"filters,omitempty"`
+	Confirm   bool                        `json:"confirm,omitempty"`
+	Filters   DataOpsBulkEpisodeFilters   `json:"filters,omitempty"`
+	Selection DataOpsBulkEpisodeSelection `json:"selection,omitempty"`
 }
 
 // DataOpsBulkSkippedBreakdownItem summarizes one skipped reason in a bulk preview.
@@ -67,13 +80,6 @@ type DataOpsBulkEpisodePreviewResponse struct {
 
 // DataOpsBulkEpisodeActionResponse acknowledges an accepted asynchronous bulk action.
 type DataOpsBulkEpisodeActionResponse struct {
-	Status       string `json:"status"`
-	MatchedCount int    `json:"matched_count"`
-	Message      string `json:"message"`
-}
-
-// DataOpsBulkEpisodeQAActionResponse acknowledges an accepted asynchronous bulk QA run.
-type DataOpsBulkEpisodeQAActionResponse struct {
 	Run     DataOpsBulkRunResponse `json:"run"`
 	Message string                 `json:"message"`
 }
@@ -169,7 +175,7 @@ func (h *DataOpsHandler) PreviewBulkEpisodeSync(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        request  body      DataOpsBulkEpisodeActionRequest  true  "Bulk QA filters and confirmation"
-// @Success      202      {object}  DataOpsBulkEpisodeQAActionResponse
+// @Success      202      {object}  DataOpsBulkEpisodeActionResponse
 // @Failure      400      {object}  map[string]string
 // @Failure      409      {object}  map[string]string
 // @Failure      503      {object}  map[string]string
@@ -222,7 +228,7 @@ func (h *DataOpsHandler) BulkRunEpisodeQA(c *gin.Context) {
 		go h.runBulkEpisodeQA(run.RunID, ids)
 	}
 
-	c.JSON(http.StatusAccepted, DataOpsBulkEpisodeQAActionResponse{
+	c.JSON(http.StatusAccepted, DataOpsBulkEpisodeActionResponse{
 		Run:     run,
 		Message: fmt.Sprintf("%d episodes accepted for bulk QA", len(ids)),
 	})
@@ -258,6 +264,22 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
 		return
 	}
 
+	h.bulkRunMu.Lock()
+	defer h.bulkRunMu.Unlock()
+
+	if current, exists, err := h.currentBulkRun(c.Request.Context(), dataOpsBulkRunActionSync); err != nil {
+		logger.Printf("[DATA_OPS] bulk sync current run lookup failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load current bulk run"})
+		return
+	} else if exists {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  "bulk sync already running",
+			"run_id": current.RunID,
+			"status": current.Status,
+		})
+		return
+	}
+
 	ids, err := h.selectBulkEpisodeIDs(c.Request.Context(), q)
 	if err != nil {
 		logger.Printf("[DATA_OPS] bulk sync ID snapshot failed: %v", err)
@@ -265,13 +287,21 @@ func (h *DataOpsHandler) BulkSyncEpisodes(c *gin.Context) {
 		return
 	}
 
-	logger.Printf("[DATA_OPS] Bulk sync accepted: matched=%d", len(ids))
-	go h.runBulkEpisodeSync(ids)
+	run, err := h.createBulkRun(c.Request.Context(), dataOpsBulkRunActionSync, int64(len(ids)))
+	if err != nil {
+		logger.Printf("[DATA_OPS] bulk sync run create failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create bulk sync run"})
+		return
+	}
+
+	logger.Printf("[DATA_OPS] Bulk sync accepted: run_id=%s total=%d", run.RunID, len(ids))
+	if len(ids) > 0 {
+		go h.runBulkEpisodeSync(run.RunID, ids)
+	}
 
 	c.JSON(http.StatusAccepted, DataOpsBulkEpisodeActionResponse{
-		Status:       "accepted",
-		MatchedCount: len(ids),
-		Message:      fmt.Sprintf("%d episodes accepted for bulk cloud sync", len(ids)),
+		Run:     run,
+		Message: fmt.Sprintf("%d episodes accepted for bulk cloud sync", len(ids)),
 	})
 }
 
@@ -322,7 +352,51 @@ func (h *DataOpsHandler) parseBulkEpisodeActionRequest(c *gin.Context, requireCo
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return req, dataOpsEpisodeQuery{}, false
 	}
+	switch req.Selection.Mode {
+	case "", dataOpsBulkSelectionModeAllMatching:
+		if len(req.Selection.EpisodeIDs) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "selection.episode_ids requires explicit mode"})
+			return req, dataOpsEpisodeQuery{}, false
+		}
+		q.ExcludedEpisodeIDs, err = normalizeDataOpsBulkSelectionIDs(
+			req.Selection.ExcludedEpisodeIDs,
+			"selection.excluded_episode_ids",
+		)
+	case dataOpsBulkSelectionModeExplicit:
+		if len(req.Selection.ExcludedEpisodeIDs) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "selection.excluded_episode_ids requires all_matching mode"})
+			return req, dataOpsEpisodeQuery{}, false
+		}
+		q.HasExplicitEpisodeIDs = true
+		q.IncludedEpisodeIDs, err = normalizeDataOpsBulkSelectionIDs(
+			req.Selection.EpisodeIDs,
+			"selection.episode_ids",
+		)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "selection.mode must be one of all_matching, explicit"})
+		return req, dataOpsEpisodeQuery{}, false
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return req, dataOpsEpisodeQuery{}, false
+	}
 	return req, q, true
+}
+
+func normalizeDataOpsBulkSelectionIDs(values []int64, fieldName string) ([]int64, error) {
+	seen := make(map[int64]struct{}, len(values))
+	out := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			return nil, fmt.Errorf("%s must contain positive integers", fieldName)
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsEpisodeQuery, error) {
@@ -346,7 +420,7 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 	}
 	for _, status := range syncStatuses {
 		if _, ok := validDataOpsSyncStatuses[status]; !ok {
-			return dataOpsEpisodeQuery{}, fmt.Errorf("sync_status must be one of not_started, pending, in_progress, completed, failed")
+			return dataOpsEpisodeQuery{}, fmt.Errorf("sync_status must be one of not_started, pending, in_progress, completed, failed, canceled")
 		}
 	}
 
@@ -589,8 +663,8 @@ func dataOpsBulkSyncPreviewSQL(fromSQL string, where string) string {
 	latestStatus := "COALESCE(latest_sync.status, '')"
 	synced := "(e.cloud_synced = TRUE OR " + latestStatus + " = 'completed')"
 	active := "(" + latestStatus + " IN ('pending', 'in_progress'))"
-	eligible := approved + " AND NOT " + synced + " AND (latest_sync.status IS NULL OR latest_sync.status = 'failed')"
-	unsupported := approved + " AND NOT " + synced + " AND latest_sync.status IS NOT NULL AND latest_sync.status NOT IN ('pending', 'in_progress', 'completed', 'failed')"
+	eligible := approved + " AND NOT " + synced + " AND (latest_sync.status IS NULL OR latest_sync.status IN ('failed', 'canceled'))"
+	unsupported := approved + " AND NOT " + synced + " AND latest_sync.status IS NOT NULL AND latest_sync.status NOT IN ('pending', 'in_progress', 'completed', 'failed', 'canceled')"
 
 	return `
 		SELECT
@@ -624,6 +698,9 @@ func dataOpsEpisodeIDSnapshotSQL(fromSQL string, where string) string {
 }
 
 func (h *DataOpsHandler) runBulkEpisodeQA(runID string, ids []int64) {
+	runCtx, finishRun := h.beginBulkRunExecution(runID)
+	defer finishRun()
+
 	matched := int64(len(ids))
 	if matched == 0 {
 		logger.Printf("[DATA_OPS] Bulk QA completed: run_id=%s total=0 processed=0 passed=0 qa_failed=0 processing_failed=0 skipped=0", runID)
@@ -632,11 +709,20 @@ func (h *DataOpsHandler) runBulkEpisodeQA(runID string, ids []int64) {
 	runner := h.bulkQARunner()
 	if runner == nil {
 		logger.Printf("[DATA_OPS] Bulk QA failed: run_id=%s, err=qa runner is not configured", runID)
-		_, _ = h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, "qa runner is not configured")
+		if _, err := h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusFailed, "qa runner is not configured"); err != nil {
+			logger.Printf("[DATA_OPS] Bulk QA failure update failed: run_id=%s err=%v", runID, err)
+		}
 		return
 	}
-	if _, err := h.markBulkRunRunning(context.Background(), runID); err != nil {
+	startedRun, err := h.markBulkRunRunning(context.Background(), runID)
+	if err != nil {
 		logger.Printf("[DATA_OPS] Bulk QA failed to start: run_id=%s, err=%v", runID, err)
+		return
+	}
+	if startedRun.Status == dataOpsBulkRunStatusCancelRequested {
+		if _, err := h.markBulkRunCanceled(context.Background(), runID); err != nil {
+			logger.Printf("[DATA_OPS] Bulk QA pre-start cancellation update failed: run_id=%s err=%v", runID, err)
+		}
 		return
 	}
 
@@ -654,6 +740,9 @@ func (h *DataOpsHandler) runBulkEpisodeQA(runID string, ids []int64) {
 		go func() {
 			defer wg.Done()
 			for episodeID := range jobs {
+				if !h.reserveBulkRunItem(runID) {
+					continue
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), defaultEpisodeQATimeout)
 				result, err := runner.RunEpisodeQASuite(ctx, episodeID, qaRunModeManual)
 				cancel()
@@ -682,7 +771,20 @@ func (h *DataOpsHandler) runBulkEpisodeQA(runID string, ids []int64) {
 
 	go func() {
 		for _, episodeID := range ids {
-			jobs <- episodeID
+			if runCtx.Err() != nil {
+				close(jobs)
+				wg.Wait()
+				close(results)
+				return
+			}
+			select {
+			case jobs <- episodeID:
+			case <-runCtx.Done():
+				close(jobs)
+				wg.Wait()
+				close(results)
+				return
+			}
 		}
 		close(jobs)
 		wg.Wait()
@@ -703,9 +805,23 @@ func (h *DataOpsHandler) runBulkEpisodeQA(runID string, ids []int64) {
 		}
 	}
 
+	if runCtx.Err() != nil || h.bulkRunCancellationRequested(context.Background(), runID) {
+		finalRun, err := h.markBulkRunCanceled(context.Background(), runID)
+		if err != nil {
+			logger.Printf("[DATA_OPS] Bulk QA cancellation update failed: run_id=%s err=%v", runID, err)
+			return
+		}
+		logger.Printf("[DATA_OPS] Bulk QA canceled: run_id=%s total=%d processed=%d canceled=%d", runID, matched, finalRun.ProcessedCount, finalRun.CanceledCount)
+		return
+	}
+
 	finalRun, err := h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusCompleted, "")
 	if err != nil {
 		logger.Printf("[DATA_OPS] Bulk QA completion update failed: run_id=%s err=%v", runID, err)
+		return
+	}
+	if finalRun.Status == dataOpsBulkRunStatusCanceled {
+		logger.Printf("[DATA_OPS] Bulk QA canceled while completing: run_id=%s total=%d processed=%d canceled=%d", runID, matched, finalRun.ProcessedCount, finalRun.CanceledCount)
 		return
 	}
 
@@ -729,15 +845,43 @@ func isBulkQASkippedError(err error) bool {
 		errors.Is(err, errEpisodeQASyncActive)
 }
 
-func (h *DataOpsHandler) runBulkEpisodeSync(ids []int64) {
+func (h *DataOpsHandler) runBulkEpisodeSync(runID string, ids []int64) {
+	runCtx, finishRun := h.beginBulkRunExecution(runID)
+	defer finishRun()
+
 	matched := int64(len(ids))
 	var attempted int64
 	var skipped int64
 	var failed int64
 
+	startedRun, err := h.markBulkRunRunning(context.Background(), runID)
+	if err != nil {
+		logger.Printf("[DATA_OPS] Bulk sync failed to start: run_id=%s err=%v", runID, err)
+		return
+	}
+	if startedRun.Status == dataOpsBulkRunStatusCancelRequested {
+		if _, err := h.markBulkRunCanceled(context.Background(), runID); err != nil {
+			logger.Printf("[DATA_OPS] Bulk sync pre-start cancellation update failed: run_id=%s err=%v", runID, err)
+		}
+		return
+	}
+
+	dispatching := true
 	for _, episodeID := range ids {
-		err := h.syncWorker.EnqueueEpisodeManual(context.Background(), episodeID)
+		select {
+		case <-runCtx.Done():
+			dispatching = false
+		default:
+		}
+		if !dispatching {
+			break
+		}
+
+		err := h.syncWorker.EnqueueEpisodeManualForBulkRun(runCtx, episodeID, runID)
 		if err != nil {
+			if runCtx.Err() != nil {
+				break
+			}
 			if isBulkSyncSkippedError(err) {
 				skipped++
 				continue
@@ -749,13 +893,123 @@ func (h *DataOpsHandler) runBulkEpisodeSync(ids []int64) {
 		attempted++
 	}
 
-	logger.Printf(
-		"[DATA_OPS] Bulk sync completed: matched=%d, attempted=%d, skipped=%d, failed=%d",
-		matched,
-		attempted,
-		skipped,
-		failed,
-	)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	cancelWake := runCtx.Done()
+	for {
+		cancellationRequested := runCtx.Err() != nil || h.bulkRunCancellationRequested(context.Background(), runID)
+		if cancellationRequested {
+			if _, err := h.syncWorker.CancelBulkRun(context.Background(), runID); err != nil {
+				logger.Printf("[DATA_OPS] Bulk sync pending cancellation retry failed: run_id=%s err=%v", runID, err)
+			}
+		}
+
+		run, active, err := h.refreshBulkSyncRun(context.Background(), runID, skipped, failed)
+		if err != nil {
+			logger.Printf("[DATA_OPS] Bulk sync progress update failed: run_id=%s err=%v", runID, err)
+		} else {
+			h.publishBulkRunEvent("bulk_run_progress", run)
+			cancellationRequested = cancellationRequested || run.Status == dataOpsBulkRunStatusCancelRequested
+			if active == 0 {
+				if cancellationRequested {
+					finalRun, err := h.markBulkRunCanceled(context.Background(), runID)
+					if err != nil {
+						logger.Printf("[DATA_OPS] Bulk sync cancellation update failed: run_id=%s err=%v", runID, err)
+						return
+					}
+					logger.Printf("[DATA_OPS] Bulk sync canceled: run_id=%s total=%d processed=%d canceled=%d", runID, matched, finalRun.ProcessedCount, finalRun.CanceledCount)
+					return
+				}
+
+				finalRun, err := h.markBulkRunTerminal(context.Background(), runID, dataOpsBulkRunStatusCompleted, "")
+				if err != nil {
+					logger.Printf("[DATA_OPS] Bulk sync completion update failed: run_id=%s err=%v", runID, err)
+					return
+				}
+				if finalRun.Status == dataOpsBulkRunStatusCanceled {
+					logger.Printf("[DATA_OPS] Bulk sync canceled while completing: run_id=%s total=%d processed=%d canceled=%d", runID, matched, finalRun.ProcessedCount, finalRun.CanceledCount)
+					return
+				}
+				logger.Printf("[DATA_OPS] Bulk sync completed: run_id=%s matched=%d attempted=%d skipped=%d failed=%d", runID, matched, attempted, skipped, failed)
+				return
+			}
+		}
+
+		cancelWake = waitForBulkSyncPoll(ticker.C, cancelWake, cancellationRequested)
+	}
+}
+
+func waitForBulkSyncPoll(ticker <-chan time.Time, cancelWake <-chan struct{}, cancellationRequested bool) <-chan struct{} {
+	if cancellationRequested {
+		cancelWake = nil
+	}
+	select {
+	case <-ticker:
+	case <-cancelWake:
+	}
+	return cancelWake
+}
+
+type dataOpsBulkSyncCounts struct {
+	Succeeded int64 `db:"succeeded_count"`
+	Failed    int64 `db:"failed_count"`
+	Canceled  int64 `db:"canceled_count"`
+	Active    int64 `db:"active_count"`
+}
+
+func (h *DataOpsHandler) refreshBulkSyncRun(ctx context.Context, runID string, dispatchSkipped int64, dispatchFailed int64) (DataOpsBulkRunResponse, int64, error) {
+	var counts dataOpsBulkSyncCounts
+	if err := h.db.GetContext(ctx, &counts, `
+		SELECT
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS succeeded_count,
+			COALESCE(SUM(CASE
+				WHEN status = 'failed' AND (next_retry_at IS NULL OR attempt_count >= ?) THEN 1
+				ELSE 0
+			END), 0) AS failed_count,
+			COALESCE(SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END), 0) AS canceled_count,
+			COALESCE(SUM(CASE
+				WHEN status IN ('pending', 'in_progress') THEN 1
+				WHEN status = 'failed' AND next_retry_at IS NOT NULL AND attempt_count < ? THEN 1
+				ELSE 0
+			END), 0) AS active_count
+		FROM sync_logs
+		WHERE bulk_run_id = ?
+	`, h.syncWorker.MaxRetries(), h.syncWorker.MaxRetries(), runID); err != nil {
+		return DataOpsBulkRunResponse{}, 0, fmt.Errorf("query bulk sync counts: %w", err)
+	}
+
+	processed := counts.Succeeded + counts.Failed + dispatchSkipped + dispatchFailed
+	run, err := h.loadBulkRun(ctx, runID)
+	if err != nil {
+		return DataOpsBulkRunResponse{}, 0, fmt.Errorf("load bulk sync run: %w", err)
+	}
+	if run.ProcessedCount == processed &&
+		run.PassedCount == counts.Succeeded &&
+		run.ProcessingFailedCount == counts.Failed+dispatchFailed &&
+		run.SkippedCount == dispatchSkipped &&
+		run.CanceledCount == counts.Canceled {
+		return run, counts.Active, nil
+	}
+
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
+	if _, err := h.db.ExecContext(ctx, `
+		UPDATE bulk_runs
+		SET processed_count = ?,
+		    passed_count = ?,
+		    processing_failed_count = ?,
+		    skipped_count = ?,
+		    canceled_count = ?,
+		    updated_at = ?
+		WHERE run_id = ? AND status IN (?, ?)
+	`, processed, counts.Succeeded, counts.Failed+dispatchFailed, dispatchSkipped, counts.Canceled,
+		h.dataOpsBulkRunNow(), runID, dataOpsBulkRunStatusRunning, dataOpsBulkRunStatusCancelRequested); err != nil {
+		return DataOpsBulkRunResponse{}, 0, fmt.Errorf("update bulk sync counts: %w", err)
+	}
+	run, err = h.loadBulkRun(ctx, runID)
+	if err != nil {
+		return DataOpsBulkRunResponse{}, 0, fmt.Errorf("load updated bulk sync run: %w", err)
+	}
+	return run, counts.Active, nil
 }
 
 func isBulkSyncSkippedError(err error) bool {

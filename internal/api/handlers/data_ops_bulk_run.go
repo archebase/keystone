@@ -12,22 +12,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"archebase.com/keystone-edge/internal/logger"
 )
 
 const (
-	dataOpsBulkRunActionQA  = "bulk_qa"
-	dataOpsBulkRunActionMP4 = "bulk_mp4"
+	dataOpsBulkRunActionQA   = "bulk_qa"
+	dataOpsBulkRunActionMP4  = "bulk_mp4"
+	dataOpsBulkRunActionSync = "bulk_sync"
 
-	dataOpsBulkRunStatusQueued      = "queued"
-	dataOpsBulkRunStatusRunning     = "running"
-	dataOpsBulkRunStatusCompleted   = "completed"
-	dataOpsBulkRunStatusFailed      = "failed"
-	dataOpsBulkRunStatusInterrupted = "interrupted"
+	dataOpsBulkRunStatusQueued          = "queued"
+	dataOpsBulkRunStatusRunning         = "running"
+	dataOpsBulkRunStatusCompleted       = "completed"
+	dataOpsBulkRunStatusFailed          = "failed"
+	dataOpsBulkRunStatusInterrupted     = "interrupted"
+	dataOpsBulkRunStatusCancelRequested = "cancel_requested"
+	dataOpsBulkRunStatusCanceled        = "canceled"
 )
 
 type dataOpsEpisodeQARunner interface {
@@ -120,7 +126,9 @@ type DataOpsBulkRunResponse struct {
 	QAFailedCount         int64      `json:"qa_failed_count"`
 	ProcessingFailedCount int64      `json:"processing_failed_count"`
 	SkippedCount          int64      `json:"skipped_count"`
+	CanceledCount         int64      `json:"canceled_count"`
 	StartedAt             *time.Time `json:"started_at"`
+	CancelRequestedAt     *time.Time `json:"cancel_requested_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 	FinishedAt            *time.Time `json:"finished_at"`
 	ErrorMessage          string     `json:"error_message"`
@@ -138,8 +146,10 @@ type dataOpsBulkRunRow struct {
 	QAFailedCount         int64          `db:"qa_failed_count"`
 	ProcessingFailedCount int64          `db:"processing_failed_count"`
 	SkippedCount          int64          `db:"skipped_count"`
+	CanceledCount         int64          `db:"canceled_count"`
 	ErrorMessage          sql.NullString `db:"error_message"`
 	StartedAt             sql.NullTime   `db:"started_at"`
+	CancelRequestedAt     sql.NullTime   `db:"cancel_requested_at"`
 	FinishedAt            sql.NullTime   `db:"finished_at"`
 	CreatedAt             time.Time      `db:"created_at"`
 	UpdatedAt             time.Time      `db:"updated_at"`
@@ -159,10 +169,8 @@ func (h *DataOpsHandler) bulkQARunner() dataOpsEpisodeQARunner {
 }
 
 func (h *DataOpsHandler) ensureBulkRunBroker() *dataOpsBulkRunBroker {
-	if h.bulkRunBroker == nil {
-		h.bulkRunMu.Lock()
-		defer h.bulkRunMu.Unlock()
-	}
+	h.bulkRunBrokerMu.Lock()
+	defer h.bulkRunBrokerMu.Unlock()
 	if h.bulkRunBroker == nil {
 		h.bulkRunBroker = newDataOpsBulkRunBroker()
 	}
@@ -199,6 +207,7 @@ func dataOpsBulkRunResponseFromRow(row dataOpsBulkRunRow) DataOpsBulkRunResponse
 		QAFailedCount:         row.QAFailedCount,
 		ProcessingFailedCount: row.ProcessingFailedCount,
 		SkippedCount:          row.SkippedCount,
+		CanceledCount:         row.CanceledCount,
 		UpdatedAt:             row.UpdatedAt.UTC(),
 	}
 	if row.ErrorMessage.Valid {
@@ -207,6 +216,10 @@ func dataOpsBulkRunResponseFromRow(row dataOpsBulkRunRow) DataOpsBulkRunResponse
 	if row.StartedAt.Valid {
 		startedAt := row.StartedAt.Time.UTC()
 		resp.StartedAt = &startedAt
+	}
+	if row.CancelRequestedAt.Valid {
+		cancelRequestedAt := row.CancelRequestedAt.Time.UTC()
+		resp.CancelRequestedAt = &cancelRequestedAt
 	}
 	if row.FinishedAt.Valid {
 		finishedAt := row.FinishedAt.Time.UTC()
@@ -254,18 +267,87 @@ func (h *DataOpsHandler) loadBulkRun(ctx context.Context, runID string) (DataOps
 	var row dataOpsBulkRunRow
 	if err := h.db.GetContext(ctx, &row, `
 		SELECT id, run_id, action, status, total_count, processed_count, passed_count,
-		       qa_failed_count, processing_failed_count, skipped_count, error_message,
-		       started_at, finished_at, created_at, updated_at
+		       qa_failed_count, processing_failed_count, skipped_count, canceled_count, error_message,
+		       started_at, cancel_requested_at, finished_at, created_at, updated_at
 		FROM bulk_runs
 		WHERE run_id = ?
 	`, runID); err != nil {
 		return DataOpsBulkRunResponse{}, err
 	}
 	resp := dataOpsBulkRunResponseFromRow(row)
-	if row.Action == dataOpsBulkRunActionMP4 && resp.Status == dataOpsBulkRunStatusCompleted {
-		resp.DownloadURL = h.bulkMP4DownloadURL(resp.RunID)
+	if row.Action == dataOpsBulkRunActionMP4 && (resp.Status == dataOpsBulkRunStatusCompleted || resp.Status == dataOpsBulkRunStatusCanceled) {
+		// #nosec G703 -- the path uses a server-generated run ID loaded from bulk_runs.
+		if _, err := os.Stat(h.bulkMP4ZipPath(resp.RunID)); err == nil {
+			resp.DownloadURL = h.bulkMP4DownloadURL(resp.RunID)
+		}
 	}
 	return resp, nil
+}
+
+// CancelBulkRun requests graceful cancellation of one active bulk run.
+//
+// @Summary      Cancel bulk run
+// @Description  Stops dispatching new items while allowing already-running items to finish.
+// @Tags         data-ops
+// @Produce      json
+// @Param        run_id  path      string  true  "Bulk run ID"
+// @Success      200     {object}  DataOpsBulkRunResponse
+// @Failure      404     {object}  map[string]string
+// @Failure      409     {object}  map[string]string
+// @Failure      503     {object}  map[string]string
+// @Failure      500     {object}  map[string]string
+// @Router       /data-ops/bulk-runs/{run_id}/cancel [post]
+func (h *DataOpsHandler) CancelBulkRun(c *gin.Context) {
+	if !h.ensureDataOpsDatabase(c) {
+		return
+	}
+
+	runID := strings.TrimSpace(c.Param("run_id"))
+	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
+	res, err := h.db.ExecContext(c.Request.Context(), `
+		UPDATE bulk_runs
+		SET status = ?, cancel_requested_at = COALESCE(cancel_requested_at, ?), updated_at = ?
+		WHERE run_id = ? AND status IN (?, ?, ?)
+	`, dataOpsBulkRunStatusCancelRequested, now, now, runID,
+		dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning, dataOpsBulkRunStatusCancelRequested)
+	if err != nil {
+		logger.Printf("[DATA_OPS] bulk run cancel update failed: run_id=%s err=%v", runID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel bulk run"})
+		return
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		logger.Printf("[DATA_OPS] bulk run cancel affected rows failed: run_id=%s err=%v", runID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel bulk run"})
+		return
+	}
+
+	run, err := h.loadBulkRun(c.Request.Context(), runID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "bulk run not found"})
+			return
+		}
+		logger.Printf("[DATA_OPS] bulk run reload after cancel failed: run_id=%s err=%v", runID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load bulk run"})
+		return
+	}
+	if affected == 0 && run.Status != dataOpsBulkRunStatusCancelRequested && run.Status != dataOpsBulkRunStatusCanceled {
+		c.JSON(http.StatusConflict, gin.H{"error": "bulk run is already finished", "run": run})
+		return
+	}
+	h.signalBulkRunCancellation(runID)
+	if run.Status == dataOpsBulkRunStatusCancelRequested {
+		h.publishBulkRunEvent("bulk_run_progress", run)
+	}
+	if run.Action == dataOpsBulkRunActionSync && h.syncWorker != nil {
+		if _, err := h.syncWorker.CancelBulkRun(c.Request.Context(), runID); err != nil {
+			// The persisted cancel request remains authoritative; the run monitor retries cleanup.
+			logger.Printf("[DATA_OPS] bulk sync pending cancellation failed: run_id=%s err=%v", runID, err)
+		}
+	}
+	c.JSON(http.StatusOK, run)
 }
 
 func (h *DataOpsHandler) markBulkRunRunning(ctx context.Context, runID string) (DataOpsBulkRunResponse, error) {
@@ -276,9 +358,13 @@ func (h *DataOpsHandler) markBulkRunRunning(ctx context.Context, runID string) (
 		SET status = ?, started_at = COALESCE(started_at, ?), updated_at = ?
 		WHERE run_id = ? AND status = ?
 	`, dataOpsBulkRunStatusRunning, now, now, runID, dataOpsBulkRunStatusQueued); err != nil {
-		return DataOpsBulkRunResponse{}, err
+		return DataOpsBulkRunResponse{}, fmt.Errorf("mark bulk run running: %w", err)
 	}
-	return h.loadBulkRun(ctx, runID)
+	run, err := h.loadBulkRun(ctx, runID)
+	if err != nil {
+		return DataOpsBulkRunResponse{}, fmt.Errorf("load running bulk run: %w", err)
+	}
+	return run, nil
 }
 
 func (h *DataOpsHandler) incrementBulkQARunCounts(ctx context.Context, runID string, outcome dataOpsBulkQAEpisodeOutcome) (DataOpsBulkRunResponse, error) {
@@ -308,26 +394,49 @@ func (h *DataOpsHandler) incrementBulkQARunCounts(ctx context.Context, runID str
 		    processing_failed_count = processing_failed_count + ?,
 		    skipped_count = skipped_count + ?,
 		    updated_at = ?
-		WHERE run_id = ? AND status = ?
-	`, passedDelta, qaFailedDelta, processingFailedDelta, skippedDelta, h.dataOpsBulkRunNow(), runID, dataOpsBulkRunStatusRunning); err != nil {
-		return DataOpsBulkRunResponse{}, err
+		WHERE run_id = ? AND status IN (?, ?)
+	`, passedDelta, qaFailedDelta, processingFailedDelta, skippedDelta, h.dataOpsBulkRunNow(), runID,
+		dataOpsBulkRunStatusRunning, dataOpsBulkRunStatusCancelRequested); err != nil {
+		return DataOpsBulkRunResponse{}, fmt.Errorf("increment bulk run counts: %w", err)
 	}
-	return h.loadBulkRun(ctx, runID)
+	run, err := h.loadBulkRun(ctx, runID)
+	if err != nil {
+		return DataOpsBulkRunResponse{}, fmt.Errorf("load bulk run after count update: %w", err)
+	}
+	return run, nil
 }
 
 func (h *DataOpsHandler) markBulkRunTerminal(ctx context.Context, runID string, status string, errorMessage string) (DataOpsBulkRunResponse, error) {
 	now := h.dataOpsBulkRunNow()
-	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
-	if _, err := h.db.ExecContext(ctx, `
-		UPDATE bulk_runs
-		SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
-		WHERE run_id = ?
-	`, status, errorMessage, now, now, runID); err != nil {
-		return DataOpsBulkRunResponse{}, err
+	if status == dataOpsBulkRunStatusFailed {
+		// #nosec G701 -- static SQL with placeholder-bound bulk run values.
+		if _, err := h.db.ExecContext(ctx, `
+			UPDATE bulk_runs
+			SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
+			WHERE run_id = ? AND status IN (?, ?, ?)
+		`, status, errorMessage, now, now, runID, dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning, dataOpsBulkRunStatusCancelRequested); err != nil {
+			return DataOpsBulkRunResponse{}, fmt.Errorf("mark failed bulk run terminal: %w", err)
+		}
+	} else {
+		// #nosec G701 -- static SQL with placeholder-bound bulk run values.
+		if _, err := h.db.ExecContext(ctx, `
+			UPDATE bulk_runs
+			SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
+			WHERE run_id = ? AND status IN (?, ?)
+		`, status, errorMessage, now, now, runID, dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning); err != nil {
+			return DataOpsBulkRunResponse{}, fmt.Errorf("mark bulk run terminal: %w", err)
+		}
 	}
 	run, err := h.loadBulkRun(ctx, runID)
 	if err != nil {
-		return DataOpsBulkRunResponse{}, err
+		return DataOpsBulkRunResponse{}, fmt.Errorf("load terminal bulk run: %w", err)
+	}
+	if run.Status == dataOpsBulkRunStatusCancelRequested {
+		canceledRun, err := h.markBulkRunCanceled(ctx, runID)
+		if err != nil {
+			return DataOpsBulkRunResponse{}, fmt.Errorf("finalize concurrent bulk run cancellation: %w", err)
+		}
+		return canceledRun, nil
 	}
 	if eventName, ok := dataOpsBulkRunTerminalEventName(run.Status); ok {
 		h.publishBulkRunEvent(eventName, run)
@@ -335,19 +444,186 @@ func (h *DataOpsHandler) markBulkRunTerminal(ctx context.Context, runID string, 
 	return run, nil
 }
 
-// InterruptActiveBulkQARuns marks stale in-flight bulk runs as interrupted on service startup.
-func (h *DataOpsHandler) InterruptActiveBulkQARuns(ctx context.Context) error {
+func (h *DataOpsHandler) markBulkRunCanceled(ctx context.Context, runID string) (DataOpsBulkRunResponse, error) {
+	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
+	res, err := h.db.ExecContext(ctx, `
+		UPDATE bulk_runs
+		SET status = ?,
+		    canceled_count = CASE
+		        WHEN total_count > processed_count THEN total_count - processed_count
+		        ELSE 0
+		    END,
+		    finished_at = COALESCE(finished_at, ?),
+		    updated_at = ?
+		WHERE run_id = ? AND status = ?
+	`, dataOpsBulkRunStatusCanceled, now, now, runID, dataOpsBulkRunStatusCancelRequested)
+	if err != nil {
+		return DataOpsBulkRunResponse{}, fmt.Errorf("mark bulk run canceled: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return DataOpsBulkRunResponse{}, fmt.Errorf("read canceled bulk run affected rows: %w", err)
+	}
+	run, err := h.loadBulkRun(ctx, runID)
+	if err != nil {
+		return DataOpsBulkRunResponse{}, fmt.Errorf("load canceled bulk run: %w", err)
+	}
+	if affected > 0 && run.Status == dataOpsBulkRunStatusCanceled {
+		h.publishBulkRunEvent("bulk_run_canceled", run)
+	}
+	return run, nil
+}
+
+func (h *DataOpsHandler) markBulkRunCancellationFailed(ctx context.Context, runID string, errorMessage string) (DataOpsBulkRunResponse, error) {
+	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
+	if _, err := h.db.ExecContext(ctx, `
+		UPDATE bulk_runs
+		SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
+		WHERE run_id = ? AND status = ?
+	`, dataOpsBulkRunStatusFailed, errorMessage, now, now, runID, dataOpsBulkRunStatusCancelRequested); err != nil {
+		return DataOpsBulkRunResponse{}, fmt.Errorf("mark bulk run cancellation failed: %w", err)
+	}
+	run, err := h.loadBulkRun(ctx, runID)
+	if err != nil {
+		return DataOpsBulkRunResponse{}, fmt.Errorf("load failed bulk run cancellation: %w", err)
+	}
+	if run.Status == dataOpsBulkRunStatusFailed {
+		h.publishBulkRunEvent("bulk_run_failed", run)
+	}
+	return run, nil
+}
+
+func (h *DataOpsHandler) beginBulkRunExecution(runID string) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	execution := &dataOpsBulkRunExecution{cancel: cancel}
+	h.bulkRunCancelMu.Lock()
+	if h.bulkRunExecutions == nil {
+		h.bulkRunExecutions = make(map[string]*dataOpsBulkRunExecution)
+	}
+	h.bulkRunExecutions[runID] = execution
+	h.bulkRunCancelMu.Unlock()
+
+	run, err := h.loadBulkRun(context.Background(), runID)
+	if err != nil {
+		logger.Printf("[DATA_OPS] bulk run cancellation state lookup failed: run_id=%s err=%v", runID, err)
+	} else if run.Status == dataOpsBulkRunStatusCancelRequested {
+		execution.requestCancellation()
+	}
+	return ctx, func() {
+		cancel()
+		h.bulkRunCancelMu.Lock()
+		delete(h.bulkRunExecutions, runID)
+		h.bulkRunCancelMu.Unlock()
+	}
+}
+
+func (h *DataOpsHandler) signalBulkRunCancellation(runID string) {
+	h.bulkRunCancelMu.Lock()
+	execution := h.bulkRunExecutions[runID]
+	h.bulkRunCancelMu.Unlock()
+	if execution != nil {
+		execution.requestCancellation()
+	}
+}
+
+func (h *DataOpsHandler) reserveBulkRunItem(runID string) bool {
+	h.bulkRunCancelMu.Lock()
+	execution := h.bulkRunExecutions[runID]
+	h.bulkRunCancelMu.Unlock()
+	if execution == nil {
+		return false
+	}
+	return execution.reserveItem()
+}
+
+func (e *dataOpsBulkRunExecution) requestCancellation() {
+	e.mu.Lock()
+	e.cancelRequested = true
+	e.cancel()
+	e.mu.Unlock()
+}
+
+func (e *dataOpsBulkRunExecution) reserveItem() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.cancelRequested
+}
+
+func (h *DataOpsHandler) bulkRunCancellationRequested(ctx context.Context, runID string) bool {
+	run, err := h.loadBulkRun(ctx, runID)
+	if err != nil {
+		logger.Printf("[DATA_OPS] bulk run cancellation check failed: run_id=%s err=%v", runID, err)
+		return false
+	}
+	return run.Status == dataOpsBulkRunStatusCancelRequested || run.Status == dataOpsBulkRunStatusCanceled
+}
+
+// InterruptActiveBulkRuns recovers canceled sync runs, then marks the remaining stale
+// in-flight bulk runs as interrupted on service startup.
+func (h *DataOpsHandler) InterruptActiveBulkRuns(ctx context.Context, maxSyncRetries int) error {
 	if h == nil || h.db == nil {
 		return nil
 	}
 	now := h.dataOpsBulkRunNow()
+	tx, err := h.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin bulk run startup recovery: %w", err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			logger.Printf("[DATA_OPS] bulk run startup recovery rollback failed: %v", err)
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE sync_logs
+		SET status = 'canceled',
+		    error_message = COALESCE(error_message, 'bulk run cancellation recovered after service restart'),
+		    next_retry_at = NULL,
+		    completed_at = COALESCE(completed_at, ?)
+		WHERE bulk_run_id IN (
+		    SELECT run_id
+		    FROM bulk_runs
+		    WHERE action = ? AND status = ?
+		)
+		  AND (
+		    status = 'pending'
+		    OR (status = 'failed' AND next_retry_at IS NOT NULL AND attempt_count < ?)
+		  )
+	`, now, dataOpsBulkRunActionSync, dataOpsBulkRunStatusCancelRequested, maxSyncRetries); err != nil {
+		return fmt.Errorf("cancel queued sync work during bulk run startup recovery: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE bulk_runs
+		SET status = ?,
+		    canceled_count = CASE
+		        WHEN total_count > processed_count THEN total_count - processed_count
+		        ELSE 0
+		    END,
+		    finished_at = COALESCE(finished_at, ?),
+		    updated_at = ?
+		WHERE action = ? AND status = ?
+	`, dataOpsBulkRunStatusCanceled, now, now, dataOpsBulkRunActionSync, dataOpsBulkRunStatusCancelRequested); err != nil {
+		return fmt.Errorf("finalize canceled sync runs during bulk run startup recovery: %w", err)
+	}
+
 	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
-	_, err := h.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
-		WHERE action IN (?, ?) AND status IN (?, ?)
-	`, dataOpsBulkRunStatusInterrupted, "service restarted before bulk action completed", now, now, dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning)
-	return err
+		WHERE action IN (?, ?, ?) AND status IN (?, ?, ?)
+	`, dataOpsBulkRunStatusInterrupted, "service restarted before bulk action completed", now, now,
+		dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync,
+		dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning, dataOpsBulkRunStatusCancelRequested); err != nil {
+		return fmt.Errorf("interrupt active bulk runs during startup recovery: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit bulk run startup recovery: %w", err)
+	}
+	return nil
 }
 
 // GetBulkRun returns the latest stored snapshot for one bulk run.
@@ -384,7 +660,7 @@ func (h *DataOpsHandler) GetBulkRun(c *gin.Context) {
 // @Description  Returns the active bulk run snapshot, or 204 when no run is active.
 // @Tags         data-ops
 // @Produce      json
-// @Param        action  query     string  true  "Bulk action: bulk_qa or bulk_mp4"
+// @Param        action  query     string  true  "Bulk action: bulk_qa, bulk_mp4, or bulk_sync"
 // @Success      200     {object}  DataOpsBulkRunResponse
 // @Success      204
 // @Failure      400     {object}  map[string]string
@@ -397,7 +673,7 @@ func (h *DataOpsHandler) GetCurrentBulkRun(c *gin.Context) {
 	}
 	action := c.Query("action")
 	if !isAllowedDataOpsBulkRunAction(action) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be bulk_qa or bulk_mp4"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be bulk_qa, bulk_mp4, or bulk_sync"})
 		return
 	}
 
@@ -488,13 +764,13 @@ func (h *DataOpsHandler) currentBulkRun(ctx context.Context, action string) (Dat
 	var row dataOpsBulkRunRow
 	if err := h.db.GetContext(ctx, &row, `
 		SELECT id, run_id, action, status, total_count, processed_count, passed_count,
-		       qa_failed_count, processing_failed_count, skipped_count, error_message,
-		       started_at, finished_at, created_at, updated_at
+		       qa_failed_count, processing_failed_count, skipped_count, canceled_count, error_message,
+		       started_at, cancel_requested_at, finished_at, created_at, updated_at
 		FROM bulk_runs
-		WHERE action = ? AND status IN (?, ?)
+		WHERE action = ? AND status IN (?, ?, ?)
 		ORDER BY updated_at DESC, id DESC
 		LIMIT 1
-	`, action, dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning); err != nil {
+		`, action, dataOpsBulkRunStatusQueued, dataOpsBulkRunStatusRunning, dataOpsBulkRunStatusCancelRequested); err != nil {
 		if err == sql.ErrNoRows {
 			return DataOpsBulkRunResponse{}, false, nil
 		}
@@ -505,7 +781,7 @@ func (h *DataOpsHandler) currentBulkRun(ctx context.Context, action string) (Dat
 
 func isAllowedDataOpsBulkRunAction(action string) bool {
 	switch action {
-	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4:
+	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync:
 		return true
 	default:
 		return false
@@ -520,6 +796,8 @@ func dataOpsBulkRunTerminalEventName(status string) (string, bool) {
 		return "bulk_run_failed", true
 	case dataOpsBulkRunStatusInterrupted:
 		return "bulk_run_interrupted", true
+	case dataOpsBulkRunStatusCanceled:
+		return "bulk_run_canceled", true
 	default:
 		return "", false
 	}
@@ -527,7 +805,7 @@ func dataOpsBulkRunTerminalEventName(status string) (string, bool) {
 
 func isAllowedDataOpsBulkRunSSEEventName(eventName string) bool {
 	switch eventName {
-	case "bulk_run_snapshot", "bulk_run_progress", "bulk_run_completed", "bulk_run_failed", "bulk_run_interrupted", "ping":
+	case "bulk_run_snapshot", "bulk_run_progress", "bulk_run_completed", "bulk_run_failed", "bulk_run_interrupted", "bulk_run_canceled", "ping":
 		return true
 	default:
 		return false
