@@ -387,6 +387,7 @@ func (h *DataOpsHandler) runBulkEpisodeMP4(runID string, rows []dataOpsBulkMP4Ep
 			return
 		}
 		h.markBulkMP4Failed(runID, "no mp4 files generated")
+		// #nosec G703 -- zipPath uses a server-generated bulk MP4 run ID and os.TempDir.
 		if err := os.Remove(zipPath); err != nil && !os.IsNotExist(err) {
 			logger.Printf("[DATA_OPS] Bulk MP4 empty failed archive cleanup failed: run_id=%s path=%s err=%v", runID, zipPath, err)
 		}
@@ -431,6 +432,7 @@ func (h *DataOpsHandler) markBulkMP4Failed(runID string, errorMessage string) {
 
 func (h *DataOpsHandler) writeEmptyBulkMP4Archive(runID string) error {
 	zipPath := h.bulkMP4ZipPath(runID)
+	// #nosec G703 -- zipPath uses a server-generated bulk MP4 run ID and os.TempDir.
 	if err := os.MkdirAll(filepath.Dir(zipPath), 0o750); err != nil {
 		return fmt.Errorf("create bulk MP4 archive directory: %w", err)
 	}

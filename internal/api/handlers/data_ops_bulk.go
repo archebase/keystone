@@ -991,6 +991,7 @@ func (h *DataOpsHandler) refreshBulkSyncRun(ctx context.Context, runID string, d
 		return run, counts.Active, nil
 	}
 
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 	if _, err := h.db.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET processed_count = ?,

@@ -276,6 +276,7 @@ func (h *DataOpsHandler) loadBulkRun(ctx context.Context, runID string) (DataOps
 	}
 	resp := dataOpsBulkRunResponseFromRow(row)
 	if row.Action == dataOpsBulkRunActionMP4 && (resp.Status == dataOpsBulkRunStatusCompleted || resp.Status == dataOpsBulkRunStatusCanceled) {
+		// #nosec G703 -- the path uses a server-generated run ID loaded from bulk_runs.
 		if _, err := os.Stat(h.bulkMP4ZipPath(resp.RunID)); err == nil {
 			resp.DownloadURL = h.bulkMP4DownloadURL(resp.RunID)
 		}
@@ -303,6 +304,7 @@ func (h *DataOpsHandler) CancelBulkRun(c *gin.Context) {
 
 	runID := strings.TrimSpace(c.Param("run_id"))
 	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 	res, err := h.db.ExecContext(c.Request.Context(), `
 		UPDATE bulk_runs
 		SET status = ?, cancel_requested_at = COALESCE(cancel_requested_at, ?), updated_at = ?
@@ -407,6 +409,7 @@ func (h *DataOpsHandler) incrementBulkQARunCounts(ctx context.Context, runID str
 func (h *DataOpsHandler) markBulkRunTerminal(ctx context.Context, runID string, status string, errorMessage string) (DataOpsBulkRunResponse, error) {
 	now := h.dataOpsBulkRunNow()
 	if status == dataOpsBulkRunStatusFailed {
+		// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 		if _, err := h.db.ExecContext(ctx, `
 			UPDATE bulk_runs
 			SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
@@ -443,6 +446,7 @@ func (h *DataOpsHandler) markBulkRunTerminal(ctx context.Context, runID string, 
 
 func (h *DataOpsHandler) markBulkRunCanceled(ctx context.Context, runID string) (DataOpsBulkRunResponse, error) {
 	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 	res, err := h.db.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET status = ?,
@@ -473,6 +477,7 @@ func (h *DataOpsHandler) markBulkRunCanceled(ctx context.Context, runID string) 
 
 func (h *DataOpsHandler) markBulkRunCancellationFailed(ctx context.Context, runID string, errorMessage string) (DataOpsBulkRunResponse, error) {
 	now := h.dataOpsBulkRunNow()
+	// #nosec G701 -- static SQL with placeholder-bound bulk run values.
 	if _, err := h.db.ExecContext(ctx, `
 		UPDATE bulk_runs
 		SET status = ?, error_message = ?, finished_at = COALESCE(finished_at, ?), updated_at = ?
