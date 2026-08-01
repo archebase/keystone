@@ -801,6 +801,38 @@ func TestCancelBulkRunRequestsCancellationIdempotently(t *testing.T) {
 	}
 }
 
+func TestCancelBulkRunPublishesCancelRequestedProgress(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := NewDataOpsHandler(db)
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api/v1/data-ops"))
+
+	insertDataOpsBulkRunForTest(t, db, "bulk_qa_cancel_event", dataOpsBulkRunStatusRunning)
+	events, unsubscribe := h.bulkRunBroker.Subscribe("bulk_qa_cancel_event", 1)
+	defer unsubscribe()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/data-ops/bulk-runs/bulk_qa_cancel_event/cancel", nil)
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case event := <-events:
+		if event.name != "bulk_run_progress" {
+			t.Fatalf("event name = %q, want bulk_run_progress", event.name)
+		}
+		if event.run.Status != dataOpsBulkRunStatusCancelRequested || event.run.CancelRequestedAt == nil {
+			t.Fatalf("event run = %+v, want cancel_requested with cancel_requested_at", event.run)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel request did not publish bulk run progress")
+	}
+}
+
 func TestBulkRunTerminalUpdateFinalizesConcurrentCancellation(t *testing.T) {
 	db := setupDataOpsBulkPreviewTestDB(t)
 	h := NewDataOpsHandler(db)

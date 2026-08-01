@@ -169,10 +169,8 @@ func (h *DataOpsHandler) bulkQARunner() dataOpsEpisodeQARunner {
 }
 
 func (h *DataOpsHandler) ensureBulkRunBroker() *dataOpsBulkRunBroker {
-	if h.bulkRunBroker == nil {
-		h.bulkRunMu.Lock()
-		defer h.bulkRunMu.Unlock()
-	}
+	h.bulkRunBrokerMu.Lock()
+	defer h.bulkRunBrokerMu.Unlock()
 	if h.bulkRunBroker == nil {
 		h.bulkRunBroker = newDataOpsBulkRunBroker()
 	}
@@ -338,6 +336,9 @@ func (h *DataOpsHandler) CancelBulkRun(c *gin.Context) {
 		return
 	}
 	h.signalBulkRunCancellation(runID)
+	if run.Status == dataOpsBulkRunStatusCancelRequested {
+		h.publishBulkRunEvent("bulk_run_progress", run)
+	}
 	if run.Action == dataOpsBulkRunActionSync && h.syncWorker != nil {
 		if _, err := h.syncWorker.CancelBulkRun(c.Request.Context(), runID); err != nil {
 			// The persisted cancel request remains authoritative; the run monitor retries cleanup.

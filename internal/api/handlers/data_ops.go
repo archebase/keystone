@@ -33,12 +33,14 @@ var validDataOpsSyncStatuses = map[string]struct{}{
 
 // DataOpsHandler handles data operations APIs for the admin workbench.
 type DataOpsHandler struct {
-	db            *sqlx.DB
-	qa            *EpisodeQAHandler
-	qaRunner      dataOpsEpisodeQARunner
-	syncWorker    dataOpsBulkSyncWorker
-	bulkRunMu     sync.Mutex
-	bulkRunBroker *dataOpsBulkRunBroker
+	db         *sqlx.DB
+	qa         *EpisodeQAHandler
+	qaRunner   dataOpsEpisodeQARunner
+	syncWorker dataOpsBulkSyncWorker
+	bulkRunMu  sync.Mutex
+	// bulkRunBrokerMu protects lazy initialization of bulkRunBroker.
+	bulkRunBrokerMu sync.Mutex
+	bulkRunBroker   *dataOpsBulkRunBroker
 	// bulkRunCancelMu protects the in-memory execution state for active runs.
 	bulkRunCancelMu   sync.Mutex
 	bulkRunExecutions map[string]*dataOpsBulkRunExecution
