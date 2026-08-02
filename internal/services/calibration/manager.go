@@ -26,6 +26,7 @@ type Manager struct {
 	now     func() time.Time
 
 	runnerMu     sync.Mutex
+	configMu     sync.RWMutex
 	runnerCancel context.CancelFunc
 	runnerDone   chan struct{}
 	wake         chan struct{}
@@ -55,7 +56,13 @@ func (m *Manager) Start(ctx context.Context, captureID, actor string) (Capture, 
 	if captureID == "" {
 		return Capture{}, false, ErrCaptureNotFound
 	}
-
+	currentConfig, err := m.CurrentProcessingConfig(ctx)
+	if err != nil {
+		return Capture{}, false, err
+	}
+	if currentConfig.ImageRef == "" {
+		return Capture{}, false, ErrImageNotConfigured
+	}
 	tx, err := m.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return Capture{}, false, fmt.Errorf("begin calibration admission: %w", err)
@@ -227,6 +234,7 @@ const captureSelect = `
 	       COALESCE(c.object_etag, '') AS object_etag,
 	       COALESCE(c.source, '') AS source,
 	       COALESCE(c.local_operator, '') AS local_operator,
+	       COALESCE(c.processor_config_revision_id, 0) AS processor_config_revision_id,
 	       COALESCE(c.processor_image, '') AS processor_image,
 	       COALESCE(c.source_etag, '') AS source_etag,
 	       COALESCE(c.orbit_submission_id, '') AS orbit_submission_id,

@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -26,8 +25,6 @@ const (
 	processingCommand = "/app/run_calibration.py"
 	resultFileName    = "result.json"
 )
-
-var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // ReconcileOnce advances at most one durable Capture state transition.
 func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
@@ -55,6 +52,8 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 
 	switch candidate.Status {
 	case StatusQueued:
+		m.configMu.RLock()
+		defer m.configMu.RUnlock()
 		atCapacity, err := m.atOrbitCapacity(ctx)
 		if err != nil {
 			return true, err
@@ -75,8 +74,9 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) atOrbitCapacity(ctx context.Context) (bool, error) {
-	if m.cfg.MaxConcurrent <= 0 {
-		return false, nil
+	current, err := m.CurrentProcessingConfig(ctx)
+	if err != nil {
+		return false, fmt.Errorf("load calibration concurrency setting: %w", err)
 	}
 	var active int
 	if err := m.db.GetContext(ctx, &active, `
@@ -85,7 +85,7 @@ func (m *Manager) atOrbitCapacity(ctx context.Context) (bool, error) {
 	`, StatusSubmitting, StatusPending, StatusRunning); err != nil {
 		return false, fmt.Errorf("count active calibration jobs: %w", err)
 	}
-	return active >= m.cfg.MaxConcurrent, nil
+	return active >= current.MaxConcurrent, nil
 }
 
 func (m *Manager) freezeQueued(ctx context.Context, capturePK int64) error {
@@ -95,9 +95,16 @@ func (m *Manager) freezeQueued(ctx context.Context, capturePK int64) error {
 	if m.objects == nil {
 		return m.failCapture(ctx, capturePK, StatusQueued, "TOS object reader is not configured")
 	}
-	image, err := validateImageRef(m.cfg.ProcessorImage, m.cfg.AllowedRepositories)
+	currentConfig, err := m.CurrentProcessingConfig(ctx)
 	if err != nil {
-		return m.failCapture(ctx, capturePK, StatusQueued, fmt.Sprintf("invalid calibration image: %v", err))
+		return err
+	}
+	if currentConfig.ImageRef == "" {
+		return ErrImageNotConfigured
+	}
+	image, err := validateProcessingImageRef(currentConfig.ImageRef)
+	if err != nil {
+		return fmt.Errorf("current calibration image is invalid: %w", err)
 	}
 	var capture Capture
 	if err := m.db.GetContext(ctx, &capture, captureSelect+` WHERE c.id = ?`, capturePK); err != nil {
@@ -152,11 +159,11 @@ func (m *Manager) freezeQueued(ctx context.Context, capturePK int64) error {
 	now := m.now().UTC()
 	result, err := m.db.ExecContext(ctx, `
 		UPDATE calibration_captures
-		SET status = ?, processor_image = ?, source_etag = ?,
+		SET status = ?, processor_config_revision_id = ?, processor_image = ?, source_etag = ?,
 		    orbit_submission_id = ?, orbit_request = ?, reconcile_after = NULL,
 		    calibration_error = NULL, updated_at = ?
 		WHERE id = ? AND status = ?
-	`, StatusSubmitting, image, strings.TrimSpace(sourceETag), submissionID, string(requestJSON), now, capturePK, StatusQueued)
+	`, StatusSubmitting, currentConfig.ID, image, strings.TrimSpace(sourceETag), submissionID, string(requestJSON), now, capturePK, StatusQueued)
 	if err != nil {
 		return fmt.Errorf("freeze calibration Orbit request: %w", err)
 	}
@@ -468,21 +475,6 @@ func (m *Manager) failCapture(ctx context.Context, capturePK int64, expectedStat
 		return fmt.Errorf("fail calibration capture: %w", err)
 	}
 	return fmt.Errorf("%s", message)
-}
-
-func validateImageRef(raw string, allowedRepositories []string) (string, error) {
-	image := strings.TrimSpace(raw)
-	parts := strings.Split(image, "@sha256:")
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || !sha256Pattern.MatchString(strings.ToLower(parts[1])) {
-		return "", fmt.Errorf("image must use an immutable sha256 digest")
-	}
-	repository := strings.TrimSpace(parts[0])
-	for _, allowed := range allowedRepositories {
-		if repository == strings.TrimSpace(allowed) {
-			return repository + "@sha256:" + strings.ToLower(parts[1]), nil
-		}
-	}
-	return "", fmt.Errorf("image repository is not allowed")
 }
 
 func validateOrbitJob(job orbitapi.Job, request orbitapi.SubmitRequest) error {

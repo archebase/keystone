@@ -1205,6 +1205,27 @@ SPDX-License-Identifier: MulanPSL-2.0
             <span class="route-desc">admin JWT；把已上传 Capture 加入 Orbit 标定队列，重复调用保持幂等。</span>
           </div>
         </div>
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/processing-settings/calibration
+            <span class="route-desc">admin JWT；读取当前标定镜像、最大并发、Revision 和修改人。</span>
+          </div>
+        </div>
+        <div class="route-line">
+          <span class="method">PUT</span>
+          <div class="route-path">
+            /api/v1/processing-settings/calibration
+            <span class="route-desc">admin JWT；以 expected revision 原子更新镜像 digest 与最大并发。</span>
+          </div>
+        </div>
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/processing-settings/calibration/history
+            <span class="route-desc">admin JWT；分页读取不可删除的标定处理设置历史。</span>
+          </div>
+        </div>
       </div>
 
       <div class="code-frame">
@@ -1354,17 +1375,14 @@ SPDX-License-Identifier: MulanPSL-2.0
         </table>
       </div>
 
-      <h3>Orbit 占位作业配置</h3>
+      <h3>Orbit 占位作业部署配置</h3>
       <div class="code-frame">
         <span class="code-label">KEYSTONE ENV</span>
         <pre>KEYSTONE_CALIBRATION_PROCESSING_ENABLED=true
 KEYSTONE_ORBIT_BASE_URL=http://orbit.archebase-system.svc.cluster.local:8080
-KEYSTONE_CALIBRATION_IMAGE=registry.example/calibration@sha256:&lt;64-hex-digest&gt;
-KEYSTONE_CALIBRATION_ALLOWED_REPOSITORIES=registry.example/calibration
-KEYSTONE_CALIBRATION_MAX_CONCURRENT=2
 KEYSTONE_CALIBRATION_POLL_INTERVAL_SECONDS=5</pre>
       </div>
-      <p>镜像必须使用不可变的 <code>@sha256:</code> 引用，并属于允许的仓库。占位镜像由 <code>jobs/calibration-placeholder/Dockerfile</code> 构建；真实标定算法准备好后，只需发布新镜像并更新镜像摘要。</p>
+      <p>标定镜像和最大并发不再通过环境变量配置。管理员在 Synapse 的“系统设置 → 设备标定”中保存不可变的 <code>@sha256:</code> 镜像引用；Keystone 生成带修改人和时间的数据库 Revision，并在 Capture 提交 Orbit 前冻结 Revision 和镜像。占位镜像由 <code>jobs/calibration-placeholder/Dockerfile</code> 构建；真实算法准备好后，只需发布新镜像并保存新的设置 Revision。</p>
 
       <div class="final-panel">
         <h2>发布顺序不能反转</h2>

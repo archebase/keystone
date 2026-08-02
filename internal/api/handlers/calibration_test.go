@@ -116,10 +116,49 @@ func TestCalibrationAdminProcessQueuesUploadedCapture(t *testing.T) {
 	}
 }
 
+func TestCalibrationAdminUpdatesProcessingSettings(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := &fakeCalibrationManager{
+		processingConfig: calibration.ProcessingConfig{
+			ID:            2,
+			ImageRef:      "registry.example/archebase/calibration@sha256:" + strings.Repeat("a", 64),
+			MaxConcurrent: 3,
+			Source:        calibration.ProcessingConfigSourceDatabase,
+		},
+	}
+	handler := NewCalibrationHandler(manager)
+	router := gin.New()
+	api := router.Group("/api/v1")
+	handler.RegisterAdminRoutes(api)
+
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/processing-settings/calibration",
+		strings.NewReader(`{
+			"image_ref":"registry.example/archebase/calibration@sha256:`+strings.Repeat("a", 64)+`",
+			"max_concurrent":3,
+			"expected_revision_id":1
+		}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if manager.expectedRevisionID != 1 || manager.updatedMaxConcurrent != 3 {
+		t.Fatalf("update args revision=%d max=%d", manager.expectedRevisionID, manager.updatedMaxConcurrent)
+	}
+}
+
 type fakeCalibrationManager struct {
-	session          calibration.SessionStatus
-	capture          calibration.Capture
-	startedCaptureID string
+	session              calibration.SessionStatus
+	capture              calibration.Capture
+	startedCaptureID     string
+	processingConfig     calibration.ProcessingConfig
+	expectedRevisionID   int64
+	updatedMaxConcurrent int
 }
 
 func (f *fakeCalibrationManager) GetSessionStatus(context.Context, string) (calibration.SessionStatus, error) {
@@ -137,4 +176,24 @@ func (f *fakeCalibrationManager) List(context.Context, calibration.ListFilter) (
 func (f *fakeCalibrationManager) Start(_ context.Context, captureID, _ string) (calibration.Capture, bool, error) {
 	f.startedCaptureID = captureID
 	return f.capture, true, nil
+}
+
+func (f *fakeCalibrationManager) CurrentProcessingConfig(context.Context) (calibration.ProcessingConfig, error) {
+	return f.processingConfig, nil
+}
+
+func (f *fakeCalibrationManager) UpdateProcessingConfig(
+	_ context.Context,
+	_ string,
+	maxConcurrent int,
+	expectedRevisionID int64,
+	_ string,
+) (calibration.ProcessingConfig, error) {
+	f.updatedMaxConcurrent = maxConcurrent
+	f.expectedRevisionID = expectedRevisionID
+	return f.processingConfig, nil
+}
+
+func (f *fakeCalibrationManager) ListProcessingConfigHistory(context.Context, int, int) ([]calibration.ProcessingConfig, error) {
+	return []calibration.ProcessingConfig{f.processingConfig}, nil
 }

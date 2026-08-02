@@ -25,6 +25,9 @@ type calibrationManager interface {
 	Get(ctx context.Context, captureID string) (calibration.Capture, error)
 	List(ctx context.Context, filter calibration.ListFilter) ([]calibration.Capture, int64, error)
 	Start(ctx context.Context, captureID, actor string) (calibration.Capture, bool, error)
+	CurrentProcessingConfig(ctx context.Context) (calibration.ProcessingConfig, error)
+	UpdateProcessingConfig(ctx context.Context, imageRef string, maxConcurrent int, expectedRevisionID int64, actor string) (calibration.ProcessingConfig, error)
+	ListProcessingConfigHistory(ctx context.Context, limit, offset int) ([]calibration.ProcessingConfig, error)
 }
 
 // CalibrationHandler exposes public Session status and admin Capture controls.
@@ -69,6 +72,124 @@ func (h *CalibrationHandler) RegisterAdminRoutes(api *gin.RouterGroup) {
 	api.GET("/calibration-captures", h.ListCaptures)
 	api.GET("/calibration-captures/:capture_id", h.GetCapture)
 	api.POST("/calibration-captures/:capture_id/process", h.ProcessCapture)
+	api.GET("/processing-settings/calibration", h.GetProcessingSettings)
+	api.PUT("/processing-settings/calibration", h.UpdateProcessingSettings)
+	api.GET("/processing-settings/calibration/history", h.ListProcessingSettingsHistory)
+}
+
+// UpdateCalibrationProcessingSettingsRequest updates one audited settings revision.
+type UpdateCalibrationProcessingSettingsRequest struct {
+	ImageRef           string `json:"image_ref" binding:"required"`
+	MaxConcurrent      int    `json:"max_concurrent" binding:"required"`
+	ExpectedRevisionID int64  `json:"expected_revision_id" binding:"required"`
+}
+
+// GetProcessingSettings returns the current calibration Job settings.
+// @Summary      Get calibration processing settings
+// @Tags         Calibration
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Router       /processing-settings/calibration [get]
+func (h *CalibrationHandler) GetProcessingSettings(c *gin.Context) {
+	config, err := h.manager.CurrentProcessingConfig(c.Request.Context())
+	if err != nil {
+		h.writeProcessingSettingsError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"config":               config,
+		"max_concurrent_limit": calibration.MaxConfigurableConcurrent,
+	})
+}
+
+// UpdateProcessingSettings appends settings used by future queued Captures.
+// @Summary      Update calibration processing settings
+// @Tags         Calibration
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request body UpdateCalibrationProcessingSettingsRequest true "Processing settings and current revision"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Failure      409 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Router       /processing-settings/calibration [put]
+func (h *CalibrationHandler) UpdateProcessingSettings(c *gin.Context) {
+	var request UpdateCalibrationProcessingSettingsRequest
+	if err := c.ShouldBindJSON(&request); err != nil || request.ExpectedRevisionID <= 0 ||
+		request.MaxConcurrent < 1 || request.MaxConcurrent > calibration.MaxConfigurableConcurrent {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "image_ref, max_concurrent between 1 and 100, and positive expected_revision_id are required",
+		})
+		return
+	}
+	config, err := h.manager.UpdateProcessingConfig(
+		c.Request.Context(),
+		request.ImageRef,
+		request.MaxConcurrent,
+		request.ExpectedRevisionID,
+		calibrationActor(c),
+	)
+	if err != nil {
+		h.writeProcessingSettingsError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"config":               config,
+		"max_concurrent_limit": calibration.MaxConfigurableConcurrent,
+	})
+}
+
+// ListProcessingSettingsHistory returns append-only calibration settings history.
+// @Summary      List calibration processing settings history
+// @Tags         Calibration
+// @Produce      json
+// @Security     BearerAuth
+// @Param        limit query int false "Max results"
+// @Param        offset query int false "Pagination offset"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Router       /processing-settings/calibration/history [get]
+func (h *CalibrationHandler) ListProcessingSettingsHistory(c *gin.Context) {
+	pagination, err := ParsePagination(c)
+	if err != nil {
+		PaginationErrorResponse(c, err)
+		return
+	}
+	rows, err := h.manager.ListProcessingConfigHistory(c.Request.Context(), pagination.Limit, pagination.Offset)
+	if err != nil {
+		h.writeProcessingSettingsError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": rows, "limit": pagination.Limit, "offset": pagination.Offset})
+}
+
+func (h *CalibrationHandler) writeProcessingSettingsError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, calibration.ErrConfigChanged):
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "calibration processing configuration changed",
+			"code":  "config_changed",
+		})
+	case errors.Is(err, calibration.ErrInvalidMaxConcurrent):
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "calibration max concurrent must be between 1 and 100",
+			"code":  "invalid_max_concurrent",
+		})
+	case strings.Contains(strings.ToLower(err.Error()), "image") ||
+		strings.Contains(strings.ToLower(err.Error()), "repository") ||
+		strings.Contains(strings.ToLower(err.Error()), "sha256"):
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid calibration image reference",
+			"code":  "invalid_image_ref",
+		})
+	default:
+		logger.Printf("[CALIBRATION] processing settings request failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "calibration processing settings operation failed"})
+	}
 }
 
 // GetSessionStatus returns the non-sensitive status used by an Ego device poller.
@@ -234,17 +355,14 @@ func (h *CalibrationHandler) ProcessCapture(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "capture_id must be a canonical UUIDv4"})
 		return
 	}
-	actor := "admin"
-	if claims := middleware.GetClaims(c); claims != nil && strings.TrimSpace(claims.OperatorID) != "" {
-		actor = strings.TrimSpace(claims.OperatorID)
-	}
+	actor := calibrationActor(c)
 	capture, _, err := h.manager.Start(c.Request.Context(), captureID, actor)
 	if err != nil {
 		switch {
 		case errors.Is(err, calibration.ErrCaptureNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "calibration capture not found"})
-		case errors.Is(err, calibration.ErrDisabled):
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "calibration processing is disabled"})
+		case errors.Is(err, calibration.ErrDisabled), errors.Is(err, calibration.ErrImageNotConfigured):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "calibration processing is not available"})
 		case errors.Is(err, calibration.ErrCaptureUploading),
 			errors.Is(err, calibration.ErrCaptureProcessed),
 			errors.Is(err, calibration.ErrSessionSucceeded):
@@ -256,6 +374,23 @@ func (h *CalibrationHandler) ProcessCapture(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, capture)
+}
+
+func calibrationActor(c *gin.Context) string {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		return "admin"
+	}
+	if actor := strings.TrimSpace(claims.OperatorID); actor != "" {
+		return actor
+	}
+	if actor := strings.TrimSpace(claims.Subject); actor != "" {
+		return actor
+	}
+	if actor := strings.TrimSpace(claims.Role); actor != "" {
+		return actor
+	}
+	return "admin"
 }
 
 func isCanonicalV4UUID(raw string) bool {

@@ -242,8 +242,6 @@ func TestLoadStereoSplitDisabledWithoutOrbitURL(t *testing.T) {
 func TestLoadCalibrationOrbitConfig(t *testing.T) {
 	t.Setenv("KEYSTONE_CALIBRATION_PROCESSING_ENABLED", "true")
 	t.Setenv("KEYSTONE_ORBIT_BASE_URL", "http://orbit.archebase-system.svc.cluster.local:8080")
-	t.Setenv("KEYSTONE_CALIBRATION_IMAGE", "registry.example/archebase/calibration@sha256:"+strings.Repeat("a", 64))
-	t.Setenv("KEYSTONE_CALIBRATION_ALLOWED_REPOSITORIES", "registry.example/archebase/calibration")
 	t.Setenv("KEYSTONE_CALIBRATION_RESOURCES", `{"requests":{"cpu":"1","memory":"1Gi"},"limits":{"cpu":"2","memory":"2Gi"}}`)
 
 	cfg, err := loadCalibrationConfig()
@@ -253,69 +251,34 @@ func TestLoadCalibrationOrbitConfig(t *testing.T) {
 	if !cfg.Enabled || cfg.OrbitBaseURL != "http://orbit.archebase-system.svc.cluster.local:8080" {
 		t.Fatalf("calibration config = %+v", cfg)
 	}
-	if cfg.ProcessorImage == "" || len(cfg.AllowedRepositories) != 1 {
-		t.Fatalf("calibration image config = %+v", cfg)
-	}
 	if cfg.Resources.Requests["cpu"] != "1" || cfg.Resources.Limits["memory"] != "2Gi" {
 		t.Fatalf("calibration resources = %+v", cfg.Resources)
 	}
 }
 
-func TestValidateCalibrationImageIsImmutableAndAllowed(t *testing.T) {
-	tests := []struct {
-		name    string
-		image   string
-		allowed []string
-		wantErr bool
-	}{
-		{
-			name:    "digest pinned allowed image",
-			image:   "registry.example/archebase/calibration@sha256:" + strings.Repeat("a", 64),
-			allowed: []string{"registry.example/archebase/calibration"},
-		},
-		{
-			name:    "mutable tag",
-			image:   "registry.example/archebase/calibration:latest",
-			allowed: []string{"registry.example/archebase/calibration"},
-			wantErr: true,
-		},
-		{
-			name:    "repository outside allowlist",
-			image:   "untrusted.example/calibration@sha256:" + strings.Repeat("a", 64),
-			allowed: []string{"registry.example/archebase/calibration"},
-			wantErr: true,
+func TestValidateCalibrationDoesNotRequireEnvironmentImage(t *testing.T) {
+	cfg := &Config{
+		Server:     ServerConfig{Mode: ModeEdge, CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+		Database:   DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+		TOSStorage: StorageConfig{Type: "tos", Endpoint: "tos.example", Bucket: "bucket", Region: "region"},
+		Auth:       AuthConfig{JWTSecret: "secret"},
+		Calibration: CalibrationConfig{
+			Enabled:         true,
+			OrbitBaseURL:    "http://orbit.example:8080",
+			OrbitTimeoutSec: 10,
+			Resources: KubernetesResourcesConfig{
+				Requests: map[string]string{"cpu": "1"},
+				Limits:   map[string]string{"cpu": "2"},
+			},
+			ActiveDeadlineSec:   600,
+			TTLSecondsAfterDone: 86400,
+			PollIntervalSec:     5,
+			MaxResultBytes:      1024,
+			OrbitLogTailBytes:   1024,
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &Config{
-				Server:     ServerConfig{Mode: ModeEdge, CallbackPublicBaseURL: "http://127.0.0.1:9999"},
-				Database:   DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
-				TOSStorage: StorageConfig{Type: "tos", Endpoint: "tos.example", Bucket: "bucket", Region: "region"},
-				Auth:       AuthConfig{JWTSecret: "secret"},
-				Calibration: CalibrationConfig{
-					Enabled:             true,
-					OrbitBaseURL:        "http://orbit.example:8080",
-					OrbitTimeoutSec:     10,
-					ProcessorImage:      tt.image,
-					AllowedRepositories: tt.allowed,
-					Resources: KubernetesResourcesConfig{
-						Requests: map[string]string{"cpu": "1"},
-						Limits:   map[string]string{"cpu": "2"},
-					},
-					ActiveDeadlineSec:   600,
-					TTLSecondsAfterDone: 86400,
-					MaxConcurrent:       2,
-					PollIntervalSec:     5,
-					MaxResultBytes:      1024,
-					OrbitLogTailBytes:   1024,
-				},
-			}
-			err := cfg.Validate()
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("Validate() error = %v, wantErr %t", err, tt.wantErr)
-			}
-		})
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 

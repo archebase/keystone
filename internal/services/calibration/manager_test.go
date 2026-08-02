@@ -56,6 +56,13 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	if orbit.request.Image != testProcessorImage || len(orbit.request.DataBindings) != 2 {
 		t.Fatalf("Orbit request = %+v", orbit.request)
 	}
+	frozen, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() frozen capture error = %v", err)
+	}
+	if frozen.ProcessorConfigRevisionID != 1 || frozen.ProcessorImage != testProcessorImage {
+		t.Fatalf("frozen processing config = %+v", frozen)
+	}
 	if got := orbit.request.DataBindings[0].URI; got != "tos://bucket-1/calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap" {
 		t.Fatalf("input binding URI = %q", got)
 	}
@@ -188,6 +195,68 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 	}
 }
 
+func TestManagerUpdatesAuditedProcessingConfig(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	manager := NewManager(db, nil, nil, testCalibrationConfig())
+	current, err := manager.CurrentProcessingConfig(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentProcessingConfig() error = %v", err)
+	}
+	if current.ID != 1 || current.ImageRef != testProcessorImage || current.MaxConcurrent != 2 {
+		t.Fatalf("current config = %+v", current)
+	}
+
+	nextImage := "registry.example/archebase/calibration@sha256:" + strings.Repeat("b", 64)
+	updated, err := manager.UpdateProcessingConfig(context.Background(), nextImage, 3, current.ID, "admin-user")
+	if err != nil {
+		t.Fatalf("UpdateProcessingConfig() error = %v", err)
+	}
+	if updated.ID != 2 || updated.ImageRef != nextImage || updated.MaxConcurrent != 3 ||
+		updated.PreviousImageRef != testProcessorImage || updated.CreatedBy != "admin-user" {
+		t.Fatalf("updated config = %+v", updated)
+	}
+	if _, err := manager.UpdateProcessingConfig(context.Background(), nextImage, 3, current.ID, "stale-admin"); !errors.Is(err, ErrConfigChanged) {
+		t.Fatalf("stale UpdateProcessingConfig() error = %v", err)
+	}
+	history, err := manager.ListProcessingConfigHistory(context.Background(), 10, 0)
+	if err != nil {
+		t.Fatalf("ListProcessingConfigHistory() error = %v", err)
+	}
+	if len(history) != 2 || history[0].ID != updated.ID {
+		t.Fatalf("config history = %+v", history)
+	}
+}
+
+func TestManagerRejectsMutableProcessingImage(t *testing.T) {
+	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
+	_, err := manager.UpdateProcessingConfig(
+		context.Background(),
+		"registry.example/archebase/calibration:latest",
+		2,
+		1,
+		"admin-user",
+	)
+	if err == nil {
+		t.Fatal("UpdateProcessingConfig() error = nil, want immutable image rejection")
+	}
+}
+
+func TestManagerRejectsProcessingWhenImageIsUnconfigured(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	if _, err := db.Exec("UPDATE calibration_processing_configs SET image_ref = NULL WHERE id = 1"); err != nil {
+		t.Fatalf("clear processing image: %v", err)
+	}
+	manager := NewManager(db, nil, nil, testCalibrationConfig())
+	_, _, err := manager.Start(
+		context.Background(),
+		"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"admin-user",
+	)
+	if !errors.Is(err, ErrImageNotConfigured) {
+		t.Fatalf("Start() error = %v, want ErrImageNotConfigured", err)
+	}
+}
+
 type fakeOrbit struct {
 	request     orbitapi.SubmitRequest
 	submitCalls int
@@ -237,16 +306,13 @@ func (f *fakeObjectStore) OpenObject(_ context.Context, _ string, objectName str
 
 func testCalibrationConfig() Config {
 	return Config{
-		Enabled:             true,
-		ProcessorImage:      testProcessorImage,
-		AllowedRepositories: []string{"registry.example/archebase/calibration"},
+		Enabled: true,
 		Resources: Resources{
 			Requests: map[string]string{"cpu": "1", "memory": "1Gi"},
 			Limits:   map[string]string{"cpu": "2", "memory": "2Gi"},
 		},
 		ActiveDeadline:      600,
 		TTLSecondsAfterDone: 86400,
-		MaxConcurrent:       2,
 		PollInterval:        time.Second,
 		MaxResultBytes:      1024 * 1024,
 		LogTailBytes:        64 * 1024,
@@ -262,6 +328,20 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	for _, statement := range []string{
+		`CREATE TABLE calibration_processing_configs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			image_ref TEXT,
+			previous_image_ref TEXT,
+			max_concurrent INTEGER NOT NULL DEFAULT 1,
+			previous_max_concurrent INTEGER,
+			created_by TEXT,
+			created_at TIMESTAMP NOT NULL
+		)`,
+		`INSERT INTO calibration_processing_configs (
+			image_ref, previous_image_ref, max_concurrent, created_by, created_at
+		) VALUES (
+			'` + testProcessorImage + `', NULL, 2, 'migration-bootstrap', CURRENT_TIMESTAMP
+		)`,
 		`CREATE TABLE calibration_sessions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL UNIQUE,
@@ -290,6 +370,7 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			source TEXT,
 			local_operator TEXT,
 			uploaded_at TIMESTAMP,
+			processor_config_revision_id INTEGER,
 			processor_image TEXT,
 			source_etag TEXT,
 			orbit_submission_id TEXT,

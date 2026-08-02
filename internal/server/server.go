@@ -726,16 +726,13 @@ func stereoSplitConfig(cfg config.DerivativeConfig) stereosplit.Config {
 
 func calibrationManagerConfig(cfg config.CalibrationConfig) calibration.Config {
 	return calibration.Config{
-		Enabled:             cfg.Enabled,
-		ProcessorImage:      cfg.ProcessorImage,
-		AllowedRepositories: append([]string(nil), cfg.AllowedRepositories...),
+		Enabled: cfg.Enabled,
 		Resources: calibration.Resources{
 			Requests: cloneServerStringMap(cfg.Resources.Requests),
 			Limits:   cloneServerStringMap(cfg.Resources.Limits),
 		},
 		ActiveDeadline:      cfg.ActiveDeadlineSec,
 		TTLSecondsAfterDone: cfg.TTLSecondsAfterDone,
-		MaxConcurrent:       cfg.MaxConcurrent,
 		PollInterval:        time.Duration(cfg.PollIntervalSec) * time.Second,
 		MaxResultBytes:      cfg.MaxResultBytes,
 		LogTailBytes:        cfg.OrbitLogTailBytes,

@@ -6,7 +6,6 @@
 package config
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -178,12 +177,9 @@ type CalibrationConfig struct {
 	Enabled             bool
 	OrbitBaseURL        string
 	OrbitTimeoutSec     int
-	ProcessorImage      string
-	AllowedRepositories []string
 	Resources           KubernetesResourcesConfig
 	ActiveDeadlineSec   int64
 	TTLSecondsAfterDone int32
-	MaxConcurrent       int
 	PollIntervalSec     int
 	MaxResultBytes      int64
 	OrbitLogTailBytes   int
@@ -365,26 +361,13 @@ func loadCalibrationConfig() (CalibrationConfig, error) {
 		Enabled:             getEnvBool("KEYSTONE_CALIBRATION_PROCESSING_ENABLED", false),
 		OrbitBaseURL:        strings.TrimRight(strings.TrimSpace(getEnv("KEYSTONE_ORBIT_BASE_URL", "")), "/"),
 		OrbitTimeoutSec:     getEnvInt("KEYSTONE_ORBIT_TIMEOUT_SECONDS", 10),
-		ProcessorImage:      strings.TrimSpace(getEnv("KEYSTONE_CALIBRATION_IMAGE", "")),
-		AllowedRepositories: splitCommaSeparated(getEnv("KEYSTONE_CALIBRATION_ALLOWED_REPOSITORIES", "")),
 		Resources:           resources,
 		ActiveDeadlineSec:   getEnvInt64("KEYSTONE_CALIBRATION_DEADLINE_SECONDS", 600),
 		TTLSecondsAfterDone: getEnvInt32("KEYSTONE_CALIBRATION_TTL_SECONDS_AFTER_DONE", 86400),
-		MaxConcurrent:       getEnvInt("KEYSTONE_CALIBRATION_MAX_CONCURRENT", 2),
 		PollIntervalSec:     getEnvInt("KEYSTONE_CALIBRATION_POLL_INTERVAL_SECONDS", 5),
 		MaxResultBytes:      getEnvInt64("KEYSTONE_CALIBRATION_MAX_RESULT_BYTES", 16*1024*1024),
 		OrbitLogTailBytes:   getEnvInt("KEYSTONE_CALIBRATION_ORBIT_LOG_TAIL_BYTES", 1024*1024),
 	}, nil
-}
-
-func splitCommaSeparated(raw string) []string {
-	values := make([]string, 0)
-	for _, value := range strings.Split(raw, ",") {
-		if value = strings.TrimSpace(value); value != "" {
-			values = append(values, value)
-		}
-	}
-	return values
 }
 
 func loadStorageConfig() StorageConfig {
@@ -596,14 +579,8 @@ func (c *Config) Validate() error {
 		if c.TOSStorage.Type != "tos" {
 			return fmt.Errorf("TOS storage must be configured when calibration processing is enabled")
 		}
-		if strings.TrimSpace(c.Calibration.ProcessorImage) == "" || len(c.Calibration.AllowedRepositories) == 0 {
-			return fmt.Errorf("calibration image and allowed repositories are required when calibration processing is enabled")
-		}
-		if err := validateCalibrationImageRef(c.Calibration.ProcessorImage, c.Calibration.AllowedRepositories); err != nil {
-			return err
-		}
 		if c.Calibration.OrbitTimeoutSec <= 0 || c.Calibration.ActiveDeadlineSec <= 0 ||
-			c.Calibration.TTLSecondsAfterDone < 0 || c.Calibration.MaxConcurrent <= 0 ||
+			c.Calibration.TTLSecondsAfterDone < 0 ||
 			c.Calibration.PollIntervalSec <= 0 || c.Calibration.MaxResultBytes <= 0 ||
 			c.Calibration.OrbitLogTailBytes <= 0 {
 			return fmt.Errorf("calibration processing numeric limits must be positive")
@@ -613,24 +590,6 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
-}
-
-func validateCalibrationImageRef(raw string, allowedRepositories []string) error {
-	image := strings.TrimSpace(raw)
-	parts := strings.Split(image, "@sha256:")
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || len(parts[1]) != 64 {
-		return fmt.Errorf("KEYSTONE_CALIBRATION_IMAGE must use an immutable sha256 digest")
-	}
-	if _, err := hex.DecodeString(parts[1]); err != nil {
-		return fmt.Errorf("KEYSTONE_CALIBRATION_IMAGE must use an immutable sha256 digest: %w", err)
-	}
-	repository := strings.TrimSpace(parts[0])
-	for _, allowed := range allowedRepositories {
-		if repository == strings.TrimSpace(allowed) {
-			return nil
-		}
-	}
-	return fmt.Errorf("KEYSTONE_CALIBRATION_IMAGE repository is not in KEYSTONE_CALIBRATION_ALLOWED_REPOSITORIES")
 }
 
 func normalizeCallbackPublicBaseURL(raw string) (string, error) {
