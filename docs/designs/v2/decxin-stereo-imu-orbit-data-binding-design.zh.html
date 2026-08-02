@@ -1,0 +1,1741 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>双目拆分 Orbit Data Binding 开发设计</title>
+  <style>
+    :root {
+      --orange: #5F2A62;
+      --blue: #8BD450;
+      --yellow: #F5C024;
+      --ink: #1D1A2F;
+      --paper: #FFF8E7;
+      --red: #F5C024;
+      --brown: #1D1A2F;
+      --content: 1180px;
+      --reading: 820px;
+      --pad: clamp(18px, 4vw, 58px);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--paper);
+    }
+
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Songti SC", STSong, SimSun, "Noto Serif SC", serif;
+      line-height: 1.72;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      pointer-events: none;
+      content: "";
+      opacity: 0.08;
+      background-image:
+        repeating-linear-gradient(0deg, transparent 0, transparent 5px, var(--brown) 6px),
+        repeating-linear-gradient(90deg, transparent 0, transparent 11px, var(--ink) 12px);
+    }
+
+    a {
+      color: inherit;
+    }
+
+    code,
+    pre,
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 760px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
+      align-items: center;
+      gap: clamp(36px, 6vw, 94px);
+      padding: clamp(72px, 9vw, 126px) var(--pad) 86px;
+      color: var(--paper);
+      background: var(--orange);
+      border-bottom: 12px solid var(--ink);
+      isolation: isolate;
+    }
+
+    .hero::before {
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      content: "";
+      opacity: 0.22;
+      background-image: repeating-linear-gradient(
+        164deg,
+        transparent 0,
+        transparent 22px,
+        var(--ink) 23px,
+        var(--ink) 27px,
+        transparent 28px,
+        transparent 52px
+      );
+    }
+
+    .hero::after {
+      position: absolute;
+      right: -16vw;
+      top: 8%;
+      z-index: -1;
+      width: 68vw;
+      height: 82%;
+      content: "";
+      background: var(--yellow);
+      border: 10px solid var(--ink);
+      transform: skewX(-12deg) rotate(-3deg);
+      box-shadow: -20px 20px 0 var(--red);
+    }
+
+    .hero-copy {
+      position: relative;
+      z-index: 3;
+      max-width: 760px;
+    }
+
+    .kicker {
+      display: inline-block;
+      margin-bottom: 22px;
+      padding: 7px 13px 6px;
+      color: var(--paper);
+      background: var(--blue);
+      border: 4px solid var(--ink);
+      box-shadow: 7px 7px 0 var(--ink);
+      font-family: Didot, "Bodoni 72", Georgia, "Songti SC", serif;
+      font-size: 14px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      transform: rotate(-1deg);
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      max-width: 800px;
+      margin-bottom: 28px;
+      color: var(--paper);
+      font-family: Didot, "Bodoni 72", Georgia, "Songti SC", serif;
+      font-size: clamp(54px, 7.5vw, 118px);
+      font-weight: 950;
+      line-height: 0.95;
+      letter-spacing: -0.035em;
+      text-shadow:
+        5px 0 0 var(--ink),
+        -5px 0 0 var(--ink),
+        0 5px 0 var(--ink),
+        0 -5px 0 var(--ink),
+        11px 11px 0 var(--blue);
+      transform: skewY(-2deg);
+    }
+
+    .subtitle {
+      max-width: 680px;
+      margin: 0;
+      padding: 14px 18px;
+      color: var(--ink);
+      background: var(--paper);
+      border: 5px solid var(--ink);
+      box-shadow: 9px 9px 0 var(--red);
+      font-size: clamp(17px, 1.7vw, 23px);
+      font-weight: 900;
+      line-height: 1.45;
+    }
+
+    .binding-arena {
+      position: relative;
+      z-index: 2;
+      min-height: 500px;
+      color: var(--paper);
+      background: var(--blue);
+      border: 9px solid var(--ink);
+      box-shadow: 18px 18px 0 var(--ink);
+      transform: rotate(2deg);
+      overflow: hidden;
+    }
+
+    .binding-arena::before {
+      position: absolute;
+      inset: -30%;
+      content: "";
+      opacity: 0.32;
+      background-image: repeating-linear-gradient(
+        28deg,
+        transparent 0,
+        transparent 14px,
+        var(--paper) 15px,
+        var(--paper) 18px,
+        transparent 19px,
+        transparent 42px
+      );
+      transform: rotate(-8deg);
+    }
+
+    .arena-label {
+      position: absolute;
+      top: 20px;
+      left: 22px;
+      z-index: 4;
+      padding: 5px 9px;
+      color: var(--ink);
+      background: var(--yellow);
+      border: 4px solid var(--ink);
+      font-family: Didot, "Bodoni 72", Georgia, serif;
+      font-size: 13px;
+      letter-spacing: 0.09em;
+    }
+
+    .energy-core {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      z-index: 4;
+      display: grid;
+      place-items: center;
+      width: 180px;
+      height: 180px;
+      padding: 22px;
+      color: var(--ink);
+      background: var(--yellow);
+      border: 9px solid var(--ink);
+      box-shadow: 0 0 0 13px var(--red), 0 0 0 22px var(--ink);
+      font-family: Didot, "Bodoni 72", Georgia, "Songti SC", serif;
+      font-size: 30px;
+      font-weight: 950;
+      line-height: 0.95;
+      text-align: center;
+      transform: translate(-50%, -50%) rotate(-5deg);
+    }
+
+    .arena-node {
+      position: absolute;
+      z-index: 5;
+      min-width: 122px;
+      padding: 13px 12px;
+      color: var(--paper);
+      background: var(--red);
+      border: 6px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-family: Georgia, "Songti SC", serif;
+      font-size: 14px;
+      font-weight: 900;
+      line-height: 1.25;
+      text-align: center;
+    }
+
+    .node-source { top: 92px; left: 25px; transform: rotate(-5deg); }
+    .node-binding { top: 92px; right: 24px; background: var(--orange); transform: rotate(4deg); }
+    .node-scratch { bottom: 62px; left: 34px; background: var(--brown); transform: rotate(3deg); }
+    .node-output { right: 27px; bottom: 54px; background: var(--orange); transform: rotate(-4deg); }
+
+    .impact-word {
+      position: absolute;
+      right: 19px;
+      top: 218px;
+      z-index: 6;
+      color: var(--paper);
+      font-family: Didot, "Bodoni 72", Georgia, serif;
+      font-size: 29px;
+      font-style: italic;
+      text-shadow: 4px 4px 0 var(--ink);
+      transform: rotate(8deg);
+    }
+
+    main {
+      position: relative;
+    }
+
+    .judgment {
+      position: relative;
+      z-index: 4;
+      max-width: var(--content);
+      margin: -32px auto 52px;
+      padding: 30px clamp(22px, 4vw, 54px);
+      color: var(--paper);
+      background: var(--blue);
+      border: 8px solid var(--ink);
+      box-shadow: 14px 14px 0 var(--red);
+      transform: rotate(-0.6deg);
+    }
+
+    .judgment strong {
+      color: var(--yellow);
+    }
+
+    .judgment p {
+      margin: 0;
+      font-size: clamp(20px, 2.4vw, 32px);
+      font-weight: 950;
+      line-height: 1.42;
+    }
+
+    .meta-strip {
+      max-width: var(--content);
+      margin: 0 auto 38px;
+      padding: 14px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 24px;
+      border-top: 5px solid var(--ink);
+      border-bottom: 5px solid var(--ink);
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .chapter {
+      position: relative;
+      max-width: var(--content);
+      margin: 0 auto 72px;
+      padding: 0 var(--pad);
+    }
+
+    .chapter::before {
+      position: absolute;
+      left: 0;
+      top: 68px;
+      width: 12px;
+      height: calc(100% - 68px);
+      content: "";
+      background: var(--orange);
+      border: 3px solid var(--ink);
+    }
+
+    .chapter-head {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: end;
+      gap: 18px;
+      margin-bottom: 28px;
+      border-bottom: 8px solid var(--ink);
+    }
+
+    .chapter-no {
+      color: var(--red);
+      font-family: Didot, "Bodoni 72", Georgia, serif;
+      font-size: clamp(62px, 8vw, 112px);
+      font-weight: 950;
+      line-height: 0.82;
+      text-shadow: 5px 5px 0 var(--yellow);
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-family: Didot, "Bodoni 72", Georgia, "Songti SC", serif;
+      font-size: clamp(31px, 4.2vw, 58px);
+      font-weight: 950;
+      line-height: 1.02;
+      letter-spacing: -0.02em;
+    }
+
+    h3 {
+      margin: 34px 0 16px;
+      padding: 9px 14px 8px;
+      color: var(--paper);
+      background: var(--blue);
+      border-left: 9px solid var(--red);
+      border-bottom: 5px solid var(--ink);
+      font-size: clamp(20px, 2.2vw, 28px);
+      font-weight: 950;
+      line-height: 1.25;
+      transform: skewX(-2deg);
+    }
+
+    .reading {
+      max-width: var(--reading);
+    }
+
+    .lead {
+      font-size: 19px;
+      font-weight: 800;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 28px;
+      align-items: start;
+    }
+
+    .panel {
+      padding: 24px;
+      background: var(--paper);
+      border: 6px solid var(--ink);
+      box-shadow: 10px 10px 0 var(--brown);
+    }
+
+    .panel.orange { border-top: 15px solid var(--orange); }
+    .panel.blue { border-top: 15px solid var(--blue); }
+    .panel.red { border-top: 15px solid var(--red); }
+
+    .panel h3 {
+      margin-top: 0;
+    }
+
+    ul,
+    ol {
+      padding-left: 1.45em;
+    }
+
+    li {
+      margin: 0.55em 0;
+    }
+
+    .decision-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px 22px;
+      padding: 0;
+      list-style: none;
+      counter-reset: decision;
+    }
+
+    .decision-list li {
+      position: relative;
+      min-height: 96px;
+      margin: 0;
+      padding: 17px 17px 17px 66px;
+      background: var(--paper);
+      border: 5px solid var(--ink);
+      box-shadow: 7px 7px 0 var(--orange);
+      counter-increment: decision;
+    }
+
+    .decision-list li::before {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      content: counter(decision);
+      color: var(--paper);
+      background: var(--red);
+      border: 4px solid var(--ink);
+      font-family: Didot, "Bodoni 72", Georgia, serif;
+      font-size: 20px;
+      font-weight: 900;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(130px, 1fr));
+      gap: 12px;
+      align-items: stretch;
+      overflow-x: auto;
+      padding: 14px 8px 24px;
+    }
+
+    .flow-step {
+      position: relative;
+      min-height: 124px;
+      display: grid;
+      align-content: center;
+      padding: 18px 14px;
+      color: var(--paper);
+      background: var(--blue);
+      border: 5px solid var(--ink);
+      box-shadow: 7px 7px 0 var(--yellow);
+      font-weight: 900;
+      text-align: center;
+    }
+
+    .flow-step:nth-child(2n) {
+      background: var(--orange);
+    }
+
+    .flow-step:not(:last-child)::after {
+      position: absolute;
+      right: -17px;
+      top: calc(50% - 14px);
+      z-index: 3;
+      width: 28px;
+      height: 28px;
+      content: "";
+      background: var(--red);
+      border: 4px solid var(--ink);
+      transform: rotate(45deg);
+    }
+
+    .callout {
+      position: relative;
+      margin: 30px 0;
+      padding: 22px 26px;
+      background: var(--yellow);
+      border: 6px solid var(--ink);
+      box-shadow: 10px 10px 0 var(--red);
+      font-size: 18px;
+      font-weight: 900;
+      transform: rotate(-0.35deg);
+    }
+
+    .callout::before {
+      position: absolute;
+      left: 22px;
+      top: -19px;
+      padding: 3px 8px;
+      content: "CORE RULE";
+      color: var(--paper);
+      background: var(--ink);
+      font-family: Didot, "Bodoni 72", Georgia, serif;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+    }
+
+    pre {
+      margin: 20px 0;
+      padding: 22px;
+      overflow: auto;
+      color: var(--paper);
+      background: var(--ink);
+      border: 6px solid var(--blue);
+      box-shadow: 8px 8px 0 var(--orange);
+      font-size: 13px;
+      line-height: 1.58;
+      white-space: pre;
+    }
+
+    code {
+      font-size: 0.92em;
+    }
+
+    :not(pre) > code {
+      padding: 0.1em 0.34em;
+      color: var(--paper);
+      background: var(--brown);
+      border: 2px solid var(--ink);
+    }
+
+    .table-wrap {
+      margin: 22px 0;
+      overflow-x: auto;
+      border: 5px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--orange);
+    }
+
+    table {
+      width: 100%;
+      min-width: 700px;
+      border-collapse: collapse;
+      background: var(--paper);
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      padding: 13px 14px;
+      border: 3px solid var(--ink);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--paper);
+      background: var(--blue);
+      font-weight: 950;
+    }
+
+    tr:nth-child(even) td {
+      background: var(--yellow);
+    }
+
+    .status-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin: 20px 0;
+    }
+
+    .status-chip {
+      padding: 8px 12px;
+      color: var(--paper);
+      background: var(--blue);
+      border: 4px solid var(--ink);
+      box-shadow: 5px 5px 0 var(--ink);
+      font-weight: 900;
+    }
+
+    .status-chip.warn { background: var(--red); }
+    .status-chip.go { color: var(--ink); background: var(--yellow); }
+
+    .finale {
+      position: relative;
+      padding: 72px var(--pad) 86px;
+      color: var(--paper);
+      background: var(--blue);
+      border-top: 12px solid var(--ink);
+      overflow: hidden;
+    }
+
+    .finale::after {
+      position: absolute;
+      right: -8vw;
+      bottom: -90px;
+      width: 46vw;
+      height: 220px;
+      content: "";
+      background: var(--orange);
+      border: 9px solid var(--ink);
+      transform: rotate(-7deg);
+    }
+
+    .finale-inner {
+      position: relative;
+      z-index: 2;
+      max-width: var(--content);
+      margin: 0 auto;
+    }
+
+    .finale h2 {
+      max-width: 900px;
+      color: var(--yellow);
+      text-shadow: 6px 6px 0 var(--ink);
+    }
+
+    .finale p {
+      max-width: 760px;
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    @media (max-width: 920px) {
+      .hero {
+        min-height: auto;
+        grid-template-columns: 1fr;
+        padding-top: 64px;
+      }
+
+      .hero::after {
+        right: -30vw;
+        top: 42%;
+        width: 120vw;
+        height: 56%;
+      }
+
+      .binding-arena {
+        width: min(100%, 620px);
+        min-height: 460px;
+        margin: 0 auto;
+      }
+
+      .split,
+      .decision-list {
+        grid-template-columns: 1fr;
+      }
+
+      .chapter::before {
+        display: none;
+      }
+    }
+
+    @media (max-width: 600px) {
+      .hero {
+        gap: 48px;
+        padding-right: 16px;
+        padding-left: 16px;
+      }
+
+      h1 {
+        font-size: clamp(46px, 15vw, 72px);
+        text-shadow:
+          3px 0 0 var(--ink),
+          -3px 0 0 var(--ink),
+          0 3px 0 var(--ink),
+          0 -3px 0 var(--ink),
+          7px 7px 0 var(--blue);
+      }
+
+      .binding-arena {
+        min-height: 420px;
+        transform: none;
+      }
+
+      .energy-core {
+        width: 136px;
+        height: 136px;
+        box-shadow: 0 0 0 8px var(--red), 0 0 0 14px var(--ink);
+        font-size: 23px;
+      }
+
+      .arena-node {
+        min-width: 104px;
+        max-width: 128px;
+        padding: 10px 8px;
+        font-size: 11px;
+      }
+
+      .node-source { top: 76px; left: 10px; }
+      .node-binding { top: 76px; right: 9px; }
+      .node-scratch { bottom: 48px; left: 12px; }
+      .node-output { right: 11px; bottom: 44px; }
+      .impact-word { display: none; }
+
+      .judgment {
+        margin-right: 12px;
+        margin-left: 12px;
+      }
+
+      .chapter {
+        padding-right: 16px;
+        padding-left: 16px;
+      }
+
+      .chapter-head {
+        gap: 10px;
+      }
+
+      .chapter-no {
+        font-size: 64px;
+      }
+
+      .panel {
+        padding: 18px;
+        box-shadow: 7px 7px 0 var(--brown);
+      }
+
+      pre {
+        padding: 16px;
+        font-size: 12px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+
+    @media print {
+      body::before,
+      .hero::before,
+      .hero::after,
+      .finale::after {
+        display: none;
+      }
+
+      .hero {
+        min-height: auto;
+      }
+
+      .chapter,
+      .panel,
+      pre,
+      .table-wrap {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-copy">
+      <div class="kicker">Simplified Development Design</div>
+      <h1>双目视觉<br>拆分处理</h1>
+      <p class="subtitle">只实现“双目拆分”：一个持久化 Reconciler 驱动作业、验证、QA 与删除；批次成员和同步来源都显式落库，不靠运行时猜测。</p>
+    </div>
+    <div class="binding-arena" role="img" aria-label="TOS 输入通过 Orbit data binding 挂载，复制到 scratch 处理，再通过输出绑定发布回 TOS">
+      <div class="arena-label">ONE MCAP · ONE JOB</div>
+      <div class="arena-node node-source">TOS<br>SOURCE</div>
+      <div class="arena-node node-binding">PV / PVC<br>BINDING</div>
+      <div class="energy-core">LOCAL<br>STAGE</div>
+      <div class="arena-node node-scratch">/scratch<br>TRANSFORM</div>
+      <div class="arena-node node-output">TOS<br>DERIVATIVE</div>
+      <div class="impact-word">PUBLISH!</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="judgment" aria-label="核心判断">
+      <p><strong>核心判断：</strong>一条 Derivative、一个批次成员表、一个持久化 Reconciler、一个不可变同步快照。宁可增加明确的数据关系，也不靠游标、实时聚合和多处分支解析推导历史事实。</p>
+    </section>
+
+    <div class="meta-strip">
+      <span>状态：简化方案，待最终实现评审</span>
+      <span>功能：双目拆分 · <code>stereo_split</code></span>
+      <span>执行模型：每个 Episode MCAP 一个 Kubernetes Job</span>
+      <span>初始约束：Keystone 单副本 · 原始自动同步关闭</span>
+    </div>
+
+    <section class="chapter" id="decisions">
+      <div class="chapter-head"><span class="chapter-no">01</span><h2>决策锁定</h2></div>
+      <ol class="decision-list">
+        <li>原始 Episode 与 <code>episodes.mcap_path</code> 永不被派生处理覆盖。</li>
+        <li>本期只实现硬编码的 <code>stereo_split</code>，不建设动态 Processor、脚本目录或多版本平台。</li>
+        <li>当前双目拆分镜像由管理员在 Synapse Data Ops 设置中集中配置，只接受带显式 registry 的不可变 digest；Keystone 不限制仓库，单条和批量作业请求都不能覆盖镜像。</li>
+        <li><code>UNIQUE (episode_id, kind)</code> 保证每个 Episode 只有一条当前双目拆分记录；成功后永久跳过。</li>
+        <li>一个 generation 对应一个 Orbit Job；失败重试递增 generation，并使用新的独占输出前缀。</li>
+        <li>一个持久化 Derivative Reconciler 统一执行冻结请求、提交、轮询、验证、自动 QA 和 Orbit DELETE。</li>
+        <li>影响执行的完整 Orbit 请求必须先提交数据库；后续恢复只读取该快照。</li>
+        <li>批量处理使用 <code>bulk_run_items</code> 显式保存成员、准入结果和终态，不从当前 Derivative 反推历史。</li>
+        <li>同步准入在 <code>sync_logs.source_snapshot</code> 保存实际上传对象；Sync Worker 不再根据 Episode metadata 猜来源。</li>
+        <li>一个 Episode 只向 Hilbert 发布 <code>original</code> 或 <code>stereo_split</code> 中的一种，来源认领不可切换。</li>
+        <li>派生成功后自动 QA；只有派生 QA approved 后，管理员才能手动同步派生结果。</li>
+        <li>第一阶段强制 <code>KEYSTONE_SYNC_AUTO_SCAN_ENABLED=false</code>，原始与派生同步都由管理员动作触发。</li>
+        <li>第一阶段 Keystone 保持单副本；数据库仍使用原子状态 claim，扩容时再引入 leader lease。</li>
+        <li>TOS 原始对象 key 必须不可覆盖；当前 Orbit 不支持按 version ID 固定 binding。</li>
+        <li>Orbit DELETE 204 表示后台删除请求已接受，404 表示 Job 已不存在；PV/PVC 与可能短暂残留的 Job 继续交给 Kubernetes 和集群 GC 收敛。</li>
+      </ol>
+    </section>
+
+    <section class="chapter" id="scope">
+      <div class="chapter-head"><span class="chapter-no">02</span><h2>目标与非目标</h2></div>
+      <div class="split">
+        <article class="panel orange">
+          <h3>目标</h3>
+          <ul>
+            <li>在数据明细页与数据操作页提供“双目拆分”的单条和批量入口。</li>
+            <li>把 <code>split_mcap_stereo_imu.py</code> 封装为唯一当前镜像。</li>
+            <li>允许管理员在 Data Ops 页面更新唯一当前镜像 digest，并保留不可删除的变更审计。</li>
+            <li>让 Orbit 保持算法无关，只理解 Job 与 data binding。</li>
+            <li>跨 Keystone、Orbit 重启恢复排队、执行、验证、Orbit 删除、质检和同步。</li>
+            <li>保证一个 Episode 只向 Hilbert 发布原始或双目拆分中的一种正式 MCAP。</li>
+            <li>用 generation 独占前缀隔离失败，成功结果永久跳过。</li>
+            <li>限制 CPU、内存、临时盘、网络和 TOS 并发。</li>
+            <li>用显式批次成员和同步快照降低大批量恢复复杂度。</li>
+          </ul>
+        </article>
+        <article class="panel blue">
+          <h3>非目标</h3>
+          <ul>
+            <li>不替换原始 MCAP，不创建第二个 Episode。</li>
+            <li>不向 Synapse 暴露通用 Orbit Job 提交能力。</li>
+            <li>不建设通用镜像市场、凭据管理、多版本选择或按作业指定镜像的能力。</li>
+            <li>不自动创建任何云同步；第一阶段关闭原始自动 scanner。</li>
+            <li>不允许原始 MCAP 与双目拆分 MCAP 各自注册 rawDataId，也不提供发布来源切换或重新发布。</li>
+            <li>处理器镜像不调用 TOS SDK，不接收 AK/SK、STS 或签名 URL。</li>
+            <li>不直接在 CSI 挂载上运行 <code>rosbags.AnyReader</code> 或 Writer。</li>
+            <li>处理失败或取消不自动创建新 generation；由管理员明确重试。</li>
+            <li>不允许用户提交任意镜像、命令或脚本。</li>
+            <li>Keystone不直接访问 Kubernetes，也不逐条验证或删除 PV/PVC。</li>
+            <li>不实现动态处理器目录、通用 Processor 接口、多版本、generation 历史、通用产物目录、DAG 或常驻 warm worker。</li>
+            <li>不支持 Keystone 多副本同时运行 Derivative Reconciler。</li>
+          </ul>
+        </article>
+      </div>
+
+      <h3>统一语言</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>术语</th><th>精确定义</th><th>避免混称</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Derivative Kind</strong></td><td>一种稳定的业务处理功能；本功能固定为 <code>stereo_split</code>。</td><td>脚本文件名、镜像名、版本</td></tr>
+            <tr><td><strong>Derivative</strong></td><td>某个 Episode 某种 kind 的唯一当前派生记录。</td><td>Orbit Job、历史执行列表</td></tr>
+            <tr><td><strong>Generation</strong></td><td>同一 Derivative 的执行次数，只用于失败重试和输出前缀隔离。</td><td>脚本版本、算法版本</td></tr>
+            <tr><td><strong>Stereo Split Contract</strong></td><td>Keystone 中固定的请求构造、输出验证和 QA 规则。</td><td>动态插件、通用 Processor 平台</td></tr>
+            <tr><td><strong>Bulk Run Item</strong></td><td>某个批次对一个 Episode 的不可变成员与当次结果。</td><td>Derivative 当前归属字段、临时计数</td></tr>
+            <tr><td><strong>Source Snapshot</strong></td><td>sync log 中冻结的实际上传对象、大小、checksum 与 bag name。</td><td>运行时重新选择来源</td></tr>
+            <tr><td><strong>Cloud Publish Source</strong></td><td>一个 Episode 在 Hilbert 唯一正式表示的不可变来源：original 或 stereo_split。</td><td>TOS 中存在几份对象、临时 worker 状态</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">这里没有“脚本版本”概念。镜像更新只是替换当前实现：成功数据仍跳过，失败数据下一次 generation 使用新镜像。</div>
+    </section>
+
+    <section class="chapter" id="architecture">
+      <div class="chapter-head"><span class="chapter-no">03</span><h2>模块职责与主流程</h2></div>
+      <div class="flow" aria-label="系统模块流程">
+        <div class="flow-step">Synapse<br>管理员动作与状态展示</div>
+        <div class="flow-step">Keystone<br>状态、队列、验证、QA、同步</div>
+        <div class="flow-step">Orbit<br>Job、PV/PVC、日志、DELETE</div>
+        <div class="flow-step">Processor<br>本地复制、转换、校验、发布</div>
+        <div class="flow-step">TOS / Hilbert<br>对象持久化与云同步</div>
+      </div>
+
+      <h3>Keystone 的功能接口</h3>
+      <pre><code>StartStereoSplit(ctx, episodeID, actor) (Derivative, error)
+RetryStereoSplit(ctx, derivativeID, actor) (Derivative, error)
+CancelStereoSplit(ctx, derivativeID, actor) (Derivative, error)
+RunStereoSplitQA(ctx, derivativeID, actor) (Derivative, error)
+StartStereoSplitSync(ctx, derivativeID, actor) (SyncLog, error)</code></pre>
+      <p class="reading">本期不定义通用 Processor interface。HTTP handler 只调用这组固定功能接口；同一个 Reconciler 负责所有后台阶段，PV/PVC 最终回收属于集群 GC。</p>
+
+      <h3>处理时序</h3>
+      <ol>
+        <li>管理员点击“双目拆分”；Keystone锁定 Episode 与 <code>Episode + stereo_split</code> Derivative。若 <code>cloud_publish_source=original</code>，或已有任何原始同步认领证据，则拒绝处理。</li>
+        <li>已 succeeded 则返回 <code>already_derived</code>；活跃则返回当前记录；失败或取消且上一 Job 的 Orbit DELETE 阶段已 completed 才递增 generation。</li>
+        <li>Reconciler 原子领取 queued Derivative，读取当前双目拆分部署配置，并从 Episode metadata 的 backend、bucket、object key 解析规范化 <code>source_uri</code>。</li>
+        <li>同一数据库事务生成 <code>orbit_submission_id</code> 与 generation 独占 <code>output_prefix</code>，保存镜像、源对象身份和完整 <code>orbit_request</code>，再把状态改为 <code>submitting</code>；事务提交前禁止调用 Orbit。</li>
+        <li>Reconciler 从已提交的快照向 Orbit 发起请求；Orbit 创建 PV/PVC 与 Job，Job 将绑定输入复制到 <code>/scratch</code>。</li>
+        <li>Job 在本地拆分左右图像并解码 IMU，本地校验后复制数据对象。</li>
+        <li><code>processing_manifest.json</code> 最后复制到输出 binding；Job 成功退出。</li>
+        <li>Derivative 进入 <code>verifying</code>；Keystone验证 manifest、MCAP、metadata 和 TOS 对象。</li>
+        <li>同一事务写入输出路径、统计、<code>processing=succeeded</code> 与 <code>qa=pending</code>。</li>
+        <li>Reconciler 保存当前 generation 日志、自动执行双目拆分 QA，并调用现有 Orbit DELETE；PV/PVC 最终回收不阻塞 QA。</li>
+      </ol>
+
+      <h3>手动同步时序</h3>
+      <ol>
+        <li>管理员对双目拆分结果点击“同步到云”；要求 <code>processing=succeeded</code> 且 <code>qa=approved</code>。</li>
+        <li>同一事务按 Episode → Derivative → latest sync log 的固定顺序加锁；为 NULL 时原子认领 <code>stereo_split</code>，并创建带完整 <code>source_snapshot</code> 的 pending sync log。</li>
+        <li>现有 Sync Worker 只按 sync log 快照读取派生对象，注册或复用 <code>episodes.hilbert_raw_data_id</code> 并上传。</li>
+        <li>成功事务更新 Episode 的 canonical <code>cloud_synced</code>、<code>cloud_synced_at</code>、<code>cloud_mcap_path</code>；失败只重试相同派生路径和 rawDataId。</li>
+      </ol>
+      <p>原始手动与管理员批量同步走同一认领事务：只有来源为 NULL / original，且不存在活跃或 succeeded 的双目拆分时，才能创建原始 source snapshot。第一阶段自动 scanner 强制关闭；处理准入与同步准入都先锁 Episode 行，所以并发时只有一方成功。</p>
+    </section>
+
+    <section class="chapter" id="job-contract">
+      <div class="chapter-head"><span class="chapter-no">04</span><h2>双目拆分 Job 契约</h2></div>
+
+      <h3>固定双目拆分契约</h3>
+      <pre><code>buildStereoSplitOrbitRequest(snapshot StereoSplitSnapshot) OrbitJobRequest
+verifyStereoSplitOutput(snapshot StereoSplitSnapshot, manifest Manifest) error
+runStereoSplitQA(output StereoSplitOutput) QAResult</code></pre>
+      <p>这三项是 Keystone 内部固定函数，不是可注册插件。出现第二种真实处理功能后，再根据共同点抽取接口。</p>
+
+      <h3>双目拆分镜像</h3>
+      <pre><code>archebase-cr-cn-beijing.cr.volces.com/prod/orbit-jobs/
+  stereo-split@sha256:&lt;configured-digest&gt;</code></pre>
+      <p>镜像包含 <code>run_processing.py</code>、<code>split_mcap_stereo_imu.py</code> 与固定版本的 <code>rosbags</code>、NumPy、OpenCV headless。它不包含 TOS SDK 或环境专属 bucket。<code>run_processing.py</code> 直接导入 splitter module，并序列化返回的 <code>SplitStats</code>，不得解析人类可读 stdout。</p>
+
+      <h3>公开命令</h3>
+      <pre><code>python3 /app/run_processing.py \
+  --input /bindings/input/&lt;source-object-basename&gt; \
+  --output-binding /bindings/output \
+  --scratch /scratch \
+  --expected-source-size &lt;bytes&gt; \
+  --expected-source-checksum &lt;sha256-if-known&gt; \
+  --source-uri &lt;frozen-tos-uri&gt; \
+  --processor-image &lt;frozen-image-digest&gt; \
+  --kind stereo_split \
+  --generation &lt;generation&gt;</code></pre>
+
+      <div class="callout">Orbit 文件 binding 不支持改名：本地输入文件名必须与 TOS object basename 完全一致。目录 binding 的 URI 和本地 path 都必须以 <code>/</code> 结尾。</div>
+
+      <h3>工作区</h3>
+      <pre><code>/bindings/
+  input/&lt;source-object-basename&gt;  # 只读 CSI binding
+  output/                         # 可读写 CSI binding
+/scratch/
+  input/source.mcap
+  output_bag/
+    output_bag.mcap
+    metadata.yaml
+  processing_manifest.json</code></pre>
+
+      <h3>发布纪律</h3>
+      <ol>
+        <li>检查临时盘，复制绑定输入到本地临时名，完整后只在本地 rename。</li>
+        <li>校验源大小与可用 checksum；在本地路径运行 splitter。</li>
+        <li>校验 <code>output_bag.mcap</code>、<code>metadata.yaml</code>，计算 SHA-256 与大小。</li>
+        <li>顺序复制 MCAP 与 metadata 到输出 binding 的最终文件名，并关闭文件等待 CSI flush。</li>
+        <li>最后复制 manifest；任何步骤失败都以非零码退出。</li>
+      </ol>
+      <p>对象存储挂载上不执行 rename。generation 前缀始终唯一，因此残缺对象不会覆盖上一代；没有有效 manifest 且未经 Keystone验证的前缀不可见。</p>
+
+      <h3>输出结构</h3>
+      <pre><code>derived/episodes/123/stereo-split/g2-a6f391/
+  output_bag.mcap
+  metadata.yaml
+  processing_manifest.json</code></pre>
+      <p><code>g2-a6f391</code> 中的随机后缀由 Keystone 生成，必须随完整 Orbit 请求在第一次外部调用前持久化；同一 generation 的传输重试不得重新生成。双目拆分当前固定输出一个处理后的 MCAP、一份 metadata 与最后发布的 manifest。以后其他 kind 的输出差异先放在 <code>processing_result JSON</code>，不提前建设通用产物模型。</p>
+    </section>
+
+    <section class="chapter" id="orbit-request">
+      <div class="chapter-head"><span class="chapter-no">05</span><h2>Orbit Data Binding 请求</h2></div>
+      <pre><code>{
+  "submission_id": "derivative-123-stereo-split-g2",
+  "image": "&lt;configured-digest&gt;",
+  "command": ["python3", "/app/run_processing.py"],
+  "args": [
+    "--input", "/bindings/input/source.mcap",
+    "--output-binding", "/bindings/output",
+    "--scratch", "/scratch",
+    "--expected-source-size", "301234567",
+    "--expected-source-checksum", "&lt;sha256-if-known&gt;",
+    "--source-uri", "tos://bucket/raw/source.mcap",
+    "--processor-image", "&lt;configured-digest&gt;",
+    "--kind", "stereo_split",
+    "--generation", "2"
+  ],
+  "data_bindings": [
+    {
+      "uri": "tos://bucket/raw/source.mcap",
+      "path": "/bindings/input/source.mcap",
+      "mode": "read"
+    },
+    {
+      "uri": "tos://bucket/derived/episodes/123/stereo-split/g2-a6f391/",
+      "path": "/bindings/output/",
+      "mode": "write"
+    }
+  ],
+  "resources": {
+    "requests": {
+      "cpu": "2",
+      "memory": "4Gi",
+      "ephemeral-storage": "4Gi"
+    },
+    "limits": {
+      "cpu": "4",
+      "memory": "8Gi",
+      "ephemeral-storage": "8Gi"
+    }
+  },
+  "active_deadline_seconds": 3600,
+  "backoff_limit": 0,
+  "ttl_seconds_after_done": 604800
+}</code></pre>
+
+      <h3>首次 Reconcile 冻结边界</h3>
+      <ol>
+        <li><code>queued</code> 行尚未绑定某次部署配置；排队期间配置变化时，以 Reconciler 首次领取时看到的当前双目拆分配置为准。</li>
+        <li>Reconciler 校验 Episode 的 storage backend 为 TOS，并用 metadata 中的 bucket 与 object key 生成唯一规范形式 <code>tos://bucket/key</code>；不得只保存展示路径。</li>
+        <li>Reconciler 获取源对象大小、ETag 与可用强校验值。原始对象 key 必须不可覆盖；快照冻结后发现身份变化，该 generation 必须失败，不能悄悄改用新对象。</li>
+        <li>同一事务写入 <code>processor_image</code>、<code>source_uri</code>、源身份、<code>output_prefix</code>、<code>orbit_submission_id</code> 和完整 <code>orbit_request</code>，并执行 <code>queued → submitting</code>。</li>
+        <li><code>orbit_request</code> 是恢复时的唯一请求来源，完整包含 image、command、args、data bindings、resources、deadline、backoff 与 TTL；事务成功提交后才允许第一次调用 Orbit。</li>
+      </ol>
+      <div class="callout">关键崩溃边界是“先提交数据库，再调用 Orbit”。若进程在两者之间崩溃，Reconciler 直接发送已存请求；绝不能用新的镜像、资源或随机前缀重建 stale <code>submitting</code>。</div>
+
+      <div class="split">
+        <article class="panel red">
+          <h3>输入 binding 的真实范围</h3>
+          <p>TOS CSI 只能挂目录。即使请求声明单个文件，Orbit 也会把对象的父目录挂到 <code>/bindings/input</code>。身份策略与对象布局必须考虑同目录兄弟对象的可见性。</p>
+        </article>
+        <article class="panel orange">
+          <h3>输出 mode 的真实语义</h3>
+          <p>Orbit 当前的 <code>mode: write</code> 实际产生 read-write 挂载。输出前缀必须由服务端生成且 generation 独占，只允许固定的双目拆分镜像接收。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="chapter" id="manifest">
+      <div class="chapter-head"><span class="chapter-no">06</span><h2>Manifest 与成功判定</h2></div>
+      <pre><code>{
+  "schema_version": 1,
+  "status": "succeeded",
+  "kind": "stereo_split",
+  "generation": 2,
+  "processor_image": "...@sha256:...",
+  "source": {
+    "uri": "tos://bucket/raw/source.mcap",
+    "binding_path": "/bindings/input/source.mcap",
+    "size_bytes": 301234567,
+    "sha256": "..."
+  },
+  "outputs": {
+    "mcap": {
+      "name": "output_bag.mcap",
+      "size_bytes": 570306435,
+      "sha256": "..."
+    },
+    "metadata": {
+      "name": "metadata.yaml",
+      "size_bytes": 1411,
+      "sha256": "..."
+    }
+  },
+  "stats": {
+    "input_messages": 988,
+    "decoded_images": 988,
+    "left_images": 988,
+    "right_images": 988,
+    "imu_messages": 10857,
+    "skipped_messages": 0
+  },
+  "started_at": "2026-08-01T10:00:00Z",
+  "finished_at": "2026-08-01T10:04:30Z"
+}</code></pre>
+
+      <h3>Keystone 验证清单</h3>
+      <ul>
+        <li>schema、kind、generation、源 URI、镜像 digest 与已冻结 <code>orbit_request</code> 完全一致；源 URI 与镜像 digest 由受信 argv 显式传给 Processor。</li>
+        <li>输出名固定为 <code>output_bag.mcap</code> 与 <code>metadata.yaml</code>，无目录穿越。</li>
+        <li>源 URI、大小和可用的 ETag / checksum 符合冻结身份；原始对象未被替换。</li>
+        <li>TOS 输出对象存在、大小与 manifest 一致，并严格位于快照中的 <code>output_prefix</code>。</li>
+        <li>输出 MCAP 大小为正、头尾 magic 有效；深层 topic / 数量检查归自动 QA。</li>
+        <li>Keystone不为复算 SHA-256 下载完整输出；checksum 由可信镜像产生并结合对象大小、range magic 与后续 QA 使用。</li>
+      </ul>
+      <p>源对象 Stat、manifest 读取、输出对象 Stat 或 range read 的暂时失败会保留 <code>verifying</code> 并递增 <code>verification_attempt_count</code>，最多观察 5 次；超过上限进入 processing failed。manifest schema、冻结快照不匹配、源 size / ETag 漂移和 MCAP magic 错误属于确定性失败，不重试。</p>
+      <div class="callout">Orbit <code>SUCCEEDED</code> 只表示容器成功退出。只有验证通过并在同一事务写入输出字段、<code>processing_status=succeeded</code> 与 <code>qa_status=pending</code>，业务才成功。</div>
+    </section>
+
+    <section class="chapter" id="lifecycle">
+      <div class="chapter-head"><span class="chapter-no">07</span><h2>状态、幂等与 Job 删除</h2></div>
+
+      <h3>状态映射</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Orbit</th><th>Derivative processing</th><th>动作</th></tr></thead>
+          <tbody>
+            <tr><td>未提交</td><td><code>queued / submitting</code></td><td>Reconciler 领取并提交</td></tr>
+            <tr><td><code>PENDING</code></td><td><code>pending</code></td><td>等待 PV/PVC、挂载或调度</td></tr>
+            <tr><td><code>RUNNING</code></td><td><code>running</code></td><td>轮询并允许取消</td></tr>
+            <tr><td><code>SUCCEEDED</code></td><td><code>verifying → succeeded</code></td><td>验证 TOS 输出</td></tr>
+            <tr><td><code>FAILED</code></td><td><code>failed</code></td><td>保存错误和日志，排队调用 Orbit DELETE</td></tr>
+            <tr><td><code>STOPPED</code></td><td><code>canceled</code></td><td>保存终态，排队调用 Orbit DELETE</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>提交幂等</h3>
+      <p><code>orbit_submission_id</code> 对 <code>episode_id + kind + generation</code> 确定。它与随机 <code>output_prefix</code>、源身份及完整 <code>orbit_request</code> 在同一事务中持久化，事务提交后才允许网络调用。当前 Orbit 的 POST 不是严格幂等：它先创建 PV/PVC，再创建 Job，因此 Reconciler 必须按下表收敛，不能把任意 409 当作 Job 已存在。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>观察结果</th><th>Reconciler 动作</th></tr></thead>
+          <tbody>
+            <tr><td>GET 返回 Job</td><td>校验 submission ID、image 与 bindings 后接管，补写 <code>orbit_job_id</code></td></tr>
+            <tr><td>GET 404，POST 202</td><td>保存 Job ID，进入 pending</td></tr>
+            <tr><td>GET 404，POST 超时</td><td>保持 submitting；退避后先 GET，不生成新请求</td></tr>
+            <tr><td>POST 409，随后 GET 返回 Job</td><td>接管已有 Job</td></tr>
+            <tr><td>POST 409，随后 GET 仍为 404</td><td>判定孤儿 binding 冲突；保持 submitting、告警并等待集群 GC 后重试同一快照</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>已接受 Job 在 <code>pending / running</code> 阶段单次 GET 404 不立即失败：首次观察写 <code>orbit_job_missing_since</code>，连续缺失达到 <code>max(3 × poll interval, 15s)</code> 后才写 processing failed 并释放全局并发容量；期间任何成功 GET 都清空该时间戳。</p>
+
+      <h3>成功锁与失败重试</h3>
+      <ul>
+        <li><code>processing_status=succeeded</code> 是 <code>Episode + kind</code> 永久成功锁。</li>
+        <li>失败或取消且 <code>orbit_delete_status</code> 为 <code>not_required / completed</code>、<code>cloud_publish_source != original</code> 时，管理员重试会创建新的 generation。</li>
+        <li>递增 generation 前，重试事务必须先冻结引用旧 generation 的批次 item 结果；存在 admitted 但尚无 <code>result_snapshot</code> 的旧 item 时不得覆盖当前 Derivative。</li>
+        <li>新 generation 回到 <code>queued</code>，清空 <code>cancel_requested_at</code>、旧请求快照、Orbit Job、处理输出与错误；QA、delete 的状态、attempt、retry time、error、result 与时间戳全部重置，下一次 Reconcile 才冻结当前配置。</li>
+        <li>上一 generation 的残缺前缀进入延迟对象清理，不保留独立运行记录。</li>
+        <li>原始同步一旦认领 <code>original</code>，无论 pending、in_progress、failed 或 completed，处理与重试都永久返回 <code>cloud_source_locked</code>。</li>
+      </ul>
+
+      <h3>取消</h3>
+      <ul>
+        <li><code>queued</code> 原子改为 canceled，并把 Orbit delete 记为 <code>not_required</code>，不调用 Orbit。</li>
+        <li><code>submitting / pending / running</code> 先写 <code>cancel_requested_at</code>；它是期望状态，不因一次 Stop 404 被清除。</li>
+        <li>Reconciler 每次 POST 前重查取消标记；POST 已在途时，提交方返回后也必须重查并立即 Stop。</li>
+        <li><code>submitting</code> 的 Stop 404 只表示“此刻未找到”；若已经尝试 POST，首次 404 写 <code>orbit_submit_absent_at</code>，至少等待 10 秒并再次 GET 仍为 404 后才能写 canceled；期间发现 Job 则按正常 Stop 收敛。尚未尝试 POST 时可直接确认不存在。</li>
+        <li><code>verifying</code> 及之后拒绝取消。</li>
+        <li>无有效 manifest 的输出前缀始终不可见，交给延迟对象清理。</li>
+      </ul>
+
+      <h3>Orbit DELETE 与 PV/PVC 最终回收</h3>
+      <ol>
+        <li>捕获 Orbit 终态与有上限的日志尾部。</li>
+        <li>成功时完成 manifest 验证；失败或取消时持久化终态原因。</li>
+        <li>将 <code>orbit_delete_status</code> 置为 <code>pending</code>。</li>
+        <li>同一个 Reconciler 调用现有 <code>DELETE /api/jobs/{job_id}</code>，其他错误持久化并按有上限退避持续重试。</li>
+        <li>HTTP 204 或 404 都记录 <code>completed</code> 与 <code>orbit_delete_accepted_at</code>：204 表示后台删除请求已接受，404 表示 Job 已不存在；两者都不表示绑定资源已消失。</li>
+        <li>集群 GC 按 Orbit labels 扫描孤儿绑定资源，在确认对应 Job / Pod 不存在且超过安全窗口后，依次删除 PVC 与 PV。</li>
+      </ol>
+      <p>Orbit delete 状态只使用 <code>not_required / pending / completed</code>。这里的 <code>completed</code> 只表示 Orbit API 清理阶段已经收敛，不是 Kubernetes 资源消失证明。错误通过 attempt、next_retry_at 与 error 字段表达，不增加无恢复入口的 failed 状态。只有旧 Job 已进入 Orbit 终态，且 delete 为 <code>not_required / completed</code> 才允许 generation 重试；新 generation 使用独立 Job ID、PV/PVC 名称和 TOS 输出前缀，因此不必等待后台删除和物理回收。</p>
+      <p>GC 只处理带 <code>app.kubernetes.io/managed-by=orbit</code> 与 <code>archebase.io/job-id</code> 的资源；必须验证 Job / Pod 已不存在、资源年龄超过安全窗口，并校验 PV 的 <code>claimRef.namespace</code> 等于 Orbit Job namespace。先删除 PVC，确认消失后再删除 PV。Job TTL 必须长于日志保存与正常 DELETE SLA。</p>
+      <div class="callout">HTTP 204 甚至不保证响应时 Job 已消失；HTTP 204 / 404 也都不保证 PV/PVC 已消失。删除 PV/PVC 只回收绑定资源，绝不能被解释为删除 TOS 前缀中的派生对象。</div>
+    </section>
+
+    <section class="chapter" id="data-model">
+      <div class="chapter-head"><span class="chapter-no">08</span><h2>持久化数据模型</h2></div>
+      <p class="lead">新增一张只追加的镜像配置审计表、<code>episode_derivatives</code> 与 <code>bulk_run_items</code>：分别保存当前有效镜像变更、当前双目拆分和批次事实。在 Episode 上增加唯一云发布来源，在 sync log 上增加不可变上传快照；不增加第二套 rawDataId 或同步状态机。</p>
+      <h3>当前镜像配置与审计</h3>
+      <pre><code>stereo_split_image_configs
+  id                           BIGINT PK AUTO_INCREMENT
+  image_ref                    VARCHAR(1024) NULL
+  previous_image_ref           VARCHAR(1024) NULL
+  max_concurrent               INT NOT NULL DEFAULT 1
+  previous_max_concurrent      INT NULL
+  created_by                   VARCHAR(191) NULL
+  created_at                   TIMESTAMP NOT NULL
+
+  INDEX (created_at)</code></pre>
+      <p>迁移先插入一条 <code>image_ref=NULL、max_concurrent=1</code> 的固定互斥行，当前配置始终是最大 ID。镜像不从环境变量初始化；管理员必须在“系统设置”页面首次保存合法 digest 后才能执行双目拆分。配置记录只 INSERT，不 UPDATE、不 DELETE；它是运维审计，不是用户可选择的脚本版本。</p>
+      <p>更新请求携带 <code>expected_revision_id</code>。事务锁定固定互斥行后读取当前最大 ID；revision 不一致返回 <code>409 config_changed</code>。镜像与并发均未变化则幂等返回当前行，否则把当时的有效值写入 previous 字段并插入新行，因此并发管理员不会静默覆盖配置。</p>
+      <pre><code>episodes  # existing table, add
+  cloud_publish_source        VARCHAR(32) NULL
+  cloud_publish_claimed_at    TIMESTAMP NULL
+
+  # existing canonical cloud fields, reused by either source
+  cloud_synced                BOOLEAN DEFAULT FALSE
+  cloud_synced_at             TIMESTAMP NULL
+  cloud_mcap_path             VARCHAR(1024) NULL
+  hilbert_raw_data_id         BIGINT NULL</code></pre>
+      <p><code>cloud_publish_source</code> 只允许 NULL、<code>original</code>、<code>stereo_split</code>。NULL 表示尚无同步准入认领，不表示两份都可以发布；认领事务会同时写 <code>cloud_publish_claimed_at</code> 与 pending sync log。选中哪种来源，Episode 既有 canonical cloud 字段就描述哪种正式表示。</p>
+      <h3>历史回填</h3>
+      <ol>
+        <li>先以 nullable、无默认值增加两个字段，不启动双目拆分。</li>
+        <li>只要 Episode 已 <code>cloud_synced=true</code>、已有 <code>hilbert_raw_data_id</code>，或存在任意历史 <code>sync_logs</code>，保守回填 <code>cloud_publish_source=original</code>。failed / canceled log 也不猜测“肯定没有外部副作用”。</li>
+        <li><code>cloud_publish_claimed_at</code> 优先取最早 sync log 时间，其次 <code>cloud_synced_at</code>，最后取迁移时间。</li>
+        <li>没有任何同步证据的 Episode 保持 NULL；上线前审计并清零“来源 NULL 但存在 cloud path / rawDataId / sync log”的矛盾行。</li>
+      </ol>
+      <pre><code>UPDATE episodes e
+SET cloud_publish_source = 'original',
+    cloud_publish_claimed_at = COALESCE(
+      (SELECT MIN(sl.started_at) FROM sync_logs sl WHERE sl.episode_id = e.id),
+      e.cloud_synced_at,
+      CURRENT_TIMESTAMP
+    )
+WHERE e.cloud_synced = TRUE
+   OR e.hilbert_raw_data_id IS NOT NULL
+   OR EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id);</code></pre>
+      <div class="callout">历史已同步原始文件的 Episode 全部锁定为 original，不能补跑双目拆分。迁移不尝试根据对象名猜测来源。</div>
+      <pre><code>episode_derivatives
+  id                           BIGINT PK
+  episode_id                   BIGINT NOT NULL
+  kind                         VARCHAR(64) NOT NULL
+  generation                   INT NOT NULL
+
+  processor_config_revision_id BIGINT NULL
+  processor_image              VARCHAR(1024) NULL
+  source_uri                   VARCHAR(2048) NULL
+  source_etag                  VARCHAR(191) NULL
+  source_checksum              VARCHAR(128) NULL
+  source_size_bytes            BIGINT NULL
+
+  processing_status            VARCHAR(32) NOT NULL DEFAULT 'queued'
+  cancel_requested_at          TIMESTAMP NULL
+  reconcile_after              TIMESTAMP NULL
+  orbit_submission_id          VARCHAR(191) NULL
+  orbit_request                JSON NULL
+  orbit_snapshot_frozen_at     TIMESTAMP NULL
+  orbit_job_id                 VARCHAR(191) NULL
+  orbit_submit_absent_at       TIMESTAMP NULL
+  orbit_job_missing_since      TIMESTAMP NULL
+  output_prefix                VARCHAR(1024) NULL
+  mcap_path                    VARCHAR(1024) NULL
+  metadata_path                VARCHAR(1024) NULL
+  manifest_path                VARCHAR(1024) NULL
+  checksum                     VARCHAR(128) NULL
+  file_size_bytes              BIGINT NULL
+  duration_sec                 DECIMAL(10,2) NULL
+  processing_result            JSON NULL
+  processing_error             TEXT NULL
+  orbit_log_tail               MEDIUMTEXT NULL
+  submit_attempt_count         INT NOT NULL DEFAULT 0
+  verification_attempt_count   INT NOT NULL DEFAULT 0
+  processing_started_at        TIMESTAMP NULL
+  processing_finished_at       TIMESTAMP NULL
+
+  orbit_delete_status          VARCHAR(32) NOT NULL DEFAULT 'not_required'
+  orbit_delete_attempt_count   INT NOT NULL DEFAULT 0
+  orbit_delete_next_retry_at   TIMESTAMP NULL
+  orbit_delete_error           TEXT NULL
+  orbit_delete_accepted_at     TIMESTAMP NULL
+
+  qa_status                    VARCHAR(32) NOT NULL DEFAULT 'not_started'
+  qa_attempt_count             INT NOT NULL DEFAULT 0
+  qa_next_retry_at             TIMESTAMP NULL
+  qa_score                     DECIMAL(4,3) NULL
+  quality_flag                 TEXT NULL
+  qa_result                    JSON NULL
+  qa_error                     TEXT NULL
+  qa_started_at                TIMESTAMP NULL
+  qa_finished_at               TIMESTAMP NULL
+
+  created_at                   TIMESTAMP NOT NULL
+  updated_at                   TIMESTAMP NOT NULL</code></pre>
+      <p>状态域固定为：processing = <code>queued / submitting / pending / running / verifying / succeeded / failed / canceled</code>；orbit delete = <code>not_required / pending / completed</code>；QA = <code>not_started / pending / running / approved / failed</code>。<code>processor_config_revision_id</code>、<code>processor_image</code>、源字段、submission ID 与输出前缀必须和 <code>orbit_request</code> 一致；从 submitting 开始不可修改。管理员保存的镜像必须先成为非空审计 revision，之后才可被 generation 冻结。源对象至少保存 size、ETag 与可用强 checksum，且原始 key 必须不可覆盖。</p>
+
+      <h3>批次成员与同步来源快照</h3>
+      <pre><code>bulk_runs  # existing table, add for stereo_split
+  request               JSON NULL
+  preview_counts        JSON NULL
+  snapshot_max_episode_id BIGINT NULL
+  materialize_cursor    BIGINT NULL
+  materialized_at       TIMESTAMP NULL
+  final_counts          JSON NULL
+  counts_frozen_at      TIMESTAMP NULL
+
+bulk_run_items
+  id                    BIGINT PK
+  bulk_run_id           VARCHAR(64) NOT NULL
+  episode_id            BIGINT NOT NULL
+  derivative_id         BIGINT NULL
+  derivative_generation INT NULL
+  admission_status      VARCHAR(32) NOT NULL DEFAULT 'pending'
+  result_reason         VARCHAR(64) NULL
+  result_snapshot       JSON NULL
+  created_at            TIMESTAMP NOT NULL
+  updated_at            TIMESTAMP NOT NULL
+
+sync_logs  # existing table, add
+  source_snapshot       JSON NULL</code></pre>
+      <p><code>bulk_run_items</code> 是批次成员和当次结果的事实来源；<code>admission_status</code> 固定为 <code>pending / admitted / skipped / canceled</code>。all_matching 仍按 <code>snapshot_max_episode_id</code> 分页物化，但每个 ID 依靠唯一键只写一次；重启重扫不会把已准入项改算成 skipped。<code>materialized_at</code> 表示成员扫描已经关闭，finalizer 在它非 NULL 前不得完成批次。</p>
+      <pre><code>source_snapshot = {
+  "source_type": "original | stereo_split",
+  "derivative_id": 123,
+  "generation": 2,
+  "backend": "tos",
+  "bucket": "archebase-prod",
+  "object_key": "derived/.../output_bag.mcap",
+  "size_bytes": 570306435,
+  "sha256": "...",
+  "bag_name": "episode-public-id.mcap"
+}</code></pre>
+      <p>pending sync log 创建时就写完整快照。后续 claim、失败重试和服务恢复都读取该 JSON；不得再次读取 Episode metadata 或 Derivative 当前字段选择对象。</p>
+
+      <h3>约束与索引</h3>
+      <pre><code>episode_derivatives:
+  UNIQUE (episode_id, kind)
+  UNIQUE (orbit_submission_id)
+  INDEX (processing_status, reconcile_after, updated_at)
+  INDEX (orbit_delete_status, orbit_delete_next_retry_at, updated_at)
+  INDEX (qa_status, qa_next_retry_at, updated_at)
+
+bulk_run_items:
+  UNIQUE (bulk_run_id, episode_id)
+  INDEX (bulk_run_id, admission_status, id)
+  INDEX (derivative_id)
+
+episodes:
+  CHECK (cloud_publish_source IS NULL OR cloud_publish_source IN ('original', 'stereo_split'))
+  INDEX (cloud_publish_source, cloud_synced, updated_at)
+  INDEX (hilbert_raw_data_id)</code></pre>
+
+      <h3>入队与失败重试事务</h3>
+      <p>单条与批量入口调用同一 seam，并始终按 Episode → Derivative → BulkRunItem / latest sync log 的顺序执行 <code>FOR UPDATE</code>：</p>
+      <ol>
+        <li>无记录时要求 Episode 尚未认领 <code>original</code> 且无原始同步证据，校验当前可解析到 TOS 源对象，创建 generation 1 <code>queued</code> 行；快照字段保持 NULL。</li>
+        <li><code>processing_status=succeeded</code> 时返回或跳过 <code>already_derived</code>，不改任何字段。</li>
+        <li>处理活跃、verifying 或上一 Job 的 Orbit DELETE 阶段尚未 completed 时拒绝，避免同一 kind 并行执行。</li>
+        <li><code>failed / canceled</code>、delete 为 <code>not_required / completed</code> 且云来源未被 original 认领时，generation 加一，清空执行和输出字段，重置 processing=queued、QA=not_started、delete=not_required。</li>
+        <li>Episode 删除、越权、源 MCAP metadata 缺失或不能规范化为 TOS URI 时不排队；Reconciler 首次领取时再次解析并冻结真实执行输入。</li>
+      </ol>
+
+      <h3>Reconciler 快照事务不变量</h3>
+      <ul>
+        <li><code>queued</code> 允许所有执行快照字段为 NULL；只有 Reconciler 可执行 <code>queued → submitting</code>。</li>
+        <li>该状态转换必须与所有快照字段一次提交；<code>submitting</code> 行必须拥有完整且可反序列化的 <code>orbit_request</code>。</li>
+        <li><code>orbit_job_id</code> 只能在 Orbit 响应或查询返回后补写，不属于调用前可知快照；其余影响请求的值都必须先持久化。</li>
+        <li>发现 <code>submitting</code> 缺少快照属于数据不变量破坏：告警并置为 failed，禁止从当前环境补造请求。</li>
+      </ul>
+
+      <h3>单版本边界</h3>
+      <ul>
+        <li>镜像 digest 只回答“这一 generation 实际运行了什么”，不形成可选择的版本。</li>
+        <li>镜像配置更新后，成功行不变；尚处于 queued 的 generation 在首次调度时读取最新非空数据库 revision，已冻结的 submitting / pending / running generation 继续使用旧快照。没有非空 revision 时处理入口拒绝创建新 generation。</li>
+        <li>generation 不是脚本版本，只是失败重试计数和输出隔离键。</li>
+      </ul>
+    </section>
+
+    <section class="chapter" id="workers">
+      <div class="chapter-head"><span class="chapter-no">09</span><h2>持久化 Worker 与规模化</h2></div>
+      <div class="split">
+        <article class="panel orange">
+          <h3>Derivative Reconciler</h3>
+          <ol>
+            <li>单副本内按全局并发上限扫描到期 Derivative，并用条件 UPDATE 原子 claim。</li>
+            <li>queued 阶段冻结请求并提交 Orbit；submitting 阶段按 GET / POST 矩阵收敛。</li>
+            <li>pending / running 阶段轮询 Job；succeeded 后验证 manifest 与 TOS 输出。</li>
+            <li>processing succeeded 且 QA pending 时运行固定双目 QA；stale QA running 可安全重跑。</li>
+            <li>所有 Orbit 终态保存日志，并在同一循环持续重试 DELETE；204 / 404 结束 API 删除状态。generation 达到批次终态时，同一事务冻结引用它的 item <code>result_snapshot</code>。</li>
+          </ol>
+        </article>
+        <article class="panel blue">
+          <h3>Bulk Materializer</h3>
+          <ul>
+            <li>按页把匹配 Episode 物化为 <code>bulk_run_items</code>，唯一键保证崩溃重扫幂等。</li>
+            <li>逐条调用与单条入口相同的准入事务，并把 admitted / skipped 原因写回 item。</li>
+            <li>扫描结束写 <code>materialized_at</code>；finalizer 只聚合 item，不读取 Derivative 当前归属。</li>
+          </ul>
+        </article>
+      </div>
+
+      <h3>容量策略</h3>
+      <ul>
+        <li>一个 queued Derivative generation 对应一个 Orbit Job；数据库排队不会提前创建 Pod。</li>
+        <li>双目拆分固定声明 CPU、内存与 <code>ephemeral-storage</code> request / limit。</li>
+        <li><code>backoff_limit=0</code>；处理重试必须是业务动作。</li>
+        <li>Job TTL 长于日志保存与 Orbit DELETE SLA；正常情况由 Keystone主动调用 DELETE，残留绑定资源由集群 GC 回收。</li>
+        <li>批量入口只增加 item 与 queued Derivative，不绕过同一个 Reconciler。</li>
+        <li>交互式单条请求优先级高于批量请求；二者共享一个全局并发上限。</li>
+      </ul>
+      <p>容量测试必须覆盖 CSI→scratch、scratch→CSI 吞吐、CSI flush 与可见延迟、JPEG 编解码 CPU、峰值内存、输入输出比例、临时盘压力和队列等待时间。</p>
+      <p>默认全局并发为 1。完成单任务链路验证后，再根据节点 CPU / 内存 / scratch 容量、TOS 吞吐、CSI 挂载能力、Orbit Controller 与自动 QA 能力逐步提高。当前不采用少量常驻 Pod 循环处理：独立 Job 能保留逐条资源隔离、日志、取消和重试边界。只有实测单条处理时间与 Pod + PVC 启动时间同量级时，才另行评估小批 micro-batching。</p>
+
+      <h3>批量派生：复用 <code>bulk_runs</code></h3>
+      <p>在现有批量基础设施上增加 <code>stereo_split</code> action，复用筛选、运行记录、SSE 与取消。请求不接收镜像或命令。Materializer 按页写 <code>bulk_run_items</code> 并调用单条准入事务；真正容量仍由唯一 Reconciler 控制。批次历史可以精确回答成员、跳过原因和当次结果。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>方法</th><th>路径</th><th>语义</th></tr></thead>
+          <tbody>
+            <tr><td>POST</td><td><code>/episodes/bulk-stereo-split/preview</code></td><td>返回当时预估的 matched、eligible、skipped 及原因分布</td></tr>
+            <tr><td>POST</td><td><code>/episodes/bulk-stereo-split</code></td><td>创建 bulk run，并分页判定和排队</td></tr>
+            <tr><td>GET</td><td><code>/bulk-runs/:run_id</code></td><td>从 items 返回当前计数；终态后可读固化汇总</td></tr>
+            <tr><td>GET</td><td><code>/bulk-runs/:run_id/items</code></td><td>分页返回精确成员与当次结果</td></tr>
+            <tr><td>GET</td><td><code>/bulk-runs/:run_id/stream</code></td><td>SSE 推送进度</td></tr>
+            <tr><td>POST</td><td><code>/bulk-runs/:run_id/cancel</code></td><td>请求取消仍属于该 run 的排队或活跃处理</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>批量资格与跳过原因</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Episode 当前状态</th><th>结果</th><th>稳定原因</th></tr></thead>
+          <tbody>
+            <tr><td>没有 <code>(episode, stereo_split)</code> 记录，源文件与权限有效</td><td>创建 generation 1</td><td><code>eligible</code></td></tr>
+            <tr><td><code>failed / canceled</code> 且 Orbit DELETE 阶段已 completed</td><td>generation 加一</td><td><code>eligible_retry</code></td></tr>
+            <tr><td><code>processing_status=succeeded</code>，无论 QA / sync 状态</td><td>跳过</td><td><code>already_derived</code></td></tr>
+            <tr><td><code>cloud_publish_source=original</code> 或存在原始同步认领证据</td><td>跳过</td><td><code>cloud_source_locked</code></td></tr>
+            <tr><td><code>queued / submitting / pending / running / verifying</code></td><td>跳过</td><td><code>processing_active</code></td></tr>
+            <tr><td>上一 Job 的 Orbit DELETE 阶段尚未 completed</td><td>跳过</td><td><code>orbit_delete_pending</code></td></tr>
+            <tr><td>源 MCAP 缺失、路径非法或无法解析为 TOS URI</td><td>跳过</td><td><code>source_unavailable</code></td></tr>
+            <tr><td>调用者无 Episode / workspace 权限</td><td>跳过</td><td><code>unauthorized</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>双目拆分镜像未配置或 <code>KEYSTONE_ORBIT_BASE_URL</code> 为空时整体拒绝。安全检查后，判定顺序固定为 <code>succeeded → cloud_source → active → orbit_delete → source → retryable</code>。preview 与 materialize 在各自执行时使用同一规则，但 preview 仍只是预估。</p>
+
+      <h3><code>all_matching</code> 的成员物化语义</h3>
+      <ul>
+        <li>创建批次时保存筛选条件、<code>snapshot_max_episode_id</code> 和 <code>preview_counts</code>；页面必须标注“预估”。</li>
+        <li>Materializer 只扫描不超过 ID 上界的数据；每个匹配 ID 先以 <code>INSERT ... ON DUPLICATE KEY</code> 固定 item，再执行准入。</li>
+        <li>item、准入结果、Derivative 变更和 materialize cursor 在同一事务提交；准入成功同时保存 <code>derivative_id + derivative_generation</code>，崩溃重扫同一 ID 直接复用 item 结果。</li>
+        <li>显式选择模式立即创建请求 ID 对应的 items，但仍在准入时重查权限和业务资格。</li>
+      </ul>
+      <div class="callout"><code>snapshot_max_episode_id</code> 仍只是新增数据截止线；preview 可能与最终成员不同，但一旦 item 被物化，该批次的成员和结果不再漂移。</div>
+
+      <h3>进度、完成与取消</h3>
+      <ul>
+        <li>进度至少返回 <code>materializing / admitted / skipped / queued / pending / running / verifying / succeeded / failed / canceled</code>，以及成功项的 QA pending、running、approved、failed和 Orbit delete pending、completed。</li>
+        <li>活跃计数只在 Derivative generation 与 item 保存值一致时读取当前 Derivative；generation 达到批次终态时写入 item <code>result_snapshot</code>，后续其他批次重试不会改写旧 item。</li>
+        <li>finalizer 必须先锁 bulk run 并确认 <code>materialized_at IS NOT NULL</code>、没有 pending item；所有 admitted item 都必须已有 <code>result_snapshot</code>，即对应 generation 的处理已终态、delete 已 completed / not_required，且成功项 QA 已终态。</li>
+        <li>finalizer 在同一事务只聚合 item 快照、写 <code>final_counts</code> 与 <code>counts_frozen_at</code>，再把 bulk run 改为 completed；PV/PVC GC 与云同步不属于该批次。</li>
+        <li>canceled / failed 批次进入终态时也必须执行同一个 finalizer；事务失败则保持非终态并重试，不能出现“已完成但没有固化计数”。</li>
+        <li>批次终态后的汇总读取 <code>final_counts</code>，逐条历史读取 items，不再依赖可覆盖的 Derivative 归属字段。</li>
+        <li>取消先把 bulk run 置为 <code>cancel_requested</code> 并原子写 <code>materialized_at</code> 关闭后续物化；pending item 的 <code>admission_status</code> 置 canceled，已 admitted item 设置 Derivative cancel request。</li>
+        <li>取消不会回滚已经成功的派生结果，也不会影响手动云同步。</li>
+      </ul>
+      <pre><code>final_counts = {
+  "preview_estimated": 1000,
+  "materialized_items": 1002,
+  "admitted": 980,
+  "skipped": 12,
+  "canceled_before_admission": 10,
+  "queued": 0,
+  "pending": 0,
+  "running": 0,
+  "verifying": 0,
+  "succeeded": 900,
+  "failed": 70,
+  "processing_canceled": 10,
+  "qa_approved": 850,
+  "qa_failed": 50,
+  "orbit_delete_completed": 970,
+  "orbit_delete_not_required": 10
+}</code></pre>
+      <p><code>preview_estimated</code> 可以与实际 item 数不同；<code>admitted + skipped + canceled_before_admission = materialized_items</code>，批次终态时还必须满足 <code>succeeded + failed + processing_canceled = admitted</code>。历史页面可以分页展示每个 item 的稳定结果。</p>
+      <div class="callout">大量数据不等于大量 Pod 同时存在。数据库可以有成千上万条 queued 记录，但 Kubernetes 中通常只有“系统设置”中 <code>max_concurrent</code> 指定数量的活跃 Job/Pod；初始值为 1。</div>
+    </section>
+
+    <section class="chapter" id="qa-sync">
+      <div class="chapter-head"><span class="chapter-no">10</span><h2>派生质检与云同步</h2></div>
+      <div class="split">
+        <article class="panel red">
+          <h3>双目拆分自动 QA</h3>
+          <ol>
+            <li>manifest 的 kind、generation、镜像和源身份正确。</li>
+            <li>输出对象存在、大小匹配，MCAP 头尾 magic 有效。</li>
+            <li>左右图像 topic 存在、数量为正且相等。</li>
+            <li>IMU 数量为正；时间戳、duration 与 generation 前缀合理。</li>
+          </ol>
+          <p>处理验证成功时写 <code>qa_status=pending</code>。Reconciler 以条件 UPDATE 领取为 running；若进程崩溃，超过 QA timeout 的 running 会回到 pending 并安全重跑。QA 失败不改变 processing succeeded，也不允许重新双目拆分；管理员只能重新执行 QA。</p>
+        </article>
+        <article class="panel blue">
+          <h3>手动同步</h3>
+          <p>派生同步继承 Episode 的 workspace、采集计划、工作站、采集员、开始时间与时长，使用双目拆分 MCAP 的 TOS 路径、大小和 checksum，但复用 Episode 唯一的 Hilbert rawDataId 与 canonical 云状态。</p>
+          <pre><code>processing_status = succeeded
+qa_status = approved
+cloud_publish_source in (NULL, stereo_split)
+latest sync_log status in (not_started, failed, canceled)</code></pre>
+          <p>Hilbert 只接收 Episode 最终选中的正式表示，原始或派生来源都使用同一个规范 bag 名：<code>&lt;episode-public-id&gt;.mcap</code>。名称不暴露 <code>stereo_split</code>、generation 或其他本地派生概念。</p>
+        </article>
+      </div>
+      <h3>发布来源仲裁</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>入口</th><th>事务内允许条件</th><th>原子动作</th></tr></thead>
+          <tbody>
+            <tr><td>原始手动 / 管理员批量同步</td><td>来源为 NULL / original，且不存在 queued、submitting、pending、running、verifying 或 succeeded 的 stereo_split</td><td>NULL 时认领 original，写完整 original source snapshot，创建 pending sync log</td></tr>
+            <tr><td>双目拆分手动同步</td><td>来源为 NULL / stereo_split，processing succeeded，QA approved</td><td>NULL 时认领 stereo_split，写完整 derivative source snapshot，创建 pending sync log</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>两条路径必须先 <code>SELECT episodes ... FOR UPDATE</code>，并在同一事务重查 Derivative 与最新 sync log。认领和 pending log 要么一起提交，要么都不生效；事务提交后才允许入内存队列或调用 Hilbert。并发原始同步与处理 / 派生同步时，拿到 Episode 锁并完成认领的一方获胜，另一方返回 <code>cloud_source_locked</code>。</p>
+      <p>failed / canceled 的双目拆分没有成功产物，不自动认领 stereo_split；管理员可以明确选择重试处理或手动同步原始文件，Episode 行锁决定唯一结果。processing succeeded 后，无论 QA 状态如何，原始同步都不再允许；QA 失败只能重新 QA。sync log 为 pending / in_progress 或 Episode 已 cloud_synced 后，禁止重新 QA，避免上传期间改变准入事实。</p>
+
+      <h3>复用一套 Sync Worker</h3>
+      <pre><code>pending sync log
+  → read source_snapshot
+  → validate source-specific QA gate
+  → register/adopt Hilbert rawDataId
+  → upload snapshot object
+  → update Episode canonical cloud fields</code></pre>
+      <p>不新增派生 Sync Worker。现有 Worker 的 pending / failed / canceled 恢复全部从 sync log 反序列化 upload input。original 在准入时检查 Episode QA；stereo_split 在准入、claim 和完成事务中检查 Derivative processing succeeded 与 QA approved。Worker不得使用 Episode metadata.object_key 或 episodes.checksum 覆盖派生快照。</p>
+      <p>第一阶段 <code>KEYSTONE_SYNC_AUTO_SCAN_ENABLED</code> 必须为 false；只恢复已经持久化的 pending / retryable sync log。以后确有自动同步需求时，再基于同一 source snapshot 准入事务开启。</p>
+      <p>rawData 注册始终写 <code>episodes.hilbert_raw_data_id</code>，完成始终写 Episode 既有 <code>cloud_synced</code>、<code>cloud_synced_at</code> 与 <code>cloud_mcap_path</code>。因此现有列表、统计、状态 API 仍把“Episode 的正式表示已同步”解释为 <code>cloud_synced=true</code>，无需在两张表间猜测。</p>
+      <div class="callout">来源认领是不可逆业务事实，不是临时 worker lease。同步失败、服务重启或 rawDataId 已分配都只能重试同一 source；不得清空字段后改传另一份 MCAP。</div>
+      <h3>Hilbert 注册恢复</h3>
+      <p>Hilbert 对 Episode 的原始 / 派生关系完全无感，不增加字段、表或接口。Keystone 调用现有 rawData register；若出现超时、连接中断或“bagName 已存在”等不确定结果，则调用 Hilbert 现有 rawData query，以 workspace 与冻结的规范 bagName 分页查询，并在客户端筛选完全相等的 bagName。只有 workspace、采集计划、bagName、开始/结束时间、大小和 digest 与冻结注册请求全部一致时，才取回该行 rawDataId；任一字段不同都作为不可重试冲突，禁止覆盖或新建第二条。</p>
+      <p>该互斥只约束 Hilbert 正式发布：TOS 中仍同时保留不可变原始 MCAP 与双目拆分派生对象，下载、QA 和审计可以访问两者；删除 PV/PVC 或切换页面状态都不会删除任何一份 TOS 数据。</p>
+    </section>
+
+    <section class="chapter" id="http-ui">
+      <div class="chapter-head"><span class="chapter-no">11</span><h2>HTTP 与 Synapse</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>方法</th><th>路径</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td>GET</td><td><code>/episodes/:id/derivatives/stereo-split</code></td><td>当前双目拆分状态；页面按状态与错误码决定可用动作</td></tr>
+            <tr><td>POST</td><td><code>.../process</code></td><td>首次处理</td></tr>
+            <tr><td>POST</td><td><code>.../retry</code></td><td>失败 / 取消、Orbit DELETE 阶段 completed 且未锁定 original 后重试</td></tr>
+            <tr><td>POST</td><td><code>.../cancel</code></td><td>取消 queued 或活跃处理</td></tr>
+            <tr><td>GET</td><td><code>.../logs</code></td><td>当前 generation 的实时或保存日志</td></tr>
+            <tr><td>POST</td><td><code>.../qa</code></td><td>重新执行双目拆分 QA</td></tr>
+            <tr><td>POST</td><td><code>.../sync</code></td><td>开始或重试手动同步</td></tr>
+            <tr><td>GET</td><td><code>/data-ops/processing-settings/stereo-split</code></td><td>读取当前镜像、全局并发上限、来源、revision 与最近修改人</td></tr>
+            <tr><td>PUT</td><td><code>/data-ops/processing-settings/stereo-split</code></td><td>管理员以 expected revision 原子更新镜像 digest 与全局并发上限</td></tr>
+            <tr><td>GET</td><td><code>/data-ops/processing-settings/stereo-split/history</code></td><td>分页读取不可删除的双目拆分设置审计</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>单条处理、重试和批量请求不能指定 kind 之外的镜像、命令、资源、URI 或 <code>cloud_publish_source</code>；镜像只能通过固定的管理员配置接口集中修改。排队成功返回 202；活跃期重复点击返回当前记录；成功后再次处理返回带 <code>already_derived</code> 的 409；原始来源已锁定时返回带 <code>cloud_source_locked</code> 的 409。</p>
+
+      <h3>管理员系统设置</h3>
+      <p>管理员侧提供独立的“<strong>系统设置</strong>”页面，并以分区承载可从浏览器修改的强类型设置；第一期只有“双目拆分”分区。它展示当前有效镜像、全局并发上限、配置来源、revision、修改人和修改时间。保存请求包含完整 <code>image_ref</code>、<code>max_concurrent</code> 与页面读取到的 <code>expected_revision_id</code>：</p>
+      <pre><code>{
+  "image_ref": "ghcr.io/archebase/stereo-split@sha256:&lt;64-hex&gt;",
+  "max_concurrent": 1,
+  "expected_revision_id": 42
+}</code></pre>
+      <p><code>max_concurrent</code> 只允许 1～100，并由单条和所有批次共享。提高后 Reconciler 会立即唤醒并补充任务；降低后不强制终止已运行 Job，只停止提交新 Job，直到活跃数低于新上限。设置更新与 queued / submitting 的 Orbit POST 通过单副本内的 dispatch 锁串行化：PUT 成功返回前会等待已经开始的旧配置提交收敛，返回后不会再发起使用旧上限的新 Job。Keystone 要求镜像使用显式 registry、仓库路径与 <code>@sha256:</code> digest，拒绝 tag-only、隐式 Docker Hub、userinfo 和空仓库，但不限制仓库域名或 namespace。镜像仓库密码、Token 与 Kubernetes <code>imagePullSecret</code> 永不返回或接收于该 API；它们继续由集群运维配置。管理员保存任意合法 digest 就是在授权 Orbit 执行该镜像，必须依靠管理员权限、审计历史与集群镜像拉取策略控制风险。配置冲突返回 409，页面刷新后由管理员重新确认。</p>
+      <p>系统设置页面是可扩展的前端容器，不是任意 key/value 配置平台。每个新增设置仍需 Keystone 定义字段、权限、校验、生效语义和审计；密钥、集群身份、资源 envelope 与安全边界不开放给浏览器。</p>
+      <p>设置页不是版本选择器：只能看到当前配置和审计历史，不能让某个 Episode 选择历史镜像，也不提供一键回滚。需要恢复旧 digest 时，管理员重新提交该 digest，形成一条新的审计记录。页面在保存前明确提示：修改会影响尚未冻结的 queued generation，不影响已冻结或已成功的记录。</p>
+
+      <h3>数据明细页</h3>
+      <p>数据明细页新增“<strong>双目拆分</strong>”面板，展示 processing、QA、Episode 的正式云发布来源与 canonical sync 状态、generation、该 generation 实际镜像 digest、错误、输出大小、duration、左右图像与 IMU 统计、预览、下载和日志。</p>
+      <div class="status-line">
+        <span class="status-chip go">Processing: succeeded</span>
+        <span class="status-chip warn">QA: failed</span>
+        <span class="status-chip">Sync: unavailable</span>
+      </div>
+      <p>处理、QA 与云同步三种状态不得折叠。<code>cloud_publish_source=original</code> 时处理 / 重试按钮永久禁用并显示“原始文件已选择同步”；失败或取消且 Orbit DELETE 阶段 completed、来源未锁定时显示“重试”。处理成功后原始同步入口禁用，QA 失败只允许重新 QA；QA 通过后才显示派生“同步到云”。来源认领后页面明确显示不可切换。</p>
+
+      <h3>数据操作批量入口</h3>
+      <p>列表页沿用现有筛选与显式选择模型，执行前先调用 preview，明确标注“预估匹配、预估将排队、预估将跳过”和 skipped reason 分布；不得使用“已锁定 N 条”之类暗示严格快照的文案。双目拆分 preview 增加 <code>cloud_source_locked</code>，原始批量同步 preview 则把活跃 / succeeded 的双目拆分列为不可同步。用户确认后创建 bulk run；活跃页面通过既有详情 / SSE 路由展示实时准入、排队、Orbit 执行、验证、Orbit DELETE 与自动 QA 进度，终态及历史页面改读固化汇总。PV/PVC GC 只进入运维指标，不进入单条进度。单条详情页提交的任务优先于批量任务。</p>
+    </section>
+
+    <section class="chapter" id="configuration">
+      <div class="chapter-head"><span class="chapter-no">12</span><h2>配置契约</h2></div>
+      <h3>Keystone</h3>
+      <p>本功能只新增两个 Keystone 环境变量。<code>KEYSTONE_ORBIT_BASE_URL</code> 非空即启用双目拆分，为空即不启动 Manager、API 执行入口和 Reconciler；不再设置独立 feature flag。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>变量</th><th>用途</th><th>规则</th></tr></thead>
+          <tbody>
+            <tr><td><code>KEYSTONE_ORBIT_BASE_URL</code></td><td>Orbit 地址及启用条件</td><td>例如 <code>http://orbit.archebase-system.svc.cluster.local:8080</code>；非空启用，为空关闭</td></tr>
+            <tr><td><code>KEYSTONE_DERIVATIVE_TOS_PREFIX</code></td><td>受信输出根</td><td><code>derived/episodes</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>派生输出始终写入 Keystone 已管理的 <code>TOSStorage.Bucket</code>，只允许通过前缀把它与原始对象隔离，不提供独立输出 bucket。现有部署仍必须保持 <code>KEYSTONE_SYNC_AUTO_SCAN_ENABLED=false</code>，避免原始自动同步绕过原始 / 派生二选一准入；它是既有同步配置，不是本功能新增变量。</p>
+      <p>command、输出文件名、QA 逻辑与运行 envelope 是 Keystone 代码中的固定双目拆分契约：Orbit HTTP 超时 10 秒；requests 为 CPU 2、内存 4 GiB、临时盘 4 GiB；limits 为 CPU 4、内存 8 GiB、临时盘 8 GiB；Job deadline 3600 秒；完成后 TTL 604800 秒；轮询 5 秒；源文件上限 500 GiB；日志尾部 1 MiB。实际镜像 digest 和全局并发始终来自数据库系统设置，初始并发为 1；没有镜像时处理入口不可用。更新设置不创建新业务版本，也不会重新排队 succeeded 数据。</p>
+      <p>作业镜像只在 Reconciler 首次冻结 queued generation 时读取。冻结后即使管理员再次保存镜像或代码变化，该 generation 的提交与恢复仍使用数据库中的 <code>orbit_request</code>；失败重试的新 generation 才会在首次调度读取当时的当前镜像。全局并发不写入 Job 快照，Reconciler 每次准备提交 queued 任务时读取最新设置。</p>
+
+      <h3>Orbit / Kubernetes</h3>
+      <pre><code>DATA_BINDINGS_ENABLED=true
+ORBIT_TOS_URL=https://tos-cn-beijing.volces.com
+JOB_SERVICE_ACCOUNT=orbit-job</code></pre>
+      <ul>
+        <li><code>tos.csi.volcengine.com</code> 在所有可调度节点健康。</li>
+        <li>Orbit Controller 可管理 cluster-scoped PV 与 namespace PVC。</li>
+        <li><code>orbit-job</code> 能读取源前缀、读写派生前缀，但不能修改或删除原始数据。</li>
+        <li>Keystone Deployment 第一阶段必须由集群部署配置固定为 <code>replicas=1</code>；本期不实现多副本协调或应用内副本探测。</li>
+        <li>Orbit 保持现有 DELETE 接口与实现，不要求增加 cleanup 状态接口。</li>
+        <li>集群部署独立的 Orbit binding GC，复用 Orbit labels 与具备最小权限的清理身份；每 10～30 分钟扫描一次，默认只处理超过 1 小时的孤儿资源。</li>
+        <li>registry pull secret、临时盘和孤儿 PV/PVC GC 可用。</li>
+        <li>生成 PV 的 reclaim policy 为 Retain；删除 PV 不得删除 TOS 对象；源对象 key 必须不可覆盖。</li>
+      </ul>
+    </section>
+
+    <section class="chapter" id="risk">
+      <div class="chapter-head"><span class="chapter-no">13</span><h2>失败、安全与观测</h2></div>
+      <h3>失败矩阵</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>失败</th><th>持久化结果</th><th>恢复</th></tr></thead>
+          <tbody>
+            <tr><td>快照事务提交前 Keystone 崩溃</td><td>queued，无半份快照</td><td>Reconciler 重新领取并读取当时的当前配置</td></tr>
+            <tr><td>快照已提交、第一次 POST 前崩溃</td><td>stale submitting + 完整快照</td><td>Reconciler 发送已存 <code>orbit_request</code></td></tr>
+            <tr><td>Orbit POST 超时或连接中断</td><td>submitting + 原快照 + backoff</td><td>先 GET；POST 409 且 GET 404 时等待 binding GC，不假装已接管</td></tr>
+            <tr><td>submitting 期间请求取消</td><td>cancel_requested_at 保持</td><td>提交方和 Reconciler持续查询；发现 Job 后 Stop，确认无在途 POST 后才 canceled</td></tr>
+            <tr><td>Orbit 接受后 Keystone 崩溃</td><td>stale submitting + 原快照</td><td>按 submission ID 接管确定性 Job，不重建请求</td></tr>
+            <tr><td>已接受的 Orbit Job 暂时 GET 404</td><td>pending / running + missing_since</td><td>连续缺失达到宽限期才 failed；成功 GET 清空观察并继续</td></tr>
+            <tr><td>submitting 行缺少或损坏快照</td><td>processing failed + invariant error</td><td>告警并人工调查；禁止从当前配置补造</td></tr>
+            <tr><td>当前镜像不可用</td><td>processing failed</td><td>更新镜像配置后递增 generation 重试</td></tr>
+            <tr><td>PV/PVC 或 CSI mount 失败</td><td>pending 或 failed</td><td>检查 CSI 与事件后重试</td></tr>
+            <tr><td>输入复制失败</td><td>processing failed</td><td>检查 CSI/TOS 访问</td></tr>
+            <tr><td>源 ETag、大小或 checksum 不匹配</td><td>processing failed</td><td>调查不可覆盖策略被破坏；不更新冻结快照</td></tr>
+            <tr><td>转换失败</td><td>processing failed</td><td>查看保存日志后 generation 重试</td></tr>
+            <tr><td>输出只复制了一部分</td><td>无有效 manifest</td><td>前缀不可见，延迟清理</td></tr>
+            <tr><td>成功但 manifest 或输出暂不可见</td><td>verifying + verification attempt</td><td>最多观察 5 次，仍不可见则 failed；检查 CSI flush</td></tr>
+            <tr><td>Orbit DELETE 失败</td><td>业务终态 + orbit delete pending</td><td>Reconciler持续退避重试；超过 SLA 后告警</td></tr>
+            <tr><td>Orbit DELETE 返回 204 / 404，但 Job 或 PV/PVC 仍短暂残留</td><td>orbit delete completed（API 阶段）</td><td>generation 隔离使其不阻塞业务重试；Kubernetes 与集群 GC 最终收敛</td></tr>
+            <tr><td>TTL 抢先删除 Job</td><td>可能遗留 PV/PVC</td><td>集群 GC 按 label 回收</td></tr>
+            <tr><td>孤儿 PV/PVC 超过数量或年龄阈值</td><td>集群运维告警</td><td>清空 Orbit 地址并重新部署，修复 GC 后恢复</td></tr>
+            <tr><td>QA 数据检查失败</td><td>processing succeeded / QA failed</td><td>重新 QA，不重新双目拆分</td></tr>
+            <tr><td>QA running 时 Keystone 崩溃</td><td>stale QA running</td><td>超过 timeout 后重置 pending 并由 Reconciler安全重跑</td></tr>
+            <tr><td>同步来源认领事务提交后进程崩溃</td><td>来源已锁定 + pending sync log</td><td>现有 Sync Worker 轮询恢复，不切换来源</td></tr>
+            <tr><td>原始同步与双目拆分处理并发</td><td>Episode 行锁决定唯一获胜者</td><td>失败方返回 cloud_source_locked；不得绕过锁重试另一来源</td></tr>
+            <tr><td>同步失败</td><td>canonical sync failed，来源保持不变</td><td>复用同一 source_snapshot 与 Episode rawDataId 重试</td></tr>
+            <tr><td>Hilbert 已注册但响应丢失</td><td>Keystone 尚无 rawDataId</td><td>按冻结 bagName 查询，完整参数一致才取回同一 rawDataId</td></tr>
+            <tr><td>历史 Episode 存在同步证据但来源为空</td><td>迁移判定为 original 或进入人工审计</td><td>完成回填前不启用派生处理</td></tr>
+            <tr><td>批次物化中崩溃</td><td>已有 items 与 cursor 同事务提交</td><td>从 cursor 重扫；唯一键复用 item，不重复计数或改判</td></tr>
+            <tr><td>批次 finalizer 事务前或事务中崩溃</td><td>批次保持非终态，<code>final_counts</code> 未生效</td><td>恢复后重新聚合并原子固化</td></tr>
+            <tr><td>旧批次数据以后被新批次重试</td><td>新 item 记录新的 generation</td><td>旧 item 与 result_snapshot 保持不变</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>安全</h3>
+      <ul>
+        <li>只有管理员可调用 data-ops 路由；Episode 动作每次重新检查 workspace 权限。镜像设置是全局配置，不属于单个 workspace，只接受现有 admin 身份。</li>
+        <li>镜像配置接口是集群代码执行边界：复用现有 admin 角色，强制显式 registry 与 digest，并以 append-only 记录审计每次变更；作业 API 不接受镜像字段。Keystone 不限制仓库，管理员保存即授权执行。</li>
+        <li>双目拆分契约由 Keystone 固定实现；镜像、命令、参数和本地路径取自首次 Reconcile 时的受信配置，TOS URI 只由 Episode metadata 规范化生成。</li>
+        <li>完整服务端请求先持久化再发送；客户端输入和后续环境配置都不能修改已经冻结的 <code>orbit_request</code>。</li>
+        <li><code>cloud_publish_source</code> 只能由服务端同步准入事务认领，客户端不能指定、清空或切换；原始手动、管理员批量和派生入口使用相同 Episode 行锁。</li>
+        <li>Orbit 使用 argv，不构造 shell；请求中不出现 AK/SK、STS、签名 URL 或 registry 凭证。</li>
+        <li>Job 只看本地路径；父目录可见性与 write 实际为 read-write 的语义必须计入权限模型。</li>
+        <li>原始 Episode 对象 key 必须不可覆盖；当前 Orbit / CSI 合约不提供 version ID 绑定退路。</li>
+        <li>输出前缀按 generation 唯一；随机后缀、实际镜像 digest 和源对象身份随当前请求持久化。</li>
+      </ul>
+
+      <h3>运维观测边界</h3>
+      <p>本期不新增一套双目拆分专用 metrics 与告警平台。运维先使用 Derivative / bulk run 数据库状态、Keystone 日志、Orbit Job 状态和 Kubernetes 既有监控观察队列、失败、ImagePull、CSI、TOS 授权、Orbit DELETE 与孤儿 PV/PVC。</p>
+      <p>资源积压越过安全阈值时清空 <code>KEYSTONE_ORBIT_BASE_URL</code> 并重新部署 Keystone，以停止接收和调度新的双目拆分任务。专用有界指标与自动告警在确认实际运维阈值后另行实现，不阻塞本期功能。</p>
+    </section>
+
+    <section class="chapter" id="delivery">
+      <div class="chapter-head"><span class="chapter-no">14</span><h2>测试、上线与回滚</h2></div>
+      <h3>测试</h3>
+      <div class="split">
+        <article class="panel orange">
+          <h3>Processor</h3>
+          <ul>
+            <li>用临时目录模拟只读输入与可写输出 binding。</li>
+            <li>验证输入→scratch、scratch→输出复制以及转换只发生在本地。</li>
+            <li>数据文件关闭后才复制 manifest；MCAP、metadata、大小和 checksum 符合固定契约。</li>
+            <li>覆盖 checksum、copy retry、取消和确定性样例 MCAP。</li>
+          </ul>
+        </article>
+        <article class="panel blue">
+          <h3>Keystone / Synapse</h3>
+          <ul>
+            <li>覆盖浏览器不能指定镜像 / argv、双击幂等和成功后 <code>already_derived</code>。</li>
+            <li>覆盖镜像未配置、digest 与 repository 语法解析、任意合法 registry、同值幂等、expected revision 冲突、append-only 审计和 admin 权限；API 不接收 registry 凭据。</li>
+            <li>迁移覆盖 cloud_synced、rawDataId、completed / failed / canceled sync log 和完全未同步组合；有任一同步证据都回填 original。</li>
+            <li>断言原始自动 scanner 配置为 false；原始手动和管理员批量入口在 Episode 行锁内认领 original。</li>
+            <li>并发执行原始同步、首次处理、处理重试和派生同步，断言只产生一个来源、一个 pending sync log 和一个 Episode rawDataId。</li>
+            <li>断言 queued 快照字段为空；排队期间配置变化由首次 Reconcile 采用，冻结后的配置变化不影响当前 generation。</li>
+            <li>失败重试 generation 加一并重置明确状态；下一次 Reconcile 使用当前镜像，更新镜像不解锁 succeeded 行。</li>
+            <li>断言 backend / bucket / object key 规范化为唯一 <code>source_uri</code>，并覆盖非法 backend、路径逃逸和源身份变化。</li>
+            <li>断言 input basename、目录尾斜杠、调用前已持久化的随机 <code>output_prefix</code> 与 generation 独占 URI。</li>
+            <li>在快照事务前、POST 前、POST 在途和 Orbit 接受后分别注入崩溃/取消；不得产生逃逸 Job，恢复必须复用同一请求。</li>
+            <li>覆盖 POST 409 + GET 404 的孤儿 binding、Orbit DELETE 204 / 404、日志保存与 GC；204 不得被表述为 Job 已消失，二者都不得被表述为 PV/PVC 已消失。</li>
+            <li>在 item、Derivative、cursor 事务各边界注入崩溃；重扫不得重复 item、改写当次结果或重复计数。</li>
+            <li>覆盖全局并发、单条优先、服务重启恢复、批量 SSE、QA running 超时恢复和取消收敛。</li>
+            <li>断言 <code>materialized_at</code>、无 pending item 且 admitted item 都有终态 <code>result_snapshot</code> 是 finalizer 前置条件；旧批次逐条历史在新 generation 重试后保持不变。</li>
+            <li>断言批量完成等待处理、Orbit delete 与自动 QA 终态，但不等待 PV/PVC GC 或手动云同步。</li>
+            <li>派生同步完成后 Episode canonical cloud 字段指向派生对象；失败重试复用相同 source_snapshot / rawDataId，original 入口和处理入口持续禁用。</li>
+            <li>模拟 Hilbert 注册成功但响应丢失，断言 Keystone 按规范 bagName 找回同一 rawDataId；参数任一字段不同必须作为不可重试冲突。</li>
+            <li>GC 覆盖 label 限定、Job / Pod 存在保护、年龄窗口、PV claim namespace 校验、PVC→PV 顺序与 TOS 对象不受影响。</li>
+            <li>Synapse build + 完整状态矩阵人工验收。</li>
+          </ul>
+        </article>
+      </div>
+
+      <h3>Staging 验收</h3>
+      <ol>
+        <li>发布双目拆分 digest staging 镜像，先不配置 <code>KEYSTONE_ORBIT_BASE_URL</code>，并限制 staging TOS 前缀。</li>
+        <li>验证固定命令与输出契约后配置 Orbit 地址并重新部署；确认配置变更不自动排队历史 Episode。</li>
+        <li>从本地 Keystone 通过 Orbit port-forward 启动一个小 Episode。</li>
+        <li>暂停首次 POST，确认规范化 source URI、源身份、镜像、随机输出前缀、submission ID 和完整请求已经在同一事务落库；恢复后发送该快照。</li>
+        <li>检查 PV/PVC、Pod 本地路径、scratch staging 与 TOS 输出。</li>
+        <li>验证 manifest、自动 QA、日志保存、Orbit DELETE 状态，以及 GC 最终删除残留 PV/PVC。</li>
+        <li>注入取消、CSI mount 失败与授权失败；验证派生手动 Hilbert 同步写回 Episode canonical 状态。</li>
+        <li>确认原始自动 scanner 已关闭；并发触发原始手动同步、处理和派生同步，验证只有一个来源胜出。</li>
+        <li>在 all_matching 物化期间重启服务，验证 items 精确恢复、materialized_at 关闭扫描、旧批次逐条历史不漂移。</li>
+        <li>逐步增加并发，记录容量数据。</li>
+      </ol>
+
+      <h3>部署顺序</h3>
+      <ol>
+        <li>在 Keystone <code>jobs/stereo-split/</code> 增加源码、Dockerfile、测试与独立镜像流水线；Orbit 只负责按冻结请求运行镜像。</li>
+        <li>验证 staging TOS CSI、data-binding RBAC、job identity 与 Orbit binding GC。</li>
+        <li>启用 Orbit data bindings，配置 TOS endpoint，发布镜像 digest。</li>
+        <li>实现镜像配置审计、cloud source 回填、<code>episode_derivatives</code>、<code>bulk_run_items</code>、bulk_runs 字段和 <code>sync_logs.source_snapshot</code> migration。</li>
+        <li>验证现有 Hilbert rawData query 可被 Keystone 服务身份调用，并能按 workspace、bagName 分页返回完整注册字段；Hilbert 本身无需部署功能改动。</li>
+        <li>修改现有 Sync Worker 从 source snapshot 上传并关闭自动 scanner；再实现固定双目契约、单 Reconciler、批次 Materializer 与 handler。</li>
+        <li>实现 Synapse 双目拆分面板与批量入口；在 staging 完成端到端与容量测试。</li>
+        <li>生产准备 CSI、RBAC、identity、Orbit binding GC、孤儿资源告警与镜像；先应用数据库 migration。</li>
+        <li>Keystone以拒绝新处理的状态上线，确认所有旧 Pod 已退出且新 Sync Worker 已遵守来源锁，再部署 Synapse。</li>
+        <li>启用双目拆分，以一个 canary Episode 和小并发开始，随后逐步放量。</li>
+      </ol>
+
+      <h3>第二种处理功能出现时</h3>
+      <ol>
+        <li>先实现第二种功能的固定请求、验证和 QA，并提供确定性样例与容量数据。</li>
+        <li>只有两个实现出现稳定共同点时，才抽取薄 Processor interface。</li>
+        <li>继续复用 Derivative、bulk items 和 Reconciler；真实输出差异放入 result JSON。</li>
+      </ol>
+      <p>本期不为尚不存在的第二种功能提前编码。只有输出差异无法容纳于固定列和 result JSON 时，才重新评估数据模型。</p>
+
+      <h3>回滚</h3>
+      <ul>
+        <li>先停止接收新处理，继续运行 Materializer finalizer、Reconciler、Sync Worker 与集群 GC。</li>
+        <li>只有明确回滚决策时才停止活跃 Job；每个终态 Job 都必须显式删除。</li>
+        <li>只要存在任意活跃或 succeeded Derivative、stereo_split source claim 或派生 pending sync log，就不能运行不识别这些事实的旧 Keystone。</li>
+        <li>必须回滚时，先关闭所有旧版原始手动、批量和自动同步入口，再启动旧服务；否则它可能上传原始 MCAP。</li>
+        <li>回滚前必须清点所有活跃 Job、pending sync log 与来源认领；任何回滚都不得清空或改写已认领来源和 rawDataId。</li>
+        <li>generation 前缀不可变；只删除超过安全窗口、无当前成功引用的残缺前缀。</li>
+        <li>任何回滚和清理都不得触碰原始 Episode MCAP。</li>
+      </ul>
+    </section>
+
+    <section class="chapter" id="validation">
+      <div class="chapter-head"><span class="chapter-no">15</span><h2>上线前验证项</h2></div>
+      <ol>
+        <li>确认 TOS CSI identity、只读输入、可读写输出、父前缀可见性，以及 PV 删除后对象仍保留。</li>
+        <li>确认原始 Episode object key 不可覆盖；不以 bucket versioning 代替该前置条件。</li>
+        <li>测量大 MCAP 的顺序复制吞吐、close / flush 行为与输出可见延迟。</li>
+        <li>测量代表性文件的输入输出比例与峰值临时盘。</li>
+        <li>确认默认全局并发 1 与固定源文件上限 500 GiB 符合节点容量；上线后只通过系统设置逐步调整并发。</li>
+        <li>确定独立作业镜像的构建、扫描、晋级与 digest 交接。</li>
+        <li>确认镜像设置只允许 admin、显式 registry 与 digest；配置历史不可删除，仓库凭据不进入 Keystone，管理员理解保存镜像即授权执行，且 staging canary 能由集群节点成功拉取。</li>
+        <li>确认 queued → submitting 的快照事务先于 Orbit POST，覆盖全部请求参数；镜像配置更新不会解锁 succeeded 行，失败重试的新 generation 会在首次调度快照新 digest。</li>
+        <li>确认历史同步证据全部回填为 original，来源矛盾行为零；原始自动 scanner 关闭，所有管理员同步入口经过同一 Episode 行锁。</li>
+        <li>确认派生同步只读取 sync log source snapshot，并在注册响应不确定时按规范 bagName 和完整参数复用唯一 rawDataId。</li>
+        <li>确认 item / Derivative / cursor 原子写入，finalizer 等待 materialized_at、无 pending item和 admitted item 的终态快照，历史逐条结果不漂移。</li>
+        <li>确定无当前成功引用的 generation 前缀保留窗口和责任人。</li>
+        <li>确定 Orbit DELETE SLA、长安全 TTL、日志保留上限、GC 扫描周期、安全年龄窗口、孤儿数量 / 年龄阈值与停接单责任人。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="finale">
+    <div class="finale-inner">
+      <h2>绑定负责抵达，本地负责决战，验证负责裁定。</h2>
+      <p>最终方案只有一个当前双目拆分脚本、一个受控且可审计的当前镜像配置、一个持久化 Reconciler、一张派生表、一张批次成员表和一个不可变同步快照。成功后永久跳过；原始与派生只能同步一种。</p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MulanPSL-2.0
 
 .PHONY: help build check-cr push run test clean lint helm-lint license proto
+.PHONY: stereo-split-image stereo-split-container-smoke stereo-split-test
 
 # Default target
 help:
@@ -16,6 +17,9 @@ help:
 	@echo "  make helm-lint   - Lint Keystone Helm chart"
 	@echo "  make license     - Run REUSE license compliance check"
 	@echo "  make proto       - Regenerate Go bindings from .proto sources"
+	@echo "  make stereo-split-image - Build the stereo split Job image"
+	@echo "  make stereo-split-container-smoke - Build and smoke-test the Job image"
+	@echo "  make stereo-split-test  - Test the stereo split Job entrypoint"
 
 # Build variables
 IMAGE_NAME ?= keystone-edge
@@ -25,6 +29,8 @@ CR_REGISTRY ?= archebase-cr-cn-beijing.cr.volces.com
 CR_NAMESPACE ?=
 CR_REPOSITORY ?= $(IMAGE_NAME)
 FULL_IMAGE = $(CR_REGISTRY)/$(CR_NAMESPACE)/$(CR_REPOSITORY):$(IMAGE_TAG)
+STEREO_SPLIT_IMAGE ?= stereo-split:dev
+STEREO_SPLIT_PLATFORM ?= linux/amd64
 
 # Build Docker image
 build:
@@ -35,6 +41,22 @@ build:
 		-t $(IMAGE_NAME):latest \
 		.
 	@echo "Built $(IMAGE_NAME):$(IMAGE_TAG)"
+
+stereo-split-image:
+	docker build \
+		--platform $(STEREO_SPLIT_PLATFORM) \
+		--file jobs/stereo-split/Dockerfile \
+		--tag $(STEREO_SPLIT_IMAGE) \
+		.
+
+stereo-split-container-smoke: stereo-split-image
+	docker run --rm $(STEREO_SPLIT_IMAGE) --help > /dev/null
+
+stereo-split-test:
+	python3 -m unittest discover \
+		-s jobs/stereo-split/tests \
+		-p 'test_*.py' \
+		-v
 
 # Run container
 run: build

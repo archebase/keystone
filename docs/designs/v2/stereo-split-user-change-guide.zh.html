@@ -1,0 +1,565 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>双目拆分功能更新说明</title>
+  <style>
+    :root {
+      --ink: #19212b;
+      --muted: #64707d;
+      --paper: #f6f7f4;
+      --card: #ffffff;
+      --line: #dfe4df;
+      --green: #196b4b;
+      --green-soft: #e6f3ec;
+      --blue: #2e5fa7;
+      --blue-soft: #eaf1fb;
+      --amber: #a15c00;
+      --amber-soft: #fff3dc;
+      --red: #9b342b;
+      --red-soft: #fcebea;
+      --shadow: 0 12px 35px rgba(25, 33, 43, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(46, 95, 167, 0.10), transparent 27rem),
+        radial-gradient(circle at 95% 12%, rgba(25, 107, 75, 0.10), transparent 24rem),
+        var(--paper);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      line-height: 1.7;
+    }
+
+    a { color: var(--blue); }
+
+    code {
+      padding: 0.12rem 0.36rem;
+      border-radius: 0.35rem;
+      background: #edf0ed;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.9em;
+    }
+
+    .page {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 32px 0 72px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(32px, 7vw, 76px);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 28px;
+      color: white;
+      background: linear-gradient(135deg, #173f35 0%, #1d6c50 54%, #2e5fa7 100%);
+      box-shadow: var(--shadow);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -90px;
+      bottom: -150px;
+      width: 360px;
+      height: 360px;
+      border: 46px solid rgba(255, 255, 255, 0.08);
+      border-radius: 50%;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      font-size: 0.78rem;
+      font-weight: 760;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      opacity: 0.82;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      max-width: 760px;
+      margin-bottom: 18px;
+      font-size: clamp(2.25rem, 6vw, 4.8rem);
+      line-height: 1.05;
+      letter-spacing: -0.045em;
+    }
+
+    .hero-copy {
+      max-width: 760px;
+      margin-bottom: 0;
+      font-size: clamp(1rem, 2.2vw, 1.22rem);
+      color: rgba(255, 255, 255, 0.86);
+    }
+
+    .hero-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .hero-tags span {
+      padding: 8px 13px;
+      border: 1px solid rgba(255, 255, 255, 0.26);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.10);
+      font-size: 0.88rem;
+    }
+
+    .section {
+      margin-top: 28px;
+      padding: clamp(24px, 4.5vw, 46px);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 7px 22px rgba(25, 33, 43, 0.045);
+    }
+
+    .section h2 {
+      margin-bottom: 8px;
+      font-size: clamp(1.5rem, 3vw, 2.15rem);
+      letter-spacing: -0.025em;
+    }
+
+    .section-lead {
+      max-width: 820px;
+      color: var(--muted);
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .card {
+      min-height: 165px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--card);
+    }
+
+    .card-index {
+      display: inline-grid;
+      width: 32px;
+      height: 32px;
+      margin-bottom: 15px;
+      place-items: center;
+      border-radius: 9px;
+      color: var(--green);
+      background: var(--green-soft);
+      font-size: 0.82rem;
+      font-weight: 800;
+    }
+
+    .card h3 { margin-bottom: 7px; font-size: 1.05rem; }
+    .card p { margin-bottom: 0; color: var(--muted); font-size: 0.94rem; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(7, auto);
+      align-items: stretch;
+      gap: 10px;
+      margin-top: 24px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .flow-step {
+      min-width: 130px;
+      padding: 18px 14px;
+      border-radius: 15px;
+      background: var(--blue-soft);
+      text-align: center;
+      font-size: 0.9rem;
+      font-weight: 720;
+    }
+
+    .flow-arrow {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .callout {
+      margin-top: 22px;
+      padding: 18px 20px;
+      border-left: 5px solid var(--green);
+      border-radius: 12px;
+      background: var(--green-soft);
+    }
+
+    .callout strong { color: var(--green); }
+    .callout p:last-child { margin-bottom: 0; }
+
+    .callout.warning {
+      border-left-color: var(--amber);
+      background: var(--amber-soft);
+    }
+
+    .callout.warning strong { color: var(--amber); }
+
+    .steps {
+      display: grid;
+      gap: 12px;
+      margin: 24px 0 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: user-step;
+    }
+
+    .steps li {
+      position: relative;
+      min-height: 58px;
+      padding: 14px 18px 14px 62px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fbfcfa;
+      counter-increment: user-step;
+    }
+
+    .steps li::before {
+      content: counter(user-step);
+      position: absolute;
+      left: 16px;
+      top: 13px;
+      display: grid;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      border-radius: 50%;
+      color: white;
+      background: var(--blue);
+      font-weight: 800;
+    }
+
+    .table-wrap {
+      margin-top: 22px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      font-size: 0.93rem;
+    }
+
+    th, td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #44515d;
+      background: #f2f5f2;
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .status {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 0.79rem;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+
+    .status.info { color: var(--blue); background: var(--blue-soft); }
+    .status.good { color: var(--green); background: var(--green-soft); }
+    .status.warn { color: var(--amber); background: var(--amber-soft); }
+    .status.bad { color: var(--red); background: var(--red-soft); }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .rule-panel {
+      padding: 22px;
+      border-radius: 18px;
+      background: #f7f9f7;
+      border: 1px solid var(--line);
+    }
+
+    .rule-panel h3 { margin-bottom: 10px; }
+    .rule-panel ul { margin: 0; padding-left: 1.2rem; }
+
+    .footer {
+      margin-top: 30px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.88rem;
+    }
+
+    @media (max-width: 820px) {
+      .cards, .two-col { grid-template-columns: 1fr; }
+      .page { width: min(100% - 20px, 1120px); padding-top: 10px; }
+      .hero, .section { border-radius: 18px; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-arrow { transform: rotate(90deg); }
+    }
+
+    @media print {
+      body { background: white; }
+      .page { width: 100%; padding: 0; }
+      .hero, .section { box-shadow: none; break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">Keystone · 用户更新说明 · 2026-08-02</p>
+      <h1>现在可以处理<br>双目拆分了</h1>
+      <p class="hero-copy">在数据明细页处理单条 Episode，在数据操作页批量处理。处理成功后系统自动质检；质检通过后，仍由管理员决定是否同步派生 MCAP 到云端。</p>
+      <div class="hero-tags">
+        <span>单条处理</span>
+        <span>批量处理</span>
+        <span>自动质检</span>
+        <span>人工确认云同步</span>
+        <span>预览与下载</span>
+      </div>
+    </header>
+
+    <section class="section">
+      <p class="eyebrow">What changed</p>
+      <h2>你会看到这些新能力</h2>
+      <p class="section-lead">这次更新不改变 Episode 的基本概念，而是在原始 MCAP 旁增加一份可追踪的“双目拆分派生数据”。</p>
+      <div class="cards">
+        <article class="card">
+          <span class="card-index">01</span>
+          <h3>数据明细页新增“双目拆分”</h3>
+          <p>可以执行、取消、重试、查看日志，并查看这一条数据的处理和自动质检状态。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">02</span>
+          <h3>派生结果可预览、下载</h3>
+          <p>成功后可以看到文件大小、时长、左右图像、IMU、跳过消息等统计。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">03</span>
+          <h3>支持批量双目拆分</h3>
+          <p>按当前筛选或勾选范围预览任务，确认预计提交和跳过数量后再执行。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">04</span>
+          <h3>处理成功后自动质检</h3>
+          <p>不需要手动发起第一次质检；质检不通过时，可单独重新质检，无需重新拆分。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">05</span>
+          <h3>同步仍由管理员确认</h3>
+          <p>自动质检通过后才出现“同步派生文件到云”，系统不会自动同步。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">06</span>
+          <h3>任务离开页面也会继续</h3>
+          <p>处理、验证、质检与失败恢复由服务端记录；关闭页面不会取消已经提交的任务。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <p class="eyebrow">Single episode</p>
+      <h2>处理一条数据</h2>
+      <p class="section-lead">进入管理员的数据明细页，找到新的“派生处理 / 双目拆分”区域。</p>
+      <ol class="steps">
+        <li>点击<strong>“执行双目拆分”</strong>。系统会先检查原始 MCAP 是否可处理，并进入排队状态。</li>
+        <li>等待状态依次经过<strong>排队、提交、等待调度、处理中、验证产物</strong>。需要时可查看日志；活跃任务可以取消。</li>
+        <li>处理成功后，系统会自动执行派生数据质检。页面会显示左图、右图、IMU 等结果统计。</li>
+        <li>质检通过后，可先<strong>预览或下载派生 MCAP</strong>，再由管理员点击<strong>“同步派生文件到云”</strong>。</li>
+        <li>若云同步失败，可重试同一份派生文件；已经选定的同步来源不会改变。</li>
+      </ol>
+
+      <div class="flow" aria-label="双目拆分用户流程">
+        <div class="flow-step">执行双目拆分</div><div class="flow-arrow">→</div>
+        <div class="flow-step">后台处理与验证</div><div class="flow-arrow">→</div>
+        <div class="flow-step">自动质检</div><div class="flow-arrow">→</div>
+        <div class="flow-step">管理员同步到云</div>
+      </div>
+
+      <div class="callout">
+        <p><strong>关键变化：</strong>“处理成功”和“已经同步”是两件事。自动质检通过后，派生文件仍然只保存在数据存储中，必须由管理员点击同步按钮才会发布到云端。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <p class="eyebrow">Status guide</p>
+      <h2>页面状态怎么理解</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>页面状态</th><th>表示什么</th><th>你可以做什么</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="status info">排队中 / 提交中</span></td><td>任务正在等待或提交给计算服务。</td><td>等待，或在允许时取消。</td></tr>
+            <tr><td><span class="status info">等待调度 / 处理中</span></td><td>作业已经创建，正在准备或执行脚本。</td><td>查看日志，必要时取消。</td></tr>
+            <tr><td><span class="status info">验证产物</span></td><td>脚本已结束，系统正在检查输出文件和统计是否可信。</td><td>等待验证完成。</td></tr>
+            <tr><td><span class="status good">处理成功</span></td><td>派生 MCAP 已验证并保存，随后进入自动质检。</td><td>预览、下载；质检通过后同步。</td></tr>
+            <tr><td><span class="status bad">处理失败</span></td><td>脚本、输入、输出验证或运行环境出现问题。</td><td>查看说明和日志；清理阶段结束后重试。</td></tr>
+            <tr><td><span class="status warn">已取消</span></td><td>本次 generation 已停止，不会发布为成功结果。</td><td>清理阶段结束后可重新执行。</td></tr>
+            <tr><td><span class="status good">自动质检通过</span></td><td>派生数据满足当前双目拆分质量规则。</td><td>管理员可点击同步派生文件到云。</td></tr>
+            <tr><td><span class="status bad">自动质检不通过</span></td><td>处理结果仍保留，但暂时不能同步。</td><td>查看质检说明，并点击重新质检。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <p class="eyebrow">One official cloud representation</p>
+      <h2>原始文件和派生文件只能同步一种</h2>
+      <p class="section-lead">原始 MCAP 和双目拆分 MCAP 可以同时保存在数据存储中，用于下载、检查和审计；但对于 Hilbert，一个 Episode 始终只对应一条正式数据。</p>
+      <div class="two-col">
+        <article class="rule-panel">
+          <h3>选择原始 MCAP 同步</h3>
+          <ul>
+            <li>一旦原始文件开始同步，该 Episode 的正式来源被锁定为原始文件。</li>
+            <li>之后不能再执行或重试双目拆分。</li>
+            <li>同步失败也只能继续重试同一份原始文件。</li>
+          </ul>
+        </article>
+        <article class="rule-panel">
+          <h3>选择双目拆分 MCAP 同步</h3>
+          <ul>
+            <li>双目拆分开始或成功后，原始文件的同步入口会被锁定。</li>
+            <li>派生质检通过后，由管理员确认同步派生文件。</li>
+            <li>同步失败也只能继续重试同一份派生文件。</li>
+          </ul>
+        </article>
+      </div>
+      <div class="callout warning">
+        <p><strong>不可切换：</strong>同步来源是业务选择，不是临时状态。一旦原始或派生来源被正式认领，不能清空后改传另一份文件。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <p class="eyebrow">Bulk processing</p>
+      <h2>批量处理大量数据</h2>
+      <p class="section-lead">在“数据操作”页面使用<strong>“批量双目拆分”</strong>。系统会为每个符合条件的 Episode 独立创建任务；默认每次只运行 1 个，其余任务排队等待，不会把整批数据塞进同一个长时间运行的 Pod。管理员可以在“系统设置”中调整这个全局上限。</p>
+      <ol class="steps">
+        <li>先设置筛选条件，或明确勾选需要处理的数据。</li>
+        <li>点击<strong>“批量双目拆分”</strong>，查看本次选中、预计提交、预计跳过及跳过原因。</li>
+        <li>确认后点击<strong>“开始拆分”</strong>。可以在进度面板中查看派生成功、处理失败和质检不通过数量。</li>
+        <li>点击<strong>“查看明细”</strong>，逐条查看准入结果、原因、generation、处理结果和自动质检结果。</li>
+      </ol>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>常见跳过原因</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td><code>已派生成功</code></td><td>这条数据已经有成功结果，不会重复处理。</td></tr>
+            <tr><td><code>云发布来源已锁定</code></td><td>该 Episode 已选择原始文件作为正式同步来源。</td></tr>
+            <tr><td><code>正在拆分或排队中</code></td><td>已有活跃任务，本批次不会再创建一个。</td></tr>
+            <tr><td><code>上次作业清理中</code></td><td>上次失败或取消的作业仍在完成 API 清理阶段。</td></tr>
+            <tr><td><code>源 MCAP 不可用</code></td><td>系统无法从当前存储信息定位可处理的 TOS 源文件。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="section-lead" style="margin-top: 16px; margin-bottom: 0;">批量预览是提交前的估算。真正轮到某条数据准入时，系统会再次检查它是否仍然符合条件，因此最终数量可能与预览略有差异。</p>
+    </section>
+
+    <section class="section">
+      <p class="eyebrow">Admin settings</p>
+      <h2>管理员新增“系统设置”</h2>
+      <p class="section-lead">管理后台侧边栏新增独立的系统设置页面。第一期提供“双目拆分”分区，以后其他系统参数可以继续增加新的设置分区。</p>
+      <div class="two-col">
+        <article class="rule-panel">
+          <h3>页面可以配置</h3>
+          <ul>
+            <li>任意可由集群拉取的完整镜像地址；Keystone 不限制仓库。</li>
+            <li>必须使用不可变的 <code>@sha256:...</code> digest。</li>
+            <li>最大同时处理数，允许范围为 1～100，默认值为 1。</li>
+            <li>可以查看当前 revision、配置来源、修改人和历史记录。</li>
+          </ul>
+        </article>
+        <article class="rule-panel">
+          <h3>页面不能配置</h3>
+          <ul>
+            <li>镜像仓库密码或 Token。</li>
+            <li>Kubernetes 的 <code>imagePullSecret</code>。</li>
+            <li>脚本命令、CPU、内存或任意用户参数。</li>
+          </ul>
+        </article>
+      </div>
+      <div class="callout">
+        <p><strong>并发调整如何生效：</strong>单条操作和全部批次共享同一个上限。调高后系统会继续从队列补充作业；调低不会强制停止已经运行的作业，而是在活跃数量降到新上限前不再启动新的作业。</p>
+      </div>
+      <div class="callout">
+        <p><strong>部署配置已经收敛：</strong>本功能只新增 Orbit 地址和派生输出前缀两个 Keystone 环境变量。配置 Orbit 地址即启用功能；不再单独配置开关、镜像仓库白名单、作业资源、并发或派生 bucket。派生文件固定写入 Keystone 已管理的 TOS bucket，镜像与并发由本页面维护。</p>
+      </div>
+      <div class="callout warning">
+        <p><strong>如果执行入口提示不可用或请求被拒绝：</strong>可能是当前环境未配置 Orbit 地址、镜像尚未配置、源 MCAP 不在受支持的 TOS 存储中，或该 Episode 已经选择了原始文件同步。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <p class="eyebrow">Data safety</p>
+      <h2>你的数据会怎样</h2>
+      <div class="cards">
+        <article class="card">
+          <span class="card-index">A</span>
+          <h3>原始 MCAP 不会被覆盖</h3>
+          <p>双目拆分输出使用独立路径。失败、取消或重试也不会修改原始文件。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">B</span>
+          <h3>成功结果不会重复生成</h3>
+          <p>一个 Episode 只保留一个当前双目拆分记录；一旦成功，后续批次会自动跳过。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">C</span>
+          <h3>失败重试使用新 generation</h3>
+          <p>新一次执行拥有独立作业和输出路径，不会混用上一次失败任务的产物。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">D</span>
+          <h3>输出必须先通过验证</h3>
+          <p>系统会检查清单、文件大小、校验值和 MCAP 内容，不能只凭作业显示成功。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">E</span>
+          <h3>Hilbert 无需理解派生关系</h3>
+          <p>Hilbert 仍只看到一条普通 rawData；原始/派生选择完全由 Keystone 管理。</p>
+        </article>
+        <article class="card">
+          <span class="card-index">F</span>
+          <h3>页面关闭不丢任务</h3>
+          <p>任务状态、批次成员、处理结果和同步来源均持久化保存，可在服务恢复后继续。</p>
+        </article>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>双目拆分功能更新说明 · 面向 Keystone 管理员与数据操作人员</p>
+    </footer>
+  </main>
+</body>
+</html>

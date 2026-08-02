@@ -50,29 +50,35 @@ type syncEnqueueRequest struct {
 }
 
 type syncEpisodeUploadRow struct {
-	ID                      int64           `db:"id"`
-	EpisodeUUID             string          `db:"episode_id"`
-	DCPlanID                sql.NullInt64   `db:"dc_plan_id"`
-	LocalDCPlanID           sql.NullInt64   `db:"local_dc_plan_id"`
-	ProjectedDCPlanID       sql.NullInt64   `db:"projected_dc_plan_id"`
-	WorkspaceID             sql.NullInt64   `db:"workspace_id"`
-	DCPlanName              sql.NullString  `db:"dc_plan_name"`
-	DCType                  sql.NullString  `db:"dc_type"`
-	McapPath                string          `db:"mcap_path"`
-	SidecarPath             string          `db:"sidecar_path"`
-	CloudSynced             bool            `db:"cloud_synced"`
-	Checksum                sql.NullString  `db:"checksum"`
-	WorkstationID           sql.NullInt64   `db:"workstation_id"`
-	DataCollectorOperatorID sql.NullString  `db:"data_collector_operator_id"`
-	DataCollectorName       sql.NullString  `db:"data_collector_name"`
-	DurationSec             sql.NullFloat64 `db:"duration_sec"`
-	Metadata                sql.NullString  `db:"metadata"`
-	HilbertRawDataID        sql.NullInt64   `db:"hilbert_raw_data_id"`
-	CreatedAt               time.Time       `db:"created_at"`
+	ID                      int64               `db:"id"`
+	EpisodeUUID             string              `db:"episode_id"`
+	DCPlanID                sql.NullInt64       `db:"dc_plan_id"`
+	LocalDCPlanID           sql.NullInt64       `db:"local_dc_plan_id"`
+	ProjectedDCPlanID       sql.NullInt64       `db:"projected_dc_plan_id"`
+	WorkspaceID             sql.NullInt64       `db:"workspace_id"`
+	DCPlanName              sql.NullString      `db:"dc_plan_name"`
+	DCType                  sql.NullString      `db:"dc_type"`
+	McapPath                string              `db:"mcap_path"`
+	StorageBackend          string              `db:"storage_backend"`
+	SidecarPath             string              `db:"sidecar_path"`
+	CloudSynced             bool                `db:"cloud_synced"`
+	QAStatus                string              `db:"qa_status"`
+	CloudPublishSource      sql.NullString      `db:"cloud_publish_source"`
+	Checksum                sql.NullString      `db:"checksum"`
+	FileSizeBytes           sql.NullInt64       `db:"file_size_bytes"`
+	WorkstationID           sql.NullInt64       `db:"workstation_id"`
+	DataCollectorOperatorID sql.NullString      `db:"data_collector_operator_id"`
+	DataCollectorName       sql.NullString      `db:"data_collector_name"`
+	DurationSec             sql.NullFloat64     `db:"duration_sec"`
+	Metadata                sql.NullString      `db:"metadata"`
+	HilbertRawDataID        sql.NullInt64       `db:"hilbert_raw_data_id"`
+	CreatedAt               time.Time           `db:"created_at"`
+	SourceSnapshot          *SyncSourceSnapshot `db:"-"`
 }
 
 type hilbertRawDataClient interface {
 	RegisterRawData(ctx context.Context, request auth.HilbertRawDataRegisterRequest) (int64, error)
+	FindRawDataByBagName(ctx context.Context, workspaceID int64, bagName string) (*auth.HilbertRawData, error)
 	GetRawDataUploadCredentials(ctx context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawDataUploadCredentials, error)
 	FinishRawDataUpload(ctx context.Context, workspaceID, rawDataID int64) error
 }
@@ -198,17 +204,18 @@ type SyncProgressSnapshot struct {
 // SyncWorker is a background goroutine that processes queued cloud sync work
 // and optionally discovers approved episodes for automatic cloud upload.
 type SyncWorker struct {
-	db          *sqlx.DB
-	uploader    *cloud.Uploader
-	minioClient *s3.Client
-	minioBucket string
-	hilbert     hilbertRawDataClient
-	tosUploader tosObjectUploader
-	source      SourceObjectReader
-	tosSource   SourceObjectReader
-	tosBucket   string
-	cfg         SyncWorkerConfig
-	syncCfg     *config.SyncConfig
+	db               *sqlx.DB
+	uploader         *cloud.Uploader
+	minioClient      *s3.Client
+	minioBucket      string
+	hilbert          hilbertRawDataClient
+	tosUploader      tosObjectUploader
+	source           SourceObjectReader
+	tosSource        SourceObjectReader
+	tosBucket        string
+	derivativeBucket string
+	cfg              SyncWorkerConfig
+	syncCfg          *config.SyncConfig
 
 	// sourceObjectRangeSize is overridden only by small deterministic tests.
 	// Production reads use defaultSourceObjectRangeSize.
@@ -308,6 +315,16 @@ func (w *SyncWorker) SetTOSSourceObjectReader(bucket string, reader SourceObject
 	w.tosSource = reader
 }
 
+// SetStereoSplitSourceBucket configures the TOS bucket containing verified
+// stereo-split outputs. The same TOS reader is used for original and derived
+// objects, but their buckets may differ.
+func (w *SyncWorker) SetStereoSplitSourceBucket(bucket string) {
+	if w == nil {
+		return
+	}
+	w.derivativeBucket = strings.TrimSpace(bucket)
+}
+
 func (w *SyncWorker) sourceReader() SourceObjectReader {
 	if w == nil {
 		return nil
@@ -339,6 +356,9 @@ func (m episodeSourceMetadata) usesTOS(configuredBucket string) bool {
 }
 
 func (w *SyncWorker) mcapSourceObject(ep syncEpisodeUploadRow) (SourceObjectReader, string, string, error) {
+	if ep.SourceSnapshot != nil {
+		return w.sourceForSnapshot(*ep.SourceSnapshot)
+	}
 	var metadata episodeSourceMetadata
 	if ep.Metadata.Valid && json.Unmarshal([]byte(ep.Metadata.String), &metadata) == nil && metadata.usesTOS(w.tosBucket) {
 		bucket := strings.TrimSpace(metadata.Bucket)
@@ -537,7 +557,13 @@ func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error 
 // EnqueueEpisodeManual adds a specific episode ID for immediate sync processing,
 // allowing explicit API-triggered retries even after automatic retries are exhausted.
 func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) error {
-	return w.enqueueEpisodeManual(ctx, episodeID, "")
+	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceOriginal)
+}
+
+// EnqueueStereoSplitManual claims the Episode's canonical cloud source as the
+// approved stereo-split generation and queues that frozen object for upload.
+func (w *SyncWorker) EnqueueStereoSplitManual(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceStereoSplit)
 }
 
 // EnqueueEpisodeManualForBulkRun persists a manual sync request with its originating bulk run.
@@ -546,14 +572,14 @@ func (w *SyncWorker) EnqueueEpisodeManualForBulkRun(ctx context.Context, episode
 	if bulkRunID == "" {
 		return fmt.Errorf("bulk run ID is required")
 	}
-	return w.enqueueEpisodeManual(ctx, episodeID, bulkRunID)
+	return w.enqueueEpisodeManual(ctx, episodeID, bulkRunID, SyncSourceOriginal)
 }
 
-func (w *SyncWorker) enqueueEpisodeManual(ctx context.Context, episodeID int64, bulkRunID string) error {
+func (w *SyncWorker) enqueueEpisodeManual(ctx context.Context, episodeID int64, bulkRunID, sourceType string) error {
 	if !w.running.Load() {
 		return ErrSyncWorkerNotRunning
 	}
-	if err := w.persistPendingSyncLog(ctx, episodeID, true, bulkRunID); err != nil {
+	if err := w.persistPendingSyncLogForSource(ctx, episodeID, true, bulkRunID, sourceType); err != nil {
 		return err
 	}
 	w.enqueuePersistedEpisode(ctx, syncEnqueueRequest{episodeID: episodeID, manual: true})
@@ -631,8 +657,15 @@ func (w *SyncWorker) enqueuePersistedEpisode(ctx context.Context, req syncEnqueu
 }
 
 func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64, manual bool, bulkRunID string) error {
+	return w.persistPendingSyncLogForSource(ctx, episodeID, manual, bulkRunID, SyncSourceOriginal)
+}
+
+func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episodeID int64, manual bool, bulkRunID, sourceType string) error {
 	if w.db == nil {
 		return nil
+	}
+	if sourceType != SyncSourceOriginal && sourceType != SyncSourceStereoSplit {
+		return fmt.Errorf("unsupported sync source type %q", sourceType)
 	}
 
 	tx, err := w.db.BeginTxx(ctx, nil)
@@ -642,13 +675,12 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	defer func() { _ = tx.Rollback() }()
 
 	lockClause := txLockClause(tx)
-	var episode struct {
-		ID          int64  `db:"id"`
-		CloudSynced bool   `db:"cloud_synced"`
-		QaStatus    string `db:"qa_status"`
-	}
+	var episode syncEpisodeUploadRow
 	if err := tx.GetContext(ctx, &episode, `
-		SELECT id, cloud_synced, COALESCE(qa_status, '') AS qa_status
+		SELECT id, episode_id, COALESCE(storage_backend, '') AS storage_backend,
+		       COALESCE(mcap_path, '') AS mcap_path, checksum, file_size_bytes,
+		       metadata, cloud_synced, COALESCE(qa_status, '') AS qa_status,
+		       cloud_publish_source, created_at, duration_sec
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`+lockClause, episodeID); err != nil {
@@ -660,38 +692,61 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	if episode.CloudSynced {
 		return fmt.Errorf("%w: episode %d", ErrEpisodeAlreadySynced, episodeID)
 	}
-	if episode.QaStatus != "approved" {
-		return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QaStatus)
-	}
-
-	var activeCount int
-	if err := tx.GetContext(ctx, &activeCount, `
-		SELECT COUNT(*)
-		FROM sync_logs
-		WHERE episode_id = ?
-		  AND status IN ('pending', 'in_progress')
-	`, episodeID); err != nil {
-		return fmt.Errorf("query active sync_log count: %w", err)
-	}
-	if activeCount > 0 {
-		return fmt.Errorf("%w for episode %d", ErrSyncAlreadyInProgress, episodeID)
-	}
 
 	var latest struct {
-		ID           int64        `db:"id"`
-		Status       string       `db:"status"`
-		NextRetry    sql.NullTime `db:"next_retry_at"`
-		AttemptCount int          `db:"attempt_count"`
+		ID             int64          `db:"id"`
+		Status         string         `db:"status"`
+		NextRetry      sql.NullTime   `db:"next_retry_at"`
+		AttemptCount   int            `db:"attempt_count"`
+		SourceSnapshot sql.NullString `db:"source_snapshot"`
 	}
 	err = tx.GetContext(ctx, &latest, `
-		SELECT id, status, next_retry_at, attempt_count
+		SELECT id, status, next_retry_at, attempt_count, source_snapshot
 		FROM sync_logs
 		WHERE episode_id = ?
 		ORDER BY id DESC
 		LIMIT 1
 	`+lockClause, episodeID)
-	if err == sql.ErrNoRows {
-		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, time.Now().UTC(), 0); err != nil {
+	var snapshot SyncSourceSnapshot
+	if errors.Is(err, sql.ErrNoRows) {
+		if sourceType == SyncSourceOriginal {
+			if episode.QAStatus != "approved" {
+				return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QAStatus)
+			}
+			var derivativeConflict int
+			if err := tx.GetContext(ctx, &derivativeConflict, `
+				SELECT COUNT(*) FROM episode_derivatives
+				WHERE episode_id = ? AND kind = 'stereo_split'
+				  AND processing_status IN ('queued', 'submitting', 'pending', 'running', 'verifying', 'succeeded')
+			`, episodeID); err != nil {
+				return fmt.Errorf("check stereo split sync conflict: %w", err)
+			}
+			if derivativeConflict > 0 {
+				return fmt.Errorf("%w: stereo split processing or output already exists", ErrCloudPublishSourceLocked)
+			}
+			snapshot, err = w.buildOriginalSourceSnapshot(episode)
+		} else {
+			snapshot, err = w.buildStereoSplitSourceSnapshot(ctx, tx, episode)
+		}
+		if err != nil {
+			return err
+		}
+		claimedSource := strings.TrimSpace(episode.CloudPublishSource.String)
+		if claimedSource != "" && claimedSource != sourceType {
+			return fmt.Errorf("%w: episode source is %q", ErrCloudPublishSourceLocked, claimedSource)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE episodes SET cloud_publish_source = ?,
+			    cloud_publish_claimed_at = COALESCE(cloud_publish_claimed_at, ?)
+			WHERE id = ? AND (cloud_publish_source IS NULL OR cloud_publish_source = ?)
+		`, sourceType, time.Now().UTC(), episodeID, sourceType); err != nil {
+			return fmt.Errorf("claim episode cloud publish source: %w", err)
+		}
+		encoded, err := encodeSyncSourceSnapshot(snapshot)
+		if err != nil {
+			return err
+		}
+		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, time.Now().UTC(), 0, encoded, snapshot.ObjectKey); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -699,6 +754,48 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	if err != nil {
 		return fmt.Errorf("lock latest sync_log: %w", err)
 	}
+	if !latest.SourceSnapshot.Valid || strings.TrimSpace(latest.SourceSnapshot.String) == "" {
+		if sourceType != SyncSourceOriginal {
+			return newNonRetryableSyncError("latest sync_log %d has no source snapshot", latest.ID)
+		}
+		snapshot, err = w.buildOriginalSourceSnapshot(episode)
+		if err != nil {
+			return err
+		}
+		encoded, encodeErr := encodeSyncSourceSnapshot(snapshot)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sync_logs SET source_snapshot = ?, source_path = COALESCE(source_path, ?)
+			WHERE id = ? AND source_snapshot IS NULL
+		`, encoded, snapshot.ObjectKey, latest.ID); err != nil {
+			return fmt.Errorf("backfill legacy sync source snapshot: %w", err)
+		}
+		latest.SourceSnapshot = sql.NullString{String: encoded, Valid: true}
+		if !episode.CloudPublishSource.Valid || strings.TrimSpace(episode.CloudPublishSource.String) == "" {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE episodes SET cloud_publish_source = 'original',
+				    cloud_publish_claimed_at = COALESCE(cloud_publish_claimed_at, ?)
+				WHERE id = ? AND cloud_publish_source IS NULL
+			`, time.Now().UTC(), episodeID); err != nil {
+				return fmt.Errorf("claim legacy original sync source: %w", err)
+			}
+			episode.CloudPublishSource = sql.NullString{String: SyncSourceOriginal, Valid: true}
+		}
+	} else {
+		snapshot, err = decodeSyncSourceSnapshot(latest.SourceSnapshot.String)
+		if err != nil {
+			return newNonRetryableSyncError("latest sync_log %d has invalid source snapshot: %v", latest.ID, err)
+		}
+	}
+	if snapshot.SourceType != sourceType {
+		return fmt.Errorf("%w: existing sync source is %q", ErrCloudPublishSourceLocked, snapshot.SourceType)
+	}
+	if err := w.validateSyncSourceGateTx(ctx, tx, episodeID, episode.QAStatus, strings.TrimSpace(episode.CloudPublishSource.String), snapshot); err != nil {
+		return err
+	}
+	encodedSnapshot := latest.SourceSnapshot.String
 
 	now := time.Now().UTC()
 	switch latest.Status {
@@ -723,7 +820,7 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 		if !manual && !retryDue {
 			return fmt.Errorf("%w for episode %d", errSyncRetryBackoffActive, episodeID)
 		}
-		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, now, 0); err != nil {
+		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, now, 0, encodedSnapshot, snapshot.ObjectKey); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -731,7 +828,7 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 		if !manual {
 			return fmt.Errorf("%w for episode %d", errSyncCanceled, episodeID)
 		}
-		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, now, 0); err != nil {
+		if err := insertPendingSyncLog(ctx, tx, episodeID, bulkRunID, now, 0, encodedSnapshot, snapshot.ObjectKey); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -740,15 +837,17 @@ func (w *SyncWorker) persistPendingSyncLog(ctx context.Context, episodeID int64,
 	}
 }
 
-func insertPendingSyncLog(ctx context.Context, tx *sqlx.Tx, episodeID int64, bulkRunID string, queuedAt time.Time, attemptCount int) error {
+func insertPendingSyncLog(ctx context.Context, tx *sqlx.Tx, episodeID int64, bulkRunID string, queuedAt time.Time, attemptCount int, sourceSnapshot, sourcePath string) error {
 	var bulkRunValue interface{}
 	if strings.TrimSpace(bulkRunID) != "" {
 		bulkRunValue = strings.TrimSpace(bulkRunID)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sync_logs (episode_id, bulk_run_id, status, attempt_count, started_at)
-		VALUES (?, ?, 'pending', ?, ?)
-	`, episodeID, bulkRunValue, attemptCount, queuedAt); err != nil {
+		INSERT INTO sync_logs (
+			episode_id, bulk_run_id, source_path, source_snapshot,
+			status, attempt_count, started_at
+		) VALUES (?, ?, ?, ?, 'pending', ?, ?)
+	`, episodeID, bulkRunValue, sourcePath, sourceSnapshot, attemptCount, queuedAt); err != nil {
 		return fmt.Errorf("insert pending sync_log: %w", err)
 	}
 	return nil
@@ -1041,6 +1140,12 @@ func (w *SyncWorker) findPendingEpisodes(ctx context.Context, includeExhaustedFa
 		WHERE e.qa_status = 'approved'
 		  AND e.cloud_synced = FALSE
 		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = 'original')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM episode_derivatives ed
+		    WHERE ed.episode_id = e.id AND ed.kind = 'stereo_split'
+		      AND ed.processing_status IN ('queued', 'submitting', 'pending', 'running', 'verifying', 'succeeded')
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1
 		    FROM sync_logs sl
@@ -1168,9 +1273,13 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual
 			dp.name AS dc_plan_name,
 			dp.dc_type,
 			e.mcap_path,
+			e.storage_backend,
 			e.sidecar_path,
 			e.cloud_synced,
+			COALESCE(e.qa_status, '') AS qa_status,
+			e.cloud_publish_source,
 			e.checksum,
+			e.file_size_bytes,
 			e.workstation_id,
 			e.duration_sec,
 			e.metadata,
@@ -1203,6 +1312,14 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual
 	if err != nil {
 		//logger.Printf("[SYNC-WORKER] Failed to acquire sync log for episode %d: %v", episodeID, err)
 		return
+	}
+	snapshot, found, err := loadSyncSourceSnapshot(ctx, w.db, syncLogID)
+	if err != nil {
+		w.markSyncFailed(ctx, syncLogID, episodeID, 0, err, attemptCount)
+		return
+	}
+	if found {
+		ep.SourceSnapshot = &snapshot
 	}
 
 	startTime := time.Now()
@@ -1241,7 +1358,21 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if objectSize <= 0 {
 		return nil, newNonRetryableSyncError("episode %d has zero-byte mcap object %s", ep.ID, mcapKey)
 	}
-	bagDigest, err := w.resolveEpisodeSHA256Hex(ctx, ep, source, sourceBucket, mcapKey, objectSize, sourceETag)
+	if ep.SourceSnapshot != nil && ep.SourceSnapshot.SizeBytes != objectSize {
+		return nil, newNonRetryableSyncError(
+			"persisted source size changed for episode %d: got %d want %d",
+			ep.ID, objectSize, ep.SourceSnapshot.SizeBytes,
+		)
+	}
+	bagDigest := ""
+	if ep.SourceSnapshot != nil {
+		bagDigest = strings.ToLower(strings.TrimSpace(ep.SourceSnapshot.SHA256))
+	}
+	if bagDigest == "" {
+		bagDigest, err = w.resolveEpisodeSHA256Hex(ctx, ep, source, sourceBucket, mcapKey, objectSize, sourceETag)
+	} else if len(bagDigest) != 64 {
+		err = newNonRetryableSyncError("persisted source snapshot has invalid SHA-256")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1270,19 +1401,24 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		logger.Printf("[SYNC-WORKER] Episode %d reusing Hilbert raw-data registration: raw_data_id=%d sync_log_id=%d",
 			ep.ID, rawDataID, syncLogID)
 	} else {
-		rawDataID, err = w.hilbert.RegisterRawData(ctx, auth.HilbertRawDataRegisterRequest{
+		bagName := hilbertBagName(ep, mcapKey)
+		if ep.SourceSnapshot != nil {
+			bagName = ep.SourceSnapshot.BagName
+		}
+		registerRequest := auth.HilbertRawDataRegisterRequest{
 			WorkspaceID:  uploadContext.WorkspaceID,
 			DCPlanID:     uploadContext.DCPlanID,
-			BagName:      hilbertBagName(ep, mcapKey),
+			BagName:      bagName,
 			BagStartTime: ep.bagStartTime(),
 			BagEndTime:   ep.bagEndTime(),
 			BagSize:      objectSize,
 			BagDigest:    bagDigest,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("register Hilbert raw data: %w", err)
 		}
-		logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data registered: raw_data_id=%d workspace_id=%d dc_plan_id=%d size=%d object_key=%s",
+		rawDataID, err = w.registerOrRecoverHilbertRawData(ctx, registerRequest)
+		if err != nil {
+			return nil, err
+		}
+		logger.Printf("[SYNC-WORKER] Episode %d Hilbert raw-data registration resolved: raw_data_id=%d workspace_id=%d dc_plan_id=%d size=%d object_key=%s",
 			ep.ID, rawDataID, uploadContext.WorkspaceID, uploadContext.DCPlanID, objectSize, mcapKey)
 		if err := w.persistEpisodeHilbertRawDataID(ctx, syncLogID, ep.ID, rawDataID); err != nil {
 			logger.Printf("[SYNC-WORKER] Episode %d failed to persist Hilbert raw-data registration: raw_data_id=%d sync_log_id=%d err=%v",
@@ -1336,6 +1472,71 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		FileSize:        objectSize,
 		OSSObjectETag:   objectETag,
 	}, nil
+}
+
+func (w *SyncWorker) registerOrRecoverHilbertRawData(
+	ctx context.Context,
+	request auth.HilbertRawDataRegisterRequest,
+) (int64, error) {
+	rawDataID, registerErr := w.hilbert.RegisterRawData(ctx, request)
+	if registerErr == nil {
+		return rawDataID, nil
+	}
+
+	existing, lookupErr := w.hilbert.FindRawDataByBagName(ctx, request.WorkspaceID, request.BagName)
+	if lookupErr != nil {
+		return 0, fmt.Errorf("register Hilbert raw data: %v; recover by bag name: %w", registerErr, lookupErr)
+	}
+	if existing == nil {
+		return 0, fmt.Errorf("register Hilbert raw data: %w", registerErr)
+	}
+	if mismatch := hilbertRawDataRegistrationMismatch(existing, request); mismatch != "" {
+		return 0, newNonRetryableSyncError(
+			"Hilbert raw data bagName %q conflicts on %s after registration error: %v",
+			request.BagName,
+			mismatch,
+			registerErr,
+		)
+	}
+
+	logger.Printf("[SYNC-WORKER] Recovered Hilbert raw-data registration after ambiguous response: raw_data_id=%d bag_name=%s",
+		existing.ID, existing.BagName)
+	return existing.ID, nil
+}
+
+func hilbertRawDataRegistrationMismatch(
+	existing *auth.HilbertRawData,
+	request auth.HilbertRawDataRegisterRequest,
+) string {
+	if existing == nil || existing.ID <= 0 {
+		return "id"
+	}
+	if existing.WorkspaceID != request.WorkspaceID {
+		return "workspace_id"
+	}
+	if existing.DCPlanID != request.DCPlanID {
+		return "dc_plan_id"
+	}
+	if existing.BagName != request.BagName {
+		return "bag_name"
+	}
+	if !hilbertRegistrationTimeEqual(existing.BagStartTime, request.BagStartTime) {
+		return "bag_start_time"
+	}
+	if !hilbertRegistrationTimeEqual(existing.BagEndTime, request.BagEndTime) {
+		return "bag_end_time"
+	}
+	if existing.BagSize != request.BagSize {
+		return "bag_size"
+	}
+	if !strings.EqualFold(strings.TrimSpace(existing.BagDigest), strings.TrimSpace(request.BagDigest)) {
+		return "bag_digest"
+	}
+	return ""
+}
+
+func hilbertRegistrationTimeEqual(left, right time.Time) bool {
+	return left.UTC().Truncate(time.Microsecond).Equal(right.UTC().Truncate(time.Microsecond))
 }
 
 //nolint:unused // Reserved for direct DP upload mode.
@@ -1608,7 +1809,7 @@ func (w *SyncWorker) resolveEpisodeSHA256Hex(
 	objectSize int64,
 	sourceETag string,
 ) (string, error) {
-	if ep.Checksum.Valid && strings.TrimSpace(ep.Checksum.String) != "" {
+	if ep.SourceSnapshot == nil && ep.Checksum.Valid && strings.TrimSpace(ep.Checksum.String) != "" {
 		return episodeSHA256Hex(ep)
 	}
 
@@ -1630,7 +1831,7 @@ func (w *SyncWorker) resolveEpisodeSHA256Hex(
 	}
 
 	checksum := hex.EncodeToString(hasher.Sum(nil))
-	if w != nil && w.db != nil {
+	if ep.SourceSnapshot == nil && w != nil && w.db != nil {
 		if _, err := w.db.ExecContext(ctx, "UPDATE episodes SET checksum = ? WHERE id = ?", checksum, ep.ID); err != nil {
 			return "", fmt.Errorf("persist calculated SHA-256 for episode %d: %w", ep.ID, err)
 		}
@@ -1754,11 +1955,12 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 
 	// Serialize per episode even when sync_logs is empty for this episode.
 	var lockedEpisode struct {
-		ID       int64  `db:"id"`
-		QAStatus string `db:"qa_status"`
+		ID                 int64          `db:"id"`
+		QAStatus           string         `db:"qa_status"`
+		CloudPublishSource sql.NullString `db:"cloud_publish_source"`
 	}
 	if err := tx.GetContext(ctx, &lockedEpisode, `
-		SELECT id, COALESCE(qa_status, '') AS qa_status
+		SELECT id, COALESCE(qa_status, '') AS qa_status, cloud_publish_source
 		FROM episodes
 		WHERE id = ? AND deleted_at IS NULL
 	`+lockClause, episodeID); err != nil {
@@ -1767,18 +1969,15 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 		}
 		return 0, 0, fmt.Errorf("lock episode %d: %w", episodeID, err)
 	}
-	if lockedEpisode.QAStatus != "approved" {
-		return 0, 0, fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, lockedEpisode.QAStatus)
-	}
-
 	var latest struct {
-		ID           int64        `db:"id"`
-		Status       string       `db:"status"`
-		NextRetry    sql.NullTime `db:"next_retry_at"`
-		AttemptCount int          `db:"attempt_count"`
+		ID             int64          `db:"id"`
+		Status         string         `db:"status"`
+		NextRetry      sql.NullTime   `db:"next_retry_at"`
+		AttemptCount   int            `db:"attempt_count"`
+		SourceSnapshot sql.NullString `db:"source_snapshot"`
 	}
 	latestQuery := `
-			SELECT sl.id, sl.status, sl.next_retry_at, sl.attempt_count
+			SELECT sl.id, sl.status, sl.next_retry_at, sl.attempt_count, sl.source_snapshot
 			FROM sync_logs sl
 			INNER JOIN (
 			  SELECT episode_id, MAX(id) AS latest_id
@@ -1789,6 +1988,25 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 		` + lockClause
 	err = tx.GetContext(ctx, &latest, latestQuery, episodeID)
 	if err == nil {
+		if latest.SourceSnapshot.Valid && strings.TrimSpace(latest.SourceSnapshot.String) != "" {
+			snapshot, snapshotErr := decodeSyncSourceSnapshot(latest.SourceSnapshot.String)
+			if snapshotErr != nil {
+				return 0, 0, newNonRetryableSyncError("sync_log %d has invalid source snapshot: %v", latest.ID, snapshotErr)
+			}
+			if gateErr := w.validateSyncSourceGateTx(
+				ctx,
+				tx,
+				episodeID,
+				lockedEpisode.QAStatus,
+				strings.TrimSpace(lockedEpisode.CloudPublishSource.String),
+				snapshot,
+			); gateErr != nil {
+				return 0, 0, gateErr
+			}
+		} else if lockedEpisode.QAStatus != "approved" {
+			// Compatibility for legacy rows created before source_snapshot existed.
+			return 0, 0, fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, lockedEpisode.QAStatus)
+		}
 		now := time.Now().UTC()
 		switch latest.Status {
 		case "pending":
@@ -1877,6 +2095,9 @@ func (w *SyncWorker) acquireSyncLogWithMode(ctx context.Context, episodeID int64
 	} else if err != sql.ErrNoRows {
 		return 0, 0, fmt.Errorf("lock latest sync_log: %w", err)
 	}
+	if lockedEpisode.QAStatus != "approved" {
+		return 0, 0, fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, lockedEpisode.QAStatus)
+	}
 
 	now := time.Now().UTC()
 	result, err := tx.ExecContext(ctx, `
@@ -1906,9 +2127,12 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Keep cloud_synced and qa_status mutually consistent even if another writer bypasses
-	// the normal sync/QA claim guards.
-	episodeResult, err := tx.ExecContext(ctx, `
+	snapshot, hasSnapshot, err := loadSyncSourceSnapshot(ctx, tx, syncLogID)
+	if err != nil {
+		logger.Printf("[SYNC-WORKER] Failed to load source snapshot for episode %d completion: %v", episodeID, err)
+		return
+	}
+	updateQuery := `
 		UPDATE episodes
 		SET cloud_synced = TRUE,
 		    cloud_synced_at = ?,
@@ -1916,8 +2140,31 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		    cloud_processed = FALSE
 		WHERE id = ?
 		  AND deleted_at IS NULL
-		  AND qa_status = 'approved'
-	`, now, result.ObjectKey, episodeID)
+		  AND qa_status = 'approved'`
+	args := []any{now, result.ObjectKey, episodeID}
+	if hasSnapshot && snapshot.SourceType == SyncSourceOriginal {
+		updateQuery += " AND cloud_publish_source = 'original'"
+	} else if hasSnapshot && snapshot.SourceType == SyncSourceStereoSplit {
+		updateQuery = `
+			UPDATE episodes
+			SET cloud_synced = TRUE,
+			    cloud_synced_at = ?,
+			    cloud_mcap_path = ?,
+			    cloud_processed = FALSE
+			WHERE id = ?
+			  AND deleted_at IS NULL
+			  AND cloud_publish_source = 'stereo_split'
+			  AND EXISTS (
+			    SELECT 1 FROM episode_derivatives ed
+			    WHERE ed.id = ? AND ed.episode_id = episodes.id
+			      AND ed.kind = 'stereo_split' AND ed.generation = ?
+			      AND ed.processing_status = 'succeeded' AND ed.qa_status = 'approved'
+			  )`
+		args = append(args, snapshot.DerivativeID, snapshot.Generation)
+	}
+	// Keep cloud_synced and the source-specific QA gate mutually consistent even
+	// if another writer bypasses the normal claim guards.
+	episodeResult, err := tx.ExecContext(ctx, updateQuery, args...)
 	if err != nil {
 		logger.Printf("[SYNC-WORKER] Failed to update episode %d cloud status: %v", episodeID, err)
 		return
@@ -1931,7 +2178,7 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE sync_logs
 			SET status = 'failed',
-			    error_message = 'episode QA status changed before sync completion',
+			    error_message = 'sync source eligibility changed before completion',
 			    duration_sec = ?,
 			    completed_at = ?,
 			    next_retry_at = NULL
@@ -1944,7 +2191,7 @@ func (w *SyncWorker) markSyncCompleted(ctx context.Context, syncLogID, episodeID
 			logger.Printf("[SYNC-WORKER] Failed to commit rejected sync completion for episode %d: %v", episodeID, err)
 			return
 		}
-		logger.Printf("[SYNC-WORKER] Rejected sync completion for episode %d because QA is no longer approved", episodeID)
+		logger.Printf("[SYNC-WORKER] Rejected sync completion for episode %d because source eligibility changed", episodeID)
 		return
 	}
 

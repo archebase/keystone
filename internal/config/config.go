@@ -36,6 +36,7 @@ type Config struct {
 	Resources    ResourceLimitsConfig
 	AxonTransfer TransferConfig
 	AxonRecorder RecorderConfig
+	Derivatives  DerivativeConfig
 }
 
 // ServerConfig server configuration
@@ -154,6 +155,27 @@ type RecorderConfig struct {
 	ResponseTimeout int // seconds
 }
 
+// DerivativeConfig controls the fixed stereo-split background lifecycle.
+type DerivativeConfig struct {
+	Enabled             bool
+	OrbitBaseURL        string
+	OrbitTimeoutSec     int
+	OutputBucket        string
+	OutputPrefix        string
+	Resources           KubernetesResourcesConfig
+	ActiveDeadlineSec   int64
+	TTLSecondsAfterDone int32
+	PollIntervalSec     int
+	MaxSourceBytes      int64
+	OrbitLogTailBytes   int
+}
+
+// KubernetesResourcesConfig is the trusted resource envelope sent to Orbit.
+type KubernetesResourcesConfig struct {
+	Requests map[string]string `json:"requests"`
+	Limits   map[string]string `json:"limits"`
+}
+
 // AuthConfig JWT authentication configuration (collector login).
 type AuthConfig struct {
 	JWTSecret             string // #nosec G117 -- signing secret loaded from env; must exist in config struct
@@ -174,6 +196,9 @@ type HilbertConfig struct {
 
 // Load loads configuration from environment variables and defaults
 func Load() (*Config, error) {
+	derivatives := loadDerivativeConfig()
+	tosStorage := loadTOSStorageConfig()
+	derivatives.OutputBucket = tosStorage.Bucket
 	cfg := &Config{
 		Server: ServerConfig{
 			Mode:                  getEnv("KEYSTONE_MODE", ModeEdge),
@@ -196,7 +221,7 @@ func Load() (*Config, error) {
 			ConnMaxLifetime: getEnvInt("KEYSTONE_DB_CONN_MAX_LIFETIME", 300),
 		},
 		Storage:    loadStorageConfig(),
-		TOSStorage: loadTOSStorageConfig(),
+		TOSStorage: tosStorage,
 		QA: QAConfig{
 			Enabled:              getEnvBool("KEYSTONE_QA_ENABLED", true),
 			AutoApproveThreshold: getEnvFloat("KEYSTONE_QA_AUTO_APPROVE_THRESHOLD", 0.90),
@@ -278,9 +303,29 @@ func Load() (*Config, error) {
 			StaleThreshold:  getEnvInt("KEYSTONE_AXON_RECORDER_STALE_THRESHOLD", 60),
 			ResponseTimeout: getEnvInt("KEYSTONE_AXON_RECORDER_RESPONSE_TIMEOUT", 15),
 		},
+		Derivatives: derivatives,
 	}
 
 	return cfg, nil
+}
+
+func loadDerivativeConfig() DerivativeConfig {
+	orbitBaseURL := strings.TrimRight(strings.TrimSpace(getEnv("KEYSTONE_ORBIT_BASE_URL", "")), "/")
+	return DerivativeConfig{
+		Enabled:         orbitBaseURL != "",
+		OrbitBaseURL:    orbitBaseURL,
+		OrbitTimeoutSec: 10,
+		OutputPrefix:    strings.Trim(strings.TrimSpace(getEnv("KEYSTONE_DERIVATIVE_TOS_PREFIX", "derived/episodes")), "/"),
+		Resources: KubernetesResourcesConfig{
+			Requests: map[string]string{"cpu": "2", "memory": "4Gi", "ephemeral-storage": "4Gi"},
+			Limits:   map[string]string{"cpu": "4", "memory": "8Gi", "ephemeral-storage": "8Gi"},
+		},
+		ActiveDeadlineSec:   3600,
+		TTLSecondsAfterDone: 604800,
+		PollIntervalSec:     5,
+		MaxSourceBytes:      500 * 1024 * 1024 * 1024,
+		OrbitLogTailBytes:   1024 * 1024,
+	}
 }
 
 func loadStorageConfig() StorageConfig {
@@ -455,6 +500,32 @@ func (c *Config) Validate() error {
 		}
 		if c.Sync.RetryMaxSec < c.Sync.RetryBaseSec {
 			return fmt.Errorf("sync retry max seconds must be greater than or equal to retry base seconds when sync is enabled")
+		}
+	}
+	if c.Derivatives.Enabled {
+		if !strings.EqualFold(strings.TrimSpace(c.TOSStorage.Type), "tos") {
+			return fmt.Errorf("TOS storage must be configured when derivative processing is enabled")
+		}
+		if c.Sync.AutoScanEnabled {
+			return fmt.Errorf("KEYSTONE_SYNC_AUTO_SCAN_ENABLED must be false when derivative processing is enabled")
+		}
+		orbitURL, err := url.Parse(strings.TrimSpace(c.Derivatives.OrbitBaseURL))
+		if err != nil || orbitURL.Scheme == "" || orbitURL.Host == "" ||
+			(orbitURL.Scheme != "http" && orbitURL.Scheme != "https") || orbitURL.User != nil ||
+			orbitURL.RawQuery != "" || orbitURL.Fragment != "" {
+			return fmt.Errorf("KEYSTONE_ORBIT_BASE_URL must be an absolute http(s) URL when derivative processing is enabled")
+		}
+		if strings.TrimSpace(c.Derivatives.OutputBucket) == "" || strings.TrimSpace(c.Derivatives.OutputPrefix) == "" {
+			return fmt.Errorf("derivative TOS bucket and prefix are required when derivative processing is enabled")
+		}
+		if c.Derivatives.OrbitTimeoutSec <= 0 || c.Derivatives.ActiveDeadlineSec <= 0 ||
+			c.Derivatives.TTLSecondsAfterDone < 0 || c.Derivatives.PollIntervalSec <= 0 ||
+			c.Derivatives.MaxSourceBytes <= 0 ||
+			c.Derivatives.OrbitLogTailBytes <= 0 {
+			return fmt.Errorf("derivative processing numeric limits must be positive")
+		}
+		if len(c.Derivatives.Resources.Requests) == 0 || len(c.Derivatives.Resources.Limits) == 0 {
+			return fmt.Errorf("derivative processing resources must define requests and limits")
 		}
 	}
 	return nil

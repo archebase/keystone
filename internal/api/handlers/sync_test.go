@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -26,6 +29,56 @@ func TestSyncHandlerRegisterRoutes(t *testing.T) {
 	handler := NewSyncHandler(nil, nil)
 
 	handler.RegisterRoutes(api)
+}
+
+func TestSyncWriteRoutesRequireAdminWhileReadsAllowCollectors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	authConfig := config.AuthConfig{
+		JWTSecret:      "sync-handler-test-secret-at-least-32-bytes",
+		Issuer:         "sync-handler-test",
+		JWTExpiryHours: 1,
+	}
+	adminToken, err := auth.GenerateToken(auth.NewAdminClaims(), &authConfig)
+	if err != nil {
+		t.Fatalf("generate admin token: %v", err)
+	}
+	collectorToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "collector-7"), &authConfig)
+	if err != nil {
+		t.Fatalf("generate collector token: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewSyncHandler(nil, nil)
+	jwtMiddleware := middleware.JWTAuth(&authConfig)
+	handler.RegisterReadRoutes(router.Group("/api/v1", jwtMiddleware, middleware.RequireAnyRole("admin", "data_collector")))
+	handler.RegisterAdminRoutes(router.Group("/api/v1", jwtMiddleware, middleware.RequireRole("admin")))
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		token      string
+		wantStatus int
+	}{
+		{name: "anonymous read", method: http.MethodGet, path: "/api/v1/sync/config", wantStatus: http.StatusUnauthorized},
+		{name: "collector read", method: http.MethodGet, path: "/api/v1/sync/config", token: collectorToken, wantStatus: http.StatusOK},
+		{name: "anonymous write", method: http.MethodPost, path: "/api/v1/sync/episodes/1", wantStatus: http.StatusUnauthorized},
+		{name: "collector write", method: http.MethodPost, path: "/api/v1/sync/episodes/1", token: collectorToken, wantStatus: http.StatusForbidden},
+		{name: "admin write reaches handler", method: http.MethodPost, path: "/api/v1/sync/episodes/1", token: adminToken, wantStatus: http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			if tt.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tt.token)
+			}
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d, body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
 }
 
 func TestGetSyncConfigIncludesAutoScanEnabled(t *testing.T) {

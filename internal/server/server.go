@@ -24,8 +24,11 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
+	orbitapi "archebase.com/keystone-edge/internal/orbit"
 	"archebase.com/keystone-edge/internal/services"
+	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"archebase.com/keystone-edge/internal/storage/s3"
+	tosstorage "archebase.com/keystone-edge/internal/storage/tos"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -56,6 +59,7 @@ type Server struct {
 	productionDashboard *handlers.ProductionDashboardHandler
 	syncHandler         *handlers.SyncHandler
 	syncWorker          *services.SyncWorker
+	stereoSplit         *stereosplit.Manager
 	workspaceSync       *services.WorkspaceSyncService
 	dcPlanSync          *services.DCPlanSyncService
 	httpServer          *http.Server
@@ -172,6 +176,26 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		productionDashboardHandler = handlers.NewProductionDashboardHandler(db, recorderHub, transferHub)
 	}
 
+	var stereoSplitManager *stereosplit.Manager
+	if db != nil && cfg.Derivatives.Enabled {
+		orbitClient, err := orbitapi.NewClient(
+			cfg.Derivatives.OrbitBaseURL,
+			time.Duration(cfg.Derivatives.OrbitTimeoutSec)*time.Second,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("initialize Orbit client: %w", err)
+		}
+		objectReader := tosstorage.NewReader(
+			cfg.TOSStorage,
+			time.Duration(cfg.Derivatives.OrbitTimeoutSec)*time.Second,
+		)
+		stereoSplitManager = stereosplit.NewManager(db, orbitClient, objectReader, stereoSplitConfig(cfg.Derivatives))
+		dataOpsHandler.SetStereoSplitManager(stereoSplitManager)
+		if err := dataOpsHandler.ResumeStereoSplitBulkRuns(context.Background()); err != nil {
+			return nil, fmt.Errorf("resume stereo split bulk runs: %w", err)
+		}
+	}
+
 	// Create SyncHandler for cloud sync API
 	var syncHandler *handlers.SyncHandler
 	if db != nil {
@@ -201,6 +225,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		productionDashboard: productionDashboardHandler,
 		syncHandler:         syncHandler,
 		syncWorker:          syncWorker,
+		stereoSplit:         stereoSplitManager,
 		workspaceSync:       workspaceSyncService,
 		dcPlanSync:          dcPlanSyncService,
 		engine:              engine,
@@ -338,7 +363,11 @@ func (s *Server) buildRoutes() http.Handler {
 
 	// Cloud Sync API
 	if s.syncHandler != nil {
-		s.syncHandler.RegisterRoutes(v1Routes)
+		jwtMw := middleware.JWTAuth(&s.cfg.Auth, s.db)
+		readSync := v1Routes.Group("", jwtMw, middleware.RequireAnyRole("admin", "data_collector"))
+		adminSync := v1Routes.Group("", jwtMw, middleware.RequireRole("admin"))
+		s.syncHandler.RegisterReadRoutes(readSync)
+		s.syncHandler.RegisterAdminRoutes(adminSync)
 	}
 
 	// Axon callbacks
@@ -399,6 +428,11 @@ func (s *Server) buildRecorderWSRoutes(recorderHandler *handlers.RecorderHandler
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
+	if s.stereoSplit != nil {
+		if err := s.stereoSplit.StartReconciler(); err != nil {
+			return fmt.Errorf("start stereo split reconciler: %w", err)
+		}
+	}
 	s.shutdownMu.Lock()
 	s.isRunning = true
 	s.shutdownMu.Unlock()
@@ -582,6 +616,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	var shutdownErr error
 
+	if s.stereoSplit != nil {
+		if err := s.stereoSplit.StopReconciler(ctx); err != nil {
+			logShutdownError("Stereo split reconciler", err)
+			shutdownErr = fmt.Errorf("stereo split reconciler shutdown: %w", err)
+		}
+	}
+
 	// Shutdown both servers
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		logShutdownError("HTTP server", err)
@@ -615,6 +656,34 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	return shutdownErr
+}
+
+func stereoSplitConfig(cfg config.DerivativeConfig) stereosplit.Config {
+	return stereosplit.Config{
+		Enabled:      cfg.Enabled,
+		OutputBucket: cfg.OutputBucket,
+		OutputPrefix: cfg.OutputPrefix,
+		Resources: stereosplit.Resources{
+			Requests: cloneServerStringMap(cfg.Resources.Requests),
+			Limits:   cloneServerStringMap(cfg.Resources.Limits),
+		},
+		ActiveDeadline:      cfg.ActiveDeadlineSec,
+		TTLSecondsAfterDone: cfg.TTLSecondsAfterDone,
+		PollInterval:        time.Duration(cfg.PollIntervalSec) * time.Second,
+		MaxSourceBytes:      cfg.MaxSourceBytes,
+		LogTailBytes:        cfg.OrbitLogTailBytes,
+	}
+}
+
+func cloneServerStringMap(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // Addr returns the server address

@@ -1609,6 +1609,10 @@ func (w *fakeDataOpsBulkSyncWorker) EnqueueEpisodeManualForBulkRun(ctx context.C
 	return err
 }
 
+func (w *fakeDataOpsBulkSyncWorker) EnqueueStereoSplitManual(context.Context, int64) error {
+	return nil
+}
+
 func (w *fakeDataOpsBulkSyncWorker) CancelBulkRun(ctx context.Context, bulkRunID string) (int64, error) {
 	res, err := w.db.ExecContext(ctx, `
 		UPDATE sync_logs SET status = 'canceled', completed_at = ?

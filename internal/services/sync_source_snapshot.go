@@ -1,0 +1,249 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+//
+// SPDX-License-Identifier: MulanPSL-2.0
+
+package services
+
+import (
+	"context"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/jmoiron/sqlx"
+)
+
+const (
+	// SyncSourceOriginal selects the Episode's original object for cloud upload.
+	SyncSourceOriginal = "original"
+	// SyncSourceStereoSplit selects the approved derivative for cloud upload.
+	SyncSourceStereoSplit = "stereo_split"
+	// SyncBackendMinIO reads the frozen source object through Keystone's MinIO client.
+	SyncBackendMinIO = "minio"
+	// SyncBackendTOS reads the frozen source object through Keystone's TOS client.
+	SyncBackendTOS = "tos"
+)
+
+// ErrCloudPublishSourceLocked indicates that an Episode already claimed another canonical upload source.
+var ErrCloudPublishSourceLocked = errors.New("episode cloud publish source is locked")
+
+// SyncSourceSnapshot is the immutable upload input stored on a sync_log. All
+// retries and recovery read this value rather than re-selecting an object from
+// mutable Episode or Derivative fields.
+type SyncSourceSnapshot struct {
+	SourceType   string `json:"source_type"`
+	Backend      string `json:"backend"`
+	Bucket       string `json:"bucket"`
+	ObjectKey    string `json:"object_key"`
+	SizeBytes    int64  `json:"size_bytes"`
+	SHA256       string `json:"sha256,omitempty"`
+	BagName      string `json:"bag_name"`
+	DerivativeID int64  `json:"derivative_id,omitempty"`
+	Generation   int    `json:"generation,omitempty"`
+}
+
+func (s SyncSourceSnapshot) validate() error {
+	if s.SourceType != SyncSourceOriginal && s.SourceType != SyncSourceStereoSplit {
+		return fmt.Errorf("unsupported sync source type %q", s.SourceType)
+	}
+	if s.Backend != SyncBackendMinIO && s.Backend != SyncBackendTOS {
+		return fmt.Errorf("unsupported sync source backend %q", s.Backend)
+	}
+	if strings.TrimSpace(s.Bucket) == "" || strings.TrimSpace(s.ObjectKey) == "" || strings.TrimSpace(s.BagName) == "" {
+		return fmt.Errorf("sync source snapshot is missing object identity")
+	}
+	if s.SizeBytes <= 0 {
+		return fmt.Errorf("sync source snapshot must contain a positive object size")
+	}
+	checksum := strings.ToLower(strings.TrimSpace(s.SHA256))
+	if len(checksum) != 64 {
+		return fmt.Errorf("sync source snapshot must contain a SHA-256 checksum")
+	}
+	if _, err := hex.DecodeString(checksum); err != nil {
+		return fmt.Errorf("sync source snapshot has invalid SHA-256")
+	}
+	if s.SourceType == SyncSourceStereoSplit && (s.DerivativeID <= 0 || s.Generation <= 0) {
+		return fmt.Errorf("stereo split sync snapshot is missing generation identity")
+	}
+	return nil
+}
+
+func encodeSyncSourceSnapshot(snapshot SyncSourceSnapshot) (string, error) {
+	snapshot.SourceType = strings.TrimSpace(snapshot.SourceType)
+	snapshot.Backend = strings.TrimSpace(snapshot.Backend)
+	snapshot.Bucket = strings.TrimSpace(snapshot.Bucket)
+	snapshot.ObjectKey = strings.TrimLeft(strings.TrimSpace(snapshot.ObjectKey), "/")
+	snapshot.SHA256 = strings.ToLower(strings.TrimSpace(snapshot.SHA256))
+	snapshot.BagName = strings.TrimSpace(snapshot.BagName)
+	if err := snapshot.validate(); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", fmt.Errorf("encode sync source snapshot: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func decodeSyncSourceSnapshot(raw string) (SyncSourceSnapshot, error) {
+	var snapshot SyncSourceSnapshot
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		return SyncSourceSnapshot{}, fmt.Errorf("decode sync source snapshot: %w", err)
+	}
+	if err := snapshot.validate(); err != nil {
+		return SyncSourceSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func (w *SyncWorker) buildOriginalSourceSnapshot(ep syncEpisodeUploadRow) (SyncSourceSnapshot, error) {
+	backend := SyncBackendMinIO
+	bucket := strings.TrimSpace(w.minioBucket)
+	objectKey := objectKeyFromStoredPath(ep.McapPath, bucket)
+	if bucket == "" {
+		storedPath := strings.TrimLeft(strings.TrimSpace(ep.McapPath), "/")
+		parts := strings.SplitN(storedPath, "/", 2)
+		if len(parts) == 2 {
+			bucket = parts[0]
+			objectKey = parts[1]
+		}
+	}
+	var metadata episodeSourceMetadata
+	if ep.Metadata.Valid && json.Unmarshal([]byte(ep.Metadata.String), &metadata) == nil &&
+		(strings.EqualFold(strings.TrimSpace(ep.StorageBackend), "keystone_tos") || metadata.usesTOS(w.tosBucket)) {
+		backend = SyncBackendTOS
+		bucket = strings.TrimSpace(metadata.Bucket)
+		if bucket == "" {
+			bucket = strings.TrimSpace(w.tosBucket)
+		}
+		objectKey = strings.TrimLeft(strings.TrimSpace(metadata.ObjectKey), "/")
+		if objectKey == "" {
+			objectKey = objectKeyFromStoredPath(ep.McapPath, bucket)
+		}
+	}
+	checksum := ""
+	if ep.Checksum.Valid {
+		checksum = strings.ToLower(strings.TrimSpace(ep.Checksum.String))
+	}
+	size := int64(0)
+	if ep.FileSizeBytes.Valid && ep.FileSizeBytes.Int64 > 0 {
+		size = ep.FileSizeBytes.Int64
+	}
+	snapshot := SyncSourceSnapshot{
+		SourceType: SyncSourceOriginal,
+		Backend:    backend,
+		Bucket:     bucket,
+		ObjectKey:  objectKey,
+		SizeBytes:  size,
+		SHA256:     checksum,
+		BagName:    hilbertBagName(ep, objectKey),
+	}
+	if _, err := encodeSyncSourceSnapshot(snapshot); err != nil {
+		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid original sync source: %v", ep.ID, err)
+	}
+	return snapshot, nil
+}
+
+func (w *SyncWorker) buildStereoSplitSourceSnapshot(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (SyncSourceSnapshot, error) {
+	var derivative struct {
+		ID         int64          `db:"id"`
+		Generation int            `db:"generation"`
+		Status     string         `db:"processing_status"`
+		QAStatus   string         `db:"qa_status"`
+		McapPath   sql.NullString `db:"mcap_path"`
+		Checksum   sql.NullString `db:"checksum"`
+		SizeBytes  sql.NullInt64  `db:"file_size_bytes"`
+	}
+	if err := tx.GetContext(ctx, &derivative, `
+		SELECT id, generation, processing_status, qa_status, mcap_path, checksum, file_size_bytes
+		FROM episode_derivatives
+		WHERE episode_id = ? AND kind = 'stereo_split'
+	`+txLockClause(tx), ep.ID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SyncSourceSnapshot{}, fmt.Errorf("stereo split derivative not found for episode %d", ep.ID)
+		}
+		return SyncSourceSnapshot{}, fmt.Errorf("load stereo split sync source: %w", err)
+	}
+	if derivative.Status != "succeeded" || derivative.QAStatus != "approved" {
+		return SyncSourceSnapshot{}, fmt.Errorf("stereo split derivative must be succeeded and QA approved")
+	}
+	objectKey := strings.TrimLeft(strings.TrimSpace(derivative.McapPath.String), "/")
+	snapshot := SyncSourceSnapshot{
+		SourceType:   SyncSourceStereoSplit,
+		Backend:      SyncBackendTOS,
+		Bucket:       strings.TrimSpace(w.derivativeBucket),
+		ObjectKey:    objectKey,
+		SizeBytes:    derivative.SizeBytes.Int64,
+		SHA256:       strings.ToLower(strings.TrimSpace(derivative.Checksum.String)),
+		BagName:      hilbertBagName(ep, objectKey),
+		DerivativeID: derivative.ID,
+		Generation:   derivative.Generation,
+	}
+	if _, err := encodeSyncSourceSnapshot(snapshot); err != nil {
+		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid stereo split sync source: %v", ep.ID, err)
+	}
+	return snapshot, nil
+}
+
+func (w *SyncWorker) sourceForSnapshot(snapshot SyncSourceSnapshot) (SourceObjectReader, string, string, error) {
+	if err := snapshot.validate(); err != nil {
+		return nil, "", "", newNonRetryableSyncError("invalid persisted sync source snapshot: %v", err)
+	}
+	switch snapshot.Backend {
+	case SyncBackendTOS:
+		if w.tosSource == nil {
+			return nil, "", "", fmt.Errorf("TOS source object reader not available")
+		}
+		return w.tosSource, snapshot.Bucket, snapshot.ObjectKey, nil
+	case SyncBackendMinIO:
+		reader := w.sourceReader()
+		if reader == nil {
+			return nil, "", "", fmt.Errorf("source object reader not available")
+		}
+		return reader, snapshot.Bucket, snapshot.ObjectKey, nil
+	default:
+		return nil, "", "", newNonRetryableSyncError("unsupported persisted source backend %q", snapshot.Backend)
+	}
+}
+
+func loadSyncSourceSnapshot(ctx context.Context, db sqlx.QueryerContext, syncLogID int64) (SyncSourceSnapshot, bool, error) {
+	var raw sql.NullString
+	if err := sqlx.GetContext(ctx, db, &raw, "SELECT source_snapshot FROM sync_logs WHERE id = ?", syncLogID); err != nil {
+		return SyncSourceSnapshot{}, false, fmt.Errorf("load sync source snapshot: %w", err)
+	}
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return SyncSourceSnapshot{}, false, nil
+	}
+	snapshot, err := decodeSyncSourceSnapshot(raw.String)
+	if err != nil {
+		return SyncSourceSnapshot{}, false, newNonRetryableSyncError("sync_log %d has invalid source snapshot: %v", syncLogID, err)
+	}
+	return snapshot, true, nil
+}
+
+func (w *SyncWorker) validateSyncSourceGateTx(ctx context.Context, tx *sqlx.Tx, episodeID int64, episodeQA, claimedSource string, snapshot SyncSourceSnapshot) error {
+	if claimedSource != snapshot.SourceType {
+		return fmt.Errorf("%w: episode source is %q but sync snapshot is %q", ErrCloudPublishSourceLocked, claimedSource, snapshot.SourceType)
+	}
+	if snapshot.SourceType == SyncSourceOriginal {
+		if episodeQA != "approved" {
+			return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episodeQA)
+		}
+		return nil
+	}
+	var count int
+	if err := tx.GetContext(ctx, &count, `
+		SELECT COUNT(*) FROM episode_derivatives
+		WHERE id = ? AND episode_id = ? AND kind = 'stereo_split' AND generation = ?
+		  AND processing_status = 'succeeded' AND qa_status = 'approved'
+	`, snapshot.DerivativeID, episodeID, snapshot.Generation); err != nil {
+		return fmt.Errorf("validate stereo split sync gate: %w", err)
+	}
+	if count != 1 {
+		return fmt.Errorf("stereo split generation is no longer eligible for sync")
+	}
+	return nil
+}

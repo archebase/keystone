@@ -145,6 +145,7 @@ func main() {
 		syncWorker.SetHilbertRawDataClient(auth.NewHilbertClient(&cfg.Hilbert))
 		syncWorker.SetSourceObjectReader(minioSourceReader)
 		syncWorker.SetTOSSourceObjectReader(cfg.TOSStorage.Bucket, tosSourceReader)
+		syncWorker.SetStereoSplitSourceBucket(cfg.Derivatives.OutputBucket)
 		syncWorker.SetTOSObjectUploader(cloud.NewTOSS3Uploader(
 			time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second,
 			cfg.Server.Mode,
