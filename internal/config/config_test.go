@@ -261,6 +261,64 @@ func TestLoadCalibrationOrbitConfig(t *testing.T) {
 	}
 }
 
+func TestValidateCalibrationImageIsImmutableAndAllowed(t *testing.T) {
+	tests := []struct {
+		name    string
+		image   string
+		allowed []string
+		wantErr bool
+	}{
+		{
+			name:    "digest pinned allowed image",
+			image:   "registry.example/archebase/calibration@sha256:" + strings.Repeat("a", 64),
+			allowed: []string{"registry.example/archebase/calibration"},
+		},
+		{
+			name:    "mutable tag",
+			image:   "registry.example/archebase/calibration:latest",
+			allowed: []string{"registry.example/archebase/calibration"},
+			wantErr: true,
+		},
+		{
+			name:    "repository outside allowlist",
+			image:   "untrusted.example/calibration@sha256:" + strings.Repeat("a", 64),
+			allowed: []string{"registry.example/archebase/calibration"},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Server:     ServerConfig{Mode: ModeEdge, CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+				Database:   DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+				TOSStorage: StorageConfig{Type: "tos", Endpoint: "tos.example", Bucket: "bucket", Region: "region"},
+				Auth:       AuthConfig{JWTSecret: "secret"},
+				Calibration: CalibrationConfig{
+					Enabled:             true,
+					OrbitBaseURL:        "http://orbit.example:8080",
+					OrbitTimeoutSec:     10,
+					ProcessorImage:      tt.image,
+					AllowedRepositories: tt.allowed,
+					Resources: KubernetesResourcesConfig{
+						Requests: map[string]string{"cpu": "1"},
+						Limits:   map[string]string{"cpu": "2"},
+					},
+					ActiveDeadlineSec:   600,
+					TTLSecondsAfterDone: 86400,
+					MaxConcurrent:       2,
+					PollIntervalSec:     5,
+					MaxResultBytes:      1024,
+					OrbitLogTailBytes:   1024,
+				},
+			}
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{

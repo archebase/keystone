@@ -63,6 +63,29 @@ func TestCalibrationPublicSessionStatusRequiresNoAuthorization(t *testing.T) {
 	}
 }
 
+func TestCalibrationPublicSessionStatusRejectsNonRandomUUID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewCalibrationHandler(&fakeCalibrationManager{})
+	router := gin.New()
+	api := router.Group("/api/v1")
+	handler.RegisterPublicRoutes(api)
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/device/calibration-sessions/f47ac10b-58cc-1372-8567-0e02b2c3d479",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", response.Header().Get("Cache-Control"))
+	}
+}
+
 func TestCalibrationAdminProcessQueuesUploadedCapture(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	manager := &fakeCalibrationManager{

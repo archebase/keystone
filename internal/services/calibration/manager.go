@@ -203,7 +203,7 @@ func (m *Manager) GetSessionStatus(ctx context.Context, sessionID string) (Sessi
 		       COALESCE(s.successful_capture_id, '') AS successful_capture_id,
 		       COUNT(c.id) AS capture_count,
 		       COALESCE(SUM(CASE WHEN c.status <> 'uploading' THEN 1 ELSE 0 END), 0) AS uploaded_count,
-		       COALESCE(SUM(CASE WHEN c.status IN ('succeeded', 'failed', 'superseded') THEN 1 ELSE 0 END), 0) AS processed_count,
+		       COALESCE(SUM(CASE WHEN c.result_json IS NOT NULL THEN 1 ELSE 0 END), 0) AS processed_count,
 		       s.updated_at
 		FROM calibration_sessions s
 		LEFT JOIN calibration_captures c ON c.calibration_session_id = s.session_id

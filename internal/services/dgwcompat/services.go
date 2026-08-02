@@ -188,6 +188,8 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	}
 	if intent.Kind == uploadKindCalibrationCapture {
 		if err := s.persistCalibrationUploadStart(ctx, principal, intent, session); err != nil {
+			logger.Printf("[DGW_COMPAT] CreateLogicalUpload calibration persistence failed capture_id=%s session_id=%s attempt_no=%d error=%v",
+				intent.CaptureID, intent.CalibrationSessionID, intent.AttemptNo, err)
 			return nil, err
 		}
 	}
@@ -363,6 +365,8 @@ func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.Comple
 	var err error
 	if session.Kind == uploadKindCalibrationCapture {
 		if err := s.completeCalibrationUpload(ctx, session, req); err != nil {
+			logger.Printf("[DGW_COMPAT] CompleteUpload calibration persistence failed upload_id=%s capture_id=%s session_id=%s error=%v",
+				session.UploadID, session.ClientHints["capture_id"], session.ClientHints["calibration_session_id"], err)
 			return nil, err
 		}
 	} else {

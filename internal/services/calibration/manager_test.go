@@ -168,6 +168,21 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 	if capture.Status != StatusFailed || capture.CalibrationError != "target was not visible" {
 		t.Fatalf("failed capture = %+v", capture)
 	}
+	if _, err := db.Exec(`
+		INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+			file_size_bytes, checksum_sha256, logical_upload_id, upload_id,
+			created_at, updated_at, uploaded_at
+		) VALUES (?, ?, 2, 'superseded', 'bucket-1', 'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2',
+			CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, "d4ad1825-35b4-4572-83aa-70cf3d8dd083", "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"); err != nil {
+		t.Fatalf("insert upload-only superseded capture: %v", err)
+	}
+	session, err = manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7")
+	if err != nil {
+		t.Fatalf("GetSessionStatus() after superseded upload error = %v", err)
+	}
 	if session.Status != SessionRunning || session.SuccessfulCaptureID != "" || session.ProcessedCount != 1 {
 		t.Fatalf("session after failed capture = %+v", session)
 	}

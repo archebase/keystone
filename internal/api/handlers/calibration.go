@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services/calibration"
 	"github.com/gin-gonic/gin"
@@ -81,14 +82,15 @@ func (h *CalibrationHandler) RegisterAdminRoutes(api *gin.RouterGroup) {
 // @Failure      500 {object} map[string]interface{}
 // @Router       /device/calibration-sessions/{session_id} [get]
 func (h *CalibrationHandler) GetSessionStatus(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	if !h.allowPublicSessionStatus(c.ClientIP()) {
 		c.Header("Retry-After", "60")
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "calibration status rate limit exceeded"})
 		return
 	}
-	sessionID := strings.TrimSpace(c.Param("session_id"))
-	if _, err := uuid.Parse(sessionID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a UUID"})
+	sessionID := c.Param("session_id")
+	if !isCanonicalV4UUID(sessionID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a canonical UUIDv4"})
 		return
 	}
 	statusValue, err := h.manager.GetSessionStatus(c.Request.Context(), sessionID)
@@ -97,10 +99,10 @@ func (h *CalibrationHandler) GetSessionStatus(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "calibration session not found"})
 			return
 		}
+		logger.Printf("[CALIBRATION] get public session status failed session_id=%s: %v", sessionID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get calibration session"})
 		return
 	}
-	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, statusValue)
 }
 
@@ -161,8 +163,8 @@ func (h *CalibrationHandler) ListCaptures(c *gin.Context) {
 		return
 	}
 	if filter.SessionID != "" {
-		if _, err := uuid.Parse(filter.SessionID); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a UUID"})
+		if !isCanonicalV4UUID(filter.SessionID) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a canonical UUIDv4"})
 			return
 		}
 	}
@@ -172,6 +174,7 @@ func (h *CalibrationHandler) ListCaptures(c *gin.Context) {
 	}
 	captures, total, err := h.manager.List(c.Request.Context(), filter)
 	if err != nil {
+		logger.Printf("[CALIBRATION] list captures failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list calibration captures"})
 		return
 	}
@@ -195,9 +198,9 @@ func (h *CalibrationHandler) ListCaptures(c *gin.Context) {
 // @Failure      500 {object} map[string]interface{}
 // @Router       /calibration-captures/{capture_id} [get]
 func (h *CalibrationHandler) GetCapture(c *gin.Context) {
-	captureID := strings.TrimSpace(c.Param("capture_id"))
-	if _, err := uuid.Parse(captureID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "capture_id must be a UUID"})
+	captureID := c.Param("capture_id")
+	if !isCanonicalV4UUID(captureID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "capture_id must be a canonical UUIDv4"})
 		return
 	}
 	capture, err := h.manager.Get(c.Request.Context(), captureID)
@@ -206,6 +209,7 @@ func (h *CalibrationHandler) GetCapture(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "calibration capture not found"})
 			return
 		}
+		logger.Printf("[CALIBRATION] get capture failed capture_id=%s: %v", captureID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get calibration capture"})
 		return
 	}
@@ -225,9 +229,9 @@ func (h *CalibrationHandler) GetCapture(c *gin.Context) {
 // @Failure      503 {object} map[string]interface{}
 // @Router       /calibration-captures/{capture_id}/process [post]
 func (h *CalibrationHandler) ProcessCapture(c *gin.Context) {
-	captureID := strings.TrimSpace(c.Param("capture_id"))
-	if _, err := uuid.Parse(captureID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "capture_id must be a UUID"})
+	captureID := c.Param("capture_id")
+	if !isCanonicalV4UUID(captureID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "capture_id must be a canonical UUIDv4"})
 		return
 	}
 	actor := "admin"
@@ -246,11 +250,17 @@ func (h *CalibrationHandler) ProcessCapture(c *gin.Context) {
 			errors.Is(err, calibration.ErrSessionSucceeded):
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		default:
+			logger.Printf("[CALIBRATION] process capture failed capture_id=%s actor=%s: %v", captureID, actor, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process calibration capture"})
 		}
 		return
 	}
 	c.JSON(http.StatusAccepted, capture)
+}
+
+func isCanonicalV4UUID(raw string) bool {
+	parsed, err := uuid.Parse(raw)
+	return err == nil && parsed.Version() == 4 && parsed.Variant() == uuid.RFC4122 && parsed.String() == raw
 }
 
 func boundedQueryInt(raw string, fallback, minimum, maximum int) (int, error) {

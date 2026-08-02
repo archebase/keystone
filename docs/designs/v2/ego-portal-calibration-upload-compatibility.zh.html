@@ -1108,7 +1108,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 }</pre>
       </div>
 
-      <p>服务端必须从 Device JWT 获取 <code>robot_id</code>、<code>device_id</code> 和 <code>workspace_id</code>。客户端不能指定或覆盖设备和空间身份。</p>
+      <p><code>calibration_session_id</code> 和 <code>capture_id</code> 都必须由客户端生成为规范小写 UUIDv4：前者在整轮“持续录制直到首次成功”期间保持不变，后者每条 MCAP 重新生成。服务端必须从 Device JWT 获取 <code>robot_id</code>、<code>device_id</code> 和 <code>workspace_id</code>；客户端不能指定或覆盖设备和空间身份。</p>
 
       <h3>服务端生成对象路径</h3>
       <div class="code-frame">
@@ -1174,6 +1174,8 @@ SPDX-License-Identifier: MulanPSL-2.0
 }</pre>
       </div>
 
+      <p><code>processed_count</code> 只统计已经产出并通过 Keystone 校验的结果 JSON；仅完成上传、但因 Session 已成功而直接标记为 <code>superseded</code> 的 Capture 不计入。</p>
+
       <ul>
         <li>接口不要求 <code>Authorization</code> 请求头。</li>
         <li>Session 不存在：<code>404 Not Found</code>。</li>
@@ -1225,7 +1227,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 }</pre>
       </div>
 
-      <p>第一版使用占位 Python 镜像。Keystone 通过 Orbit 的 TOS data bindings 把单条 MCAP 只读挂载到 <code>/bindings/input/capture.mcap</code>，把输出目录挂载到 <code>/bindings/output/</code>。Job 将结果写到 <code>calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；Keystone 校验 Capture ID、Session ID、源文件大小和 SHA-256 后再更新状态。后续替换真实算法镜像时无需修改上传协议。</p>
+      <p>第一版使用占位 Python 镜像。Keystone 通过 Orbit 的 TOS data bindings 把单条 MCAP 只读挂载到 <code>/bindings/input/capture.mcap</code>，把输出目录挂载到 <code>/bindings/output/</code>。Job 将成功或业务失败结果都写到 <code>calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；Keystone 校验 Capture ID、Session ID、源文件大小和 SHA-256 后再更新状态。后续替换真实算法镜像时无需修改上传协议。</p>
     </section>
 
     <section class="chapter" id="model">
@@ -1242,15 +1244,13 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>workspace_id</li>
             <li>status</li>
             <li>successful_capture_id</li>
-            <li>started_at</li>
-            <li>completed_at</li>
             <li>created_at / updated_at</li>
           </ul>
         </article>
         <article class="model-panel">
           <h3>calibration_captures</h3>
           <ul>
-            <li>capture_id + robot_id UNIQUE</li>
+            <li>capture_id UNIQUE（全局随机 UUIDv4）</li>
             <li>calibration_session_id</li>
             <li>workspace_id / attempt_no</li>
             <li>status</li>
@@ -1259,7 +1259,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>duration_sec / local_operator</li>
             <li>result_json / algorithm_version</li>
             <li>calibration_error</li>
-            <li>uploaded_at / calibrated_at</li>
+            <li>uploaded_at / processing_started_at / processing_finished_at</li>
           </ul>
         </article>
       </div>
@@ -1285,7 +1285,7 @@ SPDX-License-Identifier: MulanPSL-2.0
       <h2>安全、幂等与竞态</h2>
 
       <h3>公开状态接口</h3>
-      <p>设备状态查询不做身份鉴权。<code>session_id</code> 必须使用不可枚举的随机 UUID，响应只包含运行状态、计数和成功 Capture ID，不返回对象路径、操作员或其他敏感元数据。响应设置 <code>Cache-Control: no-store</code>，并应用基础限流。</p>
+      <p>设备状态查询不做身份鉴权。<code>session_id</code> 必须使用规范小写格式、不可枚举的随机 UUIDv4，响应只包含运行状态、计数和成功 Capture ID，不返回对象路径、操作员或其他敏感元数据。响应设置 <code>Cache-Control: no-store</code>，并应用基础限流。</p>
 
       <h3>上传幂等</h3>
       <ul>

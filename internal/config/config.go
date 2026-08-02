@@ -6,6 +6,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -598,6 +599,9 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Calibration.ProcessorImage) == "" || len(c.Calibration.AllowedRepositories) == 0 {
 			return fmt.Errorf("calibration image and allowed repositories are required when calibration processing is enabled")
 		}
+		if err := validateCalibrationImageRef(c.Calibration.ProcessorImage, c.Calibration.AllowedRepositories); err != nil {
+			return err
+		}
 		if c.Calibration.OrbitTimeoutSec <= 0 || c.Calibration.ActiveDeadlineSec <= 0 ||
 			c.Calibration.TTLSecondsAfterDone < 0 || c.Calibration.MaxConcurrent <= 0 ||
 			c.Calibration.PollIntervalSec <= 0 || c.Calibration.MaxResultBytes <= 0 ||
@@ -609,6 +613,24 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateCalibrationImageRef(raw string, allowedRepositories []string) error {
+	image := strings.TrimSpace(raw)
+	parts := strings.Split(image, "@sha256:")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || len(parts[1]) != 64 {
+		return fmt.Errorf("KEYSTONE_CALIBRATION_IMAGE must use an immutable sha256 digest")
+	}
+	if _, err := hex.DecodeString(parts[1]); err != nil {
+		return fmt.Errorf("KEYSTONE_CALIBRATION_IMAGE must use an immutable sha256 digest: %w", err)
+	}
+	repository := strings.TrimSpace(parts[0])
+	for _, allowed := range allowedRepositories {
+		if repository == strings.TrimSpace(allowed) {
+			return nil
+		}
+	}
+	return fmt.Errorf("KEYSTONE_CALIBRATION_IMAGE repository is not in KEYSTONE_CALIBRATION_ALLOWED_REPOSITORIES")
 }
 
 func normalizeCallbackPublicBaseURL(raw string) (string, error) {

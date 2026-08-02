@@ -35,9 +35,12 @@ def positive_integer(value: str) -> int:
 
 def uuid_value(value: str) -> str:
     try:
-        return str(uuid.UUID(value))
+        parsed = uuid.UUID(value)
     except ValueError as error:
-        raise argparse.ArgumentTypeError("must be a UUID") from error
+        raise argparse.ArgumentTypeError("must be a canonical UUIDv4") from error
+    if parsed.version != 4 or str(parsed) != value:
+        raise argparse.ArgumentTypeError("must be a canonical UUIDv4")
+    return str(parsed)
 
 
 def inspect_mcap(path: Path) -> tuple[int, str]:
@@ -72,16 +75,40 @@ def write_result(path: Path, result: dict[str, object]) -> None:
 
 def run(args: argparse.Namespace) -> dict[str, object]:
     started_at = utc_now()
-    size_bytes, checksum = inspect_mcap(args.input.resolve())
-    if size_bytes != args.expected_source_size:
-        raise RuntimeError(
-            f"source size mismatch: expected {args.expected_source_size}, got {size_bytes}"
-        )
-    if checksum != args.expected_source_checksum.lower():
-        raise RuntimeError(
-            "source checksum mismatch: "
-            f"expected {args.expected_source_checksum.lower()}, got {checksum}"
-        )
+    input_path = args.input.resolve()
+    expected_checksum = args.expected_source_checksum.lower()
+    try:
+        size_bytes, checksum = inspect_mcap(input_path)
+        if size_bytes != args.expected_source_size:
+            raise RuntimeError(
+                f"source size mismatch: expected {args.expected_source_size}, got {size_bytes}"
+            )
+        if checksum != expected_checksum:
+            raise RuntimeError(
+                "source checksum mismatch: "
+                f"expected {expected_checksum}, got {checksum}"
+            )
+    except Exception as error:
+        result = {
+            "schema_version": 1,
+            "status": "failed",
+            "algorithm_version": ALGORITHM_VERSION,
+            "placeholder": True,
+            "calibration_session_id": args.calibration_session_id,
+            "capture_id": args.capture_id,
+            "processor_image": args.processor_image,
+            "error_message": str(error),
+            "source": {
+                "uri": args.source_uri,
+                "binding_path": str(input_path),
+                "size_bytes": args.expected_source_size,
+                "sha256": expected_checksum,
+            },
+            "started_at": started_at,
+            "finished_at": utc_now(),
+        }
+        write_result(args.output.resolve(), result)
+        return result
 
     result: dict[str, object] = {
         "schema_version": 1,
@@ -93,7 +120,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "processor_image": args.processor_image,
         "source": {
             "uri": args.source_uri,
-            "binding_path": str(args.input.resolve()),
+            "binding_path": str(input_path),
             "size_bytes": size_bytes,
             "sha256": checksum,
         },

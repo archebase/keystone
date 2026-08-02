@@ -5,6 +5,7 @@
 package dgwcompat
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -39,16 +40,14 @@ func parseUploadIntent(hints map[string]string) (uploadIntent, error) {
 	case uploadKindTaskEpisode:
 		return uploadIntent{Kind: kind, CaptureID: strings.TrimSpace(hints["capture_id"])}, nil
 	case uploadKindCalibrationCapture:
-		sessionUUID, err := uuid.Parse(strings.TrimSpace(hints["calibration_session_id"]))
+		sessionID, err := parseCanonicalV4UUID(hints["calibration_session_id"])
 		if err != nil {
-			return uploadIntent{}, status.Error(codes.InvalidArgument, "calibration_session_id must be a UUID")
+			return uploadIntent{}, status.Error(codes.InvalidArgument, "calibration_session_id must be a canonical UUIDv4")
 		}
-		captureUUID, err := uuid.Parse(strings.TrimSpace(hints["capture_id"]))
+		captureID, err := parseCanonicalV4UUID(hints["capture_id"])
 		if err != nil {
-			return uploadIntent{}, status.Error(codes.InvalidArgument, "capture_id must be a UUID")
+			return uploadIntent{}, status.Error(codes.InvalidArgument, "capture_id must be a canonical UUIDv4")
 		}
-		sessionID := sessionUUID.String()
-		captureID := captureUUID.String()
 		attemptNo, err := parsePositiveInt64Hint(hints, "attempt_no")
 		if err != nil {
 			return uploadIntent{}, err
@@ -71,4 +70,12 @@ func parseUploadIntent(hints map[string]string) (uploadIntent, error) {
 	default:
 		return uploadIntent{}, status.Errorf(codes.InvalidArgument, "unsupported upload_kind %q", kind)
 	}
+}
+
+func parseCanonicalV4UUID(raw string) (string, error) {
+	parsed, err := uuid.Parse(raw)
+	if err != nil || parsed.Version() != 4 || parsed.Variant() != uuid.RFC4122 || parsed.String() != raw {
+		return "", fmt.Errorf("not a canonical UUIDv4")
+	}
+	return parsed.String(), nil
 }

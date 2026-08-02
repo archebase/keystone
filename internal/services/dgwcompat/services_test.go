@@ -366,6 +366,30 @@ func TestGatewayCalibrationSessionRejectsNewCaptureButSupersedesStartedCaptureAf
 	}
 }
 
+func TestGatewayCalibrationRejectsDifferentCaptureForSameAttempt(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	request := func(captureID string) *cloudpb.CreateLogicalUploadRequest {
+		return &cloudpb.CreateLogicalUploadRequest{ClientHints: map[string]string{
+			"upload_kind":            "calibration_capture",
+			"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			"capture_id":             captureID,
+			"attempt_no":             "1",
+			"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		}}
+	}
+	if _, err := service.CreateLogicalUpload(ctx, request("92cd6f2f-d131-4bf0-9b4a-d96258d09011")); err != nil {
+		t.Fatalf("first CreateLogicalUpload() error = %v", err)
+	}
+	_, err := service.CreateLogicalUpload(ctx, request("d4ad1825-35b4-4572-83aa-70cf3d8dd083"))
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("duplicate attempt error = %v, want FailedPrecondition", err)
+	}
+}
+
 func TestGatewayCompleteUploadRejectsExistingEpisodeFromAnotherProvenance(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)

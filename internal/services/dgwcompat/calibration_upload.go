@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
-	"github.com/google/uuid"
+	"archebase.com/keystone-edge/internal/logger"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -46,7 +46,7 @@ func (s *gatewayService) persistCalibrationUploadStart(
 	}
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return status.Error(codes.Unavailable, "begin calibration upload transaction failed")
+		return calibrationUploadDatabaseError("begin calibration upload transaction failed", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -67,16 +67,32 @@ func (s *gatewayService) persistCalibrationUploadStart(
 				session_id, robot_id, device_id, workspace_id, status, created_at, updated_at
 			) VALUES (?, ?, ?, ?, 'running', ?, ?)
 		`, intent.CalibrationSessionID, principal.RobotID, principal.DeviceID, principal.WorkspaceID, now, now); err != nil {
-			return status.Error(codes.Unavailable, "create calibration session failed")
+			return calibrationUploadDatabaseError("create calibration session failed", err)
 		}
 	case err != nil:
-		return status.Error(codes.Unavailable, "calibration session lookup unavailable")
+		return calibrationUploadDatabaseError("calibration session lookup unavailable", err)
 	case existingSession.RobotID != principal.RobotID ||
 		existingSession.DeviceID != principal.DeviceID ||
 		existingSession.WorkspaceID != principal.WorkspaceID:
 		return status.Error(codes.PermissionDenied, "calibration session belongs to another device")
 	case existingSession.Status == "succeeded":
 		return status.Error(codes.FailedPrecondition, "calibration session already succeeded")
+	}
+
+	var attemptCaptureID string
+	attemptQuery := `
+		SELECT capture_id
+		FROM calibration_captures
+		WHERE calibration_session_id = ? AND attempt_no = ?`
+	if tx.DriverName() != "sqlite" {
+		attemptQuery += " FOR UPDATE"
+	}
+	err = tx.GetContext(ctx, &attemptCaptureID, attemptQuery, intent.CalibrationSessionID, intent.AttemptNo)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return calibrationUploadDatabaseError("calibration attempt lookup unavailable", err)
+	}
+	if err == nil && attemptCaptureID != intent.CaptureID {
+		return status.Error(codes.FailedPrecondition, "attempt_no is already used by another calibration capture")
 	}
 
 	var existingCapture calibrationCaptureUploadRow
@@ -100,10 +116,10 @@ func (s *gatewayService) persistCalibrationUploadStart(
 			session.LogicalUploadID, session.UploadID,
 			strings.TrimSpace(session.ClientHints["source"]), strings.TrimSpace(session.ClientHints["local_operator"]),
 			now, now); err != nil {
-			return status.Error(codes.Unavailable, "create calibration capture failed")
+			return calibrationUploadDatabaseError("create calibration capture failed", err)
 		}
 	case err != nil:
-		return status.Error(codes.Unavailable, "calibration capture lookup unavailable")
+		return calibrationUploadDatabaseError("calibration capture lookup unavailable", err)
 	case existingCapture.CalibrationSessionID != intent.CalibrationSessionID ||
 		existingCapture.AttemptNo != intent.AttemptNo ||
 		existingCapture.ChecksumSHA256 != intent.ChecksumSHA256 ||
@@ -117,12 +133,12 @@ func (s *gatewayService) persistCalibrationUploadStart(
 			SET logical_upload_id = ?, upload_id = ?, updated_at = ?
 			WHERE capture_id = ? AND status = 'uploading'
 		`, session.LogicalUploadID, session.UploadID, now, intent.CaptureID); err != nil {
-			return status.Error(codes.Unavailable, "resume calibration capture failed")
+			return calibrationUploadDatabaseError("resume calibration capture failed", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return status.Error(codes.Unavailable, "commit calibration upload transaction failed")
+		return calibrationUploadDatabaseError("commit calibration upload transaction failed", err)
 	}
 	return nil
 }
@@ -166,7 +182,7 @@ func (s *gatewayService) completeCalibrationUpload(
 
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return status.Error(codes.Unavailable, "begin calibration completion transaction failed")
+		return calibrationUploadDatabaseError("begin calibration completion transaction failed", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -182,7 +198,7 @@ func (s *gatewayService) completeCalibrationUpload(
 		if errors.Is(err, sql.ErrNoRows) {
 			return status.Error(codes.NotFound, "calibration session not found")
 		}
-		return status.Error(codes.Unavailable, "calibration session lookup unavailable")
+		return calibrationUploadDatabaseError("calibration session lookup unavailable", err)
 	}
 	principal, err := principalFromContext(ctx)
 	if err != nil {
@@ -202,7 +218,7 @@ func (s *gatewayService) completeCalibrationUpload(
 		if errors.Is(err, sql.ErrNoRows) {
 			return status.Error(codes.NotFound, "calibration capture not found")
 		}
-		return status.Error(codes.Unavailable, "calibration capture lookup unavailable")
+		return calibrationUploadDatabaseError("calibration capture lookup unavailable", err)
 	}
 	attemptNo, err := parseInt64(session.ClientHints["attempt_no"])
 	if err != nil || attemptNo <= 0 {
@@ -218,7 +234,7 @@ func (s *gatewayService) completeCalibrationUpload(
 		if capture.FileSize.Valid && capture.FileSize.Int64 == req.GetFileSize() &&
 			capture.ChecksumSHA256 == strings.ToLower(strings.TrimSpace(rawTags["checksum_sha256"])) {
 			if err := tx.Commit(); err != nil {
-				return status.Error(codes.Unavailable, "commit idempotent calibration completion failed")
+				return calibrationUploadDatabaseError("commit idempotent calibration completion failed", err)
 			}
 			return nil
 		}
@@ -237,22 +253,27 @@ func (s *gatewayService) completeCalibrationUpload(
 		WHERE capture_id = ? AND status = 'uploading'
 	`, nextStatus, req.GetFileSize(), duration, strings.TrimSpace(req.GetObjectEtag()), now, now,
 		session.ClientHints["capture_id"]); err != nil {
-		return status.Error(codes.Unavailable, "complete calibration capture failed")
+		return calibrationUploadDatabaseError("complete calibration capture failed", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE calibration_sessions SET updated_at = ? WHERE session_id = ?
 	`, now, session.ClientHints["calibration_session_id"]); err != nil {
-		return status.Error(codes.Unavailable, "update calibration session failed")
+		return calibrationUploadDatabaseError("update calibration session failed", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return status.Error(codes.Unavailable, "commit calibration completion transaction failed")
+		return calibrationUploadDatabaseError("commit calibration completion transaction failed", err)
 	}
 	return nil
 }
 
+func calibrationUploadDatabaseError(message string, err error) error {
+	logger.Printf("[DGW_COMPAT] %s: %v", message, err)
+	return status.Error(codes.Unavailable, message)
+}
+
 func requireMatchingUUIDRawTag(tags map[string]string, key, expected string) error {
-	actualUUID, actualErr := uuid.Parse(strings.TrimSpace(tags[key]))
-	expectedUUID, expectedErr := uuid.Parse(strings.TrimSpace(expected))
+	actualUUID, actualErr := parseCanonicalV4UUID(tags[key])
+	expectedUUID, expectedErr := parseCanonicalV4UUID(expected)
 	if actualErr != nil || expectedErr != nil || actualUUID != expectedUUID {
 		return status.Errorf(codes.FailedPrecondition, "%s does not match upload session", key)
 	}

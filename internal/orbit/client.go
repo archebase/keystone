@@ -98,7 +98,10 @@ type Client struct {
 // NewClient validates an Orbit controller URL and constructs its HTTP adapter.
 func NewClient(rawBaseURL string, timeout time.Duration) (*Client, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawBaseURL))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil {
+		return nil, fmt.Errorf("parse Orbit base URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, fmt.Errorf("invalid Orbit base URL")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
