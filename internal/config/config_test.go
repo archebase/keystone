@@ -239,6 +239,28 @@ func TestLoadStereoSplitDisabledWithoutOrbitURL(t *testing.T) {
 	}
 }
 
+func TestLoadCalibrationOrbitConfig(t *testing.T) {
+	t.Setenv("KEYSTONE_CALIBRATION_PROCESSING_ENABLED", "true")
+	t.Setenv("KEYSTONE_ORBIT_BASE_URL", "http://orbit.archebase-system.svc.cluster.local:8080")
+	t.Setenv("KEYSTONE_CALIBRATION_IMAGE", "registry.example/archebase/calibration@sha256:"+strings.Repeat("a", 64))
+	t.Setenv("KEYSTONE_CALIBRATION_ALLOWED_REPOSITORIES", "registry.example/archebase/calibration")
+	t.Setenv("KEYSTONE_CALIBRATION_RESOURCES", `{"requests":{"cpu":"1","memory":"1Gi"},"limits":{"cpu":"2","memory":"2Gi"}}`)
+
+	cfg, err := loadCalibrationConfig()
+	if err != nil {
+		t.Fatalf("loadCalibrationConfig() error = %v", err)
+	}
+	if !cfg.Enabled || cfg.OrbitBaseURL != "http://orbit.archebase-system.svc.cluster.local:8080" {
+		t.Fatalf("calibration config = %+v", cfg)
+	}
+	if cfg.ProcessorImage == "" || len(cfg.AllowedRepositories) != 1 {
+		t.Fatalf("calibration image config = %+v", cfg)
+	}
+	if cfg.Resources.Requests["cpu"] != "1" || cfg.Resources.Limits["memory"] != "2Gi" {
+		t.Fatalf("calibration resources = %+v", cfg.Resources)
+	}
+}
+
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{

@@ -219,6 +219,153 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	}
 }
 
+func TestGatewayCompleteCalibrationCapturePersistsCaptureWithoutEpisode(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	qa := &fakeEpisodeQAEnqueuer{}
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, qa)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"upload_kind":            "calibration_capture",
+			"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			"capture_id":             "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			"attempt_no":             "1",
+			"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+			"source":                 "ego-portal",
+			"local_operator":         "local-user",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	if got := created.GetCredentials().GetObjectKey(); got != "calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap" {
+		t.Fatalf("calibration object key = %q", got)
+	}
+
+	_, err = service.CompleteUpload(ctx, &cloudpb.CompleteUploadRequest{
+		UploadId:           created.GetUploadId(),
+		FileSize:           1024,
+		CompletedPartCount: 1,
+		ObjectEtag:         "etag-1",
+		RawTags: map[string]string{
+			"upload_kind":            "calibration_capture",
+			"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			"capture_id":             "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			"attempt_no":             "1",
+			"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+			"duration_sec":           "30.0",
+			"source":                 "ego-portal",
+			"local_operator":         "local-user",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+
+	var capture struct {
+		Status         string  `db:"status"`
+		ObjectKey      string  `db:"object_key"`
+		FileSize       int64   `db:"file_size_bytes"`
+		ChecksumSHA256 string  `db:"checksum_sha256"`
+		DurationSec    float64 `db:"duration_sec"`
+	}
+	if err := db.Get(&capture, `
+		SELECT status, object_key, file_size_bytes, checksum_sha256, duration_sec
+		FROM calibration_captures
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`); err != nil {
+		t.Fatalf("query calibration capture: %v", err)
+	}
+	if capture.Status != "uploaded" || capture.ObjectKey != created.GetCredentials().GetObjectKey() ||
+		capture.FileSize != 1024 || capture.ChecksumSHA256 != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" ||
+		capture.DurationSec != 30 {
+		t.Fatalf("calibration capture = %+v", capture)
+	}
+
+	var episodeCount int
+	if err := db.Get(&episodeCount, `SELECT COUNT(1) FROM episodes`); err != nil {
+		t.Fatalf("count episodes: %v", err)
+	}
+	if episodeCount != 0 || len(qa.episodes) != 0 {
+		t.Fatalf("calibration created episodes=%d qa=%v", episodeCount, qa.episodes)
+	}
+}
+
+func TestGatewayCalibrationSessionRejectsNewCaptureButSupersedesStartedCaptureAfterSuccess(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	sessionID := "7f9af590-75c2-47ad-b6e0-76ebf05c44f7"
+	createCapture := func(captureID, attempt string) *cloudpb.CreateLogicalUploadResponse {
+		t.Helper()
+		created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+			ClientHints: map[string]string{
+				"upload_kind":            "calibration_capture",
+				"calibration_session_id": sessionID,
+				"capture_id":             captureID,
+				"attempt_no":             attempt,
+				"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateLogicalUpload(%s) error = %v", captureID, err)
+		}
+		return created
+	}
+	firstCaptureID := "92cd6f2f-d131-4bf0-9b4a-d96258d09011"
+	secondCaptureID := "d4ad1825-35b4-4572-83aa-70cf3d8dd083"
+	createCapture(firstCaptureID, "1")
+	second := createCapture(secondCaptureID, "2")
+	if _, err := db.Exec(`
+		UPDATE calibration_sessions
+		SET status = 'succeeded', successful_capture_id = ?
+		WHERE session_id = ?
+	`, firstCaptureID, sessionID); err != nil {
+		t.Fatalf("succeed calibration session: %v", err)
+	}
+
+	if _, err := service.CompleteUpload(ctx, &cloudpb.CompleteUploadRequest{
+		UploadId:           second.GetUploadId(),
+		FileSize:           2048,
+		CompletedPartCount: 1,
+		ObjectEtag:         "etag-2",
+		RawTags: map[string]string{
+			"upload_kind":            "calibration_capture",
+			"calibration_session_id": sessionID,
+			"capture_id":             secondCaptureID,
+			"attempt_no":             "2",
+			"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		},
+	}); err != nil {
+		t.Fatalf("CompleteUpload(started capture) error = %v", err)
+	}
+	var statusValue string
+	if err := db.Get(&statusValue, `SELECT status FROM calibration_captures WHERE capture_id = ?`, secondCaptureID); err != nil {
+		t.Fatalf("query superseded capture: %v", err)
+	}
+	if statusValue != "superseded" {
+		t.Fatalf("started capture status = %q, want superseded", statusValue)
+	}
+
+	_, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"upload_kind":            "calibration_capture",
+			"calibration_session_id": sessionID,
+			"capture_id":             "593f25fb-e9df-4c2c-85ca-c7bd85515316",
+			"attempt_no":             "3",
+			"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("new capture after success error = %v, want FailedPrecondition", err)
+	}
+}
+
 func TestGatewayCompleteUploadRejectsExistingEpisodeFromAnotherProvenance(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
@@ -650,6 +797,37 @@ func newGatewayServiceTestDB(t *testing.T) *sqlx.DB {
 				(ingestion_channel = 'data_gateway' AND storage_backend = 'keystone_tos')
 			),
 			CHECK (hilbert_raw_data_id IS NULL OR hilbert_raw_data_id > 0)
+		)`,
+		`CREATE TABLE calibration_sessions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL UNIQUE,
+			robot_id INTEGER NOT NULL,
+			device_id TEXT NOT NULL,
+			workspace_id INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			successful_capture_id TEXT,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE TABLE calibration_captures (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			capture_id TEXT NOT NULL UNIQUE,
+			calibration_session_id TEXT NOT NULL,
+			attempt_no INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			bucket TEXT NOT NULL,
+			object_key TEXT NOT NULL,
+			file_size_bytes INTEGER,
+			duration_sec REAL,
+			checksum_sha256 TEXT NOT NULL,
+			object_etag TEXT,
+			logical_upload_id TEXT NOT NULL,
+			upload_id TEXT NOT NULL,
+			source TEXT,
+			local_operator TEXT,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			uploaded_at TIMESTAMP
 		)`,
 		`INSERT INTO robots (id, device_id, workspace_id, status, auth_epoch) VALUES (1, '101', 10, 'active', 1)`,
 		`INSERT INTO workstations (id, robot_id, workspace_id) VALUES (40, 1, 10)`,
