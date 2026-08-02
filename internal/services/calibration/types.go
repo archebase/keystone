@@ -36,15 +36,15 @@ const (
 
 // Domain errors returned by the calibration module's public interface.
 var (
-	ErrDisabled             = errors.New("calibration processing is disabled")
-	ErrCaptureNotFound      = errors.New("calibration capture not found")
-	ErrSessionNotFound      = errors.New("calibration session not found")
-	ErrCaptureUploading     = errors.New("calibration capture upload is not complete")
-	ErrCaptureProcessed     = errors.New("calibration capture is already processed")
-	ErrSessionSucceeded     = errors.New("calibration session already succeeded")
-	ErrImageNotConfigured   = errors.New("calibration processing image is not configured")
-	ErrConfigChanged        = errors.New("calibration processing configuration changed")
-	ErrInvalidMaxConcurrent = errors.New("invalid calibration max concurrent")
+	ErrProcessingUnavailable = errors.New("calibration processing is unavailable")
+	ErrCaptureNotFound       = errors.New("calibration capture not found")
+	ErrSessionNotFound       = errors.New("calibration session not found")
+	ErrCaptureUploading      = errors.New("calibration capture upload is not complete")
+	ErrCaptureProcessed      = errors.New("calibration capture is already processed")
+	ErrSessionSucceeded      = errors.New("calibration session already succeeded")
+	ErrImageNotConfigured    = errors.New("calibration processing image is not configured")
+	ErrConfigChanged         = errors.New("calibration processing configuration changed")
+	ErrInvalidMaxConcurrent  = errors.New("invalid calibration max concurrent")
 )
 
 // Resources contains Kubernetes requests and limits sent to Orbit.
@@ -55,7 +55,6 @@ type Resources struct {
 
 // Config controls fixed calibration processing behavior.
 type Config struct {
-	Enabled             bool
 	Resources           Resources
 	ActiveDeadline      int64
 	TTLSecondsAfterDone int32

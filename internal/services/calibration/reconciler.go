@@ -28,7 +28,7 @@ const (
 
 // ReconcileOnce advances at most one durable Capture state transition.
 func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
-	if m == nil || m.db == nil || !m.cfg.Enabled {
+	if m == nil || m.db == nil {
 		return false, nil
 	}
 	var candidate struct {

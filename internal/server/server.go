@@ -118,7 +118,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	if db != nil {
 		var orbitClient calibration.Orbit
 		var objectReader calibration.ObjectStore
-		if cfg.Calibration.Enabled {
+		if cfg.Calibration.OrbitBaseURL != "" {
 			client, err := orbitapi.NewClient(
 				cfg.Calibration.OrbitBaseURL,
 				time.Duration(cfg.Calibration.OrbitTimeoutSec)*time.Second,
@@ -726,7 +726,6 @@ func stereoSplitConfig(cfg config.DerivativeConfig) stereosplit.Config {
 
 func calibrationManagerConfig(cfg config.CalibrationConfig) calibration.Config {
 	return calibration.Config{
-		Enabled: cfg.Enabled,
 		Resources: calibration.Resources{
 			Requests: cloneServerStringMap(cfg.Resources.Requests),
 			Limits:   cloneServerStringMap(cfg.Resources.Limits),

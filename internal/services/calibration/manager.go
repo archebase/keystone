@@ -49,9 +49,6 @@ func (m *Manager) Start(ctx context.Context, captureID, actor string) (Capture, 
 	if m == nil || m.db == nil {
 		return Capture{}, false, fmt.Errorf("start calibration: database is not configured")
 	}
-	if !m.cfg.Enabled {
-		return Capture{}, false, ErrDisabled
-	}
 	captureID = strings.TrimSpace(captureID)
 	if captureID == "" {
 		return Capture{}, false, ErrCaptureNotFound
@@ -62,6 +59,9 @@ func (m *Manager) Start(ctx context.Context, captureID, actor string) (Capture, 
 	}
 	if currentConfig.ImageRef == "" {
 		return Capture{}, false, ErrImageNotConfigured
+	}
+	if m.orbit == nil || m.objects == nil {
+		return Capture{}, false, ErrProcessingUnavailable
 	}
 	tx, err := m.db.BeginTxx(ctx, nil)
 	if err != nil {

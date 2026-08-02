@@ -257,6 +257,18 @@ func TestManagerRejectsProcessingWhenImageIsUnconfigured(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsProcessingWhenOrbitIsUnavailable(t *testing.T) {
+	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
+	_, _, err := manager.Start(
+		context.Background(),
+		"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"admin-user",
+	)
+	if !errors.Is(err, ErrProcessingUnavailable) {
+		t.Fatalf("Start() error = %v, want ErrProcessingUnavailable", err)
+	}
+}
+
 type fakeOrbit struct {
 	request     orbitapi.SubmitRequest
 	submitCalls int
@@ -306,7 +318,6 @@ func (f *fakeObjectStore) OpenObject(_ context.Context, _ string, objectName str
 
 func testCalibrationConfig() Config {
 	return Config{
-		Enabled: true,
 		Resources: Resources{
 			Requests: map[string]string{"cpu": "1", "memory": "1Gi"},
 			Limits:   map[string]string{"cpu": "2", "memory": "2Gi"},

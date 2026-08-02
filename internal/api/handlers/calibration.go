@@ -361,7 +361,7 @@ func (h *CalibrationHandler) ProcessCapture(c *gin.Context) {
 		switch {
 		case errors.Is(err, calibration.ErrCaptureNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "calibration capture not found"})
-		case errors.Is(err, calibration.ErrDisabled), errors.Is(err, calibration.ErrImageNotConfigured):
+		case errors.Is(err, calibration.ErrProcessingUnavailable), errors.Is(err, calibration.ErrImageNotConfigured):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "calibration processing is not available"})
 		case errors.Is(err, calibration.ErrCaptureUploading),
 			errors.Is(err, calibration.ErrCaptureProcessed),
