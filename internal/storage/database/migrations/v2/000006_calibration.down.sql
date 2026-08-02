@@ -3,4 +3,5 @@
 -- SPDX-License-Identifier: MulanPSL-2.0
 
 DROP TABLE IF EXISTS calibration_captures;
+DROP TABLE IF EXISTS calibration_processing_configs;
 DROP TABLE IF EXISTS calibration_sessions;

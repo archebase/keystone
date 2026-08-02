@@ -17,6 +17,26 @@ CREATE TABLE calibration_sessions (
     INDEX idx_calibration_sessions_workspace_status (workspace_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE calibration_processing_configs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    image_ref VARCHAR(1024) NULL,
+    previous_image_ref VARCHAR(1024) NULL,
+    max_concurrent INT NOT NULL DEFAULT 1,
+    previous_max_concurrent INT NULL,
+    created_by VARCHAR(191) NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_calibration_max_concurrent CHECK (
+        max_concurrent BETWEEN 1 AND 100
+    ),
+    INDEX idx_calibration_processing_configs_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- The first row is both the unconfigured bootstrap revision and the stable
+-- row locked while administrators append settings revisions.
+INSERT INTO calibration_processing_configs (
+    image_ref, previous_image_ref, max_concurrent, created_by
+) VALUES (NULL, NULL, 1, 'migration-bootstrap');
+
 CREATE TABLE calibration_captures (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     capture_id VARCHAR(36) NOT NULL,
@@ -39,6 +59,7 @@ CREATE TABLE calibration_captures (
     local_operator VARCHAR(255) NULL,
     uploaded_at TIMESTAMP NULL,
 
+    processor_config_revision_id BIGINT NULL,
     processor_image VARCHAR(1024) NULL,
     source_etag VARCHAR(255) NULL,
     orbit_submission_id VARCHAR(191) NULL,
