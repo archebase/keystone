@@ -19,6 +19,7 @@ require (
 	github.com/swaggo/files v1.0.1
 	github.com/swaggo/gin-swagger v1.6.1
 	github.com/swaggo/swag v1.16.6
+	github.com/volcengine/ve-tos-golang-sdk/v2 v2.7.22
 	github.com/volcengine/volcengine-go-sdk v1.2.42
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
