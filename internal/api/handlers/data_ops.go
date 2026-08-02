@@ -45,6 +45,16 @@ type DataOpsHandler struct {
 	bulkRunCancelMu   sync.Mutex
 	bulkRunExecutions map[string]*dataOpsBulkRunExecution
 	bulkMP4Converter  func(context.Context, dataOpsBulkMP4EpisodeRow, string, string) (string, func(), error)
+	stereoSplit       dataOpsStereoSplitManager
+	stereoBulkMu      sync.Mutex
+	stereoBulkRuns    map[string]struct{}
+}
+
+// SetStereoSplitManager wires the durable stereo-split module.
+func (h *DataOpsHandler) SetStereoSplitManager(manager dataOpsStereoSplitManager) {
+	if h != nil {
+		h.stereoSplit = manager
+	}
 }
 
 type dataOpsBulkRunExecution struct {
@@ -57,6 +67,7 @@ type dataOpsBulkSyncWorker interface {
 	IsRunning() bool
 	MaxRetries() int
 	EnqueueEpisodeManualForBulkRun(ctx context.Context, episodeID int64, bulkRunID string) error
+	EnqueueStereoSplitManual(ctx context.Context, episodeID int64) error
 	CancelBulkRun(ctx context.Context, bulkRunID string) (int64, error)
 }
 
@@ -66,6 +77,7 @@ func NewDataOpsHandler(db *sqlx.DB) *DataOpsHandler {
 		db:                db,
 		bulkRunBroker:     newDataOpsBulkRunBroker(),
 		bulkRunExecutions: make(map[string]*dataOpsBulkRunExecution),
+		stereoBulkRuns:    make(map[string]struct{}),
 	}
 }
 
@@ -94,9 +106,14 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/episodes/:id/mp4", h.DownloadEpisodeMP4)
 	apiV1.GET("/bulk-runs/current", h.GetCurrentBulkRun)
 	apiV1.GET("/bulk-runs/:run_id", h.GetBulkRun)
+	apiV1.GET("/bulk-runs/:run_id/items", h.ListBulkRunItems)
 	apiV1.POST("/bulk-runs/:run_id/cancel", h.CancelBulkRun)
 	apiV1.GET("/bulk-runs/:run_id/download", h.DownloadBulkMP4)
 	apiV1.GET("/bulk-runs/:run_id/stream", h.StreamBulkRun)
+	h.registerStereoSplitSettingsRoutes(apiV1)
+	if h.stereoSplit != nil {
+		h.registerStereoSplitRoutes(apiV1)
+	}
 }
 
 type dataOpsEpisodeQuery struct {

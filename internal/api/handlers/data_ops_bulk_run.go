@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	dataOpsBulkRunActionQA   = "bulk_qa"
-	dataOpsBulkRunActionMP4  = "bulk_mp4"
-	dataOpsBulkRunActionSync = "bulk_sync"
+	dataOpsBulkRunActionQA          = "bulk_qa"
+	dataOpsBulkRunActionMP4         = "bulk_mp4"
+	dataOpsBulkRunActionSync        = "bulk_sync"
+	dataOpsBulkRunActionStereoSplit = "stereo_split"
 
 	dataOpsBulkRunStatusQueued          = "queued"
 	dataOpsBulkRunStatusRunning         = "running"
@@ -117,22 +118,26 @@ type dataOpsBulkQAEpisodeResult struct {
 
 // DataOpsBulkRunResponse is the short-lived progress snapshot for one bulk action run.
 type DataOpsBulkRunResponse struct {
-	RunID                 string     `json:"run_id"`
-	Action                string     `json:"action"`
-	Status                string     `json:"status"`
-	TotalCount            int64      `json:"total_count"`
-	ProcessedCount        int64      `json:"processed_count"`
-	PassedCount           int64      `json:"passed_count"`
-	QAFailedCount         int64      `json:"qa_failed_count"`
-	ProcessingFailedCount int64      `json:"processing_failed_count"`
-	SkippedCount          int64      `json:"skipped_count"`
-	CanceledCount         int64      `json:"canceled_count"`
-	StartedAt             *time.Time `json:"started_at"`
-	CancelRequestedAt     *time.Time `json:"cancel_requested_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
-	FinishedAt            *time.Time `json:"finished_at"`
-	ErrorMessage          string     `json:"error_message"`
-	DownloadURL           string     `json:"download_url,omitempty"`
+	RunID                 string           `json:"run_id"`
+	Action                string           `json:"action"`
+	Status                string           `json:"status"`
+	TotalCount            int64            `json:"total_count"`
+	ProcessedCount        int64            `json:"processed_count"`
+	PassedCount           int64            `json:"passed_count"`
+	QAFailedCount         int64            `json:"qa_failed_count"`
+	ProcessingFailedCount int64            `json:"processing_failed_count"`
+	SkippedCount          int64            `json:"skipped_count"`
+	CanceledCount         int64            `json:"canceled_count"`
+	StartedAt             *time.Time       `json:"started_at"`
+	CancelRequestedAt     *time.Time       `json:"cancel_requested_at"`
+	UpdatedAt             time.Time        `json:"updated_at"`
+	FinishedAt            *time.Time       `json:"finished_at"`
+	ErrorMessage          string           `json:"error_message"`
+	DownloadURL           string           `json:"download_url,omitempty"`
+	PreviewCounts         map[string]int64 `json:"preview_counts,omitempty"`
+	FinalCounts           map[string]int64 `json:"final_counts,omitempty"`
+	MaterializedAt        *time.Time       `json:"materialized_at,omitempty"`
+	CountsFrozenAt        *time.Time       `json:"counts_frozen_at,omitempty"`
 }
 
 type dataOpsBulkRunRow struct {
@@ -275,6 +280,11 @@ func (h *DataOpsHandler) loadBulkRun(ctx context.Context, runID string) (DataOps
 		return DataOpsBulkRunResponse{}, err
 	}
 	resp := dataOpsBulkRunResponseFromRow(row)
+	if row.Action == dataOpsBulkRunActionStereoSplit {
+		if err := h.loadStereoSplitBulkRunMetadata(ctx, runID, &resp); err != nil {
+			return DataOpsBulkRunResponse{}, err
+		}
+	}
 	if row.Action == dataOpsBulkRunActionMP4 && (resp.Status == dataOpsBulkRunStatusCompleted || resp.Status == dataOpsBulkRunStatusCanceled) {
 		// #nosec G703 -- the path uses a server-generated run ID loaded from bulk_runs.
 		if _, err := os.Stat(h.bulkMP4ZipPath(resp.RunID)); err == nil {
@@ -287,7 +297,7 @@ func (h *DataOpsHandler) loadBulkRun(ctx context.Context, runID string) (DataOps
 // CancelBulkRun requests graceful cancellation of one active bulk run.
 //
 // @Summary      Cancel bulk run
-// @Description  Stops dispatching new items while allowing already-running items to finish.
+// @Description  Stops dispatching new items. Stereo-split runs also request cancellation of already-admitted generations.
 // @Tags         data-ops
 // @Produce      json
 // @Param        run_id  path      string  true  "Bulk run ID"
@@ -345,6 +355,13 @@ func (h *DataOpsHandler) CancelBulkRun(c *gin.Context) {
 		if _, err := h.syncWorker.CancelBulkRun(c.Request.Context(), runID); err != nil {
 			// The persisted cancel request remains authoritative; the run monitor retries cleanup.
 			logger.Printf("[DATA_OPS] bulk sync pending cancellation failed: run_id=%s err=%v", runID, err)
+		}
+	}
+	if run.Action == dataOpsBulkRunActionStereoSplit && h.stereoSplit != nil {
+		if err := h.cancelStereoSplitBulkRun(c.Request.Context(), runID); err != nil {
+			logger.Printf("[STEREO_SPLIT] Bulk cancellation persistence failed: run_id=%s err=%v", runID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel stereo split run"})
+			return
 		}
 	}
 	c.JSON(http.StatusOK, run)
@@ -660,7 +677,7 @@ func (h *DataOpsHandler) GetBulkRun(c *gin.Context) {
 // @Description  Returns the active bulk run snapshot, or 204 when no run is active.
 // @Tags         data-ops
 // @Produce      json
-// @Param        action  query     string  true  "Bulk action: bulk_qa, bulk_mp4, or bulk_sync"
+// @Param        action  query     string  true  "Bulk action: bulk_qa, bulk_mp4, bulk_sync, or stereo_split"
 // @Success      200     {object}  DataOpsBulkRunResponse
 // @Success      204
 // @Failure      400     {object}  map[string]string
@@ -673,7 +690,7 @@ func (h *DataOpsHandler) GetCurrentBulkRun(c *gin.Context) {
 	}
 	action := c.Query("action")
 	if !isAllowedDataOpsBulkRunAction(action) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be bulk_qa, bulk_mp4, or bulk_sync"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be bulk_qa, bulk_mp4, bulk_sync, or stereo_split"})
 		return
 	}
 
@@ -776,12 +793,16 @@ func (h *DataOpsHandler) currentBulkRun(ctx context.Context, action string) (Dat
 		}
 		return DataOpsBulkRunResponse{}, false, err
 	}
+	if row.Action == dataOpsBulkRunActionStereoSplit {
+		loaded, err := h.loadBulkRun(ctx, row.RunID)
+		return loaded, err == nil, err
+	}
 	return dataOpsBulkRunResponseFromRow(row), true, nil
 }
 
 func isAllowedDataOpsBulkRunAction(action string) bool {
 	switch action {
-	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync:
+	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync, dataOpsBulkRunActionStereoSplit:
 		return true
 	default:
 		return false

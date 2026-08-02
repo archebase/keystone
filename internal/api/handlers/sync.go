@@ -31,17 +31,29 @@ func NewSyncHandler(db *sqlx.DB, syncWorker *services.SyncWorker) *SyncHandler {
 	return &SyncHandler{db: db, syncWorker: syncWorker}
 }
 
-// RegisterRoutes registers cloud sync related routes.
+// RegisterRoutes registers all cloud sync routes. Production callers should
+// prefer RegisterReadRoutes and RegisterAdminRoutes so mutating endpoints can
+// be mounted behind stricter authorization middleware.
 func (h *SyncHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
-	apiV1.POST("/sync/episodes", h.TriggerBatchSync)
-	apiV1.POST("/sync/episodes/:id/resync", h.TriggerEpisodeResync)
-	apiV1.POST("/sync/episodes/:id", h.TriggerEpisodeSync)
+	h.RegisterReadRoutes(apiV1)
+	h.RegisterAdminRoutes(apiV1)
+}
+
+// RegisterReadRoutes registers cloud sync status routes.
+func (h *SyncHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/sync/episodes", h.ListSyncJobs)
 	apiV1.GET("/sync/episodes/summary", h.ListEpisodeSyncSummaries)
 	apiV1.GET("/sync/episode-statuses", h.ListSyncStatuses)
 	apiV1.GET("/sync/episodes/:id/logs", h.ListEpisodeSyncLogs)
 	apiV1.GET("/sync/episodes/:id/status", h.GetSyncStatus)
 	apiV1.GET("/sync/config", h.GetSyncConfig)
+}
+
+// RegisterAdminRoutes registers mutating cloud sync routes.
+func (h *SyncHandler) RegisterAdminRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/sync/episodes", h.TriggerBatchSync)
+	apiV1.POST("/sync/episodes/:id/resync", h.TriggerEpisodeResync)
+	apiV1.POST("/sync/episodes/:id", h.TriggerEpisodeSync)
 }
 
 type syncEpisodeActionRow struct {

@@ -17,6 +17,7 @@ import (
 
 func TestHilbertRawDataClientUsesRESTContract(t *testing.T) {
 	var sawRegister bool
+	var sawLookup bool
 	var sawCredentials bool
 	var sawFinish bool
 
@@ -35,6 +36,16 @@ func TestHilbertRawDataClientUsesRESTContract(t *testing.T) {
 				t.Fatalf("unexpected register body: %+v", body)
 			}
 			_, _ = w.Write([]byte(`{"code":0,"data":42}`))
+		case hilbertRawDataQueryPath:
+			sawLookup = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("lookup method = %s, want GET", r.Method)
+			}
+			if r.URL.Query().Get("workspaceId") != "2" || r.URL.Query().Get("bagName") != "capture.mcap" ||
+				r.URL.Query().Get("pageNum") != "1" || r.URL.Query().Get("pageSize") != "200" {
+				t.Fatalf("lookup query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"records":[{"id":41,"workspaceId":2,"dcPlanId":8,"bagName":"capture-old.mcap","bagStartTime":"2026-07-15T02:00:00Z","bagEndTime":"2026-07-15T02:00:01Z","bagSize":1,"bagDigest":"9dd4e461268c8034f5c8564e155c67a6"},{"id":42,"workspaceId":2,"dcPlanId":8,"bagName":"capture.mcap","bagStartTime":"2026-07-15T02:00:00Z","bagEndTime":"2026-07-15T02:00:01Z","bagSize":1,"bagDigest":"9dd4e461268c8034f5c8564e155c67a6"}],"total":2,"pageNum":1,"pageSize":200}}`))
 		case hilbertRawDataGetUploadCredentialsPath:
 			sawCredentials = true
 			if r.Method != http.MethodGet {
@@ -83,6 +94,13 @@ func TestHilbertRawDataClientUsesRESTContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterRawData() error = %v", err)
 	}
+	found, err := client.FindRawDataByBagName(t.Context(), 2, "capture.mcap")
+	if err != nil {
+		t.Fatalf("FindRawDataByBagName() error = %v", err)
+	}
+	if found == nil || found.ID != rawID || found.BagName != "capture.mcap" {
+		t.Fatalf("FindRawDataByBagName() = %+v, want raw data %d", found, rawID)
+	}
 	credentials, err := client.GetRawDataUploadCredentials(t.Context(), 2, rawID)
 	if err != nil {
 		t.Fatalf("GetRawDataUploadCredentials() error = %v", err)
@@ -93,8 +111,45 @@ func TestHilbertRawDataClientUsesRESTContract(t *testing.T) {
 	if err := client.FinishRawDataUpload(t.Context(), 2, rawID); err != nil {
 		t.Fatalf("FinishRawDataUpload() error = %v", err)
 	}
-	if !sawRegister || !sawCredentials || !sawFinish {
-		t.Fatalf("saw register=%t credentials=%t finish=%t", sawRegister, sawCredentials, sawFinish)
+	if !sawRegister || !sawLookup || !sawCredentials || !sawFinish {
+		t.Fatalf("saw register=%t lookup=%t credentials=%t finish=%t", sawRegister, sawLookup, sawCredentials, sawFinish)
+	}
+}
+
+func TestHilbertRawDataClientFindsExactBagNameOnLaterPage(t *testing.T) {
+	var pageNumbers []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != hilbertRawDataQueryPath {
+			http.NotFound(w, r)
+			return
+		}
+		pageNum := r.URL.Query().Get("pageNum")
+		pageNumbers = append(pageNumbers, pageNum)
+		switch pageNum {
+		case "1":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"records":[{"id":41,"workspaceId":2,"dcPlanId":8,"bagName":"capture.mcap.backup","bagStartTime":"2026-07-15T02:00:00Z","bagEndTime":"2026-07-15T02:00:01Z","bagSize":1,"bagDigest":"9dd4e461268c8034f5c8564e155c67a6"}],"total":201,"pageNum":1,"pageSize":200}}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"records":[{"id":42,"workspaceId":2,"dcPlanId":8,"bagName":"capture.mcap","bagStartTime":"2026-07-15T02:00:00Z","bagEndTime":"2026-07-15T02:00:01Z","bagSize":1,"bagDigest":"9dd4e461268c8034f5c8564e155c67a6"}],"total":201,"pageNum":2,"pageSize":200}}`))
+		default:
+			t.Fatalf("unexpected pageNum %q", pageNum)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL:   server.URL,
+		AccessKey: "ak",
+		SecretKey: "sk",
+	})
+	found, err := client.FindRawDataByBagName(t.Context(), 2, "capture.mcap")
+	if err != nil {
+		t.Fatalf("FindRawDataByBagName() error = %v", err)
+	}
+	if found == nil || found.ID != 42 || found.BagName != "capture.mcap" {
+		t.Fatalf("FindRawDataByBagName() = %+v, want exact second-page match", found)
+	}
+	if len(pageNumbers) != 2 || pageNumbers[0] != "1" || pageNumbers[1] != "2" {
+		t.Fatalf("lookup pages = %v, want [1 2]", pageNumbers)
 	}
 }
 

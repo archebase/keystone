@@ -347,16 +347,23 @@ func (h *DataOpsHandler) parseBulkEpisodeActionRequest(c *gin.Context, requireCo
 		return req, dataOpsEpisodeQuery{}, false
 	}
 
-	q, err := parseDataOpsBulkEpisodeFilters(req.Filters)
+	q, err := dataOpsQueryFromBulkRequest(req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return req, dataOpsEpisodeQuery{}, false
 	}
+	return req, q, true
+}
+
+func dataOpsQueryFromBulkRequest(req DataOpsBulkEpisodeActionRequest) (dataOpsEpisodeQuery, error) {
+	q, err := parseDataOpsBulkEpisodeFilters(req.Filters)
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
 	switch req.Selection.Mode {
 	case "", dataOpsBulkSelectionModeAllMatching:
 		if len(req.Selection.EpisodeIDs) > 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "selection.episode_ids requires explicit mode"})
-			return req, dataOpsEpisodeQuery{}, false
+			return dataOpsEpisodeQuery{}, fmt.Errorf("selection.episode_ids requires explicit mode")
 		}
 		q.ExcludedEpisodeIDs, err = normalizeDataOpsBulkSelectionIDs(
 			req.Selection.ExcludedEpisodeIDs,
@@ -364,8 +371,7 @@ func (h *DataOpsHandler) parseBulkEpisodeActionRequest(c *gin.Context, requireCo
 		)
 	case dataOpsBulkSelectionModeExplicit:
 		if len(req.Selection.ExcludedEpisodeIDs) > 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "selection.excluded_episode_ids requires all_matching mode"})
-			return req, dataOpsEpisodeQuery{}, false
+			return dataOpsEpisodeQuery{}, fmt.Errorf("selection.excluded_episode_ids requires all_matching mode")
 		}
 		q.HasExplicitEpisodeIDs = true
 		q.IncludedEpisodeIDs, err = normalizeDataOpsBulkSelectionIDs(
@@ -373,14 +379,12 @@ func (h *DataOpsHandler) parseBulkEpisodeActionRequest(c *gin.Context, requireCo
 			"selection.episode_ids",
 		)
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "selection.mode must be one of all_matching, explicit"})
-		return req, dataOpsEpisodeQuery{}, false
+		return dataOpsEpisodeQuery{}, fmt.Errorf("selection.mode must be one of all_matching, explicit")
 	}
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return req, dataOpsEpisodeQuery{}, false
+		return dataOpsEpisodeQuery{}, err
 	}
-	return req, q, true
+	return q, nil
 }
 
 func normalizeDataOpsBulkSelectionIDs(values []int64, fieldName string) ([]int64, error) {

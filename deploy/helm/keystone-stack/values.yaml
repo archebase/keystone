@@ -48,6 +48,10 @@ keystone:
     baseURL: https://hilbert.archebase.cn/hilbert-be-backend
     timeoutSeconds: 5
 
+  derivatives:
+    orbitBaseURL: http://orbit.archebase-system.svc.cluster.local:8080
+    tosPrefix: derived/episodes
+
   service:
     type: NodePort
     annotations: {}

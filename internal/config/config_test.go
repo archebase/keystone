@@ -203,6 +203,42 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestLoadStereoSplitConfig(t *testing.T) {
+	t.Setenv("KEYSTONE_ORBIT_BASE_URL", "http://orbit.archebase-system.svc.cluster.local:8080")
+	t.Setenv("KEYSTONE_DERIVATIVE_TOS_PREFIX", "derived/local-test")
+	t.Setenv("KEYSTONE_DGW_COMPAT_ENABLED", "true")
+	t.Setenv("KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
+	t.Setenv("KEYSTONE_DGW_TOS_BUCKET", "keystone-managed-bucket")
+	t.Setenv("KEYSTONE_DGW_TOS_REGION", "cn-beijing")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Derivatives.Enabled || cfg.Derivatives.OrbitBaseURL != "http://orbit.archebase-system.svc.cluster.local:8080" {
+		t.Fatalf("Load().Derivatives = %+v", cfg.Derivatives)
+	}
+	if cfg.Derivatives.OutputBucket != "keystone-managed-bucket" || cfg.Derivatives.OutputPrefix != "derived/local-test" {
+		t.Fatalf("Load().Derivatives output = %+v", cfg.Derivatives)
+	}
+	if cfg.Derivatives.OrbitTimeoutSec != 10 ||
+		cfg.Derivatives.Resources.Requests["cpu"] != "2" || cfg.Derivatives.Resources.Limits["memory"] != "8Gi" {
+		t.Fatalf("Load().Derivatives fixed defaults = %+v", cfg.Derivatives)
+	}
+}
+
+func TestLoadStereoSplitDisabledWithoutOrbitURL(t *testing.T) {
+	t.Setenv("KEYSTONE_ORBIT_BASE_URL", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Derivatives.Enabled {
+		t.Fatalf("Load().Derivatives.Enabled = true without KEYSTONE_ORBIT_BASE_URL")
+	}
+}
+
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{
