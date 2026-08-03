@@ -45,6 +45,7 @@ var (
 	ErrImageNotConfigured    = errors.New("calibration processing image is not configured")
 	ErrConfigChanged         = errors.New("calibration processing configuration changed")
 	ErrInvalidMaxConcurrent  = errors.New("invalid calibration max concurrent")
+	ErrInvalidImageRef       = errors.New("invalid calibration image reference")
 )
 
 // Resources contains Kubernetes requests and limits sent to Orbit.

@@ -163,9 +163,7 @@ func (h *CalibrationHandler) writeProcessingSettingsError(c *gin.Context, err er
 			"error": "calibration max concurrent must be between 1 and 100",
 			"code":  "invalid_max_concurrent",
 		})
-	case strings.Contains(strings.ToLower(err.Error()), "image") ||
-		strings.Contains(strings.ToLower(err.Error()), "repository") ||
-		strings.Contains(strings.ToLower(err.Error()), "sha256"):
+	case errors.Is(err, calibration.ErrInvalidImageRef):
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "invalid calibration image reference",
 			"code":  "invalid_image_ref",

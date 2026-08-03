@@ -12,11 +12,14 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jmoiron/sqlx"
 )
 
 const (
+	maxProcessingImageRefLength = 1024
+
 	// ProcessingConfigSourceUnconfigured means no calibration image has been selected.
 	ProcessingConfigSourceUnconfigured = "unconfigured"
 	// ProcessingConfigSourceDatabase means an administrator-selected revision is effective.
@@ -205,22 +208,25 @@ func classifyProcessingConfig(config ProcessingConfig) ProcessingConfig {
 
 func validateProcessingImageRef(raw string) (string, error) {
 	imageRef := strings.TrimSpace(raw)
+	if utf8.RuneCountInString(imageRef) > maxProcessingImageRefLength {
+		return "", fmt.Errorf("%w: exceeds %d characters", ErrInvalidImageRef, maxProcessingImageRefLength)
+	}
 	if imageRef == "" || strings.ContainsAny(imageRef, "?#") || strings.Contains(imageRef, "://") ||
 		strings.Contains(imageRef, "@") && strings.Count(imageRef, "@") != 1 {
-		return "", fmt.Errorf("invalid calibration image reference")
+		return "", ErrInvalidImageRef
 	}
 	parts := strings.Split(imageRef, "@sha256:")
 	if len(parts) != 2 || !configImageDigestPattern.MatchString(parts[1]) {
-		return "", fmt.Errorf("calibration image reference must use an immutable sha256 digest")
+		return "", fmt.Errorf("%w: must use an immutable sha256 digest", ErrInvalidImageRef)
 	}
 	repository := strings.ToLower(strings.TrimSpace(parts[0]))
 	segments := strings.Split(repository, "/")
 	if len(segments) < 2 || !configImageRegistryPattern.MatchString(segments[0]) ||
 		!configImageRepositoryPattern.MatchString(repository) {
-		return "", fmt.Errorf("invalid calibration image repository")
+		return "", fmt.Errorf("%w: invalid repository", ErrInvalidImageRef)
 	}
 	if strings.Contains(repository, "..") || strings.Contains(repository, "@") || strings.Contains(repository, "\\") {
-		return "", fmt.Errorf("invalid calibration image repository")
+		return "", fmt.Errorf("%w: invalid repository", ErrInvalidImageRef)
 	}
 	return repository + "@sha256:" + parts[1], nil
 }

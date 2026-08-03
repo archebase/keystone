@@ -294,6 +294,39 @@ func TestGatewayCompleteCalibrationCaptureQueuesProcessingWithoutEpisode(t *test
 	}
 }
 
+func TestGatewayCreateCalibrationCaptureRejectsOversizedMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "source", key: "source", value: strings.Repeat("s", 65)},
+		{name: "local operator", key: "local_operator", value: strings.Repeat("采", 256)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newGatewayServiceTestDB(t)
+			service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+			ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+				RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+			})
+			hints := map[string]string{
+				"upload_kind":            "calibration_capture",
+				"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+				"capture_id":             "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+				"attempt_no":             "1",
+				"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+				tt.key:                   tt.value,
+			}
+
+			_, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{ClientHints: hints})
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("CreateLogicalUpload() error = %v, want InvalidArgument", err)
+			}
+		})
+	}
+}
+
 func TestGatewayCalibrationSessionRejectsNewCaptureButSupersedesStartedCaptureAfterSuccess(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)

@@ -651,6 +651,22 @@ func TestManagerRejectsMutableProcessingImage(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsOversizedProcessingImageReference(t *testing.T) {
+	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
+	imageRef := "registry.example/" + strings.Repeat("a", 1100) + "@sha256:" + strings.Repeat("b", 64)
+
+	_, err := manager.UpdateProcessingConfig(
+		context.Background(),
+		imageRef,
+		2,
+		1,
+		"admin-user",
+	)
+	if !errors.Is(err, ErrInvalidImageRef) {
+		t.Fatalf("UpdateProcessingConfig() error = %v, want %v", err, ErrInvalidImageRef)
+	}
+}
+
 func TestManagerRejectsProcessingWhenImageIsUnconfigured(t *testing.T) {
 	db := newCalibrationTestDB(t)
 	if _, err := db.Exec("UPDATE calibration_processing_configs SET image_ref = NULL WHERE id = 1"); err != nil {

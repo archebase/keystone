@@ -7,6 +7,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -163,14 +165,76 @@ func TestCalibrationAdminUpdatesProcessingSettings(t *testing.T) {
 	}
 }
 
+func TestCalibrationAdminProcessingSettingsKeepsDatabaseErrorsInternal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewCalibrationHandler(&fakeCalibrationManager{
+		updateProcessingConfigErr: errors.New("load image schema: unavailable"),
+	})
+	router := gin.New()
+	api := router.Group("/api/v1")
+	handler.RegisterAdminRoutes(api)
+
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/processing-settings/calibration",
+		strings.NewReader(`{
+			"image_ref":"registry.example/archebase/calibration@sha256:`+strings.Repeat("a", 64)+`",
+			"max_concurrent":3,
+			"expected_revision_id":1
+		}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body=%s, want 500", response.Code, response.Body.String())
+	}
+}
+
+func TestCalibrationAdminProcessingSettingsMapsTypedImageError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewCalibrationHandler(&fakeCalibrationManager{
+		updateProcessingConfigErr: fmt.Errorf("validate request: %w", calibration.ErrInvalidImageRef),
+	})
+	router := gin.New()
+	api := router.Group("/api/v1")
+	handler.RegisterAdminRoutes(api)
+
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/processing-settings/calibration",
+		strings.NewReader(`{
+			"image_ref":"registry.example/archebase/calibration@sha256:`+strings.Repeat("a", 64)+`",
+			"max_concurrent":3,
+			"expected_revision_id":1
+		}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["code"] != "invalid_image_ref" {
+		t.Fatalf("response code = %v, want invalid_image_ref", body["code"])
+	}
+}
+
 type fakeCalibrationManager struct {
-	session              calibration.SessionStatus
-	capture              calibration.Capture
-	startedCaptureID     string
-	processingConfig     calibration.ProcessingConfig
-	expectedRevisionID   int64
-	updatedMaxConcurrent int
-	sessionRobotID       int64
+	session                   calibration.SessionStatus
+	capture                   calibration.Capture
+	startedCaptureID          string
+	processingConfig          calibration.ProcessingConfig
+	updateProcessingConfigErr error
+	expectedRevisionID        int64
+	updatedMaxConcurrent      int
+	sessionRobotID            int64
 }
 
 func (f *fakeCalibrationManager) GetSessionStatus(
@@ -208,7 +272,7 @@ func (f *fakeCalibrationManager) UpdateProcessingConfig(
 ) (calibration.ProcessingConfig, error) {
 	f.updatedMaxConcurrent = maxConcurrent
 	f.expectedRevisionID = expectedRevisionID
-	return f.processingConfig, nil
+	return f.processingConfig, f.updateProcessingConfigErr
 }
 
 func (f *fakeCalibrationManager) ListProcessingConfigHistory(context.Context, int, int) ([]calibration.ProcessingConfig, error) {

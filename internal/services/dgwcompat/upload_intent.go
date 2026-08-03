@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -19,6 +20,9 @@ type uploadKind string
 const (
 	uploadKindTaskEpisode        uploadKind = "task_episode"
 	uploadKindCalibrationCapture uploadKind = "calibration_capture"
+
+	maxCalibrationSourceLength        = 64
+	maxCalibrationLocalOperatorLength = 255
 )
 
 type uploadIntent struct {
@@ -56,6 +60,12 @@ func parseUploadIntent(hints map[string]string) (uploadIntent, error) {
 		if !isSHA256Hex(checksum) {
 			return uploadIntent{}, status.Error(codes.InvalidArgument, "checksum_sha256 must be a 64-character hexadecimal SHA-256 digest")
 		}
+		if err := normalizeBoundedOptionalHint(hints, "source", maxCalibrationSourceLength); err != nil {
+			return uploadIntent{}, err
+		}
+		if err := normalizeBoundedOptionalHint(hints, "local_operator", maxCalibrationLocalOperatorLength); err != nil {
+			return uploadIntent{}, err
+		}
 		hints["calibration_session_id"] = sessionID
 		hints["capture_id"] = captureID
 		hints["attempt_no"] = strconv.FormatInt(attemptNo, 10)
@@ -70,6 +80,15 @@ func parseUploadIntent(hints map[string]string) (uploadIntent, error) {
 	default:
 		return uploadIntent{}, status.Errorf(codes.InvalidArgument, "unsupported upload_kind %q", kind)
 	}
+}
+
+func normalizeBoundedOptionalHint(hints map[string]string, key string, maxLength int) error {
+	value := strings.TrimSpace(hints[key])
+	if utf8.RuneCountInString(value) > maxLength {
+		return status.Errorf(codes.InvalidArgument, "%s must not exceed %d characters", key, maxLength)
+	}
+	hints[key] = value
+	return nil
 }
 
 func parseCanonicalV4UUID(raw string) (string, error) {
