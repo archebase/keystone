@@ -17,6 +17,7 @@ import (
 )
 
 const (
+	syncSourceAuto = "auto"
 	// SyncSourceOriginal selects the Episode's original object for cloud upload.
 	SyncSourceOriginal = "original"
 	// SyncSourceStereoSplit selects the approved derivative for cloud upload.
@@ -29,6 +30,10 @@ const (
 
 // ErrCloudPublishSourceLocked indicates that an Episode already claimed another canonical upload source.
 var ErrCloudPublishSourceLocked = errors.New("episode cloud publish source is locked")
+
+// ErrSyncSourceUnavailable indicates that an Episode's canonical upload source
+// is not ready for cloud sync.
+var ErrSyncSourceUnavailable = errors.New("episode sync source is unavailable")
 
 // SyncSourceSnapshot is the immutable upload input stored on a sync_log. All
 // retries and recovery read this value rather than re-selecting an object from
@@ -186,6 +191,44 @@ func (w *SyncWorker) buildStereoSplitSourceSnapshot(ctx context.Context, tx *sql
 		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid stereo split sync source: %v", ep.ID, err)
 	}
 	return snapshot, nil
+}
+
+func (w *SyncWorker) resolveManualSyncSourceTx(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (string, error) {
+	claimedSource := strings.TrimSpace(ep.CloudPublishSource.String)
+	switch claimedSource {
+	case SyncSourceOriginal:
+		return SyncSourceOriginal, nil
+	case "", SyncSourceStereoSplit:
+	default:
+		return "", fmt.Errorf("%w: unsupported claimed source %q", ErrCloudPublishSourceLocked, claimedSource)
+	}
+
+	var derivative struct {
+		ProcessingStatus string `db:"processing_status"`
+		QAStatus         string `db:"qa_status"`
+	}
+	if err := tx.GetContext(ctx, &derivative, `
+		SELECT processing_status, qa_status
+		FROM episode_derivatives
+		WHERE episode_id = ? AND kind = 'stereo_split'
+	`+txLockClause(tx), ep.ID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			if claimedSource == SyncSourceStereoSplit {
+				return "", fmt.Errorf("%w: claimed stereo split derivative was not found", ErrSyncSourceUnavailable)
+			}
+			return SyncSourceOriginal, nil
+		}
+		return "", fmt.Errorf("load stereo split sync state: %w", err)
+	}
+	if derivative.ProcessingStatus == "succeeded" && derivative.QAStatus == "approved" {
+		return SyncSourceStereoSplit, nil
+	}
+	return "", fmt.Errorf(
+		"%w: stereo split processing_status=%q qa_status=%q",
+		ErrSyncSourceUnavailable,
+		derivative.ProcessingStatus,
+		derivative.QAStatus,
+	)
 }
 
 func (w *SyncWorker) sourceForSnapshot(snapshot SyncSourceSnapshot) (SourceObjectReader, string, string, error) {

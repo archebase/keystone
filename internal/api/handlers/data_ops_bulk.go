@@ -66,16 +66,23 @@ type DataOpsBulkSkippedBreakdownItem struct {
 	Count  int    `json:"count"`
 }
 
+// DataOpsBulkSyncSourceBreakdownItem summarizes one selected cloud source in a sync preview.
+type DataOpsBulkSyncSourceBreakdownItem struct {
+	SourceType string `json:"source_type"`
+	Count      int    `json:"count"`
+}
+
 // DataOpsBulkEpisodePreviewResponse reports matched, eligible, and skipped counts before execution.
 type DataOpsBulkEpisodePreviewResponse struct {
-	Status            string                            `json:"status"`
-	Action            string                            `json:"action"`
-	MatchedCount      int                               `json:"matched_count"`
-	EligibleCount     int                               `json:"eligible_count"`
-	SkippedCount      int                               `json:"skipped_count"`
-	SyncWorkerRunning *bool                             `json:"sync_worker_running,omitempty"`
-	SkippedBreakdown  []DataOpsBulkSkippedBreakdownItem `json:"skipped_breakdown"`
-	Warnings          []string                          `json:"warnings"`
+	Status              string                               `json:"status"`
+	Action              string                               `json:"action"`
+	MatchedCount        int                                  `json:"matched_count"`
+	EligibleCount       int                                  `json:"eligible_count"`
+	SkippedCount        int                                  `json:"skipped_count"`
+	SyncWorkerRunning   *bool                                `json:"sync_worker_running,omitempty"`
+	SkippedBreakdown    []DataOpsBulkSkippedBreakdownItem    `json:"skipped_breakdown"`
+	SyncSourceBreakdown []DataOpsBulkSyncSourceBreakdownItem `json:"sync_source_breakdown,omitempty"`
+	Warnings            []string                             `json:"warnings"`
 }
 
 // DataOpsBulkEpisodeActionResponse acknowledges an accepted asynchronous bulk action.
@@ -92,12 +99,15 @@ type dataOpsBulkQAPreviewRow struct {
 }
 
 type dataOpsBulkSyncPreviewRow struct {
-	MatchedCount          int64 `db:"matched_count"`
-	EligibleCount         int64 `db:"eligible_count"`
-	QANotApprovedCount    int64 `db:"qa_not_approved_count"`
-	AlreadySyncedCount    int64 `db:"already_synced_count"`
-	SyncActiveCount       int64 `db:"sync_active_count"`
-	UnsupportedSyncStatus int64 `db:"unsupported_sync_status_count"`
+	MatchedCount           int64 `db:"matched_count"`
+	EligibleCount          int64 `db:"eligible_count"`
+	QANotApprovedCount     int64 `db:"qa_not_approved_count"`
+	AlreadySyncedCount     int64 `db:"already_synced_count"`
+	SyncActiveCount        int64 `db:"sync_active_count"`
+	UnsupportedSyncStatus  int64 `db:"unsupported_sync_status_count"`
+	SourceUnavailableCount int64 `db:"source_unavailable_count"`
+	OriginalSourceCount    int64 `db:"original_source_count"`
+	StereoSplitSourceCount int64 `db:"stereo_split_source_count"`
 }
 
 // PreviewBulkEpisodeQA previews a bulk QA run for the current data-ops filters.
@@ -604,7 +614,10 @@ func dataOpsBulkQAPreviewSQL(fromSQL string, where string) string {
 }
 
 func (h *DataOpsHandler) previewBulkEpisodeSync(ctx context.Context, q dataOpsEpisodeQuery) (DataOpsBulkEpisodePreviewResponse, error) {
-	fromSQL := dataOpsEpisodeBaseFromSQL() + dataOpsLatestSyncPreviewJoinSQL()
+	fromSQL := dataOpsEpisodeBaseFromSQL() + dataOpsLatestSyncPreviewJoinSQL() + `
+		LEFT JOIN episode_derivatives sync_derivative
+		  ON sync_derivative.episode_id = e.id AND sync_derivative.kind = 'stereo_split'
+	`
 	where, args := buildDataOpsEpisodeWhere(q)
 	query := dataOpsBulkSyncPreviewSQL(fromSQL, where)
 
@@ -630,6 +643,20 @@ func (h *DataOpsHandler) previewBulkEpisodeSync(ctx context.Context, q dataOpsEp
 	appendBreakdown("already_synced", row.AlreadySyncedCount)
 	appendBreakdown("sync_active", row.SyncActiveCount)
 	appendBreakdown("unsupported_sync_status", row.UnsupportedSyncStatus)
+	appendBreakdown("sync_source_unavailable", row.SourceUnavailableCount)
+	sourceBreakdown := []DataOpsBulkSyncSourceBreakdownItem{}
+	if row.OriginalSourceCount > 0 {
+		sourceBreakdown = append(sourceBreakdown, DataOpsBulkSyncSourceBreakdownItem{
+			SourceType: services.SyncSourceOriginal,
+			Count:      int(row.OriginalSourceCount),
+		})
+	}
+	if row.StereoSplitSourceCount > 0 {
+		sourceBreakdown = append(sourceBreakdown, DataOpsBulkSyncSourceBreakdownItem{
+			SourceType: services.SyncSourceStereoSplit,
+			Count:      int(row.StereoSplitSourceCount),
+		})
+	}
 
 	warnings := []string{}
 	if !workerRunning {
@@ -637,14 +664,15 @@ func (h *DataOpsHandler) previewBulkEpisodeSync(ctx context.Context, q dataOpsEp
 	}
 
 	return DataOpsBulkEpisodePreviewResponse{
-		Status:            "preview",
-		Action:            "bulk_sync",
-		MatchedCount:      matched,
-		EligibleCount:     eligible,
-		SkippedCount:      skipped,
-		SyncWorkerRunning: &workerRunning,
-		SkippedBreakdown:  breakdown,
-		Warnings:          warnings,
+		Status:              "preview",
+		Action:              "bulk_sync",
+		MatchedCount:        matched,
+		EligibleCount:       eligible,
+		SkippedCount:        skipped,
+		SyncWorkerRunning:   &workerRunning,
+		SkippedBreakdown:    breakdown,
+		SyncSourceBreakdown: sourceBreakdown,
+		Warnings:            warnings,
 	}, nil
 }
 
@@ -667,8 +695,15 @@ func dataOpsBulkSyncPreviewSQL(fromSQL string, where string) string {
 	latestStatus := "COALESCE(latest_sync.status, '')"
 	synced := "(e.cloud_synced = TRUE OR " + latestStatus + " = 'completed')"
 	active := "(" + latestStatus + " IN ('pending', 'in_progress'))"
-	eligible := approved + " AND NOT " + synced + " AND (latest_sync.status IS NULL OR latest_sync.status IN ('failed', 'canceled'))"
+	claimedSource := "COALESCE(e.cloud_publish_source, '')"
+	derivativeReady := "(sync_derivative.processing_status = 'succeeded' AND sync_derivative.qa_status = 'approved')"
+	originalSource := "(" + claimedSource + " = 'original' OR (" + claimedSource + " = '' AND sync_derivative.id IS NULL))"
+	stereoSplitSource := "(" + claimedSource + " IN ('', 'stereo_split') AND " + derivativeReady + ")"
+	sourceAvailable := "(" + originalSource + " OR " + stereoSplitSource + ")"
+	retryable := "(latest_sync.status IS NULL OR latest_sync.status IN ('failed', 'canceled'))"
+	eligible := approved + " AND NOT " + synced + " AND " + retryable + " AND " + sourceAvailable
 	unsupported := approved + " AND NOT " + synced + " AND latest_sync.status IS NOT NULL AND latest_sync.status NOT IN ('pending', 'in_progress', 'completed', 'failed', 'canceled')"
+	sourceUnavailable := approved + " AND NOT " + synced + " AND " + retryable + " AND NOT " + sourceAvailable
 
 	return `
 		SELECT
@@ -677,7 +712,10 @@ func dataOpsBulkSyncPreviewSQL(fromSQL string, where string) string {
 			COALESCE(SUM(CASE WHEN NOT ` + approved + ` THEN 1 ELSE 0 END), 0) AS qa_not_approved_count,
 			COALESCE(SUM(CASE WHEN ` + approved + ` AND ` + synced + ` THEN 1 ELSE 0 END), 0) AS already_synced_count,
 			COALESCE(SUM(CASE WHEN ` + approved + ` AND NOT ` + synced + ` AND ` + active + ` THEN 1 ELSE 0 END), 0) AS sync_active_count,
-			COALESCE(SUM(CASE WHEN ` + unsupported + ` THEN 1 ELSE 0 END), 0) AS unsupported_sync_status_count
+			COALESCE(SUM(CASE WHEN ` + unsupported + ` THEN 1 ELSE 0 END), 0) AS unsupported_sync_status_count,
+			COALESCE(SUM(CASE WHEN ` + sourceUnavailable + ` THEN 1 ELSE 0 END), 0) AS source_unavailable_count,
+			COALESCE(SUM(CASE WHEN ` + eligible + ` AND ` + originalSource + ` THEN 1 ELSE 0 END), 0) AS original_source_count,
+			COALESCE(SUM(CASE WHEN ` + eligible + ` AND ` + stereoSplitSource + ` THEN 1 ELSE 0 END), 0) AS stereo_split_source_count
 	` + fromSQL + where
 }
 
@@ -1018,7 +1056,9 @@ func (h *DataOpsHandler) refreshBulkSyncRun(ctx context.Context, runID string, d
 
 func isBulkSyncSkippedError(err error) bool {
 	if errors.Is(err, services.ErrEpisodeAlreadyEnqueued) ||
-		errors.Is(err, services.ErrSyncAlreadyInProgress) {
+		errors.Is(err, services.ErrSyncAlreadyInProgress) ||
+		errors.Is(err, services.ErrSyncSourceUnavailable) ||
+		errors.Is(err, services.ErrCloudPublishSourceLocked) {
 		return true
 	}
 

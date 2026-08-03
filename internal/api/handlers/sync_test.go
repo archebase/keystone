@@ -6,6 +6,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -116,6 +117,50 @@ func TestGetSyncConfigIncludesAutoScanEnabled(t *testing.T) {
 	}
 	if got.MaxRetries != 5 {
 		t.Fatalf("max_retries = %d, want 5", got.MaxRetries)
+	}
+}
+
+func TestEnqueueSyncErrorResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus string
+	}{
+		{
+			name:       "source unavailable",
+			err:        fmt.Errorf("%w: stereo split is still running", services.ErrSyncSourceUnavailable),
+			wantStatus: "source_unavailable",
+		},
+		{
+			name:       "source locked",
+			err:        fmt.Errorf("%w: source already claimed", services.ErrCloudPublishSourceLocked),
+			wantStatus: "source_locked",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			h := NewSyncHandler(nil, nil)
+
+			h.enqueueSyncErrorResponse(c, 41, test.err)
+
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, body = %s, want 409", rec.Code, rec.Body.String())
+			}
+			var got struct {
+				EpisodeID int64  `json:"episode_id"`
+				Status    string `json:"status"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got.EpisodeID != 41 || got.Status != test.wantStatus {
+				t.Fatalf("response = %+v, want episode 41 %s", got, test.wantStatus)
+			}
+		})
 	}
 }
 

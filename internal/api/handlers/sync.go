@@ -96,6 +96,18 @@ func (h *SyncHandler) enqueueSyncErrorResponse(c *gin.Context, episodeID int64, 
 			"episode_id": episodeID,
 			"status":     "already_synced",
 		})
+	case errors.Is(err, services.ErrSyncSourceUnavailable):
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      err.Error(),
+			"episode_id": episodeID,
+			"status":     "source_unavailable",
+		})
+	case errors.Is(err, services.ErrCloudPublishSourceLocked):
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      err.Error(),
+			"episode_id": episodeID,
+			"status":     "source_locked",
+		})
 	case errors.Is(err, services.ErrSyncQueueFull):
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":      err.Error(),
@@ -383,31 +395,7 @@ func (h *SyncHandler) TriggerEpisodeSync(c *gin.Context) {
 
 	err = h.syncWorker.EnqueueEpisodeManual(c.Request.Context(), episodeID)
 	if err != nil {
-		switch {
-		case errors.Is(err, services.ErrSyncWorkerNotRunning):
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error":      err.Error(),
-				"episode_id": episodeID,
-				"status":     "worker_not_running",
-			})
-			return
-		case errors.Is(err, services.ErrEpisodeAlreadyEnqueued), errors.Is(err, services.ErrSyncAlreadyInProgress):
-			c.JSON(http.StatusConflict, gin.H{
-				"error":      err.Error(),
-				"episode_id": episodeID,
-				"status":     "already_queued",
-			})
-			return
-		case errors.Is(err, services.ErrSyncQueueFull):
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error":      err.Error(),
-				"episode_id": episodeID,
-				"status":     "queue_full",
-			})
-			return
-		}
-		logger.Printf("[SYNC] Enqueue episode %d failed: %v", episodeID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue episode"})
+		h.enqueueSyncErrorResponse(c, episodeID, err)
 		return
 	}
 
