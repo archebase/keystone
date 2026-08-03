@@ -183,6 +183,64 @@ func TestRobotHandlerListRobotsFiltersByDeviceNameOnly(t *testing.T) {
 	}
 }
 
+func TestRobotHandlerListRobotsFiltersByDeviceType(t *testing.T) {
+	db := newTestRobotHandlerDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_id, device_type, status)
+		VALUES
+			(1, 'robot-stereo', 'Axon Stereo', 'active'),
+			(2, 'robot-portal', 'EgoPortal', 'active'),
+			(3, 'robot-arm', 'Robot Arm', 'active')
+	`); err != nil {
+		t.Fatalf("seed robot fixture failed: %v", err)
+	}
+
+	r := newTestRobotRouter(t, db)
+	tests := []struct {
+		name            string
+		path            string
+		wantDeviceTypes []string
+	}{
+		{
+			name:            "exact multi-value filter",
+			path:            "/api/v1/robots?device_type=Axon%20Stereo,EgoPortal",
+			wantDeviceTypes: []string{"EgoPortal", "Axon Stereo"},
+		},
+		{
+			name:            "fuzzy type name search",
+			path:            "/api/v1/robots?device_type_name=stereo",
+			wantDeviceTypes: []string{"Axon Stereo"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+
+			var resp RobotListResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v body=%s", err, w.Body.String())
+			}
+			if resp.Total != len(tt.wantDeviceTypes) || len(resp.Items) != len(tt.wantDeviceTypes) {
+				t.Fatalf("unexpected filtered response: %#v", resp)
+			}
+			for i, wantDeviceType := range tt.wantDeviceTypes {
+				if resp.Items[i].DeviceType != wantDeviceType {
+					t.Fatalf("item[%d].DeviceType=%q want=%q item=%#v", i, resp.Items[i].DeviceType, wantDeviceType, resp.Items[i])
+				}
+			}
+		})
+	}
+}
+
 func TestRobotHandlerListRobotsIncludesProjectedDeviceNameAndType(t *testing.T) {
 	db := newTestRobotHandlerDB(t)
 	defer db.Close()

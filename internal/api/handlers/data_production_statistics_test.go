@@ -20,7 +20,7 @@ import (
 func TestParseDataProductionStatsQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&workspace_id=0&source_id=12&dc_project_id=13&dc_task_id=14&qa_status=approved,failed&cloud_synced=false&data_type=episode&task_id=task_1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/stats?start_time=2026-05-01T00:00:00Z&end_time=2026-05-02T00:00:00Z&granularity=hour&workspace_id=0&source_id=12&device_type=Axon%20Stereo,EgoPortal&dc_project_id=13&dc_task_id=14&qa_status=approved,failed&cloud_synced=false&data_type=episode&task_id=task_1", nil)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = req
 
@@ -43,6 +43,9 @@ func TestParseDataProductionStatsQuery(t *testing.T) {
 	if strings.Join(got.QAStatuses, ",") != "approved,failed" {
 		t.Fatalf("unexpected list filters: %+v", got)
 	}
+	if strings.Join(got.DeviceTypes, ",") != "Axon Stereo,EgoPortal" {
+		t.Fatalf("unexpected device types: %#v", got.DeviceTypes)
+	}
 	if len(got.CloudSyncedValues) != 1 || got.CloudSyncedValues[0] {
 		t.Fatalf("unexpected cloud synced values: %#v", got.CloudSyncedValues)
 	}
@@ -59,7 +62,7 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 	if strings.Contains(sql, "t.status IN ('failed', 'cancelled')") || strings.Contains(sql, "t.status IN ('ready', 'in_progress')") {
 		t.Fatalf("production records SQL should not include task status fallback records: %s", sql)
 	}
-	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced", "robot_device_name", "dp.dc_project_id AS dc_project_id", "dp.dc_task_id AS dc_task_id"} {
+	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced", "robot_device_name", "COALESCE(r.device_type, '') AS device_type", "dp.dc_project_id AS dc_project_id", "dp.dc_task_id AS dc_task_id"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("production records SQL should include %q: %s", want, sql)
 		}
@@ -126,18 +129,19 @@ func TestFilteredProductionRecordsSQLIncludesEpisodeFilters(t *testing.T) {
 		StartTime:         mustParseStatsTimeForTest(t, "2026-05-01T00:00:00Z"),
 		EndTime:           mustParseStatsTimeForTest(t, "2026-05-02T00:00:00Z"),
 		WorkspaceIDs:      []int64{0},
+		DeviceTypes:       []string{"Axon Stereo", "EgoPortal"},
 		DCProjectIDs:      []int64{13},
 		DCTaskIDs:         []int64{14},
 		QAStatuses:        []string{"failed"},
 		CloudSyncedValues: []bool{cloudSynced},
 	})
-	for _, want := range []string{"workspace_id IN (?)", "dc_project_id IN (?)", "dc_task_id IN (?)", "qa_status IN (?)", "cloud_synced = ?"} {
+	for _, want := range []string{"workspace_id IN (?)", "device_type IN (?,?)", "dc_project_id IN (?)", "dc_task_id IN (?)", "qa_status IN (?)", "cloud_synced = ?"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("filtered SQL should include %q: %s", want, query)
 		}
 	}
-	if len(args) != 7 {
-		t.Fatalf("arg count = %d, want 7: %#v", len(args), args)
+	if len(args) != 9 {
+		t.Fatalf("arg count = %d, want 9: %#v", len(args), args)
 	}
 }
 

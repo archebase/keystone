@@ -36,6 +36,7 @@ type DataOpsBulkEpisodeFilters struct {
 	QAStatus            string `json:"qa_status,omitempty"`
 	SyncStatus          string `json:"sync_status,omitempty"`
 	RobotDeviceID       string `json:"robot_device_id,omitempty"`
+	DeviceType          string `json:"device_type,omitempty"`
 	CollectorOperatorID string `json:"collector_operator_id,omitempty"`
 	DCProjectID         string `json:"dc_project_id,omitempty"`
 	DCProjectName       string `json:"dc_project_name,omitempty"`
@@ -442,6 +443,10 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
+	deviceTypes, err := parseDataOpsBulkStringList(filters.DeviceType, "device_type")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
 	collectorOperatorIDs, err := parseDataOpsBulkStringList(filters.CollectorOperatorID, "collector_operator_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
@@ -461,6 +466,7 @@ func parseDataOpsBulkEpisodeFilters(filters DataOpsBulkEpisodeFilters) (dataOpsE
 		QAStatuses:           qaStatuses,
 		SyncStatuses:         syncStatuses,
 		RobotDeviceIDs:       robotDeviceIDs,
+		DeviceTypes:          deviceTypes,
 		CollectorOperatorIDs: collectorOperatorIDs,
 		DCProjectIDs:         dcProjectIDs,
 		DCTaskIDs:            dcTaskIDs,

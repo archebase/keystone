@@ -33,7 +33,7 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&workspace_id=0&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&robot_device_id=robot-001,robot-002&collector_operator_id=op001&dc_project_id=13&dc_project_name=Project&dc_task_id=14&dc_task_name=Task&label=recalled_batch", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&workspace_id=0&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&robot_device_id=robot-001,robot-002&device_type=Axon%20Stereo,EgoPortal&collector_operator_id=op001&dc_project_id=13&dc_project_name=Project&dc_task_id=14&dc_task_name=Task&label=recalled_batch", nil)
 
 	got, err := parseDataOpsEpisodeQuery(c)
 	if err != nil {
@@ -57,6 +57,9 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
 	}
+	if strings.Join(got.DeviceTypes, ",") != "Axon Stereo,EgoPortal" {
+		t.Fatalf("unexpected device types: %#v", got.DeviceTypes)
+	}
 	if len(got.DCProjectIDs) != 1 || got.DCProjectIDs[0] != 13 || got.DCProjectName != "Project" {
 		t.Fatalf("unexpected project filters: %+v", got)
 	}
@@ -71,6 +74,16 @@ func TestDataOpsEpisodeWhereIncludesWorkspaceFilter(t *testing.T) {
 		t.Fatalf("workspace filter SQL should use task/workstation fallback: %s", sql)
 	}
 	if len(args) != 2 || args[0] != int64(0) || args[1] != int64(12) {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
+func TestDataOpsEpisodeWhereIncludesDeviceTypeFilter(t *testing.T) {
+	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{DeviceTypes: []string{"Axon Stereo", "EgoPortal"}})
+	if !strings.Contains(sql, "COALESCE(r.device_type, '') IN (?,?)") {
+		t.Fatalf("device type filter SQL missing: %s", sql)
+	}
+	if len(args) != 2 || args[0] != "Axon Stereo" || args[1] != "EgoPortal" {
 		t.Fatalf("unexpected args: %#v", args)
 	}
 }
@@ -198,6 +211,7 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 		QAStatus:            "failed,pending_qa",
 		SyncStatus:          "not_started,failed",
 		RobotDeviceID:       "robot-001,robot-002",
+		DeviceType:          "Axon Stereo,EgoPortal",
 		CollectorOperatorID: "op001",
 		DCProjectID:         "13",
 		DCProjectName:       "Project",
@@ -227,6 +241,9 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	}
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
+	}
+	if strings.Join(got.DeviceTypes, ",") != "Axon Stereo,EgoPortal" {
+		t.Fatalf("unexpected device types: %#v", got.DeviceTypes)
 	}
 	if len(got.DCProjectIDs) != 1 || got.DCProjectIDs[0] != 13 || got.DCProjectName != "Project" {
 		t.Fatalf("unexpected project filters: %+v", got)
