@@ -919,7 +919,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           </div>
           <div class="route-node new">
             <strong>calibration_capture</strong>
-            <small>新流程：Session → Capture → Result JSON</small>
+            <small>新流程：Capture → Stereo Split → Calibration JSON</small>
           </div>
         </div>
       </div>
@@ -960,8 +960,8 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>保留原任务上传的全部接口和业务行为。</li>
             <li>让设备凭证可以上传不绑定数采员、计划和任务的标定 MCAP。</li>
             <li>支持一轮标定持续产生多条 Capture，直到任意一条标定成功。</li>
-            <li>让 Ego Portal 通过无需鉴权的 HTTP 接口查询标定 Session 状态。</li>
-            <li>每条 MCAP 上传完成后自动排队并触发 Orbit 标定 Job；Python Job 把一对一结果 JSON 直接写入 TOS。</li>
+            <li>让 Ego Portal 使用设备初始化时的持久 Device Token 查询本设备的标定 Session 状态。</li>
+            <li>每条 MCAP 上传完成后自动排队：先通过 Orbit 双目拆分并验证 <code>output_bag.mcap</code>，再把验证后的 MCAP 交给 Orbit 标定 Job；标定 Job 把一对一结果 JSON 写入 TOS。</li>
             <li>首条成功后停止新任务，并持久化取消同一 Session 中仍在运行的 Orbit Job。</li>
           </ul>
         </div>
@@ -993,14 +993,14 @@ SPDX-License-Identifier: MulanPSL-2.0
 
       <h3>新链路异步流水</h3>
       <div class="flow-strip" aria-label="标定上传流程">
-        <div class="flow-step"><b>01</b>Ego 连续<br>分段录制</div>
-        <div class="flow-step"><b>02</b>校验 MCAP<br>计算 SHA-256</div>
-        <div class="flow-step"><b>03</b>复用 TOS<br>分片上传</div>
-        <div class="flow-step"><b>04</b>Orbit Python Job<br>写 JSON 到 TOS</div>
-        <div class="flow-step"><b>05</b>首条成功<br>Session 结束</div>
+        <div class="flow-step"><b>01</b>录制并校验<br>原始 MCAP</div>
+        <div class="flow-step"><b>02</b>分片上传<br>capture.mcap</div>
+        <div class="flow-step"><b>03</b>Orbit 双目拆分<br>产出 output_bag</div>
+        <div class="flow-step"><b>04</b>验证拆分结果<br>再运行标定 Job</div>
+        <div class="flow-step"><b>05</b>JSON 通过校验<br>Session 结束</div>
       </div>
 
-      <p>一条 MCAP 对应一条 <code>calibration_capture</code> 和一份结果 JSON；一轮 <code>calibration_session</code> 可以包含多条 Capture。录制与标定并行，Ego Portal 持续上传并轮询状态，直到第一条成功结果出现。</p>
+      <p>一条原始 MCAP 对应一条 <code>calibration_capture</code>：Keystone 先用现有 stereo-split 管线生成并验证一条 <code>output_bag.mcap</code>，随后只允许标定镜像读取这条验证后的 MCAP，最终产生一份结果 JSON。一轮 <code>calibration_session</code> 可以包含多条 Capture。录制与服务端两阶段处理并行，Ego Portal 持续上传并使用 Device Token 轮询状态，直到第一条成功结果出现。</p>
     </section>
 
     <section class="chapter" id="grpc">
@@ -1135,7 +1135,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             </tr>
             <tr>
               <td><code>calibration_capture</code></td>
-              <td>保存 MCAP 元数据并将 Capture 标记为 <code>queued</code>，后台按最大并发自动提交 Orbit。</td>
+              <td>保存原始 MCAP 元数据并将 Capture 标记为 <code>queued</code>；后台先提交并验证 stereo-split Orbit Job，再提交读取 <code>output_bag.mcap</code> 的标定 Orbit Job。</td>
               <td>不创建 Episode、不修改 Task、不进入 Episode QA 或云同步。</td>
             </tr>
           </tbody>
@@ -1157,7 +1157,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <span class="method">GET</span>
           <div class="route-path">
             /api/v1/device/calibration-sessions/{session_id}
-            <span class="route-desc">无需鉴权；Ego Portal 直接使用不可猜测的 session_id 轮询。</span>
+            <span class="route-desc">Device Token 鉴权；Ego Portal 必须通过 Device-Authorization 请求头轮询。</span>
           </div>
         </div>
       </div>
@@ -1178,13 +1178,21 @@ SPDX-License-Identifier: MulanPSL-2.0
       <p><code>processed_count</code> 只统计已经产出并通过 Keystone 校验的结果 JSON；仅完成上传、但因 Session 已成功而直接标记为 <code>superseded</code> 的 Capture 不计入。</p>
 
       <ul>
-        <li>接口不要求 <code>Authorization</code> 请求头。</li>
-        <li>Session 不存在：<code>404 Not Found</code>。</li>
+        <li>必须发送 <code>Device-Authorization: &lt;device-token&gt;</code>；该 Token 是管理员下发、初始化时使用并由设备安全持久化的凭证，不是 collector token、admin JWT 或 gRPC 临时 Device JWT。</li>
+        <li>缺少、无效或已撤销的 Device Token：<code>401 Unauthorized</code>；设备凭证认证暂时不可用：<code>503 Service Unavailable</code>。</li>
+        <li>Session 不存在或不属于当前设备：<code>404 Not Found</code>。</li>
         <li>Session ID 格式非法：<code>400 Bad Request</code>。</li>
       </ul>
 
       <h3>Orbit 标定作业与后续 Synapse 查询</h3>
       <div class="route-contract">
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/calibration-sessions/{session_id}
+            <span class="route-desc">admin JWT；Synapse 查询任意设备的 Session 摘要，不使用 Device Token。</span>
+          </div>
+        </div>
         <div class="route-line">
           <span class="method">GET</span>
           <div class="route-path">
@@ -1237,10 +1245,11 @@ SPDX-License-Identifier: MulanPSL-2.0
   "algorithm_version": "placeholder-v1",
   "calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
   "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+  "processor_image": "registry.example/archebase/calibration@sha256:...",
   "source": {
-    "uri": "tos://bucket/calibration-captures/.../capture.mcap",
-    "size_bytes": 123456,
-    "sha256": "64-character-lowercase-hex"
+    "uri": "tos://derived-bucket/derived/episodes/calibration/.../stereo-split/g1-.../output_bag.mcap",
+    "size_bytes": 120000,
+    "sha256": "output-bag-64-character-lowercase-hex"
   },
   "result": {
     "camera_matrix": [],
@@ -1249,7 +1258,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 }</pre>
       </div>
 
-      <p>第一版使用占位 Python 镜像。Keystone 通过 Orbit 的 TOS data bindings 把单条 MCAP 只读挂载到 <code>/bindings/input/capture.mcap</code>，把输出目录挂载到 <code>/bindings/output/</code>。Job 将成功或业务失败结果都写到 <code>calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；Keystone 校验 Capture ID、Session ID、源文件大小和 SHA-256 后再更新状态。后续替换真实算法镜像时无需修改上传协议。</p>
+      <p>处理严格分为两个 Orbit 阶段。第一阶段复用现有 stereo-split 管线：原始 <code>capture.mcap</code> 以只读 data binding 挂载，Job 产出 <code>output_bag.mcap</code>、<code>metadata.yaml</code> 和 <code>processing_manifest.json</code>；Keystone 验证产物结构、内容、大小、SHA-256 和 ETag 后，才把 Capture 推进到标定阶段。第二阶段使用标定镜像：验证后的 <code>output_bag.mcap</code> 只读挂载到 <code>/bindings/input/output_bag.mcap</code>，输出目录挂载到 <code>/bindings/output/</code>。标定 Job 将成功或业务失败结果写到 <code>calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；JSON 的 <code>source.uri</code>、<code>source.size_bytes</code> 和 <code>source.sha256</code> 必须指向验证后的 <code>output_bag.mcap</code>，并且 <code>processor_image</code>、Capture ID 和 Session ID 必须与 Keystone 冻结的执行上下文一致，否则结果会被拒绝。后续替换真实算法镜像时无需修改 Ego Portal 上传协议。</p>
     </section>
 
     <section class="chapter" id="model">
@@ -1298,6 +1307,8 @@ SPDX-License-Identifier: MulanPSL-2.0
 
       <p>标定失败的 Capture 进入 <code>failed</code>，但所属 Session 保持 <code>running</code>，Ego 继续录制上传。Session 成功后，尚未提交的 Capture 直接标记为 <code>superseded</code>；已提交或运行的 Capture 持久化取消请求，Orbit 停止后再标记为 <code>superseded</code>。</p>
 
+      <p>同一套 Capture 主状态由 <code>processing_stage</code> 区分为 <code>stereo_split</code> 和 <code>calibration</code>。只有 stereo-split Job 成功且产物验证通过，Capture 才会从 <code>stereo_split/verifying</code> 回到 <code>calibration/queued</code>；标定 Job 不会直接读取上传的原始 <code>capture.mcap</code>。</p>
+
       <h3>首条成功原子收敛</h3>
       <div class="impact-note">
         提交成功结果时，Keystone 在同一事务中更新 Capture、将 Session 从 running 改为 succeeded、写入 successful_capture_id、淘汰未提交 Capture，并为活跃 Orbit Job 写入可重试的取消请求。只有第一条成功 Capture 能获胜，后续并发结果不能覆盖。
@@ -1308,8 +1319,8 @@ SPDX-License-Identifier: MulanPSL-2.0
       <span class="chapter-number">07</span>
       <h2>安全、幂等与竞态</h2>
 
-      <h3>公开状态接口</h3>
-      <p>设备状态查询不做身份鉴权。<code>session_id</code> 必须使用规范小写格式、不可枚举的随机 UUIDv4，响应只包含运行状态、计数和成功 Capture ID，不返回对象路径、操作员或其他敏感元数据。响应设置 <code>Cache-Control: no-store</code>，并应用基础限流。</p>
+      <h3>设备鉴权状态接口</h3>
+      <p>设备状态查询使用 <code>Device-Authorization</code> 中的持久 Device Token 鉴权，并从凭证解析设备身份；即使知道 <code>session_id</code>，其他设备也只能得到 <code>404 Not Found</code>。<code>session_id</code> 仍必须使用规范小写 UUIDv4。响应只包含运行状态、计数和成功 Capture ID，不返回对象路径、操作员或其他敏感元数据，并设置 <code>Cache-Control: no-store</code>。</p>
 
       <h3>上传幂等</h3>
       <ul>
@@ -1391,7 +1402,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         <span class="code-label">KEYSTONE ENV</span>
         <pre>KEYSTONE_ORBIT_BASE_URL=http://orbit.archebase-system.svc.cluster.local:8080</pre>
       </div>
-      <p>标定功能没有单独的启用开关，并与双目拆分共用 Orbit 服务地址。资源、超时、清理时间、轮询间隔、结果大小和日志上限均使用 Keystone 内置的安全值，不增加标定专用环境变量。管理员在 Synapse 的“系统设置 → 设备标定”中保存不可变的 <code>@sha256:</code> 镜像引用和最大并发；Keystone 生成带修改人和时间的数据库 Revision，并在 Capture 提交 Orbit 前冻结 Revision 和镜像。占位镜像由 <code>jobs/calibration-placeholder/Dockerfile</code> 构建；真实算法准备好后，只需发布新镜像并保存新的设置 Revision。</p>
+      <p>标定功能没有单独的启用开关，并与双目拆分共用 Orbit 服务地址。上线前必须同时配置可用的 stereo-split 镜像和标定镜像：第一阶段复用现有 stereo-split 镜像及其 TOS 输出配置，第二阶段使用“系统设置 → 设备标定”中保存的不可变 <code>@sha256:</code> 标定镜像引用和最大并发。Keystone 为两个阶段分别冻结处理配置；资源、超时、清理时间、轮询间隔、结果大小和日志上限使用现有安全配置或内置值，不增加标定专用环境变量。标定占位镜像由 <code>jobs/calibration-placeholder/Dockerfile</code> 构建；真实算法镜像必须接受验证后的 <code>output_bag.mcap</code> 合同，不能把结果 JSON 的 source 写成原始 <code>capture.mcap</code>。</p>
 
       <div class="final-panel">
         <h2>发布顺序不能反转</h2>
@@ -1407,7 +1418,8 @@ SPDX-License-Identifier: MulanPSL-2.0
       <ul class="checklist">
         <li>旧客户端不发送 <code>upload_kind</code> 时仍能创建 Episode 并完成 Task。</li>
         <li>标定上传不携带 task、plan、workstation 也能获得受限 STS。</li>
-        <li>状态查询不携带 Authorization，且响应不暴露对象路径或操作员信息。</li>
+        <li>状态查询携带有效的 <code>Device-Authorization</code>，缺失或无效凭证返回 401，其他设备的 Session 返回 404。</li>
+        <li>每条原始 MCAP 先完成 stereo-split 并验证 <code>output_bag.mcap</code>，标定结果 JSON 的 source 与该验证产物完全一致。</li>
         <li>同一 Capture 重试 CompleteUpload 不产生重复记录。</li>
         <li>失败结果不会结束 Session，首条成功结果会原子结束 Session。</li>
         <li>Session 成功后的新上传被拒绝，在途上传被安全收口。</li>
