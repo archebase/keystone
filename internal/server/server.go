@@ -31,6 +31,7 @@ import (
 	"archebase.com/keystone-edge/internal/middleware"
 	orbitapi "archebase.com/keystone-edge/internal/orbit"
 	"archebase.com/keystone-edge/internal/services"
+	"archebase.com/keystone-edge/internal/services/autosync"
 	"archebase.com/keystone-edge/internal/services/calibration"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"archebase.com/keystone-edge/internal/storage/s3"
@@ -65,6 +66,8 @@ type Server struct {
 	productionDashboard *handlers.ProductionDashboardHandler
 	syncHandler         *handlers.SyncHandler
 	syncWorker          *services.SyncWorker
+	autoSync            *autosync.Manager
+	autoSyncSettings    *handlers.AutoSyncSettingsHandler
 	stereoSplit         *stereosplit.Manager
 	calibration         *calibration.Manager
 	calibrationHandler  *handlers.CalibrationHandler
@@ -241,6 +244,19 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		syncHandler = handlers.NewSyncHandler(db, syncWorker)
 	}
 
+	var autoSyncManager *autosync.Manager
+	var autoSyncSettingsHandler *handlers.AutoSyncSettingsHandler
+	if db != nil && syncWorker != nil && stereoSplitManager != nil {
+		if syncWorker.AutoScanEnabled() {
+			logger.Printf("[AUTO_SYNC] Disabling legacy broad sync scan; the system setting now controls automatic sync")
+		}
+		syncWorker.DisableAutoScan()
+		autoSyncManager = autosync.NewManager(db, stereoSplitManager, syncWorker, 0)
+		autoSyncManager.SetQAEnqueuer(qaHandler)
+		qaHandler.SetAutoSyncCapturer(autoSyncManager)
+		autoSyncSettingsHandler = handlers.NewAutoSyncSettingsHandler(autoSyncManager)
+	}
+
 	s := &Server{
 		cfg:                 cfg,
 		db:                  db,
@@ -264,6 +280,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		productionDashboard: productionDashboardHandler,
 		syncHandler:         syncHandler,
 		syncWorker:          syncWorker,
+		autoSync:            autoSyncManager,
+		autoSyncSettings:    autoSyncSettingsHandler,
 		stereoSplit:         stereoSplitManager,
 		calibration:         calibrationManager,
 		calibrationHandler:  calibrationHandler,
@@ -416,6 +434,10 @@ func (s *Server) buildRoutes() http.Handler {
 		s.syncHandler.RegisterReadRoutes(readSync)
 		s.syncHandler.RegisterAdminRoutes(adminSync)
 	}
+	if s.autoSyncSettings != nil {
+		adminAutoSync := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
+		s.autoSyncSettings.RegisterRoutes(adminAutoSync)
+	}
 
 	// Axon callbacks
 	v1Callbacks := v1Routes.Group("/callbacks")
@@ -483,6 +505,11 @@ func (s *Server) Start() error {
 	if s.calibration != nil {
 		if err := s.calibration.StartReconciler(); err != nil {
 			return fmt.Errorf("start calibration reconciler: %w", err)
+		}
+	}
+	if s.autoSync != nil {
+		if err := s.autoSync.StartReconciler(); err != nil {
+			return fmt.Errorf("start auto sync reconciler: %w", err)
 		}
 	}
 	s.shutdownMu.Lock()
@@ -667,6 +694,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	var shutdownErr error
+	if s.autoSync != nil {
+		if err := s.autoSync.StopReconciler(ctx); err != nil {
+			logShutdownError("Auto sync reconciler", err)
+			shutdownErr = fmt.Errorf("auto sync reconciler shutdown: %w", err)
+		}
+	}
 	if s.calibration != nil {
 		if err := s.calibration.StopReconciler(ctx); err != nil {
 			logShutdownError("Calibration reconciler", err)

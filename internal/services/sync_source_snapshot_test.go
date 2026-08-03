@@ -46,6 +46,28 @@ func TestEnqueueEpisodeManual_SelectsSuccessfulApprovedStereoSplit(t *testing.T)
 	}
 }
 
+func TestEnqueueOriginalAutomaticPinsOriginalSource(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 39, "approved", false)
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	if err := worker.EnqueueOriginalAutomatic(context.Background(), 39); err != nil {
+		t.Fatalf("EnqueueOriginalAutomatic() error=%v", err)
+	}
+	var rawSnapshot string
+	if err := db.Get(&rawSnapshot, "SELECT source_snapshot FROM sync_logs WHERE episode_id = 39"); err != nil {
+		t.Fatalf("load source snapshot: %v", err)
+	}
+	snapshot, err := decodeSyncSourceSnapshot(rawSnapshot)
+	if err != nil {
+		t.Fatalf("decode source snapshot: %v", err)
+	}
+	if snapshot.SourceType != SyncSourceOriginal {
+		t.Fatalf("source type=%q, want original", snapshot.SourceType)
+	}
+}
+
 func TestEnqueueEpisodeManual_WaitsForUnavailableStereoSplit(t *testing.T) {
 	tests := []struct {
 		name             string

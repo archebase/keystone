@@ -43,6 +43,7 @@ const (
 
 	defaultEpisodeQAQueueSize = 256
 	defaultEpisodeQATimeout   = 2 * time.Minute
+	defaultAutoSyncCaptureTTL = 5 * time.Second
 	maxEpisodeQASidecarBytes  = 4 * 1024 * 1024
 )
 
@@ -62,14 +63,19 @@ type QARunMode string
 
 // EpisodeQAHandler handles QA center APIs and lightweight automatic QA execution.
 type EpisodeQAHandler struct {
-	db          *sqlx.DB
-	s3          *s3.Client
-	tos         *episodeQATOSReader
-	bucket      string
-	tosBucket   string
-	authCfg     *config.AuthConfig
-	queue       chan int64
-	stateBroker *services.DeviceStateBroker
+	db               *sqlx.DB
+	s3               *s3.Client
+	tos              *episodeQATOSReader
+	bucket           string
+	tosBucket        string
+	authCfg          *config.AuthConfig
+	queue            chan int64
+	stateBroker      *services.DeviceStateBroker
+	autoSyncCapturer autoSyncEpisodeCapturer
+}
+
+type autoSyncEpisodeCapturer interface {
+	CaptureEpisode(ctx context.Context, episodeID int64) (bool, error)
 }
 
 // EpisodeQARunRequest is the request body for running an episode QA suite.
@@ -216,6 +222,15 @@ func (h *EpisodeQAHandler) SetDeviceStateBroker(broker *services.DeviceStateBrok
 	h.stateBroker = broker
 }
 
+// SetAutoSyncCapturer enables durable automatic-pipeline capture for new uploads.
+// It must be called during single-threaded initialization before the handler is used.
+func (h *EpisodeQAHandler) SetAutoSyncCapturer(capturer autoSyncEpisodeCapturer) {
+	if h == nil {
+		return
+	}
+	h.autoSyncCapturer = capturer
+}
+
 // RegisterRoutes registers QA center routes under /api/v1/qa.
 func (h *EpisodeQAHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	qa := apiV1.Group("/qa")
@@ -230,6 +245,13 @@ func (h *EpisodeQAHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 func (h *EpisodeQAHandler) EnqueueEpisode(episodeID int64) {
 	if h == nil || h.queue == nil || episodeID <= 0 {
 		return
+	}
+	if h.autoSyncCapturer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultAutoSyncCaptureTTL)
+		if _, err := h.autoSyncCapturer.CaptureEpisode(ctx, episodeID); err != nil {
+			logger.Printf("[AUTO_SYNC] Failed to capture uploaded episode=%d: %v", episodeID, err)
+		}
+		cancel()
 	}
 	select {
 	case h.queue <- episodeID:

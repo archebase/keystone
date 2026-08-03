@@ -549,6 +549,15 @@ func (w *SyncWorker) AutoScanEnabled() bool {
 	return w.cfg.AutoScanEnabled
 }
 
+// DisableAutoScan disables legacy broad approved-Episode discovery. It must be
+// called before Start when a source-aware automatic orchestrator is installed.
+func (w *SyncWorker) DisableAutoScan() {
+	if w == nil {
+		return
+	}
+	w.cfg.AutoScanEnabled = false
+}
+
 // EnqueueEpisode adds a specific episode ID for immediate sync processing.
 func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error {
 	return w.enqueueEpisode(ctx, episodeID, false)
@@ -559,6 +568,12 @@ func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error 
 // original Episode object, and preserves the claimed source for retries.
 func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) error {
 	return w.enqueueEpisodeManual(ctx, episodeID, "", syncSourceAuto)
+}
+
+// EnqueueOriginalAutomatic persists an approved original Episode as the
+// canonical cloud source and dispatches it through the existing worker pool.
+func (w *SyncWorker) EnqueueOriginalAutomatic(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceOriginal)
 }
 
 // EnqueueStereoSplitManual claims the Episode's canonical cloud source as the
