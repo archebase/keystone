@@ -240,6 +240,7 @@ const captureSelect = `
 	       COALESCE(c.source_etag, '') AS source_etag,
 	       COALESCE(c.orbit_submission_id, '') AS orbit_submission_id,
 	       COALESCE(c.orbit_job_id, '') AS orbit_job_id,
+	       c.verification_attempt_count,
 	       COALESCE(c.result_object_key, '') AS result_object_key,
 	       COALESCE(c.result_size_bytes, 0) AS result_size_bytes,
 	       COALESCE(c.result_checksum_sha256, '') AS result_checksum_sha256,

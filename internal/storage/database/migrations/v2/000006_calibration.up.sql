@@ -68,6 +68,7 @@ CREATE TABLE calibration_captures (
     orbit_log_tail MEDIUMTEXT NULL,
     cancel_requested_at TIMESTAMP NULL,
     submit_attempt_count INT NOT NULL DEFAULT 0,
+    verification_attempt_count INT NOT NULL DEFAULT 0,
     orbit_submit_absent_at TIMESTAMP NULL,
     reconcile_after TIMESTAMP NULL,
     processing_started_at TIMESTAMP NULL,

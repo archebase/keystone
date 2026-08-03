@@ -86,6 +86,7 @@ type Capture struct {
 	SourceETag                string    `db:"source_etag" json:"source_etag,omitempty"`
 	OrbitSubmissionID         string    `db:"orbit_submission_id" json:"orbit_submission_id,omitempty"`
 	OrbitJobID                string    `db:"orbit_job_id" json:"orbit_job_id,omitempty"`
+	VerificationAttemptCount  int       `db:"verification_attempt_count" json:"-"`
 	ResultObjectKey           string    `db:"result_object_key" json:"result_object_key,omitempty"`
 	ResultSizeBytes           int64     `db:"result_size_bytes" json:"result_size_bytes,omitempty"`
 	ResultChecksumSHA256      string    `db:"result_checksum_sha256" json:"result_checksum_sha256,omitempty"`

@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	processingCommand = "/app/run_calibration.py"
-	resultFileName    = "result.json"
+	processingCommand       = "/app/run_calibration.py"
+	resultFileName          = "result.json"
+	maxVerificationAttempts = 5
 )
 
 // ReconcileOnce advances at most one durable Capture state transition.
@@ -337,7 +338,8 @@ func (m *Manager) reconcileOrbitStatus(ctx context.Context, capturePK int64) err
 		logs := m.orbitLogTail(ctx, row.JobID)
 		_, err = m.db.ExecContext(ctx, `
 			UPDATE calibration_captures SET status = ?, orbit_log_tail = ?,
-			    reconcile_after = NULL, calibration_error = NULL, updated_at = ?
+			    verification_attempt_count = 0, reconcile_after = NULL,
+			    calibration_error = NULL, updated_at = ?
 			WHERE id = ? AND status IN (?, ?)
 		`, StatusVerifying, logs, now, capturePK, StatusPending, StatusRunning)
 	case "FAILED", "STOPPED":
@@ -409,7 +411,7 @@ func (m *Manager) verifyResult(ctx context.Context, capturePK int64) error {
 	}
 	sourceSize, sourceETag, err := m.objects.StatObject(ctx, capture.Bucket, capture.ObjectKey)
 	if err != nil {
-		return m.deferCapture(ctx, capturePK, StatusVerifying, fmt.Errorf("stat frozen calibration MCAP: %w", err))
+		return m.retryVerification(ctx, capture, fmt.Errorf("stat frozen calibration MCAP: %w", err))
 	}
 	if sourceSize != capture.FileSizeBytes || strings.TrimSpace(sourceETag) != capture.SourceETag {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration MCAP identity changed during processing")
@@ -417,22 +419,22 @@ func (m *Manager) verifyResult(ctx context.Context, capturePK int64) error {
 	resultKey := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID, resultFileName)
 	resultSize, _, err := m.objects.StatObject(ctx, capture.Bucket, resultKey)
 	if err != nil {
-		return m.deferCapture(ctx, capturePK, StatusVerifying, fmt.Errorf("stat calibration result JSON: %w", err))
+		return m.retryVerification(ctx, capture, fmt.Errorf("stat calibration result JSON: %w", err))
 	}
 	if resultSize <= 0 || (m.cfg.MaxResultBytes > 0 && resultSize > m.cfg.MaxResultBytes) {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration result JSON size is invalid")
 	}
 	body, err := m.objects.OpenObject(ctx, capture.Bucket, resultKey)
 	if err != nil {
-		return m.deferCapture(ctx, capturePK, StatusVerifying, fmt.Errorf("open calibration result JSON: %w", err))
+		return m.retryVerification(ctx, capture, fmt.Errorf("open calibration result JSON: %w", err))
 	}
 	defer func() { _ = body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(body, resultSize+1))
 	if err != nil {
-		return m.deferCapture(ctx, capturePK, StatusVerifying, fmt.Errorf("read calibration result JSON: %w", err))
+		return m.retryVerification(ctx, capture, fmt.Errorf("read calibration result JSON: %w", err))
 	}
 	if int64(len(data)) != resultSize {
-		return m.deferCapture(ctx, capturePK, StatusVerifying, errors.New("calibration result JSON size changed while reading"))
+		return m.retryVerification(ctx, capture, errors.New("calibration result JSON size changed while reading"))
 	}
 	var result calibrationResult
 	if err := json.Unmarshal(data, &result); err != nil {
@@ -455,6 +457,27 @@ func (m *Manager) verifyResult(ctx context.Context, capturePK int64) error {
 	}
 	digest := sha256.Sum256(data)
 	return m.persistVerifiedResult(ctx, capture, resultKey, data, result, hex.EncodeToString(digest[:]))
+}
+
+func (m *Manager) retryVerification(ctx context.Context, capture Capture, cause error) error {
+	if capture.VerificationAttemptCount+1 >= maxVerificationAttempts {
+		return m.failCapture(
+			ctx,
+			capture.ID,
+			StatusVerifying,
+			fmt.Sprintf("verification retry limit reached after transient result error: %v", cause),
+		)
+	}
+	now := m.now().UTC()
+	if _, err := m.db.ExecContext(ctx, `
+		UPDATE calibration_captures
+		SET verification_attempt_count = verification_attempt_count + 1,
+		    calibration_error = ?, reconcile_after = ?, updated_at = ?
+		WHERE id = ? AND status = ?
+	`, cause.Error(), now.Add(m.pollInterval()), now, capture.ID, StatusVerifying); err != nil {
+		return fmt.Errorf("persist calibration verification retry after %v: %w", cause, err)
+	}
+	return cause
 }
 
 func (m *Manager) persistVerifiedResult(

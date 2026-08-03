@@ -527,6 +527,52 @@ func TestManagerMissingActiveJobFailsAfterGraceAndReleasesCapacity(t *testing.T)
 	}
 }
 
+func TestManagerStopsRetryingTransientResultVerificationAtLimit(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET status = 'verifying', processor_image = ?, source_etag = 'source-etag',
+		    reconcile_after = NULL
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`, testProcessorImage); err != nil {
+		t.Fatalf("prepare verifying capture: %v", err)
+	}
+	objects := &fakeObjectStore{objects: map[string]fakeObject{
+		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
+			size: 1024,
+			etag: "source-etag",
+		},
+	}}
+	manager := NewManager(db, nil, objects, testCalibrationConfig())
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+
+	for attempt := 1; attempt <= maxVerificationAttempts; attempt++ {
+		if worked, err := manager.ReconcileOnce(context.Background()); err == nil || !worked {
+			t.Fatalf("ReconcileOnce() attempt %d worked=%t error=%v", attempt, worked, err)
+		}
+		var state struct {
+			Status   string `db:"status"`
+			Attempts int    `db:"verification_attempt_count"`
+		}
+		if err := db.Get(&state, `
+			SELECT status, verification_attempt_count
+			FROM calibration_captures
+			WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+		`); err != nil {
+			t.Fatalf("load verification attempt %d: %v", attempt, err)
+		}
+		if attempt < maxVerificationAttempts {
+			if state.Status != StatusVerifying || state.Attempts != attempt {
+				t.Fatalf("verification attempt %d state = %+v", attempt, state)
+			}
+		} else if state.Status != StatusFailed || state.Attempts != maxVerificationAttempts-1 {
+			t.Fatalf("verification terminal state = %+v", state)
+		}
+		now = now.Add(manager.pollInterval())
+	}
+}
+
 func TestManagerUpdatesAuditedProcessingConfig(t *testing.T) {
 	db := newCalibrationTestDB(t)
 	manager := NewManager(db, nil, nil, testCalibrationConfig())
@@ -775,6 +821,7 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			orbit_log_tail TEXT,
 			cancel_requested_at TIMESTAMP,
 			submit_attempt_count INTEGER NOT NULL DEFAULT 0,
+			verification_attempt_count INTEGER NOT NULL DEFAULT 0,
 			orbit_submit_absent_at TIMESTAMP,
 			reconcile_after TIMESTAMP,
 			processing_started_at TIMESTAMP,
