@@ -12,13 +12,16 @@ import (
 	"archebase.com/keystone-edge/internal/logger"
 )
 
-// StartReconciler starts the background durable state reconciler when Orbit is configured.
+// StartReconciler starts the background durable state reconciler.
 func (m *Manager) StartReconciler() error {
-	if m == nil || m.orbit == nil || m.objects == nil {
-		return nil
+	if m == nil || m.db == nil {
+		return fmt.Errorf("calibration reconciler database is not configured")
 	}
-	if m.db == nil {
-		return fmt.Errorf("calibration reconciler dependencies are incomplete")
+	if m.orbit == nil {
+		return fmt.Errorf("calibration reconciler Orbit client is not configured")
+	}
+	if m.objects == nil {
+		return fmt.Errorf("calibration reconciler TOS object reader is not configured")
 	}
 	m.runnerMu.Lock()
 	defer m.runnerMu.Unlock()

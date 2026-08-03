@@ -215,6 +215,60 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 	}
 }
 
+func TestManagerPollsActiveCaptureBeforeQueuedCaptureAtCapacity(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	orbit := &fakeOrbit{}
+	objects := &fakeObjectStore{objects: map[string]fakeObject{
+		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
+			size: 1024,
+			etag: "source-etag",
+		},
+	}}
+	manager := NewManager(db, orbit, objects, testCalibrationConfig())
+	if _, err := db.Exec(`UPDATE calibration_processing_configs SET max_concurrent = 1 WHERE id = 1`); err != nil {
+		t.Fatalf("set max concurrency: %v", err)
+	}
+
+	if _, _, err := manager.Start(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011", "admin-user"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+			t.Fatalf("admission ReconcileOnce() %d worked=%t error=%v", i, worked, err)
+		}
+	}
+	orbit.job = orbitapi.Job{
+		JobID:        "abs-job-calibration-1",
+		SubmissionID: orbit.request.SubmissionID,
+		Status:       "RUNNING",
+		Image:        orbit.request.Image,
+		DataBindings: orbit.request.DataBindings,
+	}
+	if _, err := db.Exec(`
+		INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+			file_size_bytes, checksum_sha256, logical_upload_id, upload_id,
+			created_at, updated_at, uploaded_at
+		) VALUES (?, '7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 2, 'queued', 'bucket-1',
+			'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2',
+			'2000-01-01 00:00:00', '2000-01-01 00:00:00', CURRENT_TIMESTAMP)
+	`, "d4ad1825-35b4-4572-83aa-70cf3d8dd083",
+		"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"); err != nil {
+		t.Fatalf("insert older queued capture: %v", err)
+	}
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("active poll ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	active, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() active capture error = %v", err)
+	}
+	if active.Status != StatusRunning {
+		t.Fatalf("active capture status = %q, want %q", active.Status, StatusRunning)
+	}
+}
+
 func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
 	db := newCalibrationTestDB(t)
 	if _, err := db.Exec(`
@@ -342,6 +396,56 @@ func TestManagerRetriesTransientOrbitStopFailure(t *testing.T) {
 	}
 }
 
+func TestManagerConfirmsCanceledSubmissionIsAbsentAcrossTwoPolls(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET status = 'submitting',
+		    orbit_submission_id = 'calibration-92cd6f2f-d131-4bf0-9b4a-d96258d09011',
+		    orbit_request = '{}', submit_attempt_count = 1,
+		    cancel_requested_at = ?, reconcile_after = NULL
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`, now.Add(-time.Hour)); err != nil {
+		t.Fatalf("prepare missing submission cancellation: %v", err)
+	}
+	manager := NewManager(db, &fakeOrbit{}, &fakeObjectStore{}, testCalibrationConfig())
+	manager.now = func() time.Time { return now }
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("first absence poll worked=%t error=%v", worked, err)
+	}
+	capture, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() after first absence error = %v", err)
+	}
+	if capture.Status != StatusSubmitting {
+		t.Fatalf("status after first absence = %q, want %q", capture.Status, StatusSubmitting)
+	}
+	var absentAt sql.NullTime
+	if err := db.Get(&absentAt, `
+		SELECT orbit_submit_absent_at FROM calibration_captures
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`); err != nil {
+		t.Fatalf("load first absence observation: %v", err)
+	}
+	if !absentAt.Valid || !absentAt.Time.Equal(now) {
+		t.Fatalf("orbit_submit_absent_at = %v, want %v", absentAt, now)
+	}
+
+	now = now.Add(manager.cancellationAbsenceGrace())
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("confirmed absence poll worked=%t error=%v", worked, err)
+	}
+	capture, err = manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() after confirmed absence error = %v", err)
+	}
+	if capture.Status != StatusSuperseded {
+		t.Fatalf("status after confirmed absence = %q, want %q", capture.Status, StatusSuperseded)
+	}
+}
+
 func TestManagerUpdatesAuditedProcessingConfig(t *testing.T) {
 	db := newCalibrationTestDB(t)
 	manager := NewManager(db, nil, nil, testCalibrationConfig())
@@ -437,6 +541,25 @@ func TestManagerRejectsProcessingWhenOrbitIsUnavailable(t *testing.T) {
 	)
 	if !errors.Is(err, ErrProcessingUnavailable) {
 		t.Fatalf("Start() error = %v, want ErrProcessingUnavailable", err)
+	}
+}
+
+func TestManagerRefusesToStartWithoutProcessingDependencies(t *testing.T) {
+	tests := []struct {
+		name    string
+		orbit   Orbit
+		objects ObjectStore
+	}{
+		{name: "Orbit", objects: &fakeObjectStore{}},
+		{name: "TOS", orbit: &fakeOrbit{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewManager(newCalibrationTestDB(t), test.orbit, test.objects, testCalibrationConfig())
+			if err := manager.StartReconciler(); err == nil {
+				t.Fatalf("StartReconciler() error = nil without %s", test.name)
+			}
+		})
 	}
 }
 
@@ -570,6 +693,8 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			orbit_job_id TEXT,
 			orbit_log_tail TEXT,
 			cancel_requested_at TIMESTAMP,
+			submit_attempt_count INTEGER NOT NULL DEFAULT 0,
+			orbit_submit_absent_at TIMESTAMP,
 			reconcile_after TIMESTAMP,
 			processing_started_at TIMESTAMP,
 			processing_finished_at TIMESTAMP,

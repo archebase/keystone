@@ -41,7 +41,12 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 		FROM calibration_captures
 		WHERE status IN (?, ?, ?, ?, ?)
 		  AND (reconcile_after IS NULL OR reconcile_after <= ?)
-		ORDER BY updated_at, id
+		ORDER BY CASE
+		  WHEN cancel_requested_at IS NOT NULL THEN 0
+		  WHEN status IN ('submitting', 'pending', 'running') THEN 1
+		  WHEN status = 'verifying' THEN 2
+		  ELSE 3 END,
+		  updated_at, id
 		LIMIT 1
 	`, StatusQueued, StatusSubmitting, StatusPending, StatusRunning, StatusVerifying, m.now().UTC())
 	if err != nil {
@@ -205,6 +210,13 @@ func (m *Manager) reconcileSubmitting(ctx context.Context, capturePK int64) erro
 		request.SubmissionID != row.SubmissionID {
 		return m.failCapture(ctx, capturePK, StatusSubmitting, "frozen Orbit request is invalid")
 	}
+	submitting, err := m.recordSubmissionAttempt(ctx, capturePK)
+	if err != nil {
+		return err
+	}
+	if !submitting {
+		return m.reconcileCancellation(ctx, capturePK)
+	}
 	response, err := m.orbit.Submit(ctx, request)
 	if err != nil {
 		if errors.Is(err, orbitapi.ErrConflict) {
@@ -222,12 +234,30 @@ func (m *Manager) reconcileSubmitting(ctx context.Context, capturePK int64) erro
 	if _, err := m.db.ExecContext(ctx, `
 		UPDATE calibration_captures
 		SET status = ?, orbit_job_id = ?, reconcile_after = ?,
-		    calibration_error = NULL, updated_at = ?
+		    orbit_submit_absent_at = NULL, calibration_error = NULL, updated_at = ?
 		WHERE id = ? AND status = ?
 	`, StatusPending, response.JobID, now, now, capturePK, StatusSubmitting); err != nil {
 		return fmt.Errorf("persist accepted calibration Orbit job: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) recordSubmissionAttempt(ctx context.Context, capturePK int64) (bool, error) {
+	now := m.now().UTC()
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE calibration_captures
+		SET submit_attempt_count = submit_attempt_count + 1,
+		    orbit_submit_absent_at = NULL, reconcile_after = ?, updated_at = ?
+		WHERE id = ? AND status = ? AND cancel_requested_at IS NULL
+	`, now.Add(m.pollInterval()), now, capturePK, StatusSubmitting)
+	if err != nil {
+		return false, fmt.Errorf("record calibration Orbit submission attempt: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read calibration Orbit submission attempt result: %w", err)
+	}
+	return rows == 1, nil
 }
 
 func (m *Manager) markOrbitAccepted(ctx context.Context, capturePK int64, request orbitapi.SubmitRequest, job orbitapi.Job) error {
@@ -238,7 +268,7 @@ func (m *Manager) markOrbitAccepted(ctx context.Context, capturePK int64, reques
 	_, err := m.db.ExecContext(ctx, `
 		UPDATE calibration_captures
 		SET status = ?, orbit_job_id = ?, reconcile_after = ?,
-		    calibration_error = NULL, updated_at = ?
+		    orbit_submit_absent_at = NULL, calibration_error = NULL, updated_at = ?
 		WHERE id = ? AND status = ?
 	`, StatusPending, job.JobID, now, now, capturePK, StatusSubmitting)
 	if err != nil {
@@ -478,18 +508,20 @@ func (m *Manager) persistVerifiedResult(
 
 func (m *Manager) reconcileCancellation(ctx context.Context, capturePK int64) error {
 	var row struct {
-		Status            string       `db:"status"`
-		SubmissionID      string       `db:"orbit_submission_id"`
-		JobID             string       `db:"orbit_job_id"`
-		RequestJSON       string       `db:"orbit_request"`
-		CancelRequestedAt sql.NullTime `db:"cancel_requested_at"`
+		Status              string       `db:"status"`
+		SubmissionID        string       `db:"orbit_submission_id"`
+		JobID               string       `db:"orbit_job_id"`
+		RequestJSON         string       `db:"orbit_request"`
+		CancelRequestedAt   sql.NullTime `db:"cancel_requested_at"`
+		SubmitAttemptCount  int          `db:"submit_attempt_count"`
+		OrbitSubmitAbsentAt sql.NullTime `db:"orbit_submit_absent_at"`
 	}
 	if err := m.db.GetContext(ctx, &row, `
 		SELECT status,
 		       COALESCE(orbit_submission_id, '') AS orbit_submission_id,
 		       COALESCE(orbit_job_id, '') AS orbit_job_id,
 		       COALESCE(orbit_request, '') AS orbit_request,
-		       cancel_requested_at
+		       cancel_requested_at, submit_attempt_count, orbit_submit_absent_at
 		FROM calibration_captures WHERE id = ?
 	`, capturePK); err != nil {
 		return fmt.Errorf("load calibration cancellation: %w", err)
@@ -502,14 +534,20 @@ func (m *Manager) reconcileCancellation(ctx context.Context, capturePK int64) er
 		lookupID = strings.TrimSpace(row.SubmissionID)
 	}
 	if lookupID == "" {
+		if row.SubmitAttemptCount > 0 {
+			return m.deferCapture(ctx, capturePK, row.Status,
+				errors.New("canceled calibration submission has no Orbit identity"))
+		}
 		return m.finishCanceledCapture(ctx, capturePK, "", "superseded before Orbit submission")
 	}
 	job, err := m.orbit.Get(ctx, lookupID)
 	if err != nil {
 		if errors.Is(err, orbitapi.ErrNotFound) {
-			if row.Status == StatusSubmitting && m.now().UTC().Before(row.CancelRequestedAt.Time.Add(m.cancellationAbsenceGrace())) {
-				return m.deferCancellation(ctx, capturePK, row.CancelRequestedAt.Time.Add(m.cancellationAbsenceGrace()),
-					"waiting to confirm canceled Orbit submission is absent")
+			if row.Status == StatusSubmitting {
+				confirmed, confirmErr := m.confirmCanceledSubmissionAbsent(ctx, capturePK, row.SubmitAttemptCount, row.OrbitSubmitAbsentAt)
+				if confirmErr != nil || !confirmed {
+					return confirmErr
+				}
 			}
 			return m.finishCanceledCapture(ctx, capturePK, row.JobID, "superseded; Orbit Job is absent")
 		}
@@ -545,6 +583,35 @@ func (m *Manager) reconcileCancellation(ctx context.Context, capturePK int64) er
 		"superseded; Orbit Job ended with status "+strings.ToUpper(stopped.Status))
 }
 
+func (m *Manager) confirmCanceledSubmissionAbsent(
+	ctx context.Context,
+	capturePK int64,
+	submitAttemptCount int,
+	absentAt sql.NullTime,
+) (bool, error) {
+	if submitAttemptCount == 0 {
+		return true, nil
+	}
+	now := m.now().UTC()
+	if !absentAt.Valid {
+		if _, err := m.db.ExecContext(ctx, `
+			UPDATE calibration_captures
+			SET orbit_submit_absent_at = ?, calibration_error = ?, reconcile_after = ?, updated_at = ?
+			WHERE id = ? AND cancel_requested_at IS NOT NULL
+		`, now, "waiting to confirm canceled Orbit submission is absent",
+			now.Add(m.cancellationAbsenceGrace()), now, capturePK); err != nil {
+			return false, fmt.Errorf("persist canceled calibration Orbit absence observation: %w", err)
+		}
+		return false, nil
+	}
+	confirmAt := absentAt.Time.Add(m.cancellationAbsenceGrace())
+	if now.Before(confirmAt) {
+		return false, m.deferCancellation(ctx, capturePK, confirmAt,
+			"waiting to confirm canceled Orbit submission is absent")
+	}
+	return true, nil
+}
+
 func (m *Manager) deferCancellation(ctx context.Context, capturePK int64, retryAt time.Time, message string) error {
 	now := m.now().UTC()
 	if _, err := m.db.ExecContext(ctx, `
@@ -564,6 +631,7 @@ func (m *Manager) finishCanceledCapture(ctx context.Context, capturePK int64, jo
 		UPDATE calibration_captures
 		SET status = ?, orbit_job_id = NULLIF(?, ''), orbit_log_tail = ?,
 		    calibration_error = ?, cancel_requested_at = NULL,
+		    orbit_submit_absent_at = NULL,
 		    processing_finished_at = ?, reconcile_after = NULL, updated_at = ?
 		WHERE id = ? AND cancel_requested_at IS NOT NULL
 	`, StatusSuperseded, strings.TrimSpace(jobID), logs, message, now, now, capturePK); err != nil {
