@@ -391,6 +391,21 @@ func TestManagerSessionStatusIsHiddenFromAnotherDevice(t *testing.T) {
 	}
 }
 
+func TestManagerAdminSessionStatusIsNotScopedToDevice(t *testing.T) {
+	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
+
+	session, err := manager.GetAdminSessionStatus(
+		context.Background(),
+		"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+	)
+	if err != nil {
+		t.Fatalf("GetAdminSessionStatus() error = %v", err)
+	}
+	if session.SessionID != "7f9af590-75c2-47ad-b6e0-76ebf05c44f7" || session.Status != SessionRunning {
+		t.Fatalf("GetAdminSessionStatus() = %+v", session)
+	}
+}
+
 func TestManagerListDoesNotLoadStoredCaptureResult(t *testing.T) {
 	db := newCalibrationTestDB(t)
 	if _, err := db.Exec(`

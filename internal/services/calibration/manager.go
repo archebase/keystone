@@ -222,11 +222,20 @@ func decodeCaptureResult(capture *Capture) error {
 // GetSessionStatus returns one Session status only when it belongs to the
 // authenticated device identified by robotID.
 func (m *Manager) GetSessionStatus(ctx context.Context, sessionID string, robotID int64) (SessionStatus, error) {
+	return m.getSessionStatus(ctx, sessionID, &robotID)
+}
+
+// GetAdminSessionStatus returns one Session status without device ownership
+// filtering. Callers must enforce administrator authentication.
+func (m *Manager) GetAdminSessionStatus(ctx context.Context, sessionID string) (SessionStatus, error) {
+	return m.getSessionStatus(ctx, sessionID, nil)
+}
+
+func (m *Manager) getSessionStatus(ctx context.Context, sessionID string, robotID *int64) (SessionStatus, error) {
 	if m == nil || m.db == nil {
 		return SessionStatus{}, fmt.Errorf("get calibration session: database is not configured")
 	}
-	var result SessionStatus
-	err := m.db.GetContext(ctx, &result, `
+	query := `
 		SELECT s.session_id, s.status,
 		       COALESCE(s.successful_capture_id, '') AS successful_capture_id,
 		       COUNT(c.id) AS capture_count,
@@ -235,9 +244,17 @@ func (m *Manager) GetSessionStatus(ctx context.Context, sessionID string, robotI
 		       s.updated_at
 		FROM calibration_sessions s
 		LEFT JOIN calibration_captures c ON c.calibration_session_id = s.session_id
-		WHERE s.session_id = ? AND s.robot_id = ?
+		WHERE s.session_id = ?`
+	args := []any{strings.TrimSpace(sessionID)}
+	if robotID != nil {
+		query += " AND s.robot_id = ?"
+		args = append(args, *robotID)
+	}
+	query += `
 		GROUP BY s.id, s.session_id, s.status, s.successful_capture_id, s.updated_at
-	`, strings.TrimSpace(sessionID), robotID)
+	`
+	var result SessionStatus
+	err := m.db.GetContext(ctx, &result, query, args...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SessionStatus{}, ErrSessionNotFound

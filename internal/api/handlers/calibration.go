@@ -20,6 +20,7 @@ import (
 
 type calibrationManager interface {
 	GetSessionStatus(ctx context.Context, sessionID string, robotID int64) (calibration.SessionStatus, error)
+	GetAdminSessionStatus(ctx context.Context, sessionID string) (calibration.SessionStatus, error)
 	Get(ctx context.Context, captureID string) (calibration.Capture, error)
 	List(ctx context.Context, filter calibration.ListFilter) ([]calibration.CaptureSummary, int64, error)
 	Start(ctx context.Context, captureID, actor string) (calibration.Capture, bool, error)
@@ -53,6 +54,7 @@ func (h *CalibrationHandler) RegisterDeviceRoutes(api *gin.RouterGroup) {
 
 // RegisterAdminRoutes mounts Capture query and Orbit processing routes.
 func (h *CalibrationHandler) RegisterAdminRoutes(api *gin.RouterGroup) {
+	api.GET("/calibration-sessions/:session_id", h.GetAdminSessionStatus)
 	api.GET("/calibration-captures", h.ListCaptures)
 	api.GET("/calibration-captures/:capture_id", h.GetCapture)
 	api.POST("/calibration-captures/:capture_id/process", h.ProcessCapture)
@@ -206,6 +208,37 @@ func (h *CalibrationHandler) GetSessionStatus(c *gin.Context) {
 			return
 		}
 		logger.Printf("[CALIBRATION] get device session status failed session_id=%s robot_id=%d: %v", sessionID, principal.RobotID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get calibration session"})
+		return
+	}
+	c.JSON(http.StatusOK, statusValue)
+}
+
+// GetAdminSessionStatus returns a calibration Session status to an administrator.
+// @Summary      Get calibration Session status
+// @Tags         Calibration
+// @Produce      json
+// @Security     BearerAuth
+// @Param        session_id path string true "Calibration Session UUID"
+// @Success      200 {object} calibration.SessionStatus
+// @Failure      400 {object} map[string]interface{}
+// @Failure      404 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Router       /calibration-sessions/{session_id} [get]
+func (h *CalibrationHandler) GetAdminSessionStatus(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	sessionID := c.Param("session_id")
+	if !isCanonicalV4UUID(sessionID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a canonical UUIDv4"})
+		return
+	}
+	statusValue, err := h.manager.GetAdminSessionStatus(c.Request.Context(), sessionID)
+	if err != nil {
+		if errors.Is(err, calibration.ErrSessionNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "calibration session not found"})
+			return
+		}
+		logger.Printf("[CALIBRATION] get admin session status failed session_id=%s: %v", sessionID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get calibration session"})
 		return
 	}

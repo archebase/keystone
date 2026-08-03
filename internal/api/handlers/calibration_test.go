@@ -97,6 +97,42 @@ func TestCalibrationDeviceSessionStatusRejectsNonRandomUUID(t *testing.T) {
 	}
 }
 
+func TestCalibrationAdminSessionStatusDoesNotUseDeviceIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := &fakeCalibrationManager{
+		session: calibration.SessionStatus{
+			SessionID:    "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			Status:       calibration.SessionRunning,
+			CaptureCount: 2,
+		},
+	}
+	handler := NewCalibrationHandler(manager)
+	router := gin.New()
+	api := router.Group("/api/v1")
+	handler.RegisterAdminRoutes(api)
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/calibration-sessions/7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", response.Header().Get("Cache-Control"))
+	}
+	if manager.adminSessionID != "7f9af590-75c2-47ad-b6e0-76ebf05c44f7" {
+		t.Fatalf("admin session queried for session_id = %q", manager.adminSessionID)
+	}
+	if manager.sessionRobotID != 0 {
+		t.Fatalf("admin session unexpectedly queried for robot_id = %d", manager.sessionRobotID)
+	}
+}
+
 func TestCalibrationAdminProcessQueuesUploadedCapture(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	manager := &fakeCalibrationManager{
@@ -235,6 +271,7 @@ type fakeCalibrationManager struct {
 	expectedRevisionID        int64
 	updatedMaxConcurrent      int
 	sessionRobotID            int64
+	adminSessionID            string
 }
 
 func (f *fakeCalibrationManager) GetSessionStatus(
@@ -243,6 +280,14 @@ func (f *fakeCalibrationManager) GetSessionStatus(
 	robotID int64,
 ) (calibration.SessionStatus, error) {
 	f.sessionRobotID = robotID
+	return f.session, nil
+}
+
+func (f *fakeCalibrationManager) GetAdminSessionStatus(
+	_ context.Context,
+	sessionID string,
+) (calibration.SessionStatus, error) {
+	f.adminSessionID = sessionID
 	return f.session, nil
 }
 
