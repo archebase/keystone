@@ -4,6 +4,7 @@
 
 .PHONY: help build check-cr push run test clean lint helm-lint license proto
 .PHONY: stereo-split-image stereo-split-container-smoke stereo-split-test
+.PHONY: calibration-placeholder-image calibration-placeholder-container-smoke calibration-placeholder-test
 
 # Default target
 help:
@@ -20,6 +21,9 @@ help:
 	@echo "  make stereo-split-image - Build the stereo split Job image"
 	@echo "  make stereo-split-container-smoke - Build and smoke-test the Job image"
 	@echo "  make stereo-split-test  - Test the stereo split Job entrypoint"
+	@echo "  make calibration-placeholder-image - Build the Orbit placeholder calibration image"
+	@echo "  make calibration-placeholder-container-smoke - Smoke-test the placeholder image"
+	@echo "  make calibration-placeholder-test - Test the placeholder Python job"
 
 # Build variables
 IMAGE_NAME ?= keystone-edge
@@ -31,6 +35,8 @@ CR_REPOSITORY ?= $(IMAGE_NAME)
 FULL_IMAGE = $(CR_REGISTRY)/$(CR_NAMESPACE)/$(CR_REPOSITORY):$(IMAGE_TAG)
 STEREO_SPLIT_IMAGE ?= stereo-split:dev
 STEREO_SPLIT_PLATFORM ?= linux/amd64
+CALIBRATION_PLACEHOLDER_IMAGE ?= calibration-placeholder:dev
+CALIBRATION_PLACEHOLDER_PLATFORM ?= linux/amd64
 
 # Build Docker image
 build:
@@ -55,6 +61,22 @@ stereo-split-container-smoke: stereo-split-image
 stereo-split-test:
 	python3 -m unittest discover \
 		-s jobs/stereo-split/tests \
+		-p 'test_*.py' \
+		-v
+
+calibration-placeholder-image:
+	docker build \
+		--platform $(CALIBRATION_PLACEHOLDER_PLATFORM) \
+		--file jobs/calibration-placeholder/Dockerfile \
+		--tag $(CALIBRATION_PLACEHOLDER_IMAGE) \
+		.
+
+calibration-placeholder-container-smoke: calibration-placeholder-image
+	docker run --rm $(CALIBRATION_PLACEHOLDER_IMAGE) --help > /dev/null
+
+calibration-placeholder-test:
+	python3 -m unittest discover \
+		-s jobs/calibration-placeholder/tests \
 		-p 'test_*.py' \
 		-v
 

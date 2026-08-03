@@ -1,0 +1,1435 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ego Portal 标定上传兼容接口设计</title>
+  <style>
+    :root {
+      --paper: #FFF2D4;
+      --ink: #15110D;
+      --orange: #F47A16;
+      --blue: #1E4E9A;
+      --yellow: #FFD23F;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--paper);
+    }
+
+    body {
+      margin: 0;
+      min-width: 0;
+      overflow-x: hidden;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+      line-height: 1.72;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      content: "";
+      pointer-events: none;
+      opacity: 0.07;
+      background-image:
+        radial-gradient(circle at 1px 1px, var(--ink) 1px, transparent 1.5px);
+      background-size: 11px 11px;
+    }
+
+    a {
+      color: inherit;
+      text-decoration-thickness: 2px;
+      text-underline-offset: 3px;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .hero {
+      position: relative;
+      min-height: 720px;
+      overflow: hidden;
+      border-bottom: 8px solid var(--ink);
+      background: var(--orange);
+      isolation: isolate;
+    }
+
+    .hero::before {
+      position: absolute;
+      inset: -30%;
+      z-index: -2;
+      content: "";
+      background: repeating-conic-gradient(
+        from 7deg at 72% 46%,
+        transparent 0deg 7deg,
+        var(--ink) 7deg 7.8deg,
+        transparent 7.8deg 15deg
+      );
+      opacity: 0.17;
+      transform: rotate(-3deg);
+    }
+
+    .hero::after {
+      position: absolute;
+      right: -5vw;
+      bottom: -140px;
+      z-index: -1;
+      width: min(760px, 74vw);
+      height: 420px;
+      content: "";
+      border: 7px solid var(--ink);
+      background: var(--yellow);
+      clip-path: polygon(7% 24%, 100% 0, 92% 100%, 0 84%);
+      box-shadow: -14px 14px 0 var(--ink);
+      transform: rotate(-3deg);
+    }
+
+    .hero-inner {
+      width: min(1240px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 74px 0 88px;
+    }
+
+    .kicker {
+      display: inline-block;
+      margin: 0 0 24px;
+      padding: 7px 14px 6px;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      box-shadow: 6px 6px 0 var(--ink);
+      transform: rotate(-1deg);
+    }
+
+    h1 {
+      max-width: 850px;
+      margin: 0;
+      color: var(--paper);
+      font-family: Impact, "Arial Black", STHeiti, SimHei, sans-serif;
+      font-size: clamp(3.1rem, 8.1vw, 7.4rem);
+      font-weight: 950;
+      line-height: 0.92;
+      letter-spacing: -0.055em;
+      text-shadow:
+        4px 4px 0 var(--ink),
+        8px 8px 0 var(--blue);
+      transform: skew(-4deg) rotate(-1deg);
+    }
+
+    .subtitle {
+      max-width: 760px;
+      margin: 32px 0 0;
+      padding-left: 17px;
+      border-left: 8px solid var(--ink);
+      font-size: clamp(1.05rem, 2vw, 1.42rem);
+      font-weight: 900;
+    }
+
+    .split-visual {
+      position: relative;
+      display: grid;
+      grid-template-columns: 0.82fr 70px 1.1fr;
+      align-items: center;
+      width: min(980px, 92%);
+      min-height: 260px;
+      margin: 76px 0 0 auto;
+      padding: 26px 30px;
+      border: 6px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 13px 13px 0 var(--ink);
+      transform: rotate(-1deg);
+    }
+
+    .split-source,
+    .route-node {
+      border: 4px solid var(--ink);
+      background: var(--yellow);
+      padding: 18px;
+      font-weight: 950;
+      text-align: center;
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+
+    .split-source strong,
+    .route-node strong {
+      display: block;
+      font-family: Impact, "Arial Black", STHeiti, SimHei, sans-serif;
+      font-size: clamp(1.15rem, 2.6vw, 1.85rem);
+      line-height: 1.05;
+    }
+
+    .split-source small,
+    .route-node small {
+      display: block;
+      margin-top: 8px;
+      font-size: 0.82rem;
+      font-weight: 800;
+    }
+
+    .impact-arrow {
+      position: relative;
+      height: 14px;
+      background: var(--ink);
+    }
+
+    .impact-arrow::after {
+      position: absolute;
+      top: 50%;
+      right: -2px;
+      width: 0;
+      height: 0;
+      content: "";
+      border-top: 20px solid transparent;
+      border-bottom: 20px solid transparent;
+      border-left: 28px solid var(--ink);
+      transform: translateY(-50%);
+    }
+
+    .route-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .route-node {
+      position: relative;
+      background: var(--paper);
+      text-align: left;
+      transform: skew(-2deg);
+    }
+
+    .route-node.new {
+      color: var(--paper);
+      background: var(--blue);
+    }
+
+    .route-node::before {
+      position: absolute;
+      top: 50%;
+      left: -28px;
+      width: 24px;
+      height: 6px;
+      content: "";
+      background: var(--ink);
+    }
+
+    .verdict {
+      position: relative;
+      z-index: 2;
+      width: min(1120px, calc(100% - 36px));
+      margin: -42px auto 76px;
+      padding: 28px 34px;
+      border: 6px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 10px 10px 0 var(--ink);
+      font-size: clamp(1.2rem, 2.4vw, 1.8rem);
+      font-weight: 950;
+      line-height: 1.35;
+      text-align: center;
+      transform: rotate(0.6deg);
+    }
+
+    .verdict em {
+      color: var(--blue);
+      font-style: normal;
+    }
+
+    .chapter-index {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      width: min(1120px, calc(100% - 36px));
+      margin: 0 auto 70px;
+      padding: 20px;
+      border: 5px solid var(--ink);
+      background: var(--blue);
+      box-shadow: 9px 9px 0 var(--ink);
+    }
+
+    .chapter-index a {
+      padding: 8px 11px;
+      border: 3px solid var(--ink);
+      color: var(--ink);
+      background: var(--paper);
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .chapter-index a:hover,
+    .chapter-index a:focus-visible {
+      background: var(--yellow);
+    }
+
+    main {
+      width: min(1120px, calc(100% - 36px));
+      margin: 0 auto;
+      padding-bottom: 100px;
+    }
+
+    .chapter {
+      position: relative;
+      margin: 0 0 94px;
+      padding: 42px 0 0 88px;
+      border-top: 7px solid var(--ink);
+    }
+
+    .chapter-number {
+      position: absolute;
+      top: 20px;
+      left: 0;
+      color: var(--orange);
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 4.7rem;
+      line-height: 1;
+      text-shadow: 3px 3px 0 var(--ink);
+      transform: skew(-8deg);
+    }
+
+    h2 {
+      margin: 0 0 24px;
+      font-family: Impact, "Arial Black", STHeiti, SimHei, sans-serif;
+      font-size: clamp(2rem, 4vw, 3.4rem);
+      line-height: 1.05;
+      letter-spacing: -0.035em;
+    }
+
+    h3 {
+      margin: 38px 0 14px;
+      padding: 7px 12px;
+      border-left: 8px solid var(--orange);
+      font-size: 1.22rem;
+      line-height: 1.3;
+    }
+
+    p {
+      max-width: 820px;
+      margin: 0 0 18px;
+    }
+
+    ul,
+    ol {
+      max-width: 860px;
+      margin: 16px 0 24px;
+      padding-left: 1.45rem;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    li::marker {
+      color: var(--orange);
+      font-weight: 950;
+    }
+
+    .impact-note {
+      position: relative;
+      max-width: 900px;
+      margin: 30px 0;
+      padding: 23px 28px;
+      border: 5px solid var(--ink);
+      background: var(--yellow);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-weight: 900;
+      clip-path: polygon(0 5%, 97% 0, 100% 90%, 3% 100%);
+    }
+
+    .impact-note.blue {
+      color: var(--paper);
+      background: var(--blue);
+    }
+
+    .flow-strip {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0;
+      margin: 30px 0 42px;
+      border: 5px solid var(--ink);
+      background: var(--ink);
+      box-shadow: 9px 9px 0 var(--orange);
+      overflow: hidden;
+    }
+
+    .flow-step {
+      position: relative;
+      min-height: 150px;
+      padding: 20px 16px 18px;
+      border-right: 4px solid var(--ink);
+      background: var(--paper);
+      font-weight: 800;
+    }
+
+    .flow-step:last-child {
+      border-right: 0;
+      color: var(--paper);
+      background: var(--blue);
+    }
+
+    .flow-step b {
+      display: block;
+      margin-bottom: 10px;
+      color: var(--orange);
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 2rem;
+      line-height: 1;
+    }
+
+    .flow-step:last-child b {
+      color: var(--yellow);
+    }
+
+    .flow-step::after {
+      position: absolute;
+      top: 50%;
+      right: -17px;
+      z-index: 2;
+      width: 28px;
+      height: 28px;
+      content: "";
+      border-top: 4px solid var(--ink);
+      border-right: 4px solid var(--ink);
+      background: var(--paper);
+      transform: translateY(-50%) rotate(45deg);
+    }
+
+    .flow-step:last-child::after {
+      display: none;
+    }
+
+    .table-wrap {
+      max-width: 100%;
+      margin: 24px 0 40px;
+      overflow-x: auto;
+      border: 5px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      background: var(--paper);
+    }
+
+    table {
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+      background: var(--paper);
+    }
+
+    th,
+    td {
+      padding: 14px 16px;
+      border-right: 2px solid var(--ink);
+      border-bottom: 2px solid var(--ink);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th:last-child,
+    td:last-child {
+      border-right: 0;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    th {
+      color: var(--paper);
+      background: var(--blue);
+      font-weight: 950;
+      white-space: nowrap;
+    }
+
+    tbody tr:nth-child(even) td {
+      background: var(--yellow);
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border: 2px solid var(--ink);
+      background: var(--yellow);
+      font-size: 0.82rem;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .tag.new {
+      color: var(--paper);
+      background: var(--blue);
+    }
+
+    .code-frame {
+      position: relative;
+      max-width: 900px;
+      margin: 22px 0 34px;
+      border: 5px solid var(--ink);
+      color: var(--paper);
+      background: var(--blue);
+      box-shadow: 9px 9px 0 var(--ink);
+      overflow: hidden;
+    }
+
+    .code-label {
+      display: inline-block;
+      padding: 6px 12px;
+      border-right: 4px solid var(--ink);
+      border-bottom: 4px solid var(--ink);
+      color: var(--ink);
+      background: var(--yellow);
+      font-size: 0.78rem;
+      font-weight: 950;
+      letter-spacing: 0.06em;
+    }
+
+    pre {
+      margin: 0;
+      padding: 22px;
+      overflow-x: auto;
+      font-size: 0.9rem;
+      line-height: 1.65;
+      white-space: pre;
+    }
+
+    p code,
+    li code,
+    td code {
+      padding: 1px 5px;
+      border: 1px solid var(--ink);
+      background: var(--yellow);
+      font-size: 0.9em;
+      font-weight: 800;
+    }
+
+    .route-contract {
+      max-width: 930px;
+      margin: 30px 0 44px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 9px 9px 0 var(--orange);
+    }
+
+    .route-line {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      padding: 18px 20px;
+      border-bottom: 3px solid var(--ink);
+    }
+
+    .route-line:last-child {
+      border-bottom: 0;
+    }
+
+    .method {
+      flex: 0 0 auto;
+      min-width: 58px;
+      padding: 3px 7px;
+      border: 3px solid var(--ink);
+      color: var(--paper);
+      background: var(--blue);
+      font-family: Impact, "Arial Black", sans-serif;
+      text-align: center;
+      box-shadow: 3px 3px 0 var(--ink);
+    }
+
+    .route-path {
+      min-width: 0;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-weight: 900;
+      overflow-wrap: anywhere;
+    }
+
+    .route-desc {
+      display: block;
+      margin-top: 5px;
+      font-family: "Microsoft YaHei", sans-serif;
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    .model-duel {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 28px;
+      margin: 28px 0 42px;
+    }
+
+    .model-panel {
+      position: relative;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    .model-panel h3 {
+      margin: 0;
+      padding: 14px 18px;
+      border: 0;
+      border-bottom: 4px solid var(--ink);
+      color: var(--paper);
+      background: var(--blue);
+      font-family: Impact, "Arial Black", sans-serif;
+      letter-spacing: 0.02em;
+    }
+
+    .model-panel ul {
+      margin: 0;
+      padding: 19px 20px 22px 40px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+
+    .state-track {
+      display: flex;
+      align-items: stretch;
+      max-width: 960px;
+      margin: 28px 0 44px;
+      overflow-x: auto;
+      padding-bottom: 12px;
+    }
+
+    .state {
+      position: relative;
+      flex: 0 0 150px;
+      padding: 18px 14px;
+      border: 4px solid var(--ink);
+      background: var(--paper);
+      font-weight: 950;
+      text-align: center;
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+
+    .state + .state {
+      margin-left: 35px;
+    }
+
+    .state + .state::before {
+      position: absolute;
+      top: 50%;
+      left: -37px;
+      width: 32px;
+      height: 5px;
+      content: "";
+      background: var(--ink);
+    }
+
+    .state + .state::after {
+      position: absolute;
+      top: calc(50% - 7px);
+      left: -11px;
+      width: 12px;
+      height: 12px;
+      content: "";
+      border-top: 5px solid var(--ink);
+      border-right: 5px solid var(--ink);
+      transform: rotate(45deg);
+    }
+
+    .state.success {
+      color: var(--paper);
+      background: var(--blue);
+    }
+
+    .decision-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 26px;
+      margin: 30px 0 46px;
+    }
+
+    .decision-main,
+    .decision-side {
+      padding: 26px;
+      border: 5px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 8px 8px 0 var(--ink);
+    }
+
+    .decision-side {
+      color: var(--paper);
+      background: var(--blue);
+      transform: rotate(1deg);
+    }
+
+    .decision-main h3,
+    .decision-side h3 {
+      margin-top: 0;
+    }
+
+    .checklist {
+      list-style: none;
+      padding-left: 0;
+    }
+
+    .checklist li {
+      position: relative;
+      padding: 11px 13px 11px 48px;
+      border-bottom: 2px solid var(--ink);
+    }
+
+    .checklist li::before {
+      position: absolute;
+      top: 11px;
+      left: 7px;
+      width: 24px;
+      height: 24px;
+      content: "✓";
+      border: 3px solid var(--ink);
+      background: var(--yellow);
+      font-weight: 950;
+      line-height: 18px;
+      text-align: center;
+      box-shadow: 3px 3px 0 var(--ink);
+    }
+
+    .final-panel {
+      position: relative;
+      margin-top: 74px;
+      padding: 48px clamp(24px, 5vw, 62px);
+      border: 7px solid var(--ink);
+      color: var(--paper);
+      background: var(--blue);
+      box-shadow: 12px 12px 0 var(--orange);
+      overflow: hidden;
+    }
+
+    .final-panel::after {
+      position: absolute;
+      top: -90px;
+      right: -70px;
+      width: 250px;
+      height: 250px;
+      content: "";
+      border: 28px solid var(--yellow);
+      border-radius: 50%;
+      opacity: 0.55;
+    }
+
+    .final-panel h2 {
+      position: relative;
+      z-index: 1;
+      max-width: 800px;
+      color: var(--yellow);
+    }
+
+    .final-panel p,
+    .final-panel ol {
+      position: relative;
+      z-index: 1;
+    }
+
+    footer {
+      margin-top: 90px;
+      padding: 24px;
+      border-top: 6px solid var(--ink);
+      background: var(--orange);
+      font-weight: 900;
+      text-align: center;
+    }
+
+    @media (max-width: 860px) {
+      .hero {
+        min-height: auto;
+      }
+
+      .hero-inner {
+        width: min(100% - 28px, 720px);
+        padding-top: 46px;
+      }
+
+      h1 {
+        text-shadow: 3px 3px 0 var(--ink), 6px 6px 0 var(--blue);
+      }
+
+      .split-visual {
+        grid-template-columns: 1fr;
+        gap: 22px;
+        width: 100%;
+        margin-top: 52px;
+        padding: 22px;
+      }
+
+      .impact-arrow {
+        width: 12px;
+        height: 34px;
+        margin: 0 auto;
+      }
+
+      .impact-arrow::after {
+        top: auto;
+        right: 50%;
+        bottom: -22px;
+        border-top: 22px solid var(--ink);
+        border-right: 18px solid transparent;
+        border-bottom: 0;
+        border-left: 18px solid transparent;
+        transform: translateX(50%);
+      }
+
+      .route-node::before {
+        display: none;
+      }
+
+      .chapter {
+        padding: 76px 0 0;
+      }
+
+      .chapter-number {
+        top: 14px;
+      }
+
+      .flow-strip {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-step {
+        min-height: 0;
+        border-right: 0;
+        border-bottom: 4px solid var(--ink);
+      }
+
+      .flow-step::after {
+        top: auto;
+        right: 50%;
+        bottom: -16px;
+        transform: translateX(50%) rotate(135deg);
+      }
+
+      .model-duel,
+      .decision-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .decision-side {
+        transform: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .hero-inner,
+      main,
+      .chapter-index {
+        width: calc(100% - 24px);
+      }
+
+      .hero-inner {
+        padding-bottom: 76px;
+      }
+
+      .kicker {
+        margin-bottom: 18px;
+        font-size: 0.75rem;
+      }
+
+      h1 {
+        font-size: clamp(2.65rem, 15vw, 4.2rem);
+      }
+
+      .subtitle {
+        margin-top: 26px;
+        font-size: 1rem;
+      }
+
+      .split-visual {
+        box-shadow: 8px 8px 0 var(--ink);
+      }
+
+      .verdict {
+        width: calc(100% - 24px);
+        padding: 22px 18px;
+        font-size: 1.15rem;
+      }
+
+      .chapter-index {
+        padding: 13px;
+      }
+
+      .chapter-index a {
+        flex: 1 1 130px;
+        text-align: center;
+      }
+
+      .chapter {
+        margin-bottom: 72px;
+      }
+
+      .impact-note,
+      .code-frame,
+      .route-contract,
+      .table-wrap,
+      .model-panel,
+      .decision-main,
+      .decision-side,
+      .final-panel {
+        box-shadow: 6px 6px 0 var(--ink);
+      }
+
+      .route-line {
+        display: block;
+      }
+
+      .method {
+        display: inline-block;
+        margin-bottom: 10px;
+      }
+
+      pre {
+        padding: 17px;
+        font-size: 0.78rem;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="kicker">KEYSTONE · DEVELOPMENT DESIGN</p>
+      <h1>Ego Portal<br>标定上传<br>兼容接口设计</h1>
+      <p class="subtitle">一条上传主干，按业务意图分流：旧任务链路零破坏，新标定链路独立落库。</p>
+
+      <div class="split-visual" aria-label="上传链路兼容分流图">
+        <div class="split-source">
+          <strong>Data Gateway</strong>
+          <small>同一套设备鉴权、STS、TOS 分片与恢复机制</small>
+        </div>
+        <div class="impact-arrow" aria-hidden="true"></div>
+        <div class="route-stack">
+          <div class="route-node">
+            <strong>task_episode</strong>
+            <small>旧流程：Task → Episode → QA，行为完全保留</small>
+          </div>
+          <div class="route-node new">
+            <strong>calibration_capture</strong>
+            <small>新流程：Capture → Stereo Split → Calibration JSON</small>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section class="verdict">
+    兼容铁则：<em>零删除、零改名、protobuf 不变、公共上传 SDK 不变。</em><br>
+    旧客户端不传 <code>upload_kind</code>，默认继续走原任务上传链路。
+  </section>
+
+  <nav class="chapter-index" aria-label="章节导航">
+    <a href="#scope">01 核心范围</a>
+    <a href="#flows">02 双链路</a>
+    <a href="#grpc">03 旧接口</a>
+    <a href="#contract">04 兼容扩展</a>
+    <a href="#rest">05 新 REST</a>
+    <a href="#model">06 数据与状态</a>
+    <a href="#safety">07 安全与幂等</a>
+    <a href="#rollout">08 发布验证</a>
+  </nav>
+
+  <main>
+    <section class="chapter" id="scope">
+      <span class="chapter-number">01</span>
+      <h2>核心范围：复用传输，新增业务落点</h2>
+
+      <p>Keystone 现有设备上传链路已经覆盖设备初始化、设备凭证交换、STS 临时授权、TOS 分片上传、断点恢复与上传完成通知。本设计不复制这些能力，只在上传意图解析处增加分流。</p>
+
+      <div class="impact-note">
+        标定数据不是 Episode：不创建虚假 DC Plan，不创建虚假 Task，也不把 <code>episodes.task_id</code> 改成可空。
+      </div>
+
+      <div class="decision-grid">
+        <div class="decision-main">
+          <h3>本次要完成</h3>
+          <ul>
+            <li>保留原任务上传的全部接口和业务行为。</li>
+            <li>让设备凭证可以上传不绑定数采员、计划和任务的标定 MCAP。</li>
+            <li>支持一轮标定持续产生多条 Capture，直到任意一条标定成功。</li>
+            <li>让 Ego Portal 使用设备初始化时的持久 Device Token 查询本设备的标定 Session 状态。</li>
+            <li>每条 MCAP 上传完成后自动排队：先通过 Orbit 双目拆分并验证 <code>output_bag.mcap</code>，再把验证后的 MCAP 交给 Orbit 标定 Job；标定 Job 把一对一结果 JSON 写入 TOS。</li>
+            <li>首条成功后停止新任务，并持久化取消同一 Session 中仍在运行的 Orbit Job。</li>
+          </ul>
+        </div>
+        <aside class="decision-side">
+          <h3>本次不做</h3>
+          <ul>
+            <li>不修改 protobuf。</li>
+            <li>不发布新版公共上传 SDK。</li>
+            <li>不改变 Episode、Task 或 QA 接口。</li>
+            <li>不把 Ego 本地账号映射为 Keystone 数采员。</li>
+            <li>不要求管理员逐条点击启动标定。</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <section class="chapter" id="flows">
+      <span class="chapter-number">02</span>
+      <h2>双链路并存</h2>
+
+      <h3>旧链路保持原样</h3>
+      <div class="flow-strip" aria-label="原有任务上传流程">
+        <div class="flow-step"><b>01</b>DC Plan<br>分配 Task</div>
+        <div class="flow-step"><b>02</b>CreateLogical<br>Upload</div>
+        <div class="flow-step"><b>03</b>TOS multipart<br>upload</div>
+        <div class="flow-step"><b>04</b>Complete<br>Upload</div>
+        <div class="flow-step"><b>05</b>Episode + Task<br>+ QA</div>
+      </div>
+
+      <h3>新链路异步流水</h3>
+      <div class="flow-strip" aria-label="标定上传流程">
+        <div class="flow-step"><b>01</b>录制并校验<br>原始 MCAP</div>
+        <div class="flow-step"><b>02</b>分片上传<br>capture.mcap</div>
+        <div class="flow-step"><b>03</b>Orbit 双目拆分<br>产出 output_bag</div>
+        <div class="flow-step"><b>04</b>验证拆分结果<br>再运行标定 Job</div>
+        <div class="flow-step"><b>05</b>JSON 通过校验<br>Session 结束</div>
+      </div>
+
+      <p>一条原始 MCAP 对应一条 <code>calibration_capture</code>：Keystone 先用现有 stereo-split 管线生成并验证一条 <code>output_bag.mcap</code>，随后只允许标定镜像读取这条验证后的 MCAP，最终产生一份结果 JSON。一轮 <code>calibration_session</code> 可以包含多条 Capture。录制与服务端两阶段处理并行，Ego Portal 持续上传并使用 Device Token 轮询状态，直到第一条成功结果出现。</p>
+    </section>
+
+    <section class="chapter" id="grpc">
+      <span class="chapter-number">03</span>
+      <h2>旧 gRPC 接口：全部保留</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>接口</th>
+              <th>protobuf</th>
+              <th>兼容行为</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>DeviceInitService.InitDevice</code></td>
+              <td><span class="tag">不变</span></td>
+              <td>只初始化设备，继续不要求数采员登录。</td>
+            </tr>
+            <tr>
+              <td><code>AuthService.ExchangeCredential</code></td>
+              <td><span class="tag">不变</span></td>
+              <td>继续使用设备 API Key 换取 Device JWT。</td>
+            </tr>
+            <tr>
+              <td><code>DataGatewayService.CreateLogicalUpload</code></td>
+              <td><span class="tag">不变</span></td>
+              <td>保留旧行为，兼容识别新的可选 <code>client_hints</code>。</td>
+            </tr>
+            <tr>
+              <td><code>DataGatewayService.GetUploadRecovery</code></td>
+              <td><span class="tag">不变</span></td>
+              <td>原样保留。</td>
+            </tr>
+            <tr>
+              <td><code>DataGatewayService.ReissueUploadCredentials</code></td>
+              <td><span class="tag">不变</span></td>
+              <td>原样保留。</td>
+            </tr>
+            <tr>
+              <td><code>DataGatewayService.CompleteUpload</code></td>
+              <td><span class="tag">不变</span></td>
+              <td>保留旧行为，按创建时保存的上传类型分流入库。</td>
+            </tr>
+            <tr>
+              <td><code>DataGatewayService.AbortUpload</code></td>
+              <td><span class="tag">不变</span></td>
+              <td>原样保留。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="impact-note blue">
+        已编译的旧客户端无需重新生成代码。所有现有方法名、字段号、请求和响应结构均保持不变。
+      </div>
+    </section>
+
+    <section class="chapter" id="contract">
+      <span class="chapter-number">04</span>
+      <h2>旧接口的兼容扩展</h2>
+
+      <h3>上传类型判定</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th><code>client_hints["upload_kind"]</code></th>
+              <th>服务端行为</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>缺失或空字符串</td>
+              <td>按旧的 <code>task_episode</code> 处理。</td>
+            </tr>
+            <tr>
+              <td><code>task_episode</code></td>
+              <td>要求并校验原有 <code>task_id</code>、<code>dc_plan_id</code>、workspace 和 workstation 绑定。</td>
+            </tr>
+            <tr>
+              <td><code>calibration_capture</code></td>
+              <td>进入新标定分支，不要求 Task、DC Plan 或 workstation。</td>
+            </tr>
+            <tr>
+              <td>其他值</td>
+              <td>返回 gRPC <code>InvalidArgument</code>。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>标定上传 hints</h3>
+      <div class="code-frame">
+        <span class="code-label">CreateLogicalUpload.client_hints</span>
+        <pre>{
+  "upload_kind": "calibration_capture",
+  "calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+  "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+  "attempt_no": "3",
+  "checksum_sha256": "64-character-lowercase-hex",
+  "source": "ego-portal",
+  "local_operator": "local-user"
+}</pre>
+      </div>
+
+      <p><code>calibration_session_id</code> 和 <code>capture_id</code> 都必须由客户端生成为规范小写 UUIDv4：前者在整轮“持续录制直到首次成功”期间保持不变，后者每条 MCAP 重新生成。服务端必须从 Device JWT 获取 <code>robot_id</code>、<code>device_id</code> 和 <code>workspace_id</code>；客户端不能指定或覆盖设备和空间身份。</p>
+
+      <h3>服务端生成对象路径</h3>
+      <div class="code-frame">
+        <span class="code-label">TOS OBJECT KEY</span>
+        <pre>calibration-captures/{device_id}/{calibration_session_id}/{capture_id}/capture.mcap</pre>
+      </div>
+
+      <h3>CompleteUpload 分流</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>上传类型</th>
+              <th>完成动作</th>
+              <th>明确不做</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>task_episode</code></td>
+              <td>创建 Episode、完成 Task、进入 Episode QA。</td>
+              <td>无变化。</td>
+            </tr>
+            <tr>
+              <td><code>calibration_capture</code></td>
+              <td>保存原始 MCAP 元数据并将 Capture 标记为 <code>queued</code>；后台先提交并验证 stereo-split Orbit Job，再提交读取 <code>output_bag.mcap</code> 的标定 Orbit Job。</td>
+              <td>不创建 Episode、不修改 Task、不进入 Episode QA 或云同步。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>首次收到新的 <code>calibration_session_id</code> 时，Keystone 惰性创建状态为 <code>running</code> 的 Session；每次创建逻辑上传时，创建或恢复对应 Capture。</p>
+    </section>
+
+    <section class="chapter" id="rest">
+      <span class="chapter-number">05</span>
+      <h2>新增 REST 接口</h2>
+
+      <p>这些接口承接异步标定状态和结果，不进入公共上传 SDK，也不要求修改 Data Gateway protobuf。</p>
+
+      <h3>设备状态查询</h3>
+      <div class="route-contract">
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/device/calibration-sessions/{session_id}
+            <span class="route-desc">Device Token 鉴权；Ego Portal 必须通过 Device-Authorization 请求头轮询。</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="code-frame">
+        <span class="code-label">200 RESPONSE</span>
+        <pre>{
+  "session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+  "status": "succeeded",
+  "successful_capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+  "capture_count": 4,
+  "uploaded_count": 4,
+  "processed_count": 3,
+  "updated_at": "2026-08-02T10:20:30Z"
+}</pre>
+      </div>
+
+      <p><code>processed_count</code> 只统计已经产出并通过 Keystone 校验的结果 JSON；仅完成上传、但因 Session 已成功而直接标记为 <code>superseded</code> 的 Capture 不计入。</p>
+
+      <ul>
+        <li>必须发送 <code>Device-Authorization: &lt;device-token&gt;</code>；该 Token 是管理员下发、初始化时使用并由设备安全持久化的凭证，不是 collector token、admin JWT 或 gRPC 临时 Device JWT。</li>
+        <li>缺少、无效或已撤销的 Device Token：<code>401 Unauthorized</code>；设备凭证认证暂时不可用：<code>503 Service Unavailable</code>。</li>
+        <li>Session 不存在或不属于当前设备：<code>404 Not Found</code>。</li>
+        <li>Session ID 格式非法：<code>400 Bad Request</code>。</li>
+      </ul>
+
+      <h3>Orbit 标定作业与后续 Synapse 查询</h3>
+      <div class="route-contract">
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/calibration-sessions/{session_id}
+            <span class="route-desc">admin JWT；Synapse 查询任意设备的 Session 摘要，不使用 Device Token。</span>
+          </div>
+        </div>
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/calibration-captures
+            <span class="route-desc">admin JWT；按 status、session_id、device_id 分页查询 Capture。</span>
+          </div>
+        </div>
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/calibration-captures/{capture_id}
+            <span class="route-desc">admin JWT；读取 MCAP 对象位置、SHA-256 和标定上下文。</span>
+          </div>
+        </div>
+        <div class="route-line">
+          <span class="method">POST</span>
+          <div class="route-path">
+            /api/v1/calibration-captures/{capture_id}/process
+            <span class="route-desc">admin JWT；兼容旧客户端的手动入队接口。新上传已自动入队，重复调用保持幂等。</span>
+          </div>
+        </div>
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/processing-settings/calibration
+            <span class="route-desc">admin JWT；读取当前标定镜像、最大并发、Revision 和修改人。</span>
+          </div>
+        </div>
+        <div class="route-line">
+          <span class="method">PUT</span>
+          <div class="route-path">
+            /api/v1/processing-settings/calibration
+            <span class="route-desc">admin JWT；以 expected revision 原子更新镜像 digest 与最大并发。</span>
+          </div>
+        </div>
+        <div class="route-line">
+          <span class="method">GET</span>
+          <div class="route-path">
+            /api/v1/processing-settings/calibration/history
+            <span class="route-desc">admin JWT；分页读取不可删除的标定处理设置历史。</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="code-frame">
+        <span class="code-label">TOS RESULT OBJECT</span>
+        <pre>{
+  "schema_version": 1,
+  "status": "succeeded",
+  "algorithm_version": "placeholder-v1",
+  "calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+  "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+  "processor_image": "registry.example/archebase/calibration@sha256:...",
+  "source": {
+    "uri": "tos://derived-bucket/derived/episodes/calibration/.../stereo-split/g1-.../output_bag.mcap",
+    "size_bytes": 120000,
+    "sha256": "output-bag-64-character-lowercase-hex"
+  },
+  "result": {
+    "camera_matrix": [],
+    "distortion_coefficients": []
+  }
+}</pre>
+      </div>
+
+      <p>处理严格分为两个 Orbit 阶段。第一阶段复用现有 stereo-split 管线：原始 <code>capture.mcap</code> 以只读 data binding 挂载，Job 产出 <code>output_bag.mcap</code>、<code>metadata.yaml</code> 和 <code>processing_manifest.json</code>；Keystone 验证产物结构、内容、大小、SHA-256 和 ETag 后，才把 Capture 推进到标定阶段。第二阶段使用标定镜像：验证后的 <code>output_bag.mcap</code> 只读挂载到 <code>/bindings/input/output_bag.mcap</code>，输出目录挂载到 <code>/bindings/output/</code>。标定 Job 将成功或业务失败结果写到 <code>calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；JSON 的 <code>source.uri</code>、<code>source.size_bytes</code> 和 <code>source.sha256</code> 必须指向验证后的 <code>output_bag.mcap</code>，并且 <code>processor_image</code>、Capture ID 和 Session ID 必须与 Keystone 冻结的执行上下文一致，否则结果会被拒绝。后续替换真实算法镜像时无需修改 Ego Portal 上传协议。</p>
+    </section>
+
+    <section class="chapter" id="model">
+      <span class="chapter-number">06</span>
+      <h2>数据模型与状态机</h2>
+
+      <div class="model-duel">
+        <article class="model-panel">
+          <h3>calibration_sessions</h3>
+          <ul>
+            <li>id</li>
+            <li>session_id UNIQUE</li>
+            <li>robot_id</li>
+            <li>workspace_id</li>
+            <li>status</li>
+            <li>successful_capture_id</li>
+            <li>created_at / updated_at</li>
+          </ul>
+        </article>
+        <article class="model-panel">
+          <h3>calibration_captures</h3>
+          <ul>
+            <li>capture_id UNIQUE（全局随机 UUIDv4）</li>
+            <li>calibration_session_id</li>
+            <li>workspace_id / attempt_no</li>
+            <li>status</li>
+            <li>mcap_object_key</li>
+            <li>mcap_size_bytes / mcap_sha256</li>
+            <li>duration_sec / local_operator</li>
+            <li>result_json / algorithm_version</li>
+            <li>calibration_error</li>
+            <li>uploaded_at / processing_started_at / processing_finished_at</li>
+          </ul>
+        </article>
+      </div>
+
+      <h3>Capture 主状态流</h3>
+      <div class="state-track" aria-label="Calibration Capture 状态机">
+        <div class="state">uploading</div>
+        <div class="state">queued</div>
+        <div class="state">submitting</div>
+        <div class="state">pending / running</div>
+        <div class="state">verifying</div>
+        <div class="state success">succeeded</div>
+      </div>
+
+      <p>标定失败的 Capture 进入 <code>failed</code>，但所属 Session 保持 <code>running</code>，Ego 继续录制上传。Session 成功后，尚未提交的 Capture 直接标记为 <code>superseded</code>；已提交或运行的 Capture 持久化取消请求，Orbit 停止后再标记为 <code>superseded</code>。</p>
+
+      <p>同一套 Capture 主状态由 <code>processing_stage</code> 区分为 <code>stereo_split</code> 和 <code>calibration</code>。只有 stereo-split Job 成功且产物验证通过，Capture 才会从 <code>stereo_split/verifying</code> 回到 <code>calibration/queued</code>；标定 Job 不会直接读取上传的原始 <code>capture.mcap</code>。</p>
+
+      <h3>首条成功原子收敛</h3>
+      <div class="impact-note">
+        提交成功结果时，Keystone 在同一事务中更新 Capture、将 Session 从 running 改为 succeeded、写入 successful_capture_id、淘汰未提交 Capture，并为活跃 Orbit Job 写入可重试的取消请求。只有第一条成功 Capture 能获胜，后续并发结果不能覆盖。
+      </div>
+    </section>
+
+    <section class="chapter" id="safety">
+      <span class="chapter-number">07</span>
+      <h2>安全、幂等与竞态</h2>
+
+      <h3>设备鉴权状态接口</h3>
+      <p>设备状态查询使用 <code>Device-Authorization</code> 中的持久 Device Token 鉴权，并从凭证解析设备身份；即使知道 <code>session_id</code>，其他设备也只能得到 <code>404 Not Found</code>。<code>session_id</code> 仍必须使用规范小写 UUIDv4。响应只包含运行状态、计数和成功 Capture ID，不返回对象路径、操作员或其他敏感元数据，并设置 <code>Cache-Control: no-store</code>。</p>
+
+      <h3>上传幂等</h3>
+      <ul>
+        <li>同一设备重复完成相同 <code>capture_id</code> 时，对象路径、文件大小、SHA-256 全部一致则返回成功。</li>
+        <li>任一字段不一致时返回 gRPC <code>FailedPrecondition</code>，禁止静默覆盖。</li>
+        <li>上传完成自动入队；兼容接口 <code>POST .../process</code> 重复调用也不会创建第二个 Orbit 作业。</li>
+      </ul>
+
+      <h3>Session 成功时的在途请求</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>请求时机</th>
+              <th>处理策略</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>成功后新建上传</td>
+              <td><code>CreateLogicalUpload</code> 返回 <code>FailedPrecondition</code>，不再签发 STS。</td>
+            </tr>
+            <tr>
+              <td>成功前已开始、成功后完成</td>
+              <td>允许 <code>CompleteUpload</code> 收口对象，Capture 标记为 <code>superseded</code>。</td>
+            </tr>
+            <tr>
+              <td>成功时仍在队列中</td>
+              <td>不再提交 Orbit，Capture 原子标记为 <code>superseded</code>。</td>
+            </tr>
+            <tr>
+              <td>成功时 Orbit 已提交或运行</td>
+              <td>记录可恢复的取消请求并调用 Orbit <code>Stop</code>；失败按轮询间隔重试，确认停止后标记为 <code>superseded</code>。</td>
+            </tr>
+            <tr>
+              <td>Ego 轮询到 succeeded</td>
+              <td>不再开始下一段；当前录制正常结束，避免损坏 MCAP，但不再排队上传。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="chapter" id="rollout">
+      <span class="chapter-number">08</span>
+      <h2>发布、兼容与验证</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>客户端 / 服务端组合</th>
+              <th>结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>旧 Ego + 旧 Keystone</td>
+              <td>原任务上传正常。</td>
+            </tr>
+            <tr>
+              <td>旧 Ego + 新 Keystone</td>
+              <td>原任务上传正常，行为不变。</td>
+            </tr>
+            <tr>
+              <td>新 Ego + 新 Keystone</td>
+              <td>任务上传与标定上传均正常。</td>
+            </tr>
+            <tr>
+              <td>新 Ego + 旧 Keystone</td>
+              <td>标定上传不受支持，会因缺少任务绑定而失败。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Orbit 占位作业部署配置</h3>
+      <div class="code-frame">
+        <span class="code-label">KEYSTONE ENV</span>
+        <pre>KEYSTONE_ORBIT_BASE_URL=http://orbit.archebase-system.svc.cluster.local:8080</pre>
+      </div>
+      <p>标定功能没有单独的启用开关，并与双目拆分共用 Orbit 服务地址。上线前必须同时配置可用的 stereo-split 镜像和标定镜像：第一阶段复用现有 stereo-split 镜像及其 TOS 输出配置，第二阶段使用“系统设置 → 设备标定”中保存的不可变 <code>@sha256:</code> 标定镜像引用和最大并发。Keystone 为两个阶段分别冻结处理配置；资源、超时、清理时间、轮询间隔、结果大小和日志上限使用现有安全配置或内置值，不增加标定专用环境变量。标定占位镜像由 <code>jobs/calibration-placeholder/Dockerfile</code> 构建；真实算法镜像必须接受验证后的 <code>output_bag.mcap</code> 合同，不能把结果 JSON 的 source 写成原始 <code>capture.mcap</code>。</p>
+
+      <div class="final-panel">
+        <h2>发布顺序不能反转</h2>
+        <ol>
+          <li>先部署数据库迁移和新版 Keystone。</li>
+          <li>验证旧 Ego Portal 的任务上传完整回归。</li>
+          <li>再部署支持标定模式的 Ego Portal。</li>
+        </ol>
+        <p>回滚 Ego Portal 不影响原任务上传。回滚 Keystone 前必须停止新标定上传，否则旧 Keystone 无法识别 <code>calibration_capture</code>。</p>
+      </div>
+
+      <h3>验收清单</h3>
+      <ul class="checklist">
+        <li>旧客户端不发送 <code>upload_kind</code> 时仍能创建 Episode 并完成 Task。</li>
+        <li>标定上传不携带 task、plan、workstation 也能获得受限 STS。</li>
+        <li>状态查询携带有效的 <code>Device-Authorization</code>，缺失或无效凭证返回 401，其他设备的 Session 返回 404。</li>
+        <li>每条原始 MCAP 先完成 stereo-split 并验证 <code>output_bag.mcap</code>，标定结果 JSON 的 source 与该验证产物完全一致。</li>
+        <li>同一 Capture 重试 CompleteUpload 不产生重复记录。</li>
+        <li>失败结果不会结束 Session，首条成功结果会原子结束 Session。</li>
+        <li>Session 成功后的新上传被拒绝，在途上传被安全收口。</li>
+        <li>protobuf 与公共上传 SDK 无变更。</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    Keystone 保留旧战线，新增标定分流；传输主干不重写，业务语义不混用。
+  </footer>
+</body>
+</html>

@@ -37,6 +37,7 @@ type Config struct {
 	AxonTransfer TransferConfig
 	AxonRecorder RecorderConfig
 	Derivatives  DerivativeConfig
+	Calibration  CalibrationConfig
 }
 
 // ServerConfig server configuration
@@ -170,6 +171,18 @@ type DerivativeConfig struct {
 	OrbitLogTailBytes   int
 }
 
+// CalibrationConfig controls placeholder calibration jobs executed by Orbit.
+type CalibrationConfig struct {
+	OrbitBaseURL        string
+	OrbitTimeoutSec     int
+	Resources           KubernetesResourcesConfig
+	ActiveDeadlineSec   int64
+	TTLSecondsAfterDone int32
+	PollIntervalSec     int
+	MaxResultBytes      int64
+	OrbitLogTailBytes   int
+}
+
 // KubernetesResourcesConfig is the trusted resource envelope sent to Orbit.
 type KubernetesResourcesConfig struct {
 	Requests map[string]string `json:"requests"`
@@ -199,6 +212,7 @@ func Load() (*Config, error) {
 	derivatives := loadDerivativeConfig()
 	tosStorage := loadTOSStorageConfig()
 	derivatives.OutputBucket = tosStorage.Bucket
+	calibration := loadCalibrationConfig()
 	cfg := &Config{
 		Server: ServerConfig{
 			Mode:                  getEnv("KEYSTONE_MODE", ModeEdge),
@@ -304,6 +318,7 @@ func Load() (*Config, error) {
 			ResponseTimeout: getEnvInt("KEYSTONE_AXON_RECORDER_RESPONSE_TIMEOUT", 15),
 		},
 		Derivatives: derivatives,
+		Calibration: calibration,
 	}
 
 	return cfg, nil
@@ -324,6 +339,22 @@ func loadDerivativeConfig() DerivativeConfig {
 		TTLSecondsAfterDone: 604800,
 		PollIntervalSec:     5,
 		MaxSourceBytes:      500 * 1024 * 1024 * 1024,
+		OrbitLogTailBytes:   1024 * 1024,
+	}
+}
+
+func loadCalibrationConfig() CalibrationConfig {
+	return CalibrationConfig{
+		OrbitBaseURL:    strings.TrimRight(strings.TrimSpace(getEnv("KEYSTONE_ORBIT_BASE_URL", "")), "/"),
+		OrbitTimeoutSec: 10,
+		Resources: KubernetesResourcesConfig{
+			Requests: map[string]string{"cpu": "1", "memory": "1Gi", "ephemeral-storage": "2Gi"},
+			Limits:   map[string]string{"cpu": "2", "memory": "2Gi", "ephemeral-storage": "4Gi"},
+		},
+		ActiveDeadlineSec:   600,
+		TTLSecondsAfterDone: 86400,
+		PollIntervalSec:     5,
+		MaxResultBytes:      16 * 1024 * 1024,
 		OrbitLogTailBytes:   1024 * 1024,
 	}
 }
@@ -526,6 +557,25 @@ func (c *Config) Validate() error {
 		}
 		if len(c.Derivatives.Resources.Requests) == 0 || len(c.Derivatives.Resources.Limits) == 0 {
 			return fmt.Errorf("derivative processing resources must define requests and limits")
+		}
+	}
+	if strings.TrimSpace(c.Calibration.OrbitBaseURL) != "" {
+		orbitURL, err := url.Parse(strings.TrimSpace(c.Calibration.OrbitBaseURL))
+		if err != nil || orbitURL.Scheme == "" || orbitURL.Host == "" || orbitURL.User != nil ||
+			(orbitURL.Scheme != "http" && orbitURL.Scheme != "https") || orbitURL.RawQuery != "" || orbitURL.Fragment != "" {
+			return fmt.Errorf("KEYSTONE_ORBIT_BASE_URL must be an absolute http(s) URL when configured")
+		}
+		if c.TOSStorage.Type != "tos" {
+			return fmt.Errorf("TOS storage must be configured when calibration processing is enabled")
+		}
+		if c.Calibration.OrbitTimeoutSec <= 0 || c.Calibration.ActiveDeadlineSec <= 0 ||
+			c.Calibration.TTLSecondsAfterDone < 0 ||
+			c.Calibration.PollIntervalSec <= 0 || c.Calibration.MaxResultBytes <= 0 ||
+			c.Calibration.OrbitLogTailBytes <= 0 {
+			return fmt.Errorf("calibration processing numeric limits must be positive")
+		}
+		if len(c.Calibration.Resources.Requests) == 0 || len(c.Calibration.Resources.Limits) == 0 {
+			return fmt.Errorf("calibration processing resources must define requests and limits")
 		}
 	}
 	return nil

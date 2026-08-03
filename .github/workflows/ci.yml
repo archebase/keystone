@@ -130,6 +130,9 @@ jobs:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Test image publication selection
+        run: bash .github/scripts/select-images_test.sh
       
       - name: Set up Go
         run: bash .github/scripts/setup-go.sh

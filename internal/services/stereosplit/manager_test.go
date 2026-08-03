@@ -62,6 +62,98 @@ func TestManagerStartCreatesOneQueuedDerivative(t *testing.T) {
 	}
 }
 
+func TestManagerPreparesReusableStereoSplitExecution(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	manager := NewManager(db, nil, &fakeObjectStore{size: 1024, etag: "source-etag"}, testManagerConfig())
+
+	execution, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+		SourceBucket:    "source-bucket",
+		SourceObjectKey: "calibration/capture.mcap",
+		SourceChecksum:  "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		OutputScope:     "calibration/device/session/capture/stereo-split",
+		SubmissionID:    "calibration-capture-stereo-split",
+		Generation:      1,
+	})
+	if err != nil {
+		t.Fatalf("PrepareExecution() error = %v", err)
+	}
+	if execution.ProcessorImage != testImageDigest || execution.SourceSizeBytes != 1024 ||
+		execution.SourceETag != "source-etag" || execution.OutputBucket != "output-bucket" {
+		t.Fatalf("PrepareExecution() = %+v", execution)
+	}
+	if execution.Request.Image != testImageDigest || execution.Request.SubmissionID != "calibration-capture-stereo-split" ||
+		len(execution.Request.DataBindings) != 2 {
+		t.Fatalf("PrepareExecution() request = %+v", execution.Request)
+	}
+	if got := execution.Request.DataBindings[0].URI; got != "tos://source-bucket/calibration/capture.mcap" {
+		t.Fatalf("input URI = %q", got)
+	}
+	if got := execution.Request.DataBindings[1].URI; !strings.HasPrefix(got, "tos://output-bucket/derived/episodes/calibration/device/session/capture/stereo-split/g1-") {
+		t.Fatalf("output URI = %q", got)
+	}
+}
+
+func TestManagerVerifiesReusableStereoSplitExecution(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	objects := &fakeObjectStore{size: 1024, etag: "source-etag"}
+	manager := NewManager(db, nil, objects, testManagerConfig())
+	execution, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+		SourceBucket:    "source-bucket",
+		SourceObjectKey: "calibration/capture.mcap",
+		OutputScope:     "calibration/device/session/capture/stereo-split",
+		SubmissionID:    "calibration-capture-stereo-split",
+		Generation:      1,
+	})
+	if err != nil {
+		t.Fatalf("PrepareExecution() error = %v", err)
+	}
+	manifest := `{
+		"schema_version":1,
+		"status":"succeeded",
+		"kind":"stereo_split",
+		"generation":1,
+		"processor_image":"` + testImageDigest + `",
+		"source":{"uri":"` + execution.SourceURI + `","size_bytes":1024,"sha256":""},
+		"outputs":{
+			"mcap":{"name":"output_bag.mcap","size_bytes":32,"sha256":"` + strings.Repeat("a", 64) + `"},
+			"metadata":{"name":"metadata.yaml","size_bytes":16,"sha256":"` + strings.Repeat("b", 64) + `"}
+		},
+		"stats":{"input_messages":1,"decoded_images":1,"left_images":1,"right_images":1,"imu_messages":1,"skipped_messages":0},
+		"started_at":"2026-08-02T10:00:00Z",
+		"finished_at":"2026-08-02T10:00:01Z"
+	}`
+	objects.objects = map[string]fakeStoredObject{
+		path.Join(execution.OutputPrefix, manifestName):       {size: int64(len(manifest)), etag: "manifest-etag", body: manifest},
+		path.Join(execution.OutputPrefix, outputMcapName):     {size: 32, etag: "mcap-etag", body: strings.Repeat("m", 32)},
+		path.Join(execution.OutputPrefix, outputMetadataName): {size: 16, etag: "metadata-etag", body: strings.Repeat("y", 16)},
+	}
+
+	output, err := manager.VerifyExecution(context.Background(), execution)
+	if err != nil {
+		t.Fatalf("VerifyExecution() error = %v", err)
+	}
+	if output.MCAPObjectKey != path.Join(execution.OutputPrefix, outputMcapName) ||
+		output.MCAPSizeBytes != 32 || output.MCAPChecksumSHA256 != strings.Repeat("a", 64) ||
+		output.MCAPETag != "mcap-etag" || output.ManifestJSON != manifest {
+		t.Fatalf("VerifyExecution() = %+v", output)
+	}
+}
+
+func TestManagerVerifyExecutionRejectsEmptyFrozenSourceETag(t *testing.T) {
+	manager := NewManager(newTestDB(t), nil, &fakeObjectStore{}, testManagerConfig())
+
+	_, err := manager.VerifyExecution(context.Background(), ExecutionSnapshot{})
+	if err == nil || !strings.Contains(err.Error(), "source ETag is empty") {
+		t.Fatalf("VerifyExecution() error = %v", err)
+	}
+}
+
 func TestManagerStartRejectsOriginalCloudSource(t *testing.T) {
 	db := newTestDB(t)
 	insertTestEpisode(t, db, 2, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, CloudSourceOriginal)

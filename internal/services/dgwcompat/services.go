@@ -31,6 +31,7 @@ const (
 )
 
 type uploadSession struct {
+	Kind                   uploadKind
 	LogicalUploadID        string
 	UploadID               string
 	RobotID                int64
@@ -132,7 +133,8 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	logicalUploadID := uuid.NewString()
 	uploadID := uuid.NewString()
 	hints := cloneMap(req.GetClientHints())
-	if hints["product"] == "ego_portal_lite" {
+	if hints["product"] == "ego_portal_lite" &&
+		!strings.EqualFold(strings.TrimSpace(hints["upload_kind"]), string(uploadKindCalibrationCapture)) {
 		checksumMD5 := strings.ToLower(strings.TrimSpace(hints["checksum_md5"]))
 		if !isMD5Hex(checksumMD5) {
 			return nil, status.Error(codes.InvalidArgument, "checksum_md5 must be a 32-character hexadecimal MD5 digest")
@@ -152,11 +154,45 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	}
 	hints["device_id"] = principal.DeviceID
 	hints["workspace_id"] = fmt.Sprintf("%d", principal.WorkspaceID)
-	taskBinding, err := s.validateCreateLogicalUpload(ctx, principal, hints)
+	intent, err := parseUploadIntent(hints)
 	if err != nil {
 		return nil, err
 	}
+	var taskBinding uploadTaskBinding
+	if intent.Kind == uploadKindTaskEpisode {
+		taskBinding, err = s.validateCreateLogicalUpload(ctx, principal, hints)
+		if err != nil {
+			return nil, err
+		}
+	}
 	objectKey := buildObjectKey(s.cfg.TOSKeyPrefix, hints, uploadID)
+	session := &uploadSession{
+		Kind:            intent.Kind,
+		LogicalUploadID: logicalUploadID,
+		UploadID:        uploadID,
+		RobotID:         principal.RobotID,
+		TaskPK:          taskBinding.TaskPK,
+		TaskID:          taskBinding.TaskID,
+		WorkstationID:   taskBinding.WorkstationID,
+		OrganizationID:  taskBinding.OrganizationID,
+		DCPlanID:        taskBinding.DCPlanID.Int64,
+		LocalDCPlanID:   taskBinding.LocalDCPlanID,
+		DeviceID:        principal.DeviceID,
+		WorkspaceID:     principal.WorkspaceID,
+		AuthEpoch:       principal.AuthEpoch,
+		Bucket:          s.cfg.TOSBucket,
+		Endpoint:        s.cfg.TOSEndpoint,
+		ObjectKey:       objectKey,
+		ClientHints:     hints,
+		CreatedAt:       s.now(),
+	}
+	if intent.Kind == uploadKindCalibrationCapture {
+		if err := s.persistCalibrationUploadStart(ctx, principal, intent, session); err != nil {
+			logger.Printf("[DGW_COMPAT] CreateLogicalUpload calibration persistence failed capture_id=%s session_id=%s attempt_no=%d error=%v",
+				intent.CaptureID, intent.CalibrationSessionID, intent.AttemptNo, err)
+			return nil, err
+		}
+	}
 	logger.Printf("[DGW_COMPAT] CreateLogicalUpload assume_role upload_id=%s logical_upload_id=%s bucket=%s object_key=%s endpoint=%s region=%s part_size=%d capture_id=%s task_id=%s device_id=%s workspace_id=%s",
 		uploadID,
 		logicalUploadID,
@@ -176,26 +212,7 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 			uploadID, logicalUploadID, s.cfg.TOSBucket, objectKey, err)
 		return nil, status.Errorf(codes.Unavailable, "assume role: %v", err)
 	}
-	session := &uploadSession{
-		LogicalUploadID: logicalUploadID,
-		UploadID:        uploadID,
-		RobotID:         principal.RobotID,
-		TaskPK:          taskBinding.TaskPK,
-		TaskID:          taskBinding.TaskID,
-		WorkstationID:   taskBinding.WorkstationID,
-		OrganizationID:  taskBinding.OrganizationID,
-		DCPlanID:        taskBinding.DCPlanID.Int64,
-		LocalDCPlanID:   taskBinding.LocalDCPlanID,
-		DeviceID:        principal.DeviceID,
-		WorkspaceID:     principal.WorkspaceID,
-		AuthEpoch:       principal.AuthEpoch,
-		Bucket:          s.cfg.TOSBucket,
-		Endpoint:        s.cfg.TOSEndpoint,
-		ObjectKey:       objectKey,
-		ClientHints:     hints,
-		CreatedAt:       s.now(),
-		LastSTSExpireAt: creds.Expiration,
-	}
+	session.LastSTSExpireAt = creds.Expiration
 	s.sessions.put(session)
 	logger.Printf("[DGW_COMPAT] CreateLogicalUpload issued upload_id=%s logical_upload_id=%s bucket=%s object_key=%s sts_expires_at=%s sts_ttl_seconds=%d capture_id=%s task_id=%s device_id=%s",
 		uploadID,
@@ -342,9 +359,21 @@ func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.Comple
 			session.UploadID, session.LogicalUploadID, session.DeviceID, session.WorkspaceID, err)
 		return nil, err
 	}
-	episodeID, episodePK, episodeCreated, err := s.completeBusinessUpload(ctx, session, req)
-	if err != nil {
-		return nil, err
+	var episodeID string
+	var episodePK int64
+	var episodeCreated bool
+	var err error
+	if session.Kind == uploadKindCalibrationCapture {
+		if err := s.completeCalibrationUpload(ctx, session, req); err != nil {
+			logger.Printf("[DGW_COMPAT] CompleteUpload calibration persistence failed upload_id=%s capture_id=%s session_id=%s error=%v",
+				session.UploadID, session.ClientHints["capture_id"], session.ClientHints["calibration_session_id"], err)
+			return nil, err
+		}
+	} else {
+		episodeID, episodePK, episodeCreated, err = s.completeBusinessUpload(ctx, session, req)
+		if err != nil {
+			return nil, err
+		}
 	}
 	updated, ok := s.sessions.update(req.GetUploadId(), func(current *uploadSession) {
 		current.CompletedAt = s.now()

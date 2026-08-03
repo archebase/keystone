@@ -239,6 +239,45 @@ func TestLoadStereoSplitDisabledWithoutOrbitURL(t *testing.T) {
 	}
 }
 
+func TestLoadCalibrationUsesFixedProcessingConfig(t *testing.T) {
+	t.Setenv("KEYSTONE_ORBIT_BASE_URL", "http://orbit.archebase-system.svc.cluster.local:8080")
+
+	cfg := loadCalibrationConfig()
+	if cfg.OrbitBaseURL != "http://orbit.archebase-system.svc.cluster.local:8080" {
+		t.Fatalf("calibration config = %+v", cfg)
+	}
+	if cfg.OrbitTimeoutSec != 10 || cfg.ActiveDeadlineSec != 600 || cfg.TTLSecondsAfterDone != 86400 ||
+		cfg.PollIntervalSec != 5 || cfg.MaxResultBytes != 16*1024*1024 || cfg.OrbitLogTailBytes != 1024*1024 ||
+		cfg.Resources.Requests["cpu"] != "1" || cfg.Resources.Limits["memory"] != "2Gi" {
+		t.Fatalf("calibration fixed defaults = %+v", cfg)
+	}
+}
+
+func TestValidateCalibrationDoesNotRequireEnvironmentImage(t *testing.T) {
+	cfg := &Config{
+		Server:     ServerConfig{Mode: ModeEdge, CallbackPublicBaseURL: "http://127.0.0.1:9999"},
+		Database:   DatabaseConfig{DSN: "user:pass@tcp(localhost:3306)/db"},
+		TOSStorage: StorageConfig{Type: "tos", Endpoint: "tos.example", Bucket: "bucket", Region: "region"},
+		Auth:       AuthConfig{JWTSecret: "secret"},
+		Calibration: CalibrationConfig{
+			OrbitBaseURL:    "http://orbit.example:8080",
+			OrbitTimeoutSec: 10,
+			Resources: KubernetesResourcesConfig{
+				Requests: map[string]string{"cpu": "1"},
+				Limits:   map[string]string{"cpu": "2"},
+			},
+			ActiveDeadlineSec:   600,
+			TTLSecondsAfterDone: 86400,
+			PollIntervalSec:     5,
+			MaxResultBytes:      1024,
+			OrbitLogTailBytes:   1024,
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestLoadWithCustomEnv(t *testing.T) {
 	// Save original environment variables
 	originalEnv := map[string]string{

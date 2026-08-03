@@ -2,7 +2,12 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-// Package server provides HTTP server for Keystone Edge API
+// Package server provides HTTP server for Keystone Edge API.
+//
+// @securityDefinitions.apikey DeviceAuth
+// @in header
+// @name Device-Authorization
+// @description Persistent administrator-issued device credential, optionally prefixed with Bearer.
 package server
 
 import (
@@ -26,6 +31,7 @@ import (
 	"archebase.com/keystone-edge/internal/middleware"
 	orbitapi "archebase.com/keystone-edge/internal/orbit"
 	"archebase.com/keystone-edge/internal/services"
+	"archebase.com/keystone-edge/internal/services/calibration"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"archebase.com/keystone-edge/internal/storage/s3"
 	tosstorage "archebase.com/keystone-edge/internal/storage/tos"
@@ -60,6 +66,8 @@ type Server struct {
 	syncHandler         *handlers.SyncHandler
 	syncWorker          *services.SyncWorker
 	stereoSplit         *stereosplit.Manager
+	calibration         *calibration.Manager
+	calibrationHandler  *handlers.CalibrationHandler
 	workspaceSync       *services.WorkspaceSyncService
 	dcPlanSync          *services.DCPlanSyncService
 	httpServer          *http.Server
@@ -108,6 +116,34 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	var authHandler *handlers.AuthHandler
 	if db != nil {
 		authHandler = handlers.NewAuthHandler(db, &cfg.Auth, &cfg.Hilbert)
+	}
+
+	var calibrationManager *calibration.Manager
+	var calibrationHandler *handlers.CalibrationHandler
+	if db != nil {
+		var orbitClient calibration.Orbit
+		var objectReader calibration.ObjectStore
+		if cfg.Calibration.OrbitBaseURL != "" {
+			client, err := orbitapi.NewClient(
+				cfg.Calibration.OrbitBaseURL,
+				time.Duration(cfg.Calibration.OrbitTimeoutSec)*time.Second,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("initialize calibration Orbit client: %w", err)
+			}
+			orbitClient = client
+			objectReader = tosstorage.NewReader(
+				cfg.TOSStorage,
+				time.Duration(cfg.Calibration.OrbitTimeoutSec)*time.Second,
+			)
+		}
+		calibrationManager = calibration.NewManager(
+			db,
+			orbitClient,
+			objectReader,
+			calibrationManagerConfig(cfg.Calibration),
+		)
+		calibrationHandler = handlers.NewCalibrationHandler(calibrationManager)
 	}
 	var storageHandler *handlers.StorageHandler
 	if s3Client != nil || cfg.TOSStorage.Type == "tos" {
@@ -191,6 +227,9 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		)
 		stereoSplitManager = stereosplit.NewManager(db, orbitClient, objectReader, stereoSplitConfig(cfg.Derivatives))
 		dataOpsHandler.SetStereoSplitManager(stereoSplitManager)
+		if calibrationManager != nil {
+			calibrationManager.SetStereoPreprocessor(stereoSplitManager)
+		}
 		if err := dataOpsHandler.ResumeStereoSplitBulkRuns(context.Background()); err != nil {
 			return nil, fmt.Errorf("resume stereo split bulk runs: %w", err)
 		}
@@ -226,6 +265,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		syncHandler:         syncHandler,
 		syncWorker:          syncWorker,
 		stereoSplit:         stereoSplitManager,
+		calibration:         calibrationManager,
+		calibrationHandler:  calibrationHandler,
 		workspaceSync:       workspaceSyncService,
 		dcPlanSync:          dcPlanSyncService,
 		engine:              engine,
@@ -298,6 +339,12 @@ func (s *Server) buildRoutes() http.Handler {
 	}
 	if s.storage != nil {
 		s.storage.RegisterRoutes(v1Routes)
+	}
+	if s.calibrationHandler != nil {
+		deviceCalibration := v1Routes.Group("", middleware.DeviceTokenAuth(s.db))
+		s.calibrationHandler.RegisterDeviceRoutes(deviceCalibration)
+		adminCalibration := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
+		s.calibrationHandler.RegisterAdminRoutes(adminCalibration)
 	}
 
 	// Transfer Service API
@@ -431,6 +478,11 @@ func (s *Server) Start() error {
 	if s.stereoSplit != nil {
 		if err := s.stereoSplit.StartReconciler(); err != nil {
 			return fmt.Errorf("start stereo split reconciler: %w", err)
+		}
+	}
+	if s.calibration != nil {
+		if err := s.calibration.StartReconciler(); err != nil {
+			return fmt.Errorf("start calibration reconciler: %w", err)
 		}
 	}
 	s.shutdownMu.Lock()
@@ -615,6 +667,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	var shutdownErr error
+	if s.calibration != nil {
+		if err := s.calibration.StopReconciler(ctx); err != nil {
+			logShutdownError("Calibration reconciler", err)
+			shutdownErr = fmt.Errorf("calibration reconciler shutdown: %w", err)
+		}
+	}
 
 	if s.stereoSplit != nil {
 		if err := s.stereoSplit.StopReconciler(ctx); err != nil {
@@ -671,6 +729,20 @@ func stereoSplitConfig(cfg config.DerivativeConfig) stereosplit.Config {
 		TTLSecondsAfterDone: cfg.TTLSecondsAfterDone,
 		PollInterval:        time.Duration(cfg.PollIntervalSec) * time.Second,
 		MaxSourceBytes:      cfg.MaxSourceBytes,
+		LogTailBytes:        cfg.OrbitLogTailBytes,
+	}
+}
+
+func calibrationManagerConfig(cfg config.CalibrationConfig) calibration.Config {
+	return calibration.Config{
+		Resources: calibration.Resources{
+			Requests: cloneServerStringMap(cfg.Resources.Requests),
+			Limits:   cloneServerStringMap(cfg.Resources.Limits),
+		},
+		ActiveDeadline:      cfg.ActiveDeadlineSec,
+		TTLSecondsAfterDone: cfg.TTLSecondsAfterDone,
+		PollInterval:        time.Duration(cfg.PollIntervalSec) * time.Second,
+		MaxResultBytes:      cfg.MaxResultBytes,
 		LogTailBytes:        cfg.OrbitLogTailBytes,
 	}
 }
