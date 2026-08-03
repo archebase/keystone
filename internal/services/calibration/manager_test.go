@@ -459,6 +459,74 @@ func TestManagerConfirmsCanceledSubmissionIsAbsentAcrossTwoPolls(t *testing.T) {
 	}
 }
 
+func TestManagerMissingActiveJobFailsAfterGraceAndReleasesCapacity(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	if _, err := db.Exec(`UPDATE calibration_processing_configs SET max_concurrent = 1 WHERE id = 1`); err != nil {
+		t.Fatalf("set max concurrency: %v", err)
+	}
+	orbit := &fakeOrbit{}
+	objects := &fakeObjectStore{objects: map[string]fakeObject{
+		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
+			size: 1024,
+			etag: "source-etag",
+		},
+	}}
+	manager := NewManager(db, orbit, objects, testCalibrationConfig())
+	now := time.Date(2026, 8, 3, 11, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+
+	if _, _, err := manager.Start(
+		context.Background(),
+		"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"admin-user",
+	); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("freeze ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("submit ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err == nil || !worked {
+		t.Fatalf("first missing poll worked=%t error=%v", worked, err)
+	}
+	var first struct {
+		Status   string       `db:"status"`
+		AbsentAt sql.NullTime `db:"orbit_submit_absent_at"`
+	}
+	if err := db.Get(&first, `
+		SELECT status, orbit_submit_absent_at
+		FROM calibration_captures
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`); err != nil {
+		t.Fatalf("load first missing observation: %v", err)
+	}
+	if first.Status != StatusPending || !first.AbsentAt.Valid || !first.AbsentAt.Time.Equal(now) {
+		t.Fatalf("first missing observation = %+v, want pending at %v", first, now)
+	}
+
+	now = now.Add(manager.activeJobMissingGrace())
+	if worked, err := manager.ReconcileOnce(context.Background()); err == nil || !worked {
+		t.Fatalf("expired missing poll worked=%t error=%v", worked, err)
+	}
+	capture, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() after missing grace error = %v", err)
+	}
+	if capture.Status != StatusFailed {
+		t.Fatalf("capture status = %q, want %q", capture.Status, StatusFailed)
+	}
+	atCapacity, err := manager.atOrbitCapacity(context.Background())
+	if err != nil {
+		t.Fatalf("atOrbitCapacity() error = %v", err)
+	}
+	if atCapacity {
+		t.Fatal("atOrbitCapacity() = true after missing Orbit Job failure")
+	}
+}
+
 func TestManagerUpdatesAuditedProcessingConfig(t *testing.T) {
 	db := newCalibrationTestDB(t)
 	manager := NewManager(db, nil, nil, testCalibrationConfig())

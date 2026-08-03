@@ -279,13 +279,15 @@ func (m *Manager) markOrbitAccepted(ctx context.Context, capturePK int64, reques
 
 func (m *Manager) reconcileOrbitStatus(ctx context.Context, capturePK int64) error {
 	var row struct {
-		Status      string `db:"status"`
-		JobID       string `db:"orbit_job_id"`
-		RequestJSON string `db:"orbit_request"`
+		Status              string       `db:"status"`
+		JobID               string       `db:"orbit_job_id"`
+		RequestJSON         string       `db:"orbit_request"`
+		OrbitSubmitAbsentAt sql.NullTime `db:"orbit_submit_absent_at"`
 	}
 	if err := m.db.GetContext(ctx, &row, `
 		SELECT status, COALESCE(orbit_job_id, '') AS orbit_job_id,
-		       COALESCE(orbit_request, '') AS orbit_request
+		       COALESCE(orbit_request, '') AS orbit_request,
+		       orbit_submit_absent_at
 		FROM calibration_captures WHERE id = ?
 	`, capturePK); err != nil {
 		return fmt.Errorf("load active calibration Orbit job: %w", err)
@@ -296,7 +298,21 @@ func (m *Manager) reconcileOrbitStatus(ctx context.Context, capturePK int64) err
 	}
 	job, err := m.orbit.Get(ctx, row.JobID)
 	if err != nil {
+		if errors.Is(err, orbitapi.ErrNotFound) {
+			// Submission adoption always clears this timestamp, so it can also
+			// durably track the first absence observed while the Job is active.
+			return m.reconcileMissingActiveJob(ctx, capturePK, row.Status, row.OrbitSubmitAbsentAt)
+		}
 		return m.deferCapture(ctx, capturePK, row.Status, fmt.Errorf("query calibration Orbit job: %w", err))
+	}
+	if row.OrbitSubmitAbsentAt.Valid {
+		if _, err := m.db.ExecContext(ctx, `
+			UPDATE calibration_captures
+			SET orbit_submit_absent_at = NULL, updated_at = ?
+			WHERE id = ? AND status = ?
+		`, m.now().UTC(), capturePK, row.Status); err != nil {
+			return fmt.Errorf("clear recovered calibration Orbit absence: %w", err)
+		}
 	}
 	if err := validateOrbitJob(job, request); err != nil {
 		return m.failCapture(ctx, capturePK, row.Status, err.Error())
@@ -343,6 +359,31 @@ func (m *Manager) reconcileOrbitStatus(ctx context.Context, capturePK int64) err
 		return fmt.Errorf("persist calibration Orbit status: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) reconcileMissingActiveJob(
+	ctx context.Context,
+	capturePK int64,
+	status string,
+	absentAt sql.NullTime,
+) error {
+	now := m.now().UTC()
+	if !absentAt.Valid {
+		message := "Orbit Job is temporarily absent"
+		if _, err := m.db.ExecContext(ctx, `
+			UPDATE calibration_captures
+			SET orbit_submit_absent_at = ?, calibration_error = ?,
+			    reconcile_after = ?, updated_at = ?
+			WHERE id = ? AND status = ?
+		`, now, message, now.Add(m.pollInterval()), now, capturePK, status); err != nil {
+			return fmt.Errorf("persist missing calibration Orbit Job: %w", err)
+		}
+		return errors.New(message)
+	}
+	if now.Before(absentAt.Time.Add(m.activeJobMissingGrace())) {
+		return m.deferCapture(ctx, capturePK, status, errors.New("Orbit Job remains absent"))
+	}
+	return m.failCapture(ctx, capturePK, status, "Orbit Job disappeared before a terminal status was observed")
 }
 
 type calibrationResult struct {
@@ -642,6 +683,14 @@ func (m *Manager) finishCanceledCapture(ctx context.Context, capturePK int64, jo
 
 func (m *Manager) cancellationAbsenceGrace() time.Duration {
 	grace := 2 * m.pollInterval()
+	if grace < 15*time.Second {
+		return 15 * time.Second
+	}
+	return grace
+}
+
+func (m *Manager) activeJobMissingGrace() time.Duration {
+	grace := 3 * m.pollInterval()
 	if grace < 15*time.Second {
 		return 15 * time.Second
 	}
