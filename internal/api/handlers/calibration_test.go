@@ -99,8 +99,10 @@ func TestCalibrationAdminProcessQueuesUploadedCapture(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	manager := &fakeCalibrationManager{
 		capture: calibration.Capture{
-			CaptureID: "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
-			Status:    calibration.StatusQueued,
+			CaptureSummary: calibration.CaptureSummary{
+				CaptureID: "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+				Status:    calibration.StatusQueued,
+			},
 		},
 	}
 	handler := NewCalibrationHandler(manager)
@@ -184,8 +186,8 @@ func (f *fakeCalibrationManager) Get(context.Context, string) (calibration.Captu
 	return f.capture, nil
 }
 
-func (f *fakeCalibrationManager) List(context.Context, calibration.ListFilter) ([]calibration.Capture, int64, error) {
-	return []calibration.Capture{f.capture}, 1, nil
+func (f *fakeCalibrationManager) List(context.Context, calibration.ListFilter) ([]calibration.CaptureSummary, int64, error) {
+	return []calibration.CaptureSummary{f.capture.CaptureSummary}, 1, nil
 }
 
 func (f *fakeCalibrationManager) Start(_ context.Context, captureID, _ string) (calibration.Capture, bool, error) {

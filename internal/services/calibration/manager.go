@@ -139,7 +139,7 @@ func (m *Manager) Get(ctx context.Context, captureID string) (Capture, error) {
 }
 
 // List returns a bounded page and total count of admin-visible Captures.
-func (m *Manager) List(ctx context.Context, filter ListFilter) ([]Capture, int64, error) {
+func (m *Manager) List(ctx context.Context, filter ListFilter) ([]CaptureSummary, int64, error) {
 	if m == nil || m.db == nil {
 		return nil, 0, fmt.Errorf("list calibration captures: database is not configured")
 	}
@@ -175,16 +175,11 @@ func (m *Manager) List(ctx context.Context, filter ListFilter) ([]Capture, int64
 		offset = 0
 	}
 	queryArgs := append(append([]any(nil), args...), limit, offset)
-	var captures []Capture
+	var captures []CaptureSummary
 	if err := m.db.SelectContext(ctx, &captures,
-		captureSelect+where+" ORDER BY c.created_at DESC, c.id DESC LIMIT ? OFFSET ?",
+		captureSummarySelect+where+" ORDER BY c.created_at DESC, c.id DESC LIMIT ? OFFSET ?",
 		queryArgs...); err != nil {
 		return nil, 0, fmt.Errorf("list calibration captures: %w", err)
-	}
-	for index := range captures {
-		if err := decodeCaptureResult(&captures[index]); err != nil {
-			return nil, 0, err
-		}
 	}
 	return captures, total, nil
 }
@@ -227,8 +222,7 @@ func (m *Manager) GetSessionStatus(ctx context.Context, sessionID string, robotI
 	return result, nil
 }
 
-const captureSelect = `
-	SELECT c.id, c.capture_id, c.calibration_session_id, c.attempt_no, c.status,
+const captureSummaryColumns = `c.id, c.capture_id, c.calibration_session_id, c.attempt_no, c.status,
 	       s.robot_id, s.device_id, s.workspace_id,
 	       c.bucket, c.object_key, COALESCE(c.file_size_bytes, 0) AS file_size_bytes,
 	       COALESCE(c.duration_sec, 0) AS duration_sec, c.checksum_sha256,
@@ -244,10 +238,18 @@ const captureSelect = `
 	       COALESCE(c.result_object_key, '') AS result_object_key,
 	       COALESCE(c.result_size_bytes, 0) AS result_size_bytes,
 	       COALESCE(c.result_checksum_sha256, '') AS result_checksum_sha256,
-	       COALESCE(c.result_json, '') AS result_json,
 	       COALESCE(c.algorithm_version, '') AS algorithm_version,
 	       COALESCE(c.calibration_error, '') AS calibration_error,
-	       c.created_at, c.updated_at
+	       c.created_at, c.updated_at`
+
+const captureSummarySelect = `
+	SELECT ` + captureSummaryColumns + `
+	FROM calibration_captures c
+	INNER JOIN calibration_sessions s ON s.session_id = c.calibration_session_id`
+
+const captureSelect = `
+	SELECT ` + captureSummaryColumns + `,
+	       COALESCE(c.result_json, '') AS result_json
 	FROM calibration_captures c
 	INNER JOIN calibration_sessions s ON s.session_id = c.calibration_session_id`
 

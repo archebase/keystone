@@ -21,7 +21,7 @@ import (
 type calibrationManager interface {
 	GetSessionStatus(ctx context.Context, sessionID string, robotID int64) (calibration.SessionStatus, error)
 	Get(ctx context.Context, captureID string) (calibration.Capture, error)
-	List(ctx context.Context, filter calibration.ListFilter) ([]calibration.Capture, int64, error)
+	List(ctx context.Context, filter calibration.ListFilter) ([]calibration.CaptureSummary, int64, error)
 	Start(ctx context.Context, captureID, actor string) (calibration.Capture, bool, error)
 	CurrentProcessingConfig(ctx context.Context) (calibration.ProcessingConfig, error)
 	UpdateProcessingConfig(ctx context.Context, imageRef string, maxConcurrent int, expectedRevisionID int64, actor string) (calibration.ProcessingConfig, error)
@@ -35,10 +35,10 @@ type CalibrationHandler struct {
 
 // CalibrationCaptureListResponse is one paginated admin Capture page.
 type CalibrationCaptureListResponse struct {
-	Items  []calibration.Capture `json:"items"`
-	Total  int64                 `json:"total"`
-	Limit  int                   `json:"limit"`
-	Offset int                   `json:"offset"`
+	Items  []calibration.CaptureSummary `json:"items"`
+	Total  int64                        `json:"total"`
+	Limit  int                          `json:"limit"`
+	Offset int                          `json:"offset"`
 }
 
 // NewCalibrationHandler constructs the calibration HTTP handler.

@@ -63,8 +63,8 @@ type Config struct {
 	LogTailBytes        int
 }
 
-// Capture is one MCAP upload and its one-to-one calibration result.
-type Capture struct {
+// CaptureSummary is the metadata for one MCAP upload without its full calibration result.
+type CaptureSummary struct {
 	ID                        int64     `db:"id" json:"id"`
 	CaptureID                 string    `db:"capture_id" json:"capture_id"`
 	CalibrationSessionID      string    `db:"calibration_session_id" json:"calibration_session_id"`
@@ -90,12 +90,17 @@ type Capture struct {
 	ResultObjectKey           string    `db:"result_object_key" json:"result_object_key,omitempty"`
 	ResultSizeBytes           int64     `db:"result_size_bytes" json:"result_size_bytes,omitempty"`
 	ResultChecksumSHA256      string    `db:"result_checksum_sha256" json:"result_checksum_sha256,omitempty"`
-	ResultJSON                string    `db:"result_json" json:"-"`
-	Result                    any       `db:"-" json:"result,omitempty"`
 	AlgorithmVersion          string    `db:"algorithm_version" json:"algorithm_version,omitempty"`
 	CalibrationError          string    `db:"calibration_error" json:"calibration_error,omitempty"`
 	CreatedAt                 time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt                 time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// Capture is one MCAP upload and its one-to-one calibration result.
+type Capture struct {
+	CaptureSummary
+	ResultJSON string `db:"result_json" json:"-"`
+	Result     any    `db:"-" json:"result,omitempty"`
 }
 
 // SessionStatus is the non-sensitive status exposed to a device poller.

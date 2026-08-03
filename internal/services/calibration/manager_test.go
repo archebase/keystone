@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -225,6 +226,37 @@ func TestManagerSessionStatusIsHiddenFromAnotherDevice(t *testing.T) {
 	)
 	if !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("GetSessionStatus() error = %v, want %v", err, ErrSessionNotFound)
+	}
+}
+
+func TestManagerListDoesNotLoadStoredCaptureResult(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET result_json = '{invalid-json'
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`); err != nil {
+		t.Fatalf("store invalid result JSON: %v", err)
+	}
+	manager := NewManager(db, nil, nil, testCalibrationConfig())
+
+	captures, total, err := manager.List(context.Background(), ListFilter{})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if total != 1 || len(captures) != 1 {
+		t.Fatalf("List() returned %d of %d captures, want 1 of 1", len(captures), total)
+	}
+	payload, err := json.Marshal(captures[0])
+	if err != nil {
+		t.Fatalf("marshal Capture summary: %v", err)
+	}
+	if strings.Contains(string(payload), `"result"`) {
+		t.Fatalf("Capture summary exposed result: %s", payload)
+	}
+
+	if _, err := manager.Get(context.Background(), captures[0].CaptureID); err == nil {
+		t.Fatal("Get() error = nil, want invalid stored result error")
 	}
 }
 
