@@ -52,6 +52,37 @@ func TestDataOpsStereoSplitRoutesStartAndReadCurrentDerivative(t *testing.T) {
 	}
 }
 
+func TestDataOpsStereoSplitGetReturnsSeparateDataAndProcessingDurations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	durationSec := 9.9
+	processingDurationSec := 10.0
+	manager := &fakeDataOpsStereoSplitManager{
+		derivative: stereosplit.Derivative{
+			ID:                    12,
+			EpisodeID:             42,
+			Kind:                  stereosplit.Kind,
+			Generation:            1,
+			ProcessingStatus:      stereosplit.ProcessingSucceeded,
+			DurationSec:           &durationSec,
+			ProcessingDurationSec: &processingDurationSec,
+			QAStatus:              stereosplit.QAApproved,
+			OrbitDeleteStatus:     stereosplit.DeleteCompleted,
+		},
+	}
+	handler := NewDataOpsHandler(nil)
+	handler.SetStereoSplitManager(manager)
+	router := gin.New()
+	handler.RegisterRoutes(router.Group("/data-ops"))
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/data-ops/episodes/42/derivatives/stereo-split", nil))
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"duration_sec":9.9`) ||
+		!strings.Contains(response.Body.String(), `"processing_duration_sec":10`) {
+		t.Fatalf("get response=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestDataOpsStereoSplitStartRejectsMissingImage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	manager := &fakeDataOpsStereoSplitManager{}

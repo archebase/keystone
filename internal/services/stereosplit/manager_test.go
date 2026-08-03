@@ -696,6 +696,16 @@ func TestReconcileOnceVerifiesRunsQAAndRequestsOrbitDelete(t *testing.T) {
 	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
 		t.Fatalf("verify ReconcileOnce() error = %v", err)
 	}
+	derivative, err = manager.Get(context.Background(), 4)
+	if err != nil {
+		t.Fatalf("Get() after output verification error = %v", err)
+	}
+	if derivative.DurationSec != nil {
+		t.Fatalf("duration_sec after output verification = %v, want nil until QA", *derivative.DurationSec)
+	}
+	if derivative.ProcessingDurationSec == nil || *derivative.ProcessingDurationSec != 10 {
+		t.Fatalf("processing_duration_sec after output verification = %v, want 10", derivative.ProcessingDurationSec)
+	}
 	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
 		t.Fatalf("QA ReconcileOnce() error = %v", err)
 	}
@@ -712,6 +722,12 @@ func TestReconcileOnceVerifiesRunsQAAndRequestsOrbitDelete(t *testing.T) {
 	}
 	if derivative.McapPath == "" || derivative.Checksum != outputChecksum || fake.deleteCalls != 1 {
 		t.Fatalf("final outputs/delete = %+v delete_calls=%d", derivative, fake.deleteCalls)
+	}
+	if derivative.DurationSec == nil || *derivative.DurationSec != 0.099 {
+		t.Fatalf("final duration_sec = %v, want 0.099", derivative.DurationSec)
+	}
+	if derivative.ProcessingDurationSec == nil || *derivative.ProcessingDurationSec != 10 {
+		t.Fatalf("final processing_duration_sec = %v, want 10", derivative.ProcessingDurationSec)
 	}
 }
 
@@ -1163,6 +1179,7 @@ func newTestDB(t *testing.T) *sqlx.DB {
 			checksum TEXT,
 			file_size_bytes INTEGER,
 			duration_sec REAL,
+			processing_duration_sec REAL,
 			processing_result TEXT,
 			processing_error TEXT,
 			orbit_log_tail TEXT,

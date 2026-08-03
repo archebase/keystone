@@ -426,6 +426,7 @@ const derivativeSelect = `
 	       COALESCE(metadata_path, '') AS metadata_path,
 	       COALESCE(manifest_path, '') AS manifest_path,
 	       COALESCE(checksum, '') AS checksum, file_size_bytes, duration_sec,
+	       processing_duration_sec,
 	       COALESCE(processing_error, '') AS processing_error,
 	       COALESCE(orbit_log_tail, '') AS orbit_log_tail,
 	       orbit_delete_status,
