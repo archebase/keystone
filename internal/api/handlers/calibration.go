@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
@@ -21,7 +19,7 @@ import (
 )
 
 type calibrationManager interface {
-	GetSessionStatus(ctx context.Context, sessionID string) (calibration.SessionStatus, error)
+	GetSessionStatus(ctx context.Context, sessionID string, robotID int64) (calibration.SessionStatus, error)
 	Get(ctx context.Context, captureID string) (calibration.Capture, error)
 	List(ctx context.Context, filter calibration.ListFilter) ([]calibration.Capture, int64, error)
 	Start(ctx context.Context, captureID, actor string) (calibration.Capture, bool, error)
@@ -30,20 +28,10 @@ type calibrationManager interface {
 	ListProcessingConfigHistory(ctx context.Context, limit, offset int) ([]calibration.ProcessingConfig, error)
 }
 
-// CalibrationHandler exposes public Session status and admin Capture controls.
+// CalibrationHandler exposes device Session status and admin Capture controls.
 type CalibrationHandler struct {
-	manager    calibrationManager
-	rateMu     sync.Mutex
-	publicRate map[string]publicCalibrationRate
-	now        func() time.Time
+	manager calibrationManager
 }
-
-type publicCalibrationRate struct {
-	windowStarted time.Time
-	requests      int
-}
-
-const publicCalibrationRequestsPerMinute = 120
 
 // CalibrationCaptureListResponse is one paginated admin Capture page.
 type CalibrationCaptureListResponse struct {
@@ -55,15 +43,11 @@ type CalibrationCaptureListResponse struct {
 
 // NewCalibrationHandler constructs the calibration HTTP handler.
 func NewCalibrationHandler(manager calibrationManager) *CalibrationHandler {
-	return &CalibrationHandler{
-		manager:    manager,
-		publicRate: make(map[string]publicCalibrationRate),
-		now:        time.Now,
-	}
+	return &CalibrationHandler{manager: manager}
 }
 
-// RegisterPublicRoutes mounts the unauthenticated, non-sensitive status route.
-func (h *CalibrationHandler) RegisterPublicRoutes(api *gin.RouterGroup) {
+// RegisterDeviceRoutes mounts routes protected by device authentication.
+func (h *CalibrationHandler) RegisterDeviceRoutes(api *gin.RouterGroup) {
 	api.GET("/device/calibration-sessions/:session_id", h.GetSessionStatus)
 }
 
@@ -192,21 +176,24 @@ func (h *CalibrationHandler) writeProcessingSettingsError(c *gin.Context, err er
 	}
 }
 
-// GetSessionStatus returns the non-sensitive status used by an Ego device poller.
-// @Summary      Get public calibration Session status
+// GetSessionStatus returns the authenticated device's calibration Session status.
+// @Summary      Get device calibration Session status
 // @Tags         Calibration
 // @Produce      json
+// @Security     DeviceAuth
 // @Param        session_id path string true "Calibration Session UUID"
 // @Success      200 {object} calibration.SessionStatus
 // @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
 // @Failure      404 {object} map[string]interface{}
 // @Failure      500 {object} map[string]interface{}
+// @Failure      503 {object} map[string]interface{}
 // @Router       /device/calibration-sessions/{session_id} [get]
 func (h *CalibrationHandler) GetSessionStatus(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
-	if !h.allowPublicSessionStatus(c.ClientIP()) {
-		c.Header("Retry-After", "60")
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "calibration status rate limit exceeded"})
+	principal := middleware.GetDevicePrincipal(c)
+	if principal == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "device authentication required"})
 		return
 	}
 	sessionID := c.Param("session_id")
@@ -214,37 +201,17 @@ func (h *CalibrationHandler) GetSessionStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id must be a canonical UUIDv4"})
 		return
 	}
-	statusValue, err := h.manager.GetSessionStatus(c.Request.Context(), sessionID)
+	statusValue, err := h.manager.GetSessionStatus(c.Request.Context(), sessionID, principal.RobotID)
 	if err != nil {
 		if errors.Is(err, calibration.ErrSessionNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "calibration session not found"})
 			return
 		}
-		logger.Printf("[CALIBRATION] get public session status failed session_id=%s: %v", sessionID, err)
+		logger.Printf("[CALIBRATION] get device session status failed session_id=%s robot_id=%d: %v", sessionID, principal.RobotID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get calibration session"})
 		return
 	}
 	c.JSON(http.StatusOK, statusValue)
-}
-
-func (h *CalibrationHandler) allowPublicSessionStatus(client string) bool {
-	now := h.now().UTC()
-	h.rateMu.Lock()
-	defer h.rateMu.Unlock()
-	current := h.publicRate[client]
-	if current.windowStarted.IsZero() || now.Sub(current.windowStarted) >= time.Minute {
-		current = publicCalibrationRate{windowStarted: now}
-	}
-	current.requests++
-	h.publicRate[client] = current
-	if len(h.publicRate) > 1024 {
-		for key, value := range h.publicRate {
-			if now.Sub(value.windowStarted) >= 2*time.Minute {
-				delete(h.publicRate, key)
-			}
-		}
-	}
-	return current.requests <= publicCalibrationRequestsPerMinute
 }
 
 // ListCaptures lists calibration Captures for an administrator.

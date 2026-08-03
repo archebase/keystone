@@ -129,7 +129,7 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 		capture.ResultChecksumSHA256 != hex.EncodeToString(resultDigest[:]) {
 		t.Fatalf("completed capture = %+v", capture)
 	}
-	session, err := manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7")
+	session, err := manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7", 1)
 	if err != nil {
 		t.Fatalf("GetSessionStatus() error = %v", err)
 	}
@@ -188,7 +188,7 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	session, err := manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7")
+	session, err := manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7", 1)
 	if err != nil {
 		t.Fatalf("GetSessionStatus() error = %v", err)
 	}
@@ -206,12 +206,25 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 		"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"); err != nil {
 		t.Fatalf("insert upload-only superseded capture: %v", err)
 	}
-	session, err = manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7")
+	session, err = manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7", 1)
 	if err != nil {
 		t.Fatalf("GetSessionStatus() after superseded upload error = %v", err)
 	}
 	if session.Status != SessionRunning || session.SuccessfulCaptureID != "" || session.ProcessedCount != 1 {
 		t.Fatalf("session after failed capture = %+v", session)
+	}
+}
+
+func TestManagerSessionStatusIsHiddenFromAnotherDevice(t *testing.T) {
+	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
+
+	_, err := manager.GetSessionStatus(
+		context.Background(),
+		"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		999,
+	)
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("GetSessionStatus() error = %v, want %v", err, ErrSessionNotFound)
 	}
 }
 

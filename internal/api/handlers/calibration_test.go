@@ -13,11 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"archebase.com/keystone-edge/internal/middleware"
+	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/services/calibration"
 	"github.com/gin-gonic/gin"
 )
 
-func TestCalibrationPublicSessionStatusRequiresNoAuthorization(t *testing.T) {
+func TestCalibrationDeviceSessionStatusUsesAuthenticatedDevice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	manager := &fakeCalibrationManager{
 		session: calibration.SessionStatus{
@@ -32,8 +34,10 @@ func TestCalibrationPublicSessionStatusRequiresNoAuthorization(t *testing.T) {
 	}
 	handler := NewCalibrationHandler(manager)
 	router := gin.New()
-	api := router.Group("/api/v1")
-	handler.RegisterPublicRoutes(api)
+	api := router.Group("/api/v1", func(c *gin.Context) {
+		c.Set(middleware.DevicePrincipalKey, services.DevicePrincipal{RobotID: 101})
+	})
+	handler.RegisterDeviceRoutes(api)
 
 	request := httptest.NewRequest(
 		http.MethodGet,
@@ -56,19 +60,24 @@ func TestCalibrationPublicSessionStatusRequiresNoAuthorization(t *testing.T) {
 	if body["status"] != calibration.SessionSucceeded || body["capture_count"] != float64(4) {
 		t.Fatalf("response = %v", body)
 	}
+	if manager.sessionRobotID != 101 {
+		t.Fatalf("session queried for robot_id = %d, want 101", manager.sessionRobotID)
+	}
 	for _, sensitive := range []string{"bucket", "object_key", "local_operator", "device_id"} {
 		if _, ok := body[sensitive]; ok {
-			t.Fatalf("public response exposed %s: %v", sensitive, body)
+			t.Fatalf("device response exposed %s: %v", sensitive, body)
 		}
 	}
 }
 
-func TestCalibrationPublicSessionStatusRejectsNonRandomUUID(t *testing.T) {
+func TestCalibrationDeviceSessionStatusRejectsNonRandomUUID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewCalibrationHandler(&fakeCalibrationManager{})
 	router := gin.New()
-	api := router.Group("/api/v1")
-	handler.RegisterPublicRoutes(api)
+	api := router.Group("/api/v1", func(c *gin.Context) {
+		c.Set(middleware.DevicePrincipalKey, services.DevicePrincipal{RobotID: 101})
+	})
+	handler.RegisterDeviceRoutes(api)
 
 	request := httptest.NewRequest(
 		http.MethodGet,
@@ -159,9 +168,15 @@ type fakeCalibrationManager struct {
 	processingConfig     calibration.ProcessingConfig
 	expectedRevisionID   int64
 	updatedMaxConcurrent int
+	sessionRobotID       int64
 }
 
-func (f *fakeCalibrationManager) GetSessionStatus(context.Context, string) (calibration.SessionStatus, error) {
+func (f *fakeCalibrationManager) GetSessionStatus(
+	_ context.Context,
+	_ string,
+	robotID int64,
+) (calibration.SessionStatus, error) {
+	f.sessionRobotID = robotID
 	return f.session, nil
 }
 

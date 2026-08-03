@@ -2,7 +2,12 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-// Package server provides HTTP server for Keystone Edge API
+// Package server provides HTTP server for Keystone Edge API.
+//
+// @securityDefinitions.apikey DeviceAuth
+// @in header
+// @name Device-Authorization
+// @description Persistent administrator-issued device credential, optionally prefixed with Bearer.
 package server
 
 import (
@@ -333,7 +338,8 @@ func (s *Server) buildRoutes() http.Handler {
 		s.storage.RegisterRoutes(v1Routes)
 	}
 	if s.calibrationHandler != nil {
-		s.calibrationHandler.RegisterPublicRoutes(v1Routes)
+		deviceCalibration := v1Routes.Group("", middleware.DeviceTokenAuth(s.db))
+		s.calibrationHandler.RegisterDeviceRoutes(deviceCalibration)
 		adminCalibration := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
 		s.calibrationHandler.RegisterAdminRoutes(adminCalibration)
 	}

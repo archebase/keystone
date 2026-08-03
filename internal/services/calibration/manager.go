@@ -199,8 +199,9 @@ func decodeCaptureResult(capture *Capture) error {
 	return nil
 }
 
-// GetSessionStatus returns only the fields safe for an unauthenticated poller.
-func (m *Manager) GetSessionStatus(ctx context.Context, sessionID string) (SessionStatus, error) {
+// GetSessionStatus returns one Session status only when it belongs to the
+// authenticated device identified by robotID.
+func (m *Manager) GetSessionStatus(ctx context.Context, sessionID string, robotID int64) (SessionStatus, error) {
 	if m == nil || m.db == nil {
 		return SessionStatus{}, fmt.Errorf("get calibration session: database is not configured")
 	}
@@ -214,9 +215,9 @@ func (m *Manager) GetSessionStatus(ctx context.Context, sessionID string) (Sessi
 		       s.updated_at
 		FROM calibration_sessions s
 		LEFT JOIN calibration_captures c ON c.calibration_session_id = s.session_id
-		WHERE s.session_id = ?
+		WHERE s.session_id = ? AND s.robot_id = ?
 		GROUP BY s.id, s.session_id, s.status, s.successful_capture_id, s.updated_at
-	`, strings.TrimSpace(sessionID))
+	`, strings.TrimSpace(sessionID), robotID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SessionStatus{}, ErrSessionNotFound
