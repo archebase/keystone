@@ -672,7 +672,7 @@ func TestReconcileOnceVerifiesRunsQAAndRequestsOrbitDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() after Orbit success error = %v", err)
 	}
-	outputMCAP, outputChecksum := makeStereoSplitQAOutput(t, 10, 10, 100)
+	outputMCAP, outputChecksum := makeStereoSplitQAOutput(t, 10, 10, 101)
 	manifest := `{
 		"schema_version":1,
 		"status":"succeeded",
@@ -684,7 +684,7 @@ func TestReconcileOnceVerifiesRunsQAAndRequestsOrbitDelete(t *testing.T) {
 			"mcap":{"name":"output_bag.mcap","size_bytes":` + strconv.Itoa(len(outputMCAP)) + `,"sha256":"` + outputChecksum + `"},
 			"metadata":{"name":"metadata.yaml","size_bytes":50,"sha256":"` + strings.Repeat("c", 64) + `"}
 		},
-		"stats":{"input_messages":10,"decoded_images":10,"left_images":10,"right_images":10,"imu_messages":100,"skipped_messages":0},
+		"stats":{"input_messages":10,"decoded_images":10,"left_images":10,"right_images":10,"imu_messages":101,"skipped_messages":0},
 		"started_at":"2026-08-02T10:00:00Z",
 		"finished_at":"2026-08-02T10:00:10Z"
 	}`
@@ -723,8 +723,8 @@ func TestReconcileOnceVerifiesRunsQAAndRequestsOrbitDelete(t *testing.T) {
 	if derivative.McapPath == "" || derivative.Checksum != outputChecksum || fake.deleteCalls != 1 {
 		t.Fatalf("final outputs/delete = %+v delete_calls=%d", derivative, fake.deleteCalls)
 	}
-	if derivative.DurationSec == nil || *derivative.DurationSec != 0.099 {
-		t.Fatalf("final duration_sec = %v, want 0.099", derivative.DurationSec)
+	if derivative.DurationSec == nil || *derivative.DurationSec != 0.1 {
+		t.Fatalf("final duration_sec = %v, want 0.1", derivative.DurationSec)
 	}
 	if derivative.ProcessingDurationSec == nil || *derivative.ProcessingDurationSec != 10 {
 		t.Fatalf("final processing_duration_sec = %v, want 10", derivative.ProcessingDurationSec)
