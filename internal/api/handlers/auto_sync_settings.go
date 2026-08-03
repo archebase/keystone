@@ -10,10 +10,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/services/autosync"
-	"github.com/gin-gonic/gin"
 )
 
 type autoSyncSettingsManager interface {

@@ -14,8 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"github.com/jmoiron/sqlx"
+
+	"archebase.com/keystone-edge/internal/services/stereosplit"
 )
 
 const (
@@ -118,17 +119,19 @@ func (m *Manager) CaptureEpisode(ctx context.Context, episodeID int64) (bool, er
 	m.configMu.RLock()
 	defer m.configMu.RUnlock()
 
-	config, err := m.CurrentConfig(ctx)
-	if err != nil {
-		return false, err
+	var upload struct {
+		DeviceType      string `db:"device_type"`
+		AutoSyncEnabled bool   `db:"auto_sync_enabled"`
 	}
-	if !config.Enabled {
-		return false, nil
-	}
-
-	var deviceType string
-	if err := m.db.GetContext(ctx, &deviceType, `
-		SELECT COALESCE(r.device_type, '')
+	if err := m.db.GetContext(ctx, &upload, `
+		SELECT COALESCE(r.device_type, '') AS device_type,
+		       COALESCE((
+			SELECT ascfg.enabled
+			FROM auto_sync_configs ascfg
+			WHERE ascfg.created_at <= e.auto_sync_observed_at
+			ORDER BY ascfg.created_at DESC, ascfg.id DESC
+			LIMIT 1
+		), FALSE) AS auto_sync_enabled
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN workstations ws
@@ -137,9 +140,9 @@ func (m *Manager) CaptureEpisode(ctx context.Context, episodeID int64) (bool, er
 		WHERE e.id = ? AND e.deleted_at IS NULL
 		LIMIT 1
 	`, episodeID); err != nil {
-		return false, fmt.Errorf("resolve auto sync device type for episode %d: %w", episodeID, err)
+		return false, fmt.Errorf("resolve auto sync upload eligibility for episode %d: %w", episodeID, err)
 	}
-	if !supportedDeviceType(deviceType) {
+	if !upload.AutoSyncEnabled || !supportedDeviceType(upload.DeviceType) {
 		return false, nil
 	}
 
@@ -150,7 +153,7 @@ func (m *Manager) CaptureEpisode(ctx context.Context, episodeID int64) (bool, er
 		    auto_sync_device_type = ?,
 		    auto_sync_requested_at = COALESCE(auto_sync_requested_at, ?)
 		WHERE id = ? AND deleted_at IS NULL AND auto_sync_requested = FALSE
-	`, deviceType, now, episodeID)
+	`, upload.DeviceType, now, episodeID)
 	if err != nil {
 		return false, fmt.Errorf("capture auto sync episode %d: %w", episodeID, err)
 	}

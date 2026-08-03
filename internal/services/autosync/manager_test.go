@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
+
+	"archebase.com/keystone-edge/internal/services/stereosplit"
 )
 
 func TestManagerUpdateConfigPersistsEnabledRevision(t *testing.T) {
@@ -62,7 +63,7 @@ func TestManagerReconcileOnceStartsStereoSplitAfterEpisodeQA(t *testing.T) {
 	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 30); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 30); err != nil || !captured {
 		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
 	}
 	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'approved' WHERE id = 30`); err != nil {
@@ -93,7 +94,7 @@ func TestManagerReconcileOnceReenqueuesCapturedPendingQA(t *testing.T) {
 	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 29); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 29); err != nil || !captured {
 		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
 	}
 
@@ -210,7 +211,7 @@ func TestManagerStartReconcilerProcessesCapturedEpisode(t *testing.T) {
 	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 28); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 28); err != nil || !captured {
 		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
 	}
 	qa := newNotifyingQAEnqueuer()
@@ -244,7 +245,7 @@ func TestManagerStartReconcilerDoesNotOverlapStoppingRunner(t *testing.T) {
 	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 27); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 27); err != nil || !captured {
 		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
 	}
 	qa := newBlockingQAEnqueuer()
@@ -294,7 +295,7 @@ func TestManagerReconcileOnceEnqueuesApprovedStereoDerivative(t *testing.T) {
 	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 31); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 31); err != nil || !captured {
 		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
 	}
 	if _, err := db.Exec(`
@@ -330,7 +331,7 @@ func TestManagerReconcileOnceEnqueuesApprovedLiteOriginal(t *testing.T) {
 	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 20); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 20); err != nil || !captured {
 		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
 	}
 	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'approved' WHERE id = 20`); err != nil {
@@ -365,10 +366,10 @@ func TestManagerReconcileOnceAdvancesApprovedBeforeRecoveringPendingQA(t *testin
 	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 15); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 15); err != nil || !captured {
 		t.Fatalf("CaptureEpisode(15) = %t, %v; want true, nil", captured, err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 16); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 16); err != nil || !captured {
 		t.Fatalf("CaptureEpisode(16) = %t, %v; want true, nil", captured, err)
 	}
 	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'approved' WHERE id = 16`); err != nil {
@@ -402,7 +403,7 @@ func TestManagerCaptureEpisodeMarksSupportedUpload(t *testing.T) {
 		t.Fatalf("enable auto sync: %v", err)
 	}
 
-	captured, err := manager.CaptureEpisode(context.Background(), 10)
+	captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 10)
 	if err != nil {
 		t.Fatalf("CaptureEpisode() error = %v", err)
 	}
@@ -424,7 +425,7 @@ func TestManagerCaptureEpisodeMarksSupportedUpload(t *testing.T) {
 		t.Fatalf("captured episode = %+v", marked)
 	}
 
-	captured, err = manager.CaptureEpisode(context.Background(), 11)
+	captured, err = captureEpisodeAtCurrentConfig(t, manager, db, 11)
 	if err != nil {
 		t.Fatalf("CaptureEpisode(unsupported) error = %v", err)
 	}
@@ -432,7 +433,7 @@ func TestManagerCaptureEpisodeMarksSupportedUpload(t *testing.T) {
 		t.Fatal("unsupported device captured = true, want false")
 	}
 
-	captured, err = manager.CaptureEpisode(context.Background(), 9)
+	captured, err = captureEpisodeAtCurrentConfig(t, manager, db, 9)
 	if err != nil {
 		t.Fatalf("CaptureEpisode(non-exact) error = %v", err)
 	}
@@ -447,12 +448,62 @@ func TestManagerCaptureEpisodeDoesNotCaptureWhenDisabled(t *testing.T) {
 	seedAutoSyncEpisode(t, db, 12, DeviceTypeEgoPortalLite)
 
 	manager := NewManager(db, nil, &fakeCloudSyncEnqueuer{}, 0)
-	captured, err := manager.CaptureEpisode(context.Background(), 12)
+	captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 12)
 	if err != nil {
 		t.Fatalf("CaptureEpisode() while disabled error = %v", err)
 	}
 	if captured {
 		t.Fatal("CaptureEpisode() while disabled = true, want false")
+	}
+}
+
+func TestManagerCaptureEpisodeUsesUploadTimeConfigRevision(t *testing.T) {
+	tests := []struct {
+		name               string
+		uploadWhileEnabled bool
+		wantCaptured       bool
+	}{
+		{name: "disabled upload followed by enable", uploadWhileEnabled: false, wantCaptured: false},
+		{name: "enabled upload followed by disable", uploadWhileEnabled: true, wantCaptured: true},
+	}
+
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := newAutoSyncTestDB(t)
+			defer db.Close()
+			manager := NewManager(db, nil, &fakeCloudSyncEnqueuer{}, 0)
+
+			config, err := manager.CurrentConfig(context.Background())
+			if err != nil {
+				t.Fatalf("load bootstrap config: %v", err)
+			}
+			if test.uploadWhileEnabled {
+				config, err = manager.UpdateConfig(context.Background(), true, config.ID, "admin-1")
+				if err != nil {
+					t.Fatalf("enable auto sync: %v", err)
+				}
+			}
+
+			episodeID := int64(60 + index)
+			seedAutoSyncEpisode(t, db, episodeID, DeviceTypeEgoPortalLite)
+			setAutoSyncObservedAt(t, db, episodeID, config.CreatedAt)
+
+			if test.uploadWhileEnabled {
+				if _, err := manager.UpdateConfig(context.Background(), false, config.ID, "admin-1"); err != nil {
+					t.Fatalf("disable auto sync: %v", err)
+				}
+			} else if _, err := manager.UpdateConfig(context.Background(), true, config.ID, "admin-1"); err != nil {
+				t.Fatalf("enable auto sync after upload: %v", err)
+			}
+
+			captured, err := manager.CaptureEpisode(context.Background(), episodeID)
+			if err != nil {
+				t.Fatalf("CaptureEpisode() error = %v", err)
+			}
+			if captured != test.wantCaptured {
+				t.Fatalf("CaptureEpisode() captured = %t, want %t", captured, test.wantCaptured)
+			}
+		})
 	}
 }
 
@@ -467,7 +518,7 @@ func TestManagerReconcileOnceDoesNotAdvanceWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 13); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 13); err != nil || !captured {
 		t.Fatalf("CaptureEpisode(13) = %t, %v; want true, nil", captured, err)
 	}
 	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'approved' WHERE id = 13`); err != nil {
@@ -499,7 +550,7 @@ func TestManagerReconcileOnceRecoversCapturedQAWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enable auto sync: %v", err)
 	}
-	if captured, err := manager.CaptureEpisode(context.Background(), 14); err != nil || !captured {
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 14); err != nil || !captured {
 		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
 	}
 	if _, err := manager.UpdateConfig(context.Background(), false, config.ID, "admin-1"); err != nil {
@@ -603,6 +654,23 @@ func seedAutoSyncEpisode(t *testing.T, db *sqlx.DB, episodeID int64, deviceType 
 	if _, err := db.Exec(`INSERT INTO episodes (id, task_id, workstation_id) VALUES (?, ?, ?)`, episodeID, taskID, workstationID); err != nil {
 		t.Fatalf("seed episode: %v", err)
 	}
+}
+
+func setAutoSyncObservedAt(t *testing.T, db *sqlx.DB, episodeID int64, observedAt time.Time) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE episodes SET auto_sync_observed_at = ? WHERE id = ?`, observedAt, episodeID); err != nil {
+		t.Fatalf("set auto sync observed time: %v", err)
+	}
+}
+
+func captureEpisodeAtCurrentConfig(t *testing.T, manager *Manager, db *sqlx.DB, episodeID int64) (bool, error) {
+	t.Helper()
+	config, err := manager.CurrentConfig(context.Background())
+	if err != nil {
+		t.Fatalf("load current auto sync config: %v", err)
+	}
+	setAutoSyncObservedAt(t, db, episodeID, config.CreatedAt)
+	return manager.CaptureEpisode(context.Background(), episodeID)
 }
 
 type fakeCloudSyncEnqueuer struct {

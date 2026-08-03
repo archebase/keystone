@@ -12,8 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"archebase.com/keystone-edge/internal/services/autosync"
 	"github.com/gin-gonic/gin"
+
+	"archebase.com/keystone-edge/internal/services/autosync"
 )
 
 func TestAutoSyncSettingsHandlerUpdateAcceptsDisabled(t *testing.T) {
