@@ -122,6 +122,7 @@ type Orbit interface {
 	Submit(ctx context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error)
 	Get(ctx context.Context, id string) (orbitapi.Job, error)
 	Logs(ctx context.Context, id string) (string, error)
+	Stop(ctx context.Context, id string) (orbitapi.Job, error)
 }
 
 // ObjectStore is the TOS identity and content seam used for result verification.

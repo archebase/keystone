@@ -66,6 +66,7 @@ CREATE TABLE calibration_captures (
     orbit_request JSON NULL,
     orbit_job_id VARCHAR(191) NULL,
     orbit_log_tail MEDIUMTEXT NULL,
+    cancel_requested_at TIMESTAMP NULL,
     reconcile_after TIMESTAMP NULL,
     processing_started_at TIMESTAMP NULL,
     processing_finished_at TIMESTAMP NULL,

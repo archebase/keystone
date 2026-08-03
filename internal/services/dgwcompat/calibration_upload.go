@@ -241,7 +241,7 @@ func (s *gatewayService) completeCalibrationUpload(
 		return status.Error(codes.FailedPrecondition, "calibration completion differs from stored capture")
 	}
 
-	nextStatus := "uploaded"
+	nextStatus := "queued"
 	if calibrationSession.Status == "succeeded" {
 		nextStatus = "superseded"
 	}

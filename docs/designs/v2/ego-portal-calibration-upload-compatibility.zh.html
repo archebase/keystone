@@ -961,7 +961,8 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>让设备凭证可以上传不绑定数采员、计划和任务的标定 MCAP。</li>
             <li>支持一轮标定持续产生多条 Capture，直到任意一条标定成功。</li>
             <li>让 Ego Portal 通过无需鉴权的 HTTP 接口查询标定 Session 状态。</li>
-            <li>让管理员手动触发 Orbit 标定 Job；Python Job 读取 MCAP，并把一对一结果 JSON 直接写入 TOS。</li>
+            <li>每条 MCAP 上传完成后自动排队并触发 Orbit 标定 Job；Python Job 把一对一结果 JSON 直接写入 TOS。</li>
+            <li>首条成功后停止新任务，并持久化取消同一 Session 中仍在运行的 Orbit Job。</li>
           </ul>
         </div>
         <aside class="decision-side">
@@ -971,7 +972,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>不发布新版公共上传 SDK。</li>
             <li>不改变 Episode、Task 或 QA 接口。</li>
             <li>不把 Ego 本地账号映射为 Keystone 数采员。</li>
-            <li>不自动触发标定；每条已上传 Capture 仍由管理员显式启动 Orbit Job。</li>
+            <li>不要求管理员逐条点击启动标定。</li>
           </ul>
         </aside>
       </div>
@@ -1134,7 +1135,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             </tr>
             <tr>
               <td><code>calibration_capture</code></td>
-              <td>保存 MCAP 元数据并将 Capture 标记为 <code>uploaded</code>。</td>
+              <td>保存 MCAP 元数据并将 Capture 标记为 <code>queued</code>，后台按最大并发自动提交 Orbit。</td>
               <td>不创建 Episode、不修改 Task、不进入 Episode QA 或云同步。</td>
             </tr>
           </tbody>
@@ -1202,7 +1203,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <span class="method">POST</span>
           <div class="route-path">
             /api/v1/calibration-captures/{capture_id}/process
-            <span class="route-desc">admin JWT；把已上传 Capture 加入 Orbit 标定队列，重复调用保持幂等。</span>
+            <span class="route-desc">admin JWT；兼容旧客户端的手动入队接口。新上传已自动入队，重复调用保持幂等。</span>
           </div>
         </div>
         <div class="route-line">
@@ -1288,16 +1289,18 @@ SPDX-License-Identifier: MulanPSL-2.0
       <h3>Capture 主状态流</h3>
       <div class="state-track" aria-label="Calibration Capture 状态机">
         <div class="state">uploading</div>
-        <div class="state">uploaded</div>
-        <div class="state">calibrating</div>
+        <div class="state">queued</div>
+        <div class="state">submitting</div>
+        <div class="state">pending / running</div>
+        <div class="state">verifying</div>
         <div class="state success">succeeded</div>
       </div>
 
-      <p>标定失败的 Capture 进入 <code>failed</code>，但所属 Session 保持 <code>running</code>，Ego 继续录制上传。Session 已成功后才完成的在途 Capture 标记为 <code>superseded</code>。</p>
+      <p>标定失败的 Capture 进入 <code>failed</code>，但所属 Session 保持 <code>running</code>，Ego 继续录制上传。Session 成功后，尚未提交的 Capture 直接标记为 <code>superseded</code>；已提交或运行的 Capture 持久化取消请求，Orbit 停止后再标记为 <code>superseded</code>。</p>
 
       <h3>首条成功原子收敛</h3>
       <div class="impact-note">
-        提交成功结果时，Keystone 在同一事务中更新 Capture、将 Session 从 running 改为 succeeded，并写入 successful_capture_id。只有第一条成功 Capture 能获胜，后续并发结果不能覆盖。
+        提交成功结果时，Keystone 在同一事务中更新 Capture、将 Session 从 running 改为 succeeded、写入 successful_capture_id、淘汰未提交 Capture，并为活跃 Orbit Job 写入可重试的取消请求。只有第一条成功 Capture 能获胜，后续并发结果不能覆盖。
       </div>
     </section>
 
@@ -1312,7 +1315,7 @@ SPDX-License-Identifier: MulanPSL-2.0
       <ul>
         <li>同一设备重复完成相同 <code>capture_id</code> 时，对象路径、文件大小、SHA-256 全部一致则返回成功。</li>
         <li>任一字段不一致时返回 gRPC <code>FailedPrecondition</code>，禁止静默覆盖。</li>
-        <li>同一 Capture 重复调用 <code>POST .../process</code> 不会创建第二个 Orbit 作业。</li>
+        <li>上传完成自动入队；兼容接口 <code>POST .../process</code> 重复调用也不会创建第二个 Orbit 作业。</li>
       </ul>
 
       <h3>Session 成功时的在途请求</h3>
@@ -1332,6 +1335,14 @@ SPDX-License-Identifier: MulanPSL-2.0
             <tr>
               <td>成功前已开始、成功后完成</td>
               <td>允许 <code>CompleteUpload</code> 收口对象，Capture 标记为 <code>superseded</code>。</td>
+            </tr>
+            <tr>
+              <td>成功时仍在队列中</td>
+              <td>不再提交 Orbit，Capture 原子标记为 <code>superseded</code>。</td>
+            </tr>
+            <tr>
+              <td>成功时 Orbit 已提交或运行</td>
+              <td>记录可恢复的取消请求并调用 Orbit <code>Stop</code>；失败按轮询间隔重试，确认停止后标记为 <code>superseded</code>。</td>
             </tr>
             <tr>
               <td>Ego 轮询到 succeeded</td>

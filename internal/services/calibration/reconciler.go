@@ -32,11 +32,12 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	var candidate struct {
-		ID     int64  `db:"id"`
-		Status string `db:"status"`
+		ID              int64  `db:"id"`
+		Status          string `db:"status"`
+		CancelRequested bool   `db:"cancel_requested"`
 	}
 	err := m.db.GetContext(ctx, &candidate, `
-		SELECT id, status
+		SELECT id, status, cancel_requested_at IS NOT NULL AS cancel_requested
 		FROM calibration_captures
 		WHERE status IN (?, ?, ?, ?, ?)
 		  AND (reconcile_after IS NULL OR reconcile_after <= ?)
@@ -48,6 +49,9 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 		return false, fmt.Errorf("select calibration reconciliation candidate: %w", err)
+	}
+	if candidate.CancelRequested {
+		return true, m.reconcileCancellation(ctx, candidate.ID)
 	}
 
 	switch candidate.Status {
@@ -100,7 +104,7 @@ func (m *Manager) freezeQueued(ctx context.Context, capturePK int64) error {
 		return err
 	}
 	if currentConfig.ImageRef == "" {
-		return ErrImageNotConfigured
+		return m.deferCapture(ctx, capturePK, StatusQueued, ErrImageNotConfigured)
 	}
 	image, err := validateProcessingImageRef(currentConfig.ImageRef)
 	if err != nil {
@@ -439,6 +443,23 @@ func (m *Manager) persistVerifiedResult(
 		`, SessionSucceeded, capture.CaptureID, now, capture.CalibrationSessionID, SessionRunning); err != nil {
 			return fmt.Errorf("succeed calibration session: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE calibration_captures
+			SET status = ?, calibration_error = ?, processing_finished_at = ?,
+			    reconcile_after = NULL, updated_at = ?
+			WHERE calibration_session_id = ? AND id <> ? AND status IN (?, ?, ?)
+		`, StatusSuperseded, "superseded by successful capture "+capture.CaptureID, now, now,
+			capture.CalibrationSessionID, capture.ID, StatusUploaded, StatusQueued, StatusVerifying); err != nil {
+			return fmt.Errorf("supersede queued calibration captures: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE calibration_captures
+			SET cancel_requested_at = ?, calibration_error = ?, reconcile_after = ?, updated_at = ?
+			WHERE calibration_session_id = ? AND id <> ? AND status IN (?, ?, ?)
+		`, now, "superseded by successful capture "+capture.CaptureID, now, now,
+			capture.CalibrationSessionID, capture.ID, StatusSubmitting, StatusPending, StatusRunning); err != nil {
+			return fmt.Errorf("request cancellation of active calibration captures: %w", err)
+		}
 	} else {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE calibration_sessions SET updated_at = ? WHERE session_id = ?
@@ -449,7 +470,123 @@ func (m *Manager) persistVerifiedResult(
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit calibration result transaction: %w", err)
 	}
+	if finalStatus == StatusSucceeded && session.Status == SessionRunning {
+		m.wakeReconciler()
+	}
 	return nil
+}
+
+func (m *Manager) reconcileCancellation(ctx context.Context, capturePK int64) error {
+	var row struct {
+		Status            string       `db:"status"`
+		SubmissionID      string       `db:"orbit_submission_id"`
+		JobID             string       `db:"orbit_job_id"`
+		RequestJSON       string       `db:"orbit_request"`
+		CancelRequestedAt sql.NullTime `db:"cancel_requested_at"`
+	}
+	if err := m.db.GetContext(ctx, &row, `
+		SELECT status,
+		       COALESCE(orbit_submission_id, '') AS orbit_submission_id,
+		       COALESCE(orbit_job_id, '') AS orbit_job_id,
+		       COALESCE(orbit_request, '') AS orbit_request,
+		       cancel_requested_at
+		FROM calibration_captures WHERE id = ?
+	`, capturePK); err != nil {
+		return fmt.Errorf("load calibration cancellation: %w", err)
+	}
+	if !row.CancelRequestedAt.Valid {
+		return nil
+	}
+	lookupID := strings.TrimSpace(row.JobID)
+	if lookupID == "" {
+		lookupID = strings.TrimSpace(row.SubmissionID)
+	}
+	if lookupID == "" {
+		return m.finishCanceledCapture(ctx, capturePK, "", "superseded before Orbit submission")
+	}
+	job, err := m.orbit.Get(ctx, lookupID)
+	if err != nil {
+		if errors.Is(err, orbitapi.ErrNotFound) {
+			if row.Status == StatusSubmitting && m.now().UTC().Before(row.CancelRequestedAt.Time.Add(m.cancellationAbsenceGrace())) {
+				return m.deferCancellation(ctx, capturePK, row.CancelRequestedAt.Time.Add(m.cancellationAbsenceGrace()),
+					"waiting to confirm canceled Orbit submission is absent")
+			}
+			return m.finishCanceledCapture(ctx, capturePK, row.JobID, "superseded; Orbit Job is absent")
+		}
+		return m.deferCapture(ctx, capturePK, row.Status, fmt.Errorf("query Orbit Job for cancellation: %w", err))
+	}
+	if row.RequestJSON != "" {
+		var request orbitapi.SubmitRequest
+		if json.Unmarshal([]byte(row.RequestJSON), &request) != nil {
+			return m.deferCapture(ctx, capturePK, row.Status, errors.New("canceled calibration capture has invalid Orbit request"))
+		}
+		if err := validateOrbitJob(job, request); err != nil {
+			return m.deferCapture(ctx, capturePK, row.Status, err)
+		}
+	}
+	if isTerminalOrbitStatus(job.Status) {
+		return m.finishCanceledCapture(ctx, capturePK, job.JobID, "superseded; Orbit Job ended with status "+strings.ToUpper(job.Status))
+	}
+	stopped, err := m.orbit.Stop(ctx, job.JobID)
+	if err != nil {
+		if errors.Is(err, orbitapi.ErrNotFound) {
+			return m.finishCanceledCapture(ctx, capturePK, job.JobID, "superseded; Orbit Job disappeared during cancellation")
+		}
+		return m.deferCapture(ctx, capturePK, row.Status, fmt.Errorf("stop Orbit Job: %w", err))
+	}
+	if strings.TrimSpace(stopped.JobID) == "" {
+		stopped.JobID = job.JobID
+	}
+	if !isTerminalOrbitStatus(stopped.Status) {
+		return m.deferCapture(ctx, capturePK, row.Status,
+			fmt.Errorf("Orbit stop has not reached a terminal status: %s", stopped.Status))
+	}
+	return m.finishCanceledCapture(ctx, capturePK, stopped.JobID,
+		"superseded; Orbit Job ended with status "+strings.ToUpper(stopped.Status))
+}
+
+func (m *Manager) deferCancellation(ctx context.Context, capturePK int64, retryAt time.Time, message string) error {
+	now := m.now().UTC()
+	if _, err := m.db.ExecContext(ctx, `
+		UPDATE calibration_captures
+		SET calibration_error = ?, reconcile_after = ?, updated_at = ?
+		WHERE id = ? AND cancel_requested_at IS NOT NULL
+	`, message, retryAt, now, capturePK); err != nil {
+		return fmt.Errorf("defer calibration cancellation: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) finishCanceledCapture(ctx context.Context, capturePK int64, jobID, message string) error {
+	now := m.now().UTC()
+	logs := m.orbitLogTail(ctx, jobID)
+	if _, err := m.db.ExecContext(ctx, `
+		UPDATE calibration_captures
+		SET status = ?, orbit_job_id = NULLIF(?, ''), orbit_log_tail = ?,
+		    calibration_error = ?, cancel_requested_at = NULL,
+		    processing_finished_at = ?, reconcile_after = NULL, updated_at = ?
+		WHERE id = ? AND cancel_requested_at IS NOT NULL
+	`, StatusSuperseded, strings.TrimSpace(jobID), logs, message, now, now, capturePK); err != nil {
+		return fmt.Errorf("finish canceled calibration capture: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) cancellationAbsenceGrace() time.Duration {
+	grace := 2 * m.pollInterval()
+	if grace < 15*time.Second {
+		return 15 * time.Second
+	}
+	return grace
+}
+
+func isTerminalOrbitStatus(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "SUCCEEDED", "FAILED", "STOPPED":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) deferCapture(ctx context.Context, capturePK int64, expectedStatus string, cause error) error {

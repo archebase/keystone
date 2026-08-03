@@ -7,6 +7,7 @@ package calibration
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -80,6 +81,18 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
 		t.Fatalf("terminal ReconcileOnce() worked=%t error=%v", worked, err)
 	}
+	queuedCaptureID := "d4ad1825-35b4-4572-83aa-70cf3d8dd083"
+	if _, err := db.Exec(`
+		INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+			file_size_bytes, checksum_sha256, logical_upload_id, upload_id,
+			reconcile_after, created_at, updated_at, uploaded_at
+		) VALUES (?, '7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 2, 'queued', 'bucket-1',
+			'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2',
+			'2099-01-01 00:00:00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, queuedCaptureID, "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"); err != nil {
+		t.Fatalf("insert queued capture: %v", err)
+	}
 
 	resultBody := `{
 		"schema_version": 1,
@@ -122,6 +135,13 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	}
 	if session.Status != SessionSucceeded || session.SuccessfulCaptureID != capture.CaptureID || session.ProcessedCount != 1 {
 		t.Fatalf("completed session = %+v", session)
+	}
+	superseded, err := manager.Get(context.Background(), queuedCaptureID)
+	if err != nil {
+		t.Fatalf("Get() queued capture error = %v", err)
+	}
+	if superseded.Status != StatusSuperseded {
+		t.Fatalf("queued capture status = %q, want %q", superseded.Status, StatusSuperseded)
 	}
 }
 
@@ -195,6 +215,133 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 	}
 }
 
+func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET status = 'verifying', processor_image = ?, source_etag = 'source-etag'
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`, testProcessorImage); err != nil {
+		t.Fatalf("prepare winning capture: %v", err)
+	}
+	activeCaptureID := "d4ad1825-35b4-4572-83aa-70cf3d8dd083"
+	if _, err := db.Exec(`
+		INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+			file_size_bytes, checksum_sha256, logical_upload_id, upload_id,
+			processor_image, orbit_submission_id, orbit_job_id, reconcile_after,
+			created_at, updated_at, uploaded_at, processing_started_at
+		) VALUES (?, '7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 2, 'running', 'bucket-1',
+			'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2', ?,
+			'calibration-d4ad1825-35b4-4572-83aa-70cf3d8dd083', 'abs-job-calibration-2',
+			'2099-01-01 00:00:00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+			CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, activeCaptureID, "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		testProcessorImage); err != nil {
+		t.Fatalf("insert active capture: %v", err)
+	}
+
+	resultBody := `{
+		"schema_version": 1,
+		"status": "succeeded",
+		"algorithm_version": "placeholder-v1",
+		"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		"capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"processor_image": "` + testProcessorImage + `",
+		"source": {
+			"uri": "tos://bucket-1/calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap",
+			"size_bytes": 1024,
+			"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+		},
+		"result": {"camera_matrix": [[1,0,0],[0,1,0],[0,0,1]]}
+	}`
+	objects := &fakeObjectStore{objects: map[string]fakeObject{
+		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
+			size: 1024,
+			etag: "source-etag",
+		},
+		"calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/result.json": {
+			size: int64(len(resultBody)),
+			etag: "result-etag",
+			body: resultBody,
+		},
+	}}
+	orbit := &fakeOrbit{job: orbitapi.Job{JobID: "abs-job-calibration-2", Status: "RUNNING"}}
+	manager := NewManager(db, orbit, objects, testCalibrationConfig())
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("verify winning capture worked=%t error=%v", worked, err)
+	}
+	active, err := manager.Get(context.Background(), activeCaptureID)
+	if err != nil {
+		t.Fatalf("Get() active capture error = %v", err)
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("cancel active capture worked=%t error=%v", worked, err)
+	}
+	if len(orbit.stopCalls) != 1 || orbit.stopCalls[0] != "abs-job-calibration-2" {
+		t.Fatalf("Orbit stop calls = %v", orbit.stopCalls)
+	}
+	active, err = manager.Get(context.Background(), activeCaptureID)
+	if err != nil {
+		t.Fatalf("Get() cancelled capture error = %v", err)
+	}
+	if active.Status != StatusSuperseded {
+		t.Fatalf("cancelled capture status = %q, want %q", active.Status, StatusSuperseded)
+	}
+}
+
+func TestManagerRetriesTransientOrbitStopFailure(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET status = 'running', processor_image = ?,
+		    orbit_submission_id = 'calibration-92cd6f2f-d131-4bf0-9b4a-d96258d09011',
+		    orbit_job_id = 'abs-job-calibration-1', cancel_requested_at = ?,
+		    reconcile_after = NULL
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`, testProcessorImage, now); err != nil {
+		t.Fatalf("prepare cancellation retry: %v", err)
+	}
+	orbit := &fakeOrbit{
+		job:     orbitapi.Job{JobID: "abs-job-calibration-1", Status: "RUNNING"},
+		stopErr: errors.New("temporary Orbit failure"),
+	}
+	manager := NewManager(db, orbit, &fakeObjectStore{}, testCalibrationConfig())
+	manager.now = func() time.Time { return now }
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err == nil || !worked {
+		t.Fatalf("first cancellation worked=%t error=%v", worked, err)
+	}
+	if len(orbit.stopCalls) != 1 {
+		t.Fatalf("Orbit stop calls after failure = %v", orbit.stopCalls)
+	}
+	capture, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() deferred capture error = %v", err)
+	}
+	if capture.Status != StatusRunning {
+		t.Fatalf("deferred capture status = %q, want %q", capture.Status, StatusRunning)
+	}
+
+	now = now.Add(time.Second)
+	orbit.stopErr = nil
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("retried cancellation worked=%t error=%v", worked, err)
+	}
+	if len(orbit.stopCalls) != 2 {
+		t.Fatalf("Orbit stop calls after retry = %v", orbit.stopCalls)
+	}
+	capture, err = manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() cancelled capture error = %v", err)
+	}
+	if capture.Status != StatusSuperseded {
+		t.Fatalf("retried capture status = %q, want %q", capture.Status, StatusSuperseded)
+	}
+}
+
 func TestManagerUpdatesAuditedProcessingConfig(t *testing.T) {
 	db := newCalibrationTestDB(t)
 	manager := NewManager(db, nil, nil, testCalibrationConfig())
@@ -257,6 +404,30 @@ func TestManagerRejectsProcessingWhenImageIsUnconfigured(t *testing.T) {
 	}
 }
 
+func TestManagerDefersAutomaticallyQueuedCaptureUntilImageIsConfigured(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	if _, err := db.Exec("UPDATE calibration_processing_configs SET image_ref = NULL WHERE id = 1"); err != nil {
+		t.Fatalf("clear processing image: %v", err)
+	}
+	if _, err := db.Exec("UPDATE calibration_captures SET status = 'queued' WHERE capture_id = ?",
+		"92cd6f2f-d131-4bf0-9b4a-d96258d09011"); err != nil {
+		t.Fatalf("queue capture: %v", err)
+	}
+	manager := NewManager(db, &fakeOrbit{}, &fakeObjectStore{}, testCalibrationConfig())
+	worked, err := manager.ReconcileOnce(context.Background())
+	if !worked || !errors.Is(err, ErrImageNotConfigured) {
+		t.Fatalf("ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	var retryAt sql.NullTime
+	if err := db.Get(&retryAt, "SELECT reconcile_after FROM calibration_captures WHERE capture_id = ?",
+		"92cd6f2f-d131-4bf0-9b4a-d96258d09011"); err != nil {
+		t.Fatalf("query queued retry: %v", err)
+	}
+	if !retryAt.Valid {
+		t.Fatal("reconcile_after is NULL, want deferred retry")
+	}
+}
+
 func TestManagerRejectsProcessingWhenOrbitIsUnavailable(t *testing.T) {
 	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
 	_, _, err := manager.Start(
@@ -273,6 +444,8 @@ type fakeOrbit struct {
 	request     orbitapi.SubmitRequest
 	submitCalls int
 	job         orbitapi.Job
+	stopCalls   []string
+	stopErr     error
 }
 
 func (f *fakeOrbit) Submit(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
@@ -289,6 +462,14 @@ func (f *fakeOrbit) Get(context.Context, string) (orbitapi.Job, error) {
 }
 
 func (f *fakeOrbit) Logs(context.Context, string) (string, error) { return "placeholder logs", nil }
+
+func (f *fakeOrbit) Stop(_ context.Context, id string) (orbitapi.Job, error) {
+	f.stopCalls = append(f.stopCalls, id)
+	if f.stopErr != nil {
+		return orbitapi.Job{}, f.stopErr
+	}
+	return orbitapi.Job{JobID: id, Status: "STOPPED"}, nil
+}
 
 type fakeObject struct {
 	size int64
@@ -388,6 +569,7 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			orbit_request TEXT,
 			orbit_job_id TEXT,
 			orbit_log_tail TEXT,
+			cancel_requested_at TIMESTAMP,
 			reconcile_after TIMESTAMP,
 			processing_started_at TIMESTAMP,
 			processing_finished_at TIMESTAMP,

@@ -219,7 +219,7 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	}
 }
 
-func TestGatewayCompleteCalibrationCapturePersistsCaptureWithoutEpisode(t *testing.T) {
+func TestGatewayCompleteCalibrationCaptureQueuesProcessingWithoutEpisode(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	qa := &fakeEpisodeQAEnqueuer{}
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, qa)
@@ -279,7 +279,7 @@ func TestGatewayCompleteCalibrationCapturePersistsCaptureWithoutEpisode(t *testi
 	`); err != nil {
 		t.Fatalf("query calibration capture: %v", err)
 	}
-	if capture.Status != "uploaded" || capture.ObjectKey != created.GetCredentials().GetObjectKey() ||
+	if capture.Status != "queued" || capture.ObjectKey != created.GetCredentials().GetObjectKey() ||
 		capture.FileSize != 1024 || capture.ChecksumSHA256 != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" ||
 		capture.DurationSec != 30 {
 		t.Fatalf("calibration capture = %+v", capture)
