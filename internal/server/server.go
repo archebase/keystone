@@ -227,6 +227,9 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		)
 		stereoSplitManager = stereosplit.NewManager(db, orbitClient, objectReader, stereoSplitConfig(cfg.Derivatives))
 		dataOpsHandler.SetStereoSplitManager(stereoSplitManager)
+		if calibrationManager != nil {
+			calibrationManager.SetStereoPreprocessor(stereoSplitManager)
+		}
 		if err := dataOpsHandler.ResumeStereoSplitBulkRuns(context.Background()); err != nil {
 			return nil, fmt.Errorf("resume stereo split bulk runs: %w", err)
 		}

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	orbitapi "archebase.com/keystone-edge/internal/orbit"
+	"archebase.com/keystone-edge/internal/services/stereosplit"
 )
 
 const (
@@ -46,7 +47,8 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 		  WHEN cancel_requested_at IS NOT NULL THEN 0
 		  WHEN status IN ('submitting', 'pending', 'running') THEN 1
 		  WHEN status = 'verifying' THEN 2
-		  ELSE 3 END,
+		  WHEN status = 'queued' AND processing_stage = 'calibration' THEN 3
+		  ELSE 4 END,
 		  updated_at, id
 		LIMIT 1
 	`, StatusQueued, StatusSubmitting, StatusPending, StatusRunning, StatusVerifying, m.now().UTC())
@@ -105,6 +107,81 @@ func (m *Manager) freezeQueued(ctx context.Context, capturePK int64) error {
 	if m.objects == nil {
 		return m.failCapture(ctx, capturePK, StatusQueued, "TOS object reader is not configured")
 	}
+	var stage string
+	if err := m.db.GetContext(ctx, &stage, `
+		SELECT processing_stage FROM calibration_captures WHERE id = ?
+	`, capturePK); err != nil {
+		return fmt.Errorf("load queued calibration stage: %w", err)
+	}
+	switch stage {
+	case StageStereoSplit:
+		return m.freezeStereoSplitQueued(ctx, capturePK)
+	case StageCalibration:
+		return m.freezeCalibrationQueued(ctx, capturePK)
+	default:
+		return m.failCapture(ctx, capturePK, StatusQueued, "calibration processing stage is invalid")
+	}
+}
+
+func (m *Manager) freezeStereoSplitQueued(ctx context.Context, capturePK int64) error {
+	if m.stereo == nil {
+		return m.failCapture(ctx, capturePK, StatusQueued, "stereo split preprocessor is not configured")
+	}
+	var capture Capture
+	if err := m.db.GetContext(ctx, &capture, captureSelect+` WHERE c.id = ?`, capturePK); err != nil {
+		return fmt.Errorf("load queued stereo split capture: %w", err)
+	}
+	execution, err := m.stereo.PrepareExecution(ctx, stereosplit.ExecutionInput{
+		SourceBucket:    capture.Bucket,
+		SourceObjectKey: capture.ObjectKey,
+		SourceChecksum:  capture.ChecksumSHA256,
+		OutputScope: path.Join(
+			"calibration",
+			capture.DeviceID,
+			capture.CalibrationSessionID,
+			capture.CaptureID,
+			"stereo-split",
+		),
+		SubmissionID: "calibration-" + capture.CaptureID + "-stereo-split",
+		Generation:   1,
+	})
+	if err != nil {
+		return m.deferCapture(ctx, capturePK, StatusQueued, fmt.Errorf("prepare stereo split: %w", err))
+	}
+	if execution.SourceSizeBytes != capture.FileSizeBytes {
+		return m.failCapture(ctx, capturePK, StatusQueued, "calibration MCAP identity does not match upload completion")
+	}
+	executionJSON, err := json.Marshal(execution)
+	if err != nil {
+		return m.failCapture(ctx, capturePK, StatusQueued, "encode stereo split execution failed")
+	}
+	requestJSON, err := json.Marshal(execution.Request)
+	if err != nil {
+		return m.failCapture(ctx, capturePK, StatusQueued, "encode stereo split Orbit request failed")
+	}
+	now := m.now().UTC()
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE calibration_captures
+		SET status = ?, stereo_split_execution = ?,
+		    orbit_submission_id = ?, orbit_request = ?, reconcile_after = NULL,
+		    calibration_error = NULL, updated_at = ?
+		WHERE id = ? AND status = ? AND processing_stage = ?
+	`, StatusSubmitting, string(executionJSON), execution.Request.SubmissionID,
+		string(requestJSON), now, capturePK, StatusQueued, StageStereoSplit)
+	if err != nil {
+		return fmt.Errorf("freeze stereo split Orbit request: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read stereo split freeze result: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("calibration capture changed while freezing stereo split request")
+	}
+	return nil
+}
+
+func (m *Manager) freezeCalibrationQueued(ctx context.Context, capturePK int64) error {
 	currentConfig, err := m.CurrentProcessingConfig(ctx)
 	if err != nil {
 		return err
@@ -120,18 +197,24 @@ func (m *Manager) freezeQueued(ctx context.Context, capturePK int64) error {
 	if err := m.db.GetContext(ctx, &capture, captureSelect+` WHERE c.id = ?`, capturePK); err != nil {
 		return fmt.Errorf("load queued calibration capture: %w", err)
 	}
-	sourceSize, sourceETag, err := m.objects.StatObject(ctx, capture.Bucket, capture.ObjectKey)
-	if err != nil {
-		return m.deferCapture(ctx, capturePK, StatusQueued, fmt.Errorf("stat calibration MCAP: %w", err))
+	if err := decodeCaptureResult(&capture); err != nil || capture.StereoSplitExecution == nil || capture.StereoSplitResult == nil {
+		return m.failCapture(ctx, capturePK, StatusQueued, "verified stereo split output is missing or invalid")
 	}
-	if sourceSize <= 0 || sourceSize != capture.FileSizeBytes || strings.TrimSpace(sourceETag) == "" {
-		return m.failCapture(ctx, capturePK, StatusQueued, "calibration MCAP identity does not match upload completion")
+	splitExecution := *capture.StereoSplitExecution
+	splitOutput := *capture.StereoSplitResult
+	sourceSize, sourceETag, err := m.objects.StatObject(ctx, splitExecution.OutputBucket, splitOutput.MCAPObjectKey)
+	if err != nil {
+		return m.deferCapture(ctx, capturePK, StatusQueued, fmt.Errorf("stat stereo split MCAP: %w", err))
+	}
+	if sourceSize <= 0 || sourceSize != splitOutput.MCAPSizeBytes ||
+		strings.TrimSpace(sourceETag) == "" || strings.TrimSpace(sourceETag) != splitOutput.MCAPETag {
+		return m.failCapture(ctx, capturePK, StatusQueued, "stereo split MCAP identity changed before calibration")
 	}
 
-	sourceURI := "tos://" + capture.Bucket + "/" + capture.ObjectKey
+	sourceURI := "tos://" + splitExecution.OutputBucket + "/" + splitOutput.MCAPObjectKey
 	resultPrefix := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
 	outputURI := "tos://" + capture.Bucket + "/" + resultPrefix + "/"
-	inputPath := "/bindings/input/capture.mcap"
+	inputPath := "/bindings/input/" + path.Base(splitOutput.MCAPObjectKey)
 	submissionID := "calibration-" + capture.CaptureID
 	backoffLimit := int32(0)
 	ttlSeconds := m.cfg.TTLSecondsAfterDone
@@ -146,7 +229,7 @@ func (m *Manager) freezeQueued(ctx context.Context, capturePK int64) error {
 			"--calibration-session-id", capture.CalibrationSessionID,
 			"--capture-id", capture.CaptureID,
 			"--expected-source-size", strconv.FormatInt(sourceSize, 10),
-			"--expected-source-checksum", strings.ToLower(capture.ChecksumSHA256),
+			"--expected-source-checksum", strings.ToLower(splitOutput.MCAPChecksumSHA256),
 			"--source-uri", sourceURI,
 			"--processor-image", image,
 		},
@@ -405,16 +488,89 @@ type calibrationResult struct {
 }
 
 func (m *Manager) verifyResult(ctx context.Context, capturePK int64) error {
+	var stage string
+	if err := m.db.GetContext(ctx, &stage, `
+		SELECT processing_stage FROM calibration_captures WHERE id = ?
+	`, capturePK); err != nil {
+		return fmt.Errorf("load verifying calibration stage: %w", err)
+	}
+	switch stage {
+	case StageStereoSplit:
+		return m.verifyStereoSplitResult(ctx, capturePK)
+	case StageCalibration:
+		return m.verifyCalibrationResult(ctx, capturePK)
+	default:
+		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration processing stage is invalid")
+	}
+}
+
+func (m *Manager) verifyStereoSplitResult(ctx context.Context, capturePK int64) error {
+	if m.stereo == nil {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "stereo split preprocessor is not configured")
+	}
+	var capture Capture
+	if err := m.db.GetContext(ctx, &capture, captureSelect+` WHERE c.id = ?`, capturePK); err != nil {
+		return fmt.Errorf("load verifying stereo split capture: %w", err)
+	}
+	if err := decodeCaptureResult(&capture); err != nil || capture.StereoSplitExecution == nil {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "frozen stereo split execution is missing or invalid")
+	}
+	output, err := m.stereo.VerifyExecution(ctx, *capture.StereoSplitExecution)
+	if err != nil {
+		if errors.Is(err, stereosplit.ErrOutputNotSettled) {
+			return m.retryVerification(ctx, capture, err)
+		}
+		return m.failCapture(ctx, capturePK, StatusVerifying, fmt.Sprintf("verify stereo split output: %v", err))
+	}
+	outputJSON, err := json.Marshal(output)
+	if err != nil {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "encode verified stereo split output failed")
+	}
+	now := m.now().UTC()
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE calibration_captures
+		SET processing_stage = ?, status = ?, stereo_split_result = ?,
+		    stereo_split_orbit_job_id = orbit_job_id,
+		    stereo_split_orbit_log_tail = orbit_log_tail,
+		    orbit_submission_id = NULL, orbit_request = NULL,
+		    orbit_job_id = NULL, orbit_log_tail = NULL,
+		    submit_attempt_count = 0, verification_attempt_count = 0,
+		    orbit_submit_absent_at = NULL, reconcile_after = NULL,
+		    calibration_error = NULL, updated_at = ?
+		WHERE id = ? AND status = ? AND processing_stage = ?
+	`, StageCalibration, StatusQueued, string(outputJSON), now,
+		capturePK, StatusVerifying, StageStereoSplit)
+	if err != nil {
+		return fmt.Errorf("advance verified stereo split to calibration: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read stereo split stage transition result: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("calibration capture changed while advancing stereo split stage")
+	}
+	m.wakeReconciler()
+	return nil
+}
+
+func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) error {
 	var capture Capture
 	if err := m.db.GetContext(ctx, &capture, captureSelect+` WHERE c.id = ?`, capturePK); err != nil {
 		return fmt.Errorf("load verifying calibration capture: %w", err)
 	}
-	sourceSize, sourceETag, err := m.objects.StatObject(ctx, capture.Bucket, capture.ObjectKey)
-	if err != nil {
-		return m.retryVerification(ctx, capture, fmt.Errorf("stat frozen calibration MCAP: %w", err))
+	if err := decodeCaptureResult(&capture); err != nil || capture.StereoSplitExecution == nil || capture.StereoSplitResult == nil {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "verified stereo split output is missing or invalid")
 	}
-	if sourceSize != capture.FileSizeBytes || strings.TrimSpace(sourceETag) != capture.SourceETag {
-		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration MCAP identity changed during processing")
+	splitExecution := *capture.StereoSplitExecution
+	splitOutput := *capture.StereoSplitResult
+	sourceSize, sourceETag, err := m.objects.StatObject(ctx, splitExecution.OutputBucket, splitOutput.MCAPObjectKey)
+	if err != nil {
+		return m.retryVerification(ctx, capture, fmt.Errorf("stat frozen stereo split MCAP: %w", err))
+	}
+	if sourceSize != splitOutput.MCAPSizeBytes || strings.TrimSpace(sourceETag) != capture.SourceETag ||
+		strings.TrimSpace(sourceETag) != splitOutput.MCAPETag {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "stereo split MCAP identity changed during calibration")
 	}
 	resultKey := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID, resultFileName)
 	resultSize, _, err := m.objects.StatObject(ctx, capture.Bucket, resultKey)
@@ -440,7 +596,7 @@ func (m *Manager) verifyResult(ctx context.Context, capturePK int64) error {
 	if err := json.Unmarshal(data, &result); err != nil {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration result JSON is invalid")
 	}
-	sourceURI := "tos://" + capture.Bucket + "/" + capture.ObjectKey
+	sourceURI := "tos://" + splitExecution.OutputBucket + "/" + splitOutput.MCAPObjectKey
 	if result.SchemaVersion != 1 ||
 		(result.Status != StatusSucceeded && result.Status != StatusFailed) ||
 		strings.TrimSpace(result.AlgorithmVersion) == "" ||
@@ -448,8 +604,8 @@ func (m *Manager) verifyResult(ctx context.Context, capturePK int64) error {
 		result.CaptureID != capture.CaptureID ||
 		result.ProcessorImage != capture.ProcessorImage ||
 		result.Source.URI != sourceURI ||
-		result.Source.SizeBytes != capture.FileSizeBytes ||
-		!strings.EqualFold(result.Source.SHA256, capture.ChecksumSHA256) {
+		result.Source.SizeBytes != splitOutput.MCAPSizeBytes ||
+		!strings.EqualFold(result.Source.SHA256, splitOutput.MCAPChecksumSHA256) {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration result JSON does not match the frozen Capture")
 	}
 	if result.Status == StatusSucceeded && len(result.Result) == 0 {

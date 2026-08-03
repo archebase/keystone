@@ -12,6 +12,7 @@ import (
 	"time"
 
 	orbitapi "archebase.com/keystone-edge/internal/orbit"
+	"archebase.com/keystone-edge/internal/services/stereosplit"
 )
 
 // Capture and Session lifecycle states persisted by the calibration module.
@@ -32,6 +33,9 @@ const (
 
 	SessionRunning   = "running"
 	SessionSucceeded = "succeeded"
+
+	StageStereoSplit = "stereo_split"
+	StageCalibration = "calibration"
 )
 
 // Domain errors returned by the calibration module's public interface.
@@ -82,6 +86,7 @@ type CaptureSummary struct {
 	ObjectETag                string    `db:"object_etag" json:"object_etag,omitempty"`
 	Source                    string    `db:"source" json:"source,omitempty"`
 	LocalOperator             string    `db:"local_operator" json:"local_operator,omitempty"`
+	ProcessingStage           string    `db:"processing_stage" json:"processing_stage"`
 	ProcessorConfigRevisionID int64     `db:"processor_config_revision_id" json:"processor_config_revision_id,omitempty"`
 	ProcessorImage            string    `db:"processor_image" json:"processor_image,omitempty"`
 	SourceETag                string    `db:"source_etag" json:"source_etag,omitempty"`
@@ -100,8 +105,14 @@ type CaptureSummary struct {
 // Capture is one MCAP upload and its one-to-one calibration result.
 type Capture struct {
 	CaptureSummary
-	ResultJSON string `db:"result_json" json:"-"`
-	Result     any    `db:"-" json:"result,omitempty"`
+	StereoSplitExecutionJSON string                         `db:"stereo_split_execution" json:"-"`
+	StereoSplitResultJSON    string                         `db:"stereo_split_result" json:"-"`
+	StereoSplitOrbitJobID    string                         `db:"stereo_split_orbit_job_id" json:"stereo_split_orbit_job_id,omitempty"`
+	StereoSplitOrbitLogTail  string                         `db:"stereo_split_orbit_log_tail" json:"stereo_split_orbit_log_tail,omitempty"`
+	StereoSplitExecution     *stereosplit.ExecutionSnapshot `db:"-" json:"stereo_split_execution,omitempty" swaggertype:"object"`
+	StereoSplitResult        *stereosplit.VerifiedOutput    `db:"-" json:"stereo_split_result,omitempty" swaggertype:"object"`
+	ResultJSON               string                         `db:"result_json" json:"-"`
+	Result                   any                            `db:"-" json:"result,omitempty"`
 }
 
 // SessionStatus is the non-sensitive status exposed to a device poller.
@@ -136,4 +147,10 @@ type Orbit interface {
 type ObjectStore interface {
 	StatObject(ctx context.Context, bucket, objectName string) (size int64, etag string, err error)
 	OpenObject(ctx context.Context, bucket, objectName string) (io.ReadCloser, error)
+}
+
+// StereoPreprocessor prepares and verifies the shared stereo-split Job contract.
+type StereoPreprocessor interface {
+	PrepareExecution(context.Context, stereosplit.ExecutionInput) (stereosplit.ExecutionSnapshot, error)
+	VerifyExecution(context.Context, stereosplit.ExecutionSnapshot) (stereosplit.VerifiedOutput, error)
 }

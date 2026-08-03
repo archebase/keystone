@@ -17,32 +17,78 @@ import (
 	"time"
 
 	orbitapi "archebase.com/keystone-edge/internal/orbit"
+	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
 
 const testProcessorImage = "registry.example/archebase/calibration@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const testStereoProcessorImage = "registry.example/archebase/stereo-split@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+const testSplitOutputKey = "derived/episodes/calibration/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/stereo-split/g1-test/output_bag.mcap"
+const testUploadChecksum = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 
 func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) {
 	db := newCalibrationTestDB(t)
 	orbit := &fakeOrbit{}
+	const captureID = "92cd6f2f-d131-4bf0-9b4a-d96258d09011"
+	const sessionID = "7f9af590-75c2-47ad-b6e0-76ebf05c44f7"
+	const originalKey = "calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap"
+	const splitKey = "derived/episodes/calibration/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/stereo-split/g1-test/output_bag.mcap"
+	const sourceChecksum = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	const splitChecksum = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
-		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
+		originalKey: {
 			size: 1024,
 			etag: "source-etag",
 		},
+		splitKey: {
+			size: 2048,
+			etag: "split-etag",
+		},
 	}}
 	manager := NewManager(db, orbit, objects, testCalibrationConfig())
+	stereo := &fakeStereoPreprocessor{
+		execution: stereosplit.ExecutionSnapshot{
+			Generation:                1,
+			ProcessorConfigRevisionID: 7,
+			ProcessorImage:            testStereoProcessorImage,
+			SourceURI:                 "tos://bucket-1/" + originalKey,
+			SourceETag:                "source-etag",
+			SourceChecksum:            sourceChecksum,
+			SourceSizeBytes:           1024,
+			OutputBucket:              "derived-bucket",
+			OutputPrefix:              strings.TrimSuffix(splitKey, "/output_bag.mcap"),
+			Request: orbitapi.SubmitRequest{
+				SubmissionID: "calibration-" + captureID + "-stereo-split",
+				Image:        testStereoProcessorImage,
+				Command:      []string{"python3", "/app/run_processing.py"},
+				DataBindings: []orbitapi.DataBinding{
+					{URI: "tos://bucket-1/" + originalKey, Path: "/bindings/input/capture.mcap", Mode: "read"},
+					{URI: "tos://derived-bucket/" + strings.TrimSuffix(splitKey, "/output_bag.mcap") + "/", Path: "/bindings/output/", Mode: "write"},
+				},
+			},
+		},
+		output: stereosplit.VerifiedOutput{
+			MCAPObjectKey:      splitKey,
+			MCAPSizeBytes:      2048,
+			MCAPChecksumSHA256: splitChecksum,
+			MCAPETag:           "split-etag",
+			MetadataObjectKey:  strings.TrimSuffix(splitKey, "output_bag.mcap") + "metadata.yaml",
+			ManifestObjectKey:  strings.TrimSuffix(splitKey, "output_bag.mcap") + "processing_manifest.json",
+			ManifestJSON:       `{"status":"succeeded"}`,
+		},
+	}
+	manager.SetStereoPreprocessor(stereo)
 
 	capture, created, err := manager.Start(
 		context.Background(),
-		"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		captureID,
 		"admin-user",
 	)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if !created || capture.Status != StatusQueued {
+	if !created || capture.Status != StatusQueued || capture.ProcessingStage != StageStereoSplit {
 		t.Fatalf("Start() = %+v created=%t", capture, created)
 	}
 
@@ -52,24 +98,76 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
 		t.Fatalf("submit ReconcileOnce() worked=%t error=%v", worked, err)
 	}
-	if orbit.submitCalls != 1 {
-		t.Fatalf("Orbit submit calls = %d, want 1", orbit.submitCalls)
+	if orbit.submitCalls != 1 || stereo.prepareCalls != 1 {
+		t.Fatalf("stereo submission calls: prepare=%d submit=%d", stereo.prepareCalls, orbit.submitCalls)
 	}
-	if orbit.request.Image != testProcessorImage || len(orbit.request.DataBindings) != 2 {
-		t.Fatalf("Orbit request = %+v", orbit.request)
+	if stereo.prepareInput.SourceBucket != "bucket-1" || stereo.prepareInput.SourceObjectKey != originalKey ||
+		stereo.prepareInput.SourceChecksum != sourceChecksum || stereo.prepareInput.Generation != 1 {
+		t.Fatalf("stereo preparation input = %+v", stereo.prepareInput)
+	}
+	if orbit.request.Image != testStereoProcessorImage || orbit.request.Command[1] != "/app/run_processing.py" {
+		t.Fatalf("first Orbit request = %+v", orbit.request)
 	}
 	frozen, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
 	if err != nil {
 		t.Fatalf("Get() frozen capture error = %v", err)
 	}
-	if frozen.ProcessorConfigRevisionID != 1 || frozen.ProcessorImage != testProcessorImage {
-		t.Fatalf("frozen processing config = %+v", frozen)
+	if frozen.StereoSplitExecution == nil || frozen.StereoSplitExecution.ProcessorImage != testStereoProcessorImage {
+		t.Fatalf("frozen stereo split execution = %+v", frozen.StereoSplitExecution)
 	}
 	if got := orbit.request.DataBindings[0].URI; got != "tos://bucket-1/calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap" {
 		t.Fatalf("input binding URI = %q", got)
 	}
-	if got := orbit.request.DataBindings[1].URI; got != "tos://bucket-1/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/" {
-		t.Fatalf("output binding URI = %q", got)
+
+	orbit.job = orbitapi.Job{
+		JobID:        "abs-job-stereo-split-1",
+		SubmissionID: orbit.request.SubmissionID,
+		Status:       "SUCCEEDED",
+		Image:        orbit.request.Image,
+		DataBindings: orbit.request.DataBindings,
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("terminal ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("stereo verification ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	if stereo.verifyCalls != 1 {
+		t.Fatalf("stereo verification calls = %d, want 1", stereo.verifyCalls)
+	}
+	betweenStages, err := manager.Get(context.Background(), captureID)
+	if err != nil {
+		t.Fatalf("Get() between stages error = %v", err)
+	}
+	if betweenStages.Status != StatusQueued || betweenStages.ProcessingStage != StageCalibration ||
+		betweenStages.StereoSplitResult == nil {
+		t.Fatalf("capture between stages = %+v", betweenStages)
+	}
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("calibration freeze ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("calibration submit ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	if orbit.submitCalls != 2 {
+		t.Fatalf("Orbit submit calls = %d, want 2", orbit.submitCalls)
+	}
+	if orbit.request.Image != testProcessorImage || orbit.request.Command[1] != processingCommand {
+		t.Fatalf("second Orbit request = %+v", orbit.request)
+	}
+	if got := orbit.request.DataBindings[0].URI; got != "tos://derived-bucket/"+splitKey {
+		t.Fatalf("calibration input binding URI = %q", got)
+	}
+	if got := orbit.request.DataBindings[1].URI; got != "tos://bucket-1/calibration-results/101/"+sessionID+"/"+captureID+"/" {
+		t.Fatalf("calibration output binding URI = %q", got)
+	}
+	calibrationFrozen, err := manager.Get(context.Background(), captureID)
+	if err != nil {
+		t.Fatalf("Get() calibration stage error = %v", err)
+	}
+	if calibrationFrozen.ProcessorConfigRevisionID != 1 || calibrationFrozen.ProcessorImage != testProcessorImage {
+		t.Fatalf("frozen calibration config = %+v", calibrationFrozen)
 	}
 
 	orbit.job = orbitapi.Job{
@@ -80,8 +178,9 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 		DataBindings: orbit.request.DataBindings,
 	}
 	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
-		t.Fatalf("terminal ReconcileOnce() worked=%t error=%v", worked, err)
+		t.Fatalf("calibration terminal ReconcileOnce() worked=%t error=%v", worked, err)
 	}
+
 	queuedCaptureID := "d4ad1825-35b4-4572-83aa-70cf3d8dd083"
 	if _, err := db.Exec(`
 		INSERT INTO calibration_captures (
@@ -100,13 +199,13 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 		"status": "succeeded",
 		"algorithm_version": "placeholder-v1",
 		"placeholder": true,
-		"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
-		"capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"calibration_session_id": "` + sessionID + `",
+		"capture_id": "` + captureID + `",
 		"processor_image": "` + testProcessorImage + `",
 		"source": {
-			"uri": "tos://bucket-1/calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap",
-			"size_bytes": 1024,
-			"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+			"uri": "tos://derived-bucket/` + splitKey + `",
+			"size_bytes": 2048,
+			"sha256": "` + splitChecksum + `"
 		},
 		"result": {"camera_matrix": [[1,0,0],[0,1,0],[0,0,1]]},
 		"started_at": "2026-08-02T10:00:00Z",
@@ -122,7 +221,7 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 		t.Fatalf("verify ReconcileOnce() worked=%t error=%v", worked, err)
 	}
 
-	capture, err = manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	capture, err = manager.Get(context.Background(), captureID)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -130,7 +229,7 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 		capture.ResultChecksumSHA256 != hex.EncodeToString(resultDigest[:]) {
 		t.Fatalf("completed capture = %+v", capture)
 	}
-	session, err := manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7", 1)
+	session, err := manager.GetSessionStatus(context.Background(), sessionID, 1)
 	if err != nil {
 		t.Fatalf("GetSessionStatus() error = %v", err)
 	}
@@ -146,11 +245,74 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	}
 }
 
-func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
+func TestManagerKeepsSessionRunningWhenStereoSplitVerificationFails(t *testing.T) {
 	db := newCalibrationTestDB(t)
+	executionJSON, err := json.Marshal(newTestStereoPreprocessor().execution)
+	if err != nil {
+		t.Fatalf("marshal stereo execution fixture: %v", err)
+	}
 	if _, err := db.Exec(`
 		UPDATE calibration_captures
-		SET status = 'verifying', processor_image = ?, source_etag = 'source-etag'
+		SET status = ?, processing_stage = ?, stereo_split_execution = ?
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`, StatusVerifying, StageStereoSplit, string(executionJSON)); err != nil {
+		t.Fatalf("prepare stereo verification failure: %v", err)
+	}
+	manager := NewManager(db, nil, &fakeObjectStore{}, testCalibrationConfig())
+	manager.SetStereoPreprocessor(&fakeStereoPreprocessor{verifyErr: errors.New("invalid stereo manifest")})
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err == nil || !worked {
+		t.Fatalf("ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	capture, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() failed stereo capture error = %v", err)
+	}
+	session, err := manager.GetSessionStatus(context.Background(), "7f9af590-75c2-47ad-b6e0-76ebf05c44f7", 1)
+	if err != nil {
+		t.Fatalf("GetSessionStatus() error = %v", err)
+	}
+	if capture.Status != StatusFailed || !strings.Contains(capture.CalibrationError, "invalid stereo manifest") ||
+		session.Status != SessionRunning {
+		t.Fatalf("failed stereo capture=%+v session=%+v", capture, session)
+	}
+}
+
+func TestManagerRetriesUnsettledStereoSplitOutputBeforeCalibration(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	executionJSON, err := json.Marshal(newTestStereoPreprocessor().execution)
+	if err != nil {
+		t.Fatalf("marshal stereo execution fixture: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET status = ?, processing_stage = ?, stereo_split_execution = ?
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`, StatusVerifying, StageStereoSplit, string(executionJSON)); err != nil {
+		t.Fatalf("prepare unsettled stereo output: %v", err)
+	}
+	manager := NewManager(db, nil, &fakeObjectStore{}, testCalibrationConfig())
+	manager.SetStereoPreprocessor(&fakeStereoPreprocessor{verifyErr: stereosplit.ErrOutputNotSettled})
+
+	if worked, err := manager.ReconcileOnce(context.Background()); !errors.Is(err, stereosplit.ErrOutputNotSettled) || !worked {
+		t.Fatalf("ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	capture, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() unsettled stereo capture error = %v", err)
+	}
+	if capture.Status != StatusVerifying || capture.ProcessingStage != StageStereoSplit ||
+		capture.VerificationAttemptCount != 1 {
+		t.Fatalf("unsettled stereo capture = %+v", capture)
+	}
+}
+
+func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	prepareCaptureCalibrationStage(t, db)
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET status = 'verifying', processor_image = ?
 		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
 	`, testProcessorImage); err != nil {
 		t.Fatalf("prepare verifying capture: %v", err)
@@ -164,15 +326,15 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 		"processor_image": "` + testProcessorImage + `",
 		"error_message": "target was not visible",
 		"source": {
-			"uri": "tos://bucket-1/calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap",
+			"uri": "tos://bucket-1/` + testSplitOutputKey + `",
 			"size_bytes": 1024,
 			"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 		}
 	}`
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
-		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
+		testSplitOutputKey: {
 			size: 1024,
-			etag: "source-etag",
+			etag: "split-etag",
 		},
 		"calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/result.json": {
 			size: int64(len(resultBody)),
@@ -270,6 +432,7 @@ func TestManagerPollsActiveCaptureBeforeQueuedCaptureAtCapacity(t *testing.T) {
 		},
 	}}
 	manager := NewManager(db, orbit, objects, testCalibrationConfig())
+	manager.SetStereoPreprocessor(newTestStereoPreprocessor())
 	if _, err := db.Exec(`UPDATE calibration_processing_configs SET max_concurrent = 1 WHERE id = 1`); err != nil {
 		t.Fatalf("set max concurrency: %v", err)
 	}
@@ -314,11 +477,57 @@ func TestManagerPollsActiveCaptureBeforeQueuedCaptureAtCapacity(t *testing.T) {
 	}
 }
 
+func TestManagerPrioritizesCalibrationReadyCaptureOverFreshStereoSplit(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	prepareCaptureCalibrationStage(t, db)
+	if _, err := db.Exec(`
+		UPDATE calibration_captures SET status = 'queued'
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`); err != nil {
+		t.Fatalf("queue calibration-ready capture: %v", err)
+	}
+	const freshCaptureID = "d4ad1825-35b4-4572-83aa-70cf3d8dd083"
+	if _, err := db.Exec(`
+		INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+			file_size_bytes, checksum_sha256, logical_upload_id, upload_id,
+			created_at, updated_at, uploaded_at
+		) VALUES (?, '7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 2, 'queued', 'bucket-1',
+			'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2',
+			'2000-01-01 00:00:00', '2000-01-01 00:00:00', CURRENT_TIMESTAMP)
+	`, freshCaptureID, testUploadChecksum); err != nil {
+		t.Fatalf("insert older fresh stereo capture: %v", err)
+	}
+	objects := &fakeObjectStore{objects: map[string]fakeObject{
+		testSplitOutputKey: {size: 1024, etag: "split-etag"},
+		"capture-2.mcap":   {size: 1024, etag: "source-2-etag"},
+	}}
+	manager := NewManager(db, &fakeOrbit{}, objects, testCalibrationConfig())
+	manager.SetStereoPreprocessor(newTestStereoPreprocessor())
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	var states []struct {
+		CaptureID string `db:"capture_id"`
+		Status    string `db:"status"`
+	}
+	if err := db.Select(&states, `
+		SELECT capture_id, status FROM calibration_captures ORDER BY attempt_no
+	`); err != nil {
+		t.Fatalf("load prioritized captures: %v", err)
+	}
+	if len(states) != 2 || states[0].Status != StatusSubmitting || states[1].Status != StatusQueued {
+		t.Fatalf("capture states = %+v", states)
+	}
+}
+
 func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
 	db := newCalibrationTestDB(t)
+	prepareCaptureCalibrationStage(t, db)
 	if _, err := db.Exec(`
 		UPDATE calibration_captures
-		SET status = 'verifying', processor_image = ?, source_etag = 'source-etag'
+		SET status = 'verifying', processor_image = ?
 		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
 	`, testProcessorImage); err != nil {
 		t.Fatalf("prepare winning capture: %v", err)
@@ -348,16 +557,16 @@ func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
 		"capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
 		"processor_image": "` + testProcessorImage + `",
 		"source": {
-			"uri": "tos://bucket-1/calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap",
+			"uri": "tos://bucket-1/` + testSplitOutputKey + `",
 			"size_bytes": 1024,
 			"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 		},
 		"result": {"camera_matrix": [[1,0,0],[0,1,0],[0,0,1]]}
 	}`
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
-		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
+		testSplitOutputKey: {
 			size: 1024,
-			etag: "source-etag",
+			etag: "split-etag",
 		},
 		"calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/result.json": {
 			size: int64(len(resultBody)),
@@ -367,6 +576,7 @@ func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
 	}}
 	orbit := &fakeOrbit{job: orbitapi.Job{JobID: "abs-job-calibration-2", Status: "RUNNING"}}
 	manager := NewManager(db, orbit, objects, testCalibrationConfig())
+	manager.SetStereoPreprocessor(newTestStereoPreprocessor())
 
 	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
 		t.Fatalf("verify winning capture worked=%t error=%v", worked, err)
@@ -504,6 +714,7 @@ func TestManagerMissingActiveJobFailsAfterGraceAndReleasesCapacity(t *testing.T)
 		},
 	}}
 	manager := NewManager(db, orbit, objects, testCalibrationConfig())
+	manager.SetStereoPreprocessor(newTestStereoPreprocessor())
 	now := time.Date(2026, 8, 3, 11, 0, 0, 0, time.UTC)
 	manager.now = func() time.Time { return now }
 
@@ -561,18 +772,19 @@ func TestManagerMissingActiveJobFailsAfterGraceAndReleasesCapacity(t *testing.T)
 
 func TestManagerStopsRetryingTransientResultVerificationAtLimit(t *testing.T) {
 	db := newCalibrationTestDB(t)
+	prepareCaptureCalibrationStage(t, db)
 	if _, err := db.Exec(`
 		UPDATE calibration_captures
-		SET status = 'verifying', processor_image = ?, source_etag = 'source-etag',
+		SET status = 'verifying', processor_image = ?,
 		    reconcile_after = NULL
 		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
 	`, testProcessorImage); err != nil {
 		t.Fatalf("prepare verifying capture: %v", err)
 	}
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
-		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
+		testSplitOutputKey: {
 			size: 1024,
-			etag: "source-etag",
+			etag: "split-etag",
 		},
 	}}
 	manager := NewManager(db, nil, objects, testCalibrationConfig())
@@ -685,6 +897,7 @@ func TestManagerRejectsProcessingWhenImageIsUnconfigured(t *testing.T) {
 
 func TestManagerDefersAutomaticallyQueuedCaptureUntilImageIsConfigured(t *testing.T) {
 	db := newCalibrationTestDB(t)
+	prepareCaptureCalibrationStage(t, db)
 	if _, err := db.Exec("UPDATE calibration_processing_configs SET image_ref = NULL WHERE id = 1"); err != nil {
 		t.Fatalf("clear processing image: %v", err)
 	}
@@ -740,6 +953,7 @@ func TestManagerRefusesToStartWithoutProcessingDependencies(t *testing.T) {
 
 type fakeOrbit struct {
 	request     orbitapi.SubmitRequest
+	requests    []orbitapi.SubmitRequest
 	submitCalls int
 	job         orbitapi.Job
 	stopCalls   []string
@@ -749,6 +963,7 @@ type fakeOrbit struct {
 func (f *fakeOrbit) Submit(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
 	f.submitCalls++
 	f.request = request
+	f.requests = append(f.requests, request)
 	return orbitapi.SubmitResponse{JobID: "abs-job-calibration-1", SubmissionID: request.SubmissionID}, nil
 }
 
@@ -793,6 +1008,87 @@ func (f *fakeObjectStore) OpenObject(_ context.Context, _ string, objectName str
 		return nil, errors.New("object not found")
 	}
 	return io.NopCloser(strings.NewReader(object.body)), nil
+}
+
+type fakeStereoPreprocessor struct {
+	execution    stereosplit.ExecutionSnapshot
+	output       stereosplit.VerifiedOutput
+	prepareErr   error
+	verifyErr    error
+	prepareInput stereosplit.ExecutionInput
+	prepareCalls int
+	verifyCalls  int
+}
+
+func (f *fakeStereoPreprocessor) PrepareExecution(
+	_ context.Context,
+	input stereosplit.ExecutionInput,
+) (stereosplit.ExecutionSnapshot, error) {
+	f.prepareCalls++
+	f.prepareInput = input
+	return f.execution, f.prepareErr
+}
+
+func (f *fakeStereoPreprocessor) VerifyExecution(
+	context.Context,
+	stereosplit.ExecutionSnapshot,
+) (stereosplit.VerifiedOutput, error) {
+	f.verifyCalls++
+	return f.output, f.verifyErr
+}
+
+func newTestStereoPreprocessor() *fakeStereoPreprocessor {
+	const originalKey = "calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap"
+	return &fakeStereoPreprocessor{execution: stereosplit.ExecutionSnapshot{
+		Generation:                1,
+		ProcessorConfigRevisionID: 7,
+		ProcessorImage:            testStereoProcessorImage,
+		SourceURI:                 "tos://bucket-1/" + originalKey,
+		SourceETag:                "source-etag",
+		SourceChecksum:            testUploadChecksum,
+		SourceSizeBytes:           1024,
+		OutputBucket:              "bucket-1",
+		OutputPrefix:              strings.TrimSuffix(testSplitOutputKey, "/output_bag.mcap"),
+		Request: orbitapi.SubmitRequest{
+			SubmissionID: "calibration-92cd6f2f-d131-4bf0-9b4a-d96258d09011-stereo-split",
+			Image:        testStereoProcessorImage,
+			Command:      []string{"python3", "/app/run_processing.py"},
+			DataBindings: []orbitapi.DataBinding{
+				{URI: "tos://bucket-1/" + originalKey, Path: "/bindings/input/capture.mcap", Mode: "read"},
+				{URI: "tos://bucket-1/" + strings.TrimSuffix(testSplitOutputKey, "/output_bag.mcap") + "/", Path: "/bindings/output/", Mode: "write"},
+			},
+		},
+	}}
+}
+
+func prepareCaptureCalibrationStage(t *testing.T, db *sqlx.DB) {
+	t.Helper()
+	execution := newTestStereoPreprocessor().execution
+	output := stereosplit.VerifiedOutput{
+		MCAPObjectKey:      testSplitOutputKey,
+		MCAPSizeBytes:      1024,
+		MCAPChecksumSHA256: testUploadChecksum,
+		MCAPETag:           "split-etag",
+		MetadataObjectKey:  strings.TrimSuffix(testSplitOutputKey, "output_bag.mcap") + "metadata.yaml",
+		ManifestObjectKey:  strings.TrimSuffix(testSplitOutputKey, "output_bag.mcap") + "processing_manifest.json",
+		ManifestJSON:       `{"status":"succeeded"}`,
+	}
+	executionJSON, err := json.Marshal(execution)
+	if err != nil {
+		t.Fatalf("marshal stereo execution fixture: %v", err)
+	}
+	outputJSON, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal stereo output fixture: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET processing_stage = ?, stereo_split_execution = ?, stereo_split_result = ?,
+		    source_etag = 'split-etag'
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`, StageCalibration, string(executionJSON), string(outputJSON)); err != nil {
+		t.Fatalf("prepare calibration stage fixture: %v", err)
+	}
 }
 
 func testCalibrationConfig() Config {
@@ -860,6 +1156,11 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			source TEXT,
 			local_operator TEXT,
 			uploaded_at TIMESTAMP,
+			processing_stage TEXT NOT NULL DEFAULT 'stereo_split',
+			stereo_split_execution TEXT,
+			stereo_split_orbit_job_id TEXT,
+			stereo_split_orbit_log_tail TEXT,
+			stereo_split_result TEXT,
 			processor_config_revision_id INTEGER,
 			processor_image TEXT,
 			source_etag TEXT,

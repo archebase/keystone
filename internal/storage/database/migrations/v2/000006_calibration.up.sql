@@ -59,6 +59,12 @@ CREATE TABLE calibration_captures (
     local_operator VARCHAR(255) NULL,
     uploaded_at TIMESTAMP NULL,
 
+    processing_stage ENUM('stereo_split', 'calibration') NOT NULL DEFAULT 'stereo_split',
+    stereo_split_execution JSON NULL,
+    stereo_split_orbit_job_id VARCHAR(191) NULL,
+    stereo_split_orbit_log_tail MEDIUMTEXT NULL,
+    stereo_split_result JSON NULL,
+
     processor_config_revision_id BIGINT NULL,
     processor_image VARCHAR(1024) NULL,
     source_etag VARCHAR(255) NULL,

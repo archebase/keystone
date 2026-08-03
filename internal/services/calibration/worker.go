@@ -23,6 +23,9 @@ func (m *Manager) StartReconciler() error {
 	if m.objects == nil {
 		return fmt.Errorf("calibration reconciler TOS object reader is not configured")
 	}
+	if m.stereo == nil {
+		return fmt.Errorf("calibration reconciler stereo split preprocessor is not configured")
+	}
 	m.runnerMu.Lock()
 	defer m.runnerMu.Unlock()
 	if m.runnerCancel != nil {

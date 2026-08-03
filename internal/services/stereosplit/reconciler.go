@@ -5,7 +5,6 @@
 package stereosplit
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -16,12 +15,10 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 
 	orbitapi "archebase.com/keystone-edge/internal/orbit"
-	"archebase.com/keystone-edge/internal/storage/objectrange"
 	"github.com/foxglove/mcap/go/mcap"
 )
 
@@ -407,20 +404,6 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 	if m.orbit == nil {
 		return fmt.Errorf("freeze stereo split: Orbit is not configured")
 	}
-	if m.objects == nil {
-		return fmt.Errorf("freeze stereo split: TOS object reader is not configured")
-	}
-	currentImage, err := m.CurrentImageConfig(ctx)
-	if err != nil {
-		return err
-	}
-	if currentImage.ImageRef == "" {
-		return ErrImageNotConfigured
-	}
-	imageRef, err := validateImageRef(currentImage.ImageRef)
-	if err != nil {
-		return fmt.Errorf("current stereo split image is invalid: %w", err)
-	}
 
 	var episode reconcileEpisodeRow
 	if err := m.db.GetContext(ctx, &episode, `
@@ -442,62 +425,19 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 	if err != nil {
 		return err
 	}
-	sourceSize, sourceETag, err := m.objects.StatObject(ctx, bucket, objectKey)
-	if err != nil {
-		return fmt.Errorf("stat stereo split source: %w", err)
-	}
-	if sourceSize <= 0 || (m.cfg.MaxSourceBytes > 0 && sourceSize > m.cfg.MaxSourceBytes) {
-		return fmt.Errorf("%w: source size %d exceeds allowed range", ErrSourceUnavailable, sourceSize)
-	}
-	if strings.TrimSpace(sourceETag) == "" {
-		return fmt.Errorf("%w: source ETag is missing", ErrSourceUnavailable)
-	}
-
-	randomSuffix, err := randomOutputSuffix()
-	if err != nil {
-		return fmt.Errorf("generate stereo split output prefix: %w", err)
-	}
-	outputPrefix := path.Join(
-		strings.Trim(m.cfg.OutputPrefix, "/"),
-		strconv.FormatInt(candidate.EpisodeID, 10),
-		"stereo-split",
-		fmt.Sprintf("g%d-%s", candidate.Generation, randomSuffix),
-	)
 	submissionID := fmt.Sprintf("derivative-%d-stereo-split-g%d", candidate.ID, candidate.Generation)
-	sourceURI := "tos://" + bucket + "/" + objectKey
-	outputURI := "tos://" + strings.TrimSpace(m.cfg.OutputBucket) + "/" + outputPrefix + "/"
-	inputPath := "/bindings/input/" + path.Base(objectKey)
-	backoffLimit := int32(0)
-	ttlSeconds := m.cfg.TTLSecondsAfterDone
-	deadline := m.cfg.ActiveDeadline
-	request := orbitapi.SubmitRequest{
-		SubmissionID: submissionID,
-		Image:        imageRef,
-		Command:      []string{"python3", processingCommand},
-		Args: []string{
-			"--input", inputPath,
-			"--output-binding", "/bindings/output",
-			"--scratch", "/scratch",
-			"--expected-source-size", strconv.FormatInt(sourceSize, 10),
-			"--expected-source-checksum", normalizedSHA256(episode.Checksum.String),
-			"--source-uri", sourceURI,
-			"--processor-image", imageRef,
-			"--kind", Kind,
-			"--generation", strconv.Itoa(candidate.Generation),
-		},
-		DataBindings: []orbitapi.DataBinding{
-			{URI: sourceURI, Path: inputPath, Mode: "read"},
-			{URI: outputURI, Path: "/bindings/output/", Mode: "write"},
-		},
-		Resources: orbitapi.Resources{
-			Requests: cloneStringMap(m.cfg.Resources.Requests),
-			Limits:   cloneStringMap(m.cfg.Resources.Limits),
-		},
-		TTLSecondsAfterDone:  &ttlSeconds,
-		BackoffLimit:         &backoffLimit,
-		ActiveDeadlineSecond: &deadline,
+	execution, err := m.PrepareExecution(ctx, ExecutionInput{
+		SourceBucket:    bucket,
+		SourceObjectKey: objectKey,
+		SourceChecksum:  episode.Checksum.String,
+		OutputScope:     path.Join(fmt.Sprintf("%d", candidate.EpisodeID), "stereo-split"),
+		SubmissionID:    submissionID,
+		Generation:      candidate.Generation,
+	})
+	if err != nil {
+		return err
 	}
-	requestJSON, err := json.Marshal(request)
+	requestJSON, err := json.Marshal(execution.Request)
 	if err != nil {
 		return fmt.Errorf("encode frozen Orbit request: %w", err)
 	}
@@ -538,9 +478,10 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 		    output_prefix = ?, submit_attempt_count = 0, reconcile_after = NULL,
 		    processing_error = NULL, updated_at = ?
 		WHERE id = ? AND processing_status = ?
-	`, currentImage.ID, imageRef, sourceURI, sourceETag, normalizedSHA256(episode.Checksum.String),
-		sourceSize, ProcessingSubmitting, submissionID, string(requestJSON), now,
-		outputPrefix, now, candidate.ID, ProcessingQueued)
+	`, execution.ProcessorConfigRevisionID, execution.ProcessorImage, execution.SourceURI,
+		execution.SourceETag, execution.SourceChecksum, execution.SourceSizeBytes,
+		ProcessingSubmitting, submissionID, string(requestJSON), now,
+		execution.OutputPrefix, now, candidate.ID, ProcessingQueued)
 	if err != nil {
 		return fmt.Errorf("freeze stereo split Orbit request: %w", err)
 	}
@@ -917,57 +858,21 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	if row.Status != ProcessingVerifying {
 		return nil
 	}
-	if objectrange.NormalizeETag(row.SourceETag) == "" {
-		return m.failVerification(ctx, derivativeID, fmt.Errorf("frozen source ETag is empty"))
-	}
-	sourceBucket, sourceKey, err := parseFrozenTOSURI(row.SourceURI)
+	output, err := m.VerifyExecution(ctx, ExecutionSnapshot{
+		Generation:      row.Generation,
+		ProcessorImage:  row.ProcessorImage,
+		SourceURI:       row.SourceURI,
+		SourceETag:      row.SourceETag,
+		SourceChecksum:  row.SourceChecksum.String,
+		SourceSizeBytes: row.SourceSize,
+		OutputBucket:    m.cfg.OutputBucket,
+		OutputPrefix:    row.OutputPrefix,
+	})
 	if err != nil {
-		return m.failVerification(ctx, derivativeID, err)
-	}
-	sourceSize, sourceETag, err := m.objects.StatObject(ctx, sourceBucket, sourceKey)
-	if err != nil {
-		return m.retryVerification(ctx, row, fmt.Errorf("stat frozen source object: %w", err))
-	}
-	if sourceSize != row.SourceSize || objectrange.NormalizeETag(sourceETag) != objectrange.NormalizeETag(row.SourceETag) {
-		return m.failVerification(ctx, derivativeID, fmt.Errorf("source object identity changed after execution snapshot was frozen"))
-	}
-	manifestKey := path.Join(row.OutputPrefix, manifestName)
-	body, err := m.objects.OpenObject(ctx, m.cfg.OutputBucket, manifestKey)
-	if err != nil {
-		return m.retryVerification(ctx, row, fmt.Errorf("open processing manifest: %w", err))
-	}
-	manifestBytes, readErr := io.ReadAll(io.LimitReader(body, maxManifestBytes+1))
-	closeErr := body.Close()
-	if readErr != nil || closeErr != nil {
-		return m.retryVerification(ctx, row, fmt.Errorf("read processing manifest: read=%v close=%v", readErr, closeErr))
-	}
-	if len(manifestBytes) > maxManifestBytes {
-		return m.failVerification(ctx, derivativeID, fmt.Errorf("processing manifest exceeds %d bytes", maxManifestBytes))
-	}
-	var manifest processingManifest
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		return m.failVerification(ctx, derivativeID, fmt.Errorf("decode processing manifest: %w", err))
-	}
-	if err := validateManifestSnapshot(manifest, row); err != nil {
-		return m.failVerification(ctx, derivativeID, err)
-	}
-	mcapKey := path.Join(row.OutputPrefix, outputMcapName)
-	metadataKey := path.Join(row.OutputPrefix, outputMetadataName)
-	if err := m.verifyOutputObject(ctx, mcapKey, manifest.Outputs.MCAP, true); err != nil {
-		if errors.Is(err, errOutputNotSettled) {
+		if errors.Is(err, ErrOutputNotSettled) {
 			return m.retryVerification(ctx, row, err)
 		}
 		return m.failVerification(ctx, derivativeID, err)
-	}
-	if err := m.verifyOutputObject(ctx, metadataKey, manifest.Outputs.Metadata, false); err != nil {
-		if errors.Is(err, errOutputNotSettled) {
-			return m.retryVerification(ctx, row, err)
-		}
-		return m.failVerification(ctx, derivativeID, err)
-	}
-	duration := manifest.FinishedAt.Sub(manifest.StartedAt).Seconds()
-	if duration < 0 {
-		duration = 0
 	}
 	now := m.now().UTC()
 	result, err := m.db.ExecContext(ctx, `
@@ -978,8 +883,8 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 		    qa_status = ?, qa_next_retry_at = NULL, orbit_delete_status = ?,
 		    reconcile_after = NULL, updated_at = ?
 		WHERE id = ? AND processing_status = ?
-	`, mcapKey, metadataKey, manifestKey, manifest.Outputs.MCAP.SHA256,
-		manifest.Outputs.MCAP.SizeBytes, duration, string(manifestBytes),
+	`, output.MCAPObjectKey, output.MetadataObjectKey, output.ManifestObjectKey, output.MCAPChecksumSHA256,
+		output.MCAPSizeBytes, output.ProcessingDurationSec, output.ManifestJSON,
 		ProcessingSucceeded, now, QAPending, DeletePending, now,
 		derivativeID, ProcessingVerifying)
 	if err != nil {
@@ -994,8 +899,6 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	}
 	return nil
 }
-
-var errOutputNotSettled = errors.New("stereo split output is not settled")
 
 func validateManifestSnapshot(manifest processingManifest, row verificationRow) error {
 	if manifest.SchemaVersion != 1 || manifest.Status != "succeeded" || manifest.Kind != Kind ||
@@ -1013,37 +916,6 @@ func validateManifestSnapshot(manifest processingManifest, row verificationRow) 
 	}
 	if manifest.StartedAt.IsZero() || manifest.FinishedAt.IsZero() || manifest.FinishedAt.Before(manifest.StartedAt) {
 		return fmt.Errorf("processing manifest has invalid timestamps")
-	}
-	return nil
-}
-
-func (m *Manager) verifyOutputObject(ctx context.Context, objectKey string, output manifestOutput, checkMagic bool) error {
-	size, etag, err := m.objects.StatObject(ctx, m.cfg.OutputBucket, objectKey)
-	if err != nil {
-		return fmt.Errorf("%w: stat output object %s: %v", errOutputNotSettled, objectKey, err)
-	}
-	if size != output.SizeBytes || size <= 0 || strings.TrimSpace(etag) == "" {
-		return fmt.Errorf("%w: output object %s identity does not match manifest", errOutputNotSettled, objectKey)
-	}
-	if !checkMagic {
-		return nil
-	}
-	if size < int64(len(mcapMagic)*2) {
-		return fmt.Errorf("output MCAP is too small")
-	}
-	for _, offset := range []int64{0, size - int64(len(mcapMagic))} {
-		body, err := m.objects.OpenObjectRange(ctx, m.cfg.OutputBucket, objectKey, offset, int64(len(mcapMagic)), size, etag)
-		if err != nil {
-			return fmt.Errorf("%w: read output MCAP magic at %d: %v", errOutputNotSettled, offset, err)
-		}
-		data, readErr := io.ReadAll(io.LimitReader(body, int64(len(mcapMagic)+1)))
-		closeErr := body.Close()
-		if readErr != nil || closeErr != nil {
-			return fmt.Errorf("%w: read output MCAP magic at %d: read=%v close=%v", errOutputNotSettled, offset, readErr, closeErr)
-		}
-		if !bytes.Equal(data, mcapMagic) {
-			return fmt.Errorf("output MCAP has invalid magic at %d", offset)
-		}
 	}
 	return nil
 }

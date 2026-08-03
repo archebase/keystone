@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -22,6 +23,7 @@ type Manager struct {
 	db      *sqlx.DB
 	orbit   Orbit
 	objects ObjectStore
+	stereo  StereoPreprocessor
 	cfg     Config
 	now     func() time.Time
 
@@ -30,6 +32,13 @@ type Manager struct {
 	runnerCancel context.CancelFunc
 	runnerDone   chan struct{}
 	wake         chan struct{}
+}
+
+// SetStereoPreprocessor installs the shared stereo-split pipeline dependency.
+func (m *Manager) SetStereoPreprocessor(preprocessor StereoPreprocessor) {
+	if m != nil {
+		m.stereo = preprocessor
+	}
 }
 
 // NewManager constructs the calibration module.
@@ -60,7 +69,7 @@ func (m *Manager) Start(ctx context.Context, captureID, actor string) (Capture, 
 	if currentConfig.ImageRef == "" {
 		return Capture{}, false, ErrImageNotConfigured
 	}
-	if m.orbit == nil || m.objects == nil {
+	if m.orbit == nil || m.objects == nil || m.stereo == nil {
 		return Capture{}, false, ErrProcessingUnavailable
 	}
 	tx, err := m.db.BeginTxx(ctx, nil)
@@ -185,11 +194,27 @@ func (m *Manager) List(ctx context.Context, filter ListFilter) ([]CaptureSummary
 }
 
 func decodeCaptureResult(capture *Capture) error {
-	if capture == nil || strings.TrimSpace(capture.ResultJSON) == "" {
+	if capture == nil {
 		return nil
 	}
-	if err := json.Unmarshal([]byte(capture.ResultJSON), &capture.Result); err != nil {
-		return fmt.Errorf("decode stored calibration result: %w", err)
+	if value := strings.TrimSpace(capture.StereoSplitExecutionJSON); value != "" {
+		var execution stereosplit.ExecutionSnapshot
+		if err := json.Unmarshal([]byte(value), &execution); err != nil {
+			return fmt.Errorf("decode stored stereo split execution: %w", err)
+		}
+		capture.StereoSplitExecution = &execution
+	}
+	if value := strings.TrimSpace(capture.StereoSplitResultJSON); value != "" {
+		var result stereosplit.VerifiedOutput
+		if err := json.Unmarshal([]byte(value), &result); err != nil {
+			return fmt.Errorf("decode stored stereo split result: %w", err)
+		}
+		capture.StereoSplitResult = &result
+	}
+	if value := strings.TrimSpace(capture.ResultJSON); value != "" {
+		if err := json.Unmarshal([]byte(value), &capture.Result); err != nil {
+			return fmt.Errorf("decode stored calibration result: %w", err)
+		}
 	}
 	return nil
 }
@@ -229,6 +254,7 @@ const captureSummaryColumns = `c.id, c.capture_id, c.calibration_session_id, c.a
 	       COALESCE(c.object_etag, '') AS object_etag,
 	       COALESCE(c.source, '') AS source,
 	       COALESCE(c.local_operator, '') AS local_operator,
+	       c.processing_stage,
 	       COALESCE(c.processor_config_revision_id, 0) AS processor_config_revision_id,
 	       COALESCE(c.processor_image, '') AS processor_image,
 	       COALESCE(c.source_etag, '') AS source_etag,
@@ -249,6 +275,10 @@ const captureSummarySelect = `
 
 const captureSelect = `
 	SELECT ` + captureSummaryColumns + `,
+	       COALESCE(c.stereo_split_execution, '') AS stereo_split_execution,
+	       COALESCE(c.stereo_split_orbit_job_id, '') AS stereo_split_orbit_job_id,
+	       COALESCE(c.stereo_split_orbit_log_tail, '') AS stereo_split_orbit_log_tail,
+	       COALESCE(c.stereo_split_result, '') AS stereo_split_result,
 	       COALESCE(c.result_json, '') AS result_json
 	FROM calibration_captures c
 	INNER JOIN calibration_sessions s ON s.session_id = c.calibration_session_id`
