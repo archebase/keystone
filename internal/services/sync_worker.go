@@ -34,14 +34,13 @@ import (
 
 // SyncWorkerConfig provides the runtime configuration for the sync worker.
 type SyncWorkerConfig struct {
-	BatchSize       int
-	MaxConcurrent   int
-	MaxRetries      int
-	AutoScanEnabled bool
-	IntervalSec     int
-	RetryBaseSec    int
-	RetryMaxSec     int
-	RetryJitterSec  int
+	BatchSize      int
+	MaxConcurrent  int
+	MaxRetries     int
+	IntervalSec    int
+	RetryBaseSec   int
+	RetryMaxSec    int
+	RetryJitterSec int
 }
 
 type syncEnqueueRequest struct {
@@ -542,20 +541,6 @@ func (w *SyncWorker) IsRunning() bool {
 // MaxRetries returns the configured automatic retry limit.
 func (w *SyncWorker) MaxRetries() int {
 	return w.cfg.MaxRetries
-}
-
-// AutoScanEnabled returns whether the worker periodically discovers newly eligible episodes.
-func (w *SyncWorker) AutoScanEnabled() bool {
-	return w.cfg.AutoScanEnabled
-}
-
-// DisableAutoScan disables legacy broad approved-Episode discovery. It must be
-// called before Start when a source-aware automatic orchestrator is installed.
-func (w *SyncWorker) DisableAutoScan() {
-	if w == nil {
-		return
-	}
-	w.cfg.AutoScanEnabled = false
 }
 
 // EnqueueEpisode adds a specific episode ID for immediate sync processing.
@@ -1095,34 +1080,6 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 
 	// Then, retry any failed episodes that are due.
 	w.retryFailedEpisodes(ctx)
-
-	if !w.cfg.AutoScanEnabled {
-		return
-	}
-
-	// Finally, find newly eligible episodes and persist them as queued work.
-	ids, err := w.findPendingEpisodes(ctx, false)
-	if err != nil {
-		logger.Printf("[SYNC-WORKER] Failed to find pending episodes: %v", err)
-		return
-	}
-
-	if len(ids) == 0 {
-		return
-	}
-
-	logger.Printf("[SYNC-WORKER] Found %d episodes to sync", len(ids))
-
-	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false, ""); err != nil {
-			if isSkippablePendingError(err) {
-				continue
-			}
-			logger.Printf("[SYNC-WORKER] Failed to persist pending sync for episode %d: %v", id, err)
-			continue
-		}
-		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
-	}
 }
 
 func (w *SyncWorker) dispatchPendingSyncLogs(ctx context.Context) {

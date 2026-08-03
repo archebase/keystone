@@ -79,7 +79,6 @@ func TestLoad(t *testing.T) {
 		"KEYSTONE_MINIO_SECRET_KEY":                    os.Getenv("KEYSTONE_MINIO_SECRET_KEY"),
 		"KEYSTONE_MINIO_BUCKET":                        os.Getenv("KEYSTONE_MINIO_BUCKET"),
 		"KEYSTONE_FACTORY_ID":                          os.Getenv("KEYSTONE_FACTORY_ID"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":              os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
 		"KEYSTONE_SYNC_DP_CONFIG":                      os.Getenv("KEYSTONE_SYNC_DP_CONFIG"),
 		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":            os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
 		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED":          os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
@@ -107,7 +106,6 @@ func TestLoad(t *testing.T) {
 	}()
 
 	// Set test environment variables
-	os.Unsetenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED")
 	os.Unsetenv("KEYSTONE_SYNC_DP_CONFIG")
 	os.Unsetenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED")
 	os.Unsetenv("KEYSTONE_HILBERT_BASE_URL")
@@ -160,9 +158,6 @@ func TestLoad(t *testing.T) {
 		t.Errorf("Load().Storage.Type = %v, want s3", cfg.Storage.Type)
 	}
 
-	if cfg.Sync.AutoScanEnabled {
-		t.Error("Load().Sync.AutoScanEnabled should default to false")
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatalf("os.UserHomeDir() error = %v", err)
@@ -290,7 +285,6 @@ func TestLoadWithCustomEnv(t *testing.T) {
 		"KEYSTONE_QA_MAX_WORKERS":                      os.Getenv("KEYSTONE_QA_MAX_WORKERS"),
 		"KEYSTONE_MAX_MEMORY_MB":                       os.Getenv("KEYSTONE_MAX_MEMORY_MB"),
 		"KEYSTONE_DASHBOARD_DISPLAY_TOKEN":             os.Getenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN"),
-		"KEYSTONE_SYNC_AUTO_SCAN_ENABLED":              os.Getenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED"),
 		"KEYSTONE_CALLBACK_PUBLIC_BASE_URL":            os.Getenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL"),
 		"KEYSTONE_AXON_RECORDER_AUTH_ENABLED":          os.Getenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED"),
 		"KEYSTONE_HILBERT_BASE_URL":                    os.Getenv("KEYSTONE_HILBERT_BASE_URL"),
@@ -325,7 +319,6 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Setenv("KEYSTONE_QA_MAX_WORKERS", "8")
 	os.Setenv("KEYSTONE_MAX_MEMORY_MB", "8192")
 	os.Setenv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", "display-secret")
-	os.Setenv("KEYSTONE_SYNC_AUTO_SCAN_ENABLED", "true")
 	os.Setenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL", "https://keystone.factory.internal")
 	os.Setenv("KEYSTONE_AXON_RECORDER_AUTH_ENABLED", "true")
 	os.Setenv("KEYSTONE_HILBERT_BASE_URL", "https://hilbert.example.test")
@@ -367,9 +360,6 @@ func TestLoadWithCustomEnv(t *testing.T) {
 		t.Errorf("Load().Auth.DashboardDisplayToken = %q, want display-secret", cfg.Auth.DashboardDisplayToken)
 	}
 
-	if !cfg.Sync.AutoScanEnabled {
-		t.Error("Load().Sync.AutoScanEnabled = false, want true")
-	}
 	if !cfg.AxonRecorder.AuthEnabled {
 		t.Error("Load().AxonRecorder.AuthEnabled = false, want true")
 	}

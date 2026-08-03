@@ -913,17 +913,14 @@ func (h *SyncHandler) attachSyncProgress(resp *EpisodeSyncStatusResponse) {
 // @Router       /sync/config [get]
 func (h *SyncHandler) GetSyncConfig(c *gin.Context) {
 	workerRunning := false
-	autoScanEnabled := false
 	maxRetries := 0
 	if h.syncWorker != nil {
 		workerRunning = h.syncWorker.IsRunning()
-		autoScanEnabled = h.syncWorker.AutoScanEnabled()
 		maxRetries = h.syncWorker.MaxRetries()
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"worker_running":    workerRunning,
-		"auto_scan_enabled": autoScanEnabled,
-		"max_retries":       maxRetries,
+		"worker_running": workerRunning,
+		"max_retries":    maxRetries,
 	})
 }
 

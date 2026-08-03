@@ -247,10 +247,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	var autoSyncManager *autosync.Manager
 	var autoSyncSettingsHandler *handlers.AutoSyncSettingsHandler
 	if db != nil && syncWorker != nil && stereoSplitManager != nil {
-		if syncWorker.AutoScanEnabled() {
-			logger.Printf("[AUTO_SYNC] Disabling legacy broad sync scan; the system setting now controls automatic sync")
-		}
-		syncWorker.DisableAutoScan()
 		autoSyncManager = autosync.NewManager(db, stereoSplitManager, syncWorker, 0)
 		autoSyncManager.SetQAEnqueuer(qaHandler)
 		qaHandler.SetAutoSyncCapturer(autoSyncManager)

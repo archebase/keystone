@@ -82,12 +82,11 @@ func TestSyncWriteRoutesRequireAdminWhileReadsAllowCollectors(t *testing.T) {
 	}
 }
 
-func TestGetSyncConfigIncludesAutoScanEnabled(t *testing.T) {
+func TestGetSyncConfigReturnsWorkerState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	worker := services.NewSyncWorker(nil, nil, nil, "", services.SyncWorkerConfig{
-		MaxRetries:      5,
-		AutoScanEnabled: true,
+		MaxRetries: 5,
 	}, nil)
 	router := gin.New()
 	handler := NewSyncHandler(nil, worker)
@@ -102,9 +101,8 @@ func TestGetSyncConfigIncludesAutoScanEnabled(t *testing.T) {
 	}
 
 	var got struct {
-		WorkerRunning   bool `json:"worker_running"`
-		AutoScanEnabled bool `json:"auto_scan_enabled"`
-		MaxRetries      int  `json:"max_retries"`
+		WorkerRunning bool `json:"worker_running"`
+		MaxRetries    int  `json:"max_retries"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -112,11 +110,15 @@ func TestGetSyncConfigIncludesAutoScanEnabled(t *testing.T) {
 	if got.WorkerRunning {
 		t.Fatal("worker_running = true, want false for not-started test worker")
 	}
-	if !got.AutoScanEnabled {
-		t.Fatal("auto_scan_enabled = false, want true")
-	}
 	if got.MaxRetries != 5 {
 		t.Fatalf("max_retries = %d, want 5", got.MaxRetries)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &fields); err != nil {
+		t.Fatalf("decode response fields: %v", err)
+	}
+	if _, exists := fields["auto_scan_enabled"]; exists {
+		t.Fatal("auto_scan_enabled should be removed from the sync config response")
 	}
 }
 
