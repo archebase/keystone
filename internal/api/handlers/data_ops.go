@@ -130,6 +130,7 @@ type dataOpsEpisodeQuery struct {
 	QAStatuses            []string
 	SyncStatuses          []string
 	RobotDeviceIDs        []string
+	DeviceTypes           []string
 	CollectorOperatorIDs  []string
 	DCProjectIDs          []int64
 	DCTaskIDs             []int64
@@ -211,6 +212,7 @@ type DataOpsEpisodeListResponse struct {
 // @Param        qa_status              query     string  false  "Comma-separated QA statuses"
 // @Param        sync_status            query     string  false  "Comma-separated sync statuses: not_started,pending,in_progress,completed,failed,canceled"
 // @Param        robot_device_id        query     string  false  "Comma-separated robot device IDs"
+// @Param        device_type            query     string  false  "Comma-separated robot device types"
 // @Param        collector_operator_id  query     string  false  "Comma-separated collector operator IDs"
 // @Param        dc_project_id          query     string  false  "Comma-separated Hilbert project IDs"
 // @Param        dc_project_name        query     string  false  "Fuzzy Hilbert project name filter"
@@ -326,6 +328,10 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
 	}
+	deviceTypes, err := parseStatsStringListQuery(c, "device_type")
+	if err != nil {
+		return dataOpsEpisodeQuery{}, err
+	}
 	collectorOperatorIDs, err := parseStatsStringListQuery(c, "collector_operator_id")
 	if err != nil {
 		return dataOpsEpisodeQuery{}, err
@@ -346,6 +352,7 @@ func parseDataOpsEpisodeQuery(c *gin.Context) (dataOpsEpisodeQuery, error) {
 		QAStatuses:           qaStatuses,
 		SyncStatuses:         syncStatuses,
 		RobotDeviceIDs:       robotDeviceIDs,
+		DeviceTypes:          deviceTypes,
 		CollectorOperatorIDs: collectorOperatorIDs,
 		DCProjectIDs:         dcProjectIDs,
 		DCTaskIDs:            dcTaskIDs,
@@ -422,6 +429,7 @@ func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 
 	where, args = appendStringInFilter(where, args, "e.qa_status", q.QAStatuses)
 	where, args = appendStringInFilter(where, args, "COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, ''), '')", q.RobotDeviceIDs)
+	where, args = appendStringInFilter(where, args, "COALESCE(r.device_type, '')", q.DeviceTypes)
 	where, args = appendStringInFilter(where, args, "COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, ''), '')", q.CollectorOperatorIDs)
 	where, args = appendInt64InFilter(where, args, "dp.dc_project_id", q.DCProjectIDs)
 	where, args = appendInt64InFilter(where, args, "dp.dc_task_id", q.DCTaskIDs)

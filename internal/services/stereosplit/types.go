@@ -161,6 +161,7 @@ type Derivative struct {
 	Checksum                  string     `db:"checksum" json:"checksum,omitempty"`
 	FileSizeBytes             *int64     `db:"file_size_bytes" json:"file_size_bytes,omitempty"`
 	DurationSec               *float64   `db:"duration_sec" json:"duration_sec,omitempty"`
+	ProcessingDurationSec     *float64   `db:"processing_duration_sec" json:"processing_duration_sec,omitempty"`
 	ProcessingResult          any        `db:"-" json:"processing_result,omitempty"`
 	ProcessingError           string     `db:"processing_error" json:"processing_error,omitempty"`
 	OrbitLogTail              string     `db:"orbit_log_tail" json:"orbit_log_tail,omitempty"`

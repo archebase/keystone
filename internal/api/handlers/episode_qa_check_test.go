@@ -78,6 +78,35 @@ func TestEvaluateMcapMagicCheck(t *testing.T) {
 	}
 }
 
+func TestEpisodeQAHandlerEnqueueEpisodeCapturesAutoSyncBeforeQueueing(t *testing.T) {
+	handler := &EpisodeQAHandler{queue: make(chan int64, 1)}
+	capturer := &fakeAutoSyncEpisodeCapturer{}
+	handler.SetAutoSyncCapturer(capturer)
+
+	handler.EnqueueEpisode(42)
+
+	if capturer.episodeID != 42 {
+		t.Fatalf("captured episode = %d, want 42", capturer.episodeID)
+	}
+	select {
+	case episodeID := <-handler.queue:
+		if episodeID != 42 {
+			t.Fatalf("queued episode = %d, want 42", episodeID)
+		}
+	default:
+		t.Fatal("episode was not queued for automatic QA")
+	}
+}
+
+type fakeAutoSyncEpisodeCapturer struct {
+	episodeID int64
+}
+
+func (f *fakeAutoSyncEpisodeCapturer) CaptureEpisode(_ context.Context, episodeID int64) (bool, error) {
+	f.episodeID = episodeID
+	return true, nil
+}
+
 func TestEvaluateRecordingNotEmptyCheck(t *testing.T) {
 	tests := []struct {
 		name       string

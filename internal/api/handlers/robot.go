@@ -300,7 +300,7 @@ func parseConnectedFilter(raw string) (*bool, error) {
 // ListRobots handles robot listing requests with filtering.
 //
 // @Summary      List robots
-// @Description  Lists devices with optional Workspace, status, connection, device ID, and keyword filters
+// @Description  Lists devices with optional Workspace, status, connection, device ID, device type, and keyword filters
 // @Tags         robots
 // @Accept       json
 // @Produce      json
@@ -309,6 +309,8 @@ func parseConnectedFilter(raw string) (*bool, error) {
 // @Param        connected     query     string  false  "Filter by connection status(es), comma-separated (true/false)"
 // @Param        device_id     query     string  false  "Filter by device ID(s), comma-separated"
 // @Param        device_name   query     string  false  "Search by projected device name"
+// @Param        device_type   query     string  false  "Filter by device type(s), comma-separated"
+// @Param        device_type_name query  string  false  "Search by device type name"
 // @Param        keyword       query     string  false  "Search by device ID"
 // @Param        q             query     string  false  "Alias of keyword"
 // @Param        search        query     string  false  "Alias of keyword"
@@ -345,7 +347,13 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	deviceTypes, err := parseNonEmptyStringList(c.Query("device_type"), "device_type")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	deviceName := strings.TrimSpace(c.Query("device_name"))
+	deviceTypeName := strings.TrimSpace(c.Query("device_type_name"))
 	keyword := firstNonEmptyQuery(c, "keyword", "q", "search")
 
 	whereClause := "WHERE r.deleted_at IS NULL"
@@ -353,10 +361,15 @@ func (h *RobotHandler) ListRobots(c *gin.Context) {
 	whereClause, args = appendInt64InFilter(whereClause, args, "r.workspace_id", workspaceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "r.device_id", deviceIDs)
 	whereClause, args = appendStringInFilter(whereClause, args, "r.status", statuses)
+	whereClause, args = appendStringInFilter(whereClause, args, "r.device_type", deviceTypes)
 
 	if deviceName != "" {
 		whereClause += " AND " + robotDeviceNameSQLExpr(h.db.DriverName()) + " LIKE ?"
 		args = append(args, "%"+deviceName+"%")
+	}
+	if deviceTypeName != "" {
+		whereClause += " AND COALESCE(r.device_type, '') LIKE ?"
+		args = append(args, "%"+deviceTypeName+"%")
 	}
 	if keyword != "" {
 		likeKeyword := "%" + keyword + "%"

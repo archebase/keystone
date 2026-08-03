@@ -25,6 +25,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/storage/s3"
 )
 
@@ -32,7 +33,7 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&workspace_id=0&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&robot_device_id=robot-001,robot-002&collector_operator_id=op001&dc_project_id=13&dc_project_name=Project&dc_task_id=14&dc_task_name=Task&label=recalled_batch", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/data-ops/episodes?limit=20&offset=40&workspace_id=0&created_at_from=2026-06-01T00:00:00Z&created_at_to=2026-06-06T00:00:00Z&q=ep&qa_status=failed,pending_qa&sync_status=not_started,failed&robot_device_id=robot-001,robot-002&device_type=Axon%20Stereo,EgoPortal&collector_operator_id=op001&dc_project_id=13&dc_project_name=Project&dc_task_id=14&dc_task_name=Task&label=recalled_batch", nil)
 
 	got, err := parseDataOpsEpisodeQuery(c)
 	if err != nil {
@@ -56,6 +57,9 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
 	}
+	if strings.Join(got.DeviceTypes, ",") != "Axon Stereo,EgoPortal" {
+		t.Fatalf("unexpected device types: %#v", got.DeviceTypes)
+	}
 	if len(got.DCProjectIDs) != 1 || got.DCProjectIDs[0] != 13 || got.DCProjectName != "Project" {
 		t.Fatalf("unexpected project filters: %+v", got)
 	}
@@ -70,6 +74,16 @@ func TestDataOpsEpisodeWhereIncludesWorkspaceFilter(t *testing.T) {
 		t.Fatalf("workspace filter SQL should use task/workstation fallback: %s", sql)
 	}
 	if len(args) != 2 || args[0] != int64(0) || args[1] != int64(12) {
+		t.Fatalf("unexpected args: %#v", args)
+	}
+}
+
+func TestDataOpsEpisodeWhereIncludesDeviceTypeFilter(t *testing.T) {
+	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{DeviceTypes: []string{"Axon Stereo", "EgoPortal"}})
+	if !strings.Contains(sql, "COALESCE(r.device_type, '') IN (?,?)") {
+		t.Fatalf("device type filter SQL missing: %s", sql)
+	}
+	if len(args) != 2 || args[0] != "Axon Stereo" || args[1] != "EgoPortal" {
 		t.Fatalf("unexpected args: %#v", args)
 	}
 }
@@ -197,6 +211,7 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 		QAStatus:            "failed,pending_qa",
 		SyncStatus:          "not_started,failed",
 		RobotDeviceID:       "robot-001,robot-002",
+		DeviceType:          "Axon Stereo,EgoPortal",
 		CollectorOperatorID: "op001",
 		DCProjectID:         "13",
 		DCProjectName:       "Project",
@@ -226,6 +241,9 @@ func TestParseDataOpsBulkEpisodeFilters(t *testing.T) {
 	}
 	if strings.Join(got.RobotDeviceIDs, ",") != "robot-001,robot-002" || strings.Join(got.CollectorOperatorIDs, ",") != "op001" {
 		t.Fatalf("unexpected string filters: %+v", got)
+	}
+	if strings.Join(got.DeviceTypes, ",") != "Axon Stereo,EgoPortal" {
+		t.Fatalf("unexpected device types: %#v", got.DeviceTypes)
 	}
 	if len(got.DCProjectIDs) != 1 || got.DCProjectIDs[0] != 13 || got.DCProjectName != "Project" {
 		t.Fatalf("unexpected project filters: %+v", got)
@@ -523,6 +541,92 @@ func TestPreviewBulkEpisodeSyncTreatsMissingSyncLogAsEligible(t *testing.T) {
 	}
 	if len(preview.SkippedBreakdown) != 0 {
 		t.Fatalf("unexpected skipped breakdown: %#v", preview.SkippedBreakdown)
+	}
+}
+
+func TestPreviewBulkEpisodeSyncSkipsUnavailableStereoSplitSource(t *testing.T) {
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+
+	for id := int64(1); id <= 5; id++ {
+		if _, err := db.Exec(`
+			INSERT INTO episodes (id, episode_id, task_id, qa_status, cloud_synced, deleted_at, created_at)
+			VALUES (?, ?, 0, 'approved', 0, NULL, '2026-06-01T00:00:00Z')
+		`, id, "episode"); err != nil {
+			t.Fatalf("insert episode %d: %v", id, err)
+		}
+	}
+	if _, err := db.Exec(`
+		INSERT INTO episode_derivatives (episode_id, kind, processing_status, qa_status)
+		VALUES (2, 'stereo_split', 'succeeded', 'approved'),
+		       (3, 'stereo_split', 'running', 'not_started'),
+		       (4, 'stereo_split', 'failed', 'not_started'),
+		       (5, 'stereo_split', 'succeeded', 'rejected')
+	`); err != nil {
+		t.Fatalf("insert derivatives: %v", err)
+	}
+
+	preview, err := h.previewBulkEpisodeSync(context.Background(), dataOpsEpisodeQuery{})
+	if err != nil {
+		t.Fatalf("previewBulkEpisodeSync returned error: %v", err)
+	}
+	if preview.MatchedCount != 5 || preview.EligibleCount != 2 || preview.SkippedCount != 3 {
+		t.Fatalf("preview counts = matched %d eligible %d skipped %d, want 5/2/3",
+			preview.MatchedCount, preview.EligibleCount, preview.SkippedCount)
+	}
+	if len(preview.SyncSourceBreakdown) != 2 ||
+		preview.SyncSourceBreakdown[0].SourceType != services.SyncSourceOriginal || preview.SyncSourceBreakdown[0].Count != 1 ||
+		preview.SyncSourceBreakdown[1].SourceType != services.SyncSourceStereoSplit || preview.SyncSourceBreakdown[1].Count != 1 {
+		t.Fatalf("sync source breakdown=%+v, want one original and one stereo split", preview.SyncSourceBreakdown)
+	}
+	if len(preview.SkippedBreakdown) != 1 ||
+		preview.SkippedBreakdown[0].Reason != "sync_source_unavailable" || preview.SkippedBreakdown[0].Count != 3 {
+		t.Fatalf("skipped breakdown=%+v, want three unavailable sync sources", preview.SkippedBreakdown)
+	}
+}
+
+func TestPreviewBulkEpisodeSyncRespectsClaimedSource(t *testing.T) {
+	db := setupDataOpsBulkPreviewTestDB(t)
+	h := &DataOpsHandler{db: db}
+
+	claimedSources := []string{services.SyncSourceOriginal, services.SyncSourceStereoSplit, services.SyncSourceStereoSplit}
+	for id := int64(1); id <= 3; id++ {
+		if _, err := db.Exec(`
+			INSERT INTO episodes (
+				id, episode_id, task_id, qa_status, cloud_synced,
+				cloud_publish_source, deleted_at, created_at
+			) VALUES (?, ?, 0, 'approved', 0, ?, NULL, '2026-06-01T00:00:00Z')
+		`, id, "episode", claimedSources[id-1]); err != nil {
+			t.Fatalf("insert episode %d: %v", id, err)
+		}
+	}
+	if _, err := db.Exec(`
+		INSERT INTO episode_derivatives (episode_id, kind, processing_status, qa_status)
+		VALUES (1, 'stereo_split', 'succeeded', 'approved'),
+		       (2, 'stereo_split', 'succeeded', 'approved')
+	`); err != nil {
+		t.Fatalf("insert derivatives: %v", err)
+	}
+
+	preview, err := h.previewBulkEpisodeSync(context.Background(), dataOpsEpisodeQuery{})
+	if err != nil {
+		t.Fatalf("previewBulkEpisodeSync returned error: %v", err)
+	}
+	if preview.MatchedCount != 3 || preview.EligibleCount != 2 || preview.SkippedCount != 1 {
+		t.Fatalf("preview counts = matched %d eligible %d skipped %d, want 3/2/1",
+			preview.MatchedCount, preview.EligibleCount, preview.SkippedCount)
+	}
+	if len(preview.SyncSourceBreakdown) != 2 ||
+		preview.SyncSourceBreakdown[0].SourceType != services.SyncSourceOriginal || preview.SyncSourceBreakdown[0].Count != 1 ||
+		preview.SyncSourceBreakdown[1].SourceType != services.SyncSourceStereoSplit || preview.SyncSourceBreakdown[1].Count != 1 {
+		t.Fatalf("sync source breakdown=%+v, want claimed original and stereo split", preview.SyncSourceBreakdown)
+	}
+}
+
+func TestIsBulkSyncSkippedError_UnavailableAutomaticSource(t *testing.T) {
+	err := fmt.Errorf("%w: stereo split is still running", services.ErrSyncSourceUnavailable)
+	if !isBulkSyncSkippedError(err) {
+		t.Fatalf("isBulkSyncSkippedError(%v) = false, want true", err)
 	}
 }
 
@@ -1484,6 +1588,7 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 			workstation_id INTEGER,
 			qa_status TEXT,
 			cloud_synced BOOLEAN NOT NULL DEFAULT 0,
+			cloud_publish_source TEXT,
 			deleted_at TEXT,
 			created_at TEXT NOT NULL
 		)`,
@@ -1524,6 +1629,13 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 			next_retry_at TIMESTAMP NULL,
 			error_message TEXT,
 			completed_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE episode_derivatives (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			episode_id INTEGER NOT NULL,
+			kind TEXT NOT NULL,
+			processing_status TEXT NOT NULL,
+			qa_status TEXT NOT NULL
 		)`,
 		`CREATE TABLE bulk_runs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

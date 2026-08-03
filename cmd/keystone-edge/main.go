@@ -133,14 +133,13 @@ func main() {
 	if cfg.Sync.Enabled && cfg.Hilbert.BaseURL != "" && cfg.Hilbert.AccessKey != "" && cfg.Hilbert.SecretKey != "" &&
 		(minioSourceReader != nil || tosSourceReader != nil) {
 		syncWorker = services.NewSyncWorker(db.DB, nil, s3Client, cfg.Storage.Bucket, services.SyncWorkerConfig{
-			BatchSize:       cfg.Sync.BatchSize,
-			MaxConcurrent:   cfg.Sync.MaxConcurrent,
-			MaxRetries:      cfg.Sync.MaxRetries,
-			AutoScanEnabled: cfg.Sync.AutoScanEnabled,
-			IntervalSec:     cfg.Sync.WorkerIntervalSec,
-			RetryBaseSec:    cfg.Sync.RetryBaseSec,
-			RetryMaxSec:     cfg.Sync.RetryMaxSec,
-			RetryJitterSec:  cfg.Sync.RetryJitterSec,
+			BatchSize:      cfg.Sync.BatchSize,
+			MaxConcurrent:  cfg.Sync.MaxConcurrent,
+			MaxRetries:     cfg.Sync.MaxRetries,
+			IntervalSec:    cfg.Sync.WorkerIntervalSec,
+			RetryBaseSec:   cfg.Sync.RetryBaseSec,
+			RetryMaxSec:    cfg.Sync.RetryMaxSec,
+			RetryJitterSec: cfg.Sync.RetryJitterSec,
 		}, &cfg.Sync)
 		syncWorker.SetHilbertRawDataClient(auth.NewHilbertClient(&cfg.Hilbert))
 		syncWorker.SetSourceObjectReader(minioSourceReader)
@@ -162,7 +161,7 @@ func main() {
 	}
 	if syncWorker != nil {
 		syncWorker.Start()
-		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s auto_scan=%t", cfg.Hilbert.BaseURL, cfg.Sync.AutoScanEnabled)
+		logger.Printf("[SYNC] Hilbert raw-data sync worker started: hilbert_base=%s", cfg.Hilbert.BaseURL)
 	}
 
 	// Start HTTP server after background workers are ready.

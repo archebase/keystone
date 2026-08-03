@@ -293,6 +293,7 @@ func resetDerivativeGenerationTx(ctx context.Context, tx *sqlx.Tx, derivativeID 
 		    orbit_job_id = NULL, orbit_submit_absent_at = NULL, orbit_job_missing_since = NULL,
 		    output_prefix = NULL, mcap_path = NULL, metadata_path = NULL,
 		    manifest_path = NULL, checksum = NULL, file_size_bytes = NULL, duration_sec = NULL,
+		    processing_duration_sec = NULL,
 		    processing_result = NULL, processing_error = NULL, orbit_log_tail = NULL,
 		    submit_attempt_count = 0, verification_attempt_count = 0,
 		    processing_started_at = NULL, processing_finished_at = NULL,

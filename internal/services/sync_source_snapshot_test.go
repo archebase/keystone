@@ -7,12 +7,13 @@ package services
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"archebase.com/keystone-edge/internal/cloud"
 )
 
-func TestOriginalSyncCannotClaimEpisodeWithSuccessfulStereoSplit(t *testing.T) {
+func TestEnqueueEpisodeManual_SelectsSuccessfulApprovedStereoSplit(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	insertEpisodeForSyncWorkerTest(t, db, 40, "approved", false)
 	if _, err := db.Exec(`
@@ -25,15 +26,133 @@ func TestOriginalSyncCannotClaimEpisodeWithSuccessfulStereoSplit(t *testing.T) {
 		t.Fatalf("insert derivative: %v", err)
 	}
 	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.SetStereoSplitSourceBucket("derivative-bucket")
 	worker.running.Store(true)
 
-	err := worker.EnqueueEpisodeManual(context.Background(), 40)
-	if !errors.Is(err, ErrCloudPublishSourceLocked) {
-		t.Fatalf("EnqueueEpisodeManual() error=%v want ErrCloudPublishSourceLocked", err)
+	if err := worker.EnqueueEpisodeManual(context.Background(), 40); err != nil {
+		t.Fatalf("EnqueueEpisodeManual() error=%v", err)
 	}
-	var logs int
-	if err := db.Get(&logs, "SELECT COUNT(*) FROM sync_logs WHERE episode_id = 40"); err != nil || logs != 0 {
-		t.Fatalf("sync log count=%d error=%v want 0", logs, err)
+	var rawSnapshot string
+	if err := db.Get(&rawSnapshot, "SELECT source_snapshot FROM sync_logs WHERE episode_id = 40"); err != nil {
+		t.Fatalf("load source snapshot: %v", err)
+	}
+	snapshot, err := decodeSyncSourceSnapshot(rawSnapshot)
+	if err != nil {
+		t.Fatalf("decode source snapshot: %v", err)
+	}
+	if snapshot.SourceType != SyncSourceStereoSplit || snapshot.Bucket != "derivative-bucket" ||
+		snapshot.ObjectKey != "derived/40/output_bag.mcap" {
+		t.Fatalf("source snapshot=%+v, want approved stereo split", snapshot)
+	}
+}
+
+func TestEnqueueOriginalAutomaticPinsOriginalSource(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 39, "approved", false)
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	if err := worker.EnqueueOriginalAutomatic(context.Background(), 39); err != nil {
+		t.Fatalf("EnqueueOriginalAutomatic() error=%v", err)
+	}
+	var rawSnapshot string
+	if err := db.Get(&rawSnapshot, "SELECT source_snapshot FROM sync_logs WHERE episode_id = 39"); err != nil {
+		t.Fatalf("load source snapshot: %v", err)
+	}
+	snapshot, err := decodeSyncSourceSnapshot(rawSnapshot)
+	if err != nil {
+		t.Fatalf("decode source snapshot: %v", err)
+	}
+	if snapshot.SourceType != SyncSourceOriginal {
+		t.Fatalf("source type=%q, want original", snapshot.SourceType)
+	}
+}
+
+func TestEnqueueEpisodeManual_WaitsForUnavailableStereoSplit(t *testing.T) {
+	tests := []struct {
+		name             string
+		processingStatus string
+		qaStatus         string
+	}{
+		{name: "processing", processingStatus: "running", qaStatus: "not_started"},
+		{name: "processing_failed", processingStatus: "failed", qaStatus: "not_started"},
+		{name: "qa_not_approved", processingStatus: "succeeded", qaStatus: "rejected"},
+	}
+
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := newTestSyncWorkerDB(t)
+			episodeID := int64(43 + index)
+			insertEpisodeForSyncWorkerTest(t, db, episodeID, "approved", false)
+			if _, err := db.Exec(`
+				INSERT INTO episode_derivatives (
+					episode_id, kind, generation, processing_status, qa_status,
+					mcap_path, checksum, file_size_bytes
+				) VALUES (?, 'stereo_split', 1, ?, ?, NULL, NULL, NULL)
+			`, episodeID, test.processingStatus, test.qaStatus); err != nil {
+				t.Fatalf("insert derivative: %v", err)
+			}
+			worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+			worker.running.Store(true)
+
+			err := worker.EnqueueEpisodeManual(context.Background(), episodeID)
+			if !errors.Is(err, ErrSyncSourceUnavailable) {
+				t.Fatalf("EnqueueEpisodeManual() error=%v want ErrSyncSourceUnavailable", err)
+			}
+			var logs int
+			if err := db.Get(&logs, "SELECT COUNT(*) FROM sync_logs WHERE episode_id = ?", episodeID); err != nil || logs != 0 {
+				t.Fatalf("sync log count=%d error=%v want 0", logs, err)
+			}
+		})
+	}
+}
+
+func TestEnqueueEpisodeManual_ReusesClaimedOriginalSource(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 44, "approved", false)
+	if _, err := db.Exec("UPDATE episodes SET cloud_publish_source = 'original' WHERE id = 44"); err != nil {
+		t.Fatalf("claim original source: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO episode_derivatives (
+			episode_id, kind, generation, processing_status, qa_status,
+			mcap_path, checksum, file_size_bytes
+		) VALUES (44, 'stereo_split', 1, 'succeeded', 'approved',
+		          'derived/44/output_bag.mcap', ?, 200)
+	`, testSyncSHA256); err != nil {
+		t.Fatalf("insert derivative: %v", err)
+	}
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	if err := worker.EnqueueEpisodeManual(context.Background(), 44); err != nil {
+		t.Fatalf("EnqueueEpisodeManual() error=%v", err)
+	}
+	var rawSnapshot string
+	if err := db.Get(&rawSnapshot, "SELECT source_snapshot FROM sync_logs WHERE episode_id = 44"); err != nil {
+		t.Fatalf("load source snapshot: %v", err)
+	}
+	snapshot, err := decodeSyncSourceSnapshot(rawSnapshot)
+	if err != nil {
+		t.Fatalf("decode source snapshot: %v", err)
+	}
+	if snapshot.SourceType != SyncSourceOriginal {
+		t.Fatalf("source type=%q, want original", snapshot.SourceType)
+	}
+}
+
+func TestEnqueueEpisodeManual_WaitsForMissingClaimedStereoSplit(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 47, "approved", false)
+	if _, err := db.Exec("UPDATE episodes SET cloud_publish_source = 'stereo_split' WHERE id = 47"); err != nil {
+		t.Fatalf("claim stereo split source: %v", err)
+	}
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	err := worker.EnqueueEpisodeManual(context.Background(), 47)
+	if !errors.Is(err, ErrSyncSourceUnavailable) {
+		t.Fatalf("EnqueueEpisodeManual() error=%v want ErrSyncSourceUnavailable", err)
 	}
 }
 
@@ -130,7 +249,13 @@ func TestStereoSplitSyncClaimsAndReusesFrozenSnapshot(t *testing.T) {
 	if _, err := db.Exec("UPDATE episode_derivatives SET mcap_path = 'mutated/output.mcap' WHERE id = ?", derivativeID); err != nil {
 		t.Fatalf("mutate derivative: %v", err)
 	}
-	if err := worker.EnqueueStereoSplitManual(context.Background(), 41); err != nil {
+	if err := worker.EnqueueEpisodeManual(context.Background(), 41); err == nil || !strings.Contains(err.Error(), "qa_status") {
+		t.Fatalf("manual retry with unapproved Episode error=%v, want qa_status rejection", err)
+	}
+	if _, err := db.Exec("UPDATE episodes SET qa_status = 'approved' WHERE id = 41"); err != nil {
+		t.Fatalf("approve Episode: %v", err)
+	}
+	if err := worker.EnqueueEpisodeManual(context.Background(), 41); err != nil {
 		t.Fatalf("manual retry error=%v", err)
 	}
 	var latestRaw string
@@ -140,8 +265,8 @@ func TestStereoSplitSyncClaimsAndReusesFrozenSnapshot(t *testing.T) {
 	if latestRaw != firstRaw {
 		t.Fatalf("retry snapshot changed\nfirst=%s\nretry=%s", firstRaw, latestRaw)
 	}
-	if err := worker.EnqueueEpisodeManual(context.Background(), 41); !errors.Is(err, ErrCloudPublishSourceLocked) {
-		t.Fatalf("original enqueue after stereo claim error=%v want source lock", err)
+	if err := worker.EnqueueEpisodeManual(context.Background(), 41); !errors.Is(err, ErrSyncAlreadyInProgress) {
+		t.Fatalf("second manual retry error=%v want ErrSyncAlreadyInProgress", err)
 	}
 }
 

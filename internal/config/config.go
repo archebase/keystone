@@ -84,10 +84,9 @@ type QAConfig struct {
 
 // SyncConfig synchronization configuration
 type SyncConfig struct {
-	Enabled         bool
-	AutoScanEnabled bool
-	BatchSize       int
-	MaxRetries      int
+	Enabled    bool
+	BatchSize  int
+	MaxRetries int
 
 	// Cloud upload settings (data-platform integration)
 	AuthEndpoint       string // gRPC endpoint for AuthService
@@ -245,7 +244,6 @@ func Load() (*Config, error) {
 		},
 		Sync: SyncConfig{
 			Enabled:            getEnvBool("KEYSTONE_SYNC_ENABLED", true),
-			AutoScanEnabled:    getEnvBool("KEYSTONE_SYNC_AUTO_SCAN_ENABLED", false),
 			BatchSize:          getEnvInt("KEYSTONE_SYNC_BATCH_SIZE", 10),
 			MaxRetries:         getEnvInt("KEYSTONE_SYNC_MAX_RETRIES", 5),
 			AuthEndpoint:       getEnv("KEYSTONE_CLOUD_AUTH_ENDPOINT", ""),
@@ -536,9 +534,6 @@ func (c *Config) Validate() error {
 	if c.Derivatives.Enabled {
 		if !strings.EqualFold(strings.TrimSpace(c.TOSStorage.Type), "tos") {
 			return fmt.Errorf("TOS storage must be configured when derivative processing is enabled")
-		}
-		if c.Sync.AutoScanEnabled {
-			return fmt.Errorf("KEYSTONE_SYNC_AUTO_SCAN_ENABLED must be false when derivative processing is enabled")
 		}
 		orbitURL, err := url.Parse(strings.TrimSpace(c.Derivatives.OrbitBaseURL))
 		if err != nil || orbitURL.Scheme == "" || orbitURL.Host == "" ||

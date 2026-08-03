@@ -55,6 +55,7 @@ type dataProductionStatsQuery struct {
 	WorkspaceIDs         []int64
 	SourceID             string
 	RobotDeviceIDs       []string
+	DeviceTypes          []string
 	CollectorOperatorIDs []string
 	DCProjectIDs         []int64
 	DCTaskIDs            []int64
@@ -274,6 +275,10 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 	if err != nil {
 		return dataProductionStatsQuery{}, err
 	}
+	deviceTypes, err := parseStatsStringListQuery(c, "device_type")
+	if err != nil {
+		return dataProductionStatsQuery{}, err
+	}
 	collectorOperatorIDs := []string{}
 	if !ignoreCollectorOperatorFilter {
 		collectorOperatorIDs, err = parseStatsStringListQuery(c, "collector_operator_id")
@@ -311,6 +316,7 @@ func parseDataProductionStatsQueryWithOptions(c *gin.Context, requireGranularity
 		WorkspaceIDs:         workspaceIDs,
 		SourceID:             strings.TrimSpace(c.Query("source_id")),
 		RobotDeviceIDs:       robotDeviceIDs,
+		DeviceTypes:          deviceTypes,
 		CollectorOperatorIDs: collectorOperatorIDs,
 		DCProjectIDs:         dcProjectIDs,
 		DCTaskIDs:            dcTaskIDs,
@@ -891,6 +897,7 @@ func (h *DataProductionStatisticsHandler) filteredProductionRecordsSQL(q dataPro
 	}
 	conditions, args = appendStatsInt64InCondition(conditions, args, "workspace_id", q.WorkspaceIDs)
 	conditions, args = appendStatsInCondition(conditions, args, "robot_device_id", q.RobotDeviceIDs)
+	conditions, args = appendStatsInCondition(conditions, args, "device_type", q.DeviceTypes)
 	conditions, args = appendStatsInCondition(conditions, args, "collector_operator_id", q.CollectorOperatorIDs)
 	conditions, args = appendStatsInt64InCondition(conditions, args, "dc_project_id", q.DCProjectIDs)
 	conditions, args = appendStatsInt64InCondition(conditions, args, "dc_task_id", q.DCTaskIDs)
@@ -964,6 +971,7 @@ func productionRecordsSQL() string {
 				NULLIF(ws.robot_serial, ''),
 				''
 			) AS robot_device_name,
+			COALESCE(r.device_type, '') AS device_type,
 			COALESCE(dc.operator_id, ws.collector_operator_id, '') AS collector_operator_id,
 			COALESCE(dc.name, ws.collector_name, '') AS collector_name,
 			dp.dc_project_id AS dc_project_id,

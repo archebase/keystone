@@ -34,14 +34,13 @@ import (
 
 // SyncWorkerConfig provides the runtime configuration for the sync worker.
 type SyncWorkerConfig struct {
-	BatchSize       int
-	MaxConcurrent   int
-	MaxRetries      int
-	AutoScanEnabled bool
-	IntervalSec     int
-	RetryBaseSec    int
-	RetryMaxSec     int
-	RetryJitterSec  int
+	BatchSize      int
+	MaxConcurrent  int
+	MaxRetries     int
+	IntervalSec    int
+	RetryBaseSec   int
+	RetryMaxSec    int
+	RetryJitterSec int
 }
 
 type syncEnqueueRequest struct {
@@ -544,19 +543,21 @@ func (w *SyncWorker) MaxRetries() int {
 	return w.cfg.MaxRetries
 }
 
-// AutoScanEnabled returns whether the worker periodically discovers newly eligible episodes.
-func (w *SyncWorker) AutoScanEnabled() bool {
-	return w.cfg.AutoScanEnabled
-}
-
 // EnqueueEpisode adds a specific episode ID for immediate sync processing.
 func (w *SyncWorker) EnqueueEpisode(ctx context.Context, episodeID int64) error {
 	return w.enqueueEpisode(ctx, episodeID, false)
 }
 
-// EnqueueEpisodeManual adds a specific episode ID for immediate sync processing,
-// allowing explicit API-triggered retries even after automatic retries are exhausted.
+// EnqueueEpisodeManual adds a specific episode ID for immediate sync processing.
+// It selects an approved stereo-split derivative when available, otherwise the
+// original Episode object, and preserves the claimed source for retries.
 func (w *SyncWorker) EnqueueEpisodeManual(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisodeManual(ctx, episodeID, "", syncSourceAuto)
+}
+
+// EnqueueOriginalAutomatic persists an approved original Episode as the
+// canonical cloud source and dispatches it through the existing worker pool.
+func (w *SyncWorker) EnqueueOriginalAutomatic(ctx context.Context, episodeID int64) error {
 	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceOriginal)
 }
 
@@ -566,13 +567,14 @@ func (w *SyncWorker) EnqueueStereoSplitManual(ctx context.Context, episodeID int
 	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceStereoSplit)
 }
 
-// EnqueueEpisodeManualForBulkRun persists a manual sync request with its originating bulk run.
+// EnqueueEpisodeManualForBulkRun persists an automatically sourced manual sync
+// request with its originating bulk run.
 func (w *SyncWorker) EnqueueEpisodeManualForBulkRun(ctx context.Context, episodeID int64, bulkRunID string) error {
 	bulkRunID = strings.TrimSpace(bulkRunID)
 	if bulkRunID == "" {
 		return fmt.Errorf("bulk run ID is required")
 	}
-	return w.enqueueEpisodeManual(ctx, episodeID, bulkRunID, SyncSourceOriginal)
+	return w.enqueueEpisodeManual(ctx, episodeID, bulkRunID, syncSourceAuto)
 }
 
 func (w *SyncWorker) enqueueEpisodeManual(ctx context.Context, episodeID int64, bulkRunID, sourceType string) error {
@@ -664,9 +666,10 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 	if w.db == nil {
 		return nil
 	}
-	if sourceType != SyncSourceOriginal && sourceType != SyncSourceStereoSplit {
+	if sourceType != syncSourceAuto && sourceType != SyncSourceOriginal && sourceType != SyncSourceStereoSplit {
 		return fmt.Errorf("unsupported sync source type %q", sourceType)
 	}
+	automaticSource := sourceType == syncSourceAuto
 
 	tx, err := w.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -692,6 +695,9 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 	if episode.CloudSynced {
 		return fmt.Errorf("%w: episode %d", ErrEpisodeAlreadySynced, episodeID)
 	}
+	if automaticSource && episode.QAStatus != "approved" {
+		return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QAStatus)
+	}
 
 	var latest struct {
 		ID             int64          `db:"id"`
@@ -709,20 +715,28 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 	`+lockClause, episodeID)
 	var snapshot SyncSourceSnapshot
 	if errors.Is(err, sql.ErrNoRows) {
+		if sourceType == syncSourceAuto {
+			sourceType, err = w.resolveManualSyncSourceTx(ctx, tx, episode)
+			if err != nil {
+				return err
+			}
+		}
 		if sourceType == SyncSourceOriginal {
 			if episode.QAStatus != "approved" {
 				return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QAStatus)
 			}
-			var derivativeConflict int
-			if err := tx.GetContext(ctx, &derivativeConflict, `
-				SELECT COUNT(*) FROM episode_derivatives
-				WHERE episode_id = ? AND kind = 'stereo_split'
-				  AND processing_status IN ('queued', 'submitting', 'pending', 'running', 'verifying', 'succeeded')
-			`, episodeID); err != nil {
-				return fmt.Errorf("check stereo split sync conflict: %w", err)
-			}
-			if derivativeConflict > 0 {
-				return fmt.Errorf("%w: stereo split processing or output already exists", ErrCloudPublishSourceLocked)
+			if !automaticSource {
+				var derivativeConflict int
+				if err := tx.GetContext(ctx, &derivativeConflict, `
+					SELECT COUNT(*) FROM episode_derivatives
+					WHERE episode_id = ? AND kind = 'stereo_split'
+					  AND processing_status IN ('queued', 'submitting', 'pending', 'running', 'verifying', 'succeeded')
+				`, episodeID); err != nil {
+					return fmt.Errorf("check stereo split sync conflict: %w", err)
+				}
+				if derivativeConflict > 0 {
+					return fmt.Errorf("%w: stereo split processing or output already exists", ErrCloudPublishSourceLocked)
+				}
 			}
 			snapshot, err = w.buildOriginalSourceSnapshot(episode)
 		} else {
@@ -753,6 +767,17 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 	}
 	if err != nil {
 		return fmt.Errorf("lock latest sync_log: %w", err)
+	}
+	if sourceType == syncSourceAuto {
+		if latest.SourceSnapshot.Valid && strings.TrimSpace(latest.SourceSnapshot.String) != "" {
+			existingSnapshot, decodeErr := decodeSyncSourceSnapshot(latest.SourceSnapshot.String)
+			if decodeErr != nil {
+				return newNonRetryableSyncError("latest sync_log %d has invalid source snapshot: %v", latest.ID, decodeErr)
+			}
+			sourceType = existingSnapshot.SourceType
+		} else {
+			sourceType = SyncSourceOriginal
+		}
 	}
 	if !latest.SourceSnapshot.Valid || strings.TrimSpace(latest.SourceSnapshot.String) == "" {
 		if sourceType != SyncSourceOriginal {
@@ -1055,34 +1080,6 @@ func (w *SyncWorker) pollAndProcess(ctx context.Context) {
 
 	// Then, retry any failed episodes that are due.
 	w.retryFailedEpisodes(ctx)
-
-	if !w.cfg.AutoScanEnabled {
-		return
-	}
-
-	// Finally, find newly eligible episodes and persist them as queued work.
-	ids, err := w.findPendingEpisodes(ctx, false)
-	if err != nil {
-		logger.Printf("[SYNC-WORKER] Failed to find pending episodes: %v", err)
-		return
-	}
-
-	if len(ids) == 0 {
-		return
-	}
-
-	logger.Printf("[SYNC-WORKER] Found %d episodes to sync", len(ids))
-
-	for _, id := range ids {
-		if err := w.persistPendingSyncLog(ctx, id, false, ""); err != nil {
-			if isSkippablePendingError(err) {
-				continue
-			}
-			logger.Printf("[SYNC-WORKER] Failed to persist pending sync for episode %d: %v", id, err)
-			continue
-		}
-		w.dispatchPersistedJob(ctx, syncEnqueueRequest{episodeID: id, manual: false})
-	}
 }
 
 func (w *SyncWorker) dispatchPendingSyncLogs(ctx context.Context) {

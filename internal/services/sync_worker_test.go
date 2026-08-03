@@ -1537,11 +1537,11 @@ func TestDispatchPendingSyncLogs_DispatchesPersistedRows(t *testing.T) {
 	}
 }
 
-func TestPollAndProcess_SkipsAutoDiscoveryWhenDisabled(t *testing.T) {
+func TestPollAndProcess_DoesNotBroadlyDiscoverEpisodes(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
 		db:              db,
-		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3, AutoScanEnabled: false},
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
 		jobCh:           make(chan syncEnqueueRequest, 1),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
@@ -1551,20 +1551,20 @@ func TestPollAndProcess_SkipsAutoDiscoveryWhenDisabled(t *testing.T) {
 	w.pollAndProcess(context.Background())
 
 	if count := countSyncLogsForSyncWorkerTest(t, db, 20); count != 0 {
-		t.Fatalf("sync log count = %d, want 0 when auto scan is disabled", count)
+		t.Fatalf("sync log count = %d, want 0 without an explicit enqueue", count)
 	}
 	select {
 	case got := <-w.jobCh:
-		t.Fatalf("unexpected job dispatched with auto scan disabled: %+v", got)
+		t.Fatalf("unexpected broadly discovered job: %+v", got)
 	default:
 	}
 }
 
-func TestPollAndProcess_DispatchesPendingRowsWhenAutoDiscoveryDisabled(t *testing.T) {
+func TestPollAndProcess_DispatchesPendingRows(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
 		db:              db,
-		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3, AutoScanEnabled: false},
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
 		jobCh:           make(chan syncEnqueueRequest, 1),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
@@ -1580,15 +1580,15 @@ func TestPollAndProcess_DispatchesPendingRowsWhenAutoDiscoveryDisabled(t *testin
 			t.Fatalf("unexpected episode id: got %d want 21", got.episodeID)
 		}
 	default:
-		t.Fatal("expected pending row to be dispatched with auto scan disabled")
+		t.Fatal("expected pending row to be dispatched")
 	}
 }
 
-func TestPollAndProcess_RetriesDueFailuresWhenAutoDiscoveryDisabled(t *testing.T) {
+func TestPollAndProcess_RetriesDueFailures(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
 		db:              db,
-		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3, AutoScanEnabled: false},
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
 		jobCh:           make(chan syncEnqueueRequest, 1),
 		enqueuedEpisode: make(map[int64]struct{}),
 	}
@@ -1608,34 +1608,7 @@ func TestPollAndProcess_RetriesDueFailuresWhenAutoDiscoveryDisabled(t *testing.T
 			t.Fatalf("unexpected episode id: got %d want 22", got.episodeID)
 		}
 	default:
-		t.Fatal("expected retryable failure to be dispatched with auto scan disabled")
-	}
-}
-
-func TestPollAndProcess_DiscoversPendingEpisodesWhenAutoScanEnabled(t *testing.T) {
-	db := newTestSyncWorkerDB(t)
-	w := &SyncWorker{
-		db:              db,
-		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3, AutoScanEnabled: true},
-		jobCh:           make(chan syncEnqueueRequest, 1),
-		enqueuedEpisode: make(map[int64]struct{}),
-	}
-
-	insertEpisodeForSyncWorkerTest(t, db, 23, "approved", false)
-
-	w.pollAndProcess(context.Background())
-
-	latest := latestSyncLogForSyncWorkerTest(t, db, 23)
-	if latest.Status != "pending" {
-		t.Fatalf("latest status = %q, want pending", latest.Status)
-	}
-	select {
-	case got := <-w.jobCh:
-		if got.episodeID != 23 {
-			t.Fatalf("unexpected episode id: got %d want 23", got.episodeID)
-		}
-	default:
-		t.Fatal("expected auto-discovered episode to be dispatched")
+		t.Fatal("expected retryable failure to be dispatched")
 	}
 }
 

@@ -878,7 +878,7 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	result, err := m.db.ExecContext(ctx, `
 		UPDATE episode_derivatives
 		SET mcap_path = ?, metadata_path = ?, manifest_path = ?, checksum = ?,
-		    file_size_bytes = ?, duration_sec = ?, processing_result = ?,
+		    file_size_bytes = ?, processing_duration_sec = ?, processing_result = ?,
 		    processing_status = ?, processing_error = NULL, processing_finished_at = ?,
 		    qa_status = ?, qa_next_retry_at = NULL, orbit_delete_status = ?,
 		    reconcile_after = NULL, updated_at = ?
