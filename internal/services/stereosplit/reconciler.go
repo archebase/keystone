@@ -29,12 +29,18 @@ const (
 	outputMetadataName      = "metadata.yaml"
 	maxManifestBytes        = 1024 * 1024
 	maxVerificationAttempts = 5
+	manifestSchemaV1        = 1
+	manifestSchemaV2        = 2
+	stereoH264OutputFormat  = "stereo_h264"
 
 	leftImageTopic  = "/decxin/left_rgb/compressed"
 	rightImageTopic = "/decxin/right_rgb/compressed"
+	leftVideoTopic  = "/decxin/left_rgb/h264"
+	rightVideoTopic = "/decxin/right_rgb/h264"
 	imuTopic        = "/decxin/imu"
 
 	compressedImageSchema = "sensor_msgs/msg/CompressedImage"
+	compressedVideoSchema = "foxglove.CompressedVideo"
 	imuSchema             = "sensor_msgs/msg/Imu"
 )
 
@@ -802,6 +808,7 @@ type processingManifest struct {
 	SchemaVersion  int    `json:"schema_version"`
 	Status         string `json:"status"`
 	Kind           string `json:"kind"`
+	OutputFormat   string `json:"output_format,omitempty"`
 	Generation     int    `json:"generation"`
 	ProcessorImage string `json:"processor_image"`
 	Source         struct {
@@ -827,9 +834,13 @@ type manifestOutput struct {
 type manifestStats struct {
 	InputMessages   int64 `json:"input_messages"`
 	DecodedImages   int64 `json:"decoded_images"`
-	LeftImages      int64 `json:"left_images"`
-	RightImages     int64 `json:"right_images"`
+	LeftImages      int64 `json:"left_images,omitempty"`
+	RightImages     int64 `json:"right_images,omitempty"`
+	LeftVideos      int64 `json:"left_videos,omitempty"`
+	RightVideos     int64 `json:"right_videos,omitempty"`
 	IMUMessages     int64 `json:"imu_messages"`
+	CopiedMessages  int64 `json:"copied_messages,omitempty"`
+	CopiedTopics    int64 `json:"copied_topics,omitempty"`
 	SkippedMessages int64 `json:"skipped_messages"`
 }
 
@@ -901,10 +912,22 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 }
 
 func validateManifestSnapshot(manifest processingManifest, row verificationRow) error {
-	if manifest.SchemaVersion != 1 || manifest.Status != "succeeded" || manifest.Kind != Kind ||
+	if manifest.Status != "succeeded" || manifest.Kind != Kind ||
 		manifest.Generation != row.Generation || manifest.ProcessorImage != row.ProcessorImage ||
 		manifest.Source.URI != row.SourceURI || manifest.Source.SizeBytes != row.SourceSize {
 		return fmt.Errorf("processing manifest does not match frozen execution snapshot")
+	}
+	switch manifest.SchemaVersion {
+	case manifestSchemaV1:
+		if strings.TrimSpace(manifest.OutputFormat) != "" {
+			return fmt.Errorf("processing manifest v1 has an unexpected output format")
+		}
+	case manifestSchemaV2:
+		if manifest.OutputFormat != stereoH264OutputFormat {
+			return fmt.Errorf("processing manifest v2 has an invalid output format")
+		}
+	default:
+		return fmt.Errorf("processing manifest schema version %d is unsupported", manifest.SchemaVersion)
 	}
 	if row.SourceChecksum.Valid && row.SourceChecksum.String != "" && manifest.Source.SHA256 != row.SourceChecksum.String {
 		return fmt.Errorf("processing manifest source checksum does not match snapshot")
@@ -976,11 +999,12 @@ func (m *Manager) reconcileQA(ctx context.Context, derivativeID int64) error {
 	var manifest processingManifest
 	err := json.Unmarshal([]byte(row.Result), &manifest)
 	var observed mcapQAObservation
+	var contract mcapOutputContract
 	if err == nil {
-		err = validateManifestStats(manifest.Stats)
+		contract, err = validateManifestStats(manifest)
 	}
 	if err == nil {
-		observed, err = m.inspectOutputMCAP(ctx, row.McapPath.String, row.Checksum.String, manifest.Stats)
+		observed, err = m.inspectOutputMCAP(ctx, row.McapPath.String, row.Checksum.String, contract)
 	}
 	approved := err == nil
 	qaStatus := QAApproved
@@ -1020,13 +1044,16 @@ func (m *Manager) reconcileQA(ctx context.Context, derivativeID int64) error {
 }
 
 type mcapQAObservation struct {
-	LeftImages   int64   `json:"left_images"`
-	RightImages  int64   `json:"right_images"`
-	IMUMessages  int64   `json:"imu_messages"`
-	FirstLogTime uint64  `json:"first_log_time"`
-	LastLogTime  uint64  `json:"last_log_time"`
-	DurationSec  float64 `json:"duration_sec"`
-	OutputSHA256 string  `json:"output_sha256"`
+	SchemaVersion int     `json:"schema_version"`
+	LeftImages    int64   `json:"left_images,omitempty"`
+	RightImages   int64   `json:"right_images,omitempty"`
+	LeftVideos    int64   `json:"left_videos,omitempty"`
+	RightVideos   int64   `json:"right_videos,omitempty"`
+	IMUMessages   int64   `json:"imu_messages"`
+	FirstLogTime  uint64  `json:"first_log_time"`
+	LastLogTime   uint64  `json:"last_log_time"`
+	DurationSec   float64 `json:"duration_sec"`
+	OutputSHA256  string  `json:"output_sha256"`
 }
 
 type topicQAState struct {
@@ -1035,25 +1062,80 @@ type topicQAState struct {
 	HasLast bool
 }
 
-func validateManifestStats(stats manifestStats) error {
-	if stats.InputMessages <= 0 || stats.DecodedImages <= 0 || stats.LeftImages <= 0 ||
-		stats.RightImages <= 0 || stats.IMUMessages <= 0 || stats.SkippedMessages < 0 {
-		return fmt.Errorf("processing manifest contains non-positive required statistics")
+type mcapOutputContract struct {
+	SchemaVersion        int
+	LeftTopic            string
+	RightTopic           string
+	LeftSchema           string
+	RightSchema          string
+	LeftSchemaEncoding   string
+	RightSchemaEncoding  string
+	LeftMessageEncoding  string
+	RightMessageEncoding string
+	ExpectedLeft         int64
+	ExpectedRight        int64
+	ExpectedIMU          int64
+}
+
+func validateManifestStats(manifest processingManifest) (mcapOutputContract, error) {
+	stats := manifest.Stats
+	contract := mcapOutputContract{
+		SchemaVersion: manifest.SchemaVersion,
+		ExpectedIMU:   stats.IMUMessages,
+	}
+	switch manifest.SchemaVersion {
+	case manifestSchemaV1:
+		if strings.TrimSpace(manifest.OutputFormat) != "" {
+			return mcapOutputContract{}, fmt.Errorf("processing manifest v1 has an unexpected output format")
+		}
+		contract.LeftTopic = leftImageTopic
+		contract.RightTopic = rightImageTopic
+		contract.LeftSchema = compressedImageSchema
+		contract.RightSchema = compressedImageSchema
+		contract.LeftSchemaEncoding = "ros2msg"
+		contract.RightSchemaEncoding = "ros2msg"
+		contract.LeftMessageEncoding = "cdr"
+		contract.RightMessageEncoding = "cdr"
+		contract.ExpectedLeft = stats.LeftImages
+		contract.ExpectedRight = stats.RightImages
+	case manifestSchemaV2:
+		if manifest.OutputFormat != stereoH264OutputFormat {
+			return mcapOutputContract{}, fmt.Errorf("processing manifest v2 has an invalid output format")
+		}
+		if stats.CopiedMessages < 0 || stats.CopiedTopics < 0 {
+			return mcapOutputContract{}, fmt.Errorf("processing manifest contains negative copied-topic statistics")
+		}
+		contract.LeftTopic = leftVideoTopic
+		contract.RightTopic = rightVideoTopic
+		contract.LeftSchema = compressedVideoSchema
+		contract.RightSchema = compressedVideoSchema
+		contract.LeftSchemaEncoding = "protobuf"
+		contract.RightSchemaEncoding = "protobuf"
+		contract.LeftMessageEncoding = "protobuf"
+		contract.RightMessageEncoding = "protobuf"
+		contract.ExpectedLeft = stats.LeftVideos
+		contract.ExpectedRight = stats.RightVideos
+	default:
+		return mcapOutputContract{}, fmt.Errorf("processing manifest schema version %d is unsupported", manifest.SchemaVersion)
+	}
+	if stats.InputMessages <= 0 || stats.DecodedImages <= 0 || contract.ExpectedLeft <= 0 ||
+		contract.ExpectedRight <= 0 || stats.IMUMessages <= 0 || stats.SkippedMessages < 0 {
+		return mcapOutputContract{}, fmt.Errorf("processing manifest contains non-positive required statistics")
 	}
 	if stats.InputMessages != stats.DecodedImages+stats.SkippedMessages {
-		return fmt.Errorf("processing manifest input message accounting is inconsistent")
+		return mcapOutputContract{}, fmt.Errorf("processing manifest input message accounting is inconsistent")
 	}
-	if stats.DecodedImages != stats.LeftImages || stats.LeftImages != stats.RightImages {
-		return fmt.Errorf("processing manifest stereo image counts are inconsistent")
+	if stats.DecodedImages != contract.ExpectedLeft || contract.ExpectedLeft != contract.ExpectedRight {
+		return mcapOutputContract{}, fmt.Errorf("processing manifest stereo frame counts are inconsistent")
 	}
-	return nil
+	return contract, nil
 }
 
 func (m *Manager) inspectOutputMCAP(
 	ctx context.Context,
 	objectKey string,
 	expectedChecksum string,
-	expected manifestStats,
+	contract mcapOutputContract,
 ) (mcapQAObservation, error) {
 	if strings.TrimSpace(objectKey) == "" {
 		return mcapQAObservation{}, fmt.Errorf("stereo split output MCAP path is empty")
@@ -1076,14 +1158,24 @@ func (m *Manager) inspectOutputMCAP(
 		return mcapQAObservation{}, fmt.Errorf("create output MCAP iterator: %w", err)
 	}
 	states := map[string]*topicQAState{
-		leftImageTopic:  {},
-		rightImageTopic: {},
-		imuTopic:        {},
+		contract.LeftTopic:  {},
+		contract.RightTopic: {},
+		imuTopic:            {},
 	}
 	expectedSchemas := map[string]string{
-		leftImageTopic:  compressedImageSchema,
-		rightImageTopic: compressedImageSchema,
-		imuTopic:        imuSchema,
+		contract.LeftTopic:  contract.LeftSchema,
+		contract.RightTopic: contract.RightSchema,
+		imuTopic:            imuSchema,
+	}
+	expectedSchemaEncodings := map[string]string{
+		contract.LeftTopic:  contract.LeftSchemaEncoding,
+		contract.RightTopic: contract.RightSchemaEncoding,
+		imuTopic:            "ros2msg",
+	}
+	expectedEncodings := map[string]string{
+		contract.LeftTopic:  contract.LeftMessageEncoding,
+		contract.RightTopic: contract.RightMessageEncoding,
+		imuTopic:            "cdr",
 	}
 	var firstLogTime uint64
 	var lastLogTime uint64
@@ -1102,9 +1194,14 @@ func (m *Manager) inspectOutputMCAP(
 		if !required {
 			continue
 		}
-		if schema == nil || schema.Name != expectedSchemas[channel.Topic] {
+		if schema == nil || schema.Name != expectedSchemas[channel.Topic] ||
+			schema.Encoding != expectedSchemaEncodings[channel.Topic] {
 			_ = body.Close()
 			return mcapQAObservation{}, fmt.Errorf("topic %s has unexpected schema", channel.Topic)
+		}
+		if channel.MessageEncoding != expectedEncodings[channel.Topic] {
+			_ = body.Close()
+			return mcapQAObservation{}, fmt.Errorf("topic %s has unexpected message encoding", channel.Topic)
 		}
 		if state.HasLast && current.LogTime < state.Last {
 			_ = body.Close()
@@ -1128,27 +1225,34 @@ func (m *Manager) inspectOutputMCAP(
 	if checksum != normalizedSHA256(expectedChecksum) {
 		return mcapQAObservation{}, fmt.Errorf("output MCAP SHA-256 does not match processing manifest")
 	}
-	leftCount := states[leftImageTopic].Count
-	rightCount := states[rightImageTopic].Count
+	leftCount := states[contract.LeftTopic].Count
+	rightCount := states[contract.RightTopic].Count
 	imuCount := states[imuTopic].Count
 	if leftCount <= 0 || leftCount != rightCount || imuCount <= 0 {
 		return mcapQAObservation{}, fmt.Errorf("output MCAP required topic counts are invalid")
 	}
-	if leftCount != expected.LeftImages || rightCount != expected.RightImages || imuCount != expected.IMUMessages {
+	if leftCount != contract.ExpectedLeft || rightCount != contract.ExpectedRight || imuCount != contract.ExpectedIMU {
 		return mcapQAObservation{}, fmt.Errorf("output MCAP topic counts do not match processing manifest")
 	}
 	if !hasLogTime || lastLogTime <= firstLogTime {
 		return mcapQAObservation{}, fmt.Errorf("output MCAP timestamp span must be positive")
 	}
-	return mcapQAObservation{
-		LeftImages:   leftCount,
-		RightImages:  rightCount,
-		IMUMessages:  imuCount,
-		FirstLogTime: firstLogTime,
-		LastLogTime:  lastLogTime,
-		DurationSec:  float64(lastLogTime-firstLogTime) / float64(time.Second),
-		OutputSHA256: checksum,
-	}, nil
+	observed := mcapQAObservation{
+		SchemaVersion: contract.SchemaVersion,
+		IMUMessages:   imuCount,
+		FirstLogTime:  firstLogTime,
+		LastLogTime:   lastLogTime,
+		DurationSec:   float64(lastLogTime-firstLogTime) / float64(time.Second),
+		OutputSHA256:  checksum,
+	}
+	if contract.SchemaVersion == manifestSchemaV1 {
+		observed.LeftImages = leftCount
+		observed.RightImages = rightCount
+	} else {
+		observed.LeftVideos = leftCount
+		observed.RightVideos = rightCount
+	}
+	return observed, nil
 }
 
 func (m *Manager) reconcileDelete(ctx context.Context, derivativeID int64) error {

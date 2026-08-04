@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 ArcheBase
 # SPDX-License-Identifier: MulanPSL-2.0
 
-"""Run the fixed DECXIN stereo split contract for an Orbit Job."""
+"""Run the fixed DECXIN stereo H.264 conversion contract for an Orbit Job."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import sys
 import time
 from typing import Iterable
 
-from split_mcap_stereo_imu import DecxinMcapStereoImuSplitter
+from convert_mcap_stereo_h264 import ConverterConfig, StereoSplitH264Converter
 
 
 OUTPUT_MCAP_NAME = "output_bag.mcap"
@@ -27,7 +27,7 @@ MANIFEST_NAME = "processing_manifest.json"
 COPY_BUFFER_BYTES = 8 * 1024 * 1024
 COPY_ATTEMPTS = 3
 COPY_RETRY_SECONDS = 1
-SCRATCH_SPACE_MULTIPLIER = 4
+SCRATCH_SPACE_MULTIPLIER = 3
 MCAP_MAGIC = b"\x89MCAP0\r\n"
 
 
@@ -45,7 +45,6 @@ def copy_and_hash(source: Path, destination: Path) -> FileIdentity:
     digest = hashlib.sha256()
     size_bytes = 0
     destination.parent.mkdir(parents=True, exist_ok=True)
-
     with source.open("rb") as source_stream, destination.open("wb") as destination_stream:
         while chunk := source_stream.read(COPY_BUFFER_BYTES):
             destination_stream.write(chunk)
@@ -53,10 +52,9 @@ def copy_and_hash(source: Path, destination: Path) -> FileIdentity:
             size_bytes += len(chunk)
         destination_stream.flush()
         os.fsync(destination_stream.fileno())
-
     if destination.stat().st_size != size_bytes:
         raise RuntimeError(f"copy size mismatch for {destination}")
-    return FileIdentity(size_bytes=size_bytes, sha256=digest.hexdigest())
+    return FileIdentity(size_bytes, digest.hexdigest())
 
 
 def copy_and_hash_with_retries(source: Path, destination: Path) -> FileIdentity:
@@ -84,7 +82,7 @@ def hash_file(path: Path) -> FileIdentity:
         while chunk := stream.read(COPY_BUFFER_BYTES):
             digest.update(chunk)
             size_bytes += len(chunk)
-    return FileIdentity(size_bytes=size_bytes, sha256=digest.hexdigest())
+    return FileIdentity(size_bytes, digest.hexdigest())
 
 
 def require_output(path: Path) -> FileIdentity:
@@ -101,10 +99,10 @@ def require_mcap_output(path: Path) -> FileIdentity:
     if identity.size_bytes < len(MCAP_MAGIC) * 2:
         raise RuntimeError(f"MCAP output is too small: {path.name}")
     with path.open("rb") as stream:
-        leading_magic = stream.read(len(MCAP_MAGIC))
+        leading = stream.read(len(MCAP_MAGIC))
         stream.seek(-len(MCAP_MAGIC), os.SEEK_END)
-        trailing_magic = stream.read(len(MCAP_MAGIC))
-    if leading_magic != MCAP_MAGIC or trailing_magic != MCAP_MAGIC:
+        trailing = stream.read(len(MCAP_MAGIC))
+    if leading != MCAP_MAGIC or trailing != MCAP_MAGIC:
         raise RuntimeError(f"MCAP output has invalid magic: {path.name}")
     return identity
 
@@ -115,8 +113,8 @@ def publish_file(source: Path, destination: Path, expected: FileIdentity) -> Non
         raise RuntimeError(f"published output identity mismatch: {destination.name}")
 
 
-def write_manifest(path: Path, manifest: dict[str, object]) -> None:
-    encoded = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+def write_json(path: Path, value: dict[str, object]) -> None:
+    encoded = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as stream:
         stream.write(encoded)
@@ -126,20 +124,16 @@ def write_manifest(path: Path, manifest: dict[str, object]) -> None:
 
 def require_scratch_capacity(scratch: Path, source_size_bytes: int) -> None:
     scratch.mkdir(parents=True, exist_ok=True)
-    required_bytes = source_size_bytes * SCRATCH_SPACE_MULTIPLIER
-    available_bytes = shutil.disk_usage(scratch).free
-    if available_bytes < required_bytes:
-        raise RuntimeError(
-            "insufficient scratch space: "
-            f"required {required_bytes} bytes, available {available_bytes} bytes"
-        )
+    required = source_size_bytes * SCRATCH_SPACE_MULTIPLIER
+    available = shutil.disk_usage(scratch).free
+    if available < required:
+        raise RuntimeError(f"insufficient scratch space: required {required} bytes, available {available} bytes")
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
     source = args.input.resolve()
     output_binding = args.output_binding.resolve()
     scratch = args.scratch.resolve()
-
     if not source.is_file():
         raise RuntimeError(f"input MCAP does not exist: {source}")
     if not output_binding.is_dir():
@@ -150,36 +144,49 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
     started_at = utc_now()
     local_input = scratch / "input" / "source.mcap"
-    local_output = scratch / "output_bag"
+    local_mcap = scratch / OUTPUT_MCAP_NAME
+    local_metadata = scratch / OUTPUT_METADATA_NAME
     local_manifest = scratch / MANIFEST_NAME
-
     source_identity = stage_local_file(source, local_input)
     if source_identity.size_bytes != args.expected_source_size:
         raise RuntimeError(
-            "source size mismatch: "
-            f"expected {args.expected_source_size}, got {source_identity.size_bytes}"
+            f"source size mismatch: expected {args.expected_source_size}, got {source_identity.size_bytes}"
         )
     if args.expected_source_checksum:
-        expected_checksum = args.expected_source_checksum.lower()
-        if source_identity.sha256 != expected_checksum:
-            raise RuntimeError(
-                "source checksum mismatch: "
-                f"expected {expected_checksum}, got {source_identity.sha256}"
-            )
+        expected = args.expected_source_checksum.lower()
+        if source_identity.sha256 != expected:
+            raise RuntimeError(f"source checksum mismatch: expected {expected}, got {source_identity.sha256}")
 
-    stats = DecxinMcapStereoImuSplitter().convert(local_input, local_output)
-    local_mcap = local_output / OUTPUT_MCAP_NAME
-    local_metadata = local_output / OUTPUT_METADATA_NAME
+    config = ConverterConfig()
+    stats = StereoSplitH264Converter(config).convert(local_input, local_mcap)
+    metadata: dict[str, object] = {
+        "schema_version": 1,
+        "format": "mcap",
+        "video": {
+            "codec": "h264",
+            "profile": "high",
+            "encoder": "libx264",
+            "resolution": f"{config.eye_width}x{config.eye_height}",
+            "nominal_fps": config.nominal_fps,
+            "target_bitrate": config.target_bitrate,
+            "max_bitrate": config.max_bitrate,
+            "gop": config.gop,
+            "topics": [config.left_topic, config.right_topic],
+        },
+        "imu_topic": config.imu_topic,
+        "stats": asdict(stats),
+    }
+    write_json(local_metadata, metadata)
     mcap_identity = require_mcap_output(local_mcap)
     metadata_identity = require_output(local_metadata)
-
     publish_file(local_mcap, output_binding / OUTPUT_MCAP_NAME, mcap_identity)
     publish_file(local_metadata, output_binding / OUTPUT_METADATA_NAME, metadata_identity)
 
     manifest: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "succeeded",
         "kind": args.kind,
+        "output_format": "stereo_h264",
         "generation": args.generation,
         "processor_image": args.processor_image,
         "source": {
@@ -189,24 +196,15 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "sha256": source_identity.sha256,
         },
         "outputs": {
-            "mcap": {
-                "name": OUTPUT_MCAP_NAME,
-                "size_bytes": mcap_identity.size_bytes,
-                "sha256": mcap_identity.sha256,
-            },
-            "metadata": {
-                "name": OUTPUT_METADATA_NAME,
-                "size_bytes": metadata_identity.size_bytes,
-                "sha256": metadata_identity.sha256,
-            },
+            "mcap": {"name": OUTPUT_MCAP_NAME, **asdict(mcap_identity)},
+            "metadata": {"name": OUTPUT_METADATA_NAME, **asdict(metadata_identity)},
         },
         "stats": asdict(stats),
         "started_at": started_at,
         "finished_at": utc_now(),
     }
-    write_manifest(local_manifest, manifest)
-    manifest_identity = hash_file(local_manifest)
-    publish_file(local_manifest, output_binding / MANIFEST_NAME, manifest_identity)
+    write_json(local_manifest, manifest)
+    publish_file(local_manifest, output_binding / MANIFEST_NAME, hash_file(local_manifest))
     return manifest
 
 
@@ -236,7 +234,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         manifest = run(args)
     except Exception as error:
-        print(f"stereo split failed: {error}", file=sys.stderr)
+        print(f"stereo split convert failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(manifest, separators=(",", ":"), sort_keys=True))
     return 0
