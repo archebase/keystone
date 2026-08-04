@@ -16,8 +16,8 @@ import unittest
 from unittest import mock
 
 import cv2
+from mcap.reader import make_reader
 import numpy as np
-from rosbags.highlevel import AnyReader
 from rosbags.rosbag2 import StoragePlugin, Writer
 from rosbags.typesys import Stores, get_typestore
 
@@ -27,6 +27,7 @@ RUNNER = JOB_ROOT / "run_processing.py"
 MCAP_MAGIC = b"\x89MCAP0\r\n"
 sys.path.insert(0, str(JOB_ROOT))
 import run_processing as processing_runner  # noqa: E402
+from convert_mcap_stereo_h264 import CompressedVideo, FOXGLOVE_SCHEMA_NAME  # noqa: E402
 sys.path.remove(str(JOB_ROOT))
 
 
@@ -223,69 +224,62 @@ class RunProcessingTest(unittest.TestCase):
             self.assertGreater(output_mcap.stat().st_size, 0)
             self.assertGreater(output_metadata.stat().st_size, 0)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            metadata = json.loads(output_metadata.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"], 2)
             self.assertEqual(manifest["status"], "succeeded")
             self.assertEqual(manifest["kind"], "stereo_split")
+            self.assertEqual(manifest["output_format"], "stereo_h264")
             self.assertEqual(manifest["generation"], 1)
             self.assertEqual(manifest["source"]["sha256"], source_checksum)
             self.assertEqual(sha256(source), source_checksum)
             self.assertEqual(source.stat().st_mode & 0o222, 0)
             self.assertEqual(manifest["outputs"]["mcap"]["sha256"], sha256(output_mcap))
             self.assertEqual(manifest["stats"]["input_messages"], 2)
-            self.assertEqual(manifest["stats"]["left_images"], 2)
-            self.assertEqual(manifest["stats"]["right_images"], 2)
+            self.assertEqual(manifest["stats"]["left_videos"], 2)
+            self.assertEqual(manifest["stats"]["right_videos"], 2)
             self.assertEqual(manifest["stats"]["imu_messages"], 11)
+            self.assertEqual(metadata["video"]["codec"], "h264")
             self.assertGreaterEqual(
                 manifest_path.stat().st_mtime_ns,
                 max(output_mcap.stat().st_mtime_ns, output_metadata.stat().st_mtime_ns),
             )
             self.assertFalse((scratch / "input" / ".source.mcap.partial").exists())
 
-            typestore = get_typestore(Stores.ROS2_JAZZY)
-            messages_by_topic: dict[str, list[tuple[int, object]]] = {}
-            with AnyReader([output_mcap], default_typestore=typestore) as reader:
-                for connection, timestamp, rawdata in reader.messages():
-                    message = typestore.deserialize_cdr(rawdata, connection.msgtype)
-                    messages_by_topic.setdefault(connection.topic, []).append(
-                        (timestamp, message)
+            records_by_topic: dict[str, list[tuple[object, object, object]]] = {}
+            with output_mcap.open("rb") as stream:
+                reader = make_reader(stream)
+                for schema, channel, message in reader.iter_messages():
+                    records_by_topic.setdefault(channel.topic, []).append(
+                        (schema, channel, message)
                     )
 
             self.assertEqual(
-                set(messages_by_topic),
+                set(records_by_topic),
                 {
-                    "/decxin/left_rgb/compressed",
-                    "/decxin/right_rgb/compressed",
+                    "/decxin/left_rgb/h264",
+                    "/decxin/right_rgb/h264",
                     "/decxin/imu",
                 },
             )
-            left_messages = messages_by_topic["/decxin/left_rgb/compressed"]
-            right_messages = messages_by_topic["/decxin/right_rgb/compressed"]
-            imu_messages = messages_by_topic["/decxin/imu"]
-            self.assertEqual([item[0] for item in left_messages], [1_000_000_000, 2_000_000_000])
-            self.assertEqual([item[0] for item in right_messages], [1_000_000_000, 2_000_000_000])
-            self.assertEqual(len(imu_messages), 11)
+            left_records = records_by_topic["/decxin/left_rgb/h264"]
+            right_records = records_by_topic["/decxin/right_rgb/h264"]
+            imu_records = records_by_topic["/decxin/imu"]
+            expected_video_times = [1_000_000_000, 2_000_000_000]
+            self.assertEqual([item[2].log_time for item in left_records], expected_video_times)
+            self.assertEqual([item[2].log_time for item in right_records], expected_video_times)
+            for records in (left_records, right_records):
+                for schema, channel, message in records:
+                    self.assertEqual(schema.name, FOXGLOVE_SCHEMA_NAME)
+                    self.assertEqual(channel.message_encoding, "protobuf")
+                    video = CompressedVideo.FromString(message.data)
+                    self.assertEqual(video.format, "h264")
+                    self.assertTrue(video.data)
 
-            left_bgr = cv2.imdecode(
-                np.asarray(left_messages[0][1].data, dtype=np.uint8),
-                cv2.IMREAD_COLOR,
-            )
-            right_bgr = cv2.imdecode(
-                np.asarray(right_messages[0][1].data, dtype=np.uint8),
-                cv2.IMREAD_COLOR,
-            )
-            self.assertEqual(left_bgr.shape, (1200, 1920, 3))
-            self.assertEqual(right_bgr.shape, (1200, 1920, 3))
-            np.testing.assert_allclose(
-                left_bgr[850:950, 1770:1870].mean(axis=(0, 1)),
-                (200, 20, 20),
-                atol=8,
-            )
-            np.testing.assert_allclose(
-                right_bgr[500:700, 800:1000].mean(axis=(0, 1)),
-                (120, 30, 200),
-                atol=8,
-            )
-
-            first_imu_timestamp, first_imu = imu_messages[0]
+            self.assertEqual(len(imu_records), 11)
+            typestore = get_typestore(Stores.ROS2_JAZZY)
+            first_imu_record = imu_records[0][2]
+            first_imu_timestamp = first_imu_record.log_time
+            first_imu = typestore.deserialize_cdr(first_imu_record.data, "sensor_msgs/msg/Imu")
             expected_imu_timestamp = 1_000_000_000 + 1_000_000_000 // 11
             self.assertEqual(first_imu_timestamp, expected_imu_timestamp)
             self.assertEqual(first_imu.header.stamp.sec, 1)
@@ -401,9 +395,13 @@ class RunProcessingTest(unittest.TestCase):
             fake_module.mkdir()
             fake_runner = fake_module / "run_processing.py"
             fake_runner.write_bytes(RUNNER.read_bytes())
-            (fake_module / "split_mcap_stereo_imu.py").write_text(
+            (fake_module / "convert_mcap_stereo_h264.py").write_text(
                 "import time\n"
-                "class DecxinMcapStereoImuSplitter:\n"
+                "class ConverterConfig:\n"
+                "    pass\n"
+                "class StereoSplitH264Converter:\n"
+                "    def __init__(self, config):\n"
+                "        pass\n"
                 "    def convert(self, input_path, output_path):\n"
                 "        time.sleep(30)\n",
                 encoding="utf-8",

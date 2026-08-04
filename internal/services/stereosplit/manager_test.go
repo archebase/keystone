@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"path"
@@ -943,7 +944,7 @@ func TestReconcileQAFailsWhenManifestCountsDoNotMatchMCAP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	processingResult := `{"stats":{"input_messages":11,"decoded_images":11,"left_images":11,"right_images":11,"imu_messages":100,"skipped_messages":0}}`
+	processingResult := `{"schema_version":1,"stats":{"input_messages":11,"decoded_images":11,"left_images":11,"right_images":11,"imu_messages":100,"skipped_messages":0}}`
 	if _, err := db.Exec(`
 		UPDATE episode_derivatives SET processing_status = ?, qa_status = ?, mcap_path = ?,
 		    checksum = ?, processing_result = ?, orbit_delete_status = ?
@@ -964,7 +965,140 @@ func TestReconcileQAFailsWhenManifestCountsDoNotMatchMCAP(t *testing.T) {
 	}
 }
 
+func TestReconcileQAApprovesStereoH264ManifestV2(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 33, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	outputMCAP, outputChecksum := makeStereoSplitH264QAOutput(t, 10, 10, 100)
+	outputKey := "derived/qa-h264/output_bag.mcap"
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		outputKey: {size: int64(len(outputMCAP)), etag: "mcap-etag", body: string(outputMCAP)},
+	}}
+	manager := NewManager(db, nil, objects, testManagerConfig())
+	derivative, _, err := manager.Start(context.Background(), 33, "admin")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	processingResult := `{
+		"schema_version":2,
+		"output_format":"stereo_h264",
+		"stats":{
+			"input_messages":10,
+			"decoded_images":10,
+			"left_videos":10,
+			"right_videos":10,
+			"imu_messages":100,
+			"copied_messages":3,
+			"copied_topics":1,
+			"skipped_messages":0
+		}
+	}`
+	if _, err := db.Exec(`
+		UPDATE episode_derivatives SET processing_status = ?, qa_status = ?, mcap_path = ?,
+		    checksum = ?, processing_result = ?, orbit_delete_status = ?
+		WHERE id = ?
+	`, ProcessingSucceeded, QAPending, outputKey, outputChecksum, processingResult, DeletePending, derivative.ID); err != nil {
+		t.Fatalf("prepare H.264 QA derivative: %v", err)
+	}
+
+	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	derivative, err = manager.Get(context.Background(), 33)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if derivative.QAStatus != QAApproved || derivative.QAError != "" {
+		t.Fatalf("H.264 QA derivative = %+v", derivative)
+	}
+	if derivative.DurationSec == nil || *derivative.DurationSec <= 0 {
+		t.Fatalf("H.264 QA duration = %v", derivative.DurationSec)
+	}
+}
+
+func TestValidateManifestSnapshotSupportsStereoSplitV1AndV2(t *testing.T) {
+	row := verificationRow{
+		Generation:     1,
+		ProcessorImage: testImageDigest,
+		SourceURI:      "tos://source-bucket/raw/source.mcap",
+		SourceSize:     123,
+	}
+	decode := func(payload string) processingManifest {
+		t.Helper()
+		var manifest processingManifest
+		if err := json.Unmarshal([]byte(payload), &manifest); err != nil {
+			t.Fatalf("decode manifest fixture: %v", err)
+		}
+		return manifest
+	}
+	common := `
+		"status":"succeeded",
+		"kind":"stereo_split",
+		"generation":1,
+		"processor_image":"` + testImageDigest + `",
+		"source":{"uri":"tos://source-bucket/raw/source.mcap","size_bytes":123,"sha256":""},
+		"outputs":{
+			"mcap":{"name":"output_bag.mcap","size_bytes":10,"sha256":"` + strings.Repeat("a", 64) + `"},
+			"metadata":{"name":"metadata.yaml","size_bytes":10,"sha256":"` + strings.Repeat("b", 64) + `"}
+		},
+		"started_at":"2026-08-02T10:00:00Z",
+		"finished_at":"2026-08-02T10:00:01Z"`
+
+	for name, payload := range map[string]string{
+		"v1": `{"schema_version":1,` + common + `}`,
+		"v2": `{"schema_version":2,"output_format":"stereo_h264",` + common + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateManifestSnapshot(decode(payload), row); err != nil {
+				t.Fatalf("validateManifestSnapshot() error = %v", err)
+			}
+		})
+	}
+
+	invalid := decode(`{"schema_version":2,"output_format":"",` + common + `}`)
+	if err := validateManifestSnapshot(invalid, row); err == nil || !strings.Contains(err.Error(), "output format") {
+		t.Fatalf("validateManifestSnapshot() invalid format error = %v", err)
+	}
+}
+
 func makeStereoSplitQAOutput(t *testing.T, leftCount, rightCount, imuCount int) ([]byte, string) {
+	return makeStereoSplitQAOutputForContract(
+		t,
+		compressedImageSchema,
+		"ros2msg",
+		leftImageTopic,
+		rightImageTopic,
+		"cdr",
+		leftCount,
+		rightCount,
+		imuCount,
+	)
+}
+
+func makeStereoSplitH264QAOutput(t *testing.T, leftCount, rightCount, imuCount int) ([]byte, string) {
+	return makeStereoSplitQAOutputForContract(
+		t,
+		compressedVideoSchema,
+		"protobuf",
+		leftVideoTopic,
+		rightVideoTopic,
+		"protobuf",
+		leftCount,
+		rightCount,
+		imuCount,
+	)
+}
+
+func makeStereoSplitQAOutputForContract(
+	t *testing.T,
+	stereoSchema string,
+	stereoSchemaEncoding string,
+	leftTopic string,
+	rightTopic string,
+	stereoMessageEncoding string,
+	leftCount int,
+	rightCount int,
+	imuCount int,
+) ([]byte, string) {
 	t.Helper()
 	var output bytes.Buffer
 	writer, err := mcap.NewWriter(&output, &mcap.WriterOptions{Chunked: false})
@@ -975,7 +1109,7 @@ func makeStereoSplitQAOutput(t *testing.T, leftCount, rightCount, imuCount int) 
 		t.Fatalf("write MCAP header: %v", err)
 	}
 	for _, schema := range []*mcap.Schema{
-		{ID: 1, Name: compressedImageSchema, Encoding: "ros2msg", Data: []byte("test")},
+		{ID: 1, Name: stereoSchema, Encoding: stereoSchemaEncoding, Data: []byte("test")},
 		{ID: 2, Name: imuSchema, Encoding: "ros2msg", Data: []byte("test")},
 	} {
 		if err := writer.WriteSchema(schema); err != nil {
@@ -983,8 +1117,8 @@ func makeStereoSplitQAOutput(t *testing.T, leftCount, rightCount, imuCount int) 
 		}
 	}
 	for _, channel := range []*mcap.Channel{
-		{ID: 1, SchemaID: 1, Topic: leftImageTopic, MessageEncoding: "cdr"},
-		{ID: 2, SchemaID: 1, Topic: rightImageTopic, MessageEncoding: "cdr"},
+		{ID: 1, SchemaID: 1, Topic: leftTopic, MessageEncoding: stereoMessageEncoding},
+		{ID: 2, SchemaID: 1, Topic: rightTopic, MessageEncoding: stereoMessageEncoding},
 		{ID: 3, SchemaID: 2, Topic: imuTopic, MessageEncoding: "cdr"},
 	} {
 		if err := writer.WriteChannel(channel); err != nil {
