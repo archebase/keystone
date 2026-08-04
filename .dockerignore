@@ -28,6 +28,7 @@ run-dev.sh
 
 # Build artifacts
 bin/
+.tmp/
 *.log
 output_bag/
 

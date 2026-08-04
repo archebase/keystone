@@ -4,6 +4,7 @@
 
 .PHONY: help build check-cr push run test clean lint helm-lint license proto
 .PHONY: stereo-split-image stereo-split-container-smoke stereo-split-test
+.PHONY: stereo-split-convert-image stereo-split-convert-container-smoke stereo-split-convert-test
 .PHONY: calibration-placeholder-image calibration-placeholder-container-smoke calibration-placeholder-test
 
 # Default target
@@ -21,6 +22,9 @@ help:
 	@echo "  make stereo-split-image - Build the stereo split Job image"
 	@echo "  make stereo-split-container-smoke - Build and smoke-test the Job image"
 	@echo "  make stereo-split-test  - Test the stereo split Job entrypoint"
+	@echo "  make stereo-split-convert-image - Build the stereo H.264 conversion Job image"
+	@echo "  make stereo-split-convert-container-smoke - Smoke-test the conversion Job image"
+	@echo "  make stereo-split-convert-test - Test the stereo H.264 conversion Job"
 	@echo "  make calibration-placeholder-image - Build the Orbit placeholder calibration image"
 	@echo "  make calibration-placeholder-container-smoke - Smoke-test the placeholder image"
 	@echo "  make calibration-placeholder-test - Test the placeholder Python job"
@@ -35,6 +39,8 @@ CR_REPOSITORY ?= $(IMAGE_NAME)
 FULL_IMAGE = $(CR_REGISTRY)/$(CR_NAMESPACE)/$(CR_REPOSITORY):$(IMAGE_TAG)
 STEREO_SPLIT_IMAGE ?= stereo-split:dev
 STEREO_SPLIT_PLATFORM ?= linux/amd64
+STEREO_SPLIT_CONVERT_IMAGE ?= stereo-split-convert:dev
+STEREO_SPLIT_CONVERT_PLATFORM ?= linux/amd64
 CALIBRATION_PLACEHOLDER_IMAGE ?= calibration-placeholder:dev
 CALIBRATION_PLACEHOLDER_PLATFORM ?= linux/amd64
 
@@ -61,6 +67,22 @@ stereo-split-container-smoke: stereo-split-image
 stereo-split-test:
 	python3 -m unittest discover \
 		-s jobs/stereo-split/tests \
+		-p 'test_*.py' \
+		-v
+
+stereo-split-convert-image:
+	docker build \
+		--platform $(STEREO_SPLIT_CONVERT_PLATFORM) \
+		--file jobs/stereo-split-convert/Dockerfile \
+		--tag $(STEREO_SPLIT_CONVERT_IMAGE) \
+		.
+
+stereo-split-convert-container-smoke: stereo-split-convert-image
+	docker run --rm $(STEREO_SPLIT_CONVERT_IMAGE) --help > /dev/null
+
+stereo-split-convert-test:
+	python3 -m unittest discover \
+		-s jobs/stereo-split-convert/tests \
 		-p 'test_*.py' \
 		-v
 
