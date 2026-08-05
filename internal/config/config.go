@@ -170,7 +170,7 @@ type DerivativeConfig struct {
 	OrbitLogTailBytes   int
 }
 
-// CalibrationConfig controls placeholder calibration jobs executed by Orbit.
+// CalibrationConfig controls calibration jobs executed by Orbit.
 type CalibrationConfig struct {
 	OrbitBaseURL        string
 	OrbitTimeoutSec     int
@@ -346,10 +346,10 @@ func loadCalibrationConfig() CalibrationConfig {
 		OrbitBaseURL:    strings.TrimRight(strings.TrimSpace(getEnv("KEYSTONE_ORBIT_BASE_URL", "")), "/"),
 		OrbitTimeoutSec: 10,
 		Resources: KubernetesResourcesConfig{
-			Requests: map[string]string{"cpu": "1", "memory": "1Gi", "ephemeral-storage": "2Gi"},
-			Limits:   map[string]string{"cpu": "2", "memory": "2Gi", "ephemeral-storage": "4Gi"},
+			Requests: map[string]string{"cpu": "2", "memory": "4Gi", "ephemeral-storage": "8Gi"},
+			Limits:   map[string]string{"cpu": "4", "memory": "8Gi", "ephemeral-storage": "16Gi"},
 		},
-		ActiveDeadlineSec:   600,
+		ActiveDeadlineSec:   3600,
 		TTLSecondsAfterDone: 86400,
 		PollIntervalSec:     5,
 		MaxResultBytes:      16 * 1024 * 1024,

@@ -69,7 +69,7 @@ func (m *Manager) Start(ctx context.Context, captureID, actor string) (Capture, 
 	if currentConfig.ImageRef == "" {
 		return Capture{}, false, ErrImageNotConfigured
 	}
-	if m.orbit == nil || m.objects == nil || m.stereo == nil {
+	if m.orbit == nil || m.objects == nil {
 		return Capture{}, false, ErrProcessingUnavailable
 	}
 	tx, err := m.db.BeginTxx(ctx, nil)

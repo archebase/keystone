@@ -5,6 +5,7 @@
 .PHONY: help build check-cr push run test clean lint helm-lint license proto
 .PHONY: stereo-split-image stereo-split-container-smoke stereo-split-test
 .PHONY: calibration-placeholder-image calibration-placeholder-container-smoke calibration-placeholder-test
+.PHONY: calibration-image calibration-container-smoke calibration-test
 
 # Default target
 help:
@@ -24,6 +25,9 @@ help:
 	@echo "  make calibration-placeholder-image - Build the Orbit placeholder calibration image"
 	@echo "  make calibration-placeholder-container-smoke - Smoke-test the placeholder image"
 	@echo "  make calibration-placeholder-test - Test the placeholder Python job"
+	@echo "  make calibration-image - Build the production calibration Job image"
+	@echo "  make calibration-container-smoke - Build and smoke-test the calibration image"
+	@echo "  make calibration-test - Test the calibration Job entrypoint and preprocessing"
 
 # Build variables
 IMAGE_NAME ?= keystone-edge
@@ -37,6 +41,12 @@ STEREO_SPLIT_IMAGE ?= stereo-split:dev
 STEREO_SPLIT_PLATFORM ?= linux/amd64
 CALIBRATION_PLACEHOLDER_IMAGE ?= calibration-placeholder:dev
 CALIBRATION_PLACEHOLDER_PLATFORM ?= linux/amd64
+CALIBRATION_IMAGE ?= archebase-calibration:dev
+CALIBRATION_PLATFORM ?= linux/amd64
+CALIBRATION_BUILD_JOBS ?= 4
+CALIBRATION_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple/
+ARCHEBASE_CALIB_REPOSITORY ?= git@gitlab.archebase.cn:robotics-and-ai/archebase_calib.git
+ARCHEBASE_CALIB_REF ?= refs/heads/main
 
 # Build Docker image
 build:
@@ -77,6 +87,38 @@ calibration-placeholder-container-smoke: calibration-placeholder-image
 calibration-placeholder-test:
 	python3 -m unittest discover \
 		-s jobs/calibration-placeholder/tests \
+		-p 'test_*.py' \
+		-v
+
+calibration-image:
+	@set -eu; \
+		revision="$$(git ls-remote --exit-code \
+			"$(ARCHEBASE_CALIB_REPOSITORY)" "$(ARCHEBASE_CALIB_REF)" \
+			| awk 'NR == 1 { print $$1 }')"; \
+		test -n "$$revision" || \
+			(echo "Cannot resolve ARCHEBASE_CALIB_REF=$(ARCHEBASE_CALIB_REF)"; exit 1); \
+		echo "Building with archebase_calib@$$revision"; \
+		docker build \
+			--platform $(CALIBRATION_PLATFORM) \
+			--ssh default \
+			--build-context "archebase_calib=$(ARCHEBASE_CALIB_REPOSITORY)#$$revision" \
+			--build-arg ARCHEBASE_CALIB_REVISION="$$revision" \
+			--build-arg BUILD_JOBS="$(CALIBRATION_BUILD_JOBS)" \
+			--build-arg PYPI_INDEX_URL="$(CALIBRATION_PYPI_INDEX_URL)" \
+			--file jobs/calibration/Dockerfile \
+			--tag $(CALIBRATION_IMAGE) \
+			.
+
+calibration-container-smoke: calibration-image
+	docker run --rm $(CALIBRATION_IMAGE) --help > /dev/null
+	docker run --rm --entrypoint /bin/bash $(CALIBRATION_IMAGE) -lc \
+		'python3 /workspace/calib_cli/calibrate.py --help > /dev/null && \
+		source /workspace/kalibr/scripts/kalibr_no_ros_env.sh && \
+		python3 /workspace/kalibr/aslam_offline_calibration/kalibr/python/kalibr_calibrate_cameras_mcap --help > /dev/null'
+
+calibration-test:
+	python3 -m unittest discover \
+		-s jobs/calibration/tests \
 		-p 'test_*.py' \
 		-v
 

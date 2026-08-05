@@ -962,7 +962,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>支持一轮标定持续产生多条 Capture，直到任意一条标定成功。</li>
             <li>让 Ego Portal 在标定上传中提供 <code>camera_serial</code>，并在同一 Session 内保持不变。</li>
             <li>让 Ego Portal 使用持久 Device Token 或 API Key 换取的临时 Device JWT 查询本设备的标定 Session 状态。</li>
-            <li>每条 MCAP 上传完成后自动排队：先通过 Orbit 双目拆分并验证 <code>output_bag.mcap</code>，再把验证后的 MCAP 交给 Orbit 标定 Job；标定 Job 把一对一结果 JSON 写入 TOS。</li>
+            <li>每条 MCAP 上传完成后自动排队：Keystone 只提交一个 Orbit 标定 Job；Job 内先把 DECXIN 原始 MCAP 拆成双目图像并提取 IMU，再运行标定并把一对一结果 JSON 写入 TOS。</li>
             <li>首条成功后停止新任务，并持久化取消同一 Session 中仍在运行的 Orbit Job。</li>
           </ul>
         </div>
@@ -996,12 +996,12 @@ SPDX-License-Identifier: MulanPSL-2.0
       <div class="flow-strip" aria-label="标定上传流程">
         <div class="flow-step"><b>01</b>录制并校验<br>原始 MCAP</div>
         <div class="flow-step"><b>02</b>分片上传<br>capture.mcap</div>
-        <div class="flow-step"><b>03</b>Orbit 双目拆分<br>产出 output_bag</div>
-        <div class="flow-step"><b>04</b>验证拆分结果<br>再运行标定 Job</div>
+        <div class="flow-step"><b>03</b>提交一个 Orbit<br>标定 Job</div>
+        <div class="flow-step"><b>04</b>Job 内拆分 + IMU<br>再运行标定</div>
         <div class="flow-step"><b>05</b>JSON 通过校验<br>Session 结束</div>
       </div>
 
-      <p>一条原始 MCAP 对应一条 <code>calibration_capture</code>：Keystone 先用现有 stereo-split 管线生成并验证一条 <code>output_bag.mcap</code>，随后只允许标定镜像读取这条验证后的 MCAP，最终产生一份结果 JSON。一轮 <code>calibration_session</code> 固定一个 <code>camera_serial</code>，可以包含多条 Capture。录制与服务端两阶段处理并行，Ego Portal 持续上传并使用 Device Token 轮询状态，直到第一条成功结果出现。</p>
+      <p>一条原始 MCAP 对应一条 <code>calibration_capture</code>：Keystone 把上传完成且身份已冻结的 <code>capture.mcap</code> 只读挂载给一个标定 Job。Job 在临时工作目录中拆分 DECXIN 双目图像并提取 IMU，不生成视频流；预处理满足双目完整性和非空 IMU 质量门后，立即在同一 Job 中运行标定并产生一份结果 JSON。一轮 <code>calibration_session</code> 固定一个 <code>camera_serial</code>，可以包含多条 Capture。录制与服务端处理并行，Ego Portal 持续上传并使用 Device Token 轮询状态，直到第一条成功结果出现。</p>
     </section>
 
     <section class="chapter" id="grpc">
@@ -1155,7 +1155,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             </tr>
             <tr>
               <td><code>calibration_capture</code></td>
-              <td>再次校验 raw tags 中的 <code>camera_serial</code> 与 Session 保存值一致，保存原始 MCAP 元数据并将 Capture 标记为 <code>queued</code>；后台先提交并验证 stereo-split Orbit Job，再提交读取 <code>output_bag.mcap</code> 的标定 Orbit Job。</td>
+              <td>再次校验 raw tags 中的 <code>camera_serial</code> 与 Session 保存值一致，保存原始 MCAP 元数据并将 Capture 标记为 <code>queued</code>；后台提交一个读取原始 <code>capture.mcap</code> 的标定 Orbit Job，由该 Job 顺序完成预处理和标定。</td>
               <td>不创建 Episode、不修改 Task、不进入 Episode QA 或云同步。</td>
             </tr>
           </tbody>
@@ -1267,14 +1267,15 @@ SPDX-License-Identifier: MulanPSL-2.0
         <pre>{
   "schema_version": 1,
   "status": "succeeded",
-  "algorithm_version": "placeholder-v1",
+  "algorithm_version": "archebase-calib-5767ffd8f05e039c14c0dde2f8cb7131709c2ac0",
   "calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
   "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+  "camera_serial": "CAMERA-SN-001",
   "processor_image": "registry.example/archebase/calibration@sha256:...",
   "source": {
-    "uri": "tos://derived-bucket/derived/episodes/calibration/.../stereo-split/g1-.../output_bag.mcap",
+    "uri": "tos://capture-bucket/device-uploads/calibration-captures/101/.../capture.mcap",
     "size_bytes": 120000,
-    "sha256": "output-bag-64-character-lowercase-hex"
+    "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
   },
   "result": {
     "camera_matrix": [],
@@ -1283,7 +1284,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 }</pre>
       </div>
 
-      <p>处理严格分为两个 Orbit 阶段。第一阶段复用现有 stereo-split 管线：原始 <code>capture.mcap</code> 以只读 data binding 挂载，Job 产出 <code>output_bag.mcap</code>、<code>metadata.yaml</code> 和 <code>processing_manifest.json</code>；Keystone 验证产物结构、内容、大小、SHA-256 和 ETag 后，才把 Capture 推进到标定阶段。第二阶段使用标定镜像：验证后的 <code>output_bag.mcap</code> 只读挂载到 <code>/bindings/input/output_bag.mcap</code>，输出目录挂载到 <code>/bindings/output/</code>。标定 Job 将成功或业务失败结果写到 <code>calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；JSON 的 <code>source.uri</code>、<code>source.size_bytes</code> 和 <code>source.sha256</code> 必须指向验证后的 <code>output_bag.mcap</code>，并且 <code>processor_image</code>、Capture ID 和 Session ID 必须与 Keystone 冻结的执行上下文一致，否则结果会被拒绝。后续替换真实算法镜像时无需修改 Ego Portal 上传协议。</p>
+      <p>处理只提交一个 Orbit Job。原始 <code>capture.mcap</code> 以只读 data binding 挂载到 <code>/bindings/input/</code>，输出目录挂载到 <code>/bindings/output/</code>；Job 在容器临时目录中生成仅供本次运行使用的预处理 MCAP，确认双目图像完整且成功提取 IMU 后调用 ArcheBase 标定流水线。标定成功或业务失败都写到 <code>calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；JSON 的 <code>source.uri</code>、<code>source.size_bytes</code> 和 <code>source.sha256</code> 必须指向 Keystone 冻结的原始 <code>capture.mcap</code>，并且 <code>camera_serial</code>、<code>processor_image</code>、Capture ID 和 Session ID 必须与冻结的执行上下文一致，否则结果会被拒绝。预处理 MCAP 不作为独立 TOS 产物发布，也不会创建第二个 Orbit Job。</p>
     </section>
 
     <section class="chapter" id="model">
@@ -1335,7 +1336,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 
       <p>标定失败的 Capture 进入 <code>failed</code>，但所属 Session 保持 <code>running</code>，Ego 继续录制上传。Session 成功后，尚未提交的 Capture 直接标记为 <code>superseded</code>；已提交或运行的 Capture 持久化取消请求，Orbit 停止后再标记为 <code>superseded</code>。</p>
 
-      <p>同一套 Capture 主状态由 <code>processing_stage</code> 区分为 <code>stereo_split</code> 和 <code>calibration</code>。只有 stereo-split Job 成功且产物验证通过，Capture 才会从 <code>stereo_split/verifying</code> 回到 <code>calibration/queued</code>；标定 Job 不会直接读取上传的原始 <code>capture.mcap</code>。</p>
+      <p>新 Capture 从 <code>processing_stage=calibration</code> 开始并只创建一个 Orbit Job，该 Job 直接读取上传的原始 <code>capture.mcap</code>。<code>stereo_split</code> 阶段只为升级时已经冻结或运行的历史 Capture 保留：这类任务继续按旧合同验证后再进入标定阶段，避免部署升级中断在途作业；迁移时尚未启动 stereo-split 的 Capture 会安全切换到单 Job 流程。</p>
 
       <h3>首条成功原子收敛</h3>
       <div class="impact-note">
@@ -1429,12 +1430,12 @@ SPDX-License-Identifier: MulanPSL-2.0
         截至本设计对应的代码检查点，Ego Portal 最新远端分支尚未实现标定录制/上传，也不会上传 <code>camera_serial</code>；上表中的“新 Ego”是后续目标版本，不代表当前客户端已经具备该能力。Keystone 必须先上线并保持旧任务上传兼容。
       </div>
 
-      <h3>Orbit 占位作业部署配置</h3>
+      <h3>Orbit 标定作业部署配置</h3>
       <div class="code-frame">
         <span class="code-label">KEYSTONE ENV</span>
         <pre>KEYSTONE_ORBIT_BASE_URL=http://orbit.archebase-system.svc.cluster.local:8080</pre>
       </div>
-      <p>标定功能没有单独的启用开关，并与双目拆分共用 Orbit 服务地址。上线前必须同时配置可用的 stereo-split 镜像和标定镜像：第一阶段复用现有 stereo-split 镜像及其 TOS 输出配置，第二阶段使用“系统设置 → 设备标定”中保存的不可变 <code>@sha256:</code> 标定镜像引用和最大并发。Keystone 为两个阶段分别冻结处理配置；资源、超时、清理时间、轮询间隔、结果大小和日志上限使用现有安全配置或内置值，不增加标定专用环境变量。标定占位镜像由 <code>jobs/calibration-placeholder/Dockerfile</code> 构建；真实算法镜像必须接受验证后的 <code>output_bag.mcap</code> 合同，不能把结果 JSON 的 source 写成原始 <code>capture.mcap</code>。</p>
+      <p>标定功能没有单独的启用开关，并使用现有 Orbit 服务地址。上线前在“系统设置 → 设备标定”中保存不可变 <code>@sha256:</code> 标定镜像引用和最大并发；Keystone 冻结该处理配置后提交单个 Job，资源、超时、清理时间、轮询间隔、结果大小和日志上限使用现有安全配置或内置值，不增加标定专用环境变量。生产镜像由 Keystone 的 <code>make calibration-image</code> 生成：Make 通过 SSH 从 <code>robotics-and-ai/archebase_calib</code> 解析指定 ref 的完整 commit SHA，再把该远程仓库作为 BuildKit Git context 构建，因此不读取本地 <code>archebase_calib</code> 目录，也不修改算法仓库。镜像必须接受原始 <code>capture.mcap</code> 合同，并在同一 Job 内完成预处理和标定。</p>
 
       <div class="final-panel">
         <h2>发布顺序不能反转</h2>
@@ -1452,7 +1453,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         <li>标定上传不携带 task、plan、workstation 也能获得受限 STS。</li>
         <li>标定上传必须携带非空 <code>camera_serial</code>；同一 Session 中任一 Capture 改变该值都返回 FailedPrecondition。</li>
         <li>状态查询使用持久 <code>Device-Authorization</code> 或临时 Device JWT 均成功；同时发送两个请求头返回 400，缺失或无效凭证返回 401，其他设备的 Session 返回 404。</li>
-        <li>每条原始 MCAP 先完成 stereo-split 并验证 <code>output_bag.mcap</code>，标定结果 JSON 的 source 与该验证产物完全一致。</li>
+        <li>每条原始 MCAP 只创建一个 Orbit Job；Job 内先拆分双目并提取非空 IMU，再运行标定；结果 JSON 的 source 与冻结的原始 <code>capture.mcap</code> 完全一致。</li>
         <li>同一 Capture 重试 CompleteUpload 不产生重复记录。</li>
         <li>失败结果不会结束 Session，首条成功结果会原子结束 Session。</li>
         <li>Session 成功后的新上传被拒绝，在途上传被安全收口。</li>

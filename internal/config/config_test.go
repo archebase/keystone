@@ -243,9 +243,12 @@ func TestLoadCalibrationUsesFixedProcessingConfig(t *testing.T) {
 	if cfg.OrbitBaseURL != "http://orbit.archebase-system.svc.cluster.local:8080" {
 		t.Fatalf("calibration config = %+v", cfg)
 	}
-	if cfg.OrbitTimeoutSec != 10 || cfg.ActiveDeadlineSec != 600 || cfg.TTLSecondsAfterDone != 86400 ||
+	if cfg.OrbitTimeoutSec != 10 || cfg.ActiveDeadlineSec != 3600 || cfg.TTLSecondsAfterDone != 86400 ||
 		cfg.PollIntervalSec != 5 || cfg.MaxResultBytes != 16*1024*1024 || cfg.OrbitLogTailBytes != 1024*1024 ||
-		cfg.Resources.Requests["cpu"] != "1" || cfg.Resources.Limits["memory"] != "2Gi" {
+		cfg.Resources.Requests["cpu"] != "2" || cfg.Resources.Requests["memory"] != "4Gi" ||
+		cfg.Resources.Requests["ephemeral-storage"] != "8Gi" ||
+		cfg.Resources.Limits["cpu"] != "4" || cfg.Resources.Limits["memory"] != "8Gi" ||
+		cfg.Resources.Limits["ephemeral-storage"] != "16Gi" {
 		t.Fatalf("calibration fixed defaults = %+v", cfg)
 	}
 }
