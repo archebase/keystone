@@ -137,6 +137,9 @@ jobs:
       - name: Test staging deployment resolution
         run: bash .github/scripts/resolve-staging-deploy_test.sh
 
+      - name: Test staging cluster preflight
+        run: bash .github/scripts/validate-staging-cluster_test.sh
+
       - name: Test Helm chart
         run: make helm-lint
       

@@ -104,6 +104,7 @@ jobs:
           STAGING_TOS_BUCKET: ${{ vars.STAGING_KEYSTONE_TOS_BUCKET }}
           STAGING_TOS_UPLOAD_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_TOS_UPLOAD_ROLE_TRN }}
           STAGING_TOS_READ_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_TOS_READ_ROLE_TRN }}
+          STAGING_IRSA_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_IRSA_ROLE_TRN }}
           STAGING_GRPC_LISTENER_PORT: ${{ vars.STAGING_KEYSTONE_GRPC_LISTENER_PORT }}
           STAGING_HILBERT_BASE_URL: ${{ vars.STAGING_KEYSTONE_HILBERT_BASE_URL }}
         run: bash .github/scripts/resolve-staging-deploy.sh
@@ -158,10 +159,9 @@ jobs:
             echo "STAGING_KUBECONFIG_B64 must decode to a kubeconfig with current-context set." >&2
             exit 1
           fi
-          if [[ "${CURRENT_CONTEXT} ${CURRENT_CLUSTER}" != *staging* ]]; then
-            echo "staging kubeconfig context and cluster must identify staging; got context=${CURRENT_CONTEXT}, cluster=${CURRENT_CLUSTER}" >&2
-            exit 1
-          fi
+          python3 .github/scripts/validate-staging-cluster.py target \
+            --context "$CURRENT_CONTEXT" \
+            --cluster "$CURRENT_CLUSTER"
 
           echo "Using Kubernetes context: ${CURRENT_CONTEXT}"
           kubectl auth whoami
@@ -175,79 +175,40 @@ jobs:
         env:
           STAGING_ALB_DNS_NAME: ${{ vars.STAGING_KEYSTONE_ALB_DNS_NAME }}
           STAGING_INGRESS_CLASS: ${{ vars.STAGING_KEYSTONE_INGRESS_CLASS }}
+          STAGING_IRSA_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_IRSA_ROLE_TRN }}
           STAGING_GRPC_LISTENER_PORT: ${{ vars.STAGING_KEYSTONE_GRPC_LISTENER_PORT }}
         run: |
           set -euo pipefail
 
-          kubectl get namespace "$STAGING_NAMESPACE" > /dev/null
           kubectl get storageclass ebs-ssd > /dev/null
 
+          namespace_json="${RUNNER_TEMP}/staging-namespace.json"
           service_account_json="${RUNNER_TEMP}/staging-service-account.json"
           ingress_class_json="${RUNNER_TEMP}/staging-ingress-class.json"
           alb_instance_json="${RUNNER_TEMP}/staging-alb-instance.json"
 
+          kubectl get namespace "$STAGING_NAMESPACE" -o json > "$namespace_json"
           kubectl -n "$STAGING_NAMESPACE" get serviceaccount "$STAGING_SERVICE_ACCOUNT" -o json > "$service_account_json"
           kubectl get ingressclass "$STAGING_INGRESS_CLASS" -o json > "$ingress_class_json"
 
-          ALB_INSTANCE_NAME="$(python3 - "$service_account_json" "$ingress_class_json" <<'PY'
-          import json
-          import sys
-
-          service_account = json.load(open(sys.argv[1], encoding="utf-8"))
-          ingress_class = json.load(open(sys.argv[2], encoding="utf-8"))
-
-          annotations = service_account.get("metadata", {}).get("annotations", {})
-          if not annotations.get("vke.volcengine.com/role-trn", "").startswith("trn:iam::"):
-              raise SystemExit("staging Keystone ServiceAccount must carry a Volcengine IRSA role annotation")
-          labels = service_account.get("metadata", {}).get("labels", {})
-          if labels.get("archebase.io/environment") != "staging":
-              raise SystemExit("staging Keystone ServiceAccount must be labeled archebase.io/environment=staging")
-
-          spec = ingress_class.get("spec", {})
-          if spec.get("controller") != "ingress.vke.volcengine.com/alb":
-              raise SystemExit("staging Keystone IngressClass must use the Volcengine ALB controller")
-          parameters = spec.get("parameters", {})
-          if (
-              parameters.get("apiGroup") != "loadbalancer.vke.volcengine.com"
-              or parameters.get("kind") != "ALBInstance"
-              or parameters.get("scope") != "Cluster"
-              or not parameters.get("name")
-          ):
-              raise SystemExit("staging Keystone IngressClass must reference an ALBInstance")
-          print(parameters["name"])
-          PY
+          ALB_INSTANCE_NAME="$(python3 .github/scripts/validate-staging-cluster.py ingress-alb-name \
+            --ingress-class-json "$ingress_class_json" \
+            --expected-name "$STAGING_INGRESS_CLASS"
           )"
 
           kubectl get albinstances.loadbalancer.vke.volcengine.com "$ALB_INSTANCE_NAME" -o json > "$alb_instance_json"
 
-          python3 - "$alb_instance_json" <<'PY'
-          import json
-          import os
-          import sys
-
-          alb = json.load(open(sys.argv[1], encoding="utf-8"))
-          expected_dns = os.environ["STAGING_ALB_DNS_NAME"]
-          grpc_port = int(os.environ["STAGING_GRPC_LISTENER_PORT"])
-
-          status = alb.get("status", {})
-          if status.get("phase") != "Running":
-              raise SystemExit("staging Keystone ALBInstance must be Running")
-          if status.get("edition") != "Standard":
-              raise SystemExit("staging Keystone ALBInstance must use the Standard edition for gRPC")
-
-          ingress_status = status.get("ingress", {})
-          if ingress_status.get("hostname") != expected_dns:
-              raise SystemExit("STAGING_KEYSTONE_ALB_DNS_NAME does not match the staging ALBInstance status")
-
-          listeners = {
-              (listener.get("port"), listener.get("protocol"), listener.get("enableHTTP2"))
-              for listener in alb.get("spec", {}).get("listeners", [])
-          }
-          if (443, "HTTPS", True) not in listeners:
-              raise SystemExit("staging Keystone ALBInstance requires an HTTP/2 HTTPS listener on port 443")
-          if (grpc_port, "HTTPS", True) not in listeners:
-              raise SystemExit(f"staging Keystone ALBInstance requires an HTTP/2 HTTPS listener on port {grpc_port} for gRPC")
-          PY
+          python3 .github/scripts/validate-staging-cluster.py resources \
+            --namespace-json "$namespace_json" \
+            --service-account-json "$service_account_json" \
+            --ingress-class-json "$ingress_class_json" \
+            --alb-instance-json "$alb_instance_json" \
+            --namespace "$STAGING_NAMESPACE" \
+            --service-account "$STAGING_SERVICE_ACCOUNT" \
+            --ingress-class "$STAGING_INGRESS_CLASS" \
+            --alb-dns-name "$STAGING_ALB_DNS_NAME" \
+            --grpc-port "$STAGING_GRPC_LISTENER_PORT" \
+            --expected-irsa-role-trn "$STAGING_IRSA_ROLE_TRN"
 
       - name: Reconcile staging registry pull secret
         env:

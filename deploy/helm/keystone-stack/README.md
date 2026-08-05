@@ -197,8 +197,8 @@ restrict it to the intended reviewers and `main-v2`, then configure these
 secrets:
 
 - `STAGING_KUBECONFIG_B64`: one-line base64 encoding of the cloud-infra staging
-  `ci_kubeconfig` output. Its current context and cluster name must identify
-  staging.
+  `ci_kubeconfig` output. Its current context and referenced cluster name must
+  each identify staging.
 - `STAGING_KEYSTONE_HILBERT_ACCESS_KEY`
 - `STAGING_KEYSTONE_HILBERT_SECRET_KEY`
 - `VOLCENGINE_CR_USERNAME`
@@ -212,15 +212,20 @@ staging infrastructure outputs and application configuration:
 - `STAGING_KEYSTONE_TOS_BUCKET`
 - `STAGING_KEYSTONE_TOS_UPLOAD_ROLE_TRN`
 - `STAGING_KEYSTONE_TOS_READ_ROLE_TRN`
+- `STAGING_KEYSTONE_IRSA_ROLE_TRN`: cloud-infra output
+  `tos_irsa_workload_role_trns["keystone"]`
 - `STAGING_KEYSTONE_GRPC_LISTENER_PORT`
 - `STAGING_KEYSTONE_HILBERT_BASE_URL`
 
 The staging cluster must already contain:
 
-- namespace `archebase-system` and storage class `ebs-ssd`;
+- namespace `archebase-system`, labeled
+  `vke.volcengine.com/pod-identity-injection-enabled=true`, and storage class
+  `ebs-ssd`;
 - ServiceAccount `archebase-system/keystone`, labeled
-  `archebase.io/environment=staging` and annotated with its staging Volcengine
-  IRSA role;
+  `archebase.io/environment=staging` and with its
+  `vke.volcengine.com/role-trn` annotation exactly matching
+  `STAGING_KEYSTONE_IRSA_ROLE_TRN`;
 - a staging-only Keystone IngressClass backed by a running Standard
   `ALBInstance`, with HTTP/2 HTTPS listeners on port `443` and the dedicated
   gRPC port configured in `STAGING_KEYSTONE_GRPC_LISTENER_PORT`;

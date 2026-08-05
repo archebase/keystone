@@ -11,7 +11,8 @@ Components:
 {{- if .Values.ingress.enabled }}
 Synapse and the Keystone API: {{ include "keystone-stack.callbackPublicBaseURL" . }}
 {{- if and .Values.ingress.grpc.enabled (eq .Values.storage.type "tos") }}
-{{- $grpcListenerPort := default (.Values.keystone.service.ports.dgwGrpc | toString) (index .Values.ingress.grpc.annotations "ingress.vke.volcengine.com/loadbalancer-port") }}
+{{- $grpcAnnotations := default dict .Values.ingress.grpc.annotations }}
+{{- $grpcListenerPort := default (.Values.keystone.service.ports.dgwGrpc | toString) (index $grpcAnnotations "ingress.vke.volcengine.com/loadbalancer-port") }}
 DGW gRPC endpoint: {{ include "keystone-stack.host" . }}:{{ $grpcListenerPort }}
 {{- end }}
 {{- else }}
