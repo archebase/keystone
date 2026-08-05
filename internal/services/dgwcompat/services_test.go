@@ -241,7 +241,7 @@ func TestGatewayCompleteCalibrationCaptureQueuesProcessingWithoutEpisode(t *test
 	if err != nil {
 		t.Fatalf("CreateLogicalUpload() error = %v", err)
 	}
-	if got := created.GetCredentials().GetObjectKey(); got != "calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap" {
+	if got := created.GetCredentials().GetObjectKey(); got != "device-uploads/calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap" {
 		t.Fatalf("calibration object key = %q", got)
 	}
 

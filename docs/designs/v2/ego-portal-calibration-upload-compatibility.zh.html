@@ -1114,8 +1114,9 @@ SPDX-License-Identifier: MulanPSL-2.0
       <h3>服务端生成对象路径</h3>
       <div class="code-frame">
         <span class="code-label">TOS OBJECT KEY</span>
-        <pre>calibration-captures/{device_id}/{calibration_session_id}/{capture_id}/capture.mcap</pre>
+        <pre>device-uploads/calibration-captures/{device_id}/{calibration_session_id}/{capture_id}/capture.mcap</pre>
       </div>
+      <p>标定 Capture 复用 <code>KEYSTONE_DGW_TOS_KEY_PREFIX</code>（默认 <code>device-uploads</code>）及现有 Upload Role 的前缀权限；Keystone 签发的单次 STS Session Policy 仍只允许访问本次生成的精确对象 key，不新增根级 <code>calibration-captures/*</code> 权限。</p>
 
       <h3>CompleteUpload 分流</h3>
       <div class="table-wrap">

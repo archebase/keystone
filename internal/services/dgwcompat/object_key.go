@@ -7,15 +7,15 @@ package dgwcompat
 import "strings"
 
 func buildObjectKey(prefix string, hints map[string]string, uploadID string) string {
-	if uploadKind(strings.ToLower(strings.TrimSpace(hints["upload_kind"]))) == uploadKindCalibrationCapture {
-		return "calibration-captures/" +
-			sanitizePathSegment(hints["device_id"]) + "/" +
-			sanitizePathSegment(hints["calibration_session_id"]) + "/" +
-			sanitizePathSegment(hints["capture_id"]) + "/capture.mcap"
-	}
 	cleanPrefix := strings.Trim(sanitizePathSegment(prefix), "/")
 	if cleanPrefix == "" {
 		cleanPrefix = "ego-portal-lite"
+	}
+	if uploadKind(strings.ToLower(strings.TrimSpace(hints["upload_kind"]))) == uploadKindCalibrationCapture {
+		return cleanPrefix + "/calibration-captures/" +
+			sanitizePathSegment(hints["device_id"]) + "/" +
+			sanitizePathSegment(hints["calibration_session_id"]) + "/" +
+			sanitizePathSegment(hints["capture_id"]) + "/capture.mcap"
 	}
 	deviceID := sanitizePathSegment(hints["device_id"])
 	if deviceID == "" {
