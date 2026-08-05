@@ -11,7 +11,9 @@ Components:
 {{- if .Values.ingress.enabled }}
 Synapse and the Keystone API: {{ include "keystone-stack.callbackPublicBaseURL" . }}
 {{- if and .Values.ingress.grpc.enabled (eq .Values.storage.type "tos") }}
-DGW gRPC endpoint: {{ include "keystone-stack.host" . }}:{{ .Values.keystone.service.ports.dgwGrpc }}
+{{- $grpcAnnotations := default dict .Values.ingress.grpc.annotations }}
+{{- $grpcListenerPort := default (.Values.keystone.service.ports.dgwGrpc | toString) (index $grpcAnnotations "ingress.vke.volcengine.com/loadbalancer-port") }}
+DGW gRPC endpoint: {{ include "keystone-stack.host" . }}:{{ $grpcListenerPort }}
 {{- end }}
 {{- else }}
 Ingress is disabled. For a local check:

@@ -1,0 +1,386 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+name: Deploy Keystone Staging
+
+run-name: Deploy Keystone staging ${{ inputs.releaseName }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseName:
+        description: "Helm release name. Derives keystone-staging-<releaseName>.archebase.cn."
+        required: true
+        type: string
+      keystoneImageTag:
+        description: "Full Keystone commit SHA image tag. Empty uses the checked-out main-v2 HEAD."
+        required: false
+        default: ""
+        type: string
+      synapseImageTag:
+        description: "Full Synapse commit SHA image tag."
+        required: true
+        type: string
+      dnsCnameReady:
+        description: "Confirm the staging hostname CNAME points to the staging Keystone ALB."
+        required: true
+        default: false
+        type: boolean
+      confirmStaging:
+        description: "Type deploy-staging to confirm a staging deployment."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: keystone-staging-${{ inputs.releaseName }}
+  cancel-in-progress: false
+
+env:
+  CHART_PATH: deploy/helm/keystone-stack
+  STAGING_NAMESPACE: archebase-system
+  STAGING_SERVICE_ACCOUNT: keystone
+  STAGING_REGISTRY_PULL_SECRET: keystone-staging-registry
+  VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
+  KEYSTONE_IMAGE_REPOSITORY: prod/keystone
+  SYNAPSE_IMAGE_REPOSITORY: prod/synapse
+  STAGING_TOS_ENDPOINT: https://tos-cn-beijing.volces.com
+  STAGING_TOS_REGION: cn-beijing
+  STAGING_STS_ENDPOINT: https://sts.volcengineapi.com
+
+jobs:
+  deploy:
+    name: Deploy Keystone stack to staging
+    runs-on: archebase-ci-runner
+    if: github.ref == 'refs/heads/main-v2'
+    environment: staging
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main-v2
+
+      - name: Verify deploy tooling
+        run: |
+          set -euo pipefail
+
+          missing=()
+          for tool in docker helm kubectl python3; do
+            if ! command -v "$tool" > /dev/null 2>&1; then
+              missing+=("$tool")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "deploy job container is missing required tools: ${missing[*]}" >&2
+            echo "Set CI_JOB_CONTAINER_IMAGE to a deploy runner image that includes docker, helm, kubectl, and python3." >&2
+            exit 1
+          fi
+
+          docker buildx version
+          helm version --short
+          kubectl version --client=true
+          python3 --version
+
+      - name: Resolve and validate staging deployment inputs
+        id: inputs
+        env:
+          RELEASE_NAME: ${{ inputs.releaseName }}
+          KEYSTONE_IMAGE_TAG_INPUT: ${{ inputs.keystoneImageTag }}
+          SYNAPSE_IMAGE_TAG: ${{ inputs.synapseImageTag }}
+          DNS_CNAME_READY: ${{ inputs.dnsCnameReady }}
+          CONFIRM_STAGING: ${{ inputs.confirmStaging }}
+          STAGING_ALB_DNS_NAME: ${{ vars.STAGING_KEYSTONE_ALB_DNS_NAME }}
+          STAGING_INGRESS_CLASS: ${{ vars.STAGING_KEYSTONE_INGRESS_CLASS }}
+          STAGING_TOS_BUCKET: ${{ vars.STAGING_KEYSTONE_TOS_BUCKET }}
+          STAGING_TOS_UPLOAD_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_TOS_UPLOAD_ROLE_TRN }}
+          STAGING_TOS_READ_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_TOS_READ_ROLE_TRN }}
+          STAGING_IRSA_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_IRSA_ROLE_TRN }}
+          STAGING_GRPC_LISTENER_PORT: ${{ vars.STAGING_KEYSTONE_GRPC_LISTENER_PORT }}
+          STAGING_HILBERT_BASE_URL: ${{ vars.STAGING_KEYSTONE_HILBERT_BASE_URL }}
+        run: bash .github/scripts/resolve-staging-deploy.sh
+
+      - name: Validate required staging secrets
+        env:
+          STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+          STAGING_KEYSTONE_HILBERT_ACCESS_KEY: ${{ secrets.STAGING_KEYSTONE_HILBERT_ACCESS_KEY }}
+          STAGING_KEYSTONE_HILBERT_SECRET_KEY: ${{ secrets.STAGING_KEYSTONE_HILBERT_SECRET_KEY }}
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          test -n "$STAGING_KUBECONFIG_B64" || (echo "STAGING_KUBECONFIG_B64 secret is required" >&2; exit 1)
+          test -n "$STAGING_KEYSTONE_HILBERT_ACCESS_KEY" || (echo "STAGING_KEYSTONE_HILBERT_ACCESS_KEY secret is required" >&2; exit 1)
+          test -n "$STAGING_KEYSTONE_HILBERT_SECRET_KEY" || (echo "STAGING_KEYSTONE_HILBERT_SECRET_KEY secret is required" >&2; exit 1)
+          test -n "$VOLCENGINE_CR_USERNAME" || (echo "VOLCENGINE_CR_USERNAME secret is required" >&2; exit 1)
+          test -n "$VOLCENGINE_CR_PASSWORD" || (echo "VOLCENGINE_CR_PASSWORD secret is required" >&2; exit 1)
+
+      - name: Check image availability in Volcengine CR
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+          KEYSTONE_IMAGE: ${{ steps.inputs.outputs.keystone_image }}
+          SYNAPSE_IMAGE: ${{ steps.inputs.outputs.synapse_image }}
+        run: |
+          set -euo pipefail
+
+          echo "$VOLCENGINE_CR_PASSWORD" | docker login "$VOLCENGINE_CR_ENDPOINT" --username "$VOLCENGINE_CR_USERNAME" --password-stdin
+          docker buildx imagetools inspect "$KEYSTONE_IMAGE" > /dev/null
+          docker buildx imagetools inspect "$SYNAPSE_IMAGE" > /dev/null
+
+      - name: Configure staging kubeconfig
+        env:
+          STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+
+          KUBECONFIG_PATH="${RUNNER_TEMP}/staging-kubeconfig"
+          if ! printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$KUBECONFIG_PATH"; then
+            echo "STAGING_KUBECONFIG_B64 must be a base64-encoded kubeconfig." >&2
+            exit 1
+          fi
+          chmod 600 "$KUBECONFIG_PATH"
+          export KUBECONFIG="$KUBECONFIG_PATH"
+          echo "KUBECONFIG=${KUBECONFIG_PATH}" >> "$GITHUB_ENV"
+
+          CURRENT_CONTEXT="$(kubectl config current-context)"
+          CURRENT_CLUSTER="$(kubectl config view --minify -o jsonpath='{.contexts[0].context.cluster}')"
+          if [[ -z "$CURRENT_CONTEXT" || -z "$CURRENT_CLUSTER" ]]; then
+            echo "STAGING_KUBECONFIG_B64 must decode to a kubeconfig with current-context set." >&2
+            exit 1
+          fi
+          python3 .github/scripts/validate-staging-cluster.py target \
+            --context "$CURRENT_CONTEXT" \
+            --cluster "$CURRENT_CLUSTER"
+
+          echo "Using Kubernetes context: ${CURRENT_CONTEXT}"
+          kubectl auth whoami
+
+          if ! kubectl auth can-i '*' '*' --all-namespaces --quiet; then
+            echo "STAGING_KUBECONFIG_B64 must grant staging deployment permissions." >&2
+            exit 1
+          fi
+
+      - name: Preflight staging cluster resources
+        env:
+          STAGING_ALB_DNS_NAME: ${{ vars.STAGING_KEYSTONE_ALB_DNS_NAME }}
+          STAGING_INGRESS_CLASS: ${{ vars.STAGING_KEYSTONE_INGRESS_CLASS }}
+          STAGING_IRSA_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_IRSA_ROLE_TRN }}
+          STAGING_GRPC_LISTENER_PORT: ${{ vars.STAGING_KEYSTONE_GRPC_LISTENER_PORT }}
+        run: |
+          set -euo pipefail
+
+          kubectl get storageclass ebs-ssd > /dev/null
+
+          namespace_json="${RUNNER_TEMP}/staging-namespace.json"
+          service_account_json="${RUNNER_TEMP}/staging-service-account.json"
+          ingress_class_json="${RUNNER_TEMP}/staging-ingress-class.json"
+          alb_instance_json="${RUNNER_TEMP}/staging-alb-instance.json"
+
+          kubectl get namespace "$STAGING_NAMESPACE" -o json > "$namespace_json"
+          kubectl -n "$STAGING_NAMESPACE" get serviceaccount "$STAGING_SERVICE_ACCOUNT" -o json > "$service_account_json"
+          kubectl get ingressclass "$STAGING_INGRESS_CLASS" -o json > "$ingress_class_json"
+
+          ALB_INSTANCE_NAME="$(python3 .github/scripts/validate-staging-cluster.py ingress-alb-name \
+            --ingress-class-json "$ingress_class_json" \
+            --expected-name "$STAGING_INGRESS_CLASS"
+          )"
+
+          kubectl get albinstances.loadbalancer.vke.volcengine.com "$ALB_INSTANCE_NAME" -o json > "$alb_instance_json"
+
+          python3 .github/scripts/validate-staging-cluster.py resources \
+            --namespace-json "$namespace_json" \
+            --service-account-json "$service_account_json" \
+            --ingress-class-json "$ingress_class_json" \
+            --alb-instance-json "$alb_instance_json" \
+            --namespace "$STAGING_NAMESPACE" \
+            --service-account "$STAGING_SERVICE_ACCOUNT" \
+            --ingress-class "$STAGING_INGRESS_CLASS" \
+            --alb-dns-name "$STAGING_ALB_DNS_NAME" \
+            --grpc-port "$STAGING_GRPC_LISTENER_PORT" \
+            --expected-irsa-role-trn "$STAGING_IRSA_ROLE_TRN"
+
+      - name: Reconcile staging registry pull secret
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          kubectl -n "$STAGING_NAMESPACE" create secret docker-registry "$STAGING_REGISTRY_PULL_SECRET" \
+            --docker-server="$VOLCENGINE_CR_ENDPOINT" \
+            --docker-username="$VOLCENGINE_CR_USERNAME" \
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \
+            --dry-run=client \
+            -o yaml \
+            | kubectl apply -f -
+
+      - name: Write staging Helm values
+        env:
+          RELEASE_NAME: ${{ steps.inputs.outputs.release_name }}
+          HOST: ${{ steps.inputs.outputs.host }}
+          KEYSTONE_IMAGE_TAG: ${{ steps.inputs.outputs.keystone_image_tag }}
+          SYNAPSE_IMAGE_TAG: ${{ steps.inputs.outputs.synapse_image_tag }}
+          STAGING_INGRESS_CLASS: ${{ vars.STAGING_KEYSTONE_INGRESS_CLASS }}
+          STAGING_TOS_BUCKET: ${{ vars.STAGING_KEYSTONE_TOS_BUCKET }}
+          STAGING_TOS_UPLOAD_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_TOS_UPLOAD_ROLE_TRN }}
+          STAGING_TOS_READ_ROLE_TRN: ${{ vars.STAGING_KEYSTONE_TOS_READ_ROLE_TRN }}
+          STAGING_GRPC_LISTENER_PORT: ${{ vars.STAGING_KEYSTONE_GRPC_LISTENER_PORT }}
+          STAGING_HILBERT_BASE_URL: ${{ vars.STAGING_KEYSTONE_HILBERT_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          STAGING_VALUES_FILE="${RUNNER_TEMP}/staging-values.json"
+          export STAGING_VALUES_FILE
+          python3 - <<'PY'
+          import json
+          import os
+
+          values = {
+              "commonLabels": {"archebase.io/environment": "staging"},
+              "imagePullSecrets": [{"name": os.environ["STAGING_REGISTRY_PULL_SECRET"]}],
+              "serviceAccount": {
+                  "create": False,
+                  "name": os.environ["STAGING_SERVICE_ACCOUNT"],
+              },
+              "keystone": {
+                  "mode": "cloud",
+                  "image": {
+                      "repository": f'{os.environ["VOLCENGINE_CR_ENDPOINT"]}/{os.environ["KEYSTONE_IMAGE_REPOSITORY"]}',
+                      "tag": os.environ["KEYSTONE_IMAGE_TAG"],
+                  },
+                  "factoryId": os.environ["RELEASE_NAME"],
+                  "syncEnabled": True,
+                  "hilbert": {"baseURL": os.environ["STAGING_HILBERT_BASE_URL"]},
+              },
+              "synapse": {
+                  "image": {
+                      "repository": f'{os.environ["VOLCENGINE_CR_ENDPOINT"]}/{os.environ["SYNAPSE_IMAGE_REPOSITORY"]}',
+                      "tag": os.environ["SYNAPSE_IMAGE_TAG"],
+                  },
+              },
+              "storage": {
+                  "type": "tos",
+                  "tos": {
+                      "endpoint": os.environ["STAGING_TOS_ENDPOINT"],
+                      "bucket": os.environ["STAGING_TOS_BUCKET"],
+                      "region": os.environ["STAGING_TOS_REGION"],
+                      "stsRoleTRN": os.environ["STAGING_TOS_UPLOAD_ROLE_TRN"],
+                      "qaReadSTSRoleTRN": os.environ["STAGING_TOS_READ_ROLE_TRN"],
+                      "stsEndpoint": os.environ["STAGING_STS_ENDPOINT"],
+                      "mockSTS": False,
+                  },
+              },
+              "ingress": {
+                  "enabled": True,
+                  "className": os.environ["STAGING_INGRESS_CLASS"],
+                  "host": os.environ["HOST"],
+                  "annotations": {
+                      "ingress.vke.volcengine.com/loadbalancer-port": "443",
+                      "ingress.vke.volcengine.com/loadbalancer-protocol": "https",
+                      "ingress.vke.volcengine.com/loadbalancer-backend-protocol": "http",
+                  },
+                  "grpc": {
+                      "enabled": True,
+                      "annotations": {
+                          "ingress.vke.volcengine.com/loadbalancer-port": os.environ["STAGING_GRPC_LISTENER_PORT"],
+                          "ingress.vke.volcengine.com/loadbalancer-protocol": "https",
+                          "ingress.vke.volcengine.com/loadbalancer-backend-protocol": "grpc",
+                          "ingress.vke.volcengine.com/loadbalancer-healthcheck-enabled": "true",
+                          "ingress.vke.volcengine.com/loadbalancer-healthcheck-protocol": "tcp",
+                      },
+                  },
+              },
+          }
+
+          with open(os.environ["STAGING_VALUES_FILE"], "w", encoding="utf-8") as stream:
+              json.dump(values, stream)
+          PY
+
+          echo "STAGING_VALUES_FILE=${STAGING_VALUES_FILE}" >> "$GITHUB_ENV"
+
+      - name: Render Helm chart
+        run: |
+          set -euo pipefail
+
+          helm template "${{ steps.inputs.outputs.release_name }}" "$CHART_PATH" \
+            --namespace "$STAGING_NAMESPACE" \
+            --values "$STAGING_VALUES_FILE" \
+            --set-string credentials.hilbertAccessKey=placeholder \
+            --set-string credentials.hilbertSecretKey=placeholder \
+            > /dev/null
+
+      - name: Deploy Helm release to staging
+        env:
+          RELEASE_NAME: ${{ steps.inputs.outputs.release_name }}
+          STAGING_KEYSTONE_HILBERT_ACCESS_KEY: ${{ secrets.STAGING_KEYSTONE_HILBERT_ACCESS_KEY }}
+          STAGING_KEYSTONE_HILBERT_SECRET_KEY: ${{ secrets.STAGING_KEYSTONE_HILBERT_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+
+          SECRET_VALUES_FILE="$(mktemp)"
+          cleanup() {
+            rm -f "$SECRET_VALUES_FILE"
+          }
+          trap cleanup EXIT
+
+          python3 - <<'PY' > "$SECRET_VALUES_FILE"
+          import json
+          import os
+
+          print(json.dumps({
+              "credentials": {
+                  "hilbertAccessKey": os.environ["STAGING_KEYSTONE_HILBERT_ACCESS_KEY"],
+                  "hilbertSecretKey": os.environ["STAGING_KEYSTONE_HILBERT_SECRET_KEY"],
+              }
+          }))
+          PY
+
+          helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
+            --namespace "$STAGING_NAMESPACE" \
+            --atomic \
+            --wait \
+            --timeout 15m \
+            --history-max 20 \
+            --values "$STAGING_VALUES_FILE" \
+            --values "$SECRET_VALUES_FILE"
+
+      - name: Report staging release endpoints
+        env:
+          RELEASE_NAME: ${{ steps.inputs.outputs.release_name }}
+          HOST: ${{ steps.inputs.outputs.host }}
+          KEYSTONE_IMAGE: ${{ steps.inputs.outputs.keystone_image }}
+          SYNAPSE_IMAGE: ${{ steps.inputs.outputs.synapse_image }}
+          STAGING_GRPC_LISTENER_PORT: ${{ vars.STAGING_KEYSTONE_GRPC_LISTENER_PORT }}
+        run: |
+          set -euo pipefail
+
+          helm status "$RELEASE_NAME" --namespace "$STAGING_NAMESPACE"
+
+          {
+            echo "### Keystone staging release"
+            echo
+            echo "- Release: \`${RELEASE_NAME}\`"
+            echo "- Namespace: \`${STAGING_NAMESPACE}\`"
+            echo "- HTTP/WebSocket/API: \`https://${HOST}\`"
+            echo "- gRPC: \`${HOST}:${STAGING_GRPC_LISTENER_PORT}\`"
+            echo "- Keystone sync enabled: \`true\`"
+            echo "- Keystone image: \`${KEYSTONE_IMAGE}\`"
+            echo "- Synapse image: \`${SYNAPSE_IMAGE}\`"
+            echo
+            echo "Admin password lookup:"
+            echo
+            echo "\`\`\`bash"
+            echo "kubectl -n ${STAGING_NAMESPACE} get secret ${RELEASE_NAME}-credentials -o jsonpath='{.data.admin-password}' | base64 -d; echo"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

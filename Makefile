@@ -131,6 +131,14 @@ helm-lint:
 		--set synapse.image.tag=4f294f56bfb1 \
 		--set credentials.hilbertAccessKey=lint-ak \
 		--set credentials.hilbertSecretKey=lint-sk >/dev/null
+	helm install smoke deploy/helm/keystone-stack \
+		--namespace archebase-system \
+		--dry-run=client \
+		--set ingress.grpc.annotations=null \
+		--set keystone.image.tag=e062c27a6617 \
+		--set synapse.image.tag=4f294f56bfb1 \
+		--set credentials.hilbertAccessKey=lint-ak \
+		--set credentials.hilbertSecretKey=lint-sk >/dev/null
 
 # Regenerate gRPC/protobuf Go bindings from .proto source files.
 # Requires: protoc (v5.x), protoc-gen-go, protoc-gen-go-grpc on PATH.
