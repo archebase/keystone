@@ -123,6 +123,8 @@ release names. MySQL PVCs remain release-specific.
 
 ## GitHub Actions Deployment
 
+### Production
+
 The `Deploy Keystone Stack` workflow provides the production manual deployment
 entry point on the repository default branch, `main-v2`. The deployment job runs
 on the `archebase-ci-runner` self-hosted runner and executes inside the
@@ -166,6 +168,74 @@ The workflow deploys into `archebase-system` using the kubeconfig's
 resources. Keep the GitHub `production` environment protected so production
 deployments require the intended reviewer approval.
 
+### Staging
+
+The `Deploy Keystone Staging` workflow is the manual staging entry point on
+`main-v2`. It promotes the same immutable `prod/keystone` and `prod/synapse`
+registry artifacts used by the production workflow instead of rebuilding
+environment-specific images. All runtime coordinates still come only from the
+`staging` GitHub environment, staging kubeconfig, staging application
+credentials, and staging infrastructure configuration. The workflow requires
+the IngressClass, TOS bucket, IAM roles, and Hilbert endpoint to identify
+staging, then verifies the ALB and workload identity against the staging
+cluster before it mutates any Kubernetes resource.
+
+Each release uses a staging-specific hostname that cannot collide with the
+production hostname:
+
+```text
+keystone-staging-<releaseName>.archebase.cn
+```
+
+`releaseName` must contain 1–46 lowercase alphanumeric or hyphen characters.
+`keystoneImageTag` may be empty to select the checked-out `main-v2` HEAD;
+`synapseImageTag` must be supplied explicitly. Both resolved image tags must be
+full 40-character lowercase commit SHAs.
+
+Before dispatching the workflow, create the GitHub `staging` environment and
+restrict it to the intended reviewers and `main-v2`, then configure these
+secrets:
+
+- `STAGING_KUBECONFIG_B64`: one-line base64 encoding of the cloud-infra staging
+  `ci_kubeconfig` output. Its current context and cluster name must identify
+  staging.
+- `STAGING_KEYSTONE_HILBERT_ACCESS_KEY`
+- `STAGING_KEYSTONE_HILBERT_SECRET_KEY`
+- `VOLCENGINE_CR_USERNAME`
+- `VOLCENGINE_CR_PASSWORD`
+
+Configure these repository or `staging` environment variables from the reviewed
+staging infrastructure outputs and application configuration:
+
+- `STAGING_KEYSTONE_ALB_DNS_NAME`
+- `STAGING_KEYSTONE_INGRESS_CLASS`
+- `STAGING_KEYSTONE_TOS_BUCKET`
+- `STAGING_KEYSTONE_TOS_UPLOAD_ROLE_TRN`
+- `STAGING_KEYSTONE_TOS_READ_ROLE_TRN`
+- `STAGING_KEYSTONE_GRPC_LISTENER_PORT`
+- `STAGING_KEYSTONE_HILBERT_BASE_URL`
+
+The staging cluster must already contain:
+
+- namespace `archebase-system` and storage class `ebs-ssd`;
+- ServiceAccount `archebase-system/keystone`, labeled
+  `archebase.io/environment=staging` and annotated with its staging Volcengine
+  IRSA role;
+- a staging-only Keystone IngressClass backed by a running Standard
+  `ALBInstance`, with HTTP/2 HTTPS listeners on port `443` and the dedicated
+  gRPC port configured in `STAGING_KEYSTONE_GRPC_LISTENER_PORT`;
+- a staging TOS bucket plus upload and read roles that the Keystone workload
+  identity can assume;
+- a CNAME from the derived staging hostname to
+  `STAGING_KEYSTONE_ALB_DNS_NAME`.
+
+The workflow creates or updates only the application-owned
+`archebase-system/keystone-staging-registry` image pull Secret. It does not
+create cloud infrastructure, IAM roles, DNS records, namespaces, storage
+classes, or workload identities. Dispatch requires `dnsCnameReady=true` and
+`confirmStaging=deploy-staging`; Helm uses `--atomic` so a failed rollout is
+rolled back.
+
 ## Routing
 
 Synapse uses the same-origin `/api/v1` path. The chart's HTTP Ingress sends
@@ -180,15 +250,17 @@ Keystone also serves root and `/api` health responses for ALB backend health
 checks. The public root path still routes to Synapse because the HTTP Ingress
 sends `/` to the Synapse Service.
 
-The gRPC Ingress is separate so the VKE ALB annotations can select listener
-`50053` and backend protocol `grpc` without affecting browser/API routing.
-It renders the wildcard path `/*` because Volcengine Standard ALB treats
-Kubernetes `pathType: Prefix` as validation-only. It also uses TCP health
-checks because Keystone's DGW gRPC listener is not an HTTP health endpoint.
-gRPC clients connect to:
+The gRPC Ingress is separate so the VKE ALB annotations can select a dedicated
+listener and backend protocol `grpc` without affecting browser/API routing. It
+renders the wildcard path `/*` because Volcengine Standard ALB treats Kubernetes
+`pathType: Prefix` as validation-only. It also uses TCP health checks because
+Keystone's DGW gRPC listener is not an HTTP health endpoint. Production uses
+listener `50053`; staging uses `STAGING_KEYSTONE_GRPC_LISTENER_PORT`. Clients
+connect to the corresponding environment endpoint:
 
 ```text
-keystone-<releaseName>.archebase.cn:50053
+production: keystone-<releaseName>.archebase.cn:50053
+staging:    keystone-staging-<releaseName>.archebase.cn:<STAGING_KEYSTONE_GRPC_LISTENER_PORT>
 ```
 
 ## S3 Override
