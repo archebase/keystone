@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -58,9 +59,38 @@ def contract_frame(index: int) -> np.ndarray:
     return frame
 
 
-def make_source(path: Path, frame_count: int = 3) -> None:
+def encode_h264_access_units(frames: list[np.ndarray]) -> list[bytes]:
+    height, width = frames[0].shape[:2]
+    encoded = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "rawvideo", "-pixel_format", "bgr24",
+            "-video_size", f"{width}x{height}", "-framerate", "60", "-i", "pipe:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-profile:v", "high", "-pix_fmt", "yuv420p", "-g", "1", "-bf", "0",
+            "-x264-params", "aud=1:repeat-headers=1", "-f", "h264", "pipe:1",
+        ],
+        input=b"".join(frame.tobytes() for frame in frames),
+        capture_output=True,
+        check=True,
+    ).stdout
+    starts = [match.start() for match in re.finditer(b"\\x00\\x00(?:\\x00)?\\x01\\x09", encoded)]
+    access_units = [
+        encoded[start : starts[index + 1] if index + 1 < len(starts) else len(encoded)]
+        for index, start in enumerate(starts)
+    ]
+    if len(access_units) != len(frames):
+        raise RuntimeError(
+            f"H.264 fixture frame count mismatch: {len(access_units)} != {len(frames)}"
+        )
+    return access_units
+
+
+def make_source(path: Path, frame_count: int = 3, source_format: str = "jpeg") -> None:
     typestore = get_typestore(Stores.ROS2_JAZZY)
     messages = typestore.types
+    frames = [contract_frame(index) for index in range(frame_count)]
+    h264_access_units = encode_h264_access_units(frames) if source_format == "h264" else []
     compressed_definition, _ = typestore.generate_msgdef(
         "sensor_msgs/msg/CompressedImage", ros_version=2
     )
@@ -78,17 +108,20 @@ def make_source(path: Path, frame_count: int = 3) -> None:
             "std_msgs/msg/String", "ros2msg", string_definition.encode()
         )
         string_channel = writer.register_channel("/kept", "cdr", string_schema)
-        for index in range(frame_count):
-            ok, jpeg = cv2.imencode(
-                ".jpg", contract_frame(index), [int(cv2.IMWRITE_JPEG_QUALITY), 100]
-            )
-            if not ok:
-                raise RuntimeError("failed to create JPEG fixture")
+        for index, frame in enumerate(frames):
+            if source_format == "h264":
+                payload = np.frombuffer(h264_access_units[index], dtype=np.uint8)
+            else:
+                ok, payload = cv2.imencode(
+                    ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100]
+                )
+                if not ok:
+                    raise RuntimeError("failed to create JPEG fixture")
             timestamp = (index + 1) * 1_000_000_000
             stamp = messages["builtin_interfaces/msg/Time"](sec=index + 1, nanosec=0)
             header = messages["std_msgs/msg/Header"](stamp=stamp, frame_id="joined_camera")
             compressed = messages["sensor_msgs/msg/CompressedImage"](
-                header=header, format="jpeg", data=jpeg.reshape(-1)
+                header=header, format=source_format, data=payload.reshape(-1)
             )
             writer.add_message(
                 compressed_channel,
@@ -180,6 +213,37 @@ class ConvertTest(unittest.TestCase):
                 self.assertRegex(trace, r"num_units_in_tick\s+.*= 1")
                 self.assertRegex(trace, r"time_scale\s+.*= 120")
                 self.assertRegex(trace, r"fixed_frame_rate_flag\s+.*= 1")
+
+    def test_decodes_joined_h264_before_split_and_reencode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_source(source, source_format="h264")
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.input_messages, 3)
+            self.assertEqual(stats.decoded_images, 3)
+            self.assertEqual(stats.left_videos, 3)
+            self.assertEqual(stats.right_videos, 3)
+            self.assertEqual(stats.imu_messages, 22)
+            by_topic: dict[str, int] = {}
+            with output.open("rb") as stream:
+                for schema, channel, message in make_reader(stream).iter_messages():
+                    by_topic[channel.topic] = by_topic.get(channel.topic, 0) + 1
+                    if channel.topic in {"/decxin/left_rgb/h264", "/decxin/right_rgb/h264"}:
+                        self.assertEqual(schema.name, FOXGLOVE_SCHEMA_NAME)
+                        video = CompressedVideo.FromString(message.data)
+                        self.assertEqual(video.format, "h264")
+            self.assertEqual(by_topic["/decxin/left_rgb/h264"], 3)
+            self.assertEqual(by_topic["/decxin/right_rgb/h264"], 3)
+            with output.open("rb") as stream:
+                physical_times = [
+                    message.log_time
+                    for _, _, message in make_reader(stream).iter_messages(log_time_order=False)
+                ]
+            self.assertEqual(physical_times, sorted(physical_times))
 
     def test_rejects_existing_output_topic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
