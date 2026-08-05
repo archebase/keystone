@@ -217,7 +217,9 @@ func TestLoadStereoSplitConfig(t *testing.T) {
 		t.Fatalf("Load().Derivatives output = %+v", cfg.Derivatives)
 	}
 	if cfg.Derivatives.OrbitTimeoutSec != 10 ||
-		cfg.Derivatives.Resources.Requests["cpu"] != "2" || cfg.Derivatives.Resources.Limits["memory"] != "8Gi" {
+		cfg.Derivatives.Resources.Requests["cpu"] != "2" ||
+		cfg.Derivatives.Resources.Limits["memory"] != "8Gi" ||
+		cfg.Derivatives.Resources.Limits["ephemeral-storage"] != "16Gi" {
 		t.Fatalf("Load().Derivatives fixed defaults = %+v", cfg.Derivatives)
 	}
 }

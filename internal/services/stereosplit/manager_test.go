@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"strconv"
@@ -431,6 +432,225 @@ func TestReconcileOnceStopsActiveJobAfterCancellation(t *testing.T) {
 	}
 	if derivative.ProcessingStatus != ProcessingCanceled || derivative.OrbitDeleteStatus != DeletePending || fake.stopCalls != 1 {
 		t.Fatalf("canceled derivative=%+v stop_calls=%d", derivative, fake.stopCalls)
+	}
+}
+
+func TestReconcileDeleteWaitsForPersistedOrbitLogs(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 48, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	fake := &fakeOrbit{logsErr: errors.New("terminated container logs are not ready")}
+	manager := NewManager(db, fake, nil, testManagerConfig())
+	now := time.Date(2026, 8, 5, 9, 25, 13, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	derivative, _, err := manager.Start(context.Background(), 48, "admin")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE episode_derivatives
+		SET processing_status = ?, orbit_job_id = 'abs-job-derivative-48-stereo-split-g1',
+		    orbit_log_tail = '', orbit_delete_status = ?, reconcile_after = NULL
+		WHERE id = ?
+	`, ProcessingFailed, DeletePending, derivative.ID); err != nil {
+		t.Fatalf("prepare terminal derivative: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if !worked || err == nil ||
+		!strings.Contains(err.Error(), "capture Orbit logs before delete") ||
+		!strings.Contains(err.Error(), "load Orbit logs") {
+		t.Fatalf("first ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	if fake.logsCalls != 1 || fake.deleteCalls != 0 {
+		t.Fatalf("first reconcile logs_calls=%d delete_calls=%d", fake.logsCalls, fake.deleteCalls)
+	}
+	var first struct {
+		LogTail     sql.NullString `db:"orbit_log_tail"`
+		DeleteState string         `db:"orbit_delete_status"`
+		RetryAt     sql.NullTime   `db:"reconcile_after"`
+	}
+	if err := db.Get(&first, `
+		SELECT orbit_log_tail, orbit_delete_status, reconcile_after
+		FROM episode_derivatives WHERE id = ?
+	`, derivative.ID); err != nil {
+		t.Fatalf("load first delete state: %v", err)
+	}
+	if !first.LogTail.Valid || first.LogTail.String != "" ||
+		first.DeleteState != DeletePending || !first.RetryAt.Valid {
+		t.Fatalf("first delete state = %+v", first)
+	}
+
+	fake.logsErr = nil
+	fake.logs = "[orbit] Kubernetes terminal diagnostics\npod_reason=Evicted\n"
+	now = now.Add(2 * time.Second)
+	worked, err = manager.ReconcileOnce(context.Background())
+	if err != nil || !worked {
+		t.Fatalf("second ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	updated, err := manager.Get(context.Background(), 48)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if fake.logsCalls != 2 || fake.deleteCalls != 1 ||
+		updated.OrbitLogTail != fake.logs || updated.OrbitDeleteStatus != DeleteCompleted {
+		t.Fatalf("updated=%+v logs_calls=%d delete_calls=%d", updated, fake.logsCalls, fake.deleteCalls)
+	}
+}
+
+func TestReconcileRunningPersistsLatestOrbitLogTail(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 49, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
+	fake.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
+		fake.lastRequest = request
+		return orbitapi.SubmitResponse{JobID: "abs-job-derivative-49-stereo-split-g1", SubmissionID: request.SubmissionID}, nil
+	}
+	manager := NewManager(db, fake, &fakeObjectStore{size: 100, etag: "source-etag"}, testManagerConfig())
+	now := time.Date(2026, 8, 5, 9, 19, 14, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	if _, _, err := manager.Start(context.Background(), 49, "admin"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("submit ReconcileOnce() error = %v", err)
+	}
+
+	fake.getErr = nil
+	fake.logs = "copied 4294967296 bytes\n"
+	fake.job = orbitapi.Job{
+		JobID:        "abs-job-derivative-49-stereo-split-g1",
+		SubmissionID: fake.lastRequest.SubmissionID,
+		Status:       "RUNNING",
+		Image:        fake.lastRequest.Image,
+		DataBindings: fake.lastRequest.DataBindings,
+	}
+	now = now.Add(2 * time.Second)
+	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("running ReconcileOnce() error = %v", err)
+	}
+	derivative, err := manager.Get(context.Background(), 49)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if derivative.ProcessingStatus != ProcessingRunning || derivative.OrbitLogTail != fake.logs || fake.logsCalls != 1 {
+		t.Fatalf("derivative=%+v logs_calls=%d", derivative, fake.logsCalls)
+	}
+
+	lastLogs := fake.logs
+	fake.logs = " \n"
+	now = now.Add(2 * time.Second)
+	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("empty logs ReconcileOnce() error = %v", err)
+	}
+	derivative, err = manager.Get(context.Background(), 49)
+	if err != nil {
+		t.Fatalf("Get() after empty logs error = %v", err)
+	}
+	if derivative.OrbitLogTail != lastLogs || fake.logsCalls != 2 {
+		t.Fatalf("derivative=%+v logs_calls=%d", derivative, fake.logsCalls)
+	}
+}
+
+func TestReconcileTerminalLogFailurePersistsFallbackBeforeDelete(t *testing.T) {
+	tests := []struct {
+		name          string
+		episodeID     int64
+		terminalLogs  string
+		terminalError error
+		wantLogError  string
+	}{
+		{
+			name:          "logs error",
+			episodeID:     50,
+			terminalError: errors.New(`container "job" in pod "stereo-split" is terminated`),
+			wantLogError:  `container \"job\" in pod \"stereo-split\" is terminated`,
+		},
+		{
+			name:         "empty logs",
+			episodeID:    51,
+			terminalLogs: " \n",
+			wantLogError: "empty response",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newTestDB(t)
+			insertTestEpisode(t, db, tt.episodeID, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+			if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+				t.Fatalf("insert image config: %v", err)
+			}
+			jobID := fmt.Sprintf("abs-job-episode-%d-stereo-split-g1", tt.episodeID)
+			fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
+			fake.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
+				fake.lastRequest = request
+				return orbitapi.SubmitResponse{JobID: jobID, SubmissionID: request.SubmissionID}, nil
+			}
+			manager := NewManager(db, fake, &fakeObjectStore{size: 100, etag: "source-etag"}, testManagerConfig())
+			now := time.Date(2026, 8, 5, 9, 19, 14, 0, time.UTC)
+			manager.now = func() time.Time { return now }
+			if _, _, err := manager.Start(context.Background(), tt.episodeID, "admin"); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+				t.Fatalf("submit ReconcileOnce() error = %v", err)
+			}
+
+			fake.getErr = nil
+			fake.logs = "copied 8167930399 bytes\n"
+			fake.job = orbitapi.Job{
+				JobID:        jobID,
+				SubmissionID: fake.lastRequest.SubmissionID,
+				Status:       "RUNNING",
+				Image:        fake.lastRequest.Image,
+				DataBindings: fake.lastRequest.DataBindings,
+			}
+			now = now.Add(2 * time.Second)
+			if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+				t.Fatalf("running ReconcileOnce() error = %v", err)
+			}
+
+			fake.job.Status = "FAILED"
+			fake.job.Message = "Job has reached the specified backoff limit"
+			fake.logs = tt.terminalLogs
+			fake.logsErr = tt.terminalError
+			now = now.Add(2 * time.Second)
+			if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+				t.Fatalf("terminal ReconcileOnce() error = %v", err)
+			}
+			derivative, err := manager.Get(context.Background(), tt.episodeID)
+			if err != nil {
+				t.Fatalf("Get() terminal error = %v", err)
+			}
+			for _, want := range []string{
+				"copied 8167930399 bytes",
+				"[keystone] Orbit terminal diagnostics",
+				"status=FAILED",
+				"Job has reached the specified backoff limit",
+				tt.wantLogError,
+			} {
+				if !strings.Contains(derivative.OrbitLogTail, want) {
+					t.Fatalf("orbit_log_tail %q does not contain %q", derivative.OrbitLogTail, want)
+				}
+			}
+			if derivative.ProcessingStatus != ProcessingFailed || derivative.OrbitDeleteStatus != DeletePending || fake.deleteCalls != 0 {
+				t.Fatalf("terminal derivative=%+v delete_calls=%d", derivative, fake.deleteCalls)
+			}
+
+			now = now.Add(2 * time.Second)
+			if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+				t.Fatalf("delete ReconcileOnce() error = %v", err)
+			}
+			derivative, err = manager.Get(context.Background(), tt.episodeID)
+			if err != nil {
+				t.Fatalf("Get() final error = %v", err)
+			}
+			if derivative.OrbitDeleteStatus != DeleteCompleted || fake.deleteCalls != 1 {
+				t.Fatalf("final derivative=%+v delete_calls=%d", derivative, fake.deleteCalls)
+			}
+		})
 	}
 }
 
@@ -1171,6 +1391,9 @@ type fakeOrbit struct {
 	job         orbitapi.Job
 	getErr      error
 	lastRequest orbitapi.SubmitRequest
+	logs        string
+	logsErr     error
+	logsCalls   int
 	deleteCalls int
 	stopCalls   int
 	stopJob     orbitapi.Job
@@ -1189,7 +1412,10 @@ func (f *fakeOrbit) Get(context.Context, string) (orbitapi.Job, error) {
 	return f.job, f.getErr
 }
 
-func (f *fakeOrbit) Logs(context.Context, string) (string, error) { return "", nil }
+func (f *fakeOrbit) Logs(context.Context, string) (string, error) {
+	f.logsCalls++
+	return f.logs, f.logsErr
+}
 func (f *fakeOrbit) Stop(context.Context, string) (orbitapi.Job, error) {
 	f.stopCalls++
 	if f.stopErr != nil {

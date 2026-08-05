@@ -64,6 +64,7 @@ type frozenDerivativeRow struct {
 	OrbitSubmissionID    sql.NullString `db:"orbit_submission_id"`
 	OrbitRequest         sql.NullString `db:"orbit_request"`
 	OrbitJobID           sql.NullString `db:"orbit_job_id"`
+	OrbitLogTail         sql.NullString `db:"orbit_log_tail"`
 	SubmitAttemptCount   int            `db:"submit_attempt_count"`
 	OrbitSubmitAbsentAt  sql.NullTime   `db:"orbit_submit_absent_at"`
 	OrbitJobMissingSince sql.NullTime   `db:"orbit_job_missing_since"`
@@ -239,7 +240,7 @@ func (m *Manager) reconcileCancellation(ctx context.Context, derivativeID int64)
 	if err := m.db.GetContext(ctx, &row, `
 		SELECT id, episode_id, generation, processing_status,
 		       cancel_requested_at,
-		       orbit_submission_id, orbit_request, orbit_job_id,
+		       orbit_submission_id, orbit_request, orbit_job_id, orbit_log_tail,
 		       submit_attempt_count, orbit_submit_absent_at, orbit_job_missing_since,
 		       orbit_delete_status, qa_status
 		FROM episode_derivatives WHERE id = ? AND kind = ?
@@ -336,7 +337,12 @@ func (m *Manager) persistCancellationTerminalJob(ctx context.Context, row frozen
 		return false, nil
 	}
 	now := m.now().UTC()
-	logs := m.orbitLogTail(ctx, job.JobID)
+	logs, logsErr := m.orbitLogTail(ctx, job.JobID)
+	if logsErr != nil {
+		logs = m.terminalOrbitLogTail(row.OrbitLogTail, job, logsErr)
+		logsErr = nil
+	}
+	logTail := nullableLogTail(logs, logsErr)
 	message := strings.TrimSpace(job.Message)
 	if message == "" {
 		message = "Orbit Job ended with status " + status
@@ -348,7 +354,7 @@ func (m *Manager) persistCancellationTerminalJob(ctx context.Context, row frozen
 			    cancel_requested_at = NULL, orbit_log_tail = ?, processing_error = NULL,
 			    reconcile_after = NULL, updated_at = ?
 			WHERE id = ? AND cancel_requested_at IS NOT NULL
-		`, job.JobID, ProcessingVerifying, logs, now, row.ID)
+		`, job.JobID, ProcessingVerifying, logTail, now, row.ID)
 		if err != nil {
 			return true, fmt.Errorf("persist Orbit success racing cancellation: %w", err)
 		}
@@ -363,7 +369,7 @@ func (m *Manager) persistCancellationTerminalJob(ctx context.Context, row frozen
 			    processing_error = ?, orbit_log_tail = ?, processing_finished_at = ?,
 			    orbit_delete_status = ?, reconcile_after = NULL, updated_at = ?
 			WHERE id = ? AND cancel_requested_at IS NOT NULL
-		`, job.JobID, processingStatus, message, logs, now, DeletePending, now, row.ID)
+		`, job.JobID, processingStatus, message, logTail, now, DeletePending, now, row.ID)
 		if err != nil {
 			return true, fmt.Errorf("persist Orbit cancellation terminal status: %w", err)
 		}
@@ -683,7 +689,7 @@ func (m *Manager) reconcileOrbitStatus(ctx context.Context, derivativeID int64) 
 	if err := m.db.GetContext(ctx, &row, `
 		SELECT id, episode_id, generation, processing_status,
 		       cancel_requested_at,
-		       orbit_submission_id, orbit_request, orbit_job_id,
+		       orbit_submission_id, orbit_request, orbit_job_id, orbit_log_tail,
 		       submit_attempt_count, orbit_submit_absent_at, orbit_job_missing_since,
 		       orbit_delete_status, qa_status
 		FROM episode_derivatives WHERE id = ? AND kind = ?
@@ -726,19 +732,30 @@ func (m *Manager) reconcileOrbitStatus(ctx context.Context, derivativeID int64) 
 			    orbit_job_missing_since = NULL, processing_error = NULL, updated_at = ? WHERE id = ?
 		`, ProcessingPending, now.Add(m.pollInterval()), now, derivativeID)
 	case "RUNNING":
+		logs, logsErr := m.orbitLogTail(ctx, row.OrbitJobID.String)
 		_, err = m.db.ExecContext(ctx, `
 			UPDATE episode_derivatives SET processing_status = ?, reconcile_after = ?,
 			    processing_started_at = COALESCE(processing_started_at, ?),
-			    orbit_job_missing_since = NULL, processing_error = NULL, updated_at = ? WHERE id = ?
-		`, ProcessingRunning, now.Add(m.pollInterval()), now, now, derivativeID)
+			    orbit_job_missing_since = NULL, orbit_log_tail = COALESCE(?, orbit_log_tail),
+			    processing_error = NULL, updated_at = ? WHERE id = ?
+		`, ProcessingRunning, now.Add(m.pollInterval()), now,
+			nullableLogTail(logs, logsErr), now, derivativeID)
 	case "SUCCEEDED":
-		logs := m.orbitLogTail(ctx, row.OrbitJobID.String)
+		logs, logsErr := m.orbitLogTail(ctx, row.OrbitJobID.String)
+		if logsErr != nil {
+			logs = m.terminalOrbitLogTail(row.OrbitLogTail, job, logsErr)
+			logsErr = nil
+		}
 		_, err = m.db.ExecContext(ctx, `
 			UPDATE episode_derivatives SET processing_status = ?, reconcile_after = NULL,
 			    orbit_job_missing_since = NULL, orbit_log_tail = ?, processing_error = NULL, updated_at = ? WHERE id = ?
-		`, ProcessingVerifying, logs, now, derivativeID)
+		`, ProcessingVerifying, nullableLogTail(logs, logsErr), now, derivativeID)
 	case "FAILED", "STOPPED":
-		logs := m.orbitLogTail(ctx, row.OrbitJobID.String)
+		logs, logsErr := m.orbitLogTail(ctx, row.OrbitJobID.String)
+		if logsErr != nil {
+			logs = m.terminalOrbitLogTail(row.OrbitLogTail, job, logsErr)
+			logsErr = nil
+		}
 		status := ProcessingFailed
 		if strings.EqualFold(job.Status, "STOPPED") {
 			status = ProcessingCanceled
@@ -751,7 +768,7 @@ func (m *Manager) reconcileOrbitStatus(ctx context.Context, derivativeID int64) 
 			UPDATE episode_derivatives SET processing_status = ?, processing_error = ?,
 			    orbit_log_tail = ?, processing_finished_at = ?, orbit_delete_status = ?,
 			    orbit_job_missing_since = NULL, reconcile_after = NULL, updated_at = ? WHERE id = ?
-		`, status, message, logs, now, DeletePending, now, derivativeID)
+		`, status, message, nullableLogTail(logs, logsErr), now, DeletePending, now, derivativeID)
 	default:
 		return m.deferActivePoll(ctx, derivativeID, fmt.Errorf("Orbit returned unknown status %q", job.Status))
 	}
@@ -1257,11 +1274,12 @@ func (m *Manager) inspectOutputMCAP(
 
 func (m *Manager) reconcileDelete(ctx context.Context, derivativeID int64) error {
 	var row struct {
-		JobID  sql.NullString `db:"orbit_job_id"`
-		Status string         `db:"orbit_delete_status"`
+		JobID   sql.NullString `db:"orbit_job_id"`
+		LogTail sql.NullString `db:"orbit_log_tail"`
+		Status  string         `db:"orbit_delete_status"`
 	}
 	if err := m.db.GetContext(ctx, &row, `
-		SELECT orbit_job_id, orbit_delete_status FROM episode_derivatives
+		SELECT orbit_job_id, orbit_log_tail, orbit_delete_status FROM episode_derivatives
 		WHERE id = ? AND kind = ?
 	`, derivativeID, Kind); err != nil {
 		return fmt.Errorf("load Orbit delete state: %w", err)
@@ -1277,17 +1295,30 @@ func (m *Manager) reconcileDelete(ctx context.Context, derivativeID int64) error
 		`, DeleteNotRequired, now, derivativeID, DeletePending)
 		return err
 	}
+	if !row.LogTail.Valid || strings.TrimSpace(row.LogTail.String) == "" {
+		logs, err := m.orbitLogTail(ctx, row.JobID.String)
+		if err != nil {
+			return m.deferOrbitDelete(ctx, derivativeID, fmt.Errorf("capture Orbit logs before delete: %w", err))
+		}
+		result, err := m.db.ExecContext(ctx, `
+			UPDATE episode_derivatives SET orbit_log_tail = ?, orbit_delete_error = NULL,
+			    orbit_delete_next_retry_at = NULL, reconcile_after = NULL, updated_at = ?
+			WHERE id = ? AND orbit_delete_status = ? AND COALESCE(orbit_log_tail, '') = ?
+		`, logs, now, derivativeID, DeletePending, row.LogTail.String)
+		if err != nil {
+			return fmt.Errorf("persist Orbit logs before delete: %w", err)
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("check persisted Orbit logs before delete: %w", err)
+		}
+		if updated != 1 {
+			return fmt.Errorf("persist Orbit logs before delete: derivative state changed")
+		}
+	}
 	err := m.orbit.Delete(ctx, row.JobID.String)
 	if err != nil && !errors.Is(err, orbitapi.ErrNotFound) {
-		_, persistErr := m.db.ExecContext(ctx, `
-			UPDATE episode_derivatives SET orbit_delete_attempt_count = orbit_delete_attempt_count + 1,
-			    orbit_delete_next_retry_at = ?, orbit_delete_error = ?, reconcile_after = ?, updated_at = ?
-			WHERE id = ? AND orbit_delete_status = ?
-		`, now.Add(m.pollInterval()), err.Error(), now.Add(m.pollInterval()), now, derivativeID, DeletePending)
-		if persistErr != nil {
-			return fmt.Errorf("persist Orbit delete retry after %v: %w", err, persistErr)
-		}
-		return fmt.Errorf("delete Orbit Job: %w", err)
+		return m.deferOrbitDelete(ctx, derivativeID, fmt.Errorf("delete Orbit Job: %w", err))
 	}
 	if _, err := m.db.ExecContext(ctx, `
 		UPDATE episode_derivatives SET orbit_delete_status = ?, orbit_delete_error = NULL,
@@ -1299,16 +1330,63 @@ func (m *Manager) reconcileDelete(ctx context.Context, derivativeID int64) error
 	return nil
 }
 
-func (m *Manager) orbitLogTail(ctx context.Context, jobID string) string {
+func (m *Manager) deferOrbitDelete(ctx context.Context, derivativeID int64, cause error) error {
+	now := m.now().UTC()
+	_, err := m.db.ExecContext(ctx, `
+		UPDATE episode_derivatives SET orbit_delete_attempt_count = orbit_delete_attempt_count + 1,
+		    orbit_delete_next_retry_at = ?, orbit_delete_error = ?, reconcile_after = ?, updated_at = ?
+		WHERE id = ? AND orbit_delete_status = ?
+	`, now.Add(m.pollInterval()), cause.Error(), now.Add(m.pollInterval()), now, derivativeID, DeletePending)
+	if err != nil {
+		return fmt.Errorf("persist Orbit delete retry after %v: %w", cause, err)
+	}
+	return cause
+}
+
+func (m *Manager) orbitLogTail(ctx context.Context, jobID string) (string, error) {
+	if m.orbit == nil {
+		return "", fmt.Errorf("Orbit is not configured")
+	}
 	logs, err := m.orbit.Logs(ctx, jobID)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("load Orbit logs: %w", err)
 	}
+	if strings.TrimSpace(logs) == "" {
+		return "", fmt.Errorf("load Orbit logs: empty response")
+	}
+	return m.boundOrbitLogTail(logs), nil
+}
+
+func (m *Manager) terminalOrbitLogTail(previous sql.NullString, job orbitapi.Job, logErr error) string {
+	logs := ""
+	if previous.Valid {
+		logs = previous.String
+	}
+	if logs != "" && !strings.HasSuffix(logs, "\n") {
+		logs += "\n"
+	}
+	logs += fmt.Sprintf(
+		"[keystone] Orbit terminal diagnostics\nstatus=%s\nmessage=%q\nlog_error=%q\n",
+		strings.ToUpper(strings.TrimSpace(job.Status)),
+		strings.TrimSpace(job.Message),
+		logErr.Error(),
+	)
+	return m.boundOrbitLogTail(logs)
+}
+
+func (m *Manager) boundOrbitLogTail(logs string) string {
 	limit := m.cfg.LogTailBytes
 	if limit <= 0 || len(logs) <= limit {
 		return logs
 	}
 	return logs[len(logs)-limit:]
+}
+
+func nullableLogTail(logs string, err error) any {
+	if err != nil {
+		return nil
+	}
+	return logs
 }
 
 func (m *Manager) pollInterval() time.Duration {
