@@ -236,7 +236,7 @@ func (m *Manager) getSessionStatus(ctx context.Context, sessionID string, robotI
 		return SessionStatus{}, fmt.Errorf("get calibration session: database is not configured")
 	}
 	query := `
-		SELECT s.session_id, s.status,
+		SELECT s.session_id, COALESCE(s.camera_serial, '') AS camera_serial, s.status,
 		       COALESCE(s.successful_capture_id, '') AS successful_capture_id,
 		       COUNT(c.id) AS capture_count,
 		       COALESCE(SUM(CASE WHEN c.status <> 'uploading' THEN 1 ELSE 0 END), 0) AS uploaded_count,
@@ -251,7 +251,7 @@ func (m *Manager) getSessionStatus(ctx context.Context, sessionID string, robotI
 		args = append(args, *robotID)
 	}
 	query += `
-		GROUP BY s.id, s.session_id, s.status, s.successful_capture_id, s.updated_at
+		GROUP BY s.id, s.session_id, s.camera_serial, s.status, s.successful_capture_id, s.updated_at
 	`
 	var result SessionStatus
 	err := m.db.GetContext(ctx, &result, query, args...)
@@ -265,7 +265,7 @@ func (m *Manager) getSessionStatus(ctx context.Context, sessionID string, robotI
 }
 
 const captureSummaryColumns = `c.id, c.capture_id, c.calibration_session_id, c.attempt_no, c.status,
-	       s.robot_id, s.device_id, s.workspace_id,
+	       s.robot_id, s.device_id, s.workspace_id, COALESCE(s.camera_serial, '') AS camera_serial,
 	       c.bucket, c.object_key, COALESCE(c.file_size_bytes, 0) AS file_size_bytes,
 	       COALESCE(c.duration_sec, 0) AS duration_sec, c.checksum_sha256,
 	       COALESCE(c.object_etag, '') AS object_etag,

@@ -13,17 +13,18 @@ import (
 	"strings"
 	"time"
 
-	"archebase.com/keystone-edge/internal/logger"
-	"archebase.com/keystone-edge/internal/services"
 	"github.com/jmoiron/sqlx"
+
+	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
 func generateWSClientAuthToken() (string, error) {
-	return services.GenerateDeviceAuthToken()
+	return deviceauth.GeneratePersistentToken()
 }
 
 func hashWSClientAuthToken(token string) string {
-	return services.HashDeviceAuthToken(token)
+	return deviceauth.HashPersistentToken(token)
 }
 
 func insertWSClientAuthToken(tx *sqlx.Tx, robotID int64, token string, now time.Time, enableRecovery bool) error {
@@ -42,7 +43,7 @@ func insertWSClientAuthToken(tx *sqlx.Tx, robotID int64, token string, now time.
 			recovery_requested_at,
 			recovery_stage
 		) VALUES (?, ?, ?, ?, ?, ?)
-	`, robotID, hashWSClientAuthToken(token), services.DeviceAuthTokenVersion, now, recoveryRequestedAt, recoveryStage); err != nil {
+	`, robotID, hashWSClientAuthToken(token), deviceauth.PersistentTokenVersion, now, recoveryRequestedAt, recoveryStage); err != nil {
 		return fmt.Errorf("insert ws client auth token: %w", err)
 	}
 	return nil

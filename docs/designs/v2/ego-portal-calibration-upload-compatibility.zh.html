@@ -960,7 +960,8 @@ SPDX-License-Identifier: MulanPSL-2.0
             <li>保留原任务上传的全部接口和业务行为。</li>
             <li>让设备凭证可以上传不绑定数采员、计划和任务的标定 MCAP。</li>
             <li>支持一轮标定持续产生多条 Capture，直到任意一条标定成功。</li>
-            <li>让 Ego Portal 使用设备初始化时的持久 Device Token 查询本设备的标定 Session 状态。</li>
+            <li>让 Ego Portal 在标定上传中提供 <code>camera_serial</code>，并在同一 Session 内保持不变。</li>
+            <li>让 Ego Portal 使用持久 Device Token 或 API Key 换取的临时 Device JWT 查询本设备的标定 Session 状态。</li>
             <li>每条 MCAP 上传完成后自动排队：先通过 Orbit 双目拆分并验证 <code>output_bag.mcap</code>，再把验证后的 MCAP 交给 Orbit 标定 Job；标定 Job 把一对一结果 JSON 写入 TOS。</li>
             <li>首条成功后停止新任务，并持久化取消同一 Session 中仍在运行的 Orbit Job。</li>
           </ul>
@@ -1000,7 +1001,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         <div class="flow-step"><b>05</b>JSON 通过校验<br>Session 结束</div>
       </div>
 
-      <p>一条原始 MCAP 对应一条 <code>calibration_capture</code>：Keystone 先用现有 stereo-split 管线生成并验证一条 <code>output_bag.mcap</code>，随后只允许标定镜像读取这条验证后的 MCAP，最终产生一份结果 JSON。一轮 <code>calibration_session</code> 可以包含多条 Capture。录制与服务端两阶段处理并行，Ego Portal 持续上传并使用 Device Token 轮询状态，直到第一条成功结果出现。</p>
+      <p>一条原始 MCAP 对应一条 <code>calibration_capture</code>：Keystone 先用现有 stereo-split 管线生成并验证一条 <code>output_bag.mcap</code>，随后只允许标定镜像读取这条验证后的 MCAP，最终产生一份结果 JSON。一轮 <code>calibration_session</code> 固定一个 <code>camera_serial</code>，可以包含多条 Capture。录制与服务端两阶段处理并行，Ego Portal 持续上传并使用 Device Token 轮询状态，直到第一条成功结果出现。</p>
     </section>
 
     <section class="chapter" id="grpc">
@@ -1085,7 +1086,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             </tr>
             <tr>
               <td><code>calibration_capture</code></td>
-              <td>进入新标定分支，不要求 Task、DC Plan 或 workstation。</td>
+              <td>进入新标定分支，要求 <code>camera_serial</code>，不要求 Task、DC Plan 或 workstation。</td>
             </tr>
             <tr>
               <td>其他值</td>
@@ -1100,6 +1101,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         <span class="code-label">CreateLogicalUpload.client_hints</span>
         <pre>{
   "upload_kind": "calibration_capture",
+  "camera_serial": "CAMERA-SN-20260805-0001",
   "calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
   "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
   "attempt_no": "3",
@@ -1109,7 +1111,24 @@ SPDX-License-Identifier: MulanPSL-2.0
 }</pre>
       </div>
 
-      <p><code>calibration_session_id</code> 和 <code>capture_id</code> 都必须由客户端生成为规范小写 UUIDv4：前者在整轮“持续录制直到首次成功”期间保持不变，后者每条 MCAP 重新生成。服务端必须从 Device JWT 获取 <code>robot_id</code>、<code>device_id</code> 和 <code>workspace_id</code>；客户端不能指定或覆盖设备和空间身份。</p>
+      <p><code>calibration_session_id</code> 和 <code>capture_id</code> 都必须由客户端生成为规范小写 UUIDv4：前者在整轮“持续录制直到首次成功”期间保持不变，后者每条 MCAP 重新生成。<code>camera_serial</code> 由 Ego Portal 提供，Keystone 只做一次首尾空白裁剪；裁剪后必须非空、不超过 255 个 Unicode 字符且不能包含控制字符。值区分大小写，Keystone 在首次创建 Session 时保存规范化后的值，后续 Capture 必须与 Session 中保存的值完全一致。缺失或非法值在 Create 阶段返回 gRPC <code>InvalidArgument</code>，因此不会签发 STS。<code>camera_serial</code> 只绑定当前 Session，不与 Device 建立永久绑定；同一 Device 可以为不同序列号创建不同 Session，不同 Session 也允许重复使用同一序列号。服务端必须从 Device JWT 获取 <code>robot_id</code>、<code>device_id</code> 和 <code>workspace_id</code>；客户端不能指定或覆盖设备和空间身份。</p>
+
+      <div class="code-frame">
+        <span class="code-label">CompleteUpload.raw_tags</span>
+        <pre>{
+  "upload_kind": "calibration_capture",
+  "camera_serial": "CAMERA-SN-20260805-0001",
+  "calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+  "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+  "attempt_no": "3",
+  "checksum_sha256": "64-character-lowercase-hex",
+  "duration_sec": "30.0",
+  "source": "ego-portal",
+  "local_operator": "local-user"
+}</pre>
+      </div>
+
+      <p><code>CompleteUpload.raw_tags</code> 必须重复提供规范化后的 <code>camera_serial</code>，并与 Create 时保存的 hints 及数据库 Session 值同时一致；缺失、大小写变化或其他变更都返回 gRPC <code>FailedPrecondition</code>。该校验也适用于重复 Complete；重复请求的 <code>camera_serial</code>、对象路径、文件大小、SHA-256 和 <code>duration_sec</code> 语义值必须与首次完成时保存的值一致，否则返回 <code>FailedPrecondition</code>。<code>duration_sec</code> 必须能以数据库的 <code>DECIMAL(12,3)</code> 无损表示，即最大为 <code>999999999.999</code> 秒且精确到毫秒；<code>30.0</code>、<code>30.00</code> 与 <code>30.0000</code> 表示同一个时长，而 <code>30.0004</code> 或 <code>1000000000</code> 返回 <code>InvalidArgument</code>。</p>
 
       <h3>服务端生成对象路径</h3>
       <div class="code-frame">
@@ -1136,14 +1155,14 @@ SPDX-License-Identifier: MulanPSL-2.0
             </tr>
             <tr>
               <td><code>calibration_capture</code></td>
-              <td>保存原始 MCAP 元数据并将 Capture 标记为 <code>queued</code>；后台先提交并验证 stereo-split Orbit Job，再提交读取 <code>output_bag.mcap</code> 的标定 Orbit Job。</td>
+              <td>再次校验 raw tags 中的 <code>camera_serial</code> 与 Session 保存值一致，保存原始 MCAP 元数据并将 Capture 标记为 <code>queued</code>；后台先提交并验证 stereo-split Orbit Job，再提交读取 <code>output_bag.mcap</code> 的标定 Orbit Job。</td>
               <td>不创建 Episode、不修改 Task、不进入 Episode QA 或云同步。</td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <p>首次收到新的 <code>calibration_session_id</code> 时，Keystone 惰性创建状态为 <code>running</code> 的 Session；每次创建逻辑上传时，创建或恢复对应 Capture。</p>
+      <p>首次收到新的 <code>calibration_session_id</code> 时，Keystone 惰性创建状态为 <code>running</code> 的 Session，并保存 <code>camera_serial</code>；每次创建逻辑上传时，创建或恢复对应 Capture。已存在 Session 的 <code>camera_serial</code> 不一致时返回 gRPC <code>FailedPrecondition</code>。并发请求同时首次创建同一 Session 时，数据库冲突方会回滚并重新读取已经落库的 Session，再执行相同的设备归属和序列号校验；因此不同序列号仍稳定返回 <code>FailedPrecondition</code>，不会被泛化为临时数据库错误。</p>
     </section>
 
     <section class="chapter" id="rest">
@@ -1158,7 +1177,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <span class="method">GET</span>
           <div class="route-path">
             /api/v1/device/calibration-sessions/{session_id}
-            <span class="route-desc">Device Token 鉴权；Ego Portal 必须通过 Device-Authorization 请求头轮询。</span>
+            <span class="route-desc">设备鉴权；持久 Device Token 与临时 Device JWT 二选一。</span>
           </div>
         </div>
       </div>
@@ -1167,6 +1186,7 @@ SPDX-License-Identifier: MulanPSL-2.0
         <span class="code-label">200 RESPONSE</span>
         <pre>{
   "session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+  "camera_serial": "CAMERA-SN-20260805-0001",
   "status": "succeeded",
   "successful_capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
   "capture_count": 4,
@@ -1179,11 +1199,15 @@ SPDX-License-Identifier: MulanPSL-2.0
       <p><code>processed_count</code> 只统计已经产出并通过 Keystone 校验的结果 JSON；仅完成上传、但因 Session 已成功而直接标记为 <code>superseded</code> 的 Capture 不计入。</p>
 
       <ul>
-        <li>必须发送 <code>Device-Authorization: &lt;device-token&gt;</code>；该 Token 是管理员下发、初始化时使用并由设备安全持久化的凭证，不是 collector token、admin JWT 或 gRPC 临时 Device JWT。</li>
-        <li>缺少、无效或已撤销的 Device Token：<code>401 Unauthorized</code>；设备凭证认证暂时不可用：<code>503 Service Unavailable</code>。</li>
+        <li>持久凭证：<code>Device-Authorization: &lt;device_auth_token&gt;</code>。该 Token 是管理员下发并用于初始化的设备凭证。</li>
+        <li>临时凭证：<code>Authorization: Bearer &lt;device-jwt&gt;</code>。Device JWT 必须由设备 API Key 通过 <code>AuthService.ExchangeCredential</code> 换取；API Key 本身不能直接调用 REST 接口。</li>
+        <li>两个请求头必须二选一；同时发送返回 <code>400 Bad Request</code>，错误码为 <code>ambiguous_device_credentials</code>。</li>
+        <li>缺少凭证，或者凭证无效、过期、撤销、issuer/token type 不正确：<code>401 Unauthorized</code>；设备凭证认证数据库暂时不可用：<code>503 Service Unavailable</code>。</li>
         <li>Session 不存在或不属于当前设备：<code>404 Not Found</code>。</li>
         <li>Session ID 格式非法：<code>400 Bad Request</code>。</li>
       </ul>
+
+      <p>当前 Ego Portal 初始化成功后会删除本地 <code>device_auth_token</code>，因此它接入标定状态查询时可直接复用现有 API Key 换取短期 Device JWT 的流程。仍安全持久化 Device Token 的客户端可以使用 <code>Device-Authorization</code>；两条路径最终解析为同一份包含 robot、device、workspace 和 <code>auth_epoch</code> 的设备身份。</p>
 
       <h3>Orbit 标定作业与后续 Synapse 查询</h3>
       <div class="route-contract">
@@ -1272,6 +1296,7 @@ SPDX-License-Identifier: MulanPSL-2.0
           <ul>
             <li>id</li>
             <li>session_id UNIQUE</li>
+            <li>camera_serial</li>
             <li>robot_id</li>
             <li>workspace_id</li>
             <li>status</li>
@@ -1295,6 +1320,8 @@ SPDX-License-Identifier: MulanPSL-2.0
           </ul>
         </article>
       </div>
+
+      <p><code>camera_serial</code> 只存储在 <code>calibration_sessions</code>，不复制到 Capture 表，也不建立全局唯一索引。Capture 查询通过所属 Session 返回相同的 <code>camera_serial</code>。迁移前的历史 Session 保留 <code>NULL</code> 并且仍可查询，状态响应将其表示为空字符串；为避免无法证明相机身份，这类 Session 不允许再创建新的 Capture。</p>
 
       <h3>Capture 主状态流</h3>
       <div class="state-track" aria-label="Calibration Capture 状态机">
@@ -1321,11 +1348,11 @@ SPDX-License-Identifier: MulanPSL-2.0
       <h2>安全、幂等与竞态</h2>
 
       <h3>设备鉴权状态接口</h3>
-      <p>设备状态查询使用 <code>Device-Authorization</code> 中的持久 Device Token 鉴权，并从凭证解析设备身份；即使知道 <code>session_id</code>，其他设备也只能得到 <code>404 Not Found</code>。<code>session_id</code> 仍必须使用规范小写 UUIDv4。响应只包含运行状态、计数和成功 Capture ID，不返回对象路径、操作员或其他敏感元数据，并设置 <code>Cache-Control: no-store</code>。</p>
+      <p>设备状态查询接受 <code>Device-Authorization</code> 中的持久 Device Token，或 <code>Authorization: Bearer</code> 中的短期 Device JWT，并统一解析设备身份及当前 <code>auth_epoch</code>；即使知道 <code>session_id</code>，其他设备也只能得到 <code>404 Not Found</code>。<code>session_id</code> 仍必须使用规范小写 UUIDv4。响应只包含相机序列号、运行状态、计数和成功 Capture ID，不返回对象路径、操作员或其他敏感元数据，并设置 <code>Cache-Control: no-store</code>。</p>
 
       <h3>上传幂等</h3>
       <ul>
-        <li>同一设备重复完成相同 <code>capture_id</code> 时，对象路径、文件大小、SHA-256 全部一致则返回成功。</li>
+        <li>同一设备重复完成相同 <code>capture_id</code> 时，<code>camera_serial</code>、对象路径、文件大小、SHA-256 和 <code>duration_sec</code> 语义值全部一致则返回成功。</li>
         <li>任一字段不一致时返回 gRPC <code>FailedPrecondition</code>，禁止静默覆盖。</li>
         <li>上传完成自动入队；兼容接口 <code>POST .../process</code> 重复调用也不会创建第二个 Orbit 作业。</li>
       </ul>
@@ -1388,7 +1415,7 @@ SPDX-License-Identifier: MulanPSL-2.0
             </tr>
             <tr>
               <td>新 Ego + 新 Keystone</td>
-              <td>任务上传与标定上传均正常。</td>
+              <td>目标版本：任务上传与携带 <code>camera_serial</code> 的标定上传均正常。</td>
             </tr>
             <tr>
               <td>新 Ego + 旧 Keystone</td>
@@ -1396,6 +1423,10 @@ SPDX-License-Identifier: MulanPSL-2.0
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div class="impact-note blue">
+        截至本设计对应的代码检查点，Ego Portal 最新远端分支尚未实现标定录制/上传，也不会上传 <code>camera_serial</code>；上表中的“新 Ego”是后续目标版本，不代表当前客户端已经具备该能力。Keystone 必须先上线并保持旧任务上传兼容。
       </div>
 
       <h3>Orbit 占位作业部署配置</h3>
@@ -1419,7 +1450,8 @@ SPDX-License-Identifier: MulanPSL-2.0
       <ul class="checklist">
         <li>旧客户端不发送 <code>upload_kind</code> 时仍能创建 Episode 并完成 Task。</li>
         <li>标定上传不携带 task、plan、workstation 也能获得受限 STS。</li>
-        <li>状态查询携带有效的 <code>Device-Authorization</code>，缺失或无效凭证返回 401，其他设备的 Session 返回 404。</li>
+        <li>标定上传必须携带非空 <code>camera_serial</code>；同一 Session 中任一 Capture 改变该值都返回 FailedPrecondition。</li>
+        <li>状态查询使用持久 <code>Device-Authorization</code> 或临时 Device JWT 均成功；同时发送两个请求头返回 400，缺失或无效凭证返回 401，其他设备的 Session 返回 404。</li>
         <li>每条原始 MCAP 先完成 stereo-split 并验证 <code>output_bag.mcap</code>，标定结果 JSON 的 source 与该验证产物完全一致。</li>
         <li>同一 Capture 重试 CompleteUpload 不产生重复记录。</li>
         <li>失败结果不会结束 Session，首条成功结果会原子结束 Session。</li>

@@ -14,13 +14,14 @@ import (
 	"strings"
 	"time"
 
-	keystoneauth "archebase.com/keystone-edge/internal/auth"
-	"archebase.com/keystone-edge/internal/cloud/cloudpb"
-	"archebase.com/keystone-edge/internal/config"
-	"archebase.com/keystone-edge/internal/services"
 	"github.com/jmoiron/sqlx"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	keystoneauth "archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/cloud/cloudpb"
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
 type hilbertDeviceClient interface {
@@ -32,20 +33,23 @@ type hilbertDeviceClient interface {
 
 type deviceIdentityService struct {
 	db      *sqlx.DB
-	cfg     Config
 	hilbert hilbertDeviceClient
+	auth    *deviceauth.Authenticator
 	now     func() time.Time
 }
 
 func newDeviceIdentityService(db *sqlx.DB, cfg Config) *deviceIdentityService {
 	return &deviceIdentityService{
-		db:  db,
-		cfg: cfg,
+		db: db,
 		hilbert: keystoneauth.NewHilbertClient(&config.HilbertConfig{
 			BaseURL:        cfg.HilbertBaseURL,
 			TimeoutSeconds: 5,
 			AccessKey:      cfg.HilbertAccessKey,
 			SecretKey:      cfg.HilbertSecretKey,
+		}),
+		auth: deviceauth.New(db, deviceauth.Config{
+			JWTSecret: cfg.DeviceJWTSecret,
+			JWTTTL:    cfg.DeviceJWTTTL,
 		}),
 		now: func() time.Time { return time.Now().UTC() },
 	}
@@ -106,7 +110,7 @@ func (s *authService) ExchangeCredential(ctx context.Context, req *cloudpb.Excha
 		return nil, status.Error(codes.Unauthenticated, "invalid device credential")
 	}
 	now := s.identity.now()
-	token, expiresAt, err := issueDeviceJWT(s.identity.cfg, principal, now)
+	token, expiresAt, err := s.identity.auth.IssueJWT(principal, now)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to issue device token")
 	}
@@ -166,7 +170,7 @@ func (s *deviceInitService) ReinitDevice(ctx context.Context, req *cloudpb.Reini
 	if recoveryToken := strings.TrimSpace(req.GetDeviceAuthToken()); recoveryToken != "" {
 		return s.recoverDevice(ctx, req, recoveryToken)
 	}
-	principal, err := authenticateDeviceContext(ctx, s.identity.db, s.identity.cfg)
+	principal, err := authenticateDeviceContext(ctx, s.identity.auth)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +276,7 @@ func (s *deviceIdentityService) authorizeSDKInit(ctx context.Context, deviceName
 		WHERE t.token_hash = ? AND t.revoked_at IS NULL
 			AND t.sdk_initialized_at IS NULL AND r.status = 'active' AND r.deleted_at IS NULL
 		LIMIT 1
-	`, services.HashDeviceAuthToken(token)); err != nil {
+	`, deviceauth.HashPersistentToken(token)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return devicePrincipal{}, 0, status.Error(codes.Unauthenticated, "invalid or consumed device auth token")
 		}
@@ -312,7 +316,7 @@ func (s *deviceIdentityService) authorizeRecovery(ctx context.Context, deviceID,
 		WHERE r.device_id = ? AND t.token_hash = ? AND t.revoked_at IS NULL
 			AND t.recovery_requested_at IS NOT NULL AND r.status = 'active' AND r.deleted_at IS NULL
 		LIMIT 1
-	`, strings.TrimSpace(deviceID), services.HashDeviceAuthToken(token)); err != nil {
+	`, strings.TrimSpace(deviceID), deviceauth.HashPersistentToken(token)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return devicePrincipal{}, 0, "", status.Error(codes.Unauthenticated, "device recovery is not authorized")
 		}

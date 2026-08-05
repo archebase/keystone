@@ -8,6 +8,11 @@
 // @in header
 // @name Device-Authorization
 // @description Persistent administrator-issued device credential, optionally prefixed with Bearer.
+//
+// @securityDefinitions.apikey DeviceJWT
+// @in header
+// @name Authorization
+// @description Temporary Device JWT using the Bearer scheme; do not send together with Device-Authorization.
 package server
 
 import (
@@ -33,6 +38,7 @@ import (
 	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/services/autosync"
 	"archebase.com/keystone-edge/internal/services/calibration"
+	"archebase.com/keystone-edge/internal/services/deviceauth"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"archebase.com/keystone-edge/internal/storage/s3"
 	tosstorage "archebase.com/keystone-edge/internal/storage/tos"
@@ -355,7 +361,8 @@ func (s *Server) buildRoutes() http.Handler {
 		s.storage.RegisterRoutes(v1Routes)
 	}
 	if s.calibrationHandler != nil {
-		deviceCalibration := v1Routes.Group("", middleware.DeviceTokenAuth(s.db))
+		deviceAuthenticator := deviceauth.New(s.db, deviceauth.Config{JWTSecret: s.cfg.Auth.JWTSecret})
+		deviceCalibration := v1Routes.Group("", middleware.DeviceAuth(deviceAuthenticator))
 		s.calibrationHandler.RegisterDeviceRoutes(deviceCalibration)
 		adminCalibration := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
 		s.calibrationHandler.RegisterAdminRoutes(adminCalibration)

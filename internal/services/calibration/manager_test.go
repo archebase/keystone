@@ -26,6 +26,7 @@ const testProcessorImage = "registry.example/archebase/calibration@sha256:aaaaaa
 const testStereoProcessorImage = "registry.example/archebase/stereo-split@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 const testSplitOutputKey = "derived/episodes/calibration/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/stereo-split/g1-test/output_bag.mcap"
 const testUploadChecksum = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+const testCalibrationCameraSerial = "CAMERA-SN-001"
 
 func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) {
 	db := newCalibrationTestDB(t)
@@ -403,6 +404,53 @@ func TestManagerAdminSessionStatusIsNotScopedToDevice(t *testing.T) {
 	}
 	if session.SessionID != "7f9af590-75c2-47ad-b6e0-76ebf05c44f7" || session.Status != SessionRunning {
 		t.Fatalf("GetAdminSessionStatus() = %+v", session)
+	}
+}
+
+func TestGetSessionStatusAndGetExposeCameraSerial(t *testing.T) {
+	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
+
+	session, err := manager.GetSessionStatus(
+		context.Background(),
+		"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		1,
+	)
+	if err != nil {
+		t.Fatalf("GetSessionStatus() error = %v", err)
+	}
+	if session.CameraSerial != testCalibrationCameraSerial {
+		t.Fatalf("session camera_serial = %q, want %q", session.CameraSerial, testCalibrationCameraSerial)
+	}
+
+	capture, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if capture.CameraSerial != testCalibrationCameraSerial {
+		t.Fatalf("capture camera_serial = %q, want %q", capture.CameraSerial, testCalibrationCameraSerial)
+	}
+}
+
+func TestGetSessionStatusKeepsHistoricalSessionWithoutCameraSerialQueryable(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	if _, err := db.Exec(`
+		UPDATE calibration_sessions SET camera_serial = NULL
+		WHERE session_id = '7f9af590-75c2-47ad-b6e0-76ebf05c44f7'
+	`); err != nil {
+		t.Fatalf("clear historical camera_serial: %v", err)
+	}
+	manager := NewManager(db, nil, nil, testCalibrationConfig())
+
+	session, err := manager.GetSessionStatus(
+		context.Background(),
+		"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		1,
+	)
+	if err != nil {
+		t.Fatalf("GetSessionStatus() error = %v", err)
+	}
+	if session.CameraSerial != "" {
+		t.Fatalf("historical camera_serial = %q, want empty", session.CameraSerial)
 	}
 }
 
@@ -1146,6 +1194,7 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE calibration_sessions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL UNIQUE,
+			camera_serial TEXT,
 			robot_id INTEGER NOT NULL,
 			device_id TEXT NOT NULL,
 			workspace_id INTEGER NOT NULL,
@@ -1201,9 +1250,10 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP NOT NULL
 		)`,
 		`INSERT INTO calibration_sessions (
-			session_id, robot_id, device_id, workspace_id, status, created_at, updated_at
+			session_id, camera_serial, robot_id, device_id, workspace_id, status, created_at, updated_at
 		) VALUES (
-			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 1, '101', 10, 'running', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', '` + testCalibrationCameraSerial + `',
+			1, '101', 10, 'running', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 		)`,
 		`INSERT INTO calibration_captures (
 			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,

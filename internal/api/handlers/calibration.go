@@ -181,6 +181,7 @@ func (h *CalibrationHandler) writeProcessingSettingsError(c *gin.Context, err er
 // @Tags         Calibration
 // @Produce      json
 // @Security     DeviceAuth
+// @Security     DeviceJWT
 // @Param        session_id path string true "Calibration Session UUID"
 // @Success      200 {object} calibration.SessionStatus
 // @Failure      400 {object} map[string]interface{}

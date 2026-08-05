@@ -8,7 +8,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math/big"
 	"strings"
+
+	"github.com/go-sql-driver/mysql"
 
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
 	"archebase.com/keystone-edge/internal/logger"
@@ -20,6 +23,7 @@ type calibrationSessionUploadRow struct {
 	RobotID             int64          `db:"robot_id"`
 	DeviceID            string         `db:"device_id"`
 	WorkspaceID         int64          `db:"workspace_id"`
+	CameraSerial        sql.NullString `db:"camera_serial"`
 	Status              string         `db:"status"`
 	SuccessfulCaptureID sql.NullString `db:"successful_capture_id"`
 }
@@ -41,6 +45,16 @@ func (s *gatewayService) persistCalibrationUploadStart(
 	intent uploadIntent,
 	session *uploadSession,
 ) error {
+	return s.persistCalibrationUploadStartAttempt(ctx, principal, intent, session, true)
+}
+
+func (s *gatewayService) persistCalibrationUploadStartAttempt(
+	ctx context.Context,
+	principal devicePrincipal,
+	intent uploadIntent,
+	session *uploadSession,
+	retrySessionInsert bool,
+) error {
 	if s.db == nil {
 		return nil
 	}
@@ -52,7 +66,7 @@ func (s *gatewayService) persistCalibrationUploadStart(
 
 	var existingSession calibrationSessionUploadRow
 	query := `
-		SELECT robot_id, device_id, workspace_id, status, successful_capture_id
+		SELECT robot_id, device_id, workspace_id, camera_serial, status, successful_capture_id
 		FROM calibration_sessions
 		WHERE session_id = ?`
 	if tx.DriverName() != "sqlite" {
@@ -64,9 +78,17 @@ func (s *gatewayService) persistCalibrationUploadStart(
 		now := s.now()
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO calibration_sessions (
-				session_id, robot_id, device_id, workspace_id, status, created_at, updated_at
-			) VALUES (?, ?, ?, ?, 'running', ?, ?)
-		`, intent.CalibrationSessionID, principal.RobotID, principal.DeviceID, principal.WorkspaceID, now, now); err != nil {
+				session_id, robot_id, device_id, workspace_id, camera_serial, status, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
+		`, intent.CalibrationSessionID, principal.RobotID, principal.DeviceID, principal.WorkspaceID,
+			intent.CameraSerial, now, now); err != nil {
+			if retrySessionInsert && isCalibrationSessionInsertConflict(err) {
+				if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+					return calibrationUploadDatabaseError("rollback calibration session insert conflict failed",
+						errors.Join(err, rollbackErr))
+				}
+				return s.persistCalibrationUploadStartAttempt(ctx, principal, intent, session, false)
+			}
 			return calibrationUploadDatabaseError("create calibration session failed", err)
 		}
 	case err != nil:
@@ -75,6 +97,10 @@ func (s *gatewayService) persistCalibrationUploadStart(
 		existingSession.DeviceID != principal.DeviceID ||
 		existingSession.WorkspaceID != principal.WorkspaceID:
 		return status.Error(codes.PermissionDenied, "calibration session belongs to another device")
+	case !existingSession.CameraSerial.Valid || existingSession.CameraSerial.String == "":
+		return status.Error(codes.FailedPrecondition, "calibration session has no camera_serial")
+	case existingSession.CameraSerial.String != intent.CameraSerial:
+		return status.Error(codes.FailedPrecondition, "camera_serial does not match calibration session")
 	case existingSession.Status == "succeeded":
 		return status.Error(codes.FailedPrecondition, "calibration session already succeeded")
 	}
@@ -143,6 +169,11 @@ func (s *gatewayService) persistCalibrationUploadStart(
 	return nil
 }
 
+func isCalibrationSessionInsertConflict(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && (mysqlErr.Number == 1062 || mysqlErr.Number == 1213)
+}
+
 func (s *gatewayService) completeCalibrationUpload(
 	ctx context.Context,
 	session *uploadSession,
@@ -156,6 +187,9 @@ func (s *gatewayService) completeCalibrationUpload(
 		if err := requireMatchingRawTag(rawTags, key, session.ClientHints[key]); err != nil {
 			return err
 		}
+	}
+	if rawTags["camera_serial"] == "" || rawTags["camera_serial"] != session.ClientHints["camera_serial"] {
+		return status.Error(codes.FailedPrecondition, "camera_serial does not match upload session")
 	}
 	for _, key := range []string{"calibration_session_id", "capture_id"} {
 		if err := requireMatchingUUIDRawTag(rawTags, key, session.ClientHints[key]); err != nil {
@@ -175,7 +209,7 @@ func (s *gatewayService) completeCalibrationUpload(
 	if req.GetFileSize() <= 0 {
 		return status.Error(codes.InvalidArgument, "file_size must be positive")
 	}
-	duration, err := uploadDurationSec(rawTags)
+	duration, err := calibrationUploadDurationSec(rawTags)
 	if err != nil {
 		return err
 	}
@@ -188,7 +222,7 @@ func (s *gatewayService) completeCalibrationUpload(
 
 	var calibrationSession calibrationSessionUploadRow
 	query := `
-		SELECT robot_id, device_id, workspace_id, status, successful_capture_id
+		SELECT robot_id, device_id, workspace_id, camera_serial, status, successful_capture_id
 		FROM calibration_sessions
 		WHERE session_id = ?`
 	if tx.DriverName() != "sqlite" {
@@ -206,6 +240,11 @@ func (s *gatewayService) completeCalibrationUpload(
 	}
 	if calibrationSession.RobotID != principal.RobotID || calibrationSession.DeviceID != principal.DeviceID || calibrationSession.WorkspaceID != principal.WorkspaceID {
 		return status.Error(codes.PermissionDenied, "calibration session belongs to another device")
+	}
+	if !calibrationSession.CameraSerial.Valid || calibrationSession.CameraSerial.String == "" ||
+		calibrationSession.CameraSerial.String != session.ClientHints["camera_serial"] ||
+		calibrationSession.CameraSerial.String != rawTags["camera_serial"] {
+		return status.Error(codes.FailedPrecondition, "camera_serial does not match calibration session")
 	}
 
 	var capture calibrationCaptureUploadRow
@@ -232,6 +271,7 @@ func (s *gatewayService) completeCalibrationUpload(
 	}
 	if capture.Status != "uploading" {
 		if capture.FileSize.Valid && capture.FileSize.Int64 == req.GetFileSize() &&
+			capture.Duration == duration &&
 			capture.ChecksumSHA256 == strings.ToLower(strings.TrimSpace(rawTags["checksum_sha256"])) {
 			if err := tx.Commit(); err != nil {
 				return calibrationUploadDatabaseError("commit idempotent calibration completion failed", err)
@@ -264,6 +304,24 @@ func (s *gatewayService) completeCalibrationUpload(
 		return calibrationUploadDatabaseError("commit calibration completion transaction failed", err)
 	}
 	return nil
+}
+
+func calibrationUploadDurationSec(tags map[string]string) (sql.NullFloat64, error) {
+	duration, err := uploadDurationSec(tags)
+	if err != nil || !duration.Valid {
+		return duration, err
+	}
+	exact, ok := new(big.Rat).SetString(strings.TrimSpace(tags["duration_sec"]))
+	if !ok {
+		return sql.NullFloat64{}, status.Error(codes.InvalidArgument,
+			"duration_sec must be exactly representable as DECIMAL(12,3)")
+	}
+	durationMillis := new(big.Rat).Mul(exact, big.NewRat(1000, 1))
+	if !durationMillis.IsInt() || durationMillis.Cmp(big.NewRat(999999999999, 1)) > 0 {
+		return sql.NullFloat64{}, status.Error(codes.InvalidArgument,
+			"duration_sec must be exactly representable as DECIMAL(12,3)")
+	}
+	return duration, nil
 }
 
 func calibrationUploadDatabaseError(message string, err error) error {

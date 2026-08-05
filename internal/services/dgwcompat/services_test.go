@@ -7,16 +7,24 @@ package dgwcompat
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"archebase.com/keystone-edge/internal/cloud/cloudpb"
+	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+
+	"archebase.com/keystone-edge/internal/cloud/cloudpb"
+	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
 type fixedSTSProvider struct {
@@ -32,6 +40,150 @@ func (p fixedSTSProvider) AssumeRole(context.Context, stsScope) (stsCredentials,
 	}, nil
 }
 
+type countingSTSProvider struct {
+	calls int
+}
+
+var concurrentSessionBarrierCounter atomic.Uint64
+
+type calibrationSessionBarrier struct {
+	arrived   chan struct{}
+	release   chan struct{}
+	committed chan struct{}
+	commit    sync.Once
+	calls     atomic.Int32
+}
+
+func (b *calibrationSessionBarrier) wait() error {
+	call := b.calls.Add(1)
+	if call > 2 {
+		return nil
+	}
+	b.arrived <- struct{}{}
+	if call == 2 {
+		close(b.release)
+	}
+	select {
+	case <-b.release:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timed out waiting for concurrent calibration session lookup")
+	}
+}
+
+type calibrationSessionBarrierDriver struct {
+	inner   driver.Driver
+	barrier *calibrationSessionBarrier
+}
+
+func (d *calibrationSessionBarrierDriver) Open(name string) (driver.Conn, error) {
+	conn, err := d.inner.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &calibrationSessionBarrierConn{Conn: conn, barrier: d.barrier}, nil
+}
+
+type calibrationSessionBarrierConn struct {
+	driver.Conn
+	barrier *calibrationSessionBarrier
+}
+
+func (c *calibrationSessionBarrierConn) ExecContext(
+	ctx context.Context,
+	query string,
+	args []driver.NamedValue,
+) (driver.Result, error) {
+	execer, ok := c.Conn.(driver.ExecerContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+	result, err := execer.ExecContext(ctx, query, args)
+	if err != nil && strings.Contains(query, "INSERT INTO calibration_sessions") {
+		return nil, &mysql.MySQLError{
+			Number:  1213,
+			Message: "simulated concurrent calibration session insert deadlock",
+		}
+	}
+	return result, err
+}
+
+func (c *calibrationSessionBarrierConn) QueryContext(
+	ctx context.Context,
+	query string,
+	args []driver.NamedValue,
+) (driver.Rows, error) {
+	queryer, ok := c.Conn.(driver.QueryerContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+	isSessionLookup := strings.Contains(query, "FROM calibration_sessions") &&
+		strings.Contains(query, "WHERE session_id = ?")
+	if isSessionLookup && c.barrier.calls.Load() >= 2 {
+		select {
+		case <-c.barrier.committed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return nil, fmt.Errorf("timed out waiting for calibration session commit")
+		}
+	}
+	rows, err := queryer.QueryContext(ctx, query, args)
+	if err != nil || !isSessionLookup {
+		return rows, err
+	}
+	return &calibrationSessionBarrierRows{Rows: rows, barrier: c.barrier}, nil
+}
+
+func (c *calibrationSessionBarrierConn) Begin() (driver.Tx, error) {
+	tx, err := c.Conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return &calibrationSessionBarrierTx{Tx: tx, barrier: c.barrier}, nil
+}
+
+type calibrationSessionBarrierTx struct {
+	driver.Tx
+	barrier *calibrationSessionBarrier
+}
+
+func (tx *calibrationSessionBarrierTx) Commit() error {
+	if err := tx.Tx.Commit(); err != nil {
+		return err
+	}
+	tx.barrier.commit.Do(func() { close(tx.barrier.committed) })
+	return nil
+}
+
+type calibrationSessionBarrierRows struct {
+	driver.Rows
+	barrier      *calibrationSessionBarrier
+	synchronized bool
+}
+
+func (r *calibrationSessionBarrierRows) Next(dest []driver.Value) error {
+	err := r.Rows.Next(dest)
+	if err != io.EOF || r.synchronized {
+		return err
+	}
+	r.synchronized = true
+	if waitErr := r.barrier.wait(); waitErr != nil {
+		return waitErr
+	}
+	return err
+}
+
+func (p *countingSTSProvider) AssumeRole(context.Context, stsScope) (stsCredentials, error) {
+	p.calls++
+	return stsCredentials{
+		AccessKeyID:     "ak",
+		AccessKeySecret: "sk",
+		SecurityToken:   "token",
+		Expiration:      time.Unix(2200, 0).UTC(),
+	}, nil
+}
+
 func TestGatewayCreateReissueCompleteFlow(t *testing.T) {
 	expiration := time.Unix(2200, 0).UTC()
 	cfg := Config{
@@ -42,7 +194,7 @@ func TestGatewayCreateReissueCompleteFlow(t *testing.T) {
 		UploadPartSize: 8 * 1024 * 1024,
 	}
 	service := newGatewayService(cfg, fixedSTSProvider{expiration: expiration}, newSessionStore(), nil, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		DeviceID: "robot-1", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -107,7 +259,7 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	qa := &fakeEpisodeQAEnqueuer{}
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, qa)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -223,13 +375,14 @@ func TestGatewayCompleteCalibrationCaptureQueuesProcessingWithoutEpisode(t *test
 	db := newGatewayServiceTestDB(t)
 	qa := &fakeEpisodeQAEnqueuer{}
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, qa)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
 	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
 		ClientHints: map[string]string{
 			"upload_kind":            "calibration_capture",
+			"camera_serial":          testCameraSerial,
 			"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 			"capture_id":             "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
 			"attempt_no":             "1",
@@ -252,6 +405,7 @@ func TestGatewayCompleteCalibrationCaptureQueuesProcessingWithoutEpisode(t *test
 		ObjectEtag:         "etag-1",
 		RawTags: map[string]string{
 			"upload_kind":            "calibration_capture",
+			"camera_serial":          testCameraSerial,
 			"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 			"capture_id":             "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
 			"attempt_no":             "1",
@@ -284,6 +438,16 @@ func TestGatewayCompleteCalibrationCaptureQueuesProcessingWithoutEpisode(t *test
 		capture.DurationSec != 30 {
 		t.Fatalf("calibration capture = %+v", capture)
 	}
+	var cameraSerial string
+	if err := db.Get(&cameraSerial, `
+		SELECT camera_serial FROM calibration_sessions
+		WHERE session_id = '7f9af590-75c2-47ad-b6e0-76ebf05c44f7'
+	`); err != nil {
+		t.Fatalf("query calibration session camera serial: %v", err)
+	}
+	if cameraSerial != testCameraSerial {
+		t.Fatalf("camera_serial = %q, want %q", cameraSerial, testCameraSerial)
+	}
 
 	var episodeCount int
 	if err := db.Get(&episodeCount, `SELECT COUNT(1) FROM episodes`); err != nil {
@@ -291,6 +455,264 @@ func TestGatewayCompleteCalibrationCaptureQueuesProcessingWithoutEpisode(t *test
 	}
 	if episodeCount != 0 || len(qa.episodes) != 0 {
 		t.Fatalf("calibration created episodes=%d qa=%v", episodeCount, qa.episodes)
+	}
+}
+
+func TestCreateLogicalUploadKeepsCalibrationSessionCameraSerialBeforeSTS(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	sts := &countingSTSProvider{}
+	service := newGatewayService(testGatewayConfig(), sts, newSessionStore(), db, nil)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	const sessionID = "7f9af590-75c2-47ad-b6e0-76ebf05c44f7"
+
+	if _, err := service.CreateLogicalUpload(ctx, calibrationCreateRequest(
+		sessionID,
+		"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"1",
+		"CAMERA-A",
+	)); err != nil {
+		t.Fatalf("first CreateLogicalUpload() error = %v", err)
+	}
+	_, err := service.CreateLogicalUpload(ctx, calibrationCreateRequest(
+		sessionID,
+		"d4ad1825-35b4-4572-83aa-70cf3d8dd083",
+		"2",
+		"camera-a",
+	))
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("mismatched camera_serial error = %v, want FailedPrecondition", err)
+	}
+	if sts.calls != 1 {
+		t.Fatalf("STS calls = %d, want 1", sts.calls)
+	}
+}
+
+func TestCreateLogicalUploadConcurrentSessionCreationKeepsCameraSerial(t *testing.T) {
+	const sessionID = "7f9af590-75c2-47ad-b6e0-76ebf05c44f7"
+	barrier := &calibrationSessionBarrier{
+		arrived:   make(chan struct{}, 2),
+		release:   make(chan struct{}),
+		committed: make(chan struct{}),
+	}
+	driverNumber := concurrentSessionBarrierCounter.Add(1)
+	driverName := fmt.Sprintf("sqlite_calibration_session_barrier_%d", driverNumber)
+	sql.Register(driverName, &calibrationSessionBarrierDriver{
+		inner:   &sqlite.Driver{},
+		barrier: barrier,
+	})
+	dsn := fmt.Sprintf("file:calibration-session-race-%d?mode=memory&cache=shared&_pragma=busy_timeout(5000)", driverNumber)
+	db := newGatewayServiceTestDBWithDriver(t, driverName, dsn)
+	db.SetMaxOpenConns(2)
+	service := newGatewayService(
+		testGatewayConfig(),
+		fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()},
+		newSessionStore(),
+		db,
+		nil,
+	)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	requests := []*cloudpb.CreateLogicalUploadRequest{
+		calibrationCreateRequest(sessionID, "92cd6f2f-d131-4bf0-9b4a-d96258d09011", "1", "CAMERA-A"),
+		calibrationCreateRequest(sessionID, "d4ad1825-35b4-4572-83aa-70cf3d8dd083", "2", "CAMERA-B"),
+	}
+	start := make(chan struct{})
+	results := make(chan error, len(requests))
+	for _, request := range requests {
+		go func() {
+			<-start
+			_, err := service.CreateLogicalUpload(ctx, request)
+			results <- err
+		}()
+	}
+	close(start)
+	for range requests {
+		select {
+		case <-barrier.arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("concurrent session creation reached database barrier %d times, want 2", barrier.calls.Load())
+		}
+	}
+
+	var successCount, mismatchCount int
+	for range requests {
+		err := <-results
+		switch status.Code(err) {
+		case codes.OK:
+			successCount++
+		case codes.FailedPrecondition:
+			mismatchCount++
+		default:
+			t.Fatalf("concurrent CreateLogicalUpload() error = %v, want success or FailedPrecondition", err)
+		}
+	}
+	if successCount != 1 || mismatchCount != 1 {
+		t.Fatalf("concurrent results: success=%d mismatch=%d, want 1 each", successCount, mismatchCount)
+	}
+}
+
+func TestCalibrationSessionInsertConflictRecognizesMySQLConflicts(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "duplicate key", err: &mysql.MySQLError{Number: 1062}, want: true},
+		{name: "deadlock", err: fmt.Errorf("wrapped: %w", &mysql.MySQLError{Number: 1213}), want: true},
+		{name: "other MySQL error", err: &mysql.MySQLError{Number: 1048}},
+		{name: "non-MySQL error", err: fmt.Errorf("database unavailable")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCalibrationSessionInsertConflict(tt.err); got != tt.want {
+				t.Fatalf("isCalibrationSessionInsertConflict() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCalibrationUploadDurationSecFitsDatabaseColumn(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		wantValid bool
+		wantCode  codes.Code
+	}{
+		{name: "equivalent trailing zeros", value: "30.0000", wantValid: true},
+		{name: "maximum value", value: "999999999.999", wantValid: true},
+		{name: "sub-millisecond precision", value: "30.0004", wantCode: codes.InvalidArgument},
+		{name: "integer overflow", value: "1000000000", wantCode: codes.InvalidArgument},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			duration, err := calibrationUploadDurationSec(map[string]string{"duration_sec": tt.value})
+			if status.Code(err) != tt.wantCode {
+				t.Fatalf("calibrationUploadDurationSec() error = %v, want code %v", err, tt.wantCode)
+			}
+			if duration.Valid != tt.wantValid {
+				t.Fatalf("calibrationUploadDurationSec() valid = %v, want %v", duration.Valid, tt.wantValid)
+			}
+		})
+	}
+}
+
+func TestCreateLogicalUploadAllowsSameCameraSerialInDifferentCalibrationSessions(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	sts := &countingSTSProvider{}
+	service := newGatewayService(testGatewayConfig(), sts, newSessionStore(), db, nil)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	requests := []*cloudpb.CreateLogicalUploadRequest{
+		calibrationCreateRequest(
+			"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			"1",
+			testCameraSerial,
+		),
+		calibrationCreateRequest(
+			"593f25fb-e9df-4c2c-85ca-c7bd85515316",
+			"d4ad1825-35b4-4572-83aa-70cf3d8dd083",
+			"1",
+			testCameraSerial,
+		),
+	}
+	for index, request := range requests {
+		if _, err := service.CreateLogicalUpload(ctx, request); err != nil {
+			t.Fatalf("CreateLogicalUpload(%d) error = %v", index, err)
+		}
+	}
+	if sts.calls != 2 {
+		t.Fatalf("STS calls = %d, want 2", sts.calls)
+	}
+}
+
+func TestCreateLogicalUploadRejectsHistoricalCalibrationSessionWithoutCameraSerial(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	const sessionID = "7f9af590-75c2-47ad-b6e0-76ebf05c44f7"
+	if _, err := db.Exec(`
+		INSERT INTO calibration_sessions (
+			session_id, robot_id, device_id, workspace_id, camera_serial, status, created_at, updated_at
+		) VALUES (?, 1, '101', 10, NULL, 'running', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, sessionID); err != nil {
+		t.Fatalf("seed historical calibration session: %v", err)
+	}
+	sts := &countingSTSProvider{}
+	service := newGatewayService(testGatewayConfig(), sts, newSessionStore(), db, nil)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	_, err := service.CreateLogicalUpload(ctx, calibrationCreateRequest(
+		sessionID,
+		"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"1",
+		testCameraSerial,
+	))
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CreateLogicalUpload() error = %v, want FailedPrecondition", err)
+	}
+	if sts.calls != 0 {
+		t.Fatalf("STS calls = %d, want 0", sts.calls)
+	}
+}
+
+func TestCompleteUploadRequiresStableCalibrationMetadataAndIsIdempotent(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	const sessionID = "7f9af590-75c2-47ad-b6e0-76ebf05c44f7"
+	const captureID = "92cd6f2f-d131-4bf0-9b4a-d96258d09011"
+	created, err := service.CreateLogicalUpload(ctx, calibrationCreateRequest(sessionID, captureID, "1", testCameraSerial))
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	complete := &cloudpb.CompleteUploadRequest{
+		UploadId:           created.GetUploadId(),
+		FileSize:           1024,
+		CompletedPartCount: 1,
+		ObjectEtag:         "etag-1",
+		RawTags: map[string]string{
+			"upload_kind":            "calibration_capture",
+			"calibration_session_id": sessionID,
+			"capture_id":             captureID,
+			"attempt_no":             "1",
+			"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		},
+	}
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("missing camera_serial error = %v, want FailedPrecondition", err)
+	}
+	complete.RawTags["camera_serial"] = strings.ToLower(testCameraSerial)
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("mutated camera_serial error = %v, want FailedPrecondition", err)
+	}
+	complete.RawTags["camera_serial"] = " " + testCameraSerial + " "
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("non-normalized camera_serial error = %v, want FailedPrecondition", err)
+	}
+	complete.RawTags["camera_serial"] = testCameraSerial
+	complete.RawTags["duration_sec"] = "30.0004"
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("over-precise duration_sec error = %v, want InvalidArgument", err)
+	}
+	complete.RawTags["duration_sec"] = "30.0"
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+	complete.RawTags["duration_sec"] = "60.0"
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("mutated duration_sec error = %v, want FailedPrecondition", err)
+	}
+	complete.RawTags["duration_sec"] = "30.00"
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("semantically idempotent CompleteUpload() error = %v", err)
 	}
 }
 
@@ -307,11 +729,12 @@ func TestGatewayCreateCalibrationCaptureRejectsOversizedMetadata(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			db := newGatewayServiceTestDB(t)
 			service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-			ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+			ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 				RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 			})
 			hints := map[string]string{
 				"upload_kind":            "calibration_capture",
+				"camera_serial":          testCameraSerial,
 				"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 				"capture_id":             "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
 				"attempt_no":             "1",
@@ -330,7 +753,7 @@ func TestGatewayCreateCalibrationCaptureRejectsOversizedMetadata(t *testing.T) {
 func TestGatewayCalibrationSessionRejectsNewCaptureButSupersedesStartedCaptureAfterSuccess(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 	sessionID := "7f9af590-75c2-47ad-b6e0-76ebf05c44f7"
@@ -339,6 +762,7 @@ func TestGatewayCalibrationSessionRejectsNewCaptureButSupersedesStartedCaptureAf
 		created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
 			ClientHints: map[string]string{
 				"upload_kind":            "calibration_capture",
+				"camera_serial":          testCameraSerial,
 				"calibration_session_id": sessionID,
 				"capture_id":             captureID,
 				"attempt_no":             attempt,
@@ -369,6 +793,7 @@ func TestGatewayCalibrationSessionRejectsNewCaptureButSupersedesStartedCaptureAf
 		ObjectEtag:         "etag-2",
 		RawTags: map[string]string{
 			"upload_kind":            "calibration_capture",
+			"camera_serial":          testCameraSerial,
 			"calibration_session_id": sessionID,
 			"capture_id":             secondCaptureID,
 			"attempt_no":             "2",
@@ -388,6 +813,7 @@ func TestGatewayCalibrationSessionRejectsNewCaptureButSupersedesStartedCaptureAf
 	_, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
 		ClientHints: map[string]string{
 			"upload_kind":            "calibration_capture",
+			"camera_serial":          testCameraSerial,
 			"calibration_session_id": sessionID,
 			"capture_id":             "593f25fb-e9df-4c2c-85ca-c7bd85515316",
 			"attempt_no":             "3",
@@ -402,12 +828,13 @@ func TestGatewayCalibrationSessionRejectsNewCaptureButSupersedesStartedCaptureAf
 func TestGatewayCalibrationRejectsDifferentCaptureForSameAttempt(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 	request := func(captureID string) *cloudpb.CreateLogicalUploadRequest {
 		return &cloudpb.CreateLogicalUploadRequest{ClientHints: map[string]string{
 			"upload_kind":            "calibration_capture",
+			"camera_serial":          testCameraSerial,
 			"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 			"capture_id":             captureID,
 			"attempt_no":             "1",
@@ -426,7 +853,7 @@ func TestGatewayCalibrationRejectsDifferentCaptureForSameAttempt(t *testing.T) {
 func TestGatewayCompleteUploadRejectsExistingEpisodeFromAnotherProvenance(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -474,7 +901,7 @@ func TestGatewayCompleteUploadRejectsExistingEpisodeFromAnotherProvenance(t *tes
 func TestGatewayCompleteUploadPersistsEgoPortalRecordingSHA256(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -531,7 +958,7 @@ func TestGatewayCompleteUploadPersistsEgoPortalRecordingSHA256(t *testing.T) {
 func TestGatewayCompleteUploadRejectsInvalidEgoPortalRecordingSHA256(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -571,7 +998,7 @@ func TestGatewayCompleteUploadRejectsInvalidEgoPortalRecordingSHA256(t *testing.
 func TestGatewayCompleteUploadRejectsInvalidEgoPortalRecordingSHA256OnRetry(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -615,7 +1042,7 @@ func TestGatewayCompleteUploadRejectsInvalidEgoPortalRecordingSHA256OnRetry(t *t
 func TestGatewayCompleteUploadAllowsLegacyEgoPortalRetryAfterChecksumBackfill(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -669,7 +1096,7 @@ func TestGatewayCompleteUploadAllowsLegacyEgoPortalRetryAfterChecksumBackfill(t 
 func TestGatewayCreateLogicalUploadRejectsMismatchedPlan(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -700,7 +1127,7 @@ func TestGatewayCreateLogicalUploadRejectsTaskFromAnotherWorkstation(t *testing.
 		}
 	}
 	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -727,7 +1154,7 @@ func TestGatewayCreateLogicalUploadRejectsInvalidMD5(t *testing.T) {
 		nil,
 		nil,
 	)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -753,7 +1180,7 @@ func TestGatewayCreateLogicalUploadRejectsInvalidSHA256(t *testing.T) {
 		nil,
 		nil,
 	)
-	ctx := context.WithValue(context.Background(), devicePrincipalContextKey{}, devicePrincipal{
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
 		DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
 	})
 
@@ -782,12 +1209,34 @@ func testGatewayConfig() Config {
 	}
 }
 
+func calibrationCreateRequest(sessionID, captureID, attemptNo, cameraSerial string) *cloudpb.CreateLogicalUploadRequest {
+	return &cloudpb.CreateLogicalUploadRequest{ClientHints: map[string]string{
+		"upload_kind":            "calibration_capture",
+		"camera_serial":          cameraSerial,
+		"calibration_session_id": sessionID,
+		"capture_id":             captureID,
+		"attempt_no":             attemptNo,
+		"checksum_sha256":        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+	}}
+}
+
 func newGatewayServiceTestDB(t *testing.T) *sqlx.DB {
 	t.Helper()
-	db, err := sqlx.Open("sqlite", ":memory:")
+	return newGatewayServiceTestDBWithDSN(t, ":memory:")
+}
+
+func newGatewayServiceTestDBWithDSN(t *testing.T, dsn string) *sqlx.DB {
+	t.Helper()
+	return newGatewayServiceTestDBWithDriver(t, "sqlite", dsn)
+}
+
+func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sqlx.DB {
+	t.Helper()
+	standardDB, err := sql.Open(driverName, dsn)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	db := sqlx.NewDb(standardDB, "sqlite")
 	t.Cleanup(func() {
 		if err := db.Close(); err != nil {
 			t.Fatalf("close sqlite: %v", err)
@@ -858,6 +1307,7 @@ func newGatewayServiceTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE calibration_sessions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL UNIQUE,
+			camera_serial TEXT,
 			robot_id INTEGER NOT NULL,
 			device_id TEXT NOT NULL,
 			workspace_id INTEGER NOT NULL,

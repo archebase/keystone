@@ -51,7 +51,7 @@ func Start(cfg Config, db *sqlx.DB, qaEnqueuer episodeQAEnqueuer) (*Server, erro
 	sessions := newSessionStore()
 	identity := newDeviceIdentityService(db, cfg)
 
-	server := grpc.NewServer(grpc.UnaryInterceptor(unifiedUnaryAuthInterceptor(db, cfg)))
+	server := grpc.NewServer(grpc.UnaryInterceptor(unifiedUnaryAuthInterceptor(identity.auth)))
 	cloudpb.RegisterAuthServiceServer(server, &authService{identity: identity})
 	cloudpb.RegisterDataGatewayServiceServer(server, newGatewayService(cfg, sts, sessions, db, qaEnqueuer))
 	cloudpb.RegisterDeviceInitServiceServer(server, &deviceInitService{identity: identity})

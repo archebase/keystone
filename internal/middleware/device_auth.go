@@ -9,21 +9,29 @@ import (
 	"net/http"
 	"strings"
 
-	"archebase.com/keystone-edge/internal/logger"
-	"archebase.com/keystone-edge/internal/services"
 	"github.com/gin-gonic/gin"
-	"github.com/jmoiron/sqlx"
+
+	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
 // DevicePrincipalKey is the gin.Context key for the authenticated device.
 const DevicePrincipalKey = "device_principal"
 
-// DeviceTokenAuth validates Device-Authorization and attaches the active
-// device identity to the request context.
-func DeviceTokenAuth(db *sqlx.DB) gin.HandlerFunc {
+// DeviceAuth accepts exactly one persistent Device-Authorization credential
+// or one temporary Device JWT in Authorization and attaches its principal.
+func DeviceAuth(authenticator *deviceauth.Authenticator) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := parseDeviceAuthorizationHeader(c.GetHeader("Device-Authorization"))
-		if token == "" {
+		persistentHeader := strings.TrimSpace(c.GetHeader("Device-Authorization"))
+		jwtHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+		if persistentHeader != "" && jwtHeader != "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"code":  "ambiguous_device_credentials",
+				"error": "provide exactly one device credential",
+			})
+			return
+		}
+		if persistentHeader == "" && jwtHeader == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code":  "device_authentication_required",
 				"error": "device authentication required",
@@ -31,13 +39,28 @@ func DeviceTokenAuth(db *sqlx.DB) gin.HandlerFunc {
 			return
 		}
 
-		principal, err := services.AuthenticateDeviceAuthToken(c.Request.Context(), db, token)
+		var (
+			principal deviceauth.Principal
+			err       error
+		)
+		if persistentHeader != "" {
+			token := parseDeviceAuthorizationHeader(persistentHeader)
+			if token == "" {
+				writeInvalidDeviceCredential(c)
+				return
+			}
+			principal, err = authenticator.AuthenticatePersistent(c.Request.Context(), token)
+		} else {
+			token := parseBearerAuthorizationHeader(jwtHeader)
+			if token == "" {
+				writeInvalidDeviceCredential(c)
+				return
+			}
+			principal, err = authenticator.AuthenticateJWT(c.Request.Context(), token)
+		}
 		if err != nil {
-			if errors.Is(err, services.ErrInvalidDeviceAuthToken) {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-					"code":  "invalid_device_credential",
-					"error": "invalid device credential",
-				})
+			if errors.Is(err, deviceauth.ErrInvalidCredential) {
+				writeInvalidDeviceCredential(c)
 				return
 			}
 			logger.Printf("[DEVICE] HTTP device authentication failed: %v", err)
@@ -52,6 +75,13 @@ func DeviceTokenAuth(db *sqlx.DB) gin.HandlerFunc {
 	}
 }
 
+func writeInvalidDeviceCredential(c *gin.Context) {
+	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+		"code":  "invalid_device_credential",
+		"error": "invalid device credential",
+	})
+}
+
 func parseDeviceAuthorizationHeader(header string) string {
 	parts := strings.Fields(strings.TrimSpace(header))
 	if len(parts) == 1 {
@@ -63,13 +93,21 @@ func parseDeviceAuthorizationHeader(header string) string {
 	return ""
 }
 
-// GetDevicePrincipal returns the identity attached by DeviceTokenAuth.
-func GetDevicePrincipal(c *gin.Context) *services.DevicePrincipal {
+func parseBearerAuthorizationHeader(header string) string {
+	parts := strings.Fields(strings.TrimSpace(header))
+	if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+		return parts[1]
+	}
+	return ""
+}
+
+// GetDevicePrincipal returns the identity attached by DeviceAuth.
+func GetDevicePrincipal(c *gin.Context) *deviceauth.Principal {
 	value, ok := c.Get(DevicePrincipalKey)
 	if !ok {
 		return nil
 	}
-	principal, ok := value.(services.DevicePrincipal)
+	principal, ok := value.(deviceauth.Principal)
 	if !ok {
 		return nil
 	}

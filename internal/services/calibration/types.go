@@ -78,6 +78,7 @@ type CaptureSummary struct {
 	RobotID                   int64     `db:"robot_id" json:"robot_id"`
 	DeviceID                  string    `db:"device_id" json:"device_id"`
 	WorkspaceID               int64     `db:"workspace_id" json:"workspace_id"`
+	CameraSerial              string    `db:"camera_serial" json:"camera_serial"`
 	Bucket                    string    `db:"bucket" json:"bucket"`
 	ObjectKey                 string    `db:"object_key" json:"object_key"`
 	FileSizeBytes             int64     `db:"file_size_bytes" json:"file_size_bytes"`
@@ -118,6 +119,7 @@ type Capture struct {
 // SessionStatus is the non-sensitive status exposed to a device poller.
 type SessionStatus struct {
 	SessionID           string    `db:"session_id" json:"session_id"`
+	CameraSerial        string    `db:"camera_serial" json:"camera_serial"`
 	Status              string    `db:"status" json:"status"`
 	SuccessfulCaptureID string    `db:"successful_capture_id" json:"successful_capture_id,omitempty"`
 	CaptureCount        int64     `db:"capture_count" json:"capture_count"`
