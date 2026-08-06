@@ -69,7 +69,6 @@ type collectorAuthRow struct {
 
 var (
 	errWorkstationNotAssigned  = errors.New("workstation is not assigned to collector")
-	errWorkstationOccupied     = errors.New("workstation is currently occupied")
 	errRecordingActive         = errors.New("workstation has an active recording")
 	errInvalidDeviceCredential = errors.New("invalid device credential")
 )
@@ -335,8 +334,6 @@ func (h *AuthHandler) ActivateWorkstation(c *gin.Context) {
 			c.JSON(http.StatusUnauthorized, gin.H{"code": "invalid_device_credential", "error": err.Error()})
 		case errors.Is(err, errWorkstationNotAssigned):
 			c.JSON(http.StatusForbidden, gin.H{"code": "workstation_not_assigned", "error": err.Error()})
-		case errors.Is(err, errWorkstationOccupied):
-			c.JSON(http.StatusConflict, gin.H{"code": "workstation_occupied", "error": err.Error()})
 		case errors.Is(err, errRecordingActive):
 			c.JSON(http.StatusConflict, gin.H{"code": "recording_active", "error": err.Error()})
 		default:
@@ -412,15 +409,12 @@ func (h *AuthHandler) activateWorkstation(
 		FROM workstations
 		WHERE robot_id = ? AND is_current = TRUE AND deleted_at IS NULL
 		LIMIT 1`+lockClause, workstation.RobotID)
-	takesOverCurrentDeviceSession := err == nil && (current.ID != workstation.ID || current.CollectorID != collectorID)
-	if takesOverCurrentDeviceSession && deviceToken == "" {
-		return authWorkstationRow{}, errWorkstationOccupied
-	}
+	takesOverCurrentSession := err == nil && (current.ID != workstation.ID || current.CollectorID != collectorID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return authWorkstationRow{}, fmt.Errorf("query current workstation: %w", err)
 	}
 
-	if !workstation.IsCurrent {
+	if !workstation.IsCurrent || takesOverCurrentSession {
 		var activeOtherRecording bool
 		if err := tx.GetContext(ctx, &activeOtherRecording, `
 			SELECT EXISTS(
@@ -464,9 +458,9 @@ func (h *AuthHandler) activateWorkstation(
 	if err := tx.Commit(); err != nil {
 		return authWorkstationRow{}, fmt.Errorf("commit workstation activation: %w", err)
 	}
-	if takesOverCurrentDeviceSession {
+	if takesOverCurrentSession {
 		logger.Printf(
-			"[AUTH] Ego Portal workstation session replaced: robot=%d previous_workstation=%d previous_collector=%d workstation=%d collector=%d",
+			"[AUTH] Workstation session replaced: robot=%d previous_workstation=%d previous_collector=%d workstation=%d collector=%d",
 			workstation.RobotID,
 			current.ID,
 			current.CollectorID,
