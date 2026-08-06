@@ -180,17 +180,18 @@ the IngressClass, TOS bucket, IAM roles, and Hilbert endpoint to identify
 staging, then verifies the ALB and workload identity against the staging
 cluster before it mutates any Kubernetes resource.
 
-Each release uses a staging-specific hostname that cannot collide with the
-production hostname:
+Staging uses one fixed Helm release, factory identifier, and hostname that
+cannot collide with production:
 
 ```text
-keystone-staging-<releaseName>.archebase.cn
+keystone-staging.archebase.cn
 ```
 
-`releaseName` must contain 1–46 lowercase alphanumeric or hyphen characters.
+The workflow does not accept a staging release name. Helm release name and
+`KEYSTONE_FACTORY_ID` are both fixed to `keystone-staging`.
 `keystoneImageTag` may be empty to select the checked-out `main-v2` HEAD;
-`synapseImageTag` must be supplied explicitly. Both resolved image tags must be
-full 40-character lowercase commit SHAs.
+`synapseImageTag` must be supplied explicitly. Both resolved image tags must
+be full 40-character lowercase commit SHAs.
 
 Before dispatching the workflow, create the GitHub `staging` environment and
 restrict it to the intended reviewers and `main-v2`, then configure these
@@ -231,7 +232,7 @@ The staging cluster must already contain:
   gRPC port configured in `STAGING_KEYSTONE_GRPC_LISTENER_PORT`;
 - a staging TOS bucket plus upload and read roles that the Keystone workload
   identity can assume;
-- a CNAME from the derived staging hostname to
+- a CNAME from `keystone-staging.archebase.cn` to
   `STAGING_KEYSTONE_ALB_DNS_NAME`.
 
 The workflow creates or updates only the application-owned
@@ -265,7 +266,7 @@ connect to the corresponding environment endpoint:
 
 ```text
 production: keystone-<releaseName>.archebase.cn:50053
-staging:    keystone-staging-<releaseName>.archebase.cn:<STAGING_KEYSTONE_GRPC_LISTENER_PORT>
+staging:    keystone-staging.archebase.cn:<STAGING_KEYSTONE_GRPC_LISTENER_PORT>
 ```
 
 ## S3 Override

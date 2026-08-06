@@ -5,7 +5,6 @@
 set -euo pipefail
 
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
-: "${RELEASE_NAME:?RELEASE_NAME is required}"
 : "${SYNAPSE_IMAGE_TAG:?SYNAPSE_IMAGE_TAG is required}"
 : "${DNS_CNAME_READY:?DNS_CNAME_READY is required}"
 : "${CONFIRM_STAGING:?CONFIRM_STAGING is required}"
@@ -21,6 +20,9 @@ set -euo pipefail
 : "${STAGING_GRPC_LISTENER_PORT:?STAGING_KEYSTONE_GRPC_LISTENER_PORT repository or staging environment variable is required}"
 : "${STAGING_HILBERT_BASE_URL:?STAGING_KEYSTONE_HILBERT_BASE_URL repository or staging environment variable is required}"
 
+release_name="keystone-staging"
+host="${release_name}.archebase.cn"
+
 keystone_image_tag="${KEYSTONE_IMAGE_TAG_INPUT:-}"
 if [[ -z "$keystone_image_tag" ]]; then
   keystone_image_tag="$(git rev-parse HEAD)"
@@ -33,18 +35,7 @@ fi
 
 if [[ "$DNS_CNAME_READY" != "true" ]]; then
   echo "dnsCnameReady must be true before staging deployment" >&2
-  echo "Expected CNAME: keystone-staging-${RELEASE_NAME}.archebase.cn -> ${STAGING_ALB_DNS_NAME}" >&2
-  exit 1
-fi
-
-if ! [[ "$RELEASE_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
-  echo "releaseName must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" >&2
-  exit 1
-fi
-
-# The derived keystone-staging-<releaseName> DNS label must stay within 63 bytes.
-if [[ "${#RELEASE_NAME}" -gt 46 ]]; then
-  echo "releaseName must have length of 1-46 characters for the staging hostname" >&2
+  echo "Expected CNAME: ${host} -> ${STAGING_ALB_DNS_NAME}" >&2
   exit 1
 fi
 
@@ -102,12 +93,11 @@ if ! [[ "$STAGING_HILBERT_BASE_URL" =~ ^https://[^/]*staging[^/]*/.+ ]]; then
   exit 1
 fi
 
-host="keystone-staging-${RELEASE_NAME}.archebase.cn"
 keystone_image="${VOLCENGINE_CR_ENDPOINT}/${KEYSTONE_IMAGE_REPOSITORY}:${keystone_image_tag}"
 synapse_image="${VOLCENGINE_CR_ENDPOINT}/${SYNAPSE_IMAGE_REPOSITORY}:${SYNAPSE_IMAGE_TAG}"
 
 {
-  echo "release_name=${RELEASE_NAME}"
+  echo "release_name=${release_name}"
   echo "host=${host}"
   echo "keystone_image_tag=${keystone_image_tag}"
   echo "synapse_image_tag=${SYNAPSE_IMAGE_TAG}"
