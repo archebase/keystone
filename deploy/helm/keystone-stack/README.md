@@ -176,9 +176,9 @@ registry artifacts used by the production workflow instead of rebuilding
 environment-specific images. All runtime coordinates still come only from the
 `staging` GitHub environment, staging kubeconfig, staging application
 credentials, and staging infrastructure configuration. The workflow requires
-the IngressClass, TOS bucket, IAM roles, and Hilbert endpoint to identify
-staging, then verifies the ALB and workload identity against the staging
-cluster before it mutates any Kubernetes resource.
+the IngressClass, TOS bucket, IAM roles, and fixed in-cluster Hilbert endpoint
+to identify staging, then verifies the ALB and workload identity against the
+staging cluster before it mutates any Kubernetes resource.
 
 Staging uses one fixed Helm release, factory identifier, and hostname:
 
@@ -219,7 +219,11 @@ staging infrastructure outputs and application configuration:
 - `STAGING_KEYSTONE_IRSA_ROLE_TRN`: cloud-infra output
   `tos_irsa_workload_role_trns["keystone"]`
 - `STAGING_KEYSTONE_GRPC_LISTENER_PORT`
-- `STAGING_KEYSTONE_HILBERT_BASE_URL`
+- `STAGING_KEYSTONE_HILBERT_BASE_URL`: must be exactly
+  `http://hilbert-be-backend:8080/hilbert-be-backend`, the Hilbert backend
+  Service in the shared `archebase-system` namespace. Keystone-to-Hilbert
+  traffic stays inside the staging cluster; the public Hilbert hostname remains
+  available only for clients outside the cluster.
 
 The staging cluster must already contain:
 
