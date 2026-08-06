@@ -43,7 +43,7 @@ run_resolver() {
 
 valid_output="$(mktemp)"
 trap 'rm -f "$valid_output" "${case_output:-}"' EXIT
-run_resolver "$valid_output"
+run_resolver "$valid_output" RELEASE_NAME=legacy-release
 
 grep -Fxq "release_name=keystone-staging" "$valid_output"
 grep -Fxq "host=keystone-staging.archebase.cn" "$valid_output"

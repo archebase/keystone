@@ -180,8 +180,7 @@ the IngressClass, TOS bucket, IAM roles, and Hilbert endpoint to identify
 staging, then verifies the ALB and workload identity against the staging
 cluster before it mutates any Kubernetes resource.
 
-Staging uses one fixed Helm release, factory identifier, and hostname that
-cannot collide with production:
+Staging uses one fixed Helm release, factory identifier, and hostname:
 
 ```text
 keystone-staging.archebase.cn
@@ -189,6 +188,10 @@ keystone-staging.archebase.cn
 
 The workflow does not accept a staging release name. Helm release name and
 `KEYSTONE_FACTORY_ID` are both fixed to `keystone-staging`.
+The release name `staging` is reserved from production deployments and must
+not be passed to the production workflow, because production would derive the
+same hostname. The `keystone-staging.archebase.cn` CNAME must always point to
+the staging ALB identified by `STAGING_KEYSTONE_ALB_DNS_NAME`.
 `keystoneImageTag` may be empty to select the checked-out `main-v2` HEAD;
 `synapseImageTag` must be supplied explicitly. Both resolved image tags must
 be full 40-character lowercase commit SHAs.
