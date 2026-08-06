@@ -13,7 +13,7 @@ import unittest
 
 import cv2
 from mcap.reader import make_reader
-from mcap.writer import Writer
+from mcap.writer import IndexType, Writer
 import numpy as np
 from rosbags.typesys import Stores, get_typestore
 
@@ -95,6 +95,9 @@ def make_source(
     source_frames: list[np.ndarray] | None = None,
     source_payloads: list[np.ndarray] | None = None,
     include_existing_imu: bool = False,
+    include_empty_imu_channel: bool = False,
+    include_empty_channel: bool = False,
+    include_summary: bool = True,
     log_times: list[int] | None = None,
     publish_times: list[int] | None = None,
     sequences: list[int] | None = None,
@@ -125,9 +128,17 @@ def make_source(
     compressed_definition, _ = typestore.generate_msgdef(
         "sensor_msgs/msg/CompressedImage", ros_version=2
     )
+    imu_definition, _ = typestore.generate_msgdef("sensor_msgs/msg/Imu", ros_version=2)
     string_definition, _ = typestore.generate_msgdef("std_msgs/msg/String", ros_version=2)
     with path.open("wb") as stream:
-        writer = Writer(stream)
+        writer = Writer(
+            stream,
+            index_types=IndexType.ALL if include_summary else IndexType.NONE,
+            repeat_channels=include_summary,
+            repeat_schemas=include_summary,
+            use_statistics=include_summary,
+            use_summary_offsets=include_summary,
+        )
         writer.start()
         compressed_schema = writer.register_schema(
             "sensor_msgs/msg/CompressedImage", "ros2msg", compressed_definition.encode()
@@ -140,8 +151,17 @@ def make_source(
         )
         string_channel = writer.register_channel("/kept", "cdr", string_schema)
         existing_imu_channel = None
-        if include_existing_imu:
-            existing_imu_channel = writer.register_channel("/decxin/imu", "cdr", string_schema)
+        if include_existing_imu or include_empty_imu_channel:
+            imu_schema = writer.register_schema(
+                "sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode()
+            )
+            existing_imu_channel = writer.register_channel(
+                "/decxin/imu", "cdr", imu_schema, metadata={"source": "original"}
+            )
+        if include_empty_channel:
+            writer.register_channel(
+                "/empty", "cdr", string_schema, metadata={"source": "original"}
+            )
         for index in range(frame_count):
             message_format = formats[index]
             if source_payloads is not None:
@@ -184,15 +204,67 @@ def make_source(
                 timestamp + 1,
                 index,
             )
-            if existing_imu_channel is not None:
+            if existing_imu_channel is not None and include_existing_imu:
+                vector = messages["geometry_msgs/msg/Vector3"]
+                quaternion = messages["geometry_msgs/msg/Quaternion"]
+                imu = messages["sensor_msgs/msg/Imu"](
+                    header=messages["std_msgs/msg/Header"](
+                        stamp=stamp, frame_id="source_imu"
+                    ),
+                    orientation=quaternion(x=0.0, y=0.0, z=0.0, w=1.0),
+                    orientation_covariance=np.full(9, index, dtype=np.float64),
+                    angular_velocity=vector(x=float(index), y=2.0, z=3.0),
+                    angular_velocity_covariance=np.zeros(9, dtype=np.float64),
+                    linear_acceleration=vector(x=4.0, y=5.0, z=6.0),
+                    linear_acceleration_covariance=np.zeros(9, dtype=np.float64),
+                )
                 writer.add_message(
                     existing_imu_channel,
                     timestamp + 2,
-                    bytes(typestore.serialize_cdr(kept, "std_msgs/msg/String")),
-                    timestamp + 2,
-                    index,
+                    bytes(typestore.serialize_cdr(imu, "sensor_msgs/msg/Imu")),
+                    timestamp + 3,
+                    100 + index,
                 )
         writer.finish()
+
+
+def topic_records(path: Path, topic: str) -> list[tuple[object, ...]]:
+    records: list[tuple[object, ...]] = []
+    with path.open("rb") as stream:
+        for schema, channel, message in make_reader(stream).iter_messages(topics=[topic]):
+            records.append(
+                (
+                    schema.name if schema is not None else None,
+                    schema.encoding if schema is not None else None,
+                    bytes(schema.data) if schema is not None else b"",
+                    channel.message_encoding,
+                    dict(channel.metadata),
+                    message.log_time,
+                    message.publish_time,
+                    message.sequence,
+                    bytes(message.data),
+                )
+            )
+    return records
+
+
+def summary_channel(path: Path, topic: str) -> tuple[object, ...] | None:
+    with path.open("rb") as stream:
+        summary = make_reader(stream).get_summary()
+    if summary is None:
+        return None
+    for channel in summary.channels.values():
+        if channel.topic != topic:
+            continue
+        schema = summary.schemas.get(channel.schema_id) if channel.schema_id else None
+        return (
+            schema.name if schema is not None else None,
+            schema.encoding if schema is not None else None,
+            bytes(schema.data) if schema is not None else b"",
+            channel.message_encoding,
+            dict(channel.metadata),
+        )
+    return None
 
 
 class ConvertTest(unittest.TestCase):
@@ -224,6 +296,7 @@ class ConvertTest(unittest.TestCase):
                 {"/decxin/left_rgb/h264", "/decxin/right_rgb/h264", "/decxin/imu", "/kept"},
             )
             self.assertEqual(len(by_topic["/kept"]), 3)
+            self.assertEqual(topic_records(output, "/kept"), topic_records(source, "/kept"))
 
             for topic, frame_id in (
                 ("/decxin/left_rgb/h264", "decxin_left_camera"),
@@ -299,6 +372,7 @@ class ConvertTest(unittest.TestCase):
             make_source(
                 source,
                 source_format="h264",
+                include_existing_imu=True,
                 log_times=log_times,
                 publish_times=publish_times,
                 sequences=sequences,
@@ -311,7 +385,13 @@ class ConvertTest(unittest.TestCase):
             self.assertEqual(stats.decoded_images, 3)
             self.assertEqual(stats.left_videos, 3)
             self.assertEqual(stats.right_videos, 3)
-            self.assertEqual(stats.imu_messages, 22)
+            self.assertEqual(stats.imu_messages, 3)
+            self.assertEqual(stats.copied_messages, 6)
+            self.assertEqual(stats.copied_topics, 2)
+            self.assertEqual(
+                topic_records(output, "/decxin/imu"),
+                topic_records(source, "/decxin/imu"),
+            )
             with output.open("rb") as stream:
                 by_topic: dict[str, list[object]] = {}
                 for _, channel, message in make_reader(stream).iter_messages():
@@ -349,7 +429,7 @@ class ConvertTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "already contains output topic"):
                 StereoSplitH264Converter().convert(source, root / "output.mcap")
 
-    def test_replaces_existing_imu_topic_with_decoded_samples(self) -> None:
+    def test_preserves_existing_imu_topic_instead_of_decoding_jpeg_pixels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = root / "source.mcap"
@@ -358,21 +438,15 @@ class ConvertTest(unittest.TestCase):
 
             stats = StereoSplitH264Converter().convert(source, output)
 
-            self.assertEqual(stats.imu_messages, 22)
-            self.assertEqual(stats.copied_messages, 3)
-            self.assertEqual(stats.copied_topics, 1)
-            with output.open("rb") as stream:
-                imu_records = [
-                    (schema, channel, message)
-                    for schema, channel, message in make_reader(stream).iter_messages()
-                    if channel.topic == "/decxin/imu"
-                ]
-            self.assertEqual(len(imu_records), 22)
-            self.assertTrue(
-                all(schema.name == "sensor_msgs/msg/Imu" for schema, _, _ in imu_records)
+            self.assertEqual(stats.imu_messages, 3)
+            self.assertEqual(stats.copied_messages, 6)
+            self.assertEqual(stats.copied_topics, 2)
+            self.assertEqual(
+                topic_records(output, "/decxin/imu"),
+                topic_records(source, "/decxin/imu"),
             )
 
-    def test_h264_input_replaces_existing_imu_topic_with_decoded_samples(self) -> None:
+    def test_h264_input_preserves_existing_imu_without_decoding_pixels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = root / "source.mcap"
@@ -381,19 +455,116 @@ class ConvertTest(unittest.TestCase):
 
             stats = StereoSplitH264Converter().convert(source, output)
 
-            self.assertEqual(stats.imu_messages, 22)
-            self.assertEqual(stats.copied_messages, 3)
-            self.assertEqual(stats.copied_topics, 1)
-            with output.open("rb") as stream:
-                imu_records = [
-                    (schema, channel, message)
-                    for schema, channel, message in make_reader(stream).iter_messages()
-                    if channel.topic == "/decxin/imu"
-                ]
-            self.assertEqual(len(imu_records), 22)
-            self.assertTrue(
-                all(schema.name == "sensor_msgs/msg/Imu" for schema, _, _ in imu_records)
+            self.assertEqual(stats.imu_messages, 3)
+            self.assertEqual(stats.copied_messages, 6)
+            self.assertEqual(stats.copied_topics, 2)
+            self.assertEqual(
+                topic_records(output, "/decxin/imu"),
+                topic_records(source, "/decxin/imu"),
             )
+
+    def test_preserves_empty_source_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_source(source, include_empty_channel=True)
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.copied_messages, 3)
+            self.assertEqual(stats.copied_topics, 2)
+            self.assertEqual(summary_channel(output, "/empty"), summary_channel(source, "/empty"))
+
+    def test_rejects_h264_input_without_source_imu(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            make_source(source, frame_count=1, source_format="h264")
+
+            with self.assertRaisesRegex(RuntimeError, "H.264 input requires source IMU topic"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
+
+    def test_rejects_empty_source_imu_channel(self) -> None:
+        for source_format in ("jpeg", "h264"):
+            with self.subTest(source_format=source_format), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                source = root / "source.mcap"
+                make_source(
+                    source,
+                    frame_count=1,
+                    source_format=source_format,
+                    include_empty_imu_channel=True,
+                )
+
+                with self.assertRaisesRegex(
+                    RuntimeError, "source IMU topic contains no messages"
+                ):
+                    StereoSplitH264Converter().convert(source, root / "output.mcap")
+
+    def test_preserves_source_channels_without_mcap_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_source(
+                source,
+                source_format="h264",
+                include_existing_imu=True,
+                include_summary=False,
+            )
+            with source.open("rb") as stream:
+                self.assertIsNone(make_reader(stream).get_summary())
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.copied_messages, 6)
+            self.assertEqual(stats.copied_topics, 2)
+            self.assertEqual(stats.imu_messages, 3)
+            self.assertEqual(topic_records(output, "/kept"), topic_records(source, "/kept"))
+            self.assertEqual(
+                topic_records(output, "/decxin/imu"),
+                topic_records(source, "/decxin/imu"),
+            )
+
+    def test_skips_h264_frames_before_first_idr(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            access_units = encode_h264_access_units(
+                [contract_frame(0), contract_frame(1), contract_frame(2)]
+            )
+            non_idr = np.frombuffer(
+                b"\x00\x00\x00\x01\x09\x30\x00\x00\x00\x01\x41\x80",
+                dtype=np.uint8,
+            )
+            payloads = [non_idr, non_idr] + [
+                np.frombuffer(access_unit, dtype=np.uint8) for access_unit in access_units
+            ]
+            make_source(
+                source,
+                source_format="h264",
+                source_payloads=payloads,
+                include_existing_imu=True,
+            )
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.input_messages, 5)
+            self.assertEqual(stats.decoded_images, 3)
+            self.assertEqual(stats.skipped_messages, 2)
+            self.assertEqual(stats.left_videos, 3)
+            self.assertEqual(stats.right_videos, 3)
+            self.assertEqual(stats.imu_messages, 5)
+            with output.open("rb") as stream:
+                left_times = [
+                    message.log_time
+                    for _, _, message in make_reader(stream).iter_messages(
+                        topics=["/decxin/left_rgb/h264"]
+                    )
+                ]
+            self.assertEqual(left_times, [3 * 10**9, 4 * 10**9, 5 * 10**9])
 
     def test_rejects_jpeg_then_h264_input(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -408,7 +579,12 @@ class ConvertTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = root / "source.mcap"
-            make_source(source, frame_count=2, source_formats=["h264", "jpeg"])
+            make_source(
+                source,
+                frame_count=2,
+                source_formats=["h264", "jpeg"],
+                include_existing_imu=True,
+            )
 
             with self.assertRaisesRegex(RuntimeError, "cannot mix JPEG and H.264"):
                 StereoSplitH264Converter().convert(source, root / "output.mcap")
@@ -427,7 +603,12 @@ class ConvertTest(unittest.TestCase):
             root = Path(temp_dir)
             source = root / "source.mcap"
             undersized = np.zeros((1198, 4000, 3), dtype=np.uint8)
-            make_source(source, source_format="h264", source_frames=[undersized])
+            make_source(
+                source,
+                source_format="h264",
+                source_frames=[undersized],
+                include_existing_imu=True,
+            )
 
             with self.assertRaisesRegex(RuntimeError, "required 4000x1200"):
                 StereoSplitH264Converter().convert(source, root / "output.mcap")
@@ -438,7 +619,12 @@ class ConvertTest(unittest.TestCase):
             source = root / "source.mcap"
             access_units = encode_h264_access_units([contract_frame(0), contract_frame(1)])
             payload = np.frombuffer(b"".join(access_units), dtype=np.uint8)
-            make_source(source, source_format="h264", source_payloads=[payload])
+            make_source(
+                source,
+                source_format="h264",
+                source_payloads=[payload],
+                include_existing_imu=True,
+            )
 
             with self.assertRaisesRegex(RuntimeError, "one decoded frame per input message"):
                 StereoSplitH264Converter().convert(source, root / "output.mcap")
@@ -453,7 +639,12 @@ class ConvertTest(unittest.TestCase):
                 np.frombuffer(access_unit[:split_at], dtype=np.uint8),
                 np.frombuffer(access_unit[split_at:], dtype=np.uint8),
             ]
-            make_source(source, source_format="h264", source_payloads=payloads)
+            make_source(
+                source,
+                source_format="h264",
+                source_payloads=payloads,
+                include_existing_imu=True,
+            )
 
             with self.assertRaisesRegex(RuntimeError, "one decoded frame per input message"):
                 StereoSplitH264Converter().convert(source, root / "output.mcap")
@@ -467,7 +658,12 @@ class ConvertTest(unittest.TestCase):
                 np.frombuffer(b"".join(access_units), dtype=np.uint8),
                 np.array([], dtype=np.uint8),
             ]
-            make_source(source, source_format="h264", source_payloads=payloads)
+            make_source(
+                source,
+                source_format="h264",
+                source_payloads=payloads,
+                include_existing_imu=True,
+            )
 
             with self.assertRaisesRegex(RuntimeError, "one decoded frame per input message"):
                 StereoSplitH264Converter().convert(source, root / "output.mcap")
