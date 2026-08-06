@@ -349,6 +349,23 @@ class ConvertTest(unittest.TestCase):
             [publish_times[0] + timestamp - header_times[0] for timestamp in header_times],
         )
 
+    def test_timestamp_plan_repairs_bursty_prefix_in_otherwise_healthy_file(self) -> None:
+        frame_count = 1_000
+        bursty_frames = 150
+        header_times = regular_frame_times(frame_count)
+        bursty_prefix = bursty_frame_times(bursty_frames)
+        log_times = bursty_prefix + [
+            bursty_prefix[-1] + header_time - header_times[bursty_frames - 1]
+            for header_time in header_times[bursty_frames:]
+        ]
+
+        plan = _build_timestamp_repair_plan(
+            timestamp_samples(header_times, log_times)
+        )
+
+        self.assertTrue(plan.applied)
+        self.assertEqual(plan.reason, "log_bursty,publish_bursty")
+
     def test_timestamp_plan_preserves_healthy_outer_times(self) -> None:
         header_times = regular_frame_times()
         log_times = [timestamp + 5_000_000 for timestamp in header_times]
