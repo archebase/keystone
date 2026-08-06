@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import deque
 from dataclasses import asdict, dataclass
 import heapq
@@ -13,6 +14,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import statistics
 import subprocess
 import threading
 from typing import BinaryIO
@@ -156,6 +158,11 @@ class ConvertStats:
     copied_messages: int = 0
     copied_topics: int = 0
     skipped_messages: int = 0
+    timestamp_repair_applied: bool = False
+    timestamp_repair_reason: str = "not_evaluated"
+    timestamp_log_repair_applied: bool = False
+    timestamp_publish_repair_applied: bool = False
+    timestamp_repaired_messages: int = 0
 
 
 @dataclass(frozen=True)
@@ -165,6 +172,208 @@ class VideoMetadata:
     sequence: int
     seconds: int
     nanos: int
+
+
+@dataclass(frozen=True)
+class _TimestampSample:
+    log_time: int
+    publish_time: int
+    header_time: int
+
+
+@dataclass(frozen=True)
+class _TimestampAxisRepair:
+    applied: bool = False
+    source_times: tuple[int, ...] = ()
+    repaired_times: tuple[int, ...] = ()
+    interpolate: bool = True
+    source_anchor: int = 0
+    header_anchor: int = 0
+
+    def video_time(self, timestamp: int, header_time: int) -> int:
+        if not self.applied:
+            return timestamp
+        return self.source_anchor + header_time - self.header_anchor
+
+    def message_time(self, timestamp: int, sample_index: int) -> int:
+        if not self.applied:
+            return timestamp
+        if not self.interpolate:
+            index = min(max(sample_index, 0), len(self.source_times) - 1)
+            return self.repaired_times[index] + timestamp - self.source_times[index]
+        return self._interpolate_time(timestamp)
+
+    def _interpolate_time(self, timestamp: int) -> int:
+        index = bisect_right(self.source_times, timestamp) - 1
+        if index < 0:
+            return self.repaired_times[0] + timestamp - self.source_times[0]
+        if index >= len(self.source_times) - 1:
+            return self.repaired_times[-1] + timestamp - self.source_times[-1]
+        source_start = self.source_times[index]
+        source_span = self.source_times[index + 1] - source_start
+        repaired_start = self.repaired_times[index]
+        repaired_span = self.repaired_times[index + 1] - repaired_start
+        return repaired_start + (timestamp - source_start) * repaired_span // source_span
+
+@dataclass(frozen=True)
+class _TimestampRepairPlan:
+    samples: tuple[_TimestampSample, ...] = ()
+    log_repair: _TimestampAxisRepair = _TimestampAxisRepair()
+    publish_repair: _TimestampAxisRepair = _TimestampAxisRepair()
+    reason: str = "not_evaluated"
+
+    @property
+    def applied(self) -> bool:
+        return self.log_repair.applied or self.publish_repair.applied
+
+    @property
+    def log_repair_applied(self) -> bool:
+        return self.log_repair.applied
+
+    @property
+    def publish_repair_applied(self) -> bool:
+        return self.publish_repair.applied
+
+    @property
+    def requires_physical_order(self) -> bool:
+        return any(
+            repair.applied and not repair.interpolate
+            for repair in (self.log_repair, self.publish_repair)
+        )
+
+    def video_message_times(self, sample: _TimestampSample) -> tuple[int, int]:
+        return (
+            self.log_repair.video_time(sample.log_time, sample.header_time),
+            self.publish_repair.video_time(sample.publish_time, sample.header_time),
+        )
+
+    def new_cursor(self) -> _TimestampRepairCursor:
+        return _TimestampRepairCursor(self)
+
+
+class _TimestampRepairCursor:
+    """Map copied messages against the preceding video in physical MCAP order."""
+
+    def __init__(self, plan: _TimestampRepairPlan) -> None:
+        self.plan = plan
+        self.sample_index = -1
+
+    def message_times(self, log_time: int, publish_time: int) -> tuple[int, int]:
+        return (
+            self.plan.log_repair.message_time(log_time, self.sample_index),
+            self.plan.publish_repair.message_time(publish_time, self.sample_index),
+        )
+
+    def video_message_times(self, sample: _TimestampSample) -> tuple[int, int]:
+        self.sample_index += 1
+        return self.plan.video_message_times(sample)
+
+
+_MIN_TIMESTAMP_REPAIR_SAMPLES = 30
+_MIN_HEADER_GAP_NS = 1_000_000
+_MAX_HEADER_GAP_NS = 1_000_000_000
+_MIN_STALL_GAP_NS = 250_000_000
+
+
+def _percentile(values: list[int], fraction: float) -> int:
+    ordered = sorted(values)
+    index = round((len(ordered) - 1) * fraction)
+    return ordered[index]
+
+
+def _timestamp_axis_issue(
+    times: list[int], header_times: list[int], median_header_gap: int
+) -> str | None:
+    if all(timestamp == 0 for timestamp in times):
+        return None
+    gaps = [current - previous for previous, current in zip(times, times[1:])]
+    if any(gap <= 0 for gap in gaps):
+        return "non_monotonic"
+
+    header_span = header_times[-1] - header_times[0]
+    span_ratio = (times[-1] - times[0]) / header_span
+    if not 0.5 <= span_ratio <= 2.0:
+        return "rate_mismatch"
+
+    burst_limit = median_header_gap // 2
+    burst_ratio = sum(gap < burst_limit for gap in gaps) / len(gaps)
+    stall_limit = max(_MIN_STALL_GAP_NS, median_header_gap * 8)
+    if burst_ratio >= 0.2 and max(gaps) >= stall_limit:
+        return "bursty"
+    return None
+
+
+def _make_timestamp_axis_repair(
+    times: list[int], header_times: list[int], issue: str | None
+) -> _TimestampAxisRepair:
+    if issue is None:
+        return _TimestampAxisRepair()
+
+    repaired_times = [
+        times[0] + header_time - header_times[0] for header_time in header_times
+    ]
+    strictly_increasing = all(
+        current > previous for previous, current in zip(times, times[1:])
+    )
+    return _TimestampAxisRepair(
+        applied=True,
+        source_times=tuple(times),
+        repaired_times=tuple(repaired_times),
+        interpolate=strictly_increasing,
+        source_anchor=times[0],
+        header_anchor=header_times[0],
+    )
+
+
+def _build_timestamp_repair_plan(samples: list[_TimestampSample]) -> _TimestampRepairPlan:
+    """Repair queue-burst timing only when the embedded sensor clock is trustworthy."""
+    sample_tuple = tuple(samples)
+    if len(samples) < _MIN_TIMESTAMP_REPAIR_SAMPLES:
+        return _TimestampRepairPlan(samples=sample_tuple, reason="insufficient_samples")
+
+    header_times = [sample.header_time for sample in samples]
+    header_gaps = [
+        current.header_time - previous.header_time
+        for previous, current in zip(samples, samples[1:])
+    ]
+    if any(sample.header_time <= 0 for sample in samples):
+        return _TimestampRepairPlan(samples=sample_tuple, reason="header_missing")
+    if any(gap <= 0 for gap in header_gaps):
+        return _TimestampRepairPlan(samples=sample_tuple, reason="header_non_monotonic")
+
+    median_header_gap = int(statistics.median(header_gaps))
+    header_p01 = _percentile(header_gaps, 0.01)
+    header_p99 = _percentile(header_gaps, 0.99)
+    header_is_healthy = (
+        _MIN_HEADER_GAP_NS <= median_header_gap <= _MAX_HEADER_GAP_NS
+        and header_p01 >= max(_MIN_HEADER_GAP_NS, median_header_gap // 4)
+        and header_p99 <= max(median_header_gap * 3, median_header_gap + 20_000_000)
+    )
+    if not header_is_healthy:
+        return _TimestampRepairPlan(samples=sample_tuple, reason="header_unstable")
+
+    log_times = [sample.log_time for sample in samples]
+    publish_times = [sample.publish_time for sample in samples]
+    log_issue = _timestamp_axis_issue(log_times, header_times, median_header_gap)
+    publish_issue = _timestamp_axis_issue(publish_times, header_times, median_header_gap)
+    reasons = [
+        f"{axis}_{issue}"
+        for axis, issue in (("log", log_issue), ("publish", publish_issue))
+        if issue is not None
+    ]
+    if not reasons:
+        return _TimestampRepairPlan(
+            samples=sample_tuple, reason="outer_timestamps_healthy"
+        )
+
+    return _TimestampRepairPlan(
+        samples=sample_tuple,
+        log_repair=_make_timestamp_axis_repair(log_times, header_times, log_issue),
+        publish_repair=_make_timestamp_axis_repair(
+            publish_times, header_times, publish_issue
+        ),
+        reason=",".join(reasons),
+    )
 
 
 class OrderedMessageWriter:
@@ -651,6 +860,14 @@ class StereoSplitH264Converter:
                 if collisions:
                     raise RuntimeError(f"input already contains output topic(s): {', '.join(collisions)}")
             input_codec = self._detect_input_codec(reader)
+            source.seek(0)
+            timestamp_repair = self._timestamp_repair_plan(make_reader(source))
+            stats.timestamp_repair_applied = timestamp_repair.applied
+            stats.timestamp_repair_reason = timestamp_repair.reason
+            stats.timestamp_log_repair_applied = timestamp_repair.log_repair_applied
+            stats.timestamp_publish_repair_applied = (
+                timestamp_repair.publish_repair_applied
+            )
             source_imu_channel_ids = (
                 {
                     channel.id
@@ -717,6 +934,7 @@ class StereoSplitH264Converter:
                     copied_topic_ids.add(channel.id)
 
             previous_image_timestamp: int | None = None
+            timestamp_cursor = timestamp_repair.new_cursor()
 
             def process_frame(frame: np.ndarray, metadata: VideoMetadata) -> None:
                 nonlocal encoder, previous_image_timestamp
@@ -753,25 +971,34 @@ class StereoSplitH264Converter:
                 previous_image_timestamp = metadata.log_time
 
             try:
-                for schema, channel, message in reader.iter_messages(log_time_order=True):
+                for schema, channel, message in reader.iter_messages(
+                    log_time_order=not timestamp_repair.requires_physical_order
+                ):
                     if channel.topic != config.input_topic:
                         if channel.topic in video_output_topics:
                             raise RuntimeError(f"input already contains output topic: {channel.topic}")
                         copied_channel = self._copy_channel(writer, schema, channel, schema_ids, channel_ids)
+                        log_time, publish_time = timestamp_cursor.message_times(
+                            message.log_time, message.publish_time
+                        )
                         ordered_writer.add_message(
                             copied_channel,
-                            message.log_time,
+                            log_time,
                             message.data,
-                            message.publish_time,
+                            publish_time,
                             message.sequence,
                         )
                         stats.copied_messages += 1
+                        if timestamp_repair.applied:
+                            stats.timestamp_repaired_messages += 1
                         copied_topic_ids.add(channel.id)
                         if channel.topic == config.imu_topic:
                             stats.imu_messages += 1
                         continue
 
                     stats.input_messages += 1
+                    if timestamp_repair.applied:
+                        stats.timestamp_repaired_messages += 1
                     if schema is None or schema.name != "sensor_msgs/msg/CompressedImage":
                         raise RuntimeError(
                             f"{config.input_topic} must use sensor_msgs/msg/CompressedImage"
@@ -780,9 +1007,17 @@ class StereoSplitH264Converter:
                         message.data, "sensor_msgs/msg/CompressedImage"
                     )
                     stamp = compressed.header.stamp
-                    metadata = VideoMetadata(
+                    timestamp_sample = _TimestampSample(
                         log_time=message.log_time,
                         publish_time=message.publish_time,
+                        header_time=int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
+                    )
+                    log_time, publish_time = timestamp_cursor.video_message_times(
+                        timestamp_sample
+                    )
+                    metadata = VideoMetadata(
+                        log_time=log_time,
+                        publish_time=publish_time,
                         sequence=message.sequence,
                         seconds=int(stamp.sec),
                         nanos=int(stamp.nanosec),
@@ -795,7 +1030,7 @@ class StereoSplitH264Converter:
                         _validate_single_h264_picture(access_unit)
                         if decoder is None and 5 not in _h264_nal_types(access_unit):
                             stats.skipped_messages += 1
-                            ordered_writer.flush_before(message.log_time + 1)
+                            ordered_writer.flush_before(log_time + 1)
                             continue
                         if decoder is None:
                             decoder = H264FrameDecoder(
@@ -822,7 +1057,7 @@ class StereoSplitH264Converter:
                     if pending_video_times:
                         ordered_writer.flush_before(min(pending_video_times))
                     else:
-                        ordered_writer.flush_before(message.log_time + 1)
+                        ordered_writer.flush_before(log_time + 1)
 
                 if stats.input_messages == 0:
                     raise RuntimeError(f"no CompressedImage topic found: {config.input_topic}")
@@ -863,6 +1098,26 @@ class StereoSplitH264Converter:
             )
             return _compressed_image_codec(compressed.format)
         raise RuntimeError(f"no CompressedImage topic found: {self.config.input_topic}")
+
+    def _timestamp_repair_plan(self, reader) -> _TimestampRepairPlan:
+        samples = []
+        for schema, _, message in reader.iter_messages(
+            topics=[self.config.input_topic], log_time_order=False
+        ):
+            if schema is None or schema.name != "sensor_msgs/msg/CompressedImage":
+                return _TimestampRepairPlan()
+            compressed = self.typestore.deserialize_cdr(
+                message.data, "sensor_msgs/msg/CompressedImage"
+            )
+            stamp = compressed.header.stamp
+            samples.append(
+                _TimestampSample(
+                    log_time=message.log_time,
+                    publish_time=message.publish_time,
+                    header_time=int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
+                )
+            )
+        return _build_timestamp_repair_plan(samples)
 
     @staticmethod
     def _copy_channel(writer, schema, channel, schema_ids, channel_ids) -> int:
@@ -937,5 +1192,5 @@ class StereoSplitH264Converter:
         return [start_ns + offset * (index + 1) for index in range(count)]
 
 
-def stats_dict(stats: ConvertStats) -> dict[str, int]:
+def stats_dict(stats: ConvertStats) -> dict[str, int | bool | str]:
     return asdict(stats)
