@@ -2,12 +2,13 @@
 # SPDX-FileCopyrightText: 2026 ArcheBase
 # SPDX-License-Identifier: MulanPSL-2.0
 
-"""Convert one DECXIN joined JPEG topic to stereo H.264 and IMU MCAP topics."""
+"""Convert one DECXIN joined image topic to stereo H.264 and IMU MCAP topics."""
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
+import heapq
 import os
 from pathlib import Path
 import queue
@@ -29,6 +30,97 @@ from imu_decoder import ImuSample, decode_imu_from_bgr
 FOXGLOVE_SCHEMA_NAME = "foxglove.CompressedVideo"
 OUTPUT_FORMAT = "h264"
 AUD_PATTERN = re.compile(b"(?:\\x00\\x00\\x00\\x01|\\x00\\x00\\x01)\\x09")
+ANNEX_B_START_CODE_PATTERN = re.compile(b"\\x00\\x00(?:\\x00)?\\x01")
+
+
+def _compressed_image_codec(format_value: str) -> str:
+    normalized = str(format_value).lower().strip()
+    if not normalized:
+        return "jpeg"
+    tokens = set(re.findall(r"[a-z0-9.]+", normalized))
+    codecs = set()
+    if tokens.intersection({"jpeg", "jpg"}):
+        codecs.add("jpeg")
+    if tokens.intersection({"h264", "h.264"}):
+        codecs.add("h264")
+    if len(codecs) != 1:
+        raise RuntimeError(f"unsupported CompressedImage format: {format_value!r}")
+    return codecs.pop()
+
+
+def _annex_b_nal_units(data: bytes) -> list[bytes]:
+    starts = list(ANNEX_B_START_CODE_PATTERN.finditer(data))
+    nal_units = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(data)
+        if start.end() < end:
+            nal_units.append(data[start.end() : end])
+    return nal_units
+
+
+def _rbsp_from_ebsp(data: bytes) -> bytes:
+    rbsp = bytearray()
+    offset = 0
+    while offset < len(data):
+        if data[offset : offset + 3] == b"\x00\x00\x03":
+            rbsp.extend(b"\x00\x00")
+            offset += 3
+            continue
+        rbsp.append(data[offset])
+        offset += 1
+    return bytes(rbsp)
+
+
+def _read_unsigned_exp_golomb(data: bytes) -> int:
+    bit_count = len(data) * 8
+    leading_zeroes = 0
+    while leading_zeroes < bit_count:
+        if data[leading_zeroes // 8] & (1 << (7 - leading_zeroes % 8)):
+            break
+        leading_zeroes += 1
+    if leading_zeroes == bit_count or leading_zeroes * 2 + 1 > bit_count:
+        raise ValueError("truncated Exp-Golomb value")
+    value = (1 << leading_zeroes) - 1
+    for offset in range(leading_zeroes):
+        bit_index = leading_zeroes + 1 + offset
+        if data[bit_index // 8] & (1 << (7 - bit_index % 8)):
+            value += 1 << (leading_zeroes - 1 - offset)
+    return value
+
+
+def _h264_picture_count(data: bytes) -> int:
+    pictures = 0
+    nal_units = _annex_b_nal_units(data)
+    if not nal_units:
+        return 0
+    for nal_unit in nal_units:
+        nal_type = nal_unit[0] & 0x1F
+        if nal_type not in {1, 2, 5, 19, 20, 21}:
+            continue
+        slice_offset = 4 if nal_type in {20, 21} else 1
+        if len(nal_unit) <= slice_offset:
+            raise ValueError("truncated H.264 slice")
+        first_macroblock = _read_unsigned_exp_golomb(
+            _rbsp_from_ebsp(nal_unit[slice_offset:])
+        )
+        if first_macroblock == 0:
+            pictures += 1
+    return pictures
+
+
+def _validate_single_h264_picture(data: bytes) -> None:
+    try:
+        picture_count = _h264_picture_count(data)
+    except ValueError as error:
+        raise RuntimeError(
+            "H.264 input must contain one decoded frame per input message: "
+            "invalid Annex-B slice data"
+        ) from error
+    if picture_count != 1:
+        raise RuntimeError(
+            "H.264 input must contain one decoded frame per input message: "
+            f"found {picture_count} encoded pictures"
+        )
 
 
 @dataclass(frozen=True)
@@ -69,6 +161,41 @@ class VideoMetadata:
     sequence: int
     seconds: int
     nanos: int
+
+
+class OrderedMessageWriter:
+    """Buffer delayed output and write MCAP messages in log-time order."""
+
+    def __init__(self, writer: Writer) -> None:
+        self.writer = writer
+        self.pending: list[tuple[int, int, int, bytes, int, int]] = []
+        self.order = 0
+
+    def add_message(
+        self,
+        channel_id: int,
+        log_time: int,
+        data: bytes,
+        publish_time: int,
+        sequence: int = 0,
+    ) -> None:
+        heapq.heappush(
+            self.pending,
+            (log_time, self.order, channel_id, data, publish_time, sequence),
+        )
+        self.order += 1
+
+    def flush_before(self, log_time: int) -> None:
+        while self.pending and self.pending[0][0] < log_time:
+            self._write_next()
+
+    def flush_all(self) -> None:
+        while self.pending:
+            self._write_next()
+
+    def _write_next(self) -> None:
+        log_time, _, channel_id, data, publish_time, sequence = heapq.heappop(self.pending)
+        self.writer.add_message(channel_id, log_time, data, publish_time, sequence)
 
 
 def _foxglove_descriptor() -> tuple[bytes, type]:
@@ -134,6 +261,185 @@ class AnnexBAccessUnitReader(threading.Thread):
             self.output.put(error)
         finally:
             self.output.put(None)
+
+
+class RawVideoFrameReader(threading.Thread):
+    """Read fixed-size BGR frames from FFmpeg without blocking its stdout pipe."""
+
+    def __init__(
+        self,
+        stream: BinaryIO,
+        frame_bytes: int,
+        output: queue.Queue[bytes | BaseException | None],
+    ) -> None:
+        super().__init__(daemon=True)
+        self.stream = stream
+        self.frame_bytes = frame_bytes
+        self.output = output
+
+    def run(self) -> None:
+        try:
+            while True:
+                frame = bytearray(self.frame_bytes)
+                view = memoryview(frame)
+                offset = 0
+                while offset < self.frame_bytes:
+                    size = self.stream.readinto(view[offset:])
+                    if not size:
+                        if offset:
+                            raise RuntimeError(
+                                f"FFmpeg returned a truncated raw frame: "
+                                f"{offset}/{self.frame_bytes} bytes"
+                            )
+                        return
+                    offset += size
+                self.output.put(bytes(frame))
+        except BaseException as error:  # propagate reader failures to the converter thread
+            self.output.put(error)
+        finally:
+            self.output.put(None)
+
+
+class H264FrameDecoder:
+    """Decode an Annex-B H.264 stream to fixed-size BGR frames."""
+
+    def __init__(self, width: int, height: int) -> None:
+        self.width = width
+        self.height = height
+        self.frame_bytes = width * height * 3
+        self.submitted = 0
+        self.received = 0
+        self.closed = False
+        self.output: queue.Queue[bytes | BaseException | None] = queue.Queue()
+        self.process = subprocess.Popen(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-f", "h264", "-i", "pipe:0",
+                "-map", "0:v:0", "-vf", f"crop={width}:{height}:0:0",
+                "-fps_mode", "passthrough", "-pix_fmt", "bgr24",
+                "-f", "rawvideo", "pipe:1",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if self.process.stdin is None or self.process.stdout is None:
+            raise RuntimeError("FFmpeg H.264 decoder pipes were not created")
+        self.reader = RawVideoFrameReader(self.process.stdout, self.frame_bytes, self.output)
+        self.reader.start()
+
+    def submit(self, access_unit: bytes) -> list[np.ndarray]:
+        if self.closed:
+            raise RuntimeError("cannot submit an H.264 frame after decoder close")
+        try:
+            self.process.stdin.write(access_unit)
+            self.process.stdin.flush()
+        except BrokenPipeError as error:
+            raise RuntimeError(self._ffmpeg_error("FFmpeg stopped while accepting H.264")) from error
+        self.submitted += 1
+        return self._drain_available()
+
+    def _as_frame(self, data: bytes) -> np.ndarray:
+        self.received += 1
+        if self.received > self.submitted:
+            raise self._frame_count_error()
+        return np.frombuffer(data, dtype=np.uint8).reshape(self.height, self.width, 3)
+
+    def _drain_available(self) -> list[np.ndarray]:
+        frames: list[np.ndarray] = []
+        while True:
+            try:
+                item = self.output.get_nowait()
+            except queue.Empty:
+                return frames
+            if isinstance(item, BaseException):
+                raise RuntimeError("failed to read FFmpeg decoded video") from item
+            if item is None:
+                raise self._decoder_stopped_error()
+            frames.append(self._as_frame(item))
+
+    def _decoder_stopped_error(self) -> RuntimeError:
+        return_code = self.process.poll()
+        if return_code is None:
+            try:
+                return_code = self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                return RuntimeError("FFmpeg decoded fewer H.264 frames than expected")
+        if return_code != 0:
+            return RuntimeError(
+                self._ffmpeg_error(
+                    f"FFmpeg could not decode required {self.width}x{self.height} H.264 frames"
+                )
+            )
+        return RuntimeError("FFmpeg H.264 decoder stopped before input completed")
+
+    def _frame_count_error(self) -> RuntimeError:
+        return RuntimeError(
+            "H.264 input must contain one decoded frame per input message: "
+            f"received {self.submitted} messages and decoded {self.received} frames"
+        )
+
+    def finish(self) -> list[np.ndarray]:
+        if self.closed:
+            return []
+        self.closed = True
+        try:
+            self.process.stdin.close()
+            remaining: list[np.ndarray] = []
+            while True:
+                try:
+                    item = self.output.get(timeout=120)
+                except queue.Empty as error:
+                    raise RuntimeError("timed out waiting for FFmpeg decoded video") from error
+                if isinstance(item, BaseException):
+                    raise RuntimeError("failed to read FFmpeg decoded video") from item
+                if item is None:
+                    break
+                remaining.append(self._as_frame(item))
+            return_code = self.process.wait(timeout=120)
+            self.reader.join(timeout=5)
+            if return_code != 0:
+                raise RuntimeError(
+                    self._ffmpeg_error(
+                        f"FFmpeg could not decode required {self.width}x{self.height} H.264 frames"
+                    )
+                )
+            if self.received != self.submitted:
+                raise self._frame_count_error()
+            return remaining
+        except BaseException:
+            self._terminate()
+            raise
+        finally:
+            self._close_streams()
+
+    def abort(self) -> None:
+        self.closed = True
+        self._terminate()
+        self._close_streams()
+
+    def _ffmpeg_error(self, prefix: str) -> str:
+        details = b""
+        if self.process.stderr is not None:
+            details = self.process.stderr.read()
+        text = details.decode("utf-8", errors="replace").strip()
+        return f"{prefix}: {text}" if text else prefix
+
+    def _terminate(self) -> None:
+        try:
+            if not self.process.stdin.closed:
+                self.process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
+
+    def _close_streams(self) -> None:
+        if self.process.stdout is not None and not self.process.stdout.closed:
+            self.process.stdout.close()
+        if self.process.stderr is not None and not self.process.stderr.closed:
+            self.process.stderr.close()
 
 
 class DualH264Encoder:
@@ -325,7 +631,10 @@ class StereoSplitH264Converter:
         schema_ids: dict[int, int] = {}
         channel_ids: dict[int, int] = {}
         encoder: DualH264Encoder | None = None
+        decoder: H264FrameDecoder | None = None
         video_metadata: deque[VideoMetadata] = deque()
+        decoded_metadata: deque[VideoMetadata] = deque()
+        input_codec: str | None = None
 
         with Path(input_path).open("rb") as source, Path(output_path).open("wb") as destination:
             reader = make_reader(source)
@@ -351,8 +660,44 @@ class StereoSplitH264Converter:
                 "sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode("utf-8")
             )
             imu_channel_id = writer.register_channel(config.imu_topic, "cdr", imu_schema_id)
+            ordered_writer = OrderedMessageWriter(writer)
 
             previous_image_timestamp: int | None = None
+
+            def process_frame(frame: np.ndarray, metadata: VideoMetadata) -> None:
+                nonlocal encoder, previous_image_timestamp
+                required_width = config.metadata_width + config.eye_width * 2
+                if frame.shape[0] < config.eye_height or frame.shape[1] < required_width:
+                    raise RuntimeError(
+                        f"frame {frame.shape[1]}x{frame.shape[0]} is smaller than "
+                        f"required {required_width}x{config.eye_height}"
+                    )
+                if encoder is None:
+                    encoder = DualH264Encoder(frame.shape[1], frame.shape[0], config)
+                stats.decoded_images += 1
+                video_metadata.append(metadata)
+                for encoded in encoder.submit(frame):
+                    self._write_video_pair(
+                        ordered_writer, left_channel_id, right_channel_id,
+                        video_metadata.popleft(), encoded, stats,
+                    )
+
+                imu = decode_imu_from_bgr(frame)
+                if imu and previous_image_timestamp is not None:
+                    timestamps = self._interpolate_imu_timestamps(
+                        previous_image_timestamp, metadata.log_time, len(imu.samples)
+                    )
+                    for sample, timestamp in zip(imu.samples, timestamps):
+                        imu_message = self._make_imu(sample, self._time_from_ns(timestamp))
+                        ordered_writer.add_message(
+                            imu_channel_id,
+                            timestamp,
+                            bytes(self.typestore.serialize_cdr(imu_message, "sensor_msgs/msg/Imu")),
+                            timestamp,
+                        )
+                        stats.imu_messages += 1
+                previous_image_timestamp = metadata.log_time
+
             try:
                 for schema, channel, message in reader.iter_messages(log_time_order=True):
                     if channel.topic != config.input_topic:
@@ -363,7 +708,7 @@ class StereoSplitH264Converter:
                         if channel.topic in video_output_topics:
                             raise RuntimeError(f"input already contains output topic: {channel.topic}")
                         copied_channel = self._copy_channel(writer, schema, channel, schema_ids, channel_ids)
-                        writer.add_message(
+                        ordered_writer.add_message(
                             copied_channel,
                             message.log_time,
                             message.data,
@@ -382,64 +727,70 @@ class StereoSplitH264Converter:
                     compressed = self.typestore.deserialize_cdr(
                         message.data, "sensor_msgs/msg/CompressedImage"
                     )
-                    frame = cv2.imdecode(np.asarray(compressed.data, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    if frame is None or not frame.size:
-                        stats.skipped_messages += 1
-                        continue
-                    required_width = config.metadata_width + config.eye_width * 2
-                    if frame.shape[0] < config.eye_height or frame.shape[1] < required_width:
-                        raise RuntimeError(
-                            f"frame {frame.shape[1]}x{frame.shape[0]} is smaller than "
-                            f"required {required_width}x{config.eye_height}"
-                        )
-                    if encoder is None:
-                        encoder = DualH264Encoder(frame.shape[1], frame.shape[0], config)
-                    stats.decoded_images += 1
                     stamp = compressed.header.stamp
-                    video_metadata.append(
-                        VideoMetadata(
-                            log_time=message.log_time,
-                            publish_time=message.publish_time,
-                            sequence=message.sequence,
-                            seconds=int(stamp.sec),
-                            nanos=int(stamp.nanosec),
-                        )
+                    metadata = VideoMetadata(
+                        log_time=message.log_time,
+                        publish_time=message.publish_time,
+                        sequence=message.sequence,
+                        seconds=int(stamp.sec),
+                        nanos=int(stamp.nanosec),
                     )
-                    for encoded in encoder.submit(frame):
-                        self._write_video_pair(
-                            writer, left_channel_id, right_channel_id,
-                            video_metadata.popleft(), encoded, stats,
-                        )
-
-                    imu = decode_imu_from_bgr(frame)
-                    if imu and previous_image_timestamp is not None:
-                        timestamps = self._interpolate_imu_timestamps(
-                            previous_image_timestamp, message.log_time, len(imu.samples)
-                        )
-                        for sample, timestamp in zip(imu.samples, timestamps):
-                            imu_message = self._make_imu(sample, self._time_from_ns(timestamp))
-                            writer.add_message(
-                                imu_channel_id,
-                                timestamp,
-                                bytes(self.typestore.serialize_cdr(imu_message, "sensor_msgs/msg/Imu")),
-                                timestamp,
+                    message_codec = _compressed_image_codec(compressed.format)
+                    if input_codec is None:
+                        input_codec = message_codec
+                    elif input_codec != message_codec:
+                        raise RuntimeError("input cannot mix JPEG and H.264 frames")
+                    if message_codec == "h264":
+                        access_unit = bytes(compressed.data)
+                        _validate_single_h264_picture(access_unit)
+                        if decoder is None:
+                            decoder = H264FrameDecoder(
+                                config.metadata_width + config.eye_width * 2,
+                                config.eye_height,
                             )
-                            stats.imu_messages += 1
-                    previous_image_timestamp = message.log_time
+                        decoded_metadata.append(metadata)
+                        for frame in decoder.submit(access_unit):
+                            process_frame(frame, decoded_metadata.popleft())
+                    else:
+                        frame = cv2.imdecode(
+                            np.asarray(compressed.data, dtype=np.uint8), cv2.IMREAD_COLOR
+                        )
+                        if frame is None or not frame.size:
+                            stats.skipped_messages += 1
+                            continue
+                        process_frame(frame, metadata)
+
+                    pending_video_times = [
+                        pending[0].log_time
+                        for pending in (decoded_metadata, video_metadata)
+                        if pending
+                    ]
+                    if pending_video_times:
+                        ordered_writer.flush_before(min(pending_video_times))
+                    else:
+                        ordered_writer.flush_before(message.log_time + 1)
 
                 if stats.input_messages == 0:
                     raise RuntimeError(f"no CompressedImage topic found: {config.input_topic}")
+                if decoder is not None:
+                    for frame in decoder.finish():
+                        process_frame(frame, decoded_metadata.popleft())
+                    if decoded_metadata:
+                        raise RuntimeError("H.264 decoder did not return every submitted frame")
                 if encoder is None:
                     raise RuntimeError(f"no decodable images found: {config.input_topic}")
                 for encoded in encoder.finish():
                     self._write_video_pair(
-                        writer, left_channel_id, right_channel_id,
+                        ordered_writer, left_channel_id, right_channel_id,
                         video_metadata.popleft(), encoded, stats,
                     )
                 if video_metadata:
                     raise RuntimeError("H.264 encoder did not return every submitted frame")
+                ordered_writer.flush_all()
                 writer.finish()
             except BaseException:
+                if decoder is not None:
+                    decoder.abort()
                 if encoder is not None:
                     encoder.abort()
                 raise
