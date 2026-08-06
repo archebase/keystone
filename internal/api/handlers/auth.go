@@ -412,7 +412,8 @@ func (h *AuthHandler) activateWorkstation(
 		FROM workstations
 		WHERE robot_id = ? AND is_current = TRUE AND deleted_at IS NULL
 		LIMIT 1`+lockClause, workstation.RobotID)
-	if err == nil && (current.ID != workstation.ID || current.CollectorID != collectorID) {
+	takesOverCurrentDeviceSession := err == nil && (current.ID != workstation.ID || current.CollectorID != collectorID)
+	if takesOverCurrentDeviceSession && deviceToken == "" {
 		return authWorkstationRow{}, errWorkstationOccupied
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -443,9 +444,9 @@ func (h *AuthHandler) activateWorkstation(
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE workstations
 		SET is_current = FALSE, status = 'offline', superseded_at = ?, superseded_by = ?, updated_at = ?
-		WHERE data_collector_id = ? AND id != ?
+		WHERE (data_collector_id = ? OR robot_id = ?) AND id != ?
 			AND is_current = TRUE AND deleted_at IS NULL
-	`, now, workstation.ID, now, collectorID, workstation.ID); err != nil {
+	`, now, workstation.ID, now, collectorID, workstation.RobotID, workstation.ID); err != nil {
 		return authWorkstationRow{}, fmt.Errorf("deactivate previous workstation: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -462,6 +463,16 @@ func (h *AuthHandler) activateWorkstation(
 	}
 	if err := tx.Commit(); err != nil {
 		return authWorkstationRow{}, fmt.Errorf("commit workstation activation: %w", err)
+	}
+	if takesOverCurrentDeviceSession {
+		logger.Printf(
+			"[AUTH] Ego Portal workstation session replaced: robot=%d previous_workstation=%d previous_collector=%d workstation=%d collector=%d",
+			workstation.RobotID,
+			current.ID,
+			current.CollectorID,
+			workstation.ID,
+			collectorID,
+		)
 	}
 
 	if err := h.syncOneWorkstationStatus(workstation.ID); err != nil {
