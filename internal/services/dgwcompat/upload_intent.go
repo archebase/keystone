@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -23,10 +24,12 @@ const (
 
 	maxCalibrationSourceLength        = 64
 	maxCalibrationLocalOperatorLength = 255
+	maxCameraSerialLength             = 255
 )
 
 type uploadIntent struct {
 	Kind                 uploadKind
+	CameraSerial         string
 	CalibrationSessionID string
 	CaptureID            string
 	AttemptNo            int64
@@ -44,6 +47,10 @@ func parseUploadIntent(hints map[string]string) (uploadIntent, error) {
 	case uploadKindTaskEpisode:
 		return uploadIntent{Kind: kind, CaptureID: strings.TrimSpace(hints["capture_id"])}, nil
 	case uploadKindCalibrationCapture:
+		cameraSerial, err := normalizeCameraSerial(hints["camera_serial"])
+		if err != nil {
+			return uploadIntent{}, err
+		}
 		sessionID, err := parseCanonicalV4UUID(hints["calibration_session_id"])
 		if err != nil {
 			return uploadIntent{}, status.Error(codes.InvalidArgument, "calibration_session_id must be a canonical UUIDv4")
@@ -67,11 +74,13 @@ func parseUploadIntent(hints map[string]string) (uploadIntent, error) {
 			return uploadIntent{}, err
 		}
 		hints["calibration_session_id"] = sessionID
+		hints["camera_serial"] = cameraSerial
 		hints["capture_id"] = captureID
 		hints["attempt_no"] = strconv.FormatInt(attemptNo, 10)
 		hints["checksum_sha256"] = checksum
 		return uploadIntent{
 			Kind:                 kind,
+			CameraSerial:         cameraSerial,
 			CalibrationSessionID: sessionID,
 			CaptureID:            captureID,
 			AttemptNo:            attemptNo,
@@ -80,6 +89,22 @@ func parseUploadIntent(hints map[string]string) (uploadIntent, error) {
 	default:
 		return uploadIntent{}, status.Errorf(codes.InvalidArgument, "unsupported upload_kind %q", kind)
 	}
+}
+
+func normalizeCameraSerial(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", status.Error(codes.InvalidArgument, "camera_serial is required")
+	}
+	if utf8.RuneCountInString(value) > maxCameraSerialLength {
+		return "", status.Errorf(codes.InvalidArgument, "camera_serial must not exceed %d characters", maxCameraSerialLength)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", status.Error(codes.InvalidArgument, "camera_serial must not contain control characters")
+		}
+	}
+	return value, nil
 }
 
 func normalizeBoundedOptionalHint(hints map[string]string, key string, maxLength int) error {

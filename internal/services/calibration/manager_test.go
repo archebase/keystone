@@ -25,7 +25,9 @@ import (
 const testProcessorImage = "registry.example/archebase/calibration@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const testStereoProcessorImage = "registry.example/archebase/stereo-split@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 const testSplitOutputKey = "derived/episodes/calibration/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/stereo-split/g1-test/output_bag.mcap"
+const testOriginalObjectKey = "calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap"
 const testUploadChecksum = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+const testCalibrationCameraSerial = "CAMERA-SN-001"
 
 func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) {
 	db := newCalibrationTestDB(t)
@@ -33,52 +35,13 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	const captureID = "92cd6f2f-d131-4bf0-9b4a-d96258d09011"
 	const sessionID = "7f9af590-75c2-47ad-b6e0-76ebf05c44f7"
 	const originalKey = "calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap"
-	const splitKey = "derived/episodes/calibration/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/stereo-split/g1-test/output_bag.mcap"
-	const sourceChecksum = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-	const splitChecksum = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
 		originalKey: {
 			size: 1024,
-			etag: "source-etag",
-		},
-		splitKey: {
-			size: 2048,
-			etag: "split-etag",
+			etag: "etag-1",
 		},
 	}}
 	manager := NewManager(db, orbit, objects, testCalibrationConfig())
-	stereo := &fakeStereoPreprocessor{
-		execution: stereosplit.ExecutionSnapshot{
-			Generation:                1,
-			ProcessorConfigRevisionID: 7,
-			ProcessorImage:            testStereoProcessorImage,
-			SourceURI:                 "tos://bucket-1/" + originalKey,
-			SourceETag:                "source-etag",
-			SourceChecksum:            sourceChecksum,
-			SourceSizeBytes:           1024,
-			OutputBucket:              "derived-bucket",
-			OutputPrefix:              strings.TrimSuffix(splitKey, "/output_bag.mcap"),
-			Request: orbitapi.SubmitRequest{
-				SubmissionID: "calibration-" + captureID + "-stereo-split",
-				Image:        testStereoProcessorImage,
-				Command:      []string{"python3", "/app/run_processing.py"},
-				DataBindings: []orbitapi.DataBinding{
-					{URI: "tos://bucket-1/" + originalKey, Path: "/bindings/input/capture.mcap", Mode: "read"},
-					{URI: "tos://derived-bucket/" + strings.TrimSuffix(splitKey, "/output_bag.mcap") + "/", Path: "/bindings/output/", Mode: "write"},
-				},
-			},
-		},
-		output: stereosplit.VerifiedOutput{
-			MCAPObjectKey:      splitKey,
-			MCAPSizeBytes:      2048,
-			MCAPChecksumSHA256: splitChecksum,
-			MCAPETag:           "split-etag",
-			MetadataObjectKey:  strings.TrimSuffix(splitKey, "output_bag.mcap") + "metadata.yaml",
-			ManifestObjectKey:  strings.TrimSuffix(splitKey, "output_bag.mcap") + "processing_manifest.json",
-			ManifestJSON:       `{"status":"succeeded"}`,
-		},
-	}
-	manager.SetStereoPreprocessor(stereo)
 
 	capture, created, err := manager.Start(
 		context.Background(),
@@ -88,7 +51,7 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if !created || capture.Status != StatusQueued || capture.ProcessingStage != StageStereoSplit {
+	if !created || capture.Status != StatusQueued || capture.ProcessingStage != StageCalibration {
 		t.Fatalf("Start() = %+v created=%t", capture, created)
 	}
 
@@ -98,76 +61,43 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
 		t.Fatalf("submit ReconcileOnce() worked=%t error=%v", worked, err)
 	}
-	if orbit.submitCalls != 1 || stereo.prepareCalls != 1 {
-		t.Fatalf("stereo submission calls: prepare=%d submit=%d", stereo.prepareCalls, orbit.submitCalls)
+	if orbit.submitCalls != 1 {
+		t.Fatalf("Orbit submit calls = %d, want 1", orbit.submitCalls)
 	}
-	if stereo.prepareInput.SourceBucket != "bucket-1" || stereo.prepareInput.SourceObjectKey != originalKey ||
-		stereo.prepareInput.SourceChecksum != sourceChecksum || stereo.prepareInput.Generation != 1 {
-		t.Fatalf("stereo preparation input = %+v", stereo.prepareInput)
-	}
-	if orbit.request.Image != testStereoProcessorImage || orbit.request.Command[1] != "/app/run_processing.py" {
-		t.Fatalf("first Orbit request = %+v", orbit.request)
+	if orbit.request.Image != testProcessorImage || orbit.request.Command[1] != processingCommand {
+		t.Fatalf("Orbit request = %+v", orbit.request)
 	}
 	frozen, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
 	if err != nil {
 		t.Fatalf("Get() frozen capture error = %v", err)
 	}
-	if frozen.StereoSplitExecution == nil || frozen.StereoSplitExecution.ProcessorImage != testStereoProcessorImage {
-		t.Fatalf("frozen stereo split execution = %+v", frozen.StereoSplitExecution)
+	if frozen.ProcessorConfigRevisionID != 1 || frozen.ProcessorImage != testProcessorImage ||
+		frozen.SourceETag != "etag-1" {
+		t.Fatalf("frozen calibration config = %+v", frozen)
 	}
 	if got := orbit.request.DataBindings[0].URI; got != "tos://bucket-1/calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap" {
 		t.Fatalf("input binding URI = %q", got)
 	}
-
-	orbit.job = orbitapi.Job{
-		JobID:        "abs-job-stereo-split-1",
-		SubmissionID: orbit.request.SubmissionID,
-		Status:       "SUCCEEDED",
-		Image:        orbit.request.Image,
-		DataBindings: orbit.request.DataBindings,
-	}
-	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
-		t.Fatalf("terminal ReconcileOnce() worked=%t error=%v", worked, err)
-	}
-	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
-		t.Fatalf("stereo verification ReconcileOnce() worked=%t error=%v", worked, err)
-	}
-	if stereo.verifyCalls != 1 {
-		t.Fatalf("stereo verification calls = %d, want 1", stereo.verifyCalls)
-	}
-	betweenStages, err := manager.Get(context.Background(), captureID)
-	if err != nil {
-		t.Fatalf("Get() between stages error = %v", err)
-	}
-	if betweenStages.Status != StatusQueued || betweenStages.ProcessingStage != StageCalibration ||
-		betweenStages.StereoSplitResult == nil {
-		t.Fatalf("capture between stages = %+v", betweenStages)
-	}
-
-	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
-		t.Fatalf("calibration freeze ReconcileOnce() worked=%t error=%v", worked, err)
-	}
-	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
-		t.Fatalf("calibration submit ReconcileOnce() worked=%t error=%v", worked, err)
-	}
-	if orbit.submitCalls != 2 {
-		t.Fatalf("Orbit submit calls = %d, want 2", orbit.submitCalls)
-	}
-	if orbit.request.Image != testProcessorImage || orbit.request.Command[1] != processingCommand {
-		t.Fatalf("second Orbit request = %+v", orbit.request)
-	}
-	if got := orbit.request.DataBindings[0].URI; got != "tos://derived-bucket/"+splitKey {
-		t.Fatalf("calibration input binding URI = %q", got)
-	}
 	if got := orbit.request.DataBindings[1].URI; got != "tos://bucket-1/calibration-results/101/"+sessionID+"/"+captureID+"/" {
 		t.Fatalf("calibration output binding URI = %q", got)
 	}
-	calibrationFrozen, err := manager.Get(context.Background(), captureID)
-	if err != nil {
-		t.Fatalf("Get() calibration stage error = %v", err)
+	wantArgs := map[string]string{
+		"--camera-serial":            testCalibrationCameraSerial,
+		"--expected-source-size":     "1024",
+		"--expected-source-checksum": testUploadChecksum,
+		"--source-uri":               "tos://bucket-1/" + originalKey,
 	}
-	if calibrationFrozen.ProcessorConfigRevisionID != 1 || calibrationFrozen.ProcessorImage != testProcessorImage {
-		t.Fatalf("frozen calibration config = %+v", calibrationFrozen)
+	for flag, want := range wantArgs {
+		found := false
+		for index := 0; index+1 < len(orbit.request.Args); index++ {
+			if orbit.request.Args[index] == flag && orbit.request.Args[index+1] == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("Orbit args %v do not contain %s %q", orbit.request.Args, flag, want)
+		}
 	}
 
 	orbit.job = orbitapi.Job{
@@ -197,15 +127,15 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	resultBody := `{
 		"schema_version": 1,
 		"status": "succeeded",
-		"algorithm_version": "placeholder-v1",
-		"placeholder": true,
+		"algorithm_version": "archebase-calib-5767ffd",
 		"calibration_session_id": "` + sessionID + `",
 		"capture_id": "` + captureID + `",
+		"camera_serial": "` + testCalibrationCameraSerial + `",
 		"processor_image": "` + testProcessorImage + `",
 		"source": {
-			"uri": "tos://derived-bucket/` + splitKey + `",
-			"size_bytes": 2048,
-			"sha256": "` + splitChecksum + `"
+			"uri": "tos://bucket-1/` + originalKey + `",
+			"size_bytes": 1024,
+			"sha256": "` + testUploadChecksum + `"
 		},
 		"result": {"camera_matrix": [[1,0,0],[0,1,0],[0,0,1]]},
 		"started_at": "2026-08-02T10:00:00Z",
@@ -323,18 +253,19 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 		"algorithm_version": "placeholder-v1",
 		"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 		"capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"camera_serial": "` + testCalibrationCameraSerial + `",
 		"processor_image": "` + testProcessorImage + `",
 		"error_message": "target was not visible",
 		"source": {
-			"uri": "tos://bucket-1/` + testSplitOutputKey + `",
+			"uri": "tos://bucket-1/` + testOriginalObjectKey + `",
 			"size_bytes": 1024,
 			"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 		}
 	}`
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
-		testSplitOutputKey: {
+		testOriginalObjectKey: {
 			size: 1024,
-			etag: "split-etag",
+			etag: "etag-1",
 		},
 		"calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/result.json": {
 			size: int64(len(resultBody)),
@@ -378,6 +309,58 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsCalibrationResultForAnotherCameraSerial(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	prepareCaptureCalibrationStage(t, db)
+	if _, err := db.Exec(`
+		UPDATE calibration_captures
+		SET status = 'verifying', processor_image = ?
+		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+	`, testProcessorImage); err != nil {
+		t.Fatalf("prepare verifying capture: %v", err)
+	}
+	resultBody := `{
+		"schema_version": 1,
+		"status": "succeeded",
+		"algorithm_version": "archebase-calib-5767ffd",
+		"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		"capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"camera_serial": "ANOTHER-CAMERA",
+		"processor_image": "` + testProcessorImage + `",
+		"source": {
+			"uri": "tos://bucket-1/` + testOriginalObjectKey + `",
+			"size_bytes": 1024,
+			"sha256": "` + testUploadChecksum + `"
+		},
+		"result": {"calibration": {"schema_version": "1.0"}}
+	}`
+	resultKey := "calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/result.json"
+	objects := &fakeObjectStore{objects: map[string]fakeObject{
+		testOriginalObjectKey: {size: 1024, etag: "etag-1"},
+		resultKey:             {size: int64(len(resultBody)), etag: "result-etag", body: resultBody},
+	}}
+	manager := NewManager(db, nil, objects, testCalibrationConfig())
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err == nil || !worked {
+		t.Fatalf("ReconcileOnce() worked=%t error=%v", worked, err)
+	}
+	capture, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	session, err := manager.GetSessionStatus(
+		context.Background(),
+		"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		1,
+	)
+	if err != nil {
+		t.Fatalf("GetSessionStatus() error = %v", err)
+	}
+	if capture.Status != StatusFailed || capture.ResultObjectKey != "" || session.Status != SessionRunning {
+		t.Fatalf("mismatched result capture=%+v session=%+v", capture, session)
+	}
+}
+
 func TestManagerSessionStatusIsHiddenFromAnotherDevice(t *testing.T) {
 	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
 
@@ -403,6 +386,53 @@ func TestManagerAdminSessionStatusIsNotScopedToDevice(t *testing.T) {
 	}
 	if session.SessionID != "7f9af590-75c2-47ad-b6e0-76ebf05c44f7" || session.Status != SessionRunning {
 		t.Fatalf("GetAdminSessionStatus() = %+v", session)
+	}
+}
+
+func TestGetSessionStatusAndGetExposeCameraSerial(t *testing.T) {
+	manager := NewManager(newCalibrationTestDB(t), nil, nil, testCalibrationConfig())
+
+	session, err := manager.GetSessionStatus(
+		context.Background(),
+		"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		1,
+	)
+	if err != nil {
+		t.Fatalf("GetSessionStatus() error = %v", err)
+	}
+	if session.CameraSerial != testCalibrationCameraSerial {
+		t.Fatalf("session camera_serial = %q, want %q", session.CameraSerial, testCalibrationCameraSerial)
+	}
+
+	capture, err := manager.Get(context.Background(), "92cd6f2f-d131-4bf0-9b4a-d96258d09011")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if capture.CameraSerial != testCalibrationCameraSerial {
+		t.Fatalf("capture camera_serial = %q, want %q", capture.CameraSerial, testCalibrationCameraSerial)
+	}
+}
+
+func TestGetSessionStatusKeepsHistoricalSessionWithoutCameraSerialQueryable(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	if _, err := db.Exec(`
+		UPDATE calibration_sessions SET camera_serial = NULL
+		WHERE session_id = '7f9af590-75c2-47ad-b6e0-76ebf05c44f7'
+	`); err != nil {
+		t.Fatalf("clear historical camera_serial: %v", err)
+	}
+	manager := NewManager(db, nil, nil, testCalibrationConfig())
+
+	session, err := manager.GetSessionStatus(
+		context.Background(),
+		"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		1,
+	)
+	if err != nil {
+		t.Fatalf("GetSessionStatus() error = %v", err)
+	}
+	if session.CameraSerial != "" {
+		t.Fatalf("historical camera_serial = %q, want empty", session.CameraSerial)
 	}
 }
 
@@ -443,7 +473,7 @@ func TestManagerPollsActiveCaptureBeforeQueuedCaptureAtCapacity(t *testing.T) {
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
 		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
 			size: 1024,
-			etag: "source-etag",
+			etag: "etag-1",
 		},
 	}}
 	manager := NewManager(db, orbit, objects, testCalibrationConfig())
@@ -470,10 +500,10 @@ func TestManagerPollsActiveCaptureBeforeQueuedCaptureAtCapacity(t *testing.T) {
 	if _, err := db.Exec(`
 		INSERT INTO calibration_captures (
 			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
-			file_size_bytes, checksum_sha256, logical_upload_id, upload_id,
+			file_size_bytes, checksum_sha256, logical_upload_id, upload_id, processing_stage,
 			created_at, updated_at, uploaded_at
 		) VALUES (?, '7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 2, 'queued', 'bucket-1',
-			'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2',
+			'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2', 'stereo_split',
 			'2000-01-01 00:00:00', '2000-01-01 00:00:00', CURRENT_TIMESTAMP)
 	`, "d4ad1825-35b4-4572-83aa-70cf3d8dd083",
 		"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"); err != nil {
@@ -505,17 +535,17 @@ func TestManagerPrioritizesCalibrationReadyCaptureOverFreshStereoSplit(t *testin
 	if _, err := db.Exec(`
 		INSERT INTO calibration_captures (
 			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
-			file_size_bytes, checksum_sha256, logical_upload_id, upload_id,
+			file_size_bytes, checksum_sha256, logical_upload_id, upload_id, processing_stage,
 			created_at, updated_at, uploaded_at
 		) VALUES (?, '7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 2, 'queued', 'bucket-1',
-			'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2',
+			'capture-2.mcap', 1024, ?, 'logical-2', 'upload-2', 'stereo_split',
 			'2000-01-01 00:00:00', '2000-01-01 00:00:00', CURRENT_TIMESTAMP)
 	`, freshCaptureID, testUploadChecksum); err != nil {
 		t.Fatalf("insert older fresh stereo capture: %v", err)
 	}
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
-		testSplitOutputKey: {size: 1024, etag: "split-etag"},
-		"capture-2.mcap":   {size: 1024, etag: "source-2-etag"},
+		testOriginalObjectKey: {size: 1024, etag: "etag-1"},
+		"capture-2.mcap":      {size: 1024, etag: "source-2-etag"},
 	}}
 	manager := NewManager(db, &fakeOrbit{}, objects, testCalibrationConfig())
 	manager.SetStereoPreprocessor(newTestStereoPreprocessor())
@@ -570,18 +600,19 @@ func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
 		"algorithm_version": "placeholder-v1",
 		"calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 		"capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"camera_serial": "` + testCalibrationCameraSerial + `",
 		"processor_image": "` + testProcessorImage + `",
 		"source": {
-			"uri": "tos://bucket-1/` + testSplitOutputKey + `",
+			"uri": "tos://bucket-1/` + testOriginalObjectKey + `",
 			"size_bytes": 1024,
 			"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 		},
 		"result": {"camera_matrix": [[1,0,0],[0,1,0],[0,0,1]]}
 	}`
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
-		testSplitOutputKey: {
+		testOriginalObjectKey: {
 			size: 1024,
-			etag: "split-etag",
+			etag: "etag-1",
 		},
 		"calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/result.json": {
 			size: int64(len(resultBody)),
@@ -725,7 +756,7 @@ func TestManagerMissingActiveJobFailsAfterGraceAndReleasesCapacity(t *testing.T)
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
 		"calibration-captures/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/capture.mcap": {
 			size: 1024,
-			etag: "source-etag",
+			etag: "etag-1",
 		},
 	}}
 	manager := NewManager(db, orbit, objects, testCalibrationConfig())
@@ -797,9 +828,9 @@ func TestManagerStopsRetryingTransientResultVerificationAtLimit(t *testing.T) {
 		t.Fatalf("prepare verifying capture: %v", err)
 	}
 	objects := &fakeObjectStore{objects: map[string]fakeObject{
-		testSplitOutputKey: {
+		testOriginalObjectKey: {
 			size: 1024,
-			etag: "split-etag",
+			etag: "etag-1",
 		},
 	}}
 	manager := NewManager(db, nil, objects, testCalibrationConfig())
@@ -1099,7 +1130,7 @@ func prepareCaptureCalibrationStage(t *testing.T, db *sqlx.DB) {
 	if _, err := db.Exec(`
 		UPDATE calibration_captures
 		SET processing_stage = ?, stereo_split_execution = ?, stereo_split_result = ?,
-		    source_etag = 'split-etag'
+		    source_etag = 'etag-1'
 		WHERE capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011'
 	`, StageCalibration, string(executionJSON), string(outputJSON)); err != nil {
 		t.Fatalf("prepare calibration stage fixture: %v", err)
@@ -1146,6 +1177,7 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE calibration_sessions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL UNIQUE,
+			camera_serial TEXT,
 			robot_id INTEGER NOT NULL,
 			device_id TEXT NOT NULL,
 			workspace_id INTEGER NOT NULL,
@@ -1171,7 +1203,7 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			source TEXT,
 			local_operator TEXT,
 			uploaded_at TIMESTAMP,
-			processing_stage TEXT NOT NULL DEFAULT 'stereo_split',
+			processing_stage TEXT NOT NULL DEFAULT 'calibration',
 			stereo_split_execution TEXT,
 			stereo_split_orbit_job_id TEXT,
 			stereo_split_orbit_log_tail TEXT,
@@ -1201,9 +1233,10 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP NOT NULL
 		)`,
 		`INSERT INTO calibration_sessions (
-			session_id, robot_id, device_id, workspace_id, status, created_at, updated_at
+			session_id, camera_serial, robot_id, device_id, workspace_id, status, created_at, updated_at
 		) VALUES (
-			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 1, '101', 10, 'running', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', '` + testCalibrationCameraSerial + `',
+			1, '101', 10, 'running', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 		)`,
 		`INSERT INTO calibration_captures (
 			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,

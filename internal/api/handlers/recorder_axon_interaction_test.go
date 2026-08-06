@@ -16,14 +16,16 @@ import (
 	"testing"
 	"time"
 
-	"archebase.com/keystone-edge/internal/config"
-	"archebase.com/keystone-edge/internal/logger"
-	"archebase.com/keystone-edge/internal/services"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
+
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/services"
+	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
 func TestRecorderStateSnapshotReconcilesAdditionalStates(t *testing.T) {
@@ -1898,7 +1900,7 @@ func seedRecorderWSClientTokenForDevice(t *testing.T, db *sqlx.DB, deviceID stri
 	if _, err := db.Exec(`
 		INSERT OR IGNORE INTO ws_client_auth_tokens (robot_id, token_hash, token_version, created_at)
 		VALUES (?, ?, ?, ?)
-	`, robotID, hashWSClientAuthToken(recorderWSAuthToken(deviceID)), services.DeviceAuthTokenVersion, time.Now().UTC()); err != nil {
+	`, robotID, hashWSClientAuthToken(recorderWSAuthToken(deviceID)), deviceauth.PersistentTokenVersion, time.Now().UTC()); err != nil {
 		t.Fatalf("seed ws client token: %v", err)
 	}
 }

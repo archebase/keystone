@@ -10,14 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"archebase.com/keystone-edge/internal/cloud/cloudpb"
-	"archebase.com/keystone-edge/internal/services"
 	"github.com/jmoiron/sqlx"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	_ "modernc.org/sqlite"
+
+	"archebase.com/keystone-edge/internal/cloud/cloudpb"
+	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
 type fakeHilbertDeviceClient struct {
@@ -101,21 +102,21 @@ func TestExchangeCredentialIssuesEpochBoundJWT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeCredential() error = %v", err)
 	}
-	claims, err := parseDeviceJWT(identity.cfg, response.GetAccessToken())
+	principal, err := identity.auth.AuthenticateJWT(context.Background(), response.GetAccessToken())
 	if err != nil {
-		t.Fatalf("parseDeviceJWT() error = %v", err)
+		t.Fatalf("AuthenticateJWT() error = %v", err)
 	}
-	if claims.DeviceID != "101" || claims.WorkspaceID != 10 || claims.AuthEpoch != 1 {
-		t.Fatalf("claims = %#v", claims)
+	if principal.DeviceID != "101" || principal.WorkspaceID != 10 || principal.AuthEpoch != 1 {
+		t.Fatalf("principal = %#v", principal)
 	}
 	incoming := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+response.GetAccessToken()))
-	if _, err := authenticateDeviceContext(incoming, db, identity.cfg); err != nil {
+	if _, err := authenticateDeviceContext(incoming, identity.auth); err != nil {
 		t.Fatalf("authenticateDeviceContext() error = %v", err)
 	}
 	if _, err := db.Exec(`UPDATE robots SET auth_epoch = 2 WHERE id = 1`); err != nil {
 		t.Fatalf("increment epoch: %v", err)
 	}
-	if _, err := authenticateDeviceContext(incoming, db, identity.cfg); status.Code(err) != codes.Unauthenticated {
+	if _, err := authenticateDeviceContext(incoming, identity.auth); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("stale token code = %v, want Unauthenticated", status.Code(err))
 	}
 }
@@ -133,7 +134,7 @@ func TestExchangeCredentialRejectsInvalidAPIKey(t *testing.T) {
 }
 
 func TestUnifiedInterceptorRoutesAuthenticationByService(t *testing.T) {
-	interceptor := unifiedUnaryAuthInterceptor(nil, Config{})
+	interceptor := unifiedUnaryAuthInterceptor(nil)
 	handler := func(context.Context, any) (any, error) { return "ok", nil }
 
 	for _, fullMethod := range []string{
@@ -193,14 +194,18 @@ func TestRecoveryResumesAfterGenerateFailureWithoutDeletingTwice(t *testing.T) {
 }
 
 func testDeviceIdentity(db *sqlx.DB, hilbert hilbertDeviceClient) *deviceIdentityService {
+	cfg := Config{
+		DeviceJWTSecret:  "test-device-secret-at-least-32-bytes",
+		DeviceJWTTTL:     15 * time.Minute,
+		HilbertAccessKey: "hilbert-ak",
+		HilbertSecretKey: "hilbert-sk",
+	}
 	return &deviceIdentityService{
 		db: db,
-		cfg: Config{
-			DeviceJWTSecret:  "test-device-secret-at-least-32-bytes",
-			DeviceJWTTTL:     15 * time.Minute,
-			HilbertAccessKey: "hilbert-ak",
-			HilbertSecretKey: "hilbert-sk",
-		},
+		auth: deviceauth.New(db, deviceauth.Config{
+			JWTSecret: cfg.DeviceJWTSecret,
+			JWTTTL:    cfg.DeviceJWTTTL,
+		}),
 		hilbert: hilbert,
 		now:     func() time.Time { return time.Now().UTC() },
 	}
@@ -237,7 +242,7 @@ func newDeviceAuthTestDB(t *testing.T) *sqlx.DB {
 
 func seedDeviceAuthToken(t *testing.T, db *sqlx.DB, recovery bool) string {
 	t.Helper()
-	token, err := services.GenerateDeviceAuthToken()
+	token, err := deviceauth.GeneratePersistentToken()
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
@@ -251,7 +256,7 @@ func seedDeviceAuthToken(t *testing.T, db *sqlx.DB, recovery bool) string {
 		INSERT INTO ws_client_auth_tokens (
 			robot_id, token_hash, token_version, created_at, recovery_requested_at, recovery_stage
 		) VALUES (1, ?, ?, ?, ?, ?)
-	`, services.HashDeviceAuthToken(token), services.DeviceAuthTokenVersion, time.Now().UTC(), requestedAt, stage); err != nil {
+	`, deviceauth.HashPersistentToken(token), deviceauth.PersistentTokenVersion, time.Now().UTC(), requestedAt, stage); err != nil {
 		t.Fatalf("seed token: %v", err)
 	}
 	return token

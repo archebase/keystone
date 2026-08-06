@@ -17,6 +17,7 @@ on:
         options:
           - keystone
           - stereo-split
+          - calibration
           - all
 
 permissions:
@@ -30,6 +31,10 @@ env:
   VOLCENGINE_CR_ENDPOINT: archebase-cr-cn-beijing.cr.volces.com
   IMAGE_REPOSITORY: prod/keystone
   STEREO_SPLIT_IMAGE_REPOSITORY: prod/stereo-split
+  CALIBRATION_IMAGE_REPOSITORY: prod/stereo-calibration
+  ARCHEBASE_CALIB_REPOSITORY: git@gitlab.archebase.cn:robotics-and-ai/archebase_calib.git
+  ARCHEBASE_CALIB_REF: refs/heads/main
+  CALIBRATION_BUILD_JOBS: "2"
   BUILDKIT_NAMESPACE: buildkit
   BUILDKIT_IMAGE: ${{ vars.CI_BUILDKIT_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/buildkit:buildx-stable-1' }}
   BUILDKIT_PULL_SECRET: keystone-buildkit-registry-secret
@@ -352,6 +357,95 @@ jobs:
       - name: Inspect pushed stereo-split image
         if: steps.images.outputs.stereo_split == 'true'
         run: docker buildx imagetools inspect "$STEREO_SPLIT_IMAGE"
+
+      - name: Build and push calibration image
+        id: calibration_image
+        if: steps.images.outputs.calibration == 'true'
+        env:
+          ARCHEBASE_CALIB_SSH_PRIVATE_KEY: ${{ secrets.ARCHEBASE_CALIB_SSH_PRIVATE_KEY }}
+          ARCHEBASE_GITLAB_KNOWN_HOSTS: ${{ secrets.ARCHEBASE_GITLAB_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+
+          for command_name in git jq mktemp ssh ssh-add ssh-agent tar; do
+            command -v "$command_name" >/dev/null 2>&1 || \
+              (echo "$command_name is required to build the calibration image" >&2; exit 1)
+          done
+          test -n "$ARCHEBASE_CALIB_SSH_PRIVATE_KEY" || \
+            (echo "ARCHEBASE_CALIB_SSH_PRIVATE_KEY secret is required" >&2; exit 1)
+          test -n "$ARCHEBASE_GITLAB_KNOWN_HOSTS" || \
+            (echo "ARCHEBASE_GITLAB_KNOWN_HOSTS secret is required" >&2; exit 1)
+
+          calibration_build_directory="$(mktemp -d "${RUNNER_TEMP:?RUNNER_TEMP is required}/archebase-calib.XXXXXX")"
+          ssh_directory="$calibration_build_directory/ssh"
+          checkout_directory="$calibration_build_directory/checkout"
+          context_directory="$calibration_build_directory/context"
+          private_key="$ssh_directory/id_ed25519"
+          known_hosts="$ssh_directory/known_hosts"
+          install -d -m 0700 "$ssh_directory"
+          printf '%s\n' "$ARCHEBASE_CALIB_SSH_PRIVATE_KEY" > "$private_key"
+          printf '%s\n' "$ARCHEBASE_GITLAB_KNOWN_HOSTS" > "$known_hosts"
+          chmod 0600 "$private_key" "$known_hosts"
+          unset ARCHEBASE_CALIB_SSH_PRIVATE_KEY ARCHEBASE_GITLAB_KNOWN_HOSTS
+
+          eval "$(ssh-agent -s)"
+          cleanup_ssh() {
+            ssh-agent -k >/dev/null 2>&1 || true
+            rm -rf "$calibration_build_directory"
+          }
+          trap cleanup_ssh EXIT
+          ssh-add "$private_key"
+
+          install -d -m 0700 "$checkout_directory" "$context_directory"
+          git -C "$checkout_directory" init --quiet
+          git -C "$checkout_directory" remote add origin "$ARCHEBASE_CALIB_REPOSITORY"
+          GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts" \
+            git -C "$checkout_directory" fetch --quiet --depth=1 origin "$ARCHEBASE_CALIB_REF"
+          revision="$(git -C "$checkout_directory" rev-parse --verify 'FETCH_HEAD^{commit}')"
+          if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Cannot resolve $ARCHEBASE_CALIB_REPOSITORY#$ARCHEBASE_CALIB_REF" >&2
+            exit 1
+          fi
+          git -C "$checkout_directory" checkout --quiet --detach "$revision"
+          GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts" \
+            git -C "$checkout_directory" submodule update --init --recursive --depth=1
+          tar --exclude='.git' --exclude='*/.git' -C "$checkout_directory" -cf - . \
+            | tar -C "$context_directory" -xf -
+
+          calibration_image="${VOLCENGINE_CR_ENDPOINT}/${CALIBRATION_IMAGE_REPOSITORY}:${GITHUB_SHA}-${revision:0:12}"
+          metadata_file="${RUNNER_TEMP}/calibration-image-metadata.json"
+          docker buildx build \
+            --builder "${{ steps.buildkit.outputs.builder }}" \
+            --platform linux/amd64 \
+            --build-context "archebase_calib=$context_directory" \
+            --build-arg "ARCHEBASE_CALIB_REVISION=$revision" \
+            --build-arg "BUILD_JOBS=$CALIBRATION_BUILD_JOBS" \
+            --file jobs/calibration/Dockerfile \
+            --tag "$calibration_image" \
+            --metadata-file "$metadata_file" \
+            --push \
+            .
+
+          digest="$(jq -r '."containerimage.digest" // empty' "$metadata_file")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Calibration image build did not return a valid digest" >&2
+            exit 1
+          fi
+          image_ref="${VOLCENGINE_CR_ENDPOINT}/${CALIBRATION_IMAGE_REPOSITORY}@${digest}"
+          echo "image=$calibration_image" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "archebase_calib_revision=$revision" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Calibration image"
+            echo
+            echo "- Image: \`$calibration_image\`"
+            echo "- Immutable ref: \`$image_ref\`"
+            echo "- archebase_calib: \`$revision\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect pushed calibration image
+        if: steps.images.outputs.calibration == 'true'
+        run: docker buildx imagetools inspect "${{ steps.calibration_image.outputs.image }}"
 
       - name: Remove temporary Kubernetes BuildKit builder
         if: always() && steps.buildkit.outputs.created == 'true'

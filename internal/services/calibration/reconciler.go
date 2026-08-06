@@ -197,24 +197,19 @@ func (m *Manager) freezeCalibrationQueued(ctx context.Context, capturePK int64) 
 	if err := m.db.GetContext(ctx, &capture, captureSelect+` WHERE c.id = ?`, capturePK); err != nil {
 		return fmt.Errorf("load queued calibration capture: %w", err)
 	}
-	if err := decodeCaptureResult(&capture); err != nil || capture.StereoSplitExecution == nil || capture.StereoSplitResult == nil {
-		return m.failCapture(ctx, capturePK, StatusQueued, "verified stereo split output is missing or invalid")
-	}
-	splitExecution := *capture.StereoSplitExecution
-	splitOutput := *capture.StereoSplitResult
-	sourceSize, sourceETag, err := m.objects.StatObject(ctx, splitExecution.OutputBucket, splitOutput.MCAPObjectKey)
+	sourceSize, sourceETag, err := m.objects.StatObject(ctx, capture.Bucket, capture.ObjectKey)
 	if err != nil {
-		return m.deferCapture(ctx, capturePK, StatusQueued, fmt.Errorf("stat stereo split MCAP: %w", err))
+		return m.deferCapture(ctx, capturePK, StatusQueued, fmt.Errorf("stat calibration source MCAP: %w", err))
 	}
-	if sourceSize <= 0 || sourceSize != splitOutput.MCAPSizeBytes ||
-		strings.TrimSpace(sourceETag) == "" || strings.TrimSpace(sourceETag) != splitOutput.MCAPETag {
-		return m.failCapture(ctx, capturePK, StatusQueued, "stereo split MCAP identity changed before calibration")
+	if sourceSize <= 0 || sourceSize != capture.FileSizeBytes ||
+		strings.TrimSpace(sourceETag) == "" || strings.TrimSpace(sourceETag) != strings.TrimSpace(capture.ObjectETag) {
+		return m.failCapture(ctx, capturePK, StatusQueued, "calibration source MCAP identity changed after upload completion")
 	}
 
-	sourceURI := "tos://" + splitExecution.OutputBucket + "/" + splitOutput.MCAPObjectKey
+	sourceURI := "tos://" + capture.Bucket + "/" + capture.ObjectKey
 	resultPrefix := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
 	outputURI := "tos://" + capture.Bucket + "/" + resultPrefix + "/"
-	inputPath := "/bindings/input/" + path.Base(splitOutput.MCAPObjectKey)
+	inputPath := "/bindings/input/" + path.Base(capture.ObjectKey)
 	submissionID := "calibration-" + capture.CaptureID
 	backoffLimit := int32(0)
 	ttlSeconds := m.cfg.TTLSecondsAfterDone
@@ -228,10 +223,12 @@ func (m *Manager) freezeCalibrationQueued(ctx context.Context, capturePK int64) 
 			"--output", "/bindings/output/" + resultFileName,
 			"--calibration-session-id", capture.CalibrationSessionID,
 			"--capture-id", capture.CaptureID,
+			"--camera-serial", capture.CameraSerial,
 			"--expected-source-size", strconv.FormatInt(sourceSize, 10),
-			"--expected-source-checksum", strings.ToLower(splitOutput.MCAPChecksumSHA256),
+			"--expected-source-checksum", strings.ToLower(capture.ChecksumSHA256),
 			"--source-uri", sourceURI,
 			"--processor-image", image,
+			"--scratch", "/scratch",
 		},
 		DataBindings: []orbitapi.DataBinding{
 			{URI: sourceURI, Path: inputPath, Mode: "read"},
@@ -477,6 +474,7 @@ type calibrationResult struct {
 	AlgorithmVersion     string          `json:"algorithm_version"`
 	CalibrationSessionID string          `json:"calibration_session_id"`
 	CaptureID            string          `json:"capture_id"`
+	CameraSerial         string          `json:"camera_serial"`
 	ProcessorImage       string          `json:"processor_image"`
 	ErrorMessage         string          `json:"error_message"`
 	Result               json.RawMessage `json:"result"`
@@ -559,18 +557,14 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 	if err := m.db.GetContext(ctx, &capture, captureSelect+` WHERE c.id = ?`, capturePK); err != nil {
 		return fmt.Errorf("load verifying calibration capture: %w", err)
 	}
-	if err := decodeCaptureResult(&capture); err != nil || capture.StereoSplitExecution == nil || capture.StereoSplitResult == nil {
-		return m.failCapture(ctx, capturePK, StatusVerifying, "verified stereo split output is missing or invalid")
-	}
-	splitExecution := *capture.StereoSplitExecution
-	splitOutput := *capture.StereoSplitResult
-	sourceSize, sourceETag, err := m.objects.StatObject(ctx, splitExecution.OutputBucket, splitOutput.MCAPObjectKey)
+	sourceSize, sourceETag, err := m.objects.StatObject(ctx, capture.Bucket, capture.ObjectKey)
 	if err != nil {
-		return m.retryVerification(ctx, capture, fmt.Errorf("stat frozen stereo split MCAP: %w", err))
+		return m.retryVerification(ctx, capture, fmt.Errorf("stat frozen calibration source MCAP: %w", err))
 	}
-	if sourceSize != splitOutput.MCAPSizeBytes || strings.TrimSpace(sourceETag) != capture.SourceETag ||
-		strings.TrimSpace(sourceETag) != splitOutput.MCAPETag {
-		return m.failCapture(ctx, capturePK, StatusVerifying, "stereo split MCAP identity changed during calibration")
+	if sourceSize != capture.FileSizeBytes || strings.TrimSpace(sourceETag) == "" ||
+		strings.TrimSpace(sourceETag) != strings.TrimSpace(capture.SourceETag) ||
+		strings.TrimSpace(sourceETag) != strings.TrimSpace(capture.ObjectETag) {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration source MCAP identity changed during calibration")
 	}
 	resultKey := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID, resultFileName)
 	resultSize, _, err := m.objects.StatObject(ctx, capture.Bucket, resultKey)
@@ -596,16 +590,17 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 	if err := json.Unmarshal(data, &result); err != nil {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration result JSON is invalid")
 	}
-	sourceURI := "tos://" + splitExecution.OutputBucket + "/" + splitOutput.MCAPObjectKey
+	sourceURI := "tos://" + capture.Bucket + "/" + capture.ObjectKey
 	if result.SchemaVersion != 1 ||
 		(result.Status != StatusSucceeded && result.Status != StatusFailed) ||
 		strings.TrimSpace(result.AlgorithmVersion) == "" ||
 		result.CalibrationSessionID != capture.CalibrationSessionID ||
 		result.CaptureID != capture.CaptureID ||
+		result.CameraSerial != capture.CameraSerial ||
 		result.ProcessorImage != capture.ProcessorImage ||
 		result.Source.URI != sourceURI ||
-		result.Source.SizeBytes != splitOutput.MCAPSizeBytes ||
-		!strings.EqualFold(result.Source.SHA256, splitOutput.MCAPChecksumSHA256) {
+		result.Source.SizeBytes != capture.FileSizeBytes ||
+		!strings.EqualFold(result.Source.SHA256, capture.ChecksumSHA256) {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration result JSON does not match the frozen Capture")
 	}
 	if result.Status == StatusSucceeded && len(result.Result) == 0 {

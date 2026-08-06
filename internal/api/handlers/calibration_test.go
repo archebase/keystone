@@ -15,10 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"archebase.com/keystone-edge/internal/middleware"
-	"archebase.com/keystone-edge/internal/services"
-	"archebase.com/keystone-edge/internal/services/calibration"
 	"github.com/gin-gonic/gin"
+
+	"archebase.com/keystone-edge/internal/middleware"
+	"archebase.com/keystone-edge/internal/services/calibration"
+	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
 func TestCalibrationDeviceSessionStatusUsesAuthenticatedDevice(t *testing.T) {
@@ -26,6 +27,7 @@ func TestCalibrationDeviceSessionStatusUsesAuthenticatedDevice(t *testing.T) {
 	manager := &fakeCalibrationManager{
 		session: calibration.SessionStatus{
 			SessionID:           "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			CameraSerial:        "CAMERA-SN-001",
 			Status:              calibration.SessionSucceeded,
 			SuccessfulCaptureID: "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
 			CaptureCount:        4,
@@ -37,7 +39,7 @@ func TestCalibrationDeviceSessionStatusUsesAuthenticatedDevice(t *testing.T) {
 	handler := NewCalibrationHandler(manager)
 	router := gin.New()
 	api := router.Group("/api/v1", func(c *gin.Context) {
-		c.Set(middleware.DevicePrincipalKey, services.DevicePrincipal{RobotID: 101})
+		c.Set(middleware.DevicePrincipalKey, deviceauth.Principal{RobotID: 101})
 	})
 	handler.RegisterDeviceRoutes(api)
 
@@ -59,7 +61,8 @@ func TestCalibrationDeviceSessionStatusUsesAuthenticatedDevice(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["status"] != calibration.SessionSucceeded || body["capture_count"] != float64(4) {
+	if body["status"] != calibration.SessionSucceeded || body["capture_count"] != float64(4) ||
+		body["camera_serial"] != "CAMERA-SN-001" {
 		t.Fatalf("response = %v", body)
 	}
 	if manager.sessionRobotID != 101 {
@@ -77,7 +80,7 @@ func TestCalibrationDeviceSessionStatusRejectsNonRandomUUID(t *testing.T) {
 	handler := NewCalibrationHandler(&fakeCalibrationManager{})
 	router := gin.New()
 	api := router.Group("/api/v1", func(c *gin.Context) {
-		c.Set(middleware.DevicePrincipalKey, services.DevicePrincipal{RobotID: 101})
+		c.Set(middleware.DevicePrincipalKey, deviceauth.Principal{RobotID: 101})
 	})
 	handler.RegisterDeviceRoutes(api)
 
