@@ -126,6 +126,7 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 	if err != nil {
 		return nil, err
 	}
+	// Offline-capable devices retain their prebuilt pending-task pool.
 	preservePendingPool := usesEgoPortalPendingPool(workstation.DeviceType)
 
 	counts, err := loadTaskSupplyCounts(ctx, tx, plan.ID)
