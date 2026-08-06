@@ -273,12 +273,32 @@ _MIN_TIMESTAMP_REPAIR_SAMPLES = 30
 _MIN_HEADER_GAP_NS = 1_000_000
 _MAX_HEADER_GAP_NS = 1_000_000_000
 _MIN_STALL_GAP_NS = 250_000_000
+_TIMESTAMP_REPAIR_WINDOW_GAPS = 300
+_MIN_BURST_GAP_RATIO = 0.2
 
 
 def _percentile(values: list[int], fraction: float) -> int:
     ordered = sorted(values)
     index = round((len(ordered) - 1) * fraction)
     return ordered[index]
+
+
+def _contains_bursty_window(
+    gaps: list[int], burst_limit: int, stall_limit: int
+) -> bool:
+    window_size = min(len(gaps), _TIMESTAMP_REPAIR_WINDOW_GAPS)
+    burst_flags = [gap < burst_limit for gap in gaps]
+    stall_flags = [gap >= stall_limit for gap in gaps]
+    burst_count = sum(burst_flags[:window_size])
+    stall_count = sum(stall_flags[:window_size])
+    for start in range(len(gaps) - window_size + 1):
+        if burst_count / window_size >= _MIN_BURST_GAP_RATIO and stall_count > 0:
+            return True
+        if start + window_size == len(gaps):
+            break
+        burst_count += burst_flags[start + window_size] - burst_flags[start]
+        stall_count += stall_flags[start + window_size] - stall_flags[start]
+    return False
 
 
 def _timestamp_axis_issue(
@@ -296,9 +316,8 @@ def _timestamp_axis_issue(
         return "rate_mismatch"
 
     burst_limit = median_header_gap // 2
-    burst_ratio = sum(gap < burst_limit for gap in gaps) / len(gaps)
     stall_limit = max(_MIN_STALL_GAP_NS, median_header_gap * 8)
-    if burst_ratio >= 0.2 and max(gaps) >= stall_limit:
+    if _contains_bursty_window(gaps, burst_limit, stall_limit):
         return "bursty"
     return None
 
