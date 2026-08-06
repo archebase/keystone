@@ -131,7 +131,10 @@ on the `archebase-ci-runner` self-hosted runner and executes inside the
 configured deploy job container. Run it only after the matching Keystone image
 workflow has successfully pushed the selected Keystone commit SHA.
 The workflow enables Keystone sync for production by passing
-`keystone.syncEnabled=true` to the Helm release.
+`keystone.syncEnabled=true` to the Helm release. The chart connects Keystone to
+Hilbert through the in-cluster backend Service at
+`http://hilbert-be-backend:8080/hilbert-be-backend`; Keystone-to-Hilbert traffic
+does not leave the production cluster.
 
 Required repository or `production` environment secrets:
 
