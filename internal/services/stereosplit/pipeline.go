@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"strconv"
 	"strings"
@@ -19,8 +20,18 @@ import (
 	"archebase.com/keystone-edge/internal/storage/objectrange"
 )
 
+const (
+	bytesPerGiB                 int64 = 1 << 30
+	scratchSourceSizeMultiplier int64 = 3
+	scratchStorageReserveGiB    int64 = 1
+	scratchStorageMinRequestGiB int64 = 4
+	scratchStorageLimitGiB      int64 = 50
+)
+
 // ErrOutputNotSettled marks output reads that may succeed on a later poll.
 var ErrOutputNotSettled = errors.New("stereo split output is not settled")
+
+var errScratchStorageExceeded = errors.New("stereo split scratch storage limit exceeded")
 
 // ExecutionInput identifies one TOS MCAP and the durable Orbit execution namespace.
 type ExecutionInput struct {
@@ -123,6 +134,10 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 	if sourceETag == "" {
 		return ExecutionSnapshot{}, fmt.Errorf("%w: source ETag is missing", ErrSourceUnavailable)
 	}
+	scratchRequest, err := scratchStorageRequest(sourceSize)
+	if err != nil {
+		return ExecutionSnapshot{}, err
+	}
 	randomSuffix, err := randomOutputSuffix()
 	if err != nil {
 		return ExecutionSnapshot{}, fmt.Errorf("generate stereo split output prefix: %w", err)
@@ -170,6 +185,16 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 	backoffLimit := int32(0)
 	ttlSeconds := m.cfg.TTLSecondsAfterDone
 	deadline := m.cfg.ActiveDeadline
+	resourceRequests := cloneStringMap(m.cfg.Resources.Requests)
+	if resourceRequests == nil {
+		resourceRequests = make(map[string]string)
+	}
+	resourceLimits := cloneStringMap(m.cfg.Resources.Limits)
+	if resourceLimits == nil {
+		resourceLimits = make(map[string]string)
+	}
+	resourceRequests["ephemeral-storage"] = scratchRequest
+	resourceLimits["ephemeral-storage"] = fmt.Sprintf("%dGi", scratchStorageLimitGiB)
 	request := orbitapi.SubmitRequest{
 		SubmissionID: submissionID,
 		Image:        imageRef,
@@ -189,8 +214,8 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 			{URI: sourceURI, Path: inputPath, Mode: "read"},
 		},
 		Resources: orbitapi.Resources{
-			Requests: cloneStringMap(m.cfg.Resources.Requests),
-			Limits:   cloneStringMap(m.cfg.Resources.Limits),
+			Requests: resourceRequests,
+			Limits:   resourceLimits,
 		},
 		TTLSecondsAfterDone:  &ttlSeconds,
 		BackoffLimit:         &backoffLimit,
@@ -226,6 +251,36 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 		OutputPrefix:              outputPrefix,
 		Request:                   request,
 	}, nil
+}
+
+func scratchStorageRequest(sourceSizeBytes int64) (string, error) {
+	reserveBytes := scratchStorageReserveGiB * bytesPerGiB
+	if sourceSizeBytes > (math.MaxInt64-reserveBytes)/scratchSourceSizeMultiplier {
+		return "", fmt.Errorf(
+			"%w: %w: source size %d cannot be represented safely",
+			ErrSourceUnavailable,
+			errScratchStorageExceeded,
+			sourceSizeBytes,
+		)
+	}
+	requiredBytes := sourceSizeBytes*scratchSourceSizeMultiplier + reserveBytes
+	requiredGiB := requiredBytes / bytesPerGiB
+	if requiredBytes%bytesPerGiB != 0 {
+		requiredGiB++
+	}
+	if requiredGiB < scratchStorageMinRequestGiB {
+		requiredGiB = scratchStorageMinRequestGiB
+	}
+	if requiredGiB > scratchStorageLimitGiB {
+		return "", fmt.Errorf(
+			"%w: %w: stereo split source requires %dGi ephemeral storage, maximum is %dGi",
+			ErrSourceUnavailable,
+			errScratchStorageExceeded,
+			requiredGiB,
+			scratchStorageLimitGiB,
+		)
+	}
+	return fmt.Sprintf("%dGi", requiredGiB), nil
 }
 
 // VerifyExecution validates the frozen source, manifest and fixed output objects.

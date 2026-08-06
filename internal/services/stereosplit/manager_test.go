@@ -98,6 +98,100 @@ func TestManagerPreparesReusableStereoSplitExecution(t *testing.T) {
 	}
 }
 
+func TestManagerPreparesExecutionWithDynamicScratchStorage(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	const sourceSize = int64(10 * 1024 * 1024 * 1024)
+	manager := NewManager(db, nil, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
+
+	execution, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+		SourceBucket:    "source-bucket",
+		SourceObjectKey: "raw/source.mcap",
+		OutputScope:     "42/stereo-split",
+		SubmissionID:    "derivative-42-stereo-split-g1",
+		Generation:      1,
+	})
+	if err != nil {
+		t.Fatalf("PrepareExecution() error = %v", err)
+	}
+	if got := execution.Request.Resources.Requests["ephemeral-storage"]; got != "31Gi" {
+		t.Fatalf("ephemeral-storage request = %q, want 31Gi", got)
+	}
+	if got := execution.Request.Resources.Limits["ephemeral-storage"]; got != "50Gi" {
+		t.Fatalf("ephemeral-storage limit = %q, want 50Gi", got)
+	}
+	if execution.Request.Resources.Requests["cpu"] != "2" ||
+		execution.Request.Resources.Requests["memory"] != "4Gi" ||
+		execution.Request.Resources.Limits["cpu"] != "4" ||
+		execution.Request.Resources.Limits["memory"] != "8Gi" {
+		t.Fatalf("non-storage resources changed: %+v", execution.Request.Resources)
+	}
+}
+
+func TestManagerRoundsDynamicScratchStorageRequestsUpToGiB(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	objects := &fakeObjectStore{etag: "source-etag"}
+	manager := NewManager(db, nil, objects, testManagerConfig())
+	tests := []struct {
+		name       string
+		sourceSize int64
+		want       string
+	}{
+		{name: "minimum", sourceSize: 1, want: "4Gi"},
+		{name: "round up", sourceSize: 1024*1024*1024 + 1, want: "5Gi"},
+		{name: "near limit", sourceSize: 16 * 1024 * 1024 * 1024, want: "49Gi"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objects.size = tt.sourceSize
+			execution, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+				SourceBucket:    "source-bucket",
+				SourceObjectKey: "raw/source.mcap",
+				OutputScope:     "42/stereo-split",
+				SubmissionID:    "derivative-42-stereo-split-g1",
+				Generation:      1,
+			})
+			if err != nil {
+				t.Fatalf("PrepareExecution() error = %v", err)
+			}
+			if got := execution.Request.Resources.Requests["ephemeral-storage"]; got != tt.want {
+				t.Fatalf("ephemeral-storage request = %q, want %q", got, tt.want)
+			}
+			if got := execution.Request.Resources.Limits["ephemeral-storage"]; got != "50Gi" {
+				t.Fatalf("ephemeral-storage limit = %q, want 50Gi", got)
+			}
+		})
+	}
+}
+
+func TestManagerRejectsExecutionRequiringMoreThanFiftyGiBScratchStorage(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	const sourceSize = int64(17 * 1024 * 1024 * 1024)
+	manager := NewManager(db, nil, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
+
+	_, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+		SourceBucket:    "source-bucket",
+		SourceObjectKey: "raw/source.mcap",
+		OutputScope:     "42/stereo-split",
+		SubmissionID:    "derivative-42-stereo-split-g1",
+		Generation:      1,
+	})
+	if !errors.Is(err, ErrSourceUnavailable) {
+		t.Fatalf("PrepareExecution() error = %v, want ErrSourceUnavailable", err)
+	}
+	if !strings.Contains(err.Error(), "requires 52Gi ephemeral storage, maximum is 50Gi") {
+		t.Fatalf("PrepareExecution() error = %q", err)
+	}
+}
+
 func TestManagerPreparesExecutionWithFrozenCalibrationResult(t *testing.T) {
 	db := newTestDB(t)
 	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
@@ -840,6 +934,48 @@ func TestReconcileOnceHonorsGlobalOrbitCapacity(t *testing.T) {
 	}
 }
 
+func TestReconcileOnceRejectsOversizedScratchRequestWhileOrbitIsAtCapacity(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 18, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/one.mcap"}`, "")
+	insertTestEpisode(t, db, 19, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/two.mcap"}`, "")
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
+	fake.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
+		return orbitapi.SubmitResponse{JobID: "job-" + request.SubmissionID, SubmissionID: request.SubmissionID}, nil
+	}
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		"raw/one.mcap": {size: 100, etag: "source-one-etag"},
+		"raw/two.mcap": {size: 17 * 1024 * 1024 * 1024, etag: "source-two-etag"},
+	}}
+	manager := NewManager(db, fake, objects, testManagerConfig())
+	if _, _, err := manager.Start(context.Background(), 18, "admin"); err != nil {
+		t.Fatalf("Start(18) error = %v", err)
+	}
+	if _, _, err := manager.Start(context.Background(), 19, "admin"); err != nil {
+		t.Fatalf("Start(19) error = %v", err)
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("first ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	worked, err := manager.ReconcileOnce(context.Background())
+	if !worked || !errors.Is(err, ErrSourceUnavailable) {
+		t.Fatalf("capacity ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	derivative, getErr := manager.Get(context.Background(), 19)
+	if getErr != nil {
+		t.Fatalf("Get(19) error = %v", getErr)
+	}
+	if derivative.ProcessingStatus != ProcessingFailed ||
+		!strings.Contains(derivative.ProcessingError, "requires 52Gi ephemeral storage, maximum is 50Gi") {
+		t.Fatalf("oversized derivative at capacity = %+v", derivative)
+	}
+	if fake.submitCalls != 1 {
+		t.Fatalf("submit calls=%d want 1", fake.submitCalls)
+	}
+}
+
 func TestManagerConcurrencySettingTakesEffectWithoutRestart(t *testing.T) {
 	db := newTestDB(t)
 	insertTestEpisode(t, db, 81, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/one.mcap"}`, "")
@@ -969,13 +1105,18 @@ func TestReconcileOncePersistsCompleteSnapshotBeforeOrbitSubmit(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
 		t.Fatalf("insert image config: %v", err)
 	}
-	manager := NewManager(db, nil, &fakeObjectStore{size: 301234567, etag: "source-etag"}, testManagerConfig())
+	const sourceSize = int64(10 * 1024 * 1024 * 1024)
+	manager := NewManager(db, nil, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
 	if _, _, err := manager.Start(context.Background(), 3, "admin"); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
 	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
 	fake.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
+		if request.Resources.Requests["ephemeral-storage"] != "31Gi" ||
+			request.Resources.Limits["ephemeral-storage"] != "50Gi" {
+			t.Fatalf("Orbit scratch resources = %+v", request.Resources)
+		}
 		var frozen struct {
 			Status       string `db:"processing_status"`
 			OrbitRequest string `db:"orbit_request"`
@@ -1008,6 +1149,36 @@ func TestReconcileOncePersistsCompleteSnapshotBeforeOrbitSubmit(t *testing.T) {
 	}
 	if derivative.ProcessingStatus != ProcessingPending || derivative.OrbitJobID != "abs-job-derivative-3" || derivative.SourceURI != "tos://source-bucket/raw/source.mcap" {
 		t.Fatalf("derivative after submit = %+v", derivative)
+	}
+}
+
+func TestReconcileOnceFailsBeforeOrbitSubmissionWhenScratchLimitExceeded(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 31, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
+	const sourceSize = int64(17 * 1024 * 1024 * 1024)
+	manager := NewManager(db, fake, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
+	if _, _, err := manager.Start(context.Background(), 31, "admin"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if !worked || !errors.Is(err, ErrSourceUnavailable) {
+		t.Fatalf("ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	derivative, getErr := manager.Get(context.Background(), 31)
+	if getErr != nil {
+		t.Fatalf("Get() error = %v", getErr)
+	}
+	if derivative.ProcessingStatus != ProcessingFailed || derivative.OrbitDeleteStatus != DeleteNotRequired ||
+		!strings.Contains(derivative.ProcessingError, "requires 52Gi ephemeral storage, maximum is 50Gi") {
+		t.Fatalf("derivative after scratch rejection = %+v", derivative)
+	}
+	if fake.submitCalls != 0 {
+		t.Fatalf("Orbit submit calls = %d, want 0", fake.submitCalls)
 	}
 }
 

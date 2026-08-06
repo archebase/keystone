@@ -185,9 +185,18 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 			return true, err
 		}
 		if atCapacity {
+			if err := m.preflightQueuedScratchStorage(ctx, candidate); err != nil {
+				if errors.Is(err, errScratchStorageExceeded) {
+					return true, m.failBeforeSubmission(ctx, candidate.ID, err)
+				}
+				return true, err
+			}
 			return false, nil
 		}
 		if err := m.freezeQueued(ctx, candidate); err != nil {
+			if errors.Is(err, errScratchStorageExceeded) {
+				return true, m.failBeforeSubmission(ctx, candidate.ID, err)
+			}
 			return true, err
 		}
 		return true, m.reconcileSubmitting(ctx, candidate.ID)
@@ -215,6 +224,56 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 	default:
 		return true, fmt.Errorf("unsupported reconcile status %q", candidate.ProcessingStatus)
 	}
+}
+
+func (m *Manager) preflightQueuedScratchStorage(ctx context.Context, candidate frozenDerivativeRow) error {
+	if m.objects == nil {
+		return fmt.Errorf("preflight stereo split scratch storage: TOS object reader is not configured")
+	}
+	var episode episodeAdmissionRow
+	if err := m.db.GetContext(ctx, &episode, `
+		SELECT id, storage_backend, mcap_path, metadata, cloud_publish_source
+		FROM episodes WHERE id = ? AND deleted_at IS NULL
+	`, candidate.EpisodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrEpisodeNotFound
+		}
+		return fmt.Errorf("load stereo split source for scratch preflight: %w", err)
+	}
+	bucket, objectKey, err := normalizeEpisodeSource(episode)
+	if err != nil {
+		return err
+	}
+	sourceSize, _, err := m.objects.StatObject(ctx, bucket, objectKey)
+	if err != nil {
+		return fmt.Errorf("stat stereo split source for scratch preflight: %w", err)
+	}
+	if sourceSize <= 0 {
+		return fmt.Errorf("%w: source size %d is invalid", ErrSourceUnavailable, sourceSize)
+	}
+	_, err = scratchStorageRequest(sourceSize)
+	return err
+}
+
+func (m *Manager) failBeforeSubmission(ctx context.Context, derivativeID int64, cause error) error {
+	now := m.now().UTC()
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE episode_derivatives
+		SET processing_status = ?, processing_error = ?, processing_finished_at = ?,
+		    orbit_delete_status = ?, reconcile_after = NULL, updated_at = ?
+		WHERE id = ? AND processing_status = ? AND cancel_requested_at IS NULL
+	`, ProcessingFailed, cause.Error(), now, DeleteNotRequired, now, derivativeID, ProcessingQueued)
+	if err != nil {
+		return fmt.Errorf("persist stereo split pre-submission failure after %w: %w", cause, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read stereo split pre-submission failure result after %w: %w", cause, err)
+	}
+	if rows != 1 {
+		return nil
+	}
+	return cause
 }
 
 func (m *Manager) atOrbitCapacity(ctx context.Context) (bool, error) {
