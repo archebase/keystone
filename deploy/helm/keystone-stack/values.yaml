@@ -45,7 +45,9 @@ keystone:
   qaEnabled: true
 
   hilbert:
-    baseURL: https://hilbert.archebase.cn/hilbert-be-backend
+    # Keystone and Hilbert share archebase-system in production, so keep
+    # service-to-service traffic inside the cluster.
+    baseURL: http://hilbert-be-backend:8080/hilbert-be-backend
     timeoutSeconds: 5
 
   derivatives:
