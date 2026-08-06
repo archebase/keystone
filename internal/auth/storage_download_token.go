@@ -53,14 +53,14 @@ func SignStorageDownloadToken(bucket, object string, ttl time.Duration, cfg *con
 	return tok.SignedString([]byte(cfg.JWTSecret))
 }
 
-// ParseStorageDownloadToken validates token signature, expiry, kind, and bucket/object binding.
-func ParseStorageDownloadToken(tokenString string, cfg *config.AuthConfig, wantBucket, wantObject string) error {
+// ParseStorageDownloadTokenClaims validates a token and returns its bucket/object-bound claims.
+func ParseStorageDownloadTokenClaims(tokenString string, cfg *config.AuthConfig, wantBucket, wantObject string) (*StorageDownloadClaims, error) {
 	if cfg == nil || strings.TrimSpace(cfg.JWTSecret) == "" {
-		return ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 	tokenString = strings.TrimSpace(tokenString)
 	if tokenString == "" {
-		return ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	var claims StorageDownloadClaims
@@ -72,18 +72,24 @@ func ParseStorageDownloadToken(tokenString string, cfg *config.AuthConfig, wantB
 	})
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
-			return ErrExpiredToken
+			return nil, ErrExpiredToken
 		}
-		return ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 	if !token.Valid {
-		return ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
-	if claims.Kind != StorageDownloadTokenKind {
-		return ErrInvalidToken
+	if claims.Kind != StorageDownloadTokenKind || claims.ExpiresAt == nil {
+		return nil, ErrInvalidToken
 	}
 	if claims.Bucket != wantBucket || claims.Object != wantObject {
-		return ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
-	return nil
+	return &claims, nil
+}
+
+// ParseStorageDownloadToken validates token signature, expiry, kind, and bucket/object binding.
+func ParseStorageDownloadToken(tokenString string, cfg *config.AuthConfig, wantBucket, wantObject string) error {
+	_, err := ParseStorageDownloadTokenClaims(tokenString, cfg, wantBucket, wantObject)
+	return err
 }

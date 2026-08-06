@@ -17,19 +17,22 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"archebase.com/keystone-edge/internal/config"
-	"archebase.com/keystone-edge/internal/logger"
-	"archebase.com/keystone-edge/internal/volcengineauth"
+	vtos "github.com/volcengine/ve-tos-golang-sdk/v2/tos"
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
 	"github.com/volcengine/volcengine-go-sdk/volcengine"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/request"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/session"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/volcengineerr"
+
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/volcengineauth"
 )
 
 const (
@@ -149,6 +152,70 @@ func (r *episodeQATOSReader) OpenObject(ctx context.Context, bucket, objectName 
 		return nil, tosErrorFromResponse(resp)
 	}
 	return resp.Body, nil
+}
+
+func (r *episodeQATOSReader) presignGetObject(ctx context.Context, bucket, objectName string, ttl time.Duration) (string, error) {
+	downloadExpiresAt := time.Now().Add(ttl)
+	credentials, err := r.credentials(ctx, bucket, objectName)
+	if err != nil {
+		return "", err
+	}
+	ttl = time.Until(downloadExpiresAt)
+	if !credentials.expiration.IsZero() {
+		if credentialsTTL := time.Until(credentials.expiration); credentialsTTL < ttl {
+			ttl = credentialsTTL
+		}
+	}
+	if ttl <= 0 {
+		return "", fmt.Errorf("TOS presigned URL TTL must be positive")
+	}
+	expiresSeconds := int64(ttl / time.Second)
+	if expiresSeconds < 1 {
+		return "", fmt.Errorf("TOS credentials expire too soon to presign download")
+	}
+
+	sdkCredentials := vtos.NewStaticCredentials(credentials.accessKeyID, credentials.accessKeySecret)
+	sdkCredentials.WithSecurityToken(credentials.securityToken)
+	client, err := vtos.NewClientV2(
+		publicTOSEndpoint(r.endpoint, r.useSSL),
+		vtos.WithCredentials(sdkCredentials),
+		vtos.WithRegion(r.region),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create TOS presign client: %w", err)
+	}
+
+	output, err := client.PreSignedURL(&vtos.PreSignedURLInput{
+		HTTPMethod: http.MethodGet,
+		Bucket:     bucket,
+		Key:        objectName,
+		Expires:    expiresSeconds,
+		Query: map[string]string{
+			"response-content-disposition": "attachment; filename*=UTF-8''" + url.PathEscape(path.Base(objectName)),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("presign TOS object: %w", err)
+	}
+	return output.SignedUrl, nil
+}
+
+func publicTOSEndpoint(endpoint string, useSSL bool) string {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	const (
+		privateSuffix = ".ivolces.com"
+		publicSuffix  = ".volces.com"
+	)
+	if strings.HasSuffix(strings.ToLower(endpoint), privateSuffix) {
+		endpoint = endpoint[:len(endpoint)-len(privateSuffix)] + publicSuffix
+	}
+	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		return endpoint
+	}
+	if useSSL {
+		return "https://" + endpoint
+	}
+	return "http://" + endpoint
 }
 
 func (r *episodeQATOSReader) GetObjectWithMetadata(ctx context.Context, bucket, objectName string, byteRange *httpRange) (episodeQATOSObject, error) {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,16 +38,18 @@ func (fakeEpisodeQASTSClient) AssumeRoleWithContext(volcengine.Context, *sts.Ass
 			SetAccessKeyId("temp-ak").
 			SetSecretAccessKey("temp-sk").
 			SetSessionToken("temp-token").
-			SetExpiredTime("2026-07-15T08:00:00Z"),
+			SetExpiredTime(time.Now().Add(time.Hour).UTC().Format(time.RFC3339)),
 	), nil
 }
 
 func TestStorageHandlerProxiesTOSRangeResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	handler := NewStorageHandler(nil, nil, &config.StorageConfig{
+	authCfg := &config.AuthConfig{JWTSecret: "test-secret"}
+	handler := NewStorageHandler(nil, authCfg, &config.StorageConfig{
 		Type:       "tos",
 		Endpoint:   "tos-cn-beijing.volces.com",
+		Bucket:     "bucket-a",
 		Region:     "cn-beijing",
 		AccessKey:  "test-ak",
 		SecretKey:  "test-sk",
@@ -72,13 +75,21 @@ func TestStorageHandlerProxiesTOSRangeResponse(t *testing.T) {
 		return resp, nil
 	})}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/storage/object", nil)
+	token, err := auth.SignStorageDownloadToken("bucket-a", "device-uploads/capture.mcap", time.Minute, authCfg)
+	if err != nil {
+		t.Fatalf("sign download token: %v", err)
+	}
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/storage/object?bucket=bucket-a&object=device-uploads/capture.mcap&dl_token="+url.QueryEscape(token),
+		nil,
+	)
 	req.Header.Set("Range", "bytes=0-0")
 	w := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(w)
 	ctx.Request = req
 
-	handler.getTOSObject(ctx, "bucket-a", "device-uploads/capture.mcap", false)
+	handler.GetObject(ctx)
 
 	if w.Code != http.StatusPartialContent {
 		t.Fatalf("status = %d, want %d body=%s", w.Code, http.StatusPartialContent, w.Body.String())
@@ -94,13 +105,13 @@ func TestStorageHandlerProxiesTOSRangeResponse(t *testing.T) {
 	}
 }
 
-func TestStorageHandlerGetObjectAllowsTOSWithoutS3(t *testing.T) {
+func TestStorageHandlerRedirectsTOSDownloadToPresignedURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	authCfg := &config.AuthConfig{JWTSecret: "test-secret"}
 	handler := NewStorageHandler(nil, authCfg, &config.StorageConfig{
 		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.volces.com",
+		Endpoint:   "tos-cn-beijing.ivolces.com",
 		Bucket:     "tos-bucket",
 		Region:     "cn-beijing",
 		AccessKey:  "test-ak",
@@ -110,8 +121,8 @@ func TestStorageHandlerGetObjectAllowsTOSWithoutS3(t *testing.T) {
 	})
 	handler.tos.stsClient = fakeEpisodeQASTSClient{}
 	handler.tos.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if got := req.URL.Host; got != "tos-bucket.tos-cn-beijing.volces.com" {
-			t.Fatalf("host = %q, want tos-bucket.tos-cn-beijing.volces.com", got)
+		if got := req.URL.Host; got != "tos-bucket.tos-cn-beijing.ivolces.com" {
+			t.Fatalf("host = %q, want tos-bucket.tos-cn-beijing.ivolces.com", got)
 		}
 		return &http.Response{
 			StatusCode:    http.StatusOK,
@@ -136,11 +147,34 @@ func TestStorageHandlerGetObjectAllowsTOSWithoutS3(t *testing.T) {
 
 	handler.GetObject(ctx)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d body=%s", w.Code, http.StatusTemporaryRedirect, w.Body.String())
 	}
-	if got := w.Body.String(); got != "mcap" {
-		t.Fatalf("body = %q, want mcap", got)
+	location, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect location: %v", err)
+	}
+	if got := location.Scheme; got != "https" {
+		t.Fatalf("redirect scheme = %q, want https", got)
+	}
+	if got := location.Host; got != "tos-bucket.tos-cn-beijing.volces.com" {
+		t.Fatalf("redirect host = %q, want public TOS host", got)
+	}
+	if got := location.Path; got != "/device-uploads/capture.mcap" {
+		t.Fatalf("redirect path = %q, want object path", got)
+	}
+	query := location.Query()
+	for _, key := range []string{"X-Tos-Algorithm", "X-Tos-Credential", "X-Tos-Date", "X-Tos-Expires", "X-Tos-Security-Token", "X-Tos-Signature"} {
+		if query.Get(key) == "" {
+			t.Fatalf("redirect query missing %s: %s", key, location.String())
+		}
+	}
+	expires, err := strconv.Atoi(query.Get("X-Tos-Expires"))
+	if err != nil || expires < 1 || expires > 60 {
+		t.Fatalf("X-Tos-Expires = %q, want 1..60 seconds", query.Get("X-Tos-Expires"))
+	}
+	if got := query.Get("response-content-disposition"); !strings.HasPrefix(got, "attachment;") {
+		t.Fatalf("response-content-disposition = %q, want attachment", got)
 	}
 }
 
