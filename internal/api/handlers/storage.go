@@ -64,30 +64,31 @@ func (h *StorageHandler) requireBearerToken(c *gin.Context) bool {
 
 // authorizeGetObject allows either a valid Bearer JWT (e.g. Range reads from the SPA worker)
 // or a short-lived dl_token query parameter (e.g. <a download> navigation without custom headers).
-func (h *StorageHandler) authorizeGetObject(c *gin.Context, bucket, objectName string) (usedDownloadToken bool, ok bool) {
+func (h *StorageHandler) authorizeGetObject(c *gin.Context, bucket, objectName string) (usedDownloadToken bool, downloadTTL time.Duration, ok bool) {
 	if h.authCfg == nil {
 		logger.Printf("[S3] auth config is nil; refusing request")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "auth is not configured"})
-		return false, false
+		return false, 0, false
 	}
 
 	dl := strings.TrimSpace(c.Query("dl_token"))
 	if dl != "" {
-		if err := auth.ParseStorageDownloadToken(dl, h.authCfg, bucket, objectName); err != nil {
+		claims, err := auth.ParseStorageDownloadTokenClaims(dl, h.authCfg, bucket, objectName)
+		if err != nil {
 			if err == auth.ErrExpiredToken {
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "download token has expired"})
-				return false, false
+				return false, 0, false
 			}
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid download token"})
-			return false, false
+			return false, 0, false
 		}
-		return true, true
+		return true, time.Until(claims.ExpiresAt.Time), true
 	}
 
 	if !h.requireBearerToken(c) {
-		return false, false
+		return false, 0, false
 	}
-	return false, true
+	return false, 0, true
 }
 
 // RegisterRoutes registers storage-related routes on the given router group.
@@ -237,12 +238,24 @@ func (h *StorageHandler) GetObject(c *gin.Context) {
 		return
 	}
 
-	usedDownloadToken, authed := h.authorizeGetObject(c, bucket, objectName)
+	usedDownloadToken, downloadTTL, authed := h.authorizeGetObject(c, bucket, objectName)
 	if !authed {
 		return
 	}
 
 	if h.usesTOSBucket(bucket) {
+		// Browser downloads arrive without a Range header and can go directly to TOS.
+		// Keep ranged reads on the same-origin proxy so MCAP preview does not require TOS CORS.
+		if usedDownloadToken && strings.TrimSpace(c.GetHeader("Range")) == "" {
+			directURL, err := h.tos.presignGetObject(c.Request.Context(), bucket, objectName, downloadTTL)
+			if err != nil {
+				logger.Printf("[STORAGE] TOS direct download presign failed: bucket=%s, object=%s, err=%v", bucket, objectName, err)
+				c.JSON(http.StatusBadGateway, gin.H{"error": "failed to presign object download"})
+				return
+			}
+			c.Redirect(http.StatusTemporaryRedirect, directURL)
+			return
+		}
 		h.getTOSObject(c, bucket, objectName, usedDownloadToken)
 		return
 	}
