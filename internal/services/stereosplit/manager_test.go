@@ -98,6 +98,227 @@ func TestManagerPreparesReusableStereoSplitExecution(t *testing.T) {
 	}
 }
 
+func TestManagerPreparesExecutionWithDynamicScratchStorage(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	const sourceSize = int64(10 * 1024 * 1024 * 1024)
+	manager := NewManager(db, nil, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
+
+	execution, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+		SourceBucket:    "source-bucket",
+		SourceObjectKey: "raw/source.mcap",
+		OutputScope:     "42/stereo-split",
+		SubmissionID:    "derivative-42-stereo-split-g1",
+		Generation:      1,
+	})
+	if err != nil {
+		t.Fatalf("PrepareExecution() error = %v", err)
+	}
+	if got := execution.Request.Resources.Requests["ephemeral-storage"]; got != "31Gi" {
+		t.Fatalf("ephemeral-storage request = %q, want 31Gi", got)
+	}
+	if got := execution.Request.Resources.Limits["ephemeral-storage"]; got != "100Gi" {
+		t.Fatalf("ephemeral-storage limit = %q, want 100Gi", got)
+	}
+	if execution.Request.Resources.Requests["cpu"] != "2" ||
+		execution.Request.Resources.Requests["memory"] != "4Gi" ||
+		execution.Request.Resources.Limits["cpu"] != "4" ||
+		execution.Request.Resources.Limits["memory"] != "8Gi" {
+		t.Fatalf("non-storage resources changed: %+v", execution.Request.Resources)
+	}
+}
+
+func TestManagerRoundsDynamicScratchStorageRequestsUpToGiB(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	objects := &fakeObjectStore{etag: "source-etag"}
+	manager := NewManager(db, nil, objects, testManagerConfig())
+	tests := []struct {
+		name       string
+		sourceSize int64
+		want       string
+	}{
+		{name: "minimum", sourceSize: 1, want: "4Gi"},
+		{name: "round up", sourceSize: 1024*1024*1024 + 1, want: "5Gi"},
+		{name: "at limit", sourceSize: 33 * 1024 * 1024 * 1024, want: "100Gi"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objects.size = tt.sourceSize
+			execution, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+				SourceBucket:    "source-bucket",
+				SourceObjectKey: "raw/source.mcap",
+				OutputScope:     "42/stereo-split",
+				SubmissionID:    "derivative-42-stereo-split-g1",
+				Generation:      1,
+			})
+			if err != nil {
+				t.Fatalf("PrepareExecution() error = %v", err)
+			}
+			if got := execution.Request.Resources.Requests["ephemeral-storage"]; got != tt.want {
+				t.Fatalf("ephemeral-storage request = %q, want %q", got, tt.want)
+			}
+			if got := execution.Request.Resources.Limits["ephemeral-storage"]; got != "100Gi" {
+				t.Fatalf("ephemeral-storage limit = %q, want 100Gi", got)
+			}
+		})
+	}
+}
+
+func TestManagerRejectsExecutionRequiringMoreThanOneHundredGiBScratchStorage(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	const sourceSize = int64(34 * 1024 * 1024 * 1024)
+	manager := NewManager(db, nil, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
+
+	_, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+		SourceBucket:    "source-bucket",
+		SourceObjectKey: "raw/source.mcap",
+		OutputScope:     "42/stereo-split",
+		SubmissionID:    "derivative-42-stereo-split-g1",
+		Generation:      1,
+	})
+	if !errors.Is(err, ErrSourceUnavailable) {
+		t.Fatalf("PrepareExecution() error = %v, want ErrSourceUnavailable", err)
+	}
+	if !strings.Contains(err.Error(), "requires 103Gi ephemeral storage, maximum is 100Gi") {
+		t.Fatalf("PrepareExecution() error = %q", err)
+	}
+}
+
+func TestManagerPreparesExecutionWithFrozenCalibrationResult(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		"raw/source.mcap":                 {size: 1024, etag: "source-etag"},
+		"calibration-results/result.json": {size: 512, etag: "calibration-etag"},
+	}}
+	manager := NewManager(db, nil, objects, testManagerConfig())
+
+	execution, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+		SourceBucket:    "source-bucket",
+		SourceObjectKey: "raw/source.mcap",
+		SourceChecksum:  strings.Repeat("1", 64),
+		OutputScope:     "42/stereo-split",
+		SubmissionID:    "derivative-42-stereo-split-g1",
+		Generation:      1,
+		Calibration: &CalibrationInput{
+			CameraSerial:    "CAMERA-SN-001",
+			SessionID:       "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			CaptureID:       "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			ResultBucket:    "source-bucket",
+			ResultObjectKey: "calibration-results/result.json",
+			ResultSHA256:    strings.Repeat("a", 64),
+		},
+	})
+	if err != nil {
+		t.Fatalf("PrepareExecution() error = %v", err)
+	}
+	if execution.Calibration == nil || execution.Calibration.ResultSizeBytes != 512 ||
+		execution.Calibration.ResultETag != "calibration-etag" {
+		t.Fatalf("PrepareExecution() calibration = %+v", execution.Calibration)
+	}
+	if len(execution.Request.DataBindings) != 3 {
+		t.Fatalf("DataBindings = %+v", execution.Request.DataBindings)
+	}
+	binding := execution.Request.DataBindings[1]
+	if binding.URI != "tos://source-bucket/calibration-results/result.json" ||
+		binding.Path != "/bindings/calibration/result.json" || binding.Mode != "read" {
+		t.Fatalf("calibration binding = %+v", binding)
+	}
+	joinedArgs := strings.Join(execution.Request.Args, " ")
+	for _, expected := range []string{
+		"--calibration-result /bindings/calibration/result.json",
+		"--calibration-camera-serial CAMERA-SN-001",
+		"--calibration-session-id 7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+		"--calibration-capture-id 92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"--expected-calibration-size 512",
+		"--expected-calibration-checksum " + strings.Repeat("a", 64),
+	} {
+		if !strings.Contains(joinedArgs, expected) {
+			t.Fatalf("request args %q do not contain %q", joinedArgs, expected)
+		}
+	}
+}
+
+func TestManagerFreezesEpisodeCalibrationIntoDerivativeExecution(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 42, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	for _, statement := range []string{
+		`UPDATE episodes SET camera_serial = 'CAMERA-SN-001',
+			calibration_capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011',
+			calibration_result_sha256 = '` + strings.Repeat("a", 64) + `'
+			WHERE id = 42`,
+		`INSERT INTO calibration_sessions (
+			session_id, camera_serial, status, successful_capture_id
+		) VALUES (
+			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 'CAMERA-SN-001', 'succeeded',
+			'92cd6f2f-d131-4bf0-9b4a-d96258d09011'
+		)`,
+		`INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, status, bucket, result_object_key,
+			result_size_bytes, result_checksum_sha256
+		) VALUES (
+			'92cd6f2f-d131-4bf0-9b4a-d96258d09011',
+			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 'succeeded', 'source-bucket',
+			'calibration-results/result.json', 512, '` + strings.Repeat("a", 64) + `'
+		)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed episode calibration: %v\n%s", err, statement)
+		}
+	}
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		"raw/source.mcap":                 {size: 1024, etag: "source-etag"},
+		"calibration-results/result.json": {size: 512, etag: "calibration-etag"},
+	}}
+	orbit := &fakeOrbit{getErr: orbitapi.ErrNotFound}
+	orbit.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
+		return orbitapi.SubmitResponse{JobID: "job-42", SubmissionID: request.SubmissionID}, nil
+	}
+	manager := NewManager(db, orbit, objects, testManagerConfig())
+	if _, _, err := manager.Start(context.Background(), 42, "admin"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil || !worked {
+		t.Fatalf("ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	var frozen struct {
+		CameraSerial string `db:"calibration_camera_serial"`
+		CaptureID    string `db:"calibration_capture_id"`
+		ResultURI    string `db:"calibration_result_uri"`
+		ResultSHA256 string `db:"calibration_result_sha256"`
+		Request      string `db:"orbit_request"`
+	}
+	if err := db.Get(&frozen, `
+		SELECT calibration_camera_serial, calibration_capture_id,
+			calibration_result_uri, calibration_result_sha256, orbit_request
+		FROM episode_derivatives WHERE episode_id = 42
+	`); err != nil {
+		t.Fatalf("load frozen calibration execution: %v", err)
+	}
+	if frozen.CameraSerial != "CAMERA-SN-001" ||
+		frozen.CaptureID != "92cd6f2f-d131-4bf0-9b4a-d96258d09011" ||
+		frozen.ResultURI != "tos://source-bucket/calibration-results/result.json" ||
+		frozen.ResultSHA256 != strings.Repeat("a", 64) ||
+		!strings.Contains(frozen.Request, "/bindings/calibration/result.json") {
+		t.Fatalf("frozen calibration execution = %+v", frozen)
+	}
+}
+
 func TestManagerVerifiesReusableStereoSplitExecution(t *testing.T) {
 	db := newTestDB(t)
 	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
@@ -152,6 +373,36 @@ func TestManagerVerifyExecutionRejectsEmptyFrozenSourceETag(t *testing.T) {
 
 	_, err := manager.VerifyExecution(context.Background(), ExecutionSnapshot{})
 	if err == nil || !strings.Contains(err.Error(), "source ETag is empty") {
+		t.Fatalf("VerifyExecution() error = %v", err)
+	}
+}
+
+func TestManagerVerifyExecutionRejectsChangedFrozenCalibrationResult(t *testing.T) {
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		"raw/source.mcap":                 {size: 1024, etag: "source-etag"},
+		"calibration-results/result.json": {size: 513, etag: "changed-calibration-etag"},
+	}}
+	manager := NewManager(newTestDB(t), nil, objects, testManagerConfig())
+
+	_, err := manager.VerifyExecution(context.Background(), ExecutionSnapshot{
+		Generation:      1,
+		ProcessorImage:  testImageDigest,
+		SourceURI:       "tos://source-bucket/raw/source.mcap",
+		SourceETag:      "source-etag",
+		SourceSizeBytes: 1024,
+		Calibration: &CalibrationSnapshot{
+			CameraSerial:    "CAMERA-SN-001",
+			SessionID:       "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			CaptureID:       "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			ResultURI:       "tos://source-bucket/calibration-results/result.json",
+			ResultETag:      "calibration-etag",
+			ResultSizeBytes: 512,
+			ResultSHA256:    strings.Repeat("a", 64),
+		},
+		OutputBucket: "output-bucket",
+		OutputPrefix: "derived/calibration-change",
+	})
+	if err == nil || !strings.Contains(err.Error(), "calibration result identity changed") {
 		t.Fatalf("VerifyExecution() error = %v", err)
 	}
 }
@@ -683,6 +934,48 @@ func TestReconcileOnceHonorsGlobalOrbitCapacity(t *testing.T) {
 	}
 }
 
+func TestReconcileOnceRejectsOversizedScratchRequestWhileOrbitIsAtCapacity(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 18, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/one.mcap"}`, "")
+	insertTestEpisode(t, db, 19, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/two.mcap"}`, "")
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
+	fake.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
+		return orbitapi.SubmitResponse{JobID: "job-" + request.SubmissionID, SubmissionID: request.SubmissionID}, nil
+	}
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		"raw/one.mcap": {size: 100, etag: "source-one-etag"},
+		"raw/two.mcap": {size: 34 * 1024 * 1024 * 1024, etag: "source-two-etag"},
+	}}
+	manager := NewManager(db, fake, objects, testManagerConfig())
+	if _, _, err := manager.Start(context.Background(), 18, "admin"); err != nil {
+		t.Fatalf("Start(18) error = %v", err)
+	}
+	if _, _, err := manager.Start(context.Background(), 19, "admin"); err != nil {
+		t.Fatalf("Start(19) error = %v", err)
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("first ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	worked, err := manager.ReconcileOnce(context.Background())
+	if !worked || !errors.Is(err, ErrSourceUnavailable) {
+		t.Fatalf("capacity ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	derivative, getErr := manager.Get(context.Background(), 19)
+	if getErr != nil {
+		t.Fatalf("Get(19) error = %v", getErr)
+	}
+	if derivative.ProcessingStatus != ProcessingFailed ||
+		!strings.Contains(derivative.ProcessingError, "requires 103Gi ephemeral storage, maximum is 100Gi") {
+		t.Fatalf("oversized derivative at capacity = %+v", derivative)
+	}
+	if fake.submitCalls != 1 {
+		t.Fatalf("submit calls=%d want 1", fake.submitCalls)
+	}
+}
+
 func TestManagerConcurrencySettingTakesEffectWithoutRestart(t *testing.T) {
 	db := newTestDB(t)
 	insertTestEpisode(t, db, 81, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/one.mcap"}`, "")
@@ -812,13 +1105,18 @@ func TestReconcileOncePersistsCompleteSnapshotBeforeOrbitSubmit(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
 		t.Fatalf("insert image config: %v", err)
 	}
-	manager := NewManager(db, nil, &fakeObjectStore{size: 301234567, etag: "source-etag"}, testManagerConfig())
+	const sourceSize = int64(10 * 1024 * 1024 * 1024)
+	manager := NewManager(db, nil, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
 	if _, _, err := manager.Start(context.Background(), 3, "admin"); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
 	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
 	fake.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
+		if request.Resources.Requests["ephemeral-storage"] != "31Gi" ||
+			request.Resources.Limits["ephemeral-storage"] != "100Gi" {
+			t.Fatalf("Orbit scratch resources = %+v", request.Resources)
+		}
 		var frozen struct {
 			Status       string `db:"processing_status"`
 			OrbitRequest string `db:"orbit_request"`
@@ -851,6 +1149,36 @@ func TestReconcileOncePersistsCompleteSnapshotBeforeOrbitSubmit(t *testing.T) {
 	}
 	if derivative.ProcessingStatus != ProcessingPending || derivative.OrbitJobID != "abs-job-derivative-3" || derivative.SourceURI != "tos://source-bucket/raw/source.mcap" {
 		t.Fatalf("derivative after submit = %+v", derivative)
+	}
+}
+
+func TestReconcileOnceFailsBeforeOrbitSubmissionWhenScratchLimitExceeded(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 31, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
+	const sourceSize = int64(34 * 1024 * 1024 * 1024)
+	manager := NewManager(db, fake, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
+	if _, _, err := manager.Start(context.Background(), 31, "admin"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if !worked || !errors.Is(err, ErrSourceUnavailable) {
+		t.Fatalf("ReconcileOnce() worked=%v error=%v", worked, err)
+	}
+	derivative, getErr := manager.Get(context.Background(), 31)
+	if getErr != nil {
+		t.Fatalf("Get() error = %v", getErr)
+	}
+	if derivative.ProcessingStatus != ProcessingFailed || derivative.OrbitDeleteStatus != DeleteNotRequired ||
+		!strings.Contains(derivative.ProcessingError, "requires 103Gi ephemeral storage, maximum is 100Gi") {
+		t.Fatalf("derivative after scratch rejection = %+v", derivative)
+	}
+	if fake.submitCalls != 0 {
+		t.Fatalf("Orbit submit calls = %d, want 0", fake.submitCalls)
 	}
 }
 
@@ -1101,6 +1429,74 @@ func TestVerifySucceededRejectsChangedSourceETagAtSameSize(t *testing.T) {
 	}
 }
 
+func TestVerifySucceededRestoresFrozenCalibrationSnapshot(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 34, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	manager := NewManager(db, nil, nil, testManagerConfig())
+	derivative, _, err := manager.Start(context.Background(), 34, "admin")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	const outputPrefix = "derived/calibration-v3"
+	manifest := `{
+		"schema_version":3,
+		"status":"succeeded",
+		"kind":"stereo_split",
+		"output_format":"stereo_h264",
+		"generation":1,
+		"processor_image":"` + testImageDigest + `",
+		"source":{"uri":"tos://source-bucket/raw/source.mcap","size_bytes":1024,"sha256":""},
+		"calibration":{
+			"attachment_name":"archebase/calibration/result.json",
+			"media_type":"application/json",
+			"camera_serial":"CAMERA-SN-001",
+			"session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			"capture_id":"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			"size_bytes":512,
+			"sha256":"` + strings.Repeat("a", 64) + `"
+		},
+		"outputs":{
+			"mcap":{"name":"output_bag.mcap","size_bytes":32,"sha256":"` + strings.Repeat("b", 64) + `"},
+			"metadata":{"name":"metadata.yaml","size_bytes":16,"sha256":"` + strings.Repeat("c", 64) + `"}
+		},
+		"started_at":"2026-08-02T10:00:00Z",
+		"finished_at":"2026-08-02T10:00:01Z"
+	}`
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		"raw/source.mcap":                          {size: 1024, etag: "source-etag"},
+		"calibration-results/result.json":          {size: 512, etag: "calibration-etag"},
+		outputPrefix + "/processing_manifest.json": {size: int64(len(manifest)), etag: "manifest-etag", body: manifest},
+		outputPrefix + "/output_bag.mcap":          {size: 32, etag: "mcap-etag", body: strings.Repeat("m", 32)},
+		outputPrefix + "/metadata.yaml":            {size: 16, etag: "metadata-etag", body: strings.Repeat("y", 16)},
+	}}
+	manager.objects = objects
+	if _, err := db.Exec(`
+		UPDATE episode_derivatives SET processing_status = ?, processor_image = ?,
+			source_uri = 'tos://source-bucket/raw/source.mcap', source_etag = 'source-etag',
+			source_size_bytes = 1024, output_prefix = ?,
+			calibration_camera_serial = 'CAMERA-SN-001',
+			calibration_session_id = '7f9af590-75c2-47ad-b6e0-76ebf05c44f7',
+			calibration_capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011',
+			calibration_result_uri = 'tos://source-bucket/calibration-results/result.json',
+			calibration_result_etag = 'calibration-etag', calibration_result_size_bytes = 512,
+			calibration_result_sha256 = ?
+		WHERE id = ?
+	`, ProcessingVerifying, testImageDigest, outputPrefix, strings.Repeat("a", 64), derivative.ID); err != nil {
+		t.Fatalf("prepare verifying derivative: %v", err)
+	}
+
+	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	derivative, err = manager.Get(context.Background(), 34)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if derivative.ProcessingStatus != ProcessingSucceeded || derivative.QAStatus != QAPending {
+		t.Fatalf("verified derivative = %+v", derivative)
+	}
+}
+
 func TestVerifySucceededLimitsTransientManifestRetries(t *testing.T) {
 	db := newTestDB(t)
 	insertTestEpisode(t, db, 31, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
@@ -1235,12 +1631,285 @@ func TestReconcileQAApprovesStereoH264ManifestV2(t *testing.T) {
 	}
 }
 
+func TestReconcileQAApprovesMatchingCalibrationAttachment(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 35, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	calibrationJSON := []byte(`{"schema_version":1,"status":"succeeded","camera_serial":"CAMERA-SN-001","calibration_session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7","capture_id":"92cd6f2f-d131-4bf0-9b4a-d96258d09011","result":{"calibration":{"fx":100}}}`)
+	calibrationDigest := sha256.Sum256(calibrationJSON)
+	outputMCAP, outputChecksum := makeStereoSplitH264QAOutputWithAttachments(t, 10, 10, 100, &mcap.Attachment{
+		Name:      calibrationAttachment,
+		MediaType: calibrationMediaType,
+		DataSize:  uint64(len(calibrationJSON)),
+		Data:      bytes.NewReader(calibrationJSON),
+	})
+	outputKey := "derived/qa-calibration/output_bag.mcap"
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		outputKey: {size: int64(len(outputMCAP)), etag: "mcap-etag", body: string(outputMCAP)},
+	}}
+	manager := NewManager(db, nil, objects, testManagerConfig())
+	derivative, _, err := manager.Start(context.Background(), 35, "admin")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	manifest := processingManifest{
+		SchemaVersion: manifestSchemaV3,
+		OutputFormat:  stereoH264OutputFormat,
+		Calibration: &manifestCalibration{
+			AttachmentName: calibrationAttachment,
+			MediaType:      calibrationMediaType,
+			CameraSerial:   "CAMERA-SN-001",
+			SessionID:      "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			CaptureID:      "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			SizeBytes:      int64(len(calibrationJSON)),
+			SHA256:         hex.EncodeToString(calibrationDigest[:]),
+		},
+		Stats: manifestStats{
+			InputMessages: 10,
+			DecodedImages: 10,
+			LeftVideos:    10,
+			RightVideos:   10,
+			IMUMessages:   100,
+		},
+	}
+	processingResult, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("encode processing manifest: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE episode_derivatives SET processing_status = ?, qa_status = ?, mcap_path = ?,
+			checksum = ?, processing_result = ?, orbit_delete_status = ?,
+			calibration_camera_serial = ?, calibration_session_id = ?, calibration_capture_id = ?,
+			calibration_result_uri = ?, calibration_result_etag = ?,
+			calibration_result_size_bytes = ?, calibration_result_sha256 = ?
+		WHERE id = ?
+	`, ProcessingSucceeded, QAPending, outputKey, outputChecksum, string(processingResult), DeletePending,
+		manifest.Calibration.CameraSerial, manifest.Calibration.SessionID, manifest.Calibration.CaptureID,
+		"tos://source-bucket/calibration-results/result.json", "calibration-etag",
+		manifest.Calibration.SizeBytes, manifest.Calibration.SHA256, derivative.ID); err != nil {
+		t.Fatalf("prepare calibration QA derivative: %v", err)
+	}
+
+	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	derivative, err = manager.Get(context.Background(), 35)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if derivative.QAStatus != QAApproved || derivative.QAError != "" {
+		t.Fatalf("calibration QA derivative = %+v", derivative)
+	}
+}
+
+func TestReconcileQARejectsInvalidCalibrationAttachments(t *testing.T) {
+	validJSON := []byte(`{"schema_version":1,"status":"succeeded","camera_serial":"CAMERA-SN-001","calibration_session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7","capture_id":"92cd6f2f-d131-4bf0-9b4a-d96258d09011","result":{"calibration":{"fx":100}}}`)
+	wrongIdentityJSON := []byte(`{"schema_version":1,"status":"succeeded","camera_serial":"OTHER-CAMERA","calibration_session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7","capture_id":"92cd6f2f-d131-4bf0-9b4a-d96258d09011","result":{"calibration":{"fx":100}}}`)
+	calibrationFor := func(data []byte) *manifestCalibration {
+		digest := sha256.Sum256(data)
+		return &manifestCalibration{
+			AttachmentName: calibrationAttachment,
+			MediaType:      calibrationMediaType,
+			CameraSerial:   "CAMERA-SN-001",
+			SessionID:      "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			CaptureID:      "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			SizeBytes:      int64(len(data)),
+			SHA256:         hex.EncodeToString(digest[:]),
+		}
+	}
+	attachmentFor := func(data []byte) *mcap.Attachment {
+		return &mcap.Attachment{
+			Name:      calibrationAttachment,
+			MediaType: calibrationMediaType,
+			DataSize:  uint64(len(data)),
+			Data:      bytes.NewReader(data),
+		}
+	}
+	tests := []struct {
+		name        string
+		calibration *manifestCalibration
+		attachments func() []*mcap.Attachment
+		wantError   string
+	}{
+		{
+			name:        "missing",
+			calibration: calibrationFor(validJSON),
+			attachments: func() []*mcap.Attachment { return nil },
+			wantError:   "attachment count",
+		},
+		{
+			name:        "duplicate",
+			calibration: calibrationFor(validJSON),
+			attachments: func() []*mcap.Attachment {
+				return []*mcap.Attachment{attachmentFor(validJSON), attachmentFor(validJSON)}
+			},
+			wantError: "attachment count",
+		},
+		{
+			name: "wrong checksum",
+			calibration: func() *manifestCalibration {
+				value := calibrationFor(validJSON)
+				value.SHA256 = strings.Repeat("a", 64)
+				return value
+			}(),
+			attachments: func() []*mcap.Attachment { return []*mcap.Attachment{attachmentFor(validJSON)} },
+			wantError:   "SHA-256",
+		},
+		{
+			name:        "wrong JSON identity",
+			calibration: calibrationFor(wrongIdentityJSON),
+			attachments: func() []*mcap.Attachment { return []*mcap.Attachment{attachmentFor(wrongIdentityJSON)} },
+			wantError:   "identity",
+		},
+		{
+			name:        "unexpected without calibration",
+			calibration: nil,
+			attachments: func() []*mcap.Attachment { return []*mcap.Attachment{attachmentFor(validJSON)} },
+			wantError:   "unexpected calibration attachment",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newTestDB(t)
+			insertTestEpisode(t, db, 36, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+			outputMCAP, outputChecksum := makeStereoSplitH264QAOutputWithAttachments(
+				t, 10, 10, 100, tt.attachments()...,
+			)
+			outputKey := "derived/qa-invalid-calibration/output_bag.mcap"
+			objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+				outputKey: {size: int64(len(outputMCAP)), etag: "mcap-etag", body: string(outputMCAP)},
+			}}
+			manager := NewManager(db, nil, objects, testManagerConfig())
+			derivative, _, err := manager.Start(context.Background(), 36, "admin")
+			if err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			manifest := processingManifest{
+				SchemaVersion: manifestSchemaV2,
+				OutputFormat:  stereoH264OutputFormat,
+				Calibration:   tt.calibration,
+				Stats: manifestStats{
+					InputMessages: 10,
+					DecodedImages: 10,
+					LeftVideos:    10,
+					RightVideos:   10,
+					IMUMessages:   100,
+				},
+			}
+			if tt.calibration != nil {
+				manifest.SchemaVersion = manifestSchemaV3
+			}
+			processingResult, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatalf("encode processing manifest: %v", err)
+			}
+			if _, err := db.Exec(`
+				UPDATE episode_derivatives SET processing_status = ?, qa_status = ?, mcap_path = ?,
+					checksum = ?, processing_result = ?, orbit_delete_status = ?
+				WHERE id = ?
+			`, ProcessingSucceeded, QAPending, outputKey, outputChecksum,
+				string(processingResult), DeletePending, derivative.ID); err != nil {
+				t.Fatalf("prepare calibration QA derivative: %v", err)
+			}
+			if tt.calibration != nil {
+				if _, err := db.Exec(`
+					UPDATE episode_derivatives SET calibration_camera_serial = ?,
+						calibration_session_id = ?, calibration_capture_id = ?,
+						calibration_result_uri = ?, calibration_result_etag = ?,
+						calibration_result_size_bytes = ?, calibration_result_sha256 = ?
+					WHERE id = ?
+				`, tt.calibration.CameraSerial, tt.calibration.SessionID, tt.calibration.CaptureID,
+					"tos://source-bucket/calibration-results/result.json", "calibration-etag",
+					tt.calibration.SizeBytes, tt.calibration.SHA256, derivative.ID); err != nil {
+					t.Fatalf("freeze calibration QA identity: %v", err)
+				}
+			}
+
+			if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+				t.Fatalf("ReconcileOnce() error = %v", err)
+			}
+			derivative, err = manager.Get(context.Background(), 36)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if derivative.QAStatus != QAFailed || !strings.Contains(derivative.QAError, tt.wantError) {
+				t.Fatalf("invalid calibration QA derivative = %+v", derivative)
+			}
+		})
+	}
+}
+
+func TestReconcileQARejectsCalibrationManifestDifferentFromFrozenSnapshot(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 37, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	calibrationJSON := []byte(`{"schema_version":1,"status":"succeeded","camera_serial":"CAMERA-SN-001","calibration_session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7","capture_id":"92cd6f2f-d131-4bf0-9b4a-d96258d09011","result":{"calibration":{"fx":100}}}`)
+	calibrationDigest := sha256.Sum256(calibrationJSON)
+	outputMCAP, outputChecksum := makeStereoSplitH264QAOutputWithAttachments(t, 10, 10, 100, &mcap.Attachment{
+		Name:      calibrationAttachment,
+		MediaType: calibrationMediaType,
+		DataSize:  uint64(len(calibrationJSON)),
+		Data:      bytes.NewReader(calibrationJSON),
+	})
+	outputKey := "derived/qa-frozen-calibration/output_bag.mcap"
+	manager := NewManager(db, nil, &fakeObjectStore{objects: map[string]fakeStoredObject{
+		outputKey: {size: int64(len(outputMCAP)), etag: "mcap-etag", body: string(outputMCAP)},
+	}}, testManagerConfig())
+	derivative, _, err := manager.Start(context.Background(), 37, "admin")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	manifest := processingManifest{
+		SchemaVersion: manifestSchemaV3,
+		OutputFormat:  stereoH264OutputFormat,
+		Calibration: &manifestCalibration{
+			AttachmentName: calibrationAttachment,
+			MediaType:      calibrationMediaType,
+			CameraSerial:   "CAMERA-SN-001",
+			SessionID:      "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			CaptureID:      "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			SizeBytes:      int64(len(calibrationJSON)),
+			SHA256:         hex.EncodeToString(calibrationDigest[:]),
+		},
+		Stats: manifestStats{
+			InputMessages: 10, DecodedImages: 10, LeftVideos: 10, RightVideos: 10, IMUMessages: 100,
+		},
+	}
+	processingResult, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("encode processing manifest: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE episode_derivatives SET processing_status = ?, qa_status = ?, mcap_path = ?,
+			checksum = ?, processing_result = ?, orbit_delete_status = ?,
+			calibration_camera_serial = 'OTHER-CAMERA', calibration_session_id = ?,
+			calibration_capture_id = ?, calibration_result_uri = ?, calibration_result_etag = ?,
+			calibration_result_size_bytes = ?, calibration_result_sha256 = ?
+		WHERE id = ?
+	`, ProcessingSucceeded, QAPending, outputKey, outputChecksum, string(processingResult), DeletePending,
+		manifest.Calibration.SessionID, manifest.Calibration.CaptureID,
+		"tos://source-bucket/calibration-results/result.json", "calibration-etag",
+		manifest.Calibration.SizeBytes, manifest.Calibration.SHA256, derivative.ID); err != nil {
+		t.Fatalf("prepare calibration QA derivative: %v", err)
+	}
+
+	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	derivative, err = manager.Get(context.Background(), 37)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if derivative.QAStatus != QAFailed || !strings.Contains(derivative.QAError, "frozen") {
+		t.Fatalf("frozen calibration mismatch derivative = %+v", derivative)
+	}
+}
+
 func TestValidateManifestSnapshotSupportsStereoSplitV1AndV2(t *testing.T) {
-	row := verificationRow{
-		Generation:     1,
-		ProcessorImage: testImageDigest,
-		SourceURI:      "tos://source-bucket/raw/source.mcap",
-		SourceSize:     123,
+	execution := ExecutionSnapshot{
+		Generation:      1,
+		ProcessorImage:  testImageDigest,
+		SourceURI:       "tos://source-bucket/raw/source.mcap",
+		SourceSizeBytes: 123,
 	}
 	decode := func(payload string) processingManifest {
 		t.Helper()
@@ -1268,15 +1937,70 @@ func TestValidateManifestSnapshotSupportsStereoSplitV1AndV2(t *testing.T) {
 		"v2": `{"schema_version":2,"output_format":"stereo_h264",` + common + `}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := validateManifestSnapshot(decode(payload), row); err != nil {
+			if err := validateManifestSnapshot(decode(payload), execution); err != nil {
 				t.Fatalf("validateManifestSnapshot() error = %v", err)
 			}
 		})
 	}
 
 	invalid := decode(`{"schema_version":2,"output_format":"",` + common + `}`)
-	if err := validateManifestSnapshot(invalid, row); err == nil || !strings.Contains(err.Error(), "output format") {
+	if err := validateManifestSnapshot(invalid, execution); err == nil || !strings.Contains(err.Error(), "output format") {
 		t.Fatalf("validateManifestSnapshot() invalid format error = %v", err)
+	}
+}
+
+func TestValidateManifestSnapshotRequiresV3CalibrationToMatchFrozenExecution(t *testing.T) {
+	execution := ExecutionSnapshot{
+		Generation:      1,
+		ProcessorImage:  testImageDigest,
+		SourceURI:       "tos://source-bucket/raw/source.mcap",
+		SourceSizeBytes: 123,
+		Calibration: &CalibrationSnapshot{
+			CameraSerial:    "CAMERA-SN-001",
+			SessionID:       "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			CaptureID:       "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			ResultURI:       "tos://source-bucket/calibration-results/result.json",
+			ResultETag:      "calibration-etag",
+			ResultSizeBytes: 512,
+			ResultSHA256:    strings.Repeat("a", 64),
+		},
+	}
+	manifestJSON := `{
+		"schema_version":3,
+		"status":"succeeded",
+		"kind":"stereo_split",
+		"output_format":"stereo_h264",
+		"generation":1,
+		"processor_image":"` + testImageDigest + `",
+		"source":{"uri":"tos://source-bucket/raw/source.mcap","size_bytes":123,"sha256":""},
+		"calibration":{
+			"attachment_name":"archebase/calibration/result.json",
+			"media_type":"application/json",
+			"camera_serial":"CAMERA-SN-001",
+			"session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+			"capture_id":"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+			"size_bytes":512,
+			"sha256":"` + strings.Repeat("a", 64) + `"
+		},
+		"outputs":{
+			"mcap":{"name":"output_bag.mcap","size_bytes":10,"sha256":"` + strings.Repeat("b", 64) + `"},
+			"metadata":{"name":"metadata.yaml","size_bytes":10,"sha256":"` + strings.Repeat("c", 64) + `"}
+		},
+		"started_at":"2026-08-02T10:00:00Z",
+		"finished_at":"2026-08-02T10:00:01Z"
+	}`
+	var manifest processingManifest
+	if err := json.Unmarshal([]byte(manifestJSON), &manifest); err != nil {
+		t.Fatalf("decode manifest fixture: %v", err)
+	}
+
+	if err := validateManifestSnapshot(manifest, execution); err != nil {
+		t.Fatalf("validateManifestSnapshot() error = %v", err)
+	}
+
+	manifest.Calibration.CameraSerial = "camera-sn-001"
+	if err := validateManifestSnapshot(manifest, execution); err == nil || !strings.Contains(err.Error(), "calibration") {
+		t.Fatalf("validateManifestSnapshot() mismatch error = %v", err)
 	}
 }
 
@@ -1308,6 +2032,25 @@ func makeStereoSplitH264QAOutput(t *testing.T, leftCount, rightCount, imuCount i
 	)
 }
 
+func makeStereoSplitH264QAOutputWithAttachments(
+	t *testing.T,
+	leftCount, rightCount, imuCount int,
+	attachments ...*mcap.Attachment,
+) ([]byte, string) {
+	return makeStereoSplitQAOutputForContract(
+		t,
+		compressedVideoSchema,
+		"protobuf",
+		leftVideoTopic,
+		rightVideoTopic,
+		"protobuf",
+		leftCount,
+		rightCount,
+		imuCount,
+		attachments...,
+	)
+}
+
 func makeStereoSplitQAOutputForContract(
 	t *testing.T,
 	stereoSchema string,
@@ -1318,6 +2061,7 @@ func makeStereoSplitQAOutputForContract(
 	leftCount int,
 	rightCount int,
 	imuCount int,
+	attachments ...*mcap.Attachment,
 ) ([]byte, string) {
 	t.Helper()
 	var output bytes.Buffer
@@ -1361,6 +2105,11 @@ func makeStereoSplitQAOutputForContract(
 	writeMessages(1, leftCount, uint64(time.Second))
 	writeMessages(2, rightCount, uint64(time.Second))
 	writeMessages(3, imuCount, uint64(time.Second))
+	for _, attachment := range attachments {
+		if err := writer.WriteAttachment(attachment); err != nil {
+			t.Fatalf("write MCAP attachment: %v", err)
+		}
+	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close MCAP writer: %v", err)
 	}
@@ -1494,6 +2243,9 @@ func newTestDB(t *testing.T) *sqlx.DB {
 			file_size_bytes INTEGER,
 			duration_sec REAL,
 			metadata TEXT,
+			camera_serial TEXT,
+			calibration_capture_id TEXT,
+			calibration_result_sha256 TEXT,
 			qa_status TEXT NOT NULL DEFAULT 'pending_qa',
 			cloud_synced BOOLEAN NOT NULL DEFAULT 0,
 			cloud_synced_at TIMESTAMP NULL,
@@ -1523,6 +2275,13 @@ func newTestDB(t *testing.T) *sqlx.DB {
 			source_etag TEXT,
 			source_checksum TEXT,
 			source_size_bytes INTEGER,
+			calibration_camera_serial TEXT,
+			calibration_session_id TEXT,
+			calibration_capture_id TEXT,
+			calibration_result_uri TEXT,
+			calibration_result_etag TEXT,
+			calibration_result_size_bytes INTEGER,
+			calibration_result_sha256 TEXT,
 			processing_status TEXT NOT NULL DEFAULT 'queued',
 			cancel_requested_at TIMESTAMP NULL,
 			reconcile_after TIMESTAMP NULL,
@@ -1567,6 +2326,23 @@ func newTestDB(t *testing.T) *sqlx.DB {
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE (episode_id, kind),
 			UNIQUE (orbit_submission_id)
+		)`,
+		`CREATE TABLE calibration_sessions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL UNIQUE,
+			camera_serial TEXT NOT NULL,
+			status TEXT NOT NULL,
+			successful_capture_id TEXT
+		)`,
+		`CREATE TABLE calibration_captures (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			capture_id TEXT NOT NULL UNIQUE,
+			calibration_session_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			bucket TEXT NOT NULL,
+			result_object_key TEXT,
+			result_size_bytes INTEGER,
+			result_checksum_sha256 TEXT
 		)`,
 		`CREATE TABLE stereo_split_image_configs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

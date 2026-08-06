@@ -45,7 +45,20 @@ func parseUploadIntent(hints map[string]string) (uploadIntent, error) {
 
 	switch kind {
 	case uploadKindTaskEpisode:
-		return uploadIntent{Kind: kind, CaptureID: strings.TrimSpace(hints["capture_id"])}, nil
+		cameraSerial := ""
+		if strings.TrimSpace(hints["camera_serial"]) != "" {
+			var err error
+			cameraSerial, err = normalizeCameraSerial(hints["camera_serial"])
+			if err != nil {
+				return uploadIntent{}, err
+			}
+		}
+		hints["camera_serial"] = cameraSerial
+		return uploadIntent{
+			Kind:         kind,
+			CameraSerial: cameraSerial,
+			CaptureID:    strings.TrimSpace(hints["capture_id"]),
+		}, nil
 	case uploadKindCalibrationCapture:
 		cameraSerial, err := normalizeCameraSerial(hints["camera_serial"])
 		if err != nil {

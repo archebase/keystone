@@ -7,11 +7,11 @@ package stereosplit
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"strconv"
 	"strings"
@@ -20,8 +20,18 @@ import (
 	"archebase.com/keystone-edge/internal/storage/objectrange"
 )
 
+const (
+	bytesPerGiB                 int64 = 1 << 30
+	scratchSourceSizeMultiplier int64 = 3
+	scratchStorageReserveGiB    int64 = 1
+	scratchStorageMinRequestGiB int64 = 4
+	scratchStorageLimitGiB      int64 = 100
+)
+
 // ErrOutputNotSettled marks output reads that may succeed on a later poll.
 var ErrOutputNotSettled = errors.New("stereo split output is not settled")
+
+var errScratchStorageExceeded = errors.New("stereo split scratch storage limit exceeded")
 
 // ExecutionInput identifies one TOS MCAP and the durable Orbit execution namespace.
 type ExecutionInput struct {
@@ -31,6 +41,28 @@ type ExecutionInput struct {
 	OutputScope     string
 	SubmissionID    string
 	Generation      int
+	Calibration     *CalibrationInput
+}
+
+// CalibrationInput identifies one immutable successful calibration result.
+type CalibrationInput struct {
+	CameraSerial    string
+	SessionID       string
+	CaptureID       string
+	ResultBucket    string
+	ResultObjectKey string
+	ResultSHA256    string
+}
+
+// CalibrationSnapshot freezes one result object into a reusable Orbit request.
+type CalibrationSnapshot struct {
+	CameraSerial    string `json:"camera_serial"`
+	SessionID       string `json:"session_id"`
+	CaptureID       string `json:"capture_id"`
+	ResultURI       string `json:"result_uri"`
+	ResultETag      string `json:"result_etag"`
+	ResultSizeBytes int64  `json:"result_size_bytes"`
+	ResultSHA256    string `json:"result_sha256"`
 }
 
 // ExecutionSnapshot freezes one reusable stereo-split Orbit execution.
@@ -42,6 +74,7 @@ type ExecutionSnapshot struct {
 	SourceETag                string                 `json:"source_etag"`
 	SourceChecksum            string                 `json:"source_checksum,omitempty"`
 	SourceSizeBytes           int64                  `json:"source_size_bytes"`
+	Calibration               *CalibrationSnapshot   `json:"calibration,omitempty"`
 	OutputBucket              string                 `json:"output_bucket"`
 	OutputPrefix              string                 `json:"output_prefix"`
 	Request                   orbitapi.SubmitRequest `json:"request"`
@@ -101,6 +134,10 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 	if sourceETag == "" {
 		return ExecutionSnapshot{}, fmt.Errorf("%w: source ETag is missing", ErrSourceUnavailable)
 	}
+	scratchRequest, err := scratchStorageRequest(sourceSize)
+	if err != nil {
+		return ExecutionSnapshot{}, err
+	}
 	randomSuffix, err := randomOutputSuffix()
 	if err != nil {
 		return ExecutionSnapshot{}, fmt.Errorf("generate stereo split output prefix: %w", err)
@@ -114,9 +151,50 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 	outputURI := "tos://" + strings.TrimSpace(m.cfg.OutputBucket) + "/" + outputPrefix + "/"
 	inputPath := "/bindings/input/" + path.Base(objectKey)
 	checksum := normalizedSHA256(input.SourceChecksum)
+	var calibration *CalibrationSnapshot
+	if input.Calibration != nil {
+		cameraSerial := strings.TrimSpace(input.Calibration.CameraSerial)
+		sessionID := strings.TrimSpace(input.Calibration.SessionID)
+		captureID := strings.TrimSpace(input.Calibration.CaptureID)
+		resultBucket := strings.TrimSpace(input.Calibration.ResultBucket)
+		resultKey := strings.Trim(strings.TrimSpace(input.Calibration.ResultObjectKey), "/")
+		resultChecksum := normalizedSHA256(input.Calibration.ResultSHA256)
+		if cameraSerial == "" || sessionID == "" || captureID == "" || resultBucket == "" ||
+			resultKey == "" || resultChecksum == "" || path.Clean(resultKey) != resultKey ||
+			strings.HasPrefix(resultKey, "../") {
+			return ExecutionSnapshot{}, fmt.Errorf("invalid calibration result identity")
+		}
+		resultSize, resultETag, err := m.objects.StatObject(ctx, resultBucket, resultKey)
+		if err != nil {
+			return ExecutionSnapshot{}, fmt.Errorf("stat calibration result: %w", err)
+		}
+		resultETag = strings.TrimSpace(resultETag)
+		if resultSize <= 0 || resultETag == "" {
+			return ExecutionSnapshot{}, fmt.Errorf("calibration result identity is incomplete")
+		}
+		calibration = &CalibrationSnapshot{
+			CameraSerial:    cameraSerial,
+			SessionID:       sessionID,
+			CaptureID:       captureID,
+			ResultURI:       "tos://" + resultBucket + "/" + resultKey,
+			ResultETag:      resultETag,
+			ResultSizeBytes: resultSize,
+			ResultSHA256:    resultChecksum,
+		}
+	}
 	backoffLimit := int32(0)
 	ttlSeconds := m.cfg.TTLSecondsAfterDone
 	deadline := m.cfg.ActiveDeadline
+	resourceRequests := cloneStringMap(m.cfg.Resources.Requests)
+	if resourceRequests == nil {
+		resourceRequests = make(map[string]string)
+	}
+	resourceLimits := cloneStringMap(m.cfg.Resources.Limits)
+	if resourceLimits == nil {
+		resourceLimits = make(map[string]string)
+	}
+	resourceRequests["ephemeral-storage"] = scratchRequest
+	resourceLimits["ephemeral-storage"] = fmt.Sprintf("%dGi", scratchStorageLimitGiB)
 	request := orbitapi.SubmitRequest{
 		SubmissionID: submissionID,
 		Image:        imageRef,
@@ -134,16 +212,32 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 		},
 		DataBindings: []orbitapi.DataBinding{
 			{URI: sourceURI, Path: inputPath, Mode: "read"},
-			{URI: outputURI, Path: "/bindings/output/", Mode: "write"},
 		},
 		Resources: orbitapi.Resources{
-			Requests: cloneStringMap(m.cfg.Resources.Requests),
-			Limits:   cloneStringMap(m.cfg.Resources.Limits),
+			Requests: resourceRequests,
+			Limits:   resourceLimits,
 		},
 		TTLSecondsAfterDone:  &ttlSeconds,
 		BackoffLimit:         &backoffLimit,
 		ActiveDeadlineSecond: &deadline,
 	}
+	if calibration != nil {
+		const calibrationPath = "/bindings/calibration/result.json"
+		request.Args = append(request.Args,
+			"--calibration-result", calibrationPath,
+			"--calibration-camera-serial", calibration.CameraSerial,
+			"--calibration-session-id", calibration.SessionID,
+			"--calibration-capture-id", calibration.CaptureID,
+			"--expected-calibration-size", strconv.FormatInt(calibration.ResultSizeBytes, 10),
+			"--expected-calibration-checksum", calibration.ResultSHA256,
+		)
+		request.DataBindings = append(request.DataBindings, orbitapi.DataBinding{
+			URI: calibration.ResultURI, Path: calibrationPath, Mode: "read",
+		})
+	}
+	request.DataBindings = append(request.DataBindings, orbitapi.DataBinding{
+		URI: outputURI, Path: "/bindings/output/", Mode: "write",
+	})
 	return ExecutionSnapshot{
 		Generation:                input.Generation,
 		ProcessorConfigRevisionID: currentImage.ID,
@@ -152,10 +246,41 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 		SourceETag:                sourceETag,
 		SourceChecksum:            checksum,
 		SourceSizeBytes:           sourceSize,
+		Calibration:               calibration,
 		OutputBucket:              strings.TrimSpace(m.cfg.OutputBucket),
 		OutputPrefix:              outputPrefix,
 		Request:                   request,
 	}, nil
+}
+
+func scratchStorageRequest(sourceSizeBytes int64) (string, error) {
+	reserveBytes := scratchStorageReserveGiB * bytesPerGiB
+	if sourceSizeBytes > (math.MaxInt64-reserveBytes)/scratchSourceSizeMultiplier {
+		return "", fmt.Errorf(
+			"%w: %w: source size %d cannot be represented safely",
+			ErrSourceUnavailable,
+			errScratchStorageExceeded,
+			sourceSizeBytes,
+		)
+	}
+	requiredBytes := sourceSizeBytes*scratchSourceSizeMultiplier + reserveBytes
+	requiredGiB := requiredBytes / bytesPerGiB
+	if requiredBytes%bytesPerGiB != 0 {
+		requiredGiB++
+	}
+	if requiredGiB < scratchStorageMinRequestGiB {
+		requiredGiB = scratchStorageMinRequestGiB
+	}
+	if requiredGiB > scratchStorageLimitGiB {
+		return "", fmt.Errorf(
+			"%w: %w: stereo split source requires %dGi ephemeral storage, maximum is %dGi",
+			ErrSourceUnavailable,
+			errScratchStorageExceeded,
+			requiredGiB,
+			scratchStorageLimitGiB,
+		)
+	}
+	return fmt.Sprintf("%dGi", requiredGiB), nil
 }
 
 // VerifyExecution validates the frozen source, manifest and fixed output objects.
@@ -178,6 +303,9 @@ func (m *Manager) VerifyExecution(ctx context.Context, execution ExecutionSnapsh
 		objectrange.NormalizeETag(sourceETag) != objectrange.NormalizeETag(execution.SourceETag) {
 		return VerifiedOutput{}, fmt.Errorf("source object identity changed after execution snapshot was frozen")
 	}
+	if err := m.verifyFrozenCalibrationResult(ctx, execution.Calibration); err != nil {
+		return VerifiedOutput{}, err
+	}
 
 	manifestKey := path.Join(execution.OutputPrefix, manifestName)
 	body, err := m.objects.OpenObject(ctx, execution.OutputBucket, manifestKey)
@@ -196,14 +324,7 @@ func (m *Manager) VerifyExecution(ctx context.Context, execution ExecutionSnapsh
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return VerifiedOutput{}, fmt.Errorf("decode processing manifest: %w", err)
 	}
-	if err := validateManifestSnapshot(manifest, verificationRow{
-		Generation:     execution.Generation,
-		ProcessorImage: execution.ProcessorImage,
-		SourceURI:      execution.SourceURI,
-		SourceETag:     execution.SourceETag,
-		SourceChecksum: nullableString(execution.SourceChecksum),
-		SourceSize:     execution.SourceSizeBytes,
-	}); err != nil {
+	if err := validateManifestSnapshot(manifest, execution); err != nil {
 		return VerifiedOutput{}, err
 	}
 	mcapKey := path.Join(execution.OutputPrefix, outputMcapName)
@@ -229,6 +350,31 @@ func (m *Manager) VerifyExecution(ctx context.Context, execution ExecutionSnapsh
 		ManifestJSON:          string(manifestBytes),
 		ProcessingDurationSec: duration,
 	}, nil
+}
+
+func (m *Manager) verifyFrozenCalibrationResult(ctx context.Context, calibration *CalibrationSnapshot) error {
+	if calibration == nil {
+		return nil
+	}
+	if strings.TrimSpace(calibration.CameraSerial) == "" || strings.TrimSpace(calibration.SessionID) == "" ||
+		strings.TrimSpace(calibration.CaptureID) == "" || calibration.ResultSizeBytes <= 0 ||
+		objectrange.NormalizeETag(calibration.ResultETag) == "" ||
+		normalizedSHA256(calibration.ResultSHA256) == "" {
+		return fmt.Errorf("frozen calibration result identity is incomplete")
+	}
+	bucket, objectKey, err := parseFrozenTOSURI(calibration.ResultURI)
+	if err != nil {
+		return fmt.Errorf("invalid frozen calibration result URI: %w", err)
+	}
+	size, etag, err := m.objects.StatObject(ctx, bucket, objectKey)
+	if err != nil {
+		return fmt.Errorf("%w: stat frozen calibration result: %w", ErrOutputNotSettled, err)
+	}
+	if size != calibration.ResultSizeBytes ||
+		objectrange.NormalizeETag(etag) != objectrange.NormalizeETag(calibration.ResultETag) {
+		return fmt.Errorf("calibration result identity changed after execution snapshot was frozen")
+	}
+	return nil
 }
 
 func (m *Manager) verifyExecutionOutputObject(
@@ -266,9 +412,4 @@ func (m *Manager) verifyExecutionOutputObject(
 		}
 	}
 	return strings.TrimSpace(etag), nil
-}
-
-func nullableString(value string) sql.NullString {
-	value = strings.TrimSpace(value)
-	return sql.NullString{String: value, Valid: value != ""}
 }

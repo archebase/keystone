@@ -63,6 +63,35 @@ func TestParseTaskUploadIntentDoesNotRequireCameraSerial(t *testing.T) {
 	}
 }
 
+func TestParseTaskUploadIntentNormalizesOptionalCameraSerial(t *testing.T) {
+	hints := map[string]string{
+		"upload_kind":   "task_episode",
+		"capture_id":    "capture-1",
+		"camera_serial": "  " + testCameraSerial + "  ",
+	}
+
+	intent, err := parseUploadIntent(hints)
+	if err != nil {
+		t.Fatalf("parseUploadIntent() error = %v", err)
+	}
+	if intent.CameraSerial != testCameraSerial || hints["camera_serial"] != testCameraSerial {
+		t.Fatalf("camera_serial intent=%q hint=%q", intent.CameraSerial, hints["camera_serial"])
+	}
+}
+
+func TestParseTaskUploadIntentRejectsInvalidOptionalCameraSerial(t *testing.T) {
+	hints := map[string]string{
+		"upload_kind":   "task_episode",
+		"capture_id":    "capture-1",
+		"camera_serial": "CAMERA\n001",
+	}
+
+	_, err := parseUploadIntent(hints)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("parseUploadIntent() error = %v, want InvalidArgument", err)
+	}
+}
+
 func TestParseCalibrationUploadIntentRequiresCanonicalUUIDv4(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -855,7 +855,12 @@ class StereoSplitH264Converter:
         self.typestore = get_typestore(Stores.ROS2_JAZZY)
         self.msg = self.typestore.types
 
-    def convert(self, input_path: str | Path, output_path: str | Path) -> ConvertStats:
+    def convert(
+        self,
+        input_path: str | Path,
+        output_path: str | Path,
+        calibration_attachment: bytes | None = None,
+    ) -> ConvertStats:
         config = self.config
         stats = ConvertStats()
         video_output_topics = {config.left_topic, config.right_topic}
@@ -1095,6 +1100,14 @@ class StereoSplitH264Converter:
                 if video_metadata:
                     raise RuntimeError("H.264 encoder did not return every submitted frame")
                 ordered_writer.flush_all()
+                if calibration_attachment is not None:
+                    writer.add_attachment(
+                        create_time=0,
+                        log_time=0,
+                        name="archebase/calibration/result.json",
+                        media_type="application/json",
+                        data=calibration_attachment,
+                    )
                 writer.finish()
             except BaseException:
                 if decoder is not None:

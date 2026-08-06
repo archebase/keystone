@@ -31,7 +31,10 @@ const (
 	maxVerificationAttempts = 5
 	manifestSchemaV1        = 1
 	manifestSchemaV2        = 2
+	manifestSchemaV3        = 3
 	stereoH264OutputFormat  = "stereo_h264"
+	calibrationAttachment   = "archebase/calibration/result.json"
+	calibrationMediaType    = "application/json"
 
 	leftImageTopic  = "/decxin/left_rgb/compressed"
 	rightImageTopic = "/decxin/right_rgb/compressed"
@@ -47,12 +50,26 @@ const (
 var mcapMagic = []byte{0x89, 'M', 'C', 'A', 'P', '0', '\r', '\n'}
 
 type reconcileEpisodeRow struct {
-	ID                 int64          `db:"id"`
-	StorageBackend     string         `db:"storage_backend"`
-	McapPath           string         `db:"mcap_path"`
-	Checksum           sql.NullString `db:"checksum"`
-	Metadata           sql.NullString `db:"metadata"`
-	CloudPublishSource sql.NullString `db:"cloud_publish_source"`
+	ID                      int64          `db:"id"`
+	StorageBackend          string         `db:"storage_backend"`
+	McapPath                string         `db:"mcap_path"`
+	Checksum                sql.NullString `db:"checksum"`
+	Metadata                sql.NullString `db:"metadata"`
+	CloudPublishSource      sql.NullString `db:"cloud_publish_source"`
+	CameraSerial            sql.NullString `db:"camera_serial"`
+	CalibrationCaptureID    sql.NullString `db:"calibration_capture_id"`
+	CalibrationResultSHA256 sql.NullString `db:"calibration_result_sha256"`
+}
+
+type calibrationResultRow struct {
+	SessionID    string `db:"calibration_session_id"`
+	CameraSerial string `db:"camera_serial"`
+	CaptureID    string `db:"capture_id"`
+	Status       string `db:"status"`
+	Bucket       string `db:"bucket"`
+	ResultKey    string `db:"result_object_key"`
+	ResultSize   int64  `db:"result_size_bytes"`
+	ResultSHA256 string `db:"result_checksum_sha256"`
 }
 
 type frozenDerivativeRow struct {
@@ -168,9 +185,18 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 			return true, err
 		}
 		if atCapacity {
+			if err := m.preflightQueuedScratchStorage(ctx, candidate); err != nil {
+				if errors.Is(err, errScratchStorageExceeded) {
+					return true, m.failBeforeSubmission(ctx, candidate.ID, err)
+				}
+				return true, err
+			}
 			return false, nil
 		}
 		if err := m.freezeQueued(ctx, candidate); err != nil {
+			if errors.Is(err, errScratchStorageExceeded) {
+				return true, m.failBeforeSubmission(ctx, candidate.ID, err)
+			}
 			return true, err
 		}
 		return true, m.reconcileSubmitting(ctx, candidate.ID)
@@ -198,6 +224,56 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 	default:
 		return true, fmt.Errorf("unsupported reconcile status %q", candidate.ProcessingStatus)
 	}
+}
+
+func (m *Manager) preflightQueuedScratchStorage(ctx context.Context, candidate frozenDerivativeRow) error {
+	if m.objects == nil {
+		return fmt.Errorf("preflight stereo split scratch storage: TOS object reader is not configured")
+	}
+	var episode episodeAdmissionRow
+	if err := m.db.GetContext(ctx, &episode, `
+		SELECT id, storage_backend, mcap_path, metadata, cloud_publish_source
+		FROM episodes WHERE id = ? AND deleted_at IS NULL
+	`, candidate.EpisodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrEpisodeNotFound
+		}
+		return fmt.Errorf("load stereo split source for scratch preflight: %w", err)
+	}
+	bucket, objectKey, err := normalizeEpisodeSource(episode)
+	if err != nil {
+		return err
+	}
+	sourceSize, _, err := m.objects.StatObject(ctx, bucket, objectKey)
+	if err != nil {
+		return fmt.Errorf("stat stereo split source for scratch preflight: %w", err)
+	}
+	if sourceSize <= 0 {
+		return fmt.Errorf("%w: source size %d is invalid", ErrSourceUnavailable, sourceSize)
+	}
+	_, err = scratchStorageRequest(sourceSize)
+	return err
+}
+
+func (m *Manager) failBeforeSubmission(ctx context.Context, derivativeID int64, cause error) error {
+	now := m.now().UTC()
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE episode_derivatives
+		SET processing_status = ?, processing_error = ?, processing_finished_at = ?,
+		    orbit_delete_status = ?, reconcile_after = NULL, updated_at = ?
+		WHERE id = ? AND processing_status = ? AND cancel_requested_at IS NULL
+	`, ProcessingFailed, cause.Error(), now, DeleteNotRequired, now, derivativeID, ProcessingQueued)
+	if err != nil {
+		return fmt.Errorf("persist stereo split pre-submission failure after %w: %w", cause, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read stereo split pre-submission failure result after %w: %w", cause, err)
+	}
+	if rows != 1 {
+		return nil
+	}
+	return cause
 }
 
 func (m *Manager) atOrbitCapacity(ctx context.Context) (bool, error) {
@@ -419,7 +495,8 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 
 	var episode reconcileEpisodeRow
 	if err := m.db.GetContext(ctx, &episode, `
-		SELECT id, storage_backend, mcap_path, checksum, metadata, cloud_publish_source
+		SELECT id, storage_backend, mcap_path, checksum, metadata, cloud_publish_source,
+		       camera_serial, calibration_capture_id, calibration_result_sha256
 		FROM episodes WHERE id = ? AND deleted_at IS NULL
 	`, candidate.EpisodeID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -437,6 +514,10 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 	if err != nil {
 		return err
 	}
+	calibrationInput, err := m.loadCalibrationInput(ctx, episode)
+	if err != nil {
+		return err
+	}
 	submissionID := fmt.Sprintf("derivative-%d-stereo-split-g%d", candidate.ID, candidate.Generation)
 	execution, err := m.PrepareExecution(ctx, ExecutionInput{
 		SourceBucket:    bucket,
@@ -445,6 +526,7 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 		OutputScope:     path.Join(fmt.Sprintf("%d", candidate.EpisodeID), "stereo-split"),
 		SubmissionID:    submissionID,
 		Generation:      candidate.Generation,
+		Calibration:     calibrationInput,
 	})
 	if err != nil {
 		return err
@@ -469,7 +551,8 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 	}
 	var lockedEpisode episodeAdmissionRow
 	if err := tx.GetContext(ctx, &lockedEpisode, `
-		SELECT id, storage_backend, mcap_path, metadata, cloud_publish_source
+		SELECT id, storage_backend, mcap_path, metadata, cloud_publish_source,
+		       camera_serial, calibration_capture_id, calibration_result_sha256
 		FROM episodes WHERE id = ? AND deleted_at IS NULL`+forUpdateClause(m.db), candidate.EpisodeID); err != nil {
 		return fmt.Errorf("lock stereo split source episode: %w", err)
 	}
@@ -477,21 +560,42 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 	if err != nil {
 		return err
 	}
-	if lockedBucket != bucket || lockedKey != objectKey || strings.EqualFold(strings.TrimSpace(lockedEpisode.CloudPublishSource.String), CloudSourceOriginal) {
+	if lockedBucket != bucket || lockedKey != objectKey ||
+		lockedEpisode.CameraSerial != episode.CameraSerial ||
+		lockedEpisode.CalibrationCaptureID != episode.CalibrationCaptureID ||
+		lockedEpisode.CalibrationResultSHA256 != episode.CalibrationResultSHA256 ||
+		strings.EqualFold(strings.TrimSpace(lockedEpisode.CloudPublishSource.String), CloudSourceOriginal) {
 		return ErrCloudSourceLocked
+	}
+	var calibrationCameraSerial, calibrationSessionID, calibrationCaptureID any
+	var calibrationResultURI, calibrationResultETag, calibrationResultSize, calibrationResultSHA256 any
+	if execution.Calibration != nil {
+		calibrationCameraSerial = execution.Calibration.CameraSerial
+		calibrationSessionID = execution.Calibration.SessionID
+		calibrationCaptureID = execution.Calibration.CaptureID
+		calibrationResultURI = execution.Calibration.ResultURI
+		calibrationResultETag = execution.Calibration.ResultETag
+		calibrationResultSize = execution.Calibration.ResultSizeBytes
+		calibrationResultSHA256 = execution.Calibration.ResultSHA256
 	}
 	now := m.now().UTC()
 	result, err := tx.ExecContext(ctx, `
 		UPDATE episode_derivatives
 		SET processor_config_revision_id = ?, processor_image = ?,
 		    source_uri = ?, source_etag = ?, source_checksum = NULLIF(?, ''),
-		    source_size_bytes = ?, processing_status = ?,
+		    source_size_bytes = ?,
+		    calibration_camera_serial = ?, calibration_session_id = ?,
+		    calibration_capture_id = ?, calibration_result_uri = ?,
+		    calibration_result_etag = ?, calibration_result_size_bytes = ?,
+		    calibration_result_sha256 = ?, processing_status = ?,
 		    orbit_submission_id = ?, orbit_request = ?, orbit_snapshot_frozen_at = ?,
 		    output_prefix = ?, submit_attempt_count = 0, reconcile_after = NULL,
 		    processing_error = NULL, updated_at = ?
 		WHERE id = ? AND processing_status = ?
 	`, execution.ProcessorConfigRevisionID, execution.ProcessorImage, execution.SourceURI,
 		execution.SourceETag, execution.SourceChecksum, execution.SourceSizeBytes,
+		calibrationCameraSerial, calibrationSessionID, calibrationCaptureID,
+		calibrationResultURI, calibrationResultETag, calibrationResultSize, calibrationResultSHA256,
 		ProcessingSubmitting, submissionID, string(requestJSON), now,
 		execution.OutputPrefix, now, candidate.ID, ProcessingQueued)
 	if err != nil {
@@ -508,6 +612,46 @@ func (m *Manager) freezeQueued(ctx context.Context, candidate frozenDerivativeRo
 		return fmt.Errorf("commit stereo split freeze: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) loadCalibrationInput(
+	ctx context.Context,
+	episode reconcileEpisodeRow,
+) (*CalibrationInput, error) {
+	if !episode.CalibrationCaptureID.Valid || strings.TrimSpace(episode.CalibrationCaptureID.String) == "" {
+		if episode.CalibrationResultSHA256.Valid && strings.TrimSpace(episode.CalibrationResultSHA256.String) != "" {
+			return nil, fmt.Errorf("episode calibration checksum exists without a Capture")
+		}
+		return nil, nil
+	}
+	if !episode.CameraSerial.Valid || strings.TrimSpace(episode.CameraSerial.String) == "" ||
+		!episode.CalibrationResultSHA256.Valid || normalizedSHA256(episode.CalibrationResultSHA256.String) == "" {
+		return nil, fmt.Errorf("episode calibration selection is incomplete")
+	}
+	var result calibrationResultRow
+	if err := m.db.GetContext(ctx, &result, `
+		SELECT c.calibration_session_id, s.camera_serial, c.capture_id, c.status,
+		       c.bucket, c.result_object_key, c.result_size_bytes, c.result_checksum_sha256
+		FROM calibration_captures c
+		INNER JOIN calibration_sessions s ON s.session_id = c.calibration_session_id
+		WHERE c.capture_id = ?
+	`, episode.CalibrationCaptureID.String); err != nil {
+		return nil, fmt.Errorf("load frozen episode calibration result: %w", err)
+	}
+	if result.Status != "succeeded" || result.CameraSerial != episode.CameraSerial.String ||
+		result.CaptureID != episode.CalibrationCaptureID.String ||
+		normalizedSHA256(result.ResultSHA256) != normalizedSHA256(episode.CalibrationResultSHA256.String) ||
+		strings.TrimSpace(result.ResultKey) == "" || result.ResultSize <= 0 {
+		return nil, fmt.Errorf("frozen episode calibration result identity changed")
+	}
+	return &CalibrationInput{
+		CameraSerial:    result.CameraSerial,
+		SessionID:       result.SessionID,
+		CaptureID:       result.CaptureID,
+		ResultBucket:    result.Bucket,
+		ResultObjectKey: result.ResultKey,
+		ResultSHA256:    result.ResultSHA256,
+	}, nil
 }
 
 func (m *Manager) reconcileSubmitting(ctx context.Context, derivativeID int64) error {
@@ -833,13 +977,24 @@ type processingManifest struct {
 		SizeBytes int64  `json:"size_bytes"`
 		SHA256    string `json:"sha256"`
 	} `json:"source"`
-	Outputs struct {
+	Calibration *manifestCalibration `json:"calibration,omitempty"`
+	Outputs     struct {
 		MCAP     manifestOutput `json:"mcap"`
 		Metadata manifestOutput `json:"metadata"`
 	} `json:"outputs"`
 	Stats      manifestStats `json:"stats"`
 	StartedAt  time.Time     `json:"started_at"`
 	FinishedAt time.Time     `json:"finished_at"`
+}
+
+type manifestCalibration struct {
+	AttachmentName string `json:"attachment_name"`
+	MediaType      string `json:"media_type"`
+	CameraSerial   string `json:"camera_serial"`
+	SessionID      string `json:"session_id"`
+	CaptureID      string `json:"capture_id"`
+	SizeBytes      int64  `json:"size_bytes"`
+	SHA256         string `json:"sha256"`
 }
 
 type manifestOutput struct {
@@ -869,6 +1024,13 @@ type verificationRow struct {
 	SourceETag               string         `db:"source_etag"`
 	SourceChecksum           sql.NullString `db:"source_checksum"`
 	SourceSize               int64          `db:"source_size_bytes"`
+	CalibrationCameraSerial  sql.NullString `db:"calibration_camera_serial"`
+	CalibrationSessionID     sql.NullString `db:"calibration_session_id"`
+	CalibrationCaptureID     sql.NullString `db:"calibration_capture_id"`
+	CalibrationResultURI     sql.NullString `db:"calibration_result_uri"`
+	CalibrationResultETag    sql.NullString `db:"calibration_result_etag"`
+	CalibrationResultSize    sql.NullInt64  `db:"calibration_result_size_bytes"`
+	CalibrationResultSHA256  sql.NullString `db:"calibration_result_sha256"`
 	OutputPrefix             string         `db:"output_prefix"`
 	Status                   string         `db:"processing_status"`
 	VerificationAttemptCount int            `db:"verification_attempt_count"`
@@ -878,13 +1040,20 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	var row verificationRow
 	if err := m.db.GetContext(ctx, &row, `
 		SELECT id, generation, processor_image, source_uri, source_etag, source_checksum,
-		       source_size_bytes, output_prefix, processing_status, verification_attempt_count
+		       source_size_bytes, calibration_camera_serial, calibration_session_id,
+		       calibration_capture_id, calibration_result_uri, calibration_result_etag,
+		       calibration_result_size_bytes, calibration_result_sha256,
+		       output_prefix, processing_status, verification_attempt_count
 		FROM episode_derivatives WHERE id = ? AND kind = ?
 	`, derivativeID, Kind); err != nil {
 		return fmt.Errorf("load verifying stereo split: %w", err)
 	}
 	if row.Status != ProcessingVerifying {
 		return nil
+	}
+	calibration, err := calibrationSnapshotFromVerificationRow(row)
+	if err != nil {
+		return m.failVerification(ctx, derivativeID, err)
 	}
 	output, err := m.VerifyExecution(ctx, ExecutionSnapshot{
 		Generation:      row.Generation,
@@ -893,6 +1062,7 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 		SourceETag:      row.SourceETag,
 		SourceChecksum:  row.SourceChecksum.String,
 		SourceSizeBytes: row.SourceSize,
+		Calibration:     calibration,
 		OutputBucket:    m.cfg.OutputBucket,
 		OutputPrefix:    row.OutputPrefix,
 	})
@@ -928,10 +1098,63 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	return nil
 }
 
-func validateManifestSnapshot(manifest processingManifest, row verificationRow) error {
+func calibrationSnapshotFromVerificationRow(row verificationRow) (*CalibrationSnapshot, error) {
+	return calibrationSnapshotFromColumns(
+		row.CalibrationCameraSerial,
+		row.CalibrationSessionID,
+		row.CalibrationCaptureID,
+		row.CalibrationResultURI,
+		row.CalibrationResultETag,
+		row.CalibrationResultSize,
+		row.CalibrationResultSHA256,
+	)
+}
+
+func calibrationSnapshotFromColumns(
+	cameraSerial sql.NullString,
+	sessionID sql.NullString,
+	captureID sql.NullString,
+	resultURI sql.NullString,
+	resultETag sql.NullString,
+	resultSize sql.NullInt64,
+	resultSHA256 sql.NullString,
+) (*CalibrationSnapshot, error) {
+	present := []bool{
+		cameraSerial.Valid,
+		sessionID.Valid,
+		captureID.Valid,
+		resultURI.Valid,
+		resultETag.Valid,
+		resultSize.Valid,
+		resultSHA256.Valid,
+	}
+	count := 0
+	for _, value := range present {
+		if value {
+			count++
+		}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	if count != len(present) {
+		return nil, fmt.Errorf("frozen calibration result identity is incomplete")
+	}
+	return &CalibrationSnapshot{
+		CameraSerial:    cameraSerial.String,
+		SessionID:       sessionID.String,
+		CaptureID:       captureID.String,
+		ResultURI:       resultURI.String,
+		ResultETag:      resultETag.String,
+		ResultSizeBytes: resultSize.Int64,
+		ResultSHA256:    resultSHA256.String,
+	}, nil
+}
+
+func validateManifestSnapshot(manifest processingManifest, execution ExecutionSnapshot) error {
 	if manifest.Status != "succeeded" || manifest.Kind != Kind ||
-		manifest.Generation != row.Generation || manifest.ProcessorImage != row.ProcessorImage ||
-		manifest.Source.URI != row.SourceURI || manifest.Source.SizeBytes != row.SourceSize {
+		manifest.Generation != execution.Generation || manifest.ProcessorImage != execution.ProcessorImage ||
+		manifest.Source.URI != execution.SourceURI || manifest.Source.SizeBytes != execution.SourceSizeBytes {
 		return fmt.Errorf("processing manifest does not match frozen execution snapshot")
 	}
 	switch manifest.SchemaVersion {
@@ -943,11 +1166,18 @@ func validateManifestSnapshot(manifest processingManifest, row verificationRow) 
 		if manifest.OutputFormat != stereoH264OutputFormat {
 			return fmt.Errorf("processing manifest v2 has an invalid output format")
 		}
+	case manifestSchemaV3:
+		if manifest.OutputFormat != stereoH264OutputFormat {
+			return fmt.Errorf("processing manifest v3 has an invalid output format")
+		}
 	default:
 		return fmt.Errorf("processing manifest schema version %d is unsupported", manifest.SchemaVersion)
 	}
-	if row.SourceChecksum.Valid && row.SourceChecksum.String != "" && manifest.Source.SHA256 != row.SourceChecksum.String {
+	if execution.SourceChecksum != "" && manifest.Source.SHA256 != execution.SourceChecksum {
 		return fmt.Errorf("processing manifest source checksum does not match snapshot")
+	}
+	if err := validateManifestCalibration(manifest, execution.Calibration); err != nil {
+		return err
 	}
 	if manifest.Outputs.MCAP.Name != outputMcapName || manifest.Outputs.Metadata.Name != outputMetadataName ||
 		manifest.Outputs.MCAP.SizeBytes <= 0 || manifest.Outputs.Metadata.SizeBytes <= 0 ||
@@ -956,6 +1186,27 @@ func validateManifestSnapshot(manifest processingManifest, row verificationRow) 
 	}
 	if manifest.StartedAt.IsZero() || manifest.FinishedAt.IsZero() || manifest.FinishedAt.Before(manifest.StartedAt) {
 		return fmt.Errorf("processing manifest has invalid timestamps")
+	}
+	return nil
+}
+
+func validateManifestCalibration(manifest processingManifest, expected *CalibrationSnapshot) error {
+	if expected == nil {
+		if manifest.SchemaVersion == manifestSchemaV3 || manifest.Calibration != nil {
+			return fmt.Errorf("processing manifest has unexpected calibration data")
+		}
+		return nil
+	}
+	if manifest.SchemaVersion != manifestSchemaV3 || manifest.Calibration == nil {
+		return fmt.Errorf("processing manifest is missing frozen calibration data")
+	}
+	actual := manifest.Calibration
+	if actual.AttachmentName != calibrationAttachment || actual.MediaType != calibrationMediaType ||
+		actual.CameraSerial != expected.CameraSerial || actual.SessionID != expected.SessionID ||
+		actual.CaptureID != expected.CaptureID || actual.SizeBytes != expected.ResultSizeBytes ||
+		normalizedSHA256(actual.SHA256) == "" ||
+		normalizedSHA256(actual.SHA256) != normalizedSHA256(expected.ResultSHA256) {
+		return fmt.Errorf("processing manifest calibration does not match frozen execution snapshot")
 	}
 	return nil
 }
@@ -990,14 +1241,24 @@ func (m *Manager) failVerification(ctx context.Context, derivativeID int64, caus
 
 func (m *Manager) reconcileQA(ctx context.Context, derivativeID int64) error {
 	var row struct {
-		Status   string         `db:"processing_status"`
-		QAStatus string         `db:"qa_status"`
-		McapPath sql.NullString `db:"mcap_path"`
-		Checksum sql.NullString `db:"checksum"`
-		Result   string         `db:"processing_result"`
+		Status                  string         `db:"processing_status"`
+		QAStatus                string         `db:"qa_status"`
+		McapPath                sql.NullString `db:"mcap_path"`
+		Checksum                sql.NullString `db:"checksum"`
+		Result                  string         `db:"processing_result"`
+		CalibrationCameraSerial sql.NullString `db:"calibration_camera_serial"`
+		CalibrationSessionID    sql.NullString `db:"calibration_session_id"`
+		CalibrationCaptureID    sql.NullString `db:"calibration_capture_id"`
+		CalibrationResultURI    sql.NullString `db:"calibration_result_uri"`
+		CalibrationResultETag   sql.NullString `db:"calibration_result_etag"`
+		CalibrationResultSize   sql.NullInt64  `db:"calibration_result_size_bytes"`
+		CalibrationResultSHA256 sql.NullString `db:"calibration_result_sha256"`
 	}
 	if err := m.db.GetContext(ctx, &row, `
-		SELECT processing_status, qa_status, mcap_path, checksum, processing_result
+		SELECT processing_status, qa_status, mcap_path, checksum, processing_result,
+		       calibration_camera_serial, calibration_session_id, calibration_capture_id,
+		       calibration_result_uri, calibration_result_etag,
+		       calibration_result_size_bytes, calibration_result_sha256
 		FROM episode_derivatives WHERE id = ? AND kind = ?
 	`, derivativeID, Kind); err != nil {
 		return fmt.Errorf("load stereo split QA input: %w", err)
@@ -1017,6 +1278,21 @@ func (m *Manager) reconcileQA(ctx context.Context, derivativeID int64) error {
 	err := json.Unmarshal([]byte(row.Result), &manifest)
 	var observed mcapQAObservation
 	var contract mcapOutputContract
+	if err == nil {
+		var calibration *CalibrationSnapshot
+		calibration, err = calibrationSnapshotFromColumns(
+			row.CalibrationCameraSerial,
+			row.CalibrationSessionID,
+			row.CalibrationCaptureID,
+			row.CalibrationResultURI,
+			row.CalibrationResultETag,
+			row.CalibrationResultSize,
+			row.CalibrationResultSHA256,
+		)
+		if err == nil {
+			err = validateManifestCalibration(manifest, calibration)
+		}
+	}
 	if err == nil {
 		contract, err = validateManifestStats(manifest)
 	}
@@ -1061,16 +1337,17 @@ func (m *Manager) reconcileQA(ctx context.Context, derivativeID int64) error {
 }
 
 type mcapQAObservation struct {
-	SchemaVersion int     `json:"schema_version"`
-	LeftImages    int64   `json:"left_images,omitempty"`
-	RightImages   int64   `json:"right_images,omitempty"`
-	LeftVideos    int64   `json:"left_videos,omitempty"`
-	RightVideos   int64   `json:"right_videos,omitempty"`
-	IMUMessages   int64   `json:"imu_messages"`
-	FirstLogTime  uint64  `json:"first_log_time"`
-	LastLogTime   uint64  `json:"last_log_time"`
-	DurationSec   float64 `json:"duration_sec"`
-	OutputSHA256  string  `json:"output_sha256"`
+	SchemaVersion          int     `json:"schema_version"`
+	LeftImages             int64   `json:"left_images,omitempty"`
+	RightImages            int64   `json:"right_images,omitempty"`
+	LeftVideos             int64   `json:"left_videos,omitempty"`
+	RightVideos            int64   `json:"right_videos,omitempty"`
+	IMUMessages            int64   `json:"imu_messages"`
+	CalibrationAttachments int64   `json:"calibration_attachments,omitempty"`
+	FirstLogTime           uint64  `json:"first_log_time"`
+	LastLogTime            uint64  `json:"last_log_time"`
+	DurationSec            float64 `json:"duration_sec"`
+	OutputSHA256           string  `json:"output_sha256"`
 }
 
 type topicQAState struct {
@@ -1092,6 +1369,7 @@ type mcapOutputContract struct {
 	ExpectedLeft         int64
 	ExpectedRight        int64
 	ExpectedIMU          int64
+	Calibration          *manifestCalibration
 }
 
 func validateManifestStats(manifest processingManifest) (mcapOutputContract, error) {
@@ -1115,9 +1393,12 @@ func validateManifestStats(manifest processingManifest) (mcapOutputContract, err
 		contract.RightMessageEncoding = "cdr"
 		contract.ExpectedLeft = stats.LeftImages
 		contract.ExpectedRight = stats.RightImages
-	case manifestSchemaV2:
+		if manifest.Calibration != nil {
+			return mcapOutputContract{}, fmt.Errorf("processing manifest v1 has unexpected calibration data")
+		}
+	case manifestSchemaV2, manifestSchemaV3:
 		if manifest.OutputFormat != stereoH264OutputFormat {
-			return mcapOutputContract{}, fmt.Errorf("processing manifest v2 has an invalid output format")
+			return mcapOutputContract{}, fmt.Errorf("processing manifest v%d has an invalid output format", manifest.SchemaVersion)
 		}
 		if stats.CopiedMessages < 0 || stats.CopiedTopics < 0 {
 			return mcapOutputContract{}, fmt.Errorf("processing manifest contains negative copied-topic statistics")
@@ -1132,6 +1413,15 @@ func validateManifestStats(manifest processingManifest) (mcapOutputContract, err
 		contract.RightMessageEncoding = "protobuf"
 		contract.ExpectedLeft = stats.LeftVideos
 		contract.ExpectedRight = stats.RightVideos
+		if manifest.SchemaVersion == manifestSchemaV2 && manifest.Calibration != nil {
+			return mcapOutputContract{}, fmt.Errorf("processing manifest v2 has unexpected calibration data")
+		}
+		if manifest.SchemaVersion == manifestSchemaV3 {
+			if err := validateManifestCalibrationShape(manifest.Calibration); err != nil {
+				return mcapOutputContract{}, err
+			}
+			contract.Calibration = manifest.Calibration
+		}
 	default:
 		return mcapOutputContract{}, fmt.Errorf("processing manifest schema version %d is unsupported", manifest.SchemaVersion)
 	}
@@ -1162,17 +1452,23 @@ func (m *Manager) inspectOutputMCAP(
 		return mcapQAObservation{}, fmt.Errorf("open stereo split output for QA: %w", err)
 	}
 	digest := sha256.New()
-	reader, err := mcap.NewReader(io.TeeReader(body, digest))
+	calibrationAttachments := int64(0)
+	lexer, err := mcap.NewLexer(io.TeeReader(body, digest), &mcap.LexerOptions{
+		ComputeAttachmentCRCs: true,
+		AttachmentCallback: func(attachment *mcap.AttachmentReader) error {
+			if attachment.Name != calibrationAttachment {
+				return nil
+			}
+			calibrationAttachments++
+			if contract.Calibration == nil {
+				return fmt.Errorf("output MCAP has an unexpected calibration attachment")
+			}
+			return validateCalibrationAttachment(attachment, contract.Calibration)
+		},
+	})
 	if err != nil {
 		_ = body.Close()
-		return mcapQAObservation{}, fmt.Errorf("open output MCAP reader: %w", err)
-	}
-	defer reader.Close()
-
-	iterator, err := reader.Messages(mcap.UsingIndex(false))
-	if err != nil {
-		_ = body.Close()
-		return mcapQAObservation{}, fmt.Errorf("create output MCAP iterator: %w", err)
+		return mcapQAObservation{}, fmt.Errorf("open output MCAP lexer: %w", err)
 	}
 	states := map[string]*topicQAState{
 		contract.LeftTopic:  {},
@@ -1197,19 +1493,58 @@ func (m *Manager) inspectOutputMCAP(
 	var firstLogTime uint64
 	var lastLogTime uint64
 	var hasLogTime bool
-	message := &mcap.Message{}
+	schemas := make(map[uint16]*mcap.Schema)
+	channels := make(map[uint16]*mcap.Channel)
+	var recordBuffer []byte
 	for {
-		schema, channel, current, nextErr := iterator.NextInto(message)
+		token, record, nextErr := lexer.Next(recordBuffer)
 		if errors.Is(nextErr, io.EOF) {
 			break
 		}
 		if nextErr != nil {
 			_ = body.Close()
-			return mcapQAObservation{}, fmt.Errorf("read output MCAP message: %w", nextErr)
+			return mcapQAObservation{}, fmt.Errorf("read output MCAP: %w", nextErr)
+		}
+		recordBuffer = record
+		switch token {
+		case mcap.TokenSchema:
+			schema, parseErr := mcap.ParseSchema(record)
+			if parseErr != nil {
+				_ = body.Close()
+				return mcapQAObservation{}, fmt.Errorf("parse output MCAP schema: %w", parseErr)
+			}
+			schemas[schema.ID] = schema
+			continue
+		case mcap.TokenChannel:
+			channel, parseErr := mcap.ParseChannel(record)
+			if parseErr != nil {
+				_ = body.Close()
+				return mcapQAObservation{}, fmt.Errorf("parse output MCAP channel: %w", parseErr)
+			}
+			channels[channel.ID] = channel
+			continue
+		case mcap.TokenMessage:
+		default:
+			continue
+		}
+		current, parseErr := mcap.ParseMessage(record)
+		if parseErr != nil {
+			_ = body.Close()
+			return mcapQAObservation{}, fmt.Errorf("parse output MCAP message: %w", parseErr)
+		}
+		channel, ok := channels[current.ChannelID]
+		if !ok {
+			_ = body.Close()
+			return mcapQAObservation{}, fmt.Errorf("output MCAP message references unknown channel %d", current.ChannelID)
 		}
 		state, required := states[channel.Topic]
 		if !required {
 			continue
+		}
+		schema, ok := schemas[channel.SchemaID]
+		if !ok {
+			_ = body.Close()
+			return mcapQAObservation{}, fmt.Errorf("topic %s references unknown schema %d", channel.Topic, channel.SchemaID)
 		}
 		if schema == nil || schema.Name != expectedSchemas[channel.Topic] ||
 			schema.Encoding != expectedSchemaEncodings[channel.Topic] {
@@ -1235,6 +1570,10 @@ func (m *Manager) inspectOutputMCAP(
 		}
 		hasLogTime = true
 	}
+	if contract.Calibration != nil && calibrationAttachments != 1 {
+		_ = body.Close()
+		return mcapQAObservation{}, fmt.Errorf("output MCAP calibration attachment count is %d, want 1", calibrationAttachments)
+	}
 	if err := body.Close(); err != nil {
 		return mcapQAObservation{}, fmt.Errorf("close output MCAP after QA: %w", err)
 	}
@@ -1255,12 +1594,13 @@ func (m *Manager) inspectOutputMCAP(
 		return mcapQAObservation{}, fmt.Errorf("output MCAP timestamp span must be positive")
 	}
 	observed := mcapQAObservation{
-		SchemaVersion: contract.SchemaVersion,
-		IMUMessages:   imuCount,
-		FirstLogTime:  firstLogTime,
-		LastLogTime:   lastLogTime,
-		DurationSec:   float64(lastLogTime-firstLogTime) / float64(time.Second),
-		OutputSHA256:  checksum,
+		SchemaVersion:          contract.SchemaVersion,
+		IMUMessages:            imuCount,
+		CalibrationAttachments: calibrationAttachments,
+		FirstLogTime:           firstLogTime,
+		LastLogTime:            lastLogTime,
+		DurationSec:            float64(lastLogTime-firstLogTime) / float64(time.Second),
+		OutputSHA256:           checksum,
 	}
 	if contract.SchemaVersion == manifestSchemaV1 {
 		observed.LeftImages = leftCount
@@ -1270,6 +1610,73 @@ func (m *Manager) inspectOutputMCAP(
 		observed.RightVideos = rightCount
 	}
 	return observed, nil
+}
+
+func validateManifestCalibrationShape(calibration *manifestCalibration) error {
+	if calibration == nil || calibration.AttachmentName != calibrationAttachment ||
+		calibration.MediaType != calibrationMediaType || strings.TrimSpace(calibration.CameraSerial) == "" ||
+		strings.TrimSpace(calibration.SessionID) == "" || strings.TrimSpace(calibration.CaptureID) == "" ||
+		calibration.SizeBytes <= 0 || normalizedSHA256(calibration.SHA256) == "" {
+		return fmt.Errorf("processing manifest v3 has invalid calibration data")
+	}
+	return nil
+}
+
+func validateCalibrationAttachment(
+	attachment *mcap.AttachmentReader,
+	expected *manifestCalibration,
+) error {
+	if expected.SizeBytes <= 0 {
+		return fmt.Errorf("processing manifest calibration attachment size is invalid")
+	}
+	expectedSize := uint64(expected.SizeBytes)
+	if attachment.MediaType != expected.MediaType || attachment.DataSize != expectedSize {
+		return fmt.Errorf("output MCAP calibration attachment metadata does not match manifest")
+	}
+	data, err := io.ReadAll(io.LimitReader(attachment.Data(), expected.SizeBytes+1))
+	if err != nil {
+		return fmt.Errorf("read output MCAP calibration attachment: %w", err)
+	}
+	if int64(len(data)) != expected.SizeBytes {
+		return fmt.Errorf("output MCAP calibration attachment size does not match manifest")
+	}
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) != normalizedSHA256(expected.SHA256) {
+		return fmt.Errorf("output MCAP calibration attachment SHA-256 does not match manifest")
+	}
+	computedCRC, err := attachment.ComputedCRC()
+	if err != nil {
+		return fmt.Errorf("compute output MCAP calibration attachment CRC: %w", err)
+	}
+	parsedCRC, err := attachment.ParsedCRC()
+	if err != nil {
+		return fmt.Errorf("read output MCAP calibration attachment CRC: %w", err)
+	}
+	if parsedCRC != 0 && parsedCRC != computedCRC {
+		return fmt.Errorf("output MCAP calibration attachment CRC is invalid")
+	}
+	var document struct {
+		SchemaVersion        int             `json:"schema_version"`
+		Status               string          `json:"status"`
+		CameraSerial         string          `json:"camera_serial"`
+		CalibrationSessionID string          `json:"calibration_session_id"`
+		CaptureID            string          `json:"capture_id"`
+		Result               json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return fmt.Errorf("output MCAP calibration attachment is invalid JSON: %w", err)
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(document.Result, &result); err != nil {
+		return fmt.Errorf("output MCAP calibration attachment result is invalid JSON: %w", err)
+	}
+	if document.SchemaVersion != 1 || document.Status != "succeeded" ||
+		document.CameraSerial != expected.CameraSerial ||
+		document.CalibrationSessionID != expected.SessionID || document.CaptureID != expected.CaptureID ||
+		len(result) == 0 {
+		return fmt.Errorf("output MCAP calibration attachment identity does not match manifest")
+	}
+	return nil
 }
 
 func (m *Manager) reconcileDelete(ctx context.Context, derivativeID int64) error {
