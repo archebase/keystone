@@ -86,7 +86,13 @@ def encode_h264_access_units(frames: list[np.ndarray]) -> list[bytes]:
     return access_units
 
 
-def make_source(path: Path, frame_count: int = 3, source_format: str = "jpeg") -> None:
+def make_source(
+    path: Path,
+    frame_count: int = 3,
+    source_format: str = "jpeg",
+    leading_non_idr: int = 0,
+    source_imu: bool = False,
+) -> None:
     typestore = get_typestore(Stores.ROS2_JAZZY)
     messages = typestore.types
     frames = [contract_frame(index) for index in range(frame_count)]
@@ -108,15 +114,28 @@ def make_source(path: Path, frame_count: int = 3, source_format: str = "jpeg") -
             "std_msgs/msg/String", "ros2msg", string_definition.encode()
         )
         string_channel = writer.register_channel("/kept", "cdr", string_schema)
-        for index, frame in enumerate(frames):
-            if source_format == "h264":
-                payload = np.frombuffer(h264_access_units[index], dtype=np.uint8)
-            else:
+        source_imu_channel = (
+            writer.register_channel("/decxin/imu", "cdr", string_schema)
+            if source_imu
+            else None
+        )
+        payloads: list[np.ndarray] = []
+        if source_format == "h264":
+            non_idr = np.frombuffer(
+                b"\x00\x00\x00\x01\x09\x30\x00\x00\x00\x01\x41\x80",
+                dtype=np.uint8,
+            )
+            payloads.extend([non_idr] * leading_non_idr)
+            payloads.extend(np.frombuffer(data, dtype=np.uint8) for data in h264_access_units)
+        else:
+            for frame in frames:
                 ok, payload = cv2.imencode(
                     ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100]
                 )
                 if not ok:
                     raise RuntimeError("failed to create JPEG fixture")
+                payloads.append(payload)
+        for index, payload in enumerate(payloads):
             timestamp = (index + 1) * 1_000_000_000
             stamp = messages["builtin_interfaces/msg/Time"](sec=index + 1, nanosec=0)
             header = messages["std_msgs/msg/Header"](stamp=stamp, frame_id="joined_camera")
@@ -138,6 +157,14 @@ def make_source(path: Path, frame_count: int = 3, source_format: str = "jpeg") -
                 timestamp + 1,
                 index,
             )
+            if source_imu_channel is not None:
+                writer.add_message(
+                    source_imu_channel,
+                    timestamp + 2,
+                    bytes(typestore.serialize_cdr(kept, "std_msgs/msg/String")),
+                    timestamp + 2,
+                    index,
+                )
         writer.finish()
 
 
@@ -219,15 +246,16 @@ class ConvertTest(unittest.TestCase):
             root = Path(temp_dir)
             source = root / "source.mcap"
             output = root / "output.mcap"
-            make_source(source, source_format="h264")
+            make_source(source, source_format="h264", leading_non_idr=2)
 
             stats = StereoSplitH264Converter().convert(source, output)
 
-            self.assertEqual(stats.input_messages, 3)
+            self.assertEqual(stats.input_messages, 5)
             self.assertEqual(stats.decoded_images, 3)
             self.assertEqual(stats.left_videos, 3)
             self.assertEqual(stats.right_videos, 3)
-            self.assertEqual(stats.imu_messages, 22)
+            self.assertEqual(stats.imu_messages, 0)
+            self.assertEqual(stats.skipped_messages, 2)
             by_topic: dict[str, int] = {}
             with output.open("rb") as stream:
                 for schema, channel, message in make_reader(stream).iter_messages():
@@ -238,12 +266,62 @@ class ConvertTest(unittest.TestCase):
                         self.assertEqual(video.format, "h264")
             self.assertEqual(by_topic["/decxin/left_rgb/h264"], 3)
             self.assertEqual(by_topic["/decxin/right_rgb/h264"], 3)
+            self.assertEqual(by_topic["/kept"], 5)
+            self.assertNotIn("/decxin/imu", by_topic)
+
+            def kept_records(path: Path) -> list[tuple[object, ...]]:
+                records: list[tuple[object, ...]] = []
+                with path.open("rb") as stream:
+                    for schema, channel, message in make_reader(stream).iter_messages(
+                        topics=["/kept"]
+                    ):
+                        records.append(
+                            (
+                                schema.name,
+                                schema.encoding,
+                                channel.message_encoding,
+                                dict(channel.metadata),
+                                message.log_time,
+                                message.publish_time,
+                                message.sequence,
+                                bytes(message.data),
+                            )
+                        )
+                return records
+
+            self.assertEqual(kept_records(output), kept_records(source))
             with output.open("rb") as stream:
                 physical_times = [
                     message.log_time
                     for _, _, message in make_reader(stream).iter_messages(log_time_order=False)
                 ]
             self.assertEqual(physical_times, sorted(physical_times))
+
+    def test_h264_preserves_existing_imu_channel_without_parsing_pixels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_source(source, source_format="h264", source_imu=True)
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.imu_messages, 0)
+            self.assertEqual(stats.copied_topics, 2)
+            with source.open("rb") as source_stream, output.open("rb") as output_stream:
+                source_records = [
+                    (message.log_time, message.publish_time, message.sequence, bytes(message.data))
+                    for _, _, message in make_reader(source_stream).iter_messages(
+                        topics=["/decxin/imu"]
+                    )
+                ]
+                output_records = [
+                    (message.log_time, message.publish_time, message.sequence, bytes(message.data))
+                    for _, _, message in make_reader(output_stream).iter_messages(
+                        topics=["/decxin/imu"]
+                    )
+                ]
+            self.assertEqual(output_records, source_records)
 
     def test_rejects_existing_output_topic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

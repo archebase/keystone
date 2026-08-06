@@ -30,6 +30,7 @@ from imu_decoder import ImuSample, decode_imu_from_bgr
 FOXGLOVE_SCHEMA_NAME = "foxglove.CompressedVideo"
 OUTPUT_FORMAT = "h264"
 AUD_PATTERN = re.compile(b"(?:\\x00\\x00\\x00\\x01|\\x00\\x00\\x01)\\x09")
+NAL_PATTERN = re.compile(b"(?:\\x00\\x00\\x00\\x01|\\x00\\x00\\x01)(.)", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,10 @@ def _foxglove_descriptor() -> tuple[bytes, type]:
 
 
 FOXGLOVE_DESCRIPTOR_SET, CompressedVideo = _foxglove_descriptor()
+
+
+def h264_nal_types(access_unit: bytes) -> list[int]:
+    return [match.group(1)[0] & 0x1F for match in NAL_PATTERN.finditer(access_unit)]
 
 
 class AnnexBAccessUnitReader(threading.Thread):
@@ -507,7 +512,7 @@ class StereoSplitH264Converter:
     def convert(self, input_path: str | Path, output_path: str | Path) -> ConvertStats:
         config = self.config
         stats = ConvertStats()
-        output_topics = {config.left_topic, config.right_topic, config.imu_topic}
+        video_output_topics = {config.left_topic, config.right_topic}
         copied_topic_ids: set[int] = set()
         schema_ids: dict[int, int] = {}
         channel_ids: dict[int, int] = {}
@@ -521,10 +526,21 @@ class StereoSplitH264Converter:
             summary = reader.get_summary()
             if summary:
                 collisions = sorted(
-                    channel.topic for channel in summary.channels.values() if channel.topic in output_topics
+                    channel.topic
+                    for channel in summary.channels.values()
+                    if channel.topic in video_output_topics
                 )
                 if collisions:
                     raise RuntimeError(f"input already contains output topic(s): {', '.join(collisions)}")
+            input_format = self._detect_input_format(reader)
+            source.seek(0)
+            reader = make_reader(source)
+            summary = reader.get_summary()
+            source_has_imu = bool(
+                summary
+                and any(channel.topic == config.imu_topic for channel in summary.channels.values())
+            )
+            generate_imu = input_format in {"jpeg", "jpg"} and not source_has_imu
 
             writer = Writer(destination, compression=CompressionType.ZSTD)
             writer.start(profile="", library="archebase stereo-split-convert")
@@ -533,12 +549,24 @@ class StereoSplitH264Converter:
             )
             left_channel_id = writer.register_channel(config.left_topic, "protobuf", video_schema_id)
             right_channel_id = writer.register_channel(config.right_topic, "protobuf", video_schema_id)
-            imu_definition, _ = self.typestore.generate_msgdef("sensor_msgs/msg/Imu", ros_version=2)
-            imu_schema_id = writer.register_schema(
-                "sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode("utf-8")
-            )
-            imu_channel_id = writer.register_channel(config.imu_topic, "cdr", imu_schema_id)
+            imu_channel_id: int | None = None
+            if generate_imu:
+                imu_definition, _ = self.typestore.generate_msgdef(
+                    "sensor_msgs/msg/Imu", ros_version=2
+                )
+                imu_schema_id = writer.register_schema(
+                    "sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode("utf-8")
+                )
+                imu_channel_id = writer.register_channel(config.imu_topic, "cdr", imu_schema_id)
             ordered_writer = OrderedMessageWriter(writer)
+
+            if summary:
+                for channel in summary.channels.values():
+                    if channel.topic == config.input_topic:
+                        continue
+                    schema = summary.schemas.get(channel.schema_id) if channel.schema_id else None
+                    self._copy_channel(writer, schema, channel, schema_ids, channel_ids)
+                    copied_topic_ids.add(channel.id)
 
             previous_image_timestamp: int | None = None
 
@@ -560,8 +588,8 @@ class StereoSplitH264Converter:
                         video_metadata.popleft(), encoded, stats,
                     )
 
-                imu = decode_imu_from_bgr(frame)
-                if imu and previous_image_timestamp is not None:
+                imu = decode_imu_from_bgr(frame) if imu_channel_id is not None else None
+                if imu is not None and previous_image_timestamp is not None:
                     timestamps = self._interpolate_imu_timestamps(
                         previous_image_timestamp, metadata.log_time, len(imu.samples)
                     )
@@ -579,7 +607,7 @@ class StereoSplitH264Converter:
             try:
                 for schema, channel, message in reader.iter_messages(log_time_order=True):
                     if channel.topic != config.input_topic:
-                        if channel.topic in output_topics:
+                        if channel.topic in video_output_topics:
                             raise RuntimeError(f"input already contains output topic: {channel.topic}")
                         copied_channel = self._copy_channel(writer, schema, channel, schema_ids, channel_ids)
                         ordered_writer.add_message(
@@ -609,9 +637,17 @@ class StereoSplitH264Converter:
                         seconds=int(stamp.sec),
                         nanos=int(stamp.nanosec),
                     )
-                    compressed_format = str(compressed.format).lower().split(";", 1)[0].strip()
+                    compressed_format = self._normalize_compressed_format(compressed.format)
+                    if compressed_format != input_format:
+                        raise RuntimeError(
+                            f"input cannot mix {input_format!r} and {compressed_format!r} frames"
+                        )
                     if compressed_format == "h264":
                         if decoder is None:
+                            access_unit = bytes(compressed.data)
+                            if 5 not in h264_nal_types(access_unit):
+                                stats.skipped_messages += 1
+                                continue
                             decoder = H264FrameDecoder(
                                 config.metadata_width + config.eye_width * 2,
                                 config.eye_height,
@@ -671,6 +707,27 @@ class StereoSplitH264Converter:
 
         stats.copied_topics = len(copied_topic_ids)
         return stats
+
+    def _detect_input_format(self, reader) -> str:
+        for schema, _, message in reader.iter_messages(topics=[self.config.input_topic]):
+            if schema is None or schema.name != "sensor_msgs/msg/CompressedImage":
+                raise RuntimeError(
+                    f"{self.config.input_topic} must use sensor_msgs/msg/CompressedImage"
+                )
+            compressed = self.typestore.deserialize_cdr(
+                message.data, "sensor_msgs/msg/CompressedImage"
+            )
+            compressed_format = self._normalize_compressed_format(compressed.format)
+            if compressed_format not in {"h264", "jpeg", "jpg"}:
+                raise RuntimeError(
+                    f"unsupported CompressedImage format: {compressed.format!r}"
+                )
+            return compressed_format
+        raise RuntimeError(f"no CompressedImage topic found: {self.config.input_topic}")
+
+    @staticmethod
+    def _normalize_compressed_format(value: object) -> str:
+        return str(value).lower().split(";", 1)[0].strip()
 
     @staticmethod
     def _copy_channel(writer, schema, channel, schema_ids, channel_ids) -> int:
