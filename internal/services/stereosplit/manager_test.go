@@ -119,8 +119,8 @@ func TestManagerPreparesExecutionWithDynamicScratchStorage(t *testing.T) {
 	if got := execution.Request.Resources.Requests["ephemeral-storage"]; got != "31Gi" {
 		t.Fatalf("ephemeral-storage request = %q, want 31Gi", got)
 	}
-	if got := execution.Request.Resources.Limits["ephemeral-storage"]; got != "50Gi" {
-		t.Fatalf("ephemeral-storage limit = %q, want 50Gi", got)
+	if got := execution.Request.Resources.Limits["ephemeral-storage"]; got != "100Gi" {
+		t.Fatalf("ephemeral-storage limit = %q, want 100Gi", got)
 	}
 	if execution.Request.Resources.Requests["cpu"] != "2" ||
 		execution.Request.Resources.Requests["memory"] != "4Gi" ||
@@ -144,7 +144,7 @@ func TestManagerRoundsDynamicScratchStorageRequestsUpToGiB(t *testing.T) {
 	}{
 		{name: "minimum", sourceSize: 1, want: "4Gi"},
 		{name: "round up", sourceSize: 1024*1024*1024 + 1, want: "5Gi"},
-		{name: "near limit", sourceSize: 16 * 1024 * 1024 * 1024, want: "49Gi"},
+		{name: "at limit", sourceSize: 33 * 1024 * 1024 * 1024, want: "100Gi"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -162,19 +162,19 @@ func TestManagerRoundsDynamicScratchStorageRequestsUpToGiB(t *testing.T) {
 			if got := execution.Request.Resources.Requests["ephemeral-storage"]; got != tt.want {
 				t.Fatalf("ephemeral-storage request = %q, want %q", got, tt.want)
 			}
-			if got := execution.Request.Resources.Limits["ephemeral-storage"]; got != "50Gi" {
-				t.Fatalf("ephemeral-storage limit = %q, want 50Gi", got)
+			if got := execution.Request.Resources.Limits["ephemeral-storage"]; got != "100Gi" {
+				t.Fatalf("ephemeral-storage limit = %q, want 100Gi", got)
 			}
 		})
 	}
 }
 
-func TestManagerRejectsExecutionRequiringMoreThanFiftyGiBScratchStorage(t *testing.T) {
+func TestManagerRejectsExecutionRequiringMoreThanOneHundredGiBScratchStorage(t *testing.T) {
 	db := newTestDB(t)
 	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
 		t.Fatalf("insert image config: %v", err)
 	}
-	const sourceSize = int64(17 * 1024 * 1024 * 1024)
+	const sourceSize = int64(34 * 1024 * 1024 * 1024)
 	manager := NewManager(db, nil, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
 
 	_, err := manager.PrepareExecution(context.Background(), ExecutionInput{
@@ -187,7 +187,7 @@ func TestManagerRejectsExecutionRequiringMoreThanFiftyGiBScratchStorage(t *testi
 	if !errors.Is(err, ErrSourceUnavailable) {
 		t.Fatalf("PrepareExecution() error = %v, want ErrSourceUnavailable", err)
 	}
-	if !strings.Contains(err.Error(), "requires 52Gi ephemeral storage, maximum is 50Gi") {
+	if !strings.Contains(err.Error(), "requires 103Gi ephemeral storage, maximum is 100Gi") {
 		t.Fatalf("PrepareExecution() error = %q", err)
 	}
 }
@@ -947,7 +947,7 @@ func TestReconcileOnceRejectsOversizedScratchRequestWhileOrbitIsAtCapacity(t *te
 	}
 	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
 		"raw/one.mcap": {size: 100, etag: "source-one-etag"},
-		"raw/two.mcap": {size: 17 * 1024 * 1024 * 1024, etag: "source-two-etag"},
+		"raw/two.mcap": {size: 34 * 1024 * 1024 * 1024, etag: "source-two-etag"},
 	}}
 	manager := NewManager(db, fake, objects, testManagerConfig())
 	if _, _, err := manager.Start(context.Background(), 18, "admin"); err != nil {
@@ -968,7 +968,7 @@ func TestReconcileOnceRejectsOversizedScratchRequestWhileOrbitIsAtCapacity(t *te
 		t.Fatalf("Get(19) error = %v", getErr)
 	}
 	if derivative.ProcessingStatus != ProcessingFailed ||
-		!strings.Contains(derivative.ProcessingError, "requires 52Gi ephemeral storage, maximum is 50Gi") {
+		!strings.Contains(derivative.ProcessingError, "requires 103Gi ephemeral storage, maximum is 100Gi") {
 		t.Fatalf("oversized derivative at capacity = %+v", derivative)
 	}
 	if fake.submitCalls != 1 {
@@ -1114,7 +1114,7 @@ func TestReconcileOncePersistsCompleteSnapshotBeforeOrbitSubmit(t *testing.T) {
 	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
 	fake.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
 		if request.Resources.Requests["ephemeral-storage"] != "31Gi" ||
-			request.Resources.Limits["ephemeral-storage"] != "50Gi" {
+			request.Resources.Limits["ephemeral-storage"] != "100Gi" {
 			t.Fatalf("Orbit scratch resources = %+v", request.Resources)
 		}
 		var frozen struct {
@@ -1159,7 +1159,7 @@ func TestReconcileOnceFailsBeforeOrbitSubmissionWhenScratchLimitExceeded(t *test
 		t.Fatalf("insert image config: %v", err)
 	}
 	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
-	const sourceSize = int64(17 * 1024 * 1024 * 1024)
+	const sourceSize = int64(34 * 1024 * 1024 * 1024)
 	manager := NewManager(db, fake, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
 	if _, _, err := manager.Start(context.Background(), 31, "admin"); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -1174,7 +1174,7 @@ func TestReconcileOnceFailsBeforeOrbitSubmissionWhenScratchLimitExceeded(t *test
 		t.Fatalf("Get() error = %v", getErr)
 	}
 	if derivative.ProcessingStatus != ProcessingFailed || derivative.OrbitDeleteStatus != DeleteNotRequired ||
-		!strings.Contains(derivative.ProcessingError, "requires 52Gi ephemeral storage, maximum is 50Gi") {
+		!strings.Contains(derivative.ProcessingError, "requires 103Gi ephemeral storage, maximum is 100Gi") {
 		t.Fatalf("derivative after scratch rejection = %+v", derivative)
 	}
 	if fake.submitCalls != 0 {

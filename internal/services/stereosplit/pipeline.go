@@ -25,7 +25,7 @@ const (
 	scratchSourceSizeMultiplier int64 = 3
 	scratchStorageReserveGiB    int64 = 1
 	scratchStorageMinRequestGiB int64 = 4
-	scratchStorageLimitGiB      int64 = 50
+	scratchStorageLimitGiB      int64 = 100
 )
 
 // ErrOutputNotSettled marks output reads that may succeed on a later poll.
