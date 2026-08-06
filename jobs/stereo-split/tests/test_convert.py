@@ -25,6 +25,8 @@ from convert_mcap_stereo_h264 import (  # noqa: E402
     ConverterConfig,
     FOXGLOVE_SCHEMA_NAME,
     StereoSplitH264Converter,
+    _TimestampSample,
+    _build_timestamp_repair_plan,
 )
 sys.path.remove(str(JOB_ROOT))
 
@@ -97,6 +99,7 @@ def make_source(
     include_existing_imu: bool = False,
     include_empty_imu_channel: bool = False,
     include_empty_channel: bool = False,
+    include_kept_topic: bool = True,
     include_summary: bool = True,
     log_times: list[int] | None = None,
     publish_times: list[int] | None = None,
@@ -149,7 +152,11 @@ def make_source(
         string_schema = writer.register_schema(
             "std_msgs/msg/String", "ros2msg", string_definition.encode()
         )
-        string_channel = writer.register_channel("/kept", "cdr", string_schema)
+        string_channel = (
+            writer.register_channel("/kept", "cdr", string_schema)
+            if include_kept_topic
+            else None
+        )
         existing_imu_channel = None
         if include_existing_imu or include_empty_imu_channel:
             imu_schema = writer.register_schema(
@@ -196,14 +203,15 @@ def make_source(
                 publish_time,
                 sequence,
             )
-            kept = messages["std_msgs/msg/String"](data=f"kept-{index}")
-            writer.add_message(
-                string_channel,
-                timestamp + 1,
-                bytes(typestore.serialize_cdr(kept, "std_msgs/msg/String")),
-                timestamp + 1,
-                index,
-            )
+            if string_channel is not None:
+                kept = messages["std_msgs/msg/String"](data=f"kept-{index}")
+                writer.add_message(
+                    string_channel,
+                    timestamp + 1,
+                    bytes(typestore.serialize_cdr(kept, "std_msgs/msg/String")),
+                    timestamp + 1,
+                    index,
+                )
             if existing_imu_channel is not None and include_existing_imu:
                 vector = messages["geometry_msgs/msg/Vector3"]
                 quaternion = messages["geometry_msgs/msg/Quaternion"]
@@ -226,6 +234,59 @@ def make_source(
                     100 + index,
                 )
         writer.finish()
+
+
+def regular_frame_times(frame_count: int = 30) -> list[int]:
+    start_time = 1_800_000_000_000_000_000
+    return [start_time + index * 16_666_667 for index in range(frame_count)]
+
+
+def bursty_frame_times(frame_count: int = 30) -> list[int]:
+    start_time = 1_800_000_000_000_000_000
+    return [
+        start_time + (index // 10) * 300_000_000 + (index % 10) * 100_000
+        for index in range(frame_count)
+    ]
+
+
+def timestamp_samples(
+    header_times: list[int],
+    log_times: list[int],
+    publish_times: list[int] | None = None,
+) -> list[_TimestampSample]:
+    return [
+        _TimestampSample(log_time, publish_time, header_time)
+        for header_time, log_time, publish_time in zip(
+            header_times,
+            log_times,
+            publish_times or log_times,
+        )
+    ]
+
+
+def make_timestamp_source(
+    path: Path,
+    header_times: list[int],
+    log_times: list[int],
+    *,
+    publish_times: list[int] | None = None,
+    include_kept_topic: bool = False,
+) -> None:
+    ok, payload = cv2.imencode(
+        ".jpg",
+        contract_frame(0),
+        [int(cv2.IMWRITE_JPEG_QUALITY), 100],
+    )
+    if not ok:
+        raise RuntimeError("failed to create JPEG timestamp fixture")
+    make_source(
+        path,
+        source_payloads=[payload] * len(header_times),
+        include_kept_topic=include_kept_topic,
+        log_times=log_times,
+        publish_times=publish_times or log_times,
+        header_stamps=[divmod(timestamp, 1_000_000_000) for timestamp in header_times],
+    )
 
 
 def topic_records(path: Path, topic: str) -> list[tuple[object, ...]]:
@@ -268,6 +329,136 @@ def summary_channel(path: Path, topic: str) -> tuple[object, ...] | None:
 
 
 class ConvertTest(unittest.TestCase):
+    def test_timestamp_plan_repairs_publish_only(self) -> None:
+        header_times = regular_frame_times()
+        log_times = [timestamp + 5_000_000 for timestamp in header_times]
+        publish_times = bursty_frame_times()
+
+        plan = _build_timestamp_repair_plan(
+            timestamp_samples(header_times, log_times, publish_times)
+        )
+
+        self.assertTrue(plan.applied)
+        self.assertFalse(plan.log_repair_applied)
+        self.assertTrue(plan.publish_repair_applied)
+        self.assertEqual(plan.reason, "publish_bursty")
+        repaired = [plan.video_message_times(sample) for sample in plan.samples]
+        self.assertEqual([times[0] for times in repaired], log_times)
+        self.assertEqual(
+            [times[1] for times in repaired],
+            [publish_times[0] + timestamp - header_times[0] for timestamp in header_times],
+        )
+
+    def test_timestamp_plan_preserves_healthy_outer_times(self) -> None:
+        header_times = regular_frame_times()
+        log_times = [timestamp + 5_000_000 for timestamp in header_times]
+        publish_times = [timestamp + 1_000_000 for timestamp in log_times]
+
+        plan = _build_timestamp_repair_plan(
+            timestamp_samples(header_times, log_times, publish_times)
+        )
+
+        self.assertFalse(plan.applied)
+        self.assertEqual(plan.reason, "outer_timestamps_healthy")
+
+    def test_timestamp_plan_rejects_non_monotonic_header(self) -> None:
+        header_times = regular_frame_times()
+        header_times[15] = header_times[14]
+
+        plan = _build_timestamp_repair_plan(
+            timestamp_samples(header_times, bursty_frame_times())
+        )
+
+        self.assertFalse(plan.applied)
+        self.assertEqual(plan.reason, "header_non_monotonic")
+
+    def test_timestamp_plan_repairs_non_monotonic_log_times(self) -> None:
+        header_times = regular_frame_times()
+        log_times = [timestamp + 5_000_000 for timestamp in header_times]
+        log_times[15] = log_times[14]
+
+        plan = _build_timestamp_repair_plan(
+            timestamp_samples(header_times, log_times)
+        )
+
+        self.assertTrue(plan.applied)
+        self.assertTrue(plan.log_repair_applied)
+        self.assertEqual(plan.reason, "log_non_monotonic,publish_non_monotonic")
+        self.assertEqual(
+            [plan.video_message_times(sample)[0] for sample in plan.samples],
+            [log_times[0] + timestamp - header_times[0] for timestamp in header_times],
+        )
+
+    def test_timestamp_cursor_aligns_copied_messages_with_duplicate_outer_times(self) -> None:
+        header_times = regular_frame_times()
+        log_times = [timestamp + 5_000_000 for timestamp in header_times]
+        log_times[15] = log_times[14]
+        plan = _build_timestamp_repair_plan(
+            timestamp_samples(header_times, log_times)
+        )
+
+        cursor = plan.new_cursor()
+        for sample in plan.samples:
+            video_log, video_publish = cursor.video_message_times(sample)
+            copied_log, copied_publish = cursor.message_times(
+                sample.log_time + 1, sample.publish_time + 1
+            )
+            self.assertEqual(copied_log, video_log + 1)
+            self.assertEqual(copied_publish, video_publish + 1)
+
+    def test_timestamp_plan_repairs_outer_clock_rate_mismatch(self) -> None:
+        header_times = regular_frame_times()
+        log_times = [
+            header_times[0] + (timestamp - header_times[0]) * 3
+            for timestamp in header_times
+        ]
+
+        plan = _build_timestamp_repair_plan(
+            timestamp_samples(header_times, log_times)
+        )
+
+        self.assertTrue(plan.applied)
+        self.assertEqual(plan.reason, "log_rate_mismatch,publish_rate_mismatch")
+
+    def test_repairs_bursty_container_and_copied_topic_times(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            frame_count = 30
+            header_times = regular_frame_times(frame_count)
+            log_times = bursty_frame_times(frame_count)
+            make_timestamp_source(
+                source,
+                header_times,
+                log_times=log_times,
+                include_kept_topic=True,
+            )
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertTrue(stats.timestamp_repair_applied)
+            self.assertTrue(stats.timestamp_log_repair_applied)
+            self.assertTrue(stats.timestamp_publish_repair_applied)
+            self.assertEqual(stats.timestamp_repair_reason, "log_bursty,publish_bursty")
+            self.assertEqual(stats.timestamp_repaired_messages, frame_count * 2)
+            expected_times = [
+                log_times[0] + timestamp - header_times[0] for timestamp in header_times
+            ]
+            video_times = [record[5] for record in topic_records(output, "/decxin/left_rgb/h264")]
+            self.assertEqual(video_times, expected_times)
+            kept_times = [record[5] for record in topic_records(output, "/kept")]
+            for index in range(frame_count - 1):
+                self.assertLessEqual(video_times[index], kept_times[index])
+                self.assertLess(kept_times[index], video_times[index + 1])
+            self.assertGreaterEqual(kept_times[-1], video_times[-1])
+            with output.open("rb") as stream:
+                physical_times = [
+                    message.log_time
+                    for _, _, message in make_reader(stream).iter_messages(log_time_order=False)
+                ]
+            self.assertEqual(physical_times, sorted(physical_times))
+
     def test_converts_joined_jpeg_and_preserves_other_topics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
