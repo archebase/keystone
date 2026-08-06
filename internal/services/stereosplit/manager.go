@@ -68,11 +68,14 @@ func NewManager(db *sqlx.DB, orbit Orbit, objects ObjectStore, cfg Config) *Mana
 }
 
 type episodeAdmissionRow struct {
-	ID                 int64          `db:"id"`
-	StorageBackend     string         `db:"storage_backend"`
-	McapPath           string         `db:"mcap_path"`
-	Metadata           sql.NullString `db:"metadata"`
-	CloudPublishSource sql.NullString `db:"cloud_publish_source"`
+	ID                      int64          `db:"id"`
+	StorageBackend          string         `db:"storage_backend"`
+	McapPath                string         `db:"mcap_path"`
+	Metadata                sql.NullString `db:"metadata"`
+	CloudPublishSource      sql.NullString `db:"cloud_publish_source"`
+	CameraSerial            sql.NullString `db:"camera_serial"`
+	CalibrationCaptureID    sql.NullString `db:"calibration_capture_id"`
+	CalibrationResultSHA256 sql.NullString `db:"calibration_result_sha256"`
 }
 
 type sourceMetadata struct {

@@ -496,15 +496,23 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 }
 
 type completedUploadEpisode struct {
-	ID               int64           `db:"id"`
-	EpisodeID        string          `db:"episode_id"`
-	IngestionChannel string          `db:"ingestion_channel"`
-	StorageBackend   string          `db:"storage_backend"`
-	MCAPPath         string          `db:"mcap_path"`
-	FileSize         sql.NullInt64   `db:"file_size_bytes"`
-	Duration         sql.NullFloat64 `db:"duration_sec"`
-	Checksum         sql.NullString  `db:"checksum"`
-	Metadata         sql.NullString  `db:"metadata"`
+	ID                      int64           `db:"id"`
+	EpisodeID               string          `db:"episode_id"`
+	IngestionChannel        string          `db:"ingestion_channel"`
+	StorageBackend          string          `db:"storage_backend"`
+	MCAPPath                string          `db:"mcap_path"`
+	FileSize                sql.NullInt64   `db:"file_size_bytes"`
+	Duration                sql.NullFloat64 `db:"duration_sec"`
+	Checksum                sql.NullString  `db:"checksum"`
+	Metadata                sql.NullString  `db:"metadata"`
+	CameraSerial            sql.NullString  `db:"camera_serial"`
+	CalibrationCaptureID    sql.NullString  `db:"calibration_capture_id"`
+	CalibrationResultSHA256 sql.NullString  `db:"calibration_result_sha256"`
+}
+
+type episodeCalibrationSelection struct {
+	CaptureID    string `db:"capture_id"`
+	ResultSHA256 string `db:"result_checksum_sha256"`
 }
 
 func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *uploadSession, req *cloudpb.CompleteUploadRequest) (string, int64, bool, error) {
@@ -526,6 +534,9 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 		return "", 0, false, err
 	}
 	if err := requireMatchingRawTag(rawTags, "workspace_id", fmt.Sprintf("%d", principal.WorkspaceID)); err != nil {
+		return "", 0, false, err
+	}
+	if err := requireOptionalMatchingRawTag(rawTags, "camera_serial", session.ClientHints["camera_serial"]); err != nil {
 		return "", 0, false, err
 	}
 	var episodeChecksumSHA256 sql.NullString
@@ -596,7 +607,8 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	var existing completedUploadEpisode
 	err = tx.GetContext(ctx, &existing, `
 		SELECT id, episode_id, ingestion_channel, storage_backend,
-			mcap_path, file_size_bytes, duration_sec, checksum, metadata
+			mcap_path, file_size_bytes, duration_sec, checksum, metadata,
+			camera_serial, calibration_capture_id, calibration_result_sha256
 		FROM episodes
 		WHERE task_id = ? AND deleted_at IS NULL
 		LIMIT 1
@@ -641,6 +653,12 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 
 	now := s.now()
 	episodeID := uuid.NewString()
+	selection, matched, err := s.resolveSuccessfulCalibration(ctx, tx, session.ClientHints["camera_serial"])
+	if err != nil {
+		logger.Printf("[DGW_COMPAT] resolve camera calibration failed camera_serial=%q: %v",
+			session.ClientHints["camera_serial"], err)
+		return "", 0, false, status.Error(codes.Unavailable, "camera calibration lookup unavailable")
+	}
 	metadata, err := uploadEpisodeMetadata(session, req)
 	if err != nil {
 		return "", 0, false, status.Error(codes.InvalidArgument, "invalid upload metadata")
@@ -666,12 +684,17 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			checksum,
 			qa_status,
 			metadata,
+			camera_serial,
+			calibration_capture_id,
+			calibration_result_sha256,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, NULLIF(?, ''), ?, ?, ?, ?)
 	`, episodeID, task.TaskPK, task.WorkstationID, task.OrganizationID, task.DCPlanID, task.LocalDCPlanID,
 		dataGatewayEpisodeIngestionChannel, dataGatewayEpisodeStorageBackend,
-		session.ObjectKey, "", req.GetFileSize(), durationSec, episodeChecksumSHA256, metadata, now, now)
+		session.ObjectKey, "", req.GetFileSize(), durationSec, episodeChecksumSHA256, metadata,
+		session.ClientHints["camera_serial"], nullableCalibrationValue(matched, selection.CaptureID),
+		nullableCalibrationValue(matched, selection.ResultSHA256), now, now)
 	if err != nil {
 		return "", 0, false, status.Error(codes.Unavailable, "episode creation failed")
 	}
@@ -696,6 +719,55 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	return episodeID, episodePK, true, nil
 }
 
+func (s *gatewayService) resolveSuccessfulCalibration(
+	ctx context.Context,
+	tx *sqlx.Tx,
+	cameraSerial string,
+) (episodeCalibrationSelection, bool, error) {
+	cameraSerial = strings.TrimSpace(cameraSerial)
+	if cameraSerial == "" {
+		return episodeCalibrationSelection{}, false, nil
+	}
+	comparison := "s.camera_serial = ?"
+	if s.db.DriverName() != "sqlite" {
+		comparison = "BINARY s.camera_serial = BINARY ?"
+	}
+	var selection episodeCalibrationSelection
+	err := tx.GetContext(ctx, &selection, `
+		SELECT c.capture_id, c.result_checksum_sha256
+		FROM calibration_sessions s
+		INNER JOIN calibration_captures c
+			ON c.capture_id = s.successful_capture_id
+			AND c.calibration_session_id = s.session_id
+		WHERE `+comparison+`
+		  AND s.status = 'succeeded'
+		  AND c.status = 'succeeded'
+		  AND c.result_object_key IS NOT NULL
+		  AND c.result_size_bytes > 0
+		  AND c.result_checksum_sha256 IS NOT NULL
+		ORDER BY c.processing_finished_at DESC, c.id DESC
+		LIMIT 1
+	`, cameraSerial)
+	if errors.Is(err, sql.ErrNoRows) {
+		return episodeCalibrationSelection{}, false, nil
+	}
+	if err != nil {
+		return episodeCalibrationSelection{}, false, fmt.Errorf("query successful calibration: %w", err)
+	}
+	if !isSHA256Hex(strings.ToLower(selection.ResultSHA256)) {
+		return episodeCalibrationSelection{}, false, fmt.Errorf("matched calibration result has invalid SHA-256")
+	}
+	selection.ResultSHA256 = strings.ToLower(selection.ResultSHA256)
+	return selection, true, nil
+}
+
+func nullableCalibrationValue(matched bool, value string) any {
+	if !matched {
+		return nil
+	}
+	return value
+}
+
 func parsePositiveInt64Hint(hints map[string]string, key string) (int64, error) {
 	value := strings.TrimSpace(hints[key])
 	if value == "" {
@@ -717,6 +789,18 @@ func parseInt64(value string) (int64, error) {
 func requireMatchingRawTag(tags map[string]string, key, expected string) error {
 	actual := strings.TrimSpace(tags[key])
 	expected = strings.TrimSpace(expected)
+	if actual == "" || actual != expected {
+		return status.Errorf(codes.FailedPrecondition, "%s does not match upload session", key)
+	}
+	return nil
+}
+
+func requireOptionalMatchingRawTag(tags map[string]string, key, expected string) error {
+	actual := strings.TrimSpace(tags[key])
+	expected = strings.TrimSpace(expected)
+	if actual == "" && expected == "" {
+		return nil
+	}
 	if actual == "" || actual != expected {
 		return status.Errorf(codes.FailedPrecondition, "%s does not match upload session", key)
 	}
@@ -759,6 +843,23 @@ func validateIdempotentComplete(
 	req *cloudpb.CompleteUploadRequest,
 	episodeChecksumSHA256 sql.NullString,
 ) error {
+	expectedCameraSerial := strings.TrimSpace(session.ClientHints["camera_serial"])
+	storedCameraSerial := strings.TrimSpace(episode.CameraSerial.String)
+	if expectedCameraSerial == "" {
+		if episode.CameraSerial.Valid && storedCameraSerial != "" {
+			return status.Error(codes.FailedPrecondition, "camera_serial differs from completed upload")
+		}
+	} else if !episode.CameraSerial.Valid || storedCameraSerial != expectedCameraSerial {
+		return status.Error(codes.FailedPrecondition, "camera_serial differs from completed upload")
+	}
+	storedCaptureID := strings.TrimSpace(episode.CalibrationCaptureID.String)
+	storedResultSHA256 := strings.ToLower(strings.TrimSpace(episode.CalibrationResultSHA256.String))
+	if (episode.CalibrationCaptureID.Valid && storedCaptureID == "") ||
+		(episode.CalibrationResultSHA256.Valid && !isSHA256Hex(storedResultSHA256)) ||
+		(episode.CalibrationCaptureID.Valid != episode.CalibrationResultSHA256.Valid) ||
+		(episode.CalibrationCaptureID.Valid && expectedCameraSerial == "") {
+		return status.Error(codes.FailedPrecondition, "completed upload calibration selection is inconsistent")
+	}
 	if episode.MCAPPath != session.ObjectKey {
 		return status.Error(codes.FailedPrecondition, "object key differs from completed upload")
 	}

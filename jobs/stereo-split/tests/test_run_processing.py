@@ -127,9 +127,10 @@ def job_command(
     *,
     expected_size: int | None = None,
     expected_checksum: str | None = None,
+    calibration_result: Path | None = None,
     runner: Path = RUNNER,
 ) -> list[str]:
-    return [
+    command = [
         sys.executable,
         str(runner),
         "--input",
@@ -151,6 +152,25 @@ def job_command(
         "--generation",
         "1",
     ]
+    if calibration_result is not None:
+        calibration_bytes = calibration_result.read_bytes()
+        command.extend(
+            [
+                "--calibration-result",
+                str(calibration_result),
+                "--calibration-camera-serial",
+                "CAMERA-SN-001",
+                "--calibration-session-id",
+                "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+                "--calibration-capture-id",
+                "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+                "--expected-calibration-size",
+                str(len(calibration_bytes)),
+                "--expected-calibration-checksum",
+                hashlib.sha256(calibration_bytes).hexdigest(),
+            ]
+        )
+    return command
 
 
 def run_job(
@@ -160,6 +180,7 @@ def run_job(
     *,
     expected_size: int | None = None,
     expected_checksum: str | None = None,
+    calibration_result: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         job_command(
@@ -168,6 +189,7 @@ def run_job(
             scratch,
             expected_size=expected_size,
             expected_checksum=expected_checksum,
+            calibration_result=calibration_result,
         ),
         cwd=JOB_ROOT,
         capture_output=True,
@@ -292,6 +314,59 @@ class RunProcessingTest(unittest.TestCase):
             self.assertAlmostEqual(first_imu.angular_velocity.x, 4000 * gyro_scale)
             self.assertAlmostEqual(first_imu.angular_velocity.y, -5000 * gyro_scale)
             self.assertAlmostEqual(first_imu.angular_velocity.z, 6000 * gyro_scale)
+
+    def test_embeds_frozen_calibration_result_as_json_attachment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = make_source_mcap(root)
+            calibration_result = root / "calibration-result.json"
+            calibration_document = {
+                "schema_version": 1,
+                "status": "succeeded",
+                "algorithm_version": "archebase-calib-test",
+                "calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+                "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+                "camera_serial": "CAMERA-SN-001",
+                "result": {"calibration": {"fx": 100.0}},
+            }
+            calibration_result.write_bytes(
+                (json.dumps(calibration_document, sort_keys=True) + "\n").encode("utf-8")
+            )
+            output_binding = root / "published"
+            output_binding.mkdir()
+
+            result = run_job(
+                source,
+                output_binding,
+                root / "scratch",
+                calibration_result=calibration_result,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output_mcap = output_binding / "output_bag.mcap"
+            with output_mcap.open("rb") as stream:
+                attachments = list(make_reader(stream).iter_attachments())
+            self.assertEqual(len(attachments), 1)
+            self.assertEqual(attachments[0].name, "archebase/calibration/result.json")
+            self.assertEqual(attachments[0].media_type, "application/json")
+            self.assertEqual(attachments[0].data, calibration_result.read_bytes())
+
+            manifest = json.loads(
+                (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(
+                manifest["calibration"],
+                {
+                    "attachment_name": "archebase/calibration/result.json",
+                    "camera_serial": "CAMERA-SN-001",
+                    "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+                    "media_type": "application/json",
+                    "session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+                    "sha256": hashlib.sha256(calibration_result.read_bytes()).hexdigest(),
+                    "size_bytes": calibration_result.stat().st_size,
+                },
+            )
 
     def test_same_source_produces_deterministic_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

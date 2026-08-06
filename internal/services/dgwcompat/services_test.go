@@ -371,6 +371,304 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	}
 }
 
+func TestGatewayCompleteUploadFreezesMatchingCalibrationResult(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	for _, statement := range []string{
+		`INSERT INTO calibration_sessions (
+			session_id, camera_serial, robot_id, device_id, workspace_id, status,
+			successful_capture_id, created_at, updated_at
+		) VALUES (
+			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 'CAMERA-SN-001', 1, '101', 10,
+			'succeeded', '92cd6f2f-d131-4bf0-9b4a-d96258d09011', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+		)`,
+		`INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+			checksum_sha256, logical_upload_id, upload_id, result_object_key,
+			result_size_bytes, result_checksum_sha256, algorithm_version,
+			processing_finished_at, created_at, updated_at
+		) VALUES (
+			'92cd6f2f-d131-4bf0-9b4a-d96258d09011',
+			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 1, 'succeeded', 'bucket-1',
+			'calibration/source.mcap',
+			'9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+			'logical-calibration', 'upload-calibration', 'calibration-results/result.json',
+			512, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+			'archebase-calib-test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+		)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed successful calibration: %v\n%s", err, statement)
+		}
+	}
+
+	service := newGatewayService(
+		testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()},
+		newSessionStore(), db, nil,
+	)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		ClientHints: map[string]string{
+			"camera_serial": "  CAMERA-SN-001  ",
+			"capture_id":    "capture-1",
+			"dc_plan_id":    "1001",
+			"source":        "ego-portal",
+			"task_id":       "task-1",
+			"workspace_id":  "10",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	complete := &cloudpb.CompleteUploadRequest{
+		UploadId: created.GetUploadId(), FileSize: 1024, CompletedPartCount: 1, ObjectEtag: "etag-1",
+		RawTags: map[string]string{
+			"camera_serial": "CAMERA-SN-001",
+			"capture_id":    "capture-1",
+			"dc_plan_id":    "1001",
+			"task_id":       "task-1",
+			"workspace_id":  "10",
+		},
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+
+	var episode struct {
+		CameraSerial            string `db:"camera_serial"`
+		CalibrationCaptureID    string `db:"calibration_capture_id"`
+		CalibrationResultSHA256 string `db:"calibration_result_sha256"`
+	}
+	if err := db.Get(&episode, `
+		SELECT camera_serial, calibration_capture_id, calibration_result_sha256
+		FROM episodes WHERE task_id = 1
+	`); err != nil {
+		t.Fatalf("query episode calibration selection: %v", err)
+	}
+	if episode.CameraSerial != "CAMERA-SN-001" ||
+		episode.CalibrationCaptureID != "92cd6f2f-d131-4bf0-9b4a-d96258d09011" ||
+		episode.CalibrationResultSHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("episode calibration selection = %+v", episode)
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("idempotent CompleteUpload() error = %v", err)
+	}
+	if _, err := db.Exec(`UPDATE episodes SET camera_serial = 'OTHER-CAMERA' WHERE task_id = 1`); err != nil {
+		t.Fatalf("change frozen camera serial: %v", err)
+	}
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CompleteUpload() changed camera error = %v, want FailedPrecondition", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE episodes SET camera_serial = 'CAMERA-SN-001', calibration_capture_id = NULL
+		WHERE task_id = 1
+	`); err != nil {
+		t.Fatalf("make frozen calibration partial: %v", err)
+	}
+	if _, err := service.CompleteUpload(ctx, complete); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CompleteUpload() partial calibration error = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestGatewayCompleteUploadAllowsMissingOrUnknownCameraSerial(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		cameraSerial string
+		wantStored   bool
+	}{
+		{name: "missing"},
+		{name: "unknown", cameraSerial: "UNREGISTERED-CAMERA", wantStored: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newGatewayServiceTestDB(t)
+			service := newGatewayService(
+				testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()},
+				newSessionStore(), db, nil,
+			)
+			ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+				RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+			})
+			hints := map[string]string{
+				"capture_id":   "capture-1",
+				"dc_plan_id":   "1001",
+				"source":       "ego-portal",
+				"task_id":      "task-1",
+				"workspace_id": "10",
+			}
+			rawTags := map[string]string{
+				"capture_id":   "capture-1",
+				"dc_plan_id":   "1001",
+				"task_id":      "task-1",
+				"workspace_id": "10",
+			}
+			if tt.cameraSerial != "" {
+				hints["camera_serial"] = tt.cameraSerial
+				rawTags["camera_serial"] = tt.cameraSerial
+			}
+			created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{ClientHints: hints})
+			if err != nil {
+				t.Fatalf("CreateLogicalUpload() error = %v", err)
+			}
+			if _, err := service.CompleteUpload(ctx, &cloudpb.CompleteUploadRequest{
+				UploadId: created.GetUploadId(), FileSize: 1024, CompletedPartCount: 1,
+				ObjectEtag: "etag-1", RawTags: rawTags,
+			}); err != nil {
+				t.Fatalf("CompleteUpload() error = %v", err)
+			}
+			var episode struct {
+				CameraSerial         sql.NullString `db:"camera_serial"`
+				CalibrationCaptureID sql.NullString `db:"calibration_capture_id"`
+				CalibrationSHA256    sql.NullString `db:"calibration_result_sha256"`
+			}
+			if err := db.Get(&episode, `
+				SELECT camera_serial, calibration_capture_id, calibration_result_sha256
+				FROM episodes WHERE task_id = 1
+			`); err != nil {
+				t.Fatalf("query episode calibration selection: %v", err)
+			}
+			if episode.CameraSerial.Valid != tt.wantStored || episode.CameraSerial.String != tt.cameraSerial ||
+				episode.CalibrationCaptureID.Valid || episode.CalibrationSHA256.Valid {
+				t.Fatalf("episode calibration selection = %+v", episode)
+			}
+		})
+	}
+}
+
+func TestGatewayCompleteUploadRequiresCameraSerialToMatchCreate(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		createSerial   string
+		completeSerial string
+	}{
+		{name: "omitted on complete", createSerial: "CAMERA-SN-001"},
+		{name: "changed on complete", createSerial: "CAMERA-SN-001", completeSerial: "CAMERA-SN-002"},
+		{name: "added on complete", completeSerial: "CAMERA-SN-001"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newGatewayServiceTestDB(t)
+			service := newGatewayService(
+				testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()},
+				newSessionStore(), db, nil,
+			)
+			ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+				RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+			})
+			hints := map[string]string{
+				"capture_id": "capture-1", "dc_plan_id": "1001", "source": "ego-portal",
+				"task_id": "task-1", "workspace_id": "10",
+			}
+			if tt.createSerial != "" {
+				hints["camera_serial"] = tt.createSerial
+			}
+			created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{ClientHints: hints})
+			if err != nil {
+				t.Fatalf("CreateLogicalUpload() error = %v", err)
+			}
+			rawTags := map[string]string{
+				"capture_id": "capture-1", "dc_plan_id": "1001", "task_id": "task-1", "workspace_id": "10",
+			}
+			if tt.completeSerial != "" {
+				rawTags["camera_serial"] = tt.completeSerial
+			}
+			_, err = service.CompleteUpload(ctx, &cloudpb.CompleteUploadRequest{
+				UploadId: created.GetUploadId(), FileSize: 1024, CompletedPartCount: 1,
+				ObjectEtag: "etag-1", RawTags: rawTags,
+			})
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("CompleteUpload() error = %v, want FailedPrecondition", err)
+			}
+		})
+	}
+}
+
+func TestGatewayCompleteUploadSelectsLatestSuccessfulCalibrationByExactCameraSerial(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	for _, statement := range []string{
+		`INSERT INTO calibration_sessions (
+			session_id, camera_serial, robot_id, device_id, workspace_id, status,
+			successful_capture_id, created_at, updated_at
+		) VALUES
+			('session-old', 'CAMERA-SN-001', 1, '101', 10, 'succeeded', 'capture-old', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+			('session-latest', 'CAMERA-SN-001', 999, 'other-device', 999, 'succeeded', 'capture-latest', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+			('session-case', 'camera-sn-001', 1, '101', 10, 'succeeded', 'capture-case', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+			('session-running', 'CAMERA-SN-001', 1, '101', 10, 'running', 'capture-running', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		`INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+			checksum_sha256, logical_upload_id, upload_id, result_object_key,
+			result_size_bytes, result_checksum_sha256, algorithm_version,
+			processing_finished_at, created_at, updated_at
+		) VALUES
+			('capture-old', 'session-old', 1, 'succeeded', 'bucket-1', 'old.mcap', '` + strings.Repeat("1", 64) + `', 'logical-old', 'upload-old', 'old/result.json', 100, '` + strings.Repeat("a", 64) + `', 'test', '2026-08-01 10:00:00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+			('capture-latest', 'session-latest', 1, 'succeeded', 'bucket-1', 'latest.mcap', '` + strings.Repeat("2", 64) + `', 'logical-latest', 'upload-latest', 'latest/result.json', 100, '` + strings.Repeat("b", 64) + `', 'test', '2026-08-02 10:00:00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+			('capture-case', 'session-case', 1, 'succeeded', 'bucket-1', 'case.mcap', '` + strings.Repeat("3", 64) + `', 'logical-case', 'upload-case', 'case/result.json', 100, '` + strings.Repeat("c", 64) + `', 'test', '2026-08-03 10:00:00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+			('capture-running', 'session-running', 1, 'succeeded', 'bucket-1', 'running.mcap', '` + strings.Repeat("4", 64) + `', 'logical-running', 'upload-running', 'running/result.json', 100, '` + strings.Repeat("d", 64) + `', 'test', '2026-08-04 10:00:00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed calibration selection candidates: %v\n%s", err, statement)
+		}
+	}
+	service := newGatewayService(
+		testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()},
+		newSessionStore(), db, nil,
+	)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{ClientHints: map[string]string{
+		"camera_serial": "CAMERA-SN-001", "capture_id": "capture-1", "dc_plan_id": "1001",
+		"source": "ego-portal", "task_id": "task-1", "workspace_id": "10",
+	}})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	complete := &cloudpb.CompleteUploadRequest{
+		UploadId: created.GetUploadId(), FileSize: 1024, CompletedPartCount: 1, ObjectEtag: "etag-1",
+		RawTags: map[string]string{
+			"camera_serial": "CAMERA-SN-001", "capture_id": "capture-1", "dc_plan_id": "1001",
+			"task_id": "task-1", "workspace_id": "10",
+		},
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO calibration_sessions (
+			session_id, camera_serial, robot_id, device_id, workspace_id, status,
+			successful_capture_id, created_at, updated_at
+		) VALUES ('session-newer', 'CAMERA-SN-001', 1, '101', 10, 'succeeded', 'capture-newer', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`); err != nil {
+		t.Fatalf("seed newer calibration session: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO calibration_captures (
+			capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+			checksum_sha256, logical_upload_id, upload_id, result_object_key,
+			result_size_bytes, result_checksum_sha256, algorithm_version,
+			processing_finished_at, created_at, updated_at
+		) VALUES ('capture-newer', 'session-newer', 1, 'succeeded', 'bucket-1', 'newer.mcap', ?,
+			'logical-newer', 'upload-newer', 'newer/result.json', 100, ?, 'test',
+			'2026-08-05 10:00:00', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, strings.Repeat("5", 64), strings.Repeat("e", 64)); err != nil {
+		t.Fatalf("seed newer calibration capture: %v", err)
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("idempotent CompleteUpload() error = %v", err)
+	}
+	var frozen struct {
+		CaptureID string `db:"calibration_capture_id"`
+		SHA256    string `db:"calibration_result_sha256"`
+	}
+	if err := db.Get(&frozen, `
+		SELECT calibration_capture_id, calibration_result_sha256 FROM episodes WHERE task_id = 1
+	`); err != nil {
+		t.Fatalf("load frozen calibration selection: %v", err)
+	}
+	if frozen.CaptureID != "capture-latest" || frozen.SHA256 != strings.Repeat("b", 64) {
+		t.Fatalf("frozen calibration selection = %+v", frozen)
+	}
+}
+
 func TestGatewayCompleteCalibrationCaptureQueuesProcessingWithoutEpisode(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	qa := &fakeEpisodeQAEnqueuer{}
@@ -1294,6 +1592,9 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 			checksum TEXT,
 			qa_status TEXT,
 			metadata TEXT,
+			camera_serial TEXT,
+			calibration_capture_id TEXT,
+			calibration_result_sha256 TEXT,
 			created_at TIMESTAMP NULL,
 			updated_at TIMESTAMP NULL,
 			deleted_at TIMESTAMP NULL,
@@ -1332,6 +1633,11 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 			upload_id TEXT NOT NULL,
 			source TEXT,
 			local_operator TEXT,
+			processing_finished_at TIMESTAMP,
+			result_object_key TEXT,
+			result_size_bytes INTEGER,
+			result_checksum_sha256 TEXT,
+			algorithm_version TEXT,
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL,
 			uploaded_at TIMESTAMP

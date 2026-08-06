@@ -29,6 +29,8 @@ COPY_ATTEMPTS = 3
 COPY_RETRY_SECONDS = 1
 SCRATCH_SPACE_MULTIPLIER = 3
 MCAP_MAGIC = b"\x89MCAP0\r\n"
+CALIBRATION_ATTACHMENT_NAME = "archebase/calibration/result.json"
+CALIBRATION_MEDIA_TYPE = "application/json"
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,62 @@ def require_scratch_capacity(scratch: Path, source_size_bytes: int) -> None:
         raise RuntimeError(f"insufficient scratch space: required {required} bytes, available {available} bytes")
 
 
+def load_calibration_result(args: argparse.Namespace) -> tuple[bytes, dict[str, object]] | None:
+    values = (
+        args.calibration_result,
+        args.calibration_camera_serial,
+        args.calibration_session_id,
+        args.calibration_capture_id,
+        args.expected_calibration_size,
+        args.expected_calibration_checksum,
+    )
+    if not any(value not in (None, "", 0) for value in values):
+        return None
+    if any(value in (None, "", 0) for value in values):
+        raise RuntimeError("calibration result arguments must be provided together")
+
+    path = args.calibration_result.resolve()
+    if not path.is_file():
+        raise RuntimeError(f"calibration result does not exist: {path}")
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if len(data) != args.expected_calibration_size:
+        raise RuntimeError(
+            "calibration result size mismatch: "
+            f"expected {args.expected_calibration_size}, got {len(data)}"
+        )
+    if digest != args.expected_calibration_checksum.lower():
+        raise RuntimeError(
+            "calibration result checksum mismatch: "
+            f"expected {args.expected_calibration_checksum.lower()}, got {digest}"
+        )
+    try:
+        document = json.loads(data)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("calibration result JSON is invalid") from error
+    if not isinstance(document, dict):
+        raise RuntimeError("calibration result JSON must contain an object")
+    if (
+        document.get("schema_version") != 1
+        or document.get("status") != "succeeded"
+        or document.get("camera_serial") != args.calibration_camera_serial
+        or document.get("calibration_session_id") != args.calibration_session_id
+        or document.get("capture_id") != args.calibration_capture_id
+        or not isinstance(document.get("result"), dict)
+        or not document["result"]
+    ):
+        raise RuntimeError("calibration result JSON does not match the frozen selection")
+    return data, {
+        "attachment_name": CALIBRATION_ATTACHMENT_NAME,
+        "media_type": CALIBRATION_MEDIA_TYPE,
+        "camera_serial": args.calibration_camera_serial,
+        "session_id": args.calibration_session_id,
+        "capture_id": args.calibration_capture_id,
+        "size_bytes": len(data),
+        "sha256": digest,
+    }
+
+
 def run(args: argparse.Namespace) -> dict[str, object]:
     source = args.input.resolve()
     output_binding = args.output_binding.resolve()
@@ -141,6 +199,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     if (output_binding / MANIFEST_NAME).exists():
         raise RuntimeError("output binding already contains a processing manifest")
     require_scratch_capacity(scratch, args.expected_source_size)
+    calibration = load_calibration_result(args)
 
     started_at = utc_now()
     local_input = scratch / "input" / "source.mcap"
@@ -158,7 +217,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             raise RuntimeError(f"source checksum mismatch: expected {expected}, got {source_identity.sha256}")
 
     config = ConverterConfig()
-    stats = StereoSplitH264Converter(config).convert(local_input, local_mcap)
+    stats = StereoSplitH264Converter(config).convert(
+        local_input,
+        local_mcap,
+        calibration_attachment=calibration[0] if calibration is not None else None,
+    )
     metadata: dict[str, object] = {
         "schema_version": 1,
         "format": "mcap",
@@ -183,7 +246,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     publish_file(local_metadata, output_binding / OUTPUT_METADATA_NAME, metadata_identity)
 
     manifest: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3 if calibration is not None else 2,
         "status": "succeeded",
         "kind": args.kind,
         "output_format": "stereo_h264",
@@ -203,6 +266,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "started_at": started_at,
         "finished_at": utc_now(),
     }
+    if calibration is not None:
+        manifest["calibration"] = calibration[1]
     write_json(local_manifest, manifest)
     publish_file(local_manifest, output_binding / MANIFEST_NAME, hash_file(local_manifest))
     return manifest
@@ -226,6 +291,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--processor-image", required=True)
     parser.add_argument("--kind", choices=("stereo_split",), required=True)
     parser.add_argument("--generation", type=positive_integer, required=True)
+    parser.add_argument("--calibration-result", type=Path)
+    parser.add_argument("--calibration-camera-serial", default="")
+    parser.add_argument("--calibration-session-id", default="")
+    parser.add_argument("--calibration-capture-id", default="")
+    parser.add_argument("--expected-calibration-size", type=positive_integer)
+    parser.add_argument("--expected-calibration-checksum", default="")
     return parser
 
 
