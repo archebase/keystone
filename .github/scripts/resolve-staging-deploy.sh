@@ -88,8 +88,9 @@ if ! [[ "$STAGING_IRSA_ROLE_TRN" =~ ^trn:iam::[0-9]+:role/[^[:space:]]*staging[^
   exit 1
 fi
 
-if ! [[ "$STAGING_HILBERT_BASE_URL" =~ ^https://[^/]*staging[^/]*/.+ ]]; then
-  echo "STAGING_KEYSTONE_HILBERT_BASE_URL must be a staging HTTPS URL with a path" >&2
+expected_staging_hilbert_base_url="http://hilbert-be-backend:8080/hilbert-be-backend"
+if [[ "$STAGING_HILBERT_BASE_URL" != "$expected_staging_hilbert_base_url" ]]; then
+  echo "STAGING_KEYSTONE_HILBERT_BASE_URL must be ${expected_staging_hilbert_base_url}" >&2
   exit 1
 fi
 

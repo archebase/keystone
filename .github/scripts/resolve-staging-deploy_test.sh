@@ -36,7 +36,7 @@ run_resolver() {
     STAGING_TOS_READ_ROLE_TRN=trn:iam::1234567890:role/keystone-staging-read \
     STAGING_IRSA_ROLE_TRN=trn:iam::1234567890:role/archebase-staging-keystone-tos-irsa \
     STAGING_GRPC_LISTENER_PORT=50053 \
-    STAGING_HILBERT_BASE_URL=https://hilbert-staging.example.com/hilbert-be-backend \
+    STAGING_HILBERT_BASE_URL=http://hilbert-be-backend:8080/hilbert-be-backend \
     "$@" \
     bash "$resolver" >/dev/null
 }
@@ -72,6 +72,7 @@ expect_failure "non-staging bucket" STAGING_TOS_BUCKET=archebase-prod-keystone
 expect_failure "non-staging upload role" STAGING_TOS_UPLOAD_ROLE_TRN=trn:iam::1234567890:role/keystone-upload
 expect_failure "non-staging read role" STAGING_TOS_READ_ROLE_TRN=trn:iam::1234567890:role/keystone-read
 expect_failure "non-staging IRSA role" STAGING_IRSA_ROLE_TRN=trn:iam::1234567890:role/archebase-prod-keystone-tos-irsa
-expect_failure "non-staging Hilbert" STAGING_HILBERT_BASE_URL=https://hilbert.example.com/hilbert-be-backend
+expect_failure "public staging Hilbert" STAGING_HILBERT_BASE_URL=https://hilbert-staging.example.com/hilbert-be-backend
+expect_failure "wrong internal Hilbert service" STAGING_HILBERT_BASE_URL=http://hilbert-be:8080/hilbert-be-backend
 
 echo "staging deployment resolution tests passed"
