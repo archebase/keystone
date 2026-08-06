@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -58,9 +59,69 @@ def contract_frame(index: int) -> np.ndarray:
     return frame
 
 
-def make_source(path: Path, frame_count: int = 3, *, include_existing_imu: bool = False) -> None:
+def encode_h264_access_units(frames: list[np.ndarray]) -> list[bytes]:
+    height, width = frames[0].shape[:2]
+    encoded = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "rawvideo", "-pixel_format", "bgr24",
+            "-video_size", f"{width}x{height}", "-framerate", "60", "-i", "pipe:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-profile:v", "high", "-pix_fmt", "yuv420p", "-g", "1", "-bf", "0",
+            "-x264-params", "aud=1:repeat-headers=1", "-f", "h264", "pipe:1",
+        ],
+        input=b"".join(frame.tobytes() for frame in frames),
+        capture_output=True,
+        check=True,
+    ).stdout
+    starts = [match.start() for match in re.finditer(b"\\x00\\x00(?:\\x00)?\\x01\\x09", encoded)]
+    access_units = [
+        encoded[start : starts[index + 1] if index + 1 < len(starts) else len(encoded)]
+        for index, start in enumerate(starts)
+    ]
+    if len(access_units) != len(frames):
+        raise RuntimeError(
+            f"H.264 fixture frame count mismatch: {len(access_units)} != {len(frames)}"
+        )
+    return access_units
+
+
+def make_source(
+    path: Path,
+    frame_count: int = 3,
+    *,
+    source_format: str = "jpeg",
+    source_formats: list[str] | None = None,
+    source_frames: list[np.ndarray] | None = None,
+    source_payloads: list[np.ndarray] | None = None,
+    include_existing_imu: bool = False,
+    log_times: list[int] | None = None,
+    publish_times: list[int] | None = None,
+    sequences: list[int] | None = None,
+    header_stamps: list[tuple[int, int]] | None = None,
+) -> None:
     typestore = get_typestore(Stores.ROS2_JAZZY)
     messages = typestore.types
+    frames = source_frames if source_frames is not None else [
+        contract_frame(index) for index in range(frame_count)
+    ]
+    frame_count = len(source_payloads) if source_payloads is not None else len(frames)
+    formats = source_formats or [source_format] * frame_count
+    if len(formats) != frame_count:
+        raise ValueError("source format count must match frame count")
+    for name, values in (
+        ("log time", log_times),
+        ("publish time", publish_times),
+        ("sequence", sequences),
+        ("header stamp", header_stamps),
+    ):
+        if values is not None and len(values) != frame_count:
+            raise ValueError(f"source {name} count must match frame count")
+    h264_access_units = (
+        encode_h264_access_units(frames)
+        if source_payloads is None and "h264" in formats
+        else []
+    )
     compressed_definition, _ = typestore.generate_msgdef(
         "sensor_msgs/msg/CompressedImage", ros_version=2
     )
@@ -82,23 +143,38 @@ def make_source(path: Path, frame_count: int = 3, *, include_existing_imu: bool 
         if include_existing_imu:
             existing_imu_channel = writer.register_channel("/decxin/imu", "cdr", string_schema)
         for index in range(frame_count):
-            ok, jpeg = cv2.imencode(
-                ".jpg", contract_frame(index), [int(cv2.IMWRITE_JPEG_QUALITY), 100]
+            message_format = formats[index]
+            if source_payloads is not None:
+                payload = source_payloads[index]
+            elif message_format == "h264":
+                payload = np.frombuffer(h264_access_units[index], dtype=np.uint8)
+            else:
+                ok, payload = cv2.imencode(
+                    ".jpg", frames[index], [int(cv2.IMWRITE_JPEG_QUALITY), 100]
+                )
+                if not ok:
+                    raise RuntimeError("failed to create JPEG fixture")
+            timestamp = (
+                log_times[index] if log_times is not None else (index + 1) * 1_000_000_000
             )
-            if not ok:
-                raise RuntimeError("failed to create JPEG fixture")
-            timestamp = (index + 1) * 1_000_000_000
-            stamp = messages["builtin_interfaces/msg/Time"](sec=index + 1, nanosec=0)
+            publish_time = publish_times[index] if publish_times is not None else timestamp
+            sequence = sequences[index] if sequences is not None else index
+            stamp_seconds, stamp_nanos = (
+                header_stamps[index] if header_stamps is not None else (index + 1, 0)
+            )
+            stamp = messages["builtin_interfaces/msg/Time"](
+                sec=stamp_seconds, nanosec=stamp_nanos
+            )
             header = messages["std_msgs/msg/Header"](stamp=stamp, frame_id="joined_camera")
             compressed = messages["sensor_msgs/msg/CompressedImage"](
-                header=header, format="jpeg", data=jpeg.reshape(-1)
+                header=header, format=message_format, data=payload.reshape(-1)
             )
             writer.add_message(
                 compressed_channel,
                 timestamp,
                 bytes(typestore.serialize_cdr(compressed, "sensor_msgs/msg/CompressedImage")),
-                timestamp,
-                index,
+                publish_time,
+                sequence,
             )
             kept = messages["std_msgs/msg/String"](data=f"kept-{index}")
             writer.add_message(
@@ -191,6 +267,71 @@ class ConvertTest(unittest.TestCase):
                 self.assertRegex(trace, r"num_units_in_tick\s+.*= 1")
                 self.assertRegex(trace, r"time_scale\s+.*= 120")
                 self.assertRegex(trace, r"fixed_frame_rate_flag\s+.*= 1")
+            with output.open("rb") as stream:
+                physical_times = [
+                    message.log_time
+                    for _, _, message in make_reader(stream).iter_messages(log_time_order=False)
+                ]
+            self.assertEqual(physical_times, sorted(physical_times))
+
+    def test_accepts_standard_ros_jpeg_format_description(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_source(source, frame_count=2, source_format="bgr8; jpeg compressed bgr8")
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.decoded_images, 2)
+            self.assertEqual(stats.left_videos, 2)
+            self.assertEqual(stats.right_videos, 2)
+
+    def test_converts_joined_h264_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            log_times = [1_000_000_101, 2_000_000_202, 3_000_000_303]
+            publish_times = [7_000_000_707, 8_000_000_808, 9_000_000_909]
+            sequences = [41, 73, 109]
+            header_stamps = [(11, 111), (22, 222), (33, 333)]
+            make_source(
+                source,
+                source_format="h264",
+                log_times=log_times,
+                publish_times=publish_times,
+                sequences=sequences,
+                header_stamps=header_stamps,
+            )
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.input_messages, 3)
+            self.assertEqual(stats.decoded_images, 3)
+            self.assertEqual(stats.left_videos, 3)
+            self.assertEqual(stats.right_videos, 3)
+            self.assertEqual(stats.imu_messages, 22)
+            with output.open("rb") as stream:
+                by_topic: dict[str, list[object]] = {}
+                for _, channel, message in make_reader(stream).iter_messages():
+                    by_topic.setdefault(channel.topic, []).append(message)
+            for topic in ("/decxin/left_rgb/h264", "/decxin/right_rgb/h264"):
+                records = by_topic[topic]
+                self.assertEqual([record.log_time for record in records], log_times)
+                self.assertEqual([record.publish_time for record in records], publish_times)
+                self.assertEqual([record.sequence for record in records], sequences)
+                videos = [CompressedVideo.FromString(record.data) for record in records]
+                self.assertEqual(
+                    [(video.timestamp.seconds, video.timestamp.nanos) for video in videos],
+                    header_stamps,
+                )
+            with output.open("rb") as stream:
+                physical_times = [
+                    message.log_time
+                    for _, _, message in make_reader(stream).iter_messages(log_time_order=False)
+                ]
+            self.assertEqual(physical_times, sorted(physical_times))
 
     def test_rejects_existing_output_topic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -230,6 +371,106 @@ class ConvertTest(unittest.TestCase):
             self.assertTrue(
                 all(schema.name == "sensor_msgs/msg/Imu" for schema, _, _ in imu_records)
             )
+
+    def test_h264_input_replaces_existing_imu_topic_with_decoded_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_source(source, source_format="h264", include_existing_imu=True)
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.imu_messages, 22)
+            self.assertEqual(stats.copied_messages, 3)
+            self.assertEqual(stats.copied_topics, 1)
+            with output.open("rb") as stream:
+                imu_records = [
+                    (schema, channel, message)
+                    for schema, channel, message in make_reader(stream).iter_messages()
+                    if channel.topic == "/decxin/imu"
+                ]
+            self.assertEqual(len(imu_records), 22)
+            self.assertTrue(
+                all(schema.name == "sensor_msgs/msg/Imu" for schema, _, _ in imu_records)
+            )
+
+    def test_rejects_jpeg_then_h264_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            make_source(source, frame_count=2, source_formats=["jpeg", "h264"])
+
+            with self.assertRaisesRegex(RuntimeError, "cannot mix JPEG and H.264"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
+
+    def test_rejects_h264_then_jpeg_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            make_source(source, frame_count=2, source_formats=["h264", "jpeg"])
+
+            with self.assertRaisesRegex(RuntimeError, "cannot mix JPEG and H.264"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
+
+    def test_rejects_unsupported_compressed_image_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            make_source(source, frame_count=1, source_format="png")
+
+            with self.assertRaisesRegex(RuntimeError, "unsupported CompressedImage format"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
+
+    def test_rejects_h264_input_smaller_than_required_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            undersized = np.zeros((1198, 4000, 3), dtype=np.uint8)
+            make_source(source, source_format="h264", source_frames=[undersized])
+
+            with self.assertRaisesRegex(RuntimeError, "required 4000x1200"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
+
+    def test_rejects_multiple_h264_frames_in_one_input_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            access_units = encode_h264_access_units([contract_frame(0), contract_frame(1)])
+            payload = np.frombuffer(b"".join(access_units), dtype=np.uint8)
+            make_source(source, source_format="h264", source_payloads=[payload])
+
+            with self.assertRaisesRegex(RuntimeError, "one decoded frame per input message"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
+
+    def test_rejects_one_h264_frame_split_across_input_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            access_unit = encode_h264_access_units([contract_frame(0)])[0]
+            split_at = len(access_unit) // 2
+            payloads = [
+                np.frombuffer(access_unit[:split_at], dtype=np.uint8),
+                np.frombuffer(access_unit[split_at:], dtype=np.uint8),
+            ]
+            make_source(source, source_format="h264", source_payloads=payloads)
+
+            with self.assertRaisesRegex(RuntimeError, "one decoded frame per input message"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
+
+    def test_rejects_compensating_h264_frame_counts_between_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            access_units = encode_h264_access_units([contract_frame(0), contract_frame(1)])
+            payloads = [
+                np.frombuffer(b"".join(access_units), dtype=np.uint8),
+                np.array([], dtype=np.uint8),
+            ]
+            make_source(source, source_format="h264", source_payloads=payloads)
+
+            with self.assertRaisesRegex(RuntimeError, "one decoded frame per input message"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
 
 
 if __name__ == "__main__":
