@@ -17,7 +17,7 @@ from rosbags.typesys import Stores, get_typestore
 
 JOB_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(JOB_ROOT))
-from preprocess_decxin import preprocess_decxin  # noqa: E402
+from preprocess_decxin import PreprocessingRejected, preprocess_decxin  # noqa: E402
 sys.path.remove(str(JOB_ROOT))
 
 
@@ -51,12 +51,16 @@ def contract_frame(index: int) -> np.ndarray:
     return frame
 
 
-def make_source(path: Path, frame_count: int = 2) -> Path:
+def make_source(
+    path: Path,
+    frame_count: int = 2,
+    topic: str = "/decxin/rgb/compressed",
+) -> Path:
     typestore = get_typestore(Stores.ROS2_JAZZY)
     messages = typestore.types
     with Writer(path, version=9, storage_plugin=StoragePlugin.MCAP) as writer:
         connection = writer.add_connection(
-            "/decxin/rgb/compressed",
+            topic,
             "sensor_msgs/msg/CompressedImage",
             typestore=typestore,
         )
@@ -107,7 +111,17 @@ class PreprocessDecxinTest(unittest.TestCase):
             root = Path(temporary_directory)
             source = make_source(root / "source", frame_count=1)
 
-            with self.assertRaisesRegex(RuntimeError, "did not produce IMU samples"):
+            with self.assertRaisesRegex(PreprocessingRejected, "did not produce IMU samples"):
+                preprocess_decxin(source, root / "preprocessed")
+
+    def test_rejects_capture_without_expected_stereo_topic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = make_source(
+                root / "source", frame_count=0, topic="/unexpected/topic"
+            )
+
+            with self.assertRaisesRegex(PreprocessingRejected, "no CompressedImage topic found"):
                 preprocess_decxin(source, root / "preprocessed")
 
 

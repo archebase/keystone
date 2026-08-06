@@ -19,6 +19,7 @@ import tempfile
 from typing import Callable, Iterable, NoReturn
 import uuid
 
+from preprocess_decxin import PreprocessingRejected
 from preprocess_decxin import preprocess_decxin as default_preprocess
 
 
@@ -162,6 +163,32 @@ def failure_message(document: dict[str, object]) -> str:
     return "calibration pipeline rejected the capture"
 
 
+def failed_result(
+    args: argparse.Namespace,
+    source: dict[str, object],
+    started_at: str,
+    failure: dict[str, object],
+    preprocessing: dict[str, int] | None = None,
+) -> dict[str, object]:
+    details: dict[str, object] = {"failure": failure}
+    if preprocessing is not None:
+        details["preprocessing"] = preprocessing
+    return {
+        "schema_version": 1,
+        "status": "failed",
+        "algorithm_version": ALGORITHM_VERSION,
+        "calibration_session_id": args.calibration_session_id,
+        "capture_id": args.capture_id,
+        "camera_serial": args.camera_serial,
+        "processor_image": args.processor_image,
+        "error_message": failure_message(failure),
+        "source": source,
+        "result": details,
+        "started_at": started_at,
+        "finished_at": utc_now(),
+    }
+
+
 def run(
     args: argparse.Namespace,
     *,
@@ -188,33 +215,30 @@ def run(
     work_directory = Path(
         tempfile.mkdtemp(prefix=f"calibration-{args.capture_id}-", dir=scratch_root)
     )
-    preprocessed_mcap, preprocessing = preprocess(
-        input_path, work_directory / "preprocessed"
-    )
-    calibration_output = work_directory / "calibration-output"
     source = source_document(args, input_path, size_bytes, checksum)
+    try:
+        preprocessed_mcap, preprocessing = preprocess(
+            input_path, work_directory / "preprocessed"
+        )
+    except PreprocessingRejected as error:
+        failure = {
+            "stage": "preprocessing",
+            "error": {
+                "type": type(error).__name__,
+                "message": str(error),
+            },
+        }
+        result = failed_result(args, source, started_at, failure)
+        write_result(output_path, result)
+        return result
+
+    calibration_output = work_directory / "calibration-output"
 
     try:
         calibrate(preprocessed_mcap, calibration_output)
     except CalibrationRejected as error:
         failure = read_json_object(error.error_path, "calibration failure JSON")
-        result: dict[str, object] = {
-            "schema_version": 1,
-            "status": "failed",
-            "algorithm_version": ALGORITHM_VERSION,
-            "calibration_session_id": args.calibration_session_id,
-            "capture_id": args.capture_id,
-            "camera_serial": args.camera_serial,
-            "processor_image": args.processor_image,
-            "error_message": failure_message(failure),
-            "source": source,
-            "result": {
-                "preprocessing": preprocessing,
-                "failure": failure,
-            },
-            "started_at": started_at,
-            "finished_at": utc_now(),
-        }
+        result = failed_result(args, source, started_at, failure, preprocessing)
         write_result(output_path, result)
         return result
 

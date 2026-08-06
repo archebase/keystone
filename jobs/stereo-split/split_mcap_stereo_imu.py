@@ -74,6 +74,10 @@ class DecxinMcapSplitterConfig:
     rotate_180: bool = True
 
 
+class SplitInputRejected(RuntimeError):
+    """The source capture does not satisfy the DECXIN stereo input contract."""
+
+
 class DecxinMcapStereoImuSplitter:
     """Convert full-frame DECXIN MJPG messages into stereo images and IMU MCAP."""
 
@@ -96,7 +100,9 @@ class DecxinMcapStereoImuSplitter:
                 and conn.msgtype == "sensor_msgs/msg/CompressedImage"
             ]
             if not input_connections:
-                raise RuntimeError(f"no CompressedImage topic found: {self.config.input_topic}")
+                raise SplitInputRejected(
+                    f"no CompressedImage topic found: {self.config.input_topic}"
+                )
 
             with Writer(output_path, version=9, storage_plugin=StoragePlugin.MCAP) as writer:
                 left_conn = writer.add_connection(
@@ -168,7 +174,7 @@ class DecxinMcapStereoImuSplitter:
         cfg = self.config
         required_width = cfg.metadata_width + cfg.eye_width * 2
         if bgr.shape[1] < required_width or bgr.shape[0] < cfg.eye_height:
-            raise RuntimeError(
+            raise SplitInputRejected(
                 f"frame {bgr.shape[1]}x{bgr.shape[0]} is smaller than "
                 f"stereo crop {required_width}x{cfg.eye_height}"
             )

@@ -123,6 +123,33 @@ class CalibrationJobTest(unittest.TestCase):
             self.assertEqual(result["result"]["failure"]["stage"], "precheck")
             self.assertTrue(args.output.is_file())
 
+    def test_publishes_failed_result_for_preprocessing_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source_bytes = MCAP_MAGIC + b"source-records" + MCAP_MAGIC
+            args = self.make_args(root, source_bytes)
+
+            def preprocess(_source: Path, _output: Path):
+                raise run_calibration.PreprocessingRejected(
+                    "DECXIN preprocessing did not produce IMU samples"
+                )
+
+            def calibrate(_preprocessed: Path, _output: Path) -> None:
+                self.fail("calibration must not run after preprocessing rejection")
+
+            result = run_calibration.run(args, preprocess=preprocess, calibrate=calibrate)
+
+            published = json.loads(args.output.read_text(encoding="utf-8"))
+            self.assertEqual(published, result)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["camera_serial"], CAMERA_SERIAL)
+            self.assertIn("did not produce IMU samples", result["error_message"])
+            self.assertEqual(result["result"]["failure"]["stage"], "preprocessing")
+            self.assertEqual(
+                result["result"]["failure"]["error"]["type"],
+                "PreprocessingRejected",
+            )
+
     def test_source_identity_mismatch_does_not_publish_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
