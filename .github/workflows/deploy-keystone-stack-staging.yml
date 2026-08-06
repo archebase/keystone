@@ -4,15 +4,11 @@
 
 name: Deploy Keystone Staging
 
-run-name: Deploy Keystone staging ${{ inputs.releaseName }}
+run-name: Deploy Keystone staging
 
 on:
   workflow_dispatch:
     inputs:
-      releaseName:
-        description: "Helm release name. Derives keystone-staging-<releaseName>.archebase.cn."
-        required: true
-        type: string
       keystoneImageTag:
         description: "Full Keystone commit SHA image tag. Empty uses the checked-out main-v2 HEAD."
         required: false
@@ -40,7 +36,7 @@ defaults:
     shell: bash
 
 concurrency:
-  group: keystone-staging-${{ inputs.releaseName }}
+  group: keystone-staging
   cancel-in-progress: false
 
 env:
@@ -94,7 +90,6 @@ jobs:
       - name: Resolve and validate staging deployment inputs
         id: inputs
         env:
-          RELEASE_NAME: ${{ inputs.releaseName }}
           KEYSTONE_IMAGE_TAG_INPUT: ${{ inputs.keystoneImageTag }}
           SYNAPSE_IMAGE_TAG: ${{ inputs.synapseImageTag }}
           DNS_CNAME_READY: ${{ inputs.dnsCnameReady }}

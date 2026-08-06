@@ -6,8 +6,15 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 resolver="$script_dir/resolve-staging-deploy.sh"
+workflow="$script_dir/../workflows/deploy-keystone-stack-staging.yml"
 test_sha="0123456789abcdef0123456789abcdef01234567"
 synapse_sha="89abcdef0123456789abcdef0123456789abcdef"
+
+if grep -Fq "releaseName:" "$workflow" || grep -Fq "inputs.releaseName" "$workflow"; then
+  echo "staging workflow must not accept a releaseName input" >&2
+  exit 1
+fi
+grep -Fxq "  group: keystone-staging" "$workflow"
 
 run_resolver() {
   local output_file="$1"
@@ -15,7 +22,6 @@ run_resolver() {
 
   env \
     GITHUB_OUTPUT="$output_file" \
-    RELEASE_NAME=mercury \
     KEYSTONE_IMAGE_TAG_INPUT="$test_sha" \
     SYNAPSE_IMAGE_TAG="$synapse_sha" \
     DNS_CNAME_READY=true \
@@ -37,10 +43,10 @@ run_resolver() {
 
 valid_output="$(mktemp)"
 trap 'rm -f "$valid_output" "${case_output:-}"' EXIT
-run_resolver "$valid_output"
+run_resolver "$valid_output" RELEASE_NAME=legacy-release
 
-grep -Fxq "release_name=mercury" "$valid_output"
-grep -Fxq "host=keystone-staging-mercury.archebase.cn" "$valid_output"
+grep -Fxq "release_name=keystone-staging" "$valid_output"
+grep -Fxq "host=keystone-staging.archebase.cn" "$valid_output"
 grep -Fxq "keystone_image=registry.example.com/prod/keystone:$test_sha" "$valid_output"
 grep -Fxq "synapse_image=registry.example.com/prod/synapse:$synapse_sha" "$valid_output"
 
@@ -60,7 +66,6 @@ expect_failure() {
 expect_failure "missing confirmation" CONFIRM_STAGING=wrong
 expect_failure "missing DNS confirmation" DNS_CNAME_READY=false
 expect_failure "mutable image tag" KEYSTONE_IMAGE_TAG_INPUT=latest
-expect_failure "oversized staging hostname" RELEASE_NAME=abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstu
 expect_failure "shared HTTPS and gRPC listener" STAGING_GRPC_LISTENER_PORT=443
 expect_failure "non-staging ingress class" STAGING_INGRESS_CLASS=keystone-prod
 expect_failure "non-staging bucket" STAGING_TOS_BUCKET=archebase-prod-keystone
