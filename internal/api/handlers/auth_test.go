@@ -222,7 +222,7 @@ func TestAuthHandlerActivateWorkstationForEgoPortalDeviceCredential(t *testing.T
 	}
 }
 
-func TestAuthHandlerActivateWorkstationRejectsOccupiedDevice(t *testing.T) {
+func TestAuthHandlerActivateWorkstationAllowsWebTakeover(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
 	if _, err := db.Exec(`
@@ -240,8 +240,125 @@ func TestAuthHandlerActivateWorkstationRejectsOccupiedDevice(t *testing.T) {
 		t.Fatalf("generate identity token: %v", err)
 	}
 	w := performAuthActivation(newTestAuthRouter(db, ""), identityToken, `{"workstation_id":11}`, "")
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "workstation_occupied") {
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var currentID int64
+	if err := db.Get(&currentID, `SELECT id FROM workstations WHERE robot_id = 101 AND is_current = TRUE`); err != nil {
+		t.Fatalf("query current workstation: %v", err)
+	}
+	if currentID != 11 {
+		t.Fatalf("current workstation=%d want 11", currentID)
+	}
+}
+
+func TestAuthHandlerActivateWorkstationAllowsEgoPortalDeviceTakeover(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	deviceToken := "kda_v1_takeover-device-token"
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES
+			(7, 'Collector B', 'dc01', 'active'), (8, 'Collector A', 'dc02', 'active');
+		INSERT INTO robots (id, device_id, workspace_id, status) VALUES (101, '101', 10, 'active');
+		INSERT INTO workstations (
+			id, data_collector_id, workspace_id, robot_id, status, is_current
+		) VALUES
+			(11, 7, 10, 101, 'offline', FALSE),
+			(12, 8, 10, 101, 'active', TRUE);
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id) VALUES (1001, 10, 'dc01', 101);
+		INSERT INTO ws_client_auth_tokens (robot_id, token_hash) VALUES (101, ?)
+	`, hashWSClientAuthToken(deviceToken)); err != nil {
+		t.Fatalf("seed Ego Portal takeover: %v", err)
+	}
+
+	identityToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	router := newTestAuthRouter(db, "")
+	w := performAuthActivation(router, identityToken, `{}`, deviceToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var currentID int64
+	if err := db.Get(&currentID, `
+		SELECT id FROM workstations
+		WHERE robot_id = 101 AND is_current = TRUE AND deleted_at IS NULL
+	`); err != nil {
+		t.Fatalf("query current workstation: %v", err)
+	}
+	if currentID != 11 {
+		t.Fatalf("current workstation=%d want 11", currentID)
+	}
+
+	var replaced struct {
+		Status       string        `db:"status"`
+		IsCurrent    bool          `db:"is_current"`
+		SupersededBy sql.NullInt64 `db:"superseded_by"`
+	}
+	if err := db.Get(&replaced, `
+		SELECT status, is_current, superseded_by
+		FROM workstations WHERE id = 12
+	`); err != nil {
+		t.Fatalf("query replaced workstation: %v", err)
+	}
+	if replaced.Status != "offline" || replaced.IsCurrent || !replaced.SupersededBy.Valid || replaced.SupersededBy.Int64 != 11 {
+		t.Fatalf("replaced workstation=%#v", replaced)
+	}
+
+	oldToken, err := auth.GenerateToken(
+		auth.NewCollectorWorkstationClaims(8, "dc02", 12, 101, 10),
+		testAuthConfig(),
+	)
+	if err != nil {
+		t.Fatalf("generate previous workstation token: %v", err)
+	}
+	oldRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/me/station/break", nil)
+	oldRequest.Header.Set("Authorization", "Bearer "+oldToken)
+	oldResponse := httptest.NewRecorder()
+	router.ServeHTTP(oldResponse, oldRequest)
+	if oldResponse.Code != http.StatusUnauthorized || !strings.Contains(oldResponse.Body.String(), "workstation_session_invalid") {
+		t.Fatalf("old session status=%d body=%s", oldResponse.Code, oldResponse.Body.String())
+	}
+}
+
+func TestAuthHandlerActivateWorkstationRejectsEgoPortalTakeoverDuringActiveRecording(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	deviceToken := "kda_v1_recording-device-token"
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES
+			(7, 'Collector B', 'dc01', 'active'), (8, 'Collector A', 'dc02', 'active');
+		INSERT INTO robots (id, device_id, workspace_id, status) VALUES (101, '101', 10, 'active');
+		INSERT INTO workstations (
+			id, data_collector_id, workspace_id, robot_id, status, is_current
+		) VALUES
+			(11, 7, 10, 101, 'offline', FALSE),
+			(12, 8, 10, 101, 'active', TRUE);
+		INSERT INTO tasks (id, workstation_id, status) VALUES (5001, 12, 'in_progress');
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id) VALUES (1001, 10, 'dc01', 101);
+		INSERT INTO ws_client_auth_tokens (robot_id, token_hash) VALUES (101, ?)
+	`, hashWSClientAuthToken(deviceToken)); err != nil {
+		t.Fatalf("seed active recording takeover: %v", err)
+	}
+
+	identityToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	w := performAuthActivation(newTestAuthRouter(db, ""), identityToken, `{}`, deviceToken)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "recording_active") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var currentID int64
+	if err := db.Get(&currentID, `SELECT id FROM workstations WHERE robot_id = 101 AND is_current = TRUE`); err != nil {
+		t.Fatalf("query current workstation: %v", err)
+	}
+	if currentID != 12 {
+		t.Fatalf("current workstation=%d want 12", currentID)
 	}
 }
 

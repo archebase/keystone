@@ -27,7 +27,10 @@ var (
 	ErrDCPlanTaskSupplyActiveTask = errors.New("dc plan task supply active task exists")
 )
 
-const egoPortalStereoDeviceType = "Ego Portal Stereo"
+const (
+	egoPortalStereoDeviceType = "Ego Portal Stereo"
+	egoPortalLiteDeviceType   = "Ego Portal Lite"
+)
 
 // DCPlanSuppliedTask is the task returned by on-demand plan task supply.
 type DCPlanSuppliedTask struct {
@@ -123,7 +126,8 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 	if err != nil {
 		return nil, err
 	}
-	preservePendingPool := isEgoPortalStereo(workstation.DeviceType)
+	// Offline-capable devices retain their prebuilt pending-task pool.
+	preservePendingPool := usesEgoPortalPendingPool(workstation.DeviceType)
 
 	counts, err := loadTaskSupplyCounts(ctx, tx, plan.ID)
 	if err != nil {
@@ -209,7 +213,7 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 	return &DCPlanTaskSupplyResult{Task: *supplied, Created: true}, nil
 }
 
-// EnsureEgoPortalPendingPool fills the pending-task pool for an Ego Portal Stereo plan.
+// EnsureEgoPortalPendingPool fills the pending-task pool for an offline-capable Ego Portal plan.
 func (s *DCPlanTaskSupplyService) EnsureEgoPortalPendingPool(
 	ctx context.Context,
 	planID int64,
@@ -237,7 +241,7 @@ func (s *DCPlanTaskSupplyService) EnsureEgoPortalPendingPool(
 		return nil, err
 	}
 	result := &EgoPortalPendingPoolResult{
-		Enabled:       isEgoPortalStereo(workstation.DeviceType),
+		Enabled:       usesEgoPortalPendingPool(workstation.DeviceType),
 		PlanID:        plan.ID,
 		WorkstationID: workstation.ID,
 	}
@@ -382,8 +386,8 @@ func loadTaskSupplyCounts(
 	return counts, nil
 }
 
-func isEgoPortalStereo(deviceType string) bool {
-	return deviceType == egoPortalStereoDeviceType
+func usesEgoPortalPendingPool(deviceType string) bool {
+	return deviceType == egoPortalStereoDeviceType || deviceType == egoPortalLiteDeviceType
 }
 
 func insertPendingPlanTask(

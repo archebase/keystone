@@ -229,6 +229,47 @@ func TestDCPlanTaskSupplyMaintainsEgoPortalStereoPendingPool(t *testing.T) {
 	}
 }
 
+func TestDCPlanTaskSupplyMaintainsEgoPortalLitePendingPool(t *testing.T) {
+	db := newTestDCPlanTaskSupplyDB(t)
+	defer db.Close()
+
+	plan := testTaskSupplyPlan(1001, 123, 4)
+	plan.CurCount = 1
+	seedTaskSupplyPlan(t, db, plan)
+	seedTaskSupplyResources(t, db, plan)
+	if _, err := db.Exec("UPDATE robots SET device_type = ? WHERE id = 9", egoPortalLiteDeviceType); err != nil {
+		t.Fatalf("mark lite robot: %v", err)
+	}
+	workstationID := seedCurrentTaskSupplyWorkstation(t, db, plan.WorkspaceID)
+
+	service := NewDCPlanTaskSupplyService(db)
+	first, err := service.EnsureEgoPortalPendingPool(context.Background(), plan.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("first EnsureEgoPortalPendingPool() error = %v", err)
+	}
+	if !first.Enabled || first.DesiredCount != 3 || first.CreatedCount != 3 || first.PendingCount != 3 {
+		t.Fatalf("unexpected first result: %#v", first)
+	}
+
+	next, err := service.EnsureNextTask(context.Background(), plan.ID, workstationID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("EnsureNextTask() error = %v", err)
+	}
+	if next.Created {
+		t.Fatalf("EnsureNextTask() created a task instead of reusing the Lite pool: %#v", next)
+	}
+
+	var pendingCount int
+	if err := db.Get(&pendingCount, `
+		SELECT COUNT(*) FROM tasks WHERE dc_plan_id = ? AND status = 'pending'
+	`, plan.ID); err != nil {
+		t.Fatalf("count pending tasks: %v", err)
+	}
+	if pendingCount != 3 {
+		t.Fatalf("pendingCount=%d want 3", pendingCount)
+	}
+}
+
 func TestDCPlanTaskSupplyCancelsPendingWhenTargetReached(t *testing.T) {
 	db := newTestDCPlanTaskSupplyDB(t)
 	defer db.Close()
