@@ -61,6 +61,15 @@ def contract_frame(index: int) -> np.ndarray:
     return frame
 
 
+def orientation_frame() -> np.ndarray:
+    frame = np.full((1200, 4000, 3), 80, dtype=np.uint8)
+    frame[:240, 160:400, :] = 240
+    frame[-240:, 1840:2080, :] = 10
+    frame[:240, 3760:4000, :] = 240
+    frame[-240:, 2080:2320, :] = 10
+    return frame
+
+
 def encode_h264_access_units(frames: list[np.ndarray]) -> list[bytes]:
     height, width = frames[0].shape[:2]
     encoded = subprocess.run(
@@ -307,6 +316,30 @@ def topic_records(path: Path, topic: str) -> list[tuple[object, ...]]:
                 )
             )
     return records
+
+
+def decode_h264_frame(data: bytes, width: int = 1920, height: int = 1200) -> np.ndarray:
+    decoded = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "h264", "-i", "pipe:0", "-frames:v", "1",
+            "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1",
+        ],
+        input=data,
+        capture_output=True,
+        check=True,
+    ).stdout
+    expected_bytes = width * height * 3
+    if len(decoded) != expected_bytes:
+        raise RuntimeError(
+            f"decoded H.264 frame size mismatch: {len(decoded)} != {expected_bytes}"
+        )
+    return np.frombuffer(decoded, dtype=np.uint8).reshape(height, width, 3)
+
+
+def output_video_frame(path: Path, topic: str) -> np.ndarray:
+    record = topic_records(path, topic)[0]
+    return decode_h264_frame(CompressedVideo.FromString(record[8]).data)
 
 
 def summary_channel(path: Path, topic: str) -> tuple[object, ...] | None:
@@ -620,6 +653,46 @@ class ConvertTest(unittest.TestCase):
                     for _, _, message in make_reader(stream).iter_messages(log_time_order=False)
                 ]
             self.assertEqual(physical_times, sorted(physical_times))
+
+    def test_h264_input_preserves_eye_orientation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_source(
+                source,
+                source_format="h264",
+                source_frames=[orientation_frame()],
+                include_existing_imu=True,
+            )
+
+            StereoSplitH264Converter().convert(source, output)
+
+            left = output_video_frame(output, "/decxin/left_rgb/h264")
+            self.assertGreater(left[:200, :200].mean(), left[-200:, -200:].mean() + 100)
+
+            right = output_video_frame(output, "/decxin/right_rgb/h264")
+            self.assertGreater(right[:200, -200:].mean(), right[-200:, :200].mean() + 100)
+
+    def test_jpeg_input_rotates_each_eye_180_degrees(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_source(
+                source,
+                source_format="jpeg",
+                source_frames=[orientation_frame()],
+                include_existing_imu=True,
+            )
+
+            StereoSplitH264Converter().convert(source, output)
+
+            left = output_video_frame(output, "/decxin/left_rgb/h264")
+            self.assertGreater(left[-200:, -200:].mean(), left[:200, :200].mean() + 100)
+
+            right = output_video_frame(output, "/decxin/right_rgb/h264")
+            self.assertGreater(right[-200:, :200].mean(), right[:200, -200:].mean() + 100)
 
     def test_rejects_existing_output_topic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

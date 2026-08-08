@@ -677,7 +677,13 @@ class H264FrameDecoder:
 class DualH264Encoder:
     """Encode both eye crops using one persistent FFmpeg process and one raw-frame copy."""
 
-    def __init__(self, width: int, height: int, config: ConverterConfig) -> None:
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        config: ConverterConfig,
+        rotate_180: bool,
+    ) -> None:
         self.config = config
         self.width = width
         self.height = height
@@ -693,13 +699,14 @@ class DualH264Encoder:
         right_read, right_write = os.pipe()
         self.left_stream = os.fdopen(left_read, "rb", buffering=0)
         self.right_stream = os.fdopen(right_read, "rb", buffering=0)
+        orientation_filter = ",hflip,vflip" if rotate_180 else ""
         filter_graph = (
             "[0:v]split=2[left_input][right_input];"
             f"[left_input]crop={config.eye_width}:{config.eye_height}:"
-            f"{config.metadata_width}:0,hflip,vflip,format=yuv420p[left];"
+            f"{config.metadata_width}:0{orientation_filter},format=yuv420p[left];"
             f"[right_input]crop={config.eye_width}:{config.eye_height}:"
-            f"{config.metadata_width + config.eye_width}:0,"
-            "hflip,vflip,format=yuv420p[right]"
+            f"{config.metadata_width + config.eye_width}:0"
+            f"{orientation_filter},format=yuv420p[right]"
         )
         common = [
             "-c:v", "libx264",
@@ -969,7 +976,13 @@ class StereoSplitH264Converter:
                         f"required {required_width}x{config.eye_height}"
                     )
                 if encoder is None:
-                    encoder = DualH264Encoder(frame.shape[1], frame.shape[0], config)
+                    # JPEG captures are upside down; H.264 captures already have final orientation.
+                    encoder = DualH264Encoder(
+                        frame.shape[1],
+                        frame.shape[0],
+                        config,
+                        rotate_180=input_codec == "jpeg",
+                    )
                 stats.decoded_images += 1
                 video_metadata.append(metadata)
                 for encoded in encoder.submit(frame):
