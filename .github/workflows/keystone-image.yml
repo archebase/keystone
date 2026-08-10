@@ -40,9 +40,9 @@ env:
   BUILDKIT_PULL_SECRET: keystone-buildkit-registry-secret
   BUILDKIT_STORAGE: 40Gi
   BUILDKIT_CPU_REQUEST: "2"
-  BUILDKIT_MEMORY_REQUEST: 2Gi
+  BUILDKIT_MEMORY_REQUEST: 4Gi
   BUILDKIT_CPU_LIMIT: "4"
-  BUILDKIT_MEMORY_LIMIT: 4Gi
+  BUILDKIT_MEMORY_LIMIT: 8Gi
   BUILDKIT_PROGRESS: plain
 
 jobs:
@@ -446,6 +446,39 @@ jobs:
       - name: Inspect pushed calibration image
         if: steps.images.outputs.calibration == 'true'
         run: docker buildx imagetools inspect "${{ steps.calibration_image.outputs.image }}"
+
+      - name: Diagnose failed Kubernetes BuildKit builder
+        if: failure() && steps.buildkit.outputs.created == 'true'
+        run: |
+          set +e
+
+          builder="${{ steps.buildkit.outputs.builder }}"
+          builder_resource="${builder}0"
+          pod="${builder_resource}-0"
+
+          echo "::group::BuildKit pod status"
+          kubectl -n "$BUILDKIT_NAMESPACE" get pod "$pod" -o wide
+          kubectl -n "$BUILDKIT_NAMESPACE" get pod "$pod" \
+            -o jsonpath='{range .status.containerStatuses[*]}container={.name} ready={.ready} restartCount={.restartCount} currentWaitingReason={.state.waiting.reason} currentTerminatedReason={.state.terminated.reason} currentExitCode={.state.terminated.exitCode} lastTerminatedReason={.lastState.terminated.reason} lastExitCode={.lastState.terminated.exitCode}{"\n"}{end}'
+          kubectl -n "$BUILDKIT_NAMESPACE" describe pod "$pod"
+          echo "::endgroup::"
+
+          echo "::group::Previous BuildKit logs"
+          kubectl -n "$BUILDKIT_NAMESPACE" logs "$pod" -c buildkitd --previous --tail=500
+          echo "::endgroup::"
+
+          echo "::group::Current BuildKit logs"
+          kubectl -n "$BUILDKIT_NAMESPACE" logs "$pod" -c buildkitd --tail=500
+          echo "::endgroup::"
+
+          echo "::group::BuildKit Kubernetes events"
+          kubectl -n "$BUILDKIT_NAMESPACE" get events \
+            --field-selector "involvedObject.name=$pod" \
+            --sort-by=.lastTimestamp
+          kubectl -n "$BUILDKIT_NAMESPACE" get events \
+            --field-selector "involvedObject.name=$builder_resource" \
+            --sort-by=.lastTimestamp
+          echo "::endgroup::"
 
       - name: Remove temporary Kubernetes BuildKit builder
         if: always() && steps.buildkit.outputs.created == 'true'
