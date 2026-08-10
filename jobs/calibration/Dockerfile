@@ -11,12 +11,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 RUN sed -i \
-        's|http://ports.ubuntu.com/ubuntu-ports/|https://mirrors.aliyun.com/ubuntu-ports/|g' \
+        -e 's|http://ports.ubuntu.com/ubuntu-ports/|https://mirrors.aliyun.com/ubuntu-ports/|g' \
+        -e 's|http://archive.ubuntu.com/ubuntu/|https://mirrors.aliyun.com/ubuntu/|g' \
+        -e 's|http://security.ubuntu.com/ubuntu/|https://mirrors.aliyun.com/ubuntu/|g' \
         /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
+        ffmpeg \
         libboost-all-dev \
         libeigen3-dev \
         libgoogle-glog-dev \
@@ -58,6 +61,7 @@ RUN BUILD_TYPE=Release JOBS="${BUILD_JOBS}" scripts/build_all.sh kalibr --clean
 
 WORKDIR /app
 COPY jobs/stereo-split/split_mcap_stereo_imu.py /app/split_mcap_stereo_imu.py
+COPY jobs/calibration/calibration_mcap_preprocessor.py /app/calibration_mcap_preprocessor.py
 COPY jobs/calibration/preprocess_decxin.py /app/preprocess_decxin.py
 COPY jobs/calibration/run_calibration.py /app/run_calibration.py
 
