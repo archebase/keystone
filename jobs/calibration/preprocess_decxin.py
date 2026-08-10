@@ -15,9 +15,9 @@ JOB_ROOT = Path(__file__).resolve().parent
 SHARED_STEREO_SPLIT_ROOT = JOB_ROOT.parent / "stereo-split"
 if SHARED_STEREO_SPLIT_ROOT.is_dir():
     sys.path.insert(0, str(SHARED_STEREO_SPLIT_ROOT))
-from split_mcap_stereo_imu import (  # noqa: E402
-    DecxinMcapStereoImuSplitter,
-    SplitInputRejected,
+from calibration_mcap_preprocessor import (  # noqa: E402
+    CalibrationInputRejected,
+    DecxinCalibrationMcapPreprocessor,
 )
 if SHARED_STEREO_SPLIT_ROOT.is_dir():
     sys.path.remove(str(SHARED_STEREO_SPLIT_ROOT))
@@ -27,13 +27,16 @@ class PreprocessingRejected(RuntimeError):
     """The source capture failed a preprocessing quality requirement."""
 
 
-def preprocess_decxin(source: Path, output_directory: Path) -> tuple[Path, dict[str, int]]:
-    """Split joined JPEG frames and embedded IMU samples into a temporary MCAP."""
+def preprocess_decxin(
+    source: Path,
+    output_directory: Path,
+) -> tuple[Path, dict[str, int | str]]:
+    """Normalize a joined JPEG or H.264 capture into a temporary calibration MCAP."""
     source = source.expanduser().resolve()
     output_directory = output_directory.expanduser().resolve()
     try:
-        stats = DecxinMcapStereoImuSplitter().convert(source, output_directory)
-    except SplitInputRejected as error:
+        stats = DecxinCalibrationMcapPreprocessor().convert(source, output_directory)
+    except CalibrationInputRejected as error:
         raise PreprocessingRejected(str(error)) from error
     output_files = list(output_directory.glob("*.mcap"))
     if len(output_files) != 1 or not output_files[0].is_file():

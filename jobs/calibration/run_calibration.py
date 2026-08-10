@@ -168,7 +168,7 @@ def failed_result(
     source: dict[str, object],
     started_at: str,
     failure: dict[str, object],
-    preprocessing: dict[str, int] | None = None,
+    preprocessing: dict[str, int | str] | None = None,
 ) -> dict[str, object]:
     details: dict[str, object] = {"failure": failure}
     if preprocessing is not None:
@@ -192,7 +192,9 @@ def failed_result(
 def run(
     args: argparse.Namespace,
     *,
-    preprocess: Callable[[Path, Path], tuple[Path, dict[str, int]]] = default_preprocess,
+    preprocess: Callable[
+        [Path, Path], tuple[Path, dict[str, int | str]]
+    ] = default_preprocess,
     calibrate: Callable[[Path, Path], None] = run_archebase_calibration,
 ) -> dict[str, object]:
     started_at = utc_now()

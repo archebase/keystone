@@ -17,6 +17,7 @@ RUN sed -i \
     && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
+        ffmpeg \
         libboost-all-dev \
         libeigen3-dev \
         libgoogle-glog-dev \
@@ -58,6 +59,7 @@ RUN BUILD_TYPE=Release JOBS="${BUILD_JOBS}" scripts/build_all.sh kalibr --clean
 
 WORKDIR /app
 COPY jobs/stereo-split/split_mcap_stereo_imu.py /app/split_mcap_stereo_imu.py
+COPY jobs/calibration/calibration_mcap_preprocessor.py /app/calibration_mcap_preprocessor.py
 COPY jobs/calibration/preprocess_decxin.py /app/preprocess_decxin.py
 COPY jobs/calibration/run_calibration.py /app/run_calibration.py
 
