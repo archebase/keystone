@@ -87,10 +87,18 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "calibration.json must contain a JSON object"})
 		return
 	}
-	serial, _ := document["camera_serial"].(string)
-	serial = strings.TrimSpace(serial)
+	serial := strings.TrimSpace(c.PostForm("camera_serial"))
+	if serial == "" {
+		serial, _ = document["camera_serial"].(string)
+		serial = strings.TrimSpace(serial)
+	}
 	if serial == "" || len(serial) > 255 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "calibration.json camera_serial is required"})
+		return
+	}
+	if documentSerial, _ := document["camera_serial"].(string); strings.TrimSpace(documentSerial) != "" &&
+		strings.TrimSpace(documentSerial) != serial {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "camera_serial does not match calibration.json"})
 		return
 	}
 	digest := sha256.Sum256(data)
