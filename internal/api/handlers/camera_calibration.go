@@ -14,10 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"archebase.com/keystone-edge/internal/storage/tos"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+
+	"archebase.com/keystone-edge/internal/storage/tos"
 )
 
 const maxCameraCalibrationBytes = 4 << 20
