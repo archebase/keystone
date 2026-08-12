@@ -1117,7 +1117,7 @@ class StereoSplitH264Converter:
                     writer.add_attachment(
                         create_time=0,
                         log_time=0,
-                        name="archebase/calibration/result.json",
+                        name="archebase/calibration/calibration.json",
                         media_type="application/json",
                         data=calibration_attachment,
                     )

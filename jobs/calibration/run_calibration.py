@@ -126,6 +126,23 @@ def write_result(path: Path, result: dict[str, object]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def copy_artifact(source: Path, destination: Path) -> None:
+    destination = destination.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise RuntimeError(f"result artifact already exists: {destination}")
+    data = source.read_bytes()
+    temporary_path = destination.parent / f".{destination.name}.{uuid.uuid4()}.tmp"
+    try:
+        with temporary_path.open("xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def run_archebase_calibration(preprocessed_mcap: Path, output_directory: Path) -> None:
     command = [
         sys.executable,
@@ -210,6 +227,11 @@ def run(
         )
 
     output_path = args.output.expanduser().resolve()
+    calibration_path = (
+        args.calibration_output.expanduser().resolve()
+        if args.calibration_output is not None
+        else output_path.parent / "calibration.json"
+    )
     if output_path.exists():
         raise RuntimeError(f"result JSON already exists: {output_path}")
     scratch_root = args.scratch.expanduser().resolve()
@@ -268,6 +290,7 @@ def run(
         "started_at": started_at,
         "finished_at": utc_now(),
     }
+    copy_artifact(calibration_output / "calibration.json", calibration_path)
     write_result(output_path, result)
     return result
 
@@ -276,6 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--calibration-output", type=Path)
     parser.add_argument("--calibration-session-id", type=uuid_value, required=True)
     parser.add_argument("--capture-id", type=uuid_value, required=True)
     parser.add_argument("--camera-serial", type=nonempty_value, required=True)

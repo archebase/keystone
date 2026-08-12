@@ -89,6 +89,10 @@ class CalibrationJobTest(unittest.TestCase):
             self.assertEqual(result["result"]["precheck"]["status"], "ok")
             self.assertEqual(result["result"]["quality"]["camera_calibration"]["status"], "qualified")
             self.assertEqual(result["result"]["calibration"]["schema"], "archebase.calibration")
+            self.assertEqual(
+                json.loads((args.output.parent / "calibration.json").read_text(encoding="utf-8"))["schema"],
+                "archebase.calibration",
+            )
 
     def test_publishes_failed_result_for_calibration_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

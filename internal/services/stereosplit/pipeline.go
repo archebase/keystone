@@ -222,7 +222,7 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 		ActiveDeadlineSecond: &deadline,
 	}
 	if calibration != nil {
-		const calibrationPath = "/bindings/calibration/result.json"
+		const calibrationPath = "/bindings/calibration/calibration.json"
 		request.Args = append(request.Args,
 			"--calibration-result", calibrationPath,
 			"--calibration-camera-serial", calibration.CameraSerial,

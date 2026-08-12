@@ -1284,7 +1284,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 }</pre>
       </div>
 
-      <p>处理只提交一个 Orbit Job。原始 <code>capture.mcap</code> 以只读 data binding 挂载到 <code>/bindings/input/</code>，输出目录挂载到 <code>/bindings/output/</code>；Job 在容器临时目录中生成仅供本次运行使用的预处理 MCAP，确认双目图像完整且成功提取 IMU 后调用 ArcheBase 标定流水线。标定成功或业务失败都写到 <code>calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；JSON 的 <code>source.uri</code>、<code>source.size_bytes</code> 和 <code>source.sha256</code> 必须指向 Keystone 冻结的原始 <code>capture.mcap</code>，并且 <code>camera_serial</code>、<code>processor_image</code>、Capture ID 和 Session ID 必须与冻结的执行上下文一致，否则结果会被拒绝。预处理 MCAP 不作为独立 TOS 产物发布，也不会创建第二个 Orbit Job。</p>
+      <p>处理只提交一个 Orbit Job。原始 <code>capture.mcap</code> 以只读 data binding 挂载到 <code>/bindings/input/</code>，输出目录挂载到 <code>/bindings/output/</code>；Job 在容器临时目录中生成仅供本次运行使用的预处理 MCAP，确认双目图像完整且成功提取 IMU 后调用 ArcheBase 标定流水线。标定成功或业务失败都写到 <code>derived/calibration-results/{device_id}/{session_id}/{capture_id}/result.json</code>；JSON 的 <code>source.uri</code>、<code>source.size_bytes</code> 和 <code>source.sha256</code> 必须指向 Keystone 冻结的原始 <code>capture.mcap</code>，并且 <code>camera_serial</code>、<code>processor_image</code>、Capture ID 和 Session ID 必须与冻结的执行上下文一致，否则结果会被拒绝。预处理 MCAP 不作为独立 TOS 产物发布，也不会创建第二个 Orbit Job。</p>
     </section>
 
     <section class="chapter" id="model">

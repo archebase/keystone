@@ -25,6 +25,7 @@ import (
 const (
 	processingCommand       = "/app/run_calibration.py"
 	resultFileName          = "result.json"
+	calibrationFileName     = "calibration.json"
 	maxVerificationAttempts = 5
 )
 
@@ -207,7 +208,7 @@ func (m *Manager) freezeCalibrationQueued(ctx context.Context, capturePK int64) 
 	}
 
 	sourceURI := "tos://" + capture.Bucket + "/" + capture.ObjectKey
-	resultPrefix := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
+	resultPrefix := path.Join("derived/calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
 	outputURI := "tos://" + capture.Bucket + "/" + resultPrefix + "/"
 	inputPath := "/bindings/input/" + path.Base(capture.ObjectKey)
 	submissionID := "calibration-" + capture.CaptureID
@@ -221,6 +222,7 @@ func (m *Manager) freezeCalibrationQueued(ctx context.Context, capturePK int64) 
 		Args: []string{
 			"--input", inputPath,
 			"--output", "/bindings/output/" + resultFileName,
+			"--calibration-output", "/bindings/output/" + calibrationFileName,
 			"--calibration-session-id", capture.CalibrationSessionID,
 			"--capture-id", capture.CaptureID,
 			"--camera-serial", capture.CameraSerial,
@@ -566,7 +568,9 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 		strings.TrimSpace(sourceETag) != strings.TrimSpace(capture.ObjectETag) {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration source MCAP identity changed during calibration")
 	}
-	resultKey := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID, resultFileName)
+	resultPrefix := path.Join("derived/calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
+	resultKey := path.Join(resultPrefix, resultFileName)
+	calibrationKey := path.Join(resultPrefix, calibrationFileName)
 	resultSize, _, err := m.objects.StatObject(ctx, capture.Bucket, resultKey)
 	if err != nil {
 		return m.retryVerification(ctx, capture, fmt.Errorf("stat calibration result JSON: %w", err))
@@ -606,8 +610,28 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 	if result.Status == StatusSucceeded && len(result.Result) == 0 {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "successful calibration result is missing result data")
 	}
-	digest := sha256.Sum256(data)
-	return m.persistVerifiedResult(ctx, capture, resultKey, data, result, hex.EncodeToString(digest[:]))
+	if result.Status == StatusFailed {
+		digest := sha256.Sum256(data)
+		return m.persistVerifiedResult(ctx, capture, resultKey, data, data, result, hex.EncodeToString(digest[:]))
+	}
+	calibrationSize, _, err := m.objects.StatObject(ctx, capture.Bucket, calibrationKey)
+	if err != nil {
+		return m.retryVerification(ctx, capture, fmt.Errorf("stat calibration JSON: %w", err))
+	}
+	if calibrationSize <= 0 || (m.cfg.MaxResultBytes > 0 && calibrationSize > m.cfg.MaxResultBytes) {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration JSON size is invalid")
+	}
+	calibrationBody, err := m.objects.OpenObject(ctx, capture.Bucket, calibrationKey)
+	if err != nil {
+		return m.retryVerification(ctx, capture, fmt.Errorf("open calibration JSON: %w", err))
+	}
+	calibrationData, readErr := io.ReadAll(io.LimitReader(calibrationBody, calibrationSize+1))
+	_ = calibrationBody.Close()
+	if readErr != nil || int64(len(calibrationData)) != calibrationSize {
+		return m.retryVerification(ctx, capture, errors.New("calibration JSON changed while reading"))
+	}
+	calibrationDigest := sha256.Sum256(calibrationData)
+	return m.persistVerifiedResult(ctx, capture, calibrationKey, calibrationData, data, result, hex.EncodeToString(calibrationDigest[:]))
 }
 
 func (m *Manager) retryVerification(ctx context.Context, capture Capture, cause error) error {
@@ -635,7 +659,8 @@ func (m *Manager) persistVerifiedResult(
 	ctx context.Context,
 	capture Capture,
 	resultKey string,
-	data []byte,
+	calibrationData []byte,
+	resultData []byte,
 	result calibrationResult,
 	checksum string,
 ) error {
@@ -676,7 +701,7 @@ func (m *Manager) persistVerifiedResult(
 		    calibration_error = NULLIF(?, ''), processing_finished_at = ?,
 		    reconcile_after = NULL, updated_at = ?
 		WHERE id = ? AND status = ?
-	`, finalStatus, resultKey, len(data), checksum, string(data), result.AlgorithmVersion,
+	`, finalStatus, resultKey, len(calibrationData), checksum, string(resultData), result.AlgorithmVersion,
 		errorMessage, now, now, capture.ID, StatusVerifying); err != nil {
 		return fmt.Errorf("persist calibration result: %w", err)
 	}

@@ -347,7 +347,7 @@ class RunProcessingTest(unittest.TestCase):
             with output_mcap.open("rb") as stream:
                 attachments = list(make_reader(stream).iter_attachments())
             self.assertEqual(len(attachments), 1)
-            self.assertEqual(attachments[0].name, "archebase/calibration/result.json")
+            self.assertEqual(attachments[0].name, "archebase/calibration/calibration.json")
             self.assertEqual(attachments[0].media_type, "application/json")
             self.assertEqual(attachments[0].data, calibration_result.read_bytes())
 
@@ -358,7 +358,7 @@ class RunProcessingTest(unittest.TestCase):
             self.assertEqual(
                 manifest["calibration"],
                 {
-                    "attachment_name": "archebase/calibration/result.json",
+                    "attachment_name": "archebase/calibration/calibration.json",
                     "camera_serial": "CAMERA-SN-001",
                     "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
                     "media_type": "application/json",
