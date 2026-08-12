@@ -610,12 +610,16 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 	if result.Status == StatusSucceeded && len(result.Result) == 0 {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "successful calibration result is missing result data")
 	}
+	if result.Status == StatusFailed {
+		digest := sha256.Sum256(data)
+		return m.persistVerifiedResult(ctx, capture, resultKey, data, data, result, hex.EncodeToString(digest[:]))
+	}
 	calibrationSize, _, err := m.objects.StatObject(ctx, capture.Bucket, calibrationKey)
 	if err != nil {
-		// Older workers only published the envelope. Keep them readable while
-		// new workers publish the raw calibration artifact alongside it.
-		calibrationKey = resultKey
-		calibrationSize = resultSize
+		return m.retryVerification(ctx, capture, fmt.Errorf("stat calibration JSON: %w", err))
+	}
+	if calibrationSize <= 0 || (m.cfg.MaxResultBytes > 0 && calibrationSize > m.cfg.MaxResultBytes) {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration JSON size is invalid")
 	}
 	calibrationBody, err := m.objects.OpenObject(ctx, capture.Bucket, calibrationKey)
 	if err != nil {

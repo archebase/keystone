@@ -141,7 +141,13 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 		"started_at": "2026-08-02T10:00:00Z",
 		"finished_at": "2026-08-02T10:00:01Z"
 	}`
-	resultDigest := sha256.Sum256([]byte(resultBody))
+	calibrationBody := `{"schema":"archebase.calibration","schema_version":"1.0"}`
+	calibrationDigest := sha256.Sum256([]byte(calibrationBody))
+	objects.objects["derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json"] = fakeObject{
+		size: int64(len(calibrationBody)),
+		etag: "calibration-etag",
+		body: calibrationBody,
+	}
 	objects.objects["derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/result.json"] = fakeObject{
 		size: int64(len(resultBody)),
 		etag: "result-etag",
@@ -156,7 +162,7 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 		t.Fatalf("Get() error = %v", err)
 	}
 	if capture.Status != StatusSucceeded || capture.ResultObjectKey == "" ||
-		capture.ResultChecksumSHA256 != hex.EncodeToString(resultDigest[:]) {
+		capture.ResultChecksumSHA256 != hex.EncodeToString(calibrationDigest[:]) {
 		t.Fatalf("completed capture = %+v", capture)
 	}
 	session, err := manager.GetSessionStatus(context.Background(), sessionID, 1)
@@ -271,6 +277,9 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 			size: int64(len(resultBody)),
 			etag: "result-etag",
 			body: resultBody,
+		},
+		"derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json": {
+			size: 2, etag: "calibration-etag", body: "{}",
 		},
 	}}
 	manager := NewManager(db, nil, objects, testCalibrationConfig())
@@ -618,6 +627,9 @@ func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
 			size: int64(len(resultBody)),
 			etag: "result-etag",
 			body: resultBody,
+		},
+		"derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json": {
+			size: 2, etag: "calibration-etag", body: "{}",
 		},
 	}}
 	orbit := &fakeOrbit{job: orbitapi.Job{JobID: "abs-job-calibration-2", Status: "RUNNING"}}
