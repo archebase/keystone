@@ -33,7 +33,7 @@ const (
 	manifestSchemaV2        = 2
 	manifestSchemaV3        = 3
 	stereoH264OutputFormat  = "stereo_h264"
-	calibrationAttachment   = "archebase/calibration/result.json"
+	calibrationAttachment   = "archebase/calibration/calibration.json"
 	calibrationMediaType    = "application/json"
 
 	leftImageTopic  = "/decxin/left_rgb/compressed"

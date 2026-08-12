@@ -198,8 +198,8 @@ func TestManagerPreparesExecutionWithFrozenCalibrationResult(t *testing.T) {
 		t.Fatalf("insert image config: %v", err)
 	}
 	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
-		"raw/source.mcap":                 {size: 1024, etag: "source-etag"},
-		"calibration-results/result.json": {size: 512, etag: "calibration-etag"},
+		"raw/source.mcap":                      {size: 1024, etag: "source-etag"},
+		"calibration-results/calibration.json": {size: 512, etag: "calibration-etag"},
 	}}
 	manager := NewManager(db, nil, objects, testManagerConfig())
 
