@@ -159,7 +159,7 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 		resultBucket := strings.TrimSpace(input.Calibration.ResultBucket)
 		resultKey := strings.Trim(strings.TrimSpace(input.Calibration.ResultObjectKey), "/")
 		resultChecksum := normalizedSHA256(input.Calibration.ResultSHA256)
-		if cameraSerial == "" || sessionID == "" || captureID == "" || resultBucket == "" ||
+		if cameraSerial == "" || resultBucket == "" ||
 			resultKey == "" || resultChecksum == "" || path.Clean(resultKey) != resultKey ||
 			strings.HasPrefix(resultKey, "../") {
 			return ExecutionSnapshot{}, fmt.Errorf("invalid calibration result identity")

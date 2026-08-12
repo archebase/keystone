@@ -713,6 +713,31 @@ func (m *Manager) persistVerifiedResult(
 		`, SessionSucceeded, capture.CaptureID, now, capture.CalibrationSessionID, SessionRunning); err != nil {
 			return fmt.Errorf("succeed calibration session: %w", err)
 		}
+		upsert := `
+			INSERT INTO camera_calibrations (
+				camera_serial, bucket, object_key, size_bytes, sha256, source,
+				calibration_session_id, capture_id, updated_by
+			) VALUES (?, ?, ?, ?, ?, 'pipeline', ?, ?, 'system')
+			ON DUPLICATE KEY UPDATE
+				bucket = VALUES(bucket), object_key = VALUES(object_key),
+				size_bytes = VALUES(size_bytes), sha256 = VALUES(sha256),
+				source = VALUES(source), calibration_session_id = VALUES(calibration_session_id),
+				capture_id = VALUES(capture_id), updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP
+		`
+		if m.db.DriverName() == "sqlite" {
+			upsert = `
+				INSERT INTO camera_calibrations (camera_serial, bucket, object_key, size_bytes, sha256, source, calibration_session_id, capture_id, updated_by)
+				VALUES (?, ?, ?, ?, ?, 'pipeline', ?, ?, 'system')
+				ON CONFLICT(camera_serial) DO UPDATE SET bucket=excluded.bucket, object_key=excluded.object_key,
+				size_bytes=excluded.size_bytes, sha256=excluded.sha256, source=excluded.source,
+				calibration_session_id=excluded.calibration_session_id, capture_id=excluded.capture_id,
+				updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP
+			`
+		}
+		if _, err := tx.ExecContext(ctx, upsert, capture.CameraSerial, capture.Bucket, resultKey, len(calibrationData), checksum,
+			capture.CalibrationSessionID, capture.CaptureID); err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return fmt.Errorf("register current camera calibration: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE calibration_captures
 			SET status = ?, calibration_error = ?, processing_finished_at = ?,

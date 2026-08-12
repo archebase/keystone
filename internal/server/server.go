@@ -77,6 +77,7 @@ type Server struct {
 	stereoSplit         *stereosplit.Manager
 	calibration         *calibration.Manager
 	calibrationHandler  *handlers.CalibrationHandler
+	cameraCalibration   *handlers.CameraCalibrationHandler
 	workspaceSync       *services.WorkspaceSyncService
 	dcPlanSync          *services.DCPlanSyncService
 	httpServer          *http.Server
@@ -129,6 +130,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	var calibrationManager *calibration.Manager
 	var calibrationHandler *handlers.CalibrationHandler
+	var cameraCalibrationHandler *handlers.CameraCalibrationHandler
 	if db != nil {
 		var orbitClient calibration.Orbit
 		var objectReader calibration.ObjectStore
@@ -153,6 +155,11 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 			calibrationManagerConfig(cfg.Calibration),
 		)
 		calibrationHandler = handlers.NewCalibrationHandler(calibrationManager)
+		cameraCalibrationHandler = handlers.NewCameraCalibrationHandler(
+			db,
+			tosstorage.NewReader(cfg.TOSStorage, time.Duration(cfg.Calibration.OrbitTimeoutSec)*time.Second),
+			cfg.TOSStorage.Bucket,
+		)
 	}
 	var storageHandler *handlers.StorageHandler
 	if s3Client != nil || cfg.TOSStorage.Type == "tos" {
@@ -287,6 +294,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		stereoSplit:         stereoSplitManager,
 		calibration:         calibrationManager,
 		calibrationHandler:  calibrationHandler,
+		cameraCalibration:   cameraCalibrationHandler,
 		workspaceSync:       workspaceSyncService,
 		dcPlanSync:          dcPlanSyncService,
 		engine:              engine,
@@ -366,6 +374,9 @@ func (s *Server) buildRoutes() http.Handler {
 		s.calibrationHandler.RegisterDeviceRoutes(deviceCalibration)
 		adminCalibration := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
 		s.calibrationHandler.RegisterAdminRoutes(adminCalibration)
+		if s.cameraCalibration != nil {
+			s.cameraCalibration.RegisterRoutes(adminCalibration)
+		}
 	}
 
 	// Transfer Service API

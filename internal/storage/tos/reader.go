@@ -188,6 +188,28 @@ func (r *Reader) OpenObject(ctx context.Context, bucket, objectName string) (io.
 	return resp.Body, nil
 }
 
+// PutObject writes one small immutable object using the configured TOS credentials.
+func (r *Reader) PutObject(ctx context.Context, bucket, objectName string, body []byte) (string, error) {
+	req, err := r.newRequest(ctx, http.MethodPut, bucket, objectName, body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := r.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and objectURL validation.
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", errorFromResponse(resp)
+	}
+	etag := objectrange.NormalizeETag(resp.Header.Get("ETag"))
+	if etag == "" {
+		return "", fmt.Errorf("tos put missing object ETag")
+	}
+	return etag, nil
+}
+
 // OpenObjectRange opens one bounded byte range. The caller is expected to use
 // a fresh context for every range so large-object reads do not share one
 // whole-object deadline.
