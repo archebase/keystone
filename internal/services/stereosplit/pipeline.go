@@ -356,8 +356,7 @@ func (m *Manager) verifyFrozenCalibrationResult(ctx context.Context, calibration
 	if calibration == nil {
 		return nil
 	}
-	if strings.TrimSpace(calibration.CameraSerial) == "" || strings.TrimSpace(calibration.SessionID) == "" ||
-		strings.TrimSpace(calibration.CaptureID) == "" || calibration.ResultSizeBytes <= 0 ||
+	if strings.TrimSpace(calibration.CameraSerial) == "" || calibration.ResultSizeBytes <= 0 ||
 		objectrange.NormalizeETag(calibration.ResultETag) == "" ||
 		normalizedSHA256(calibration.ResultSHA256) == "" {
 		return fmt.Errorf("frozen calibration result identity is incomplete")

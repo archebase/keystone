@@ -67,7 +67,7 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 		return
 	}
 	file, err := c.FormFile("file")
-	if err != nil || file.Size <= 0 || file.Size > maxCameraCalibrationBytes {
+	if err != nil || file.Filename != "calibration.json" || file.Size <= 0 || file.Size > maxCameraCalibrationBytes {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "a calibration.json file up to 4 MiB is required"})
 		return
 	}

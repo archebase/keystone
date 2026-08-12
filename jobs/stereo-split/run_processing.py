@@ -136,8 +136,6 @@ def load_calibration_result(args: argparse.Namespace) -> tuple[bytes, dict[str, 
     values = (
         args.calibration_result,
         args.calibration_camera_serial,
-        args.calibration_session_id,
-        args.calibration_capture_id,
         args.expected_calibration_size,
         args.expected_calibration_checksum,
     )
