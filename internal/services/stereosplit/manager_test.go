@@ -198,8 +198,8 @@ func TestManagerPreparesExecutionWithFrozenCalibrationResult(t *testing.T) {
 		t.Fatalf("insert image config: %v", err)
 	}
 	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
-		"raw/source.mcap":                      {size: 1024, etag: "source-etag"},
-		"calibration-results/calibration.json": {size: 512, etag: "calibration-etag"},
+		"raw/source.mcap": {size: 1024, etag: "source-etag"},
+		"derived/calibration-results/calibration.json": {size: 512, etag: "calibration-etag"},
 	}}
 	manager := NewManager(db, nil, objects, testManagerConfig())
 
@@ -215,7 +215,7 @@ func TestManagerPreparesExecutionWithFrozenCalibrationResult(t *testing.T) {
 			SessionID:       "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 			CaptureID:       "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
 			ResultBucket:    "source-bucket",
-			ResultObjectKey: "calibration-results/result.json",
+			ResultObjectKey: "derived/calibration-results/calibration.json",
 			ResultSHA256:    strings.Repeat("a", 64),
 		},
 	})
@@ -230,13 +230,13 @@ func TestManagerPreparesExecutionWithFrozenCalibrationResult(t *testing.T) {
 		t.Fatalf("DataBindings = %+v", execution.Request.DataBindings)
 	}
 	binding := execution.Request.DataBindings[1]
-	if binding.URI != "tos://source-bucket/calibration-results/result.json" ||
-		binding.Path != "/bindings/calibration/result.json" || binding.Mode != "read" {
+	if binding.URI != "tos://source-bucket/derived/calibration-results/calibration.json" ||
+		binding.Path != "/bindings/calibration/calibration.json" || binding.Mode != "read" {
 		t.Fatalf("calibration binding = %+v", binding)
 	}
 	joinedArgs := strings.Join(execution.Request.Args, " ")
 	for _, expected := range []string{
-		"--calibration-result /bindings/calibration/result.json",
+		"--calibration-result /bindings/calibration/calibration.json",
 		"--calibration-camera-serial CAMERA-SN-001",
 		"--calibration-session-id 7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 		"--calibration-capture-id 92cd6f2f-d131-4bf0-9b4a-d96258d09011",
@@ -269,7 +269,7 @@ func TestManagerFreezesEpisodeCalibrationIntoDerivativeExecution(t *testing.T) {
 		) VALUES (
 			'92cd6f2f-d131-4bf0-9b4a-d96258d09011',
 			'7f9af590-75c2-47ad-b6e0-76ebf05c44f7', 'succeeded', 'source-bucket',
-			'calibration-results/result.json', 512, '` + strings.Repeat("a", 64) + `'
+			'derived/calibration-results/calibration.json', 512, '` + strings.Repeat("a", 64) + `'
 		)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
@@ -280,8 +280,8 @@ func TestManagerFreezesEpisodeCalibrationIntoDerivativeExecution(t *testing.T) {
 		t.Fatalf("insert image config: %v", err)
 	}
 	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
-		"raw/source.mcap":                 {size: 1024, etag: "source-etag"},
-		"calibration-results/result.json": {size: 512, etag: "calibration-etag"},
+		"raw/source.mcap": {size: 1024, etag: "source-etag"},
+		"derived/calibration-results/calibration.json": {size: 512, etag: "calibration-etag"},
 	}}
 	orbit := &fakeOrbit{getErr: orbitapi.ErrNotFound}
 	orbit.submit = func(_ context.Context, request orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
@@ -312,9 +312,9 @@ func TestManagerFreezesEpisodeCalibrationIntoDerivativeExecution(t *testing.T) {
 	}
 	if frozen.CameraSerial != "CAMERA-SN-001" ||
 		frozen.CaptureID != "92cd6f2f-d131-4bf0-9b4a-d96258d09011" ||
-		frozen.ResultURI != "tos://source-bucket/calibration-results/result.json" ||
+		frozen.ResultURI != "tos://source-bucket/derived/calibration-results/calibration.json" ||
 		frozen.ResultSHA256 != strings.Repeat("a", 64) ||
-		!strings.Contains(frozen.Request, "/bindings/calibration/result.json") {
+		!strings.Contains(frozen.Request, "/bindings/calibration/calibration.json") {
 		t.Fatalf("frozen calibration execution = %+v", frozen)
 	}
 }
@@ -379,8 +379,8 @@ func TestManagerVerifyExecutionRejectsEmptyFrozenSourceETag(t *testing.T) {
 
 func TestManagerVerifyExecutionRejectsChangedFrozenCalibrationResult(t *testing.T) {
 	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
-		"raw/source.mcap":                 {size: 1024, etag: "source-etag"},
-		"calibration-results/result.json": {size: 513, etag: "changed-calibration-etag"},
+		"raw/source.mcap": {size: 1024, etag: "source-etag"},
+		"derived/calibration-results/calibration.json": {size: 513, etag: "changed-calibration-etag"},
 	}}
 	manager := NewManager(newTestDB(t), nil, objects, testManagerConfig())
 
@@ -394,7 +394,7 @@ func TestManagerVerifyExecutionRejectsChangedFrozenCalibrationResult(t *testing.
 			CameraSerial:    "CAMERA-SN-001",
 			SessionID:       "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 			CaptureID:       "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
-			ResultURI:       "tos://source-bucket/calibration-results/result.json",
+			ResultURI:       "tos://source-bucket/derived/calibration-results/calibration.json",
 			ResultETag:      "calibration-etag",
 			ResultSizeBytes: 512,
 			ResultSHA256:    strings.Repeat("a", 64),
@@ -1447,7 +1447,7 @@ func TestVerifySucceededRestoresFrozenCalibrationSnapshot(t *testing.T) {
 		"processor_image":"` + testImageDigest + `",
 		"source":{"uri":"tos://source-bucket/raw/source.mcap","size_bytes":1024,"sha256":""},
 		"calibration":{
-			"attachment_name":"archebase/calibration/result.json",
+			"attachment_name":"archebase/calibration/calibration.json",
 			"media_type":"application/json",
 			"camera_serial":"CAMERA-SN-001",
 			"session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
@@ -1463,11 +1463,11 @@ func TestVerifySucceededRestoresFrozenCalibrationSnapshot(t *testing.T) {
 		"finished_at":"2026-08-02T10:00:01Z"
 	}`
 	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
-		"raw/source.mcap":                          {size: 1024, etag: "source-etag"},
-		"calibration-results/result.json":          {size: 512, etag: "calibration-etag"},
-		outputPrefix + "/processing_manifest.json": {size: int64(len(manifest)), etag: "manifest-etag", body: manifest},
-		outputPrefix + "/output_bag.mcap":          {size: 32, etag: "mcap-etag", body: strings.Repeat("m", 32)},
-		outputPrefix + "/metadata.yaml":            {size: 16, etag: "metadata-etag", body: strings.Repeat("y", 16)},
+		"raw/source.mcap": {size: 1024, etag: "source-etag"},
+		"derived/calibration-results/calibration.json": {size: 512, etag: "calibration-etag"},
+		outputPrefix + "/processing_manifest.json":     {size: int64(len(manifest)), etag: "manifest-etag", body: manifest},
+		outputPrefix + "/output_bag.mcap":              {size: 32, etag: "mcap-etag", body: strings.Repeat("m", 32)},
+		outputPrefix + "/metadata.yaml":                {size: 16, etag: "metadata-etag", body: strings.Repeat("y", 16)},
 	}}
 	manager.objects = objects
 	if _, err := db.Exec(`
@@ -1477,7 +1477,7 @@ func TestVerifySucceededRestoresFrozenCalibrationSnapshot(t *testing.T) {
 			calibration_camera_serial = 'CAMERA-SN-001',
 			calibration_session_id = '7f9af590-75c2-47ad-b6e0-76ebf05c44f7',
 			calibration_capture_id = '92cd6f2f-d131-4bf0-9b4a-d96258d09011',
-			calibration_result_uri = 'tos://source-bucket/calibration-results/result.json',
+			calibration_result_uri = 'tos://source-bucket/derived/calibration-results/calibration.json',
 			calibration_result_etag = 'calibration-etag', calibration_result_size_bytes = 512,
 			calibration_result_sha256 = ?
 		WHERE id = ?
@@ -1684,7 +1684,7 @@ func TestReconcileQAApprovesMatchingCalibrationAttachment(t *testing.T) {
 		WHERE id = ?
 	`, ProcessingSucceeded, QAPending, outputKey, outputChecksum, string(processingResult), DeletePending,
 		manifest.Calibration.CameraSerial, manifest.Calibration.SessionID, manifest.Calibration.CaptureID,
-		"tos://source-bucket/calibration-results/result.json", "calibration-etag",
+		"tos://source-bucket/derived/calibration-results/calibration.json", "calibration-etag",
 		manifest.Calibration.SizeBytes, manifest.Calibration.SHA256, derivative.ID); err != nil {
 		t.Fatalf("prepare calibration QA derivative: %v", err)
 	}
@@ -1819,7 +1819,7 @@ func TestReconcileQARejectsInvalidCalibrationAttachments(t *testing.T) {
 						calibration_result_size_bytes = ?, calibration_result_sha256 = ?
 					WHERE id = ?
 				`, tt.calibration.CameraSerial, tt.calibration.SessionID, tt.calibration.CaptureID,
-					"tos://source-bucket/calibration-results/result.json", "calibration-etag",
+					"tos://source-bucket/derived/calibration-results/calibration.json", "calibration-etag",
 					tt.calibration.SizeBytes, tt.calibration.SHA256, derivative.ID); err != nil {
 					t.Fatalf("freeze calibration QA identity: %v", err)
 				}
@@ -1887,7 +1887,7 @@ func TestReconcileQARejectsCalibrationManifestDifferentFromFrozenSnapshot(t *tes
 		WHERE id = ?
 	`, ProcessingSucceeded, QAPending, outputKey, outputChecksum, string(processingResult), DeletePending,
 		manifest.Calibration.SessionID, manifest.Calibration.CaptureID,
-		"tos://source-bucket/calibration-results/result.json", "calibration-etag",
+		"tos://source-bucket/derived/calibration-results/calibration.json", "calibration-etag",
 		manifest.Calibration.SizeBytes, manifest.Calibration.SHA256, derivative.ID); err != nil {
 		t.Fatalf("prepare calibration QA derivative: %v", err)
 	}
@@ -1959,7 +1959,7 @@ func TestValidateManifestSnapshotRequiresV3CalibrationToMatchFrozenExecution(t *
 			CameraSerial:    "CAMERA-SN-001",
 			SessionID:       "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
 			CaptureID:       "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
-			ResultURI:       "tos://source-bucket/calibration-results/result.json",
+			ResultURI:       "tos://source-bucket/derived/calibration-results/calibration.json",
 			ResultETag:      "calibration-etag",
 			ResultSizeBytes: 512,
 			ResultSHA256:    strings.Repeat("a", 64),
@@ -1974,7 +1974,7 @@ func TestValidateManifestSnapshotRequiresV3CalibrationToMatchFrozenExecution(t *
 		"processor_image":"` + testImageDigest + `",
 		"source":{"uri":"tos://source-bucket/raw/source.mcap","size_bytes":123,"sha256":""},
 		"calibration":{
-			"attachment_name":"archebase/calibration/result.json",
+			"attachment_name":"archebase/calibration/calibration.json",
 			"media_type":"application/json",
 			"camera_serial":"CAMERA-SN-001",
 			"session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",

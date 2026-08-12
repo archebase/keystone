@@ -208,7 +208,7 @@ func (m *Manager) freezeCalibrationQueued(ctx context.Context, capturePK int64) 
 	}
 
 	sourceURI := "tos://" + capture.Bucket + "/" + capture.ObjectKey
-	resultPrefix := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
+	resultPrefix := path.Join("derived/calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
 	outputURI := "tos://" + capture.Bucket + "/" + resultPrefix + "/"
 	inputPath := "/bindings/input/" + path.Base(capture.ObjectKey)
 	submissionID := "calibration-" + capture.CaptureID
@@ -568,7 +568,7 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 		strings.TrimSpace(sourceETag) != strings.TrimSpace(capture.ObjectETag) {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration source MCAP identity changed during calibration")
 	}
-	resultPrefix := path.Join("calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
+	resultPrefix := path.Join("derived/calibration-results", capture.DeviceID, capture.CalibrationSessionID, capture.CaptureID)
 	resultKey := path.Join(resultPrefix, resultFileName)
 	calibrationKey := path.Join(resultPrefix, calibrationFileName)
 	resultSize, _, err := m.objects.StatObject(ctx, capture.Bucket, resultKey)
