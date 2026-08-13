@@ -630,6 +630,10 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 	if readErr != nil || int64(len(calibrationData)) != calibrationSize {
 		return m.retryVerification(ctx, capture, errors.New("calibration JSON changed while reading"))
 	}
+	var calibrationDocument map[string]json.RawMessage
+	if err := json.Unmarshal(calibrationData, &calibrationDocument); err != nil || len(calibrationDocument) == 0 {
+		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration JSON is invalid")
+	}
 	calibrationDigest := sha256.Sum256(calibrationData)
 	return m.persistVerifiedResult(ctx, capture, calibrationKey, calibrationData, data, result, hex.EncodeToString(calibrationDigest[:]))
 }

@@ -279,7 +279,7 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 			body: resultBody,
 		},
 		"derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json": {
-			size: 2, etag: "calibration-etag", body: "{}",
+			size: 18, etag: "calibration-etag", body: `{"calibration":{}}`,
 		},
 	}}
 	manager := NewManager(db, nil, objects, testCalibrationConfig())
@@ -629,7 +629,7 @@ func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
 			body: resultBody,
 		},
 		"derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json": {
-			size: 2, etag: "calibration-etag", body: "{}",
+			size: 18, etag: "calibration-etag", body: `{"calibration":{}}`,
 		},
 	}}
 	orbit := &fakeOrbit{job: orbitapi.Job{JobID: "abs-job-calibration-2", Status: "RUNNING"}}

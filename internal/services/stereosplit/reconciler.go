@@ -1226,8 +1226,7 @@ func validateManifestCalibration(manifest processingManifest, expected *Calibrat
 	}
 	actual := manifest.Calibration
 	if actual.AttachmentName != calibrationAttachment || actual.MediaType != calibrationMediaType ||
-		actual.CameraSerial != expected.CameraSerial || actual.SessionID != expected.SessionID ||
-		actual.CaptureID != expected.CaptureID || actual.SizeBytes != expected.ResultSizeBytes ||
+		actual.CameraSerial != expected.CameraSerial || actual.SizeBytes != expected.ResultSizeBytes ||
 		normalizedSHA256(actual.SHA256) == "" ||
 		normalizedSHA256(actual.SHA256) != normalizedSHA256(expected.ResultSHA256) {
 		return fmt.Errorf("processing manifest calibration does not match frozen execution snapshot")
