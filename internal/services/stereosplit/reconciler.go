@@ -1639,7 +1639,6 @@ func (m *Manager) inspectOutputMCAP(
 func validateManifestCalibrationShape(calibration *manifestCalibration) error {
 	if calibration == nil || calibration.AttachmentName != calibrationAttachment ||
 		calibration.MediaType != calibrationMediaType || strings.TrimSpace(calibration.CameraSerial) == "" ||
-		strings.TrimSpace(calibration.SessionID) == "" || strings.TrimSpace(calibration.CaptureID) == "" ||
 		calibration.SizeBytes <= 0 || normalizedSHA256(calibration.SHA256) == "" {
 		return fmt.Errorf("processing manifest v3 has invalid calibration data")
 	}
@@ -1679,26 +1678,18 @@ func validateCalibrationAttachment(
 	if parsedCRC != 0 && parsedCRC != computedCRC {
 		return fmt.Errorf("output MCAP calibration attachment CRC is invalid")
 	}
-	var document struct {
-		SchemaVersion        int             `json:"schema_version"`
-		Status               string          `json:"status"`
-		CameraSerial         string          `json:"camera_serial"`
-		CalibrationSessionID string          `json:"calibration_session_id"`
-		CaptureID            string          `json:"capture_id"`
-		Result               json.RawMessage `json:"result"`
-	}
+	var document map[string]json.RawMessage
 	if err := json.Unmarshal(data, &document); err != nil {
 		return fmt.Errorf("output MCAP calibration attachment is invalid JSON: %w", err)
 	}
-	var result map[string]json.RawMessage
-	if err := json.Unmarshal(document.Result, &result); err != nil {
-		return fmt.Errorf("output MCAP calibration attachment result is invalid JSON: %w", err)
+	if len(document) == 0 {
+		return fmt.Errorf("output MCAP calibration attachment JSON is empty")
 	}
-	if document.SchemaVersion != 1 || document.Status != "succeeded" ||
-		document.CameraSerial != expected.CameraSerial ||
-		document.CalibrationSessionID != expected.SessionID || document.CaptureID != expected.CaptureID ||
-		len(result) == 0 {
-		return fmt.Errorf("output MCAP calibration attachment identity does not match manifest")
+	if rawSerial, ok := document["camera_serial"]; ok {
+		var serial string
+		if err := json.Unmarshal(rawSerial, &serial); err != nil || serial != expected.CameraSerial {
+			return fmt.Errorf("output MCAP calibration attachment identity does not match manifest")
+		}
 	}
 	return nil
 }

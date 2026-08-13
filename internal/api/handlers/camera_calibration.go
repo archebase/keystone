@@ -11,8 +11,11 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 	"time"
+
+	"archebase.com/keystone-edge/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -22,6 +25,8 @@ import (
 )
 
 const maxCameraCalibrationBytes = 4 << 20
+
+var cameraSerialPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$`)
 
 type CameraCalibrationHandler struct {
 	db      *sqlx.DB
@@ -92,7 +97,7 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 		serial, _ = document["camera_serial"].(string)
 		serial = strings.TrimSpace(serial)
 	}
-	if serial == "" || len(serial) > 255 {
+	if !cameraSerialPattern.MatchString(serial) || serial == "." || serial == ".." {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "calibration.json camera_serial is required"})
 		return
 	}
@@ -107,7 +112,10 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to store calibration file"})
 		return
 	}
-	actor, _ := c.Get("username")
+	actor := ""
+	if claims := middleware.GetClaims(c); claims != nil {
+		actor = strings.TrimSpace(claims.OperatorID)
+	}
 	if _, err := h.db.ExecContext(c.Request.Context(), `INSERT INTO camera_calibrations (camera_serial, bucket, object_key, size_bytes, sha256, source, updated_by) VALUES (?, ?, ?, ?, ?, 'manual', ?) ON DUPLICATE KEY UPDATE bucket=VALUES(bucket), object_key=VALUES(object_key), size_bytes=VALUES(size_bytes), sha256=VALUES(sha256), source='manual', calibration_session_id=NULL, capture_id=NULL, updated_by=VALUES(updated_by), updated_at=CURRENT_TIMESTAMP`, serial, h.bucket, objectKey, len(data), hex.EncodeToString(digest[:]), fmt.Sprint(actor)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register calibration file"})
 		return
