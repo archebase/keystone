@@ -3,7 +3,7 @@
 
 CREATE TABLE camera_calibrations (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    camera_serial VARCHAR(255) NOT NULL,
+    camera_serial VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
     bucket VARCHAR(255) NOT NULL,
     object_key VARCHAR(1024) NOT NULL,
     size_bytes BIGINT NOT NULL,

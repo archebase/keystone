@@ -630,10 +630,14 @@ func (m *Manager) loadCalibrationInput(
 		SessionID    sql.NullString `db:"calibration_session_id"`
 		CaptureID    sql.NullString `db:"capture_id"`
 	}
+	cameraSerialComparison := "camera_serial = ?"
+	if m.db.DriverName() != "sqlite" {
+		cameraSerialComparison = "BINARY camera_serial = BINARY ?"
+	}
 	if err := m.db.GetContext(ctx, &result, `
 		SELECT camera_serial, bucket, object_key, size_bytes, sha256,
 		       calibration_session_id, capture_id
-		FROM camera_calibrations WHERE camera_serial = ?
+		FROM camera_calibrations WHERE `+cameraSerialComparison+`
 	`, episode.CameraSerial.String); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
