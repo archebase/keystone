@@ -7,6 +7,7 @@ package tos
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -185,6 +186,70 @@ func TestStatObjectReturnsSizeAndNormalizedETag(t *testing.T) {
 	}
 	if gotRequest == nil || gotRequest.Method != http.MethodHead {
 		t.Fatalf("StatObject request = %#v, want HEAD", gotRequest)
+	}
+}
+
+func TestPutObjectSendsJSONAndReturnsNormalizedETag(t *testing.T) {
+	var gotRequest *http.Request
+	var gotBody []byte
+	reader := &Reader{
+		endpoint:  "tos-cn-beijing.volces.com",
+		region:    "cn-beijing",
+		accessKey: "test-ak",
+		secretKey: "test-sk",
+		useSSL:    true,
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotRequest = req
+			var err error
+			gotBody, err = io.ReadAll(req.Body)
+			if err != nil {
+				return nil, err
+			}
+			header := make(http.Header)
+			header.Set("ETag", `"uploaded-etag"`)
+			return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+		})},
+	}
+
+	etag, err := reader.PutObject(context.Background(), "source-bucket", "derived/calibration.json", []byte(`{"camera_serial":"camera-1"}`))
+	if err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+	if etag != "uploaded-etag" {
+		t.Fatalf("PutObject() ETag = %q, want uploaded-etag", etag)
+	}
+	if gotRequest == nil || gotRequest.Method != http.MethodPut {
+		t.Fatalf("PutObject request = %#v, want PUT", gotRequest)
+	}
+	if got := gotRequest.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := string(gotBody); got != `{"camera_serial":"camera-1"}` {
+		t.Fatalf("request body = %q", got)
+	}
+}
+
+func TestPutObjectConvertsTOSFailure(t *testing.T) {
+	reader := &Reader{
+		endpoint:  "tos-cn-beijing.volces.com",
+		region:    "cn-beijing",
+		accessKey: "test-ak",
+		secretKey: "test-sk",
+		useSSL:    true,
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`<Error><Code>AccessDenied</Code><Message>denied</Message></Error>`)),
+				Request:    req,
+			}, nil
+		})},
+	}
+
+	_, err := reader.PutObject(context.Background(), "source-bucket", "derived/calibration.json", []byte(`{}`))
+	var tosErr *Error
+	if !errors.As(err, &tosErr) || tosErr.StatusCode != http.StatusForbidden || tosErr.Code != "AccessDenied" {
+		t.Fatalf("PutObject() error = %#v, want AccessDenied TOS error", err)
 	}
 }
 

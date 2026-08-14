@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
 )
 
@@ -80,6 +81,7 @@ type cameraCalibrationResponse struct {
 func (h *CameraCalibrationHandler) List(c *gin.Context) {
 	items := []cameraCalibrationResponse{}
 	if err := h.db.SelectContext(c.Request.Context(), &items, `SELECT camera_serial, bucket, object_key, size_bytes, sha256, source, calibration_session_id, capture_id, updated_by, updated_at FROM camera_calibrations ORDER BY updated_at DESC, camera_serial`); err != nil {
+		logger.Printf("[CAMERA_CALIBRATION] list failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list camera calibrations"})
 		return
 	}
@@ -140,6 +142,7 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 	digest := sha256.Sum256(data)
 	objectKey := path.Join("derived/camera-calibrations", serial, uuid.NewString(), "calibration.json")
 	if _, err := h.objects.PutObject(c.Request.Context(), h.bucket, objectKey, data); err != nil {
+		logger.Printf("[CAMERA_CALIBRATION] store failed: camera_serial=%s error=%v", serial, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to store calibration file"})
 		return
 	}
@@ -148,6 +151,7 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 		actor = strings.TrimSpace(claims.OperatorID)
 	}
 	if _, err := h.db.ExecContext(c.Request.Context(), `INSERT INTO camera_calibrations (camera_serial, bucket, object_key, size_bytes, sha256, source, updated_by) VALUES (?, ?, ?, ?, ?, 'manual', ?) ON DUPLICATE KEY UPDATE bucket=VALUES(bucket), object_key=VALUES(object_key), size_bytes=VALUES(size_bytes), sha256=VALUES(sha256), source='manual', calibration_session_id=NULL, capture_id=NULL, updated_by=VALUES(updated_by), updated_at=CURRENT_TIMESTAMP`, serial, h.bucket, objectKey, len(data), hex.EncodeToString(digest[:]), fmt.Sprint(actor)); err != nil {
+		logger.Printf("[CAMERA_CALIBRATION] register failed: camera_serial=%s error=%v", serial, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register calibration file"})
 		return
 	}
@@ -169,11 +173,13 @@ func (h *CameraCalibrationHandler) Delete(c *gin.Context) {
 	serial := strings.TrimSpace(c.Param("camera_serial"))
 	result, err := h.db.ExecContext(c.Request.Context(), "DELETE FROM camera_calibrations WHERE camera_serial = ?", serial)
 	if err != nil {
+		logger.Printf("[CAMERA_CALIBRATION] delete failed: camera_serial=%s error=%v", serial, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete camera calibration"})
 		return
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
+		logger.Printf("[CAMERA_CALIBRATION] delete result failed: camera_serial=%s error=%v", serial, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete camera calibration"})
 		return
 	}
