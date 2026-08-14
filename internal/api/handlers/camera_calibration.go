@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,23 +21,29 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/middleware"
-	"archebase.com/keystone-edge/internal/storage/tos"
 )
 
 const maxCameraCalibrationBytes = 4 << 20
 
 var cameraSerialPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$`)
 
+// CameraCalibrationHandler manages the current calibration file for each camera.
 type CameraCalibrationHandler struct {
 	db      *sqlx.DB
-	objects *tos.Reader
+	objects cameraCalibrationObjectStore
 	bucket  string
 }
 
-func NewCameraCalibrationHandler(db *sqlx.DB, objects *tos.Reader, bucket string) *CameraCalibrationHandler {
+type cameraCalibrationObjectStore interface {
+	PutObject(ctx context.Context, bucket, objectName string, body []byte) (string, error)
+}
+
+// NewCameraCalibrationHandler creates a handler backed by the supplied object store.
+func NewCameraCalibrationHandler(db *sqlx.DB, objects cameraCalibrationObjectStore, bucket string) *CameraCalibrationHandler {
 	return &CameraCalibrationHandler{db: db, objects: objects, bucket: strings.TrimSpace(bucket)}
 }
 
+// RegisterRoutes registers current camera-calibration management endpoints.
 func (h *CameraCalibrationHandler) RegisterRoutes(api *gin.RouterGroup) {
 	api.GET("/camera-calibrations", h.List)
 	api.POST("/camera-calibrations", h.Upload)
@@ -56,6 +63,14 @@ type cameraCalibrationResponse struct {
 	UpdatedAt    time.Time `db:"updated_at" json:"updated_at"`
 }
 
+// List returns every current camera calibration.
+//
+// @Summary      List current camera calibrations
+// @Tags         calibration
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]string
+// @Router       /camera-calibrations [get]
 func (h *CameraCalibrationHandler) List(c *gin.Context) {
 	items := []cameraCalibrationResponse{}
 	if err := h.db.SelectContext(c.Request.Context(), &items, `SELECT camera_serial, bucket, object_key, size_bytes, sha256, source, calibration_session_id, capture_id, updated_by, updated_at FROM camera_calibrations ORDER BY updated_at DESC, camera_serial`); err != nil {
@@ -65,6 +80,18 @@ func (h *CameraCalibrationHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+// Upload stores a manually uploaded calibration.json as the current camera calibration.
+//
+// @Summary      Upload current camera calibration
+// @Tags         calibration
+// @Accept       mpfd
+// @Produce      json
+// @Param        camera_serial  formData  string  true  "Camera serial"
+// @Param        file           formData  file    true  "calibration.json"
+// @Success      204
+// @Failure      400  {object}  map[string]string
+// @Failure      502  {object}  map[string]string
+// @Router       /camera-calibrations [post]
 func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 	if h.objects == nil || h.bucket == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "calibration storage is not configured"})
@@ -118,6 +145,16 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// Delete removes the current calibration record for one camera.
+//
+// @Summary      Delete current camera calibration
+// @Tags         calibration
+// @Produce      json
+// @Param        camera_serial  path  string  true  "Camera serial"
+// @Success      204
+// @Failure      404  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
+// @Router       /camera-calibrations/{camera_serial} [delete]
 func (h *CameraCalibrationHandler) Delete(c *gin.Context) {
 	serial := strings.TrimSpace(c.Param("camera_serial"))
 	result, err := h.db.ExecContext(c.Request.Context(), "DELETE FROM camera_calibrations WHERE camera_serial = ?", serial)

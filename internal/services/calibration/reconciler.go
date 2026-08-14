@@ -610,9 +610,9 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 	if result.Status == StatusSucceeded && len(result.Result) == 0 {
 		return m.failCapture(ctx, capturePK, StatusVerifying, "successful calibration result is missing result data")
 	}
+	resultDigest := sha256.Sum256(data)
 	if result.Status == StatusFailed {
-		digest := sha256.Sum256(data)
-		return m.persistVerifiedResult(ctx, capture, resultKey, data, data, result, hex.EncodeToString(digest[:]))
+		return m.persistVerifiedResult(ctx, capture, resultKey, data, result, hex.EncodeToString(resultDigest[:]), "", nil, "")
 	}
 	calibrationSize, _, err := m.objects.StatObject(ctx, capture.Bucket, calibrationKey)
 	if err != nil {
@@ -635,7 +635,8 @@ func (m *Manager) verifyCalibrationResult(ctx context.Context, capturePK int64) 
 		return m.failCapture(ctx, capturePK, StatusVerifying, "calibration JSON is invalid")
 	}
 	calibrationDigest := sha256.Sum256(calibrationData)
-	return m.persistVerifiedResult(ctx, capture, calibrationKey, calibrationData, data, result, hex.EncodeToString(calibrationDigest[:]))
+	return m.persistVerifiedResult(ctx, capture, resultKey, data, result, hex.EncodeToString(resultDigest[:]),
+		calibrationKey, calibrationData, hex.EncodeToString(calibrationDigest[:]))
 }
 
 func (m *Manager) retryVerification(ctx context.Context, capture Capture, cause error) error {
@@ -663,10 +664,12 @@ func (m *Manager) persistVerifiedResult(
 	ctx context.Context,
 	capture Capture,
 	resultKey string,
-	calibrationData []byte,
 	resultData []byte,
 	result calibrationResult,
-	checksum string,
+	resultChecksum string,
+	calibrationKey string,
+	calibrationData []byte,
+	calibrationChecksum string,
 ) error {
 	tx, err := m.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -705,7 +708,7 @@ func (m *Manager) persistVerifiedResult(
 		    calibration_error = NULLIF(?, ''), processing_finished_at = ?,
 		    reconcile_after = NULL, updated_at = ?
 		WHERE id = ? AND status = ?
-	`, finalStatus, resultKey, len(calibrationData), checksum, string(resultData), result.AlgorithmVersion,
+	`, finalStatus, resultKey, len(resultData), resultChecksum, string(resultData), result.AlgorithmVersion,
 		errorMessage, now, now, capture.ID, StatusVerifying); err != nil {
 		return fmt.Errorf("persist calibration result: %w", err)
 	}
@@ -738,7 +741,7 @@ func (m *Manager) persistVerifiedResult(
 				updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP
 			`
 		}
-		if _, err := tx.ExecContext(ctx, upsert, capture.CameraSerial, capture.Bucket, resultKey, len(calibrationData), checksum,
+		if _, err := tx.ExecContext(ctx, upsert, capture.CameraSerial, capture.Bucket, calibrationKey, len(calibrationData), calibrationChecksum,
 			capture.CalibrationSessionID, capture.CaptureID); err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such table") {
 			return fmt.Errorf("register current camera calibration: %w", err)
 		}
