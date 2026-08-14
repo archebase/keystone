@@ -26,15 +26,17 @@ import (
 )
 
 type fakeCameraCalibrationStore struct {
-	bucket     string
-	objectName string
-	body       []byte
-	err        error
+	bucket      string
+	objectName  string
+	contentType string
+	body        []byte
+	err         error
 }
 
-func (s *fakeCameraCalibrationStore) PutObject(_ context.Context, bucket, objectName string, body []byte) (string, error) {
+func (s *fakeCameraCalibrationStore) PutObject(_ context.Context, bucket, objectName, contentType string, body []byte) (string, error) {
 	s.bucket = bucket
 	s.objectName = objectName
+	s.contentType = contentType
 	s.body = append([]byte(nil), body...)
 	return "", s.err
 }
@@ -148,8 +150,10 @@ func TestCameraCalibrationUploadRegistersCurrentManualCalibration(t *testing.T) 
 	}
 	if store.bucket != "test-bucket" ||
 		!strings.HasPrefix(store.objectName, "derived/calibration-results/manual/camera-1/") ||
-		!strings.HasSuffix(store.objectName, "/calibration.json") || string(store.body) != document {
-		t.Fatalf("object store call = bucket=%q object=%q body=%q", store.bucket, store.objectName, store.body)
+		!strings.HasSuffix(store.objectName, "/calibration.json") || store.contentType != "application/json" ||
+		string(store.body) != document {
+		t.Fatalf("object store call = bucket=%q object=%q content_type=%q body=%q",
+			store.bucket, store.objectName, store.contentType, store.body)
 	}
 	digest := sha256.Sum256([]byte(document))
 	if len(db.execArgs) != 6 || db.execArgs[0] != "camera-1" || db.execArgs[1] != "test-bucket" ||

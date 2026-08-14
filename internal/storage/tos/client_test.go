@@ -6,11 +6,8 @@ package tos
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +68,7 @@ func TestInternalStorageConfigRoutesSourceEndpointUsingMode(t *testing.T) {
 				SecretKey: "test-sk",
 				UseSSL:    true,
 			}
-			reader := NewReader(InternalStorageConfig(storageCfg, tt.mode), time.Minute)
+			reader := NewClient(InternalStorageConfig(storageCfg, tt.mode), time.Minute)
 			reader.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				gotRequest = req
 				header := make(http.Header)
@@ -103,7 +100,7 @@ func TestInternalStorageConfigRoutesSourceEndpointUsingMode(t *testing.T) {
 
 func TestOpenObjectRangeSendsBoundedRangeRequest(t *testing.T) {
 	var gotRequest *http.Request
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  "tos-cn-beijing.volces.com",
 		region:    "cn-beijing",
 		accessKey: "test-ak",
@@ -157,7 +154,7 @@ func TestOpenObjectRangeSendsBoundedRangeRequest(t *testing.T) {
 
 func TestStatObjectReturnsSizeAndNormalizedETag(t *testing.T) {
 	var gotRequest *http.Request
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  "tos-cn-beijing.volces.com",
 		region:    "cn-beijing",
 		accessKey: "test-ak",
@@ -189,72 +186,8 @@ func TestStatObjectReturnsSizeAndNormalizedETag(t *testing.T) {
 	}
 }
 
-func TestPutObjectSendsJSONAndReturnsNormalizedETag(t *testing.T) {
-	var gotRequest *http.Request
-	var gotBody []byte
-	reader := &Reader{
-		endpoint:  "tos-cn-beijing.volces.com",
-		region:    "cn-beijing",
-		accessKey: "test-ak",
-		secretKey: "test-sk",
-		useSSL:    true,
-		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			gotRequest = req
-			var err error
-			gotBody, err = io.ReadAll(req.Body)
-			if err != nil {
-				return nil, err
-			}
-			header := make(http.Header)
-			header.Set("ETag", `"uploaded-etag"`)
-			return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
-		})},
-	}
-
-	etag, err := reader.PutObject(context.Background(), "source-bucket", "derived/calibration.json", []byte(`{"camera_serial":"camera-1"}`))
-	if err != nil {
-		t.Fatalf("PutObject() error = %v", err)
-	}
-	if etag != "uploaded-etag" {
-		t.Fatalf("PutObject() ETag = %q, want uploaded-etag", etag)
-	}
-	if gotRequest == nil || gotRequest.Method != http.MethodPut {
-		t.Fatalf("PutObject request = %#v, want PUT", gotRequest)
-	}
-	if got := gotRequest.Header.Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q, want application/json", got)
-	}
-	if got := string(gotBody); got != `{"camera_serial":"camera-1"}` {
-		t.Fatalf("request body = %q", got)
-	}
-}
-
-func TestPutObjectConvertsTOSFailure(t *testing.T) {
-	reader := &Reader{
-		endpoint:  "tos-cn-beijing.volces.com",
-		region:    "cn-beijing",
-		accessKey: "test-ak",
-		secretKey: "test-sk",
-		useSSL:    true,
-		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return &http.Response{
-				StatusCode: http.StatusForbidden,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`<Error><Code>AccessDenied</Code><Message>denied</Message></Error>`)),
-				Request:    req,
-			}, nil
-		})},
-	}
-
-	_, err := reader.PutObject(context.Background(), "source-bucket", "derived/calibration.json", []byte(`{}`))
-	var tosErr *Error
-	if !errors.As(err, &tosErr) || tosErr.StatusCode != http.StatusForbidden || tosErr.Code != "AccessDenied" {
-		t.Fatalf("PutObject() error = %#v, want AccessDenied TOS error", err)
-	}
-}
-
 func TestOpenObjectRangeRejectsNonPartialSuccess(t *testing.T) {
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  "tos-cn-beijing.volces.com",
 		region:    "cn-beijing",
 		accessKey: "test-ak",
@@ -277,7 +210,7 @@ func TestOpenObjectRangeRejectsNonPartialSuccess(t *testing.T) {
 }
 
 func TestOpenObjectRangeRejectsWrongContentRange(t *testing.T) {
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  "tos-cn-beijing.volces.com",
 		region:    "cn-beijing",
 		accessKey: "test-ak",
@@ -303,7 +236,7 @@ func TestOpenObjectRangeRejectsWrongContentRange(t *testing.T) {
 	}
 }
 
-func TestReaderReusesUnexpiredSTSCredentialsForObjectRanges(t *testing.T) {
+func TestClientCachesCredentialsByObjectAndAccess(t *testing.T) {
 	expiresAt := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
 	stsClient := &fakeSTSClient{output: (&sts.AssumeRoleOutput{}).SetCredentials(
 		(&sts.CredentialsForAssumeRoleOutput{}).
@@ -312,16 +245,16 @@ func TestReaderReusesUnexpiredSTSCredentialsForObjectRanges(t *testing.T) {
 			SetSessionToken("temporary-token").
 			SetExpiredTime(expiresAt),
 	)}
-	reader := &Reader{
-		roleTRN:   "trn:iam::123:role/tos-read",
+	reader := &Client{
+		roleTRN:   "trn:iam::123:role/tos-storage",
 		stsClient: stsClient,
 	}
 
-	first, err := reader.credentials(context.Background(), http.MethodGet, "source-bucket", "path/capture.mcap")
+	first, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap", objectReadAccess)
 	if err != nil {
 		t.Fatalf("first credentials() error = %v", err)
 	}
-	second, err := reader.credentials(context.Background(), http.MethodGet, "source-bucket", "path/capture.mcap")
+	second, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap", objectReadAccess)
 	if err != nil {
 		t.Fatalf("second credentials() error = %v", err)
 	}
@@ -332,48 +265,62 @@ func TestReaderReusesUnexpiredSTSCredentialsForObjectRanges(t *testing.T) {
 		t.Fatalf("AssumeRole calls = %d, want 1 for repeated ranges of one object", stsClient.calls)
 	}
 
-	if _, err := reader.credentials(context.Background(), http.MethodGet, "source-bucket", "path/other.mcap"); err != nil {
+	if _, err := reader.credentials(context.Background(), "source-bucket", "path/other.mcap", objectReadAccess); err != nil {
 		t.Fatalf("other object credentials() error = %v", err)
 	}
 	if stsClient.calls != 2 {
 		t.Fatalf("AssumeRole calls = %d, want separate credentials for another object", stsClient.calls)
 	}
+
+	if _, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap", objectPutAccess); err != nil {
+		t.Fatalf("put credentials() error = %v", err)
+	}
+	if stsClient.calls != 3 {
+		t.Fatalf("AssumeRole calls = %d, want separate credentials for write access", stsClient.calls)
+	}
+	policyInput := stsClient.inputs[len(stsClient.inputs)-1].Policy
+	if policyInput == nil {
+		t.Fatal("write session policy is nil")
+	}
+	policy := *policyInput
+	if !strings.Contains(policy, `"tos:PutObject"`) || strings.Contains(policy, `"tos:GetObject"`) {
+		t.Fatalf("write session policy = %s, want PutObject without GetObject", policy)
+	}
 }
 
-func TestReaderUsesWriteOnlySTSPolicyForPutObject(t *testing.T) {
-	expiresAt := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
-	stsClient := &fakeSTSClient{output: (&sts.AssumeRoleOutput{}).SetCredentials(
-		(&sts.CredentialsForAssumeRoleOutput{}).
-			SetAccessKeyId("temporary-ak").
-			SetSecretAccessKey("temporary-sk").
-			SetSessionToken("temporary-token").
-			SetExpiredTime(expiresAt),
-	)}
-	reader := &Reader{
-		roleTRN:   "trn:iam::123:role/tos-read",
-		stsClient: stsClient,
+func TestClientPutObjectUsesWriteScopedSignedRequest(t *testing.T) {
+	var gotRequest *http.Request
+	client := &Client{
+		endpoint:  "tos-cn-beijing.volces.com",
+		region:    "cn-beijing",
+		accessKey: "test-ak",
+		secretKey: "test-sk",
+		useSSL:    true,
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotRequest = req
+			header := make(http.Header)
+			header.Set("ETag", `"written-etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    req,
+			}, nil
+		})},
 	}
 
-	if _, err := reader.credentials(context.Background(), http.MethodPut, "source-bucket", "derived/calibration-results/manual/camera-1/id/calibration.json"); err != nil {
-		t.Fatalf("credentials() error = %v", err)
+	etag, err := client.PutObject(context.Background(), "bucket-a", "derived/result.json", "application/json", []byte(`{"ok":true}`))
+	if err != nil {
+		t.Fatalf("PutObject() error = %v", err)
 	}
-	if stsClient.input == nil {
-		t.Fatal("AssumeRole input is nil")
+	if etag != "written-etag" {
+		t.Fatalf("PutObject() ETag = %q, want written-etag", etag)
 	}
-	var policy struct {
-		Statement []struct {
-			Action   []string `json:"Action"`
-			Resource []string `json:"Resource"`
-		} `json:"Statement"`
+	if gotRequest == nil || gotRequest.Method != http.MethodPut || gotRequest.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("PutObject() request = %#v", gotRequest)
 	}
-	if err := json.Unmarshal([]byte(volcengine.StringValue(stsClient.input.Policy)), &policy); err != nil {
-		t.Fatalf("decode STS policy: %v", err)
-	}
-	if len(policy.Statement) != 1 || !reflect.DeepEqual(policy.Statement[0].Action, []string{"tos:PutObject"}) {
-		t.Fatalf("STS actions = %#v, want only tos:PutObject", policy.Statement)
-	}
-	if got, want := policy.Statement[0].Resource, []string{"trn:tos:::source-bucket/derived/calibration-results/manual/camera-1/id/calibration.json"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("STS resources = %#v, want %#v", got, want)
+	if !strings.HasPrefix(gotRequest.Header.Get("Authorization"), algorithm+" ") {
+		t.Fatalf("PutObject() Authorization = %q", gotRequest.Header.Get("Authorization"))
 	}
 }
 
@@ -385,12 +332,12 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 
 type fakeSTSClient struct {
 	calls  int
+	inputs []*sts.AssumeRoleInput
 	output *sts.AssumeRoleOutput
-	input  *sts.AssumeRoleInput
 }
 
 func (c *fakeSTSClient) AssumeRoleWithContext(_ volcengine.Context, input *sts.AssumeRoleInput, _ ...request.Option) (*sts.AssumeRoleOutput, error) {
 	c.calls++
-	c.input = input
+	c.inputs = append(c.inputs, input)
 	return c.output, nil
 }

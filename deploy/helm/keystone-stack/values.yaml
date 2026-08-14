@@ -139,7 +139,7 @@ storage:
     keyPrefix: device-uploads
     uploadPartSizeBytes: 8388608
     stsRoleTRN: trn:iam::2117611051:role/archebase-prod-keystone-upload
-    qaReadSTSRoleTRN: trn:iam::2117611051:role/archebase-prod-keystone-read
+    storageSTSRoleTRN: trn:iam::2117611051:role/archebase-prod-keystone-storage
     stsEndpoint: https://sts.volcengineapi.com
     stsSessionTTLSeconds: 3600
     deviceJWTTTLSeconds: 900

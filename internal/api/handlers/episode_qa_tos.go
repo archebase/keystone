@@ -95,7 +95,7 @@ func newEpisodeQATOSReader(cfg config.StorageConfig) *episodeQATOSReader {
 		region:    strings.TrimSpace(cfg.Region),
 		accessKey: strings.TrimSpace(cfg.AccessKey),
 		secretKey: strings.TrimSpace(cfg.SecretKey),
-		roleTRN:   strings.TrimSpace(cfg.STSRoleTRN),
+		roleTRN:   strings.TrimSpace(cfg.StorageRoleTRN),
 		useSSL:    cfg.UseSSL,
 		client:    &http.Client{Timeout: defaultEpisodeQATimeout},
 	}
@@ -274,16 +274,16 @@ func (r *episodeQATOSReader) newRequest(ctx context.Context, method, bucket, obj
 
 func (r *episodeQATOSReader) credentials(ctx context.Context, bucket, objectName string) (episodeQATOSCredentials, error) {
 	if strings.TrimSpace(r.roleTRN) == "" {
-		return episodeQATOSCredentials{}, fmt.Errorf("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN is required for TOS QA reads")
+		return episodeQATOSCredentials{}, fmt.Errorf("KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN is required for TOS access")
 	}
 	if r.stsClient == nil {
-		return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS client is not configured for TOS QA reads")
+		return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS client is not configured for TOS access")
 	}
 	policy, err := tosReadPolicy(bucket, objectName)
 	if err != nil {
 		return episodeQATOSCredentials{}, err
 	}
-	sessionName := fmt.Sprintf("keystone-qa-read-%d", time.Now().UTC().Unix())
+	sessionName := fmt.Sprintf("keystone-storage-read-%d", time.Now().UTC().Unix())
 	logger.Printf("[EPISODE-QA] TOS AssumeRole start role_trn=%s session_name=%s bucket=%s object=%s policy_sha256=%s policy_bytes=%d",
 		r.roleTRN, sessionName, bucket, objectName, sha256Hex([]byte(policy)), len(policy))
 	output, err := r.stsClient.AssumeRoleWithContext(ctx, (&sts.AssumeRoleInput{}).
@@ -296,17 +296,17 @@ func (r *episodeQATOSReader) credentials(ctx context.Context, bucket, objectName
 		if errors.As(err, &sdkErr) {
 			logger.Printf("[EPISODE-QA] TOS AssumeRole failed role_trn=%s bucket=%s object=%s error_code=%s",
 				r.roleTRN, bucket, objectName, sdkErr.Code())
-			return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS AssumeRole for QA read failed: %s", sdkErr.Code())
+			return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS AssumeRole for TOS read failed: %s", sdkErr.Code())
 		}
 		logger.Printf("[EPISODE-QA] TOS AssumeRole failed role_trn=%s bucket=%s object=%s",
 			r.roleTRN, bucket, objectName)
-		return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS AssumeRole for QA read failed")
+		return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS AssumeRole for TOS read failed")
 	}
 	if output == nil || output.Credentials == nil ||
 		output.Credentials.AccessKeyId == nil ||
 		output.Credentials.SecretAccessKey == nil ||
 		output.Credentials.SessionToken == nil {
-		return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS response missing QA read credentials")
+		return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS response missing TOS storage credentials")
 	}
 	result := episodeQATOSCredentials{
 		accessKeyID:     strings.TrimSpace(*output.Credentials.AccessKeyId),
@@ -319,7 +319,7 @@ func (r *episodeQATOSReader) credentials(ctx context.Context, bucket, objectName
 		}
 	}
 	if result.accessKeyID == "" || result.accessKeySecret == "" || result.securityToken == "" {
-		return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS response contains empty QA read credentials")
+		return episodeQATOSCredentials{}, fmt.Errorf("volcengine STS response contains empty TOS storage credentials")
 	}
 	logger.Printf("[EPISODE-QA] TOS AssumeRole success role_trn=%s bucket=%s object=%s expires_at=%s access_key_suffix=%s",
 		r.roleTRN,
@@ -407,7 +407,7 @@ func tosReadPolicy(bucket, objectName string) (string, error) {
 	bucket = strings.TrimSpace(bucket)
 	objectName = strings.TrimSpace(objectName)
 	if bucket == "" || objectName == "" {
-		return "", fmt.Errorf("TOS QA read scope requires bucket and object key")
+		return "", fmt.Errorf("TOS read scope requires bucket and object key")
 	}
 	policy := map[string]any{
 		"Statement": []map[string]any{{
@@ -421,7 +421,7 @@ func tosReadPolicy(bucket, objectName string) (string, error) {
 	}
 	encoded, err := json.Marshal(policy)
 	if err != nil {
-		return "", fmt.Errorf("encode TOS QA read STS policy: %w", err)
+		return "", fmt.Errorf("encode TOS read STS policy: %w", err)
 	}
 	return string(encoded), nil
 }

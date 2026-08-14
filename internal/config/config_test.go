@@ -18,7 +18,7 @@ var storageConfigEnvKeys = []string{
 	"KEYSTONE_DGW_TOS_BUCKET",
 	"KEYSTONE_DGW_TOS_REGION",
 	"KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN",
-	"KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN",
+	"KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN",
 	"KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT",
 	"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID",
 	"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET",
@@ -90,7 +90,7 @@ func TestLoad(t *testing.T) {
 		"KEYSTONE_DGW_COMPAT_ENABLED":                  os.Getenv("KEYSTONE_DGW_COMPAT_ENABLED"),
 		"KEYSTONE_DGW_TOS_ENDPOINT":                    os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT"),
 		"KEYSTONE_DGW_TOS_BUCKET":                      os.Getenv("KEYSTONE_DGW_TOS_BUCKET"),
-		"KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN": os.Getenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN"),
+		"KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN": os.Getenv("KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN"),
 		"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID":        os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"),
 		"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET":    os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"),
 	}
@@ -117,7 +117,7 @@ func TestLoad(t *testing.T) {
 	os.Unsetenv("KEYSTONE_DGW_COMPAT_ENABLED")
 	os.Unsetenv("KEYSTONE_DGW_TOS_ENDPOINT")
 	os.Unsetenv("KEYSTONE_DGW_TOS_BUCKET")
-	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN")
+	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN")
 	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID")
 	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET")
 	os.Setenv("KEYSTONE_MYSQL_PASSWORD", "test-password")
@@ -300,7 +300,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 		"KEYSTONE_DGW_COMPAT_ENABLED":                  os.Getenv("KEYSTONE_DGW_COMPAT_ENABLED"),
 		"KEYSTONE_DGW_TOS_ENDPOINT":                    os.Getenv("KEYSTONE_DGW_TOS_ENDPOINT"),
 		"KEYSTONE_DGW_TOS_BUCKET":                      os.Getenv("KEYSTONE_DGW_TOS_BUCKET"),
-		"KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN": os.Getenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN"),
+		"KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN": os.Getenv("KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN"),
 		"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID":        os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"),
 		"KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET":    os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"),
 	}
@@ -334,7 +334,7 @@ func TestLoadWithCustomEnv(t *testing.T) {
 	os.Unsetenv("KEYSTONE_DGW_COMPAT_ENABLED")
 	os.Unsetenv("KEYSTONE_DGW_TOS_ENDPOINT")
 	os.Unsetenv("KEYSTONE_DGW_TOS_BUCKET")
-	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN")
+	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN")
 	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID")
 	os.Unsetenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET")
 
@@ -386,7 +386,7 @@ func TestLoadStorageConfigKeepsAxonOnMinIOWhenDGWCompatEnabled(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_REGION", "cn-beijing")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN", "trn:iam::123:role/upload")
-	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "trn:iam::123:role/qa-read")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN", "trn:iam::123:role/storage")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT", "https://sts.volcengineapi.com")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
@@ -422,8 +422,8 @@ func TestLoadStorageConfigKeepsAxonOnMinIOWhenDGWCompatEnabled(t *testing.T) {
 	if tosCfg.Type != "tos" || tosCfg.Bucket != "tos-bucket" {
 		t.Fatalf("TOS storage = type %q bucket %q, want tos/tos-bucket", tosCfg.Type, tosCfg.Bucket)
 	}
-	if tosCfg.STSRoleTRN != "trn:iam::123:role/qa-read" {
-		t.Fatalf("TOS STSRoleTRN = %q, want QA read role", tosCfg.STSRoleTRN)
+	if tosCfg.StorageRoleTRN != "trn:iam::123:role/storage" {
+		t.Fatalf("TOS StorageRoleTRN = %q, want storage role", tosCfg.StorageRoleTRN)
 	}
 }
 
@@ -434,7 +434,7 @@ func TestLoadStorageConfigDoesNotFallbackToUploadSTSRoleForTOSQA(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_REGION", "cn-beijing")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN", "trn:iam::123:role/upload")
-	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN", "")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "tos-ak")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "tos-sk")
 
@@ -442,8 +442,8 @@ func TestLoadStorageConfigDoesNotFallbackToUploadSTSRoleForTOSQA(t *testing.T) {
 	if cfg.Type != "tos" {
 		t.Fatalf("Type = %q, want tos (%s)", cfg.Type, tosStorageEnvDebug())
 	}
-	if cfg.STSRoleTRN != "" {
-		t.Fatalf("STSRoleTRN = %q, want empty when QA read role is not configured", cfg.STSRoleTRN)
+	if cfg.StorageRoleTRN != "" {
+		t.Fatalf("StorageRoleTRN = %q, want empty when storage role is not configured", cfg.StorageRoleTRN)
 	}
 }
 
@@ -453,7 +453,7 @@ func TestLoadStorageConfigAllowsTOSWithoutStaticCredentials(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_REGION", "cn-beijing")
-	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "trn:iam::123:role/qa-read")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN", "trn:iam::123:role/storage")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "")
 
@@ -472,7 +472,7 @@ func TestLoadValidateTOSIRSAWithoutMinIOCredentials(t *testing.T) {
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_BUCKET", "tos-bucket")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_TOS_REGION", "cn-beijing")
-	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN", "trn:iam::123:role/qa-read")
+	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN", "trn:iam::123:role/storage")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID", "")
 	setStorageConfigEnv(t, "KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET", "")
 	t.Setenv("KEYSTONE_CALLBACK_PUBLIC_BASE_URL", "https://keystone.example.test")

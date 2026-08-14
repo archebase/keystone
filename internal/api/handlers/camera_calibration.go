@@ -41,7 +41,7 @@ type cameraCalibrationDatabase interface {
 }
 
 type cameraCalibrationObjectStore interface {
-	PutObject(ctx context.Context, bucket, objectName string, body []byte) (string, error)
+	PutObject(ctx context.Context, bucket, objectName, contentType string, body []byte) (string, error)
 }
 
 // NewCameraCalibrationHandler creates a handler backed by the supplied object store.
@@ -141,7 +141,7 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 	}
 	digest := sha256.Sum256(data)
 	objectKey := path.Join("derived/calibration-results/manual", serial, uuid.NewString(), "calibration.json")
-	if _, err := h.objects.PutObject(c.Request.Context(), h.bucket, objectKey, data); err != nil {
+	if _, err := h.objects.PutObject(c.Request.Context(), h.bucket, objectKey, "application/json", data); err != nil {
 		logger.Printf("[CAMERA_CALIBRATION] store failed: camera_serial=%s error=%v", serial, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to store calibration file"})
 		return
