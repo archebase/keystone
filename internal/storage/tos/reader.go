@@ -53,7 +53,7 @@ type credentialsSet struct {
 	expiration      time.Time
 }
 
-// Reader reads objects from native TOS endpoints using TOS4 request signing.
+// Reader reads and writes small objects through native TOS endpoints using TOS4 request signing.
 type Reader struct {
 	endpoint  string
 	region    string
@@ -97,7 +97,7 @@ func InternalStorageConfig(cfg config.StorageConfig, mode string) config.Storage
 	return cfg
 }
 
-// NewReader creates a native TOS reader from Keystone storage config.
+// NewReader creates a native TOS object client from Keystone storage config.
 func NewReader(cfg config.StorageConfig, timeout time.Duration) *Reader {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -276,7 +276,7 @@ func (r *Reader) credentials(ctx context.Context, method, bucket, objectName str
 		return credentialsSet{accessKeyID: r.accessKey, accessKeySecret: r.secretKey}, nil
 	}
 	if r.stsClient == nil {
-		return credentialsSet{}, fmt.Errorf("volcengine STS client is not configured for TOS reads")
+		return credentialsSet{}, fmt.Errorf("volcengine STS client is not configured for TOS requests")
 	}
 	accessMode, policy, err := policyForMethod(method, bucket, objectName)
 	if err != nil {

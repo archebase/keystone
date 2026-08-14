@@ -15,9 +15,14 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/middleware"
 )
 
 type fakeCameraCalibrationStore struct {
@@ -39,10 +44,19 @@ type fakeCameraCalibrationDatabase struct {
 	execErr   error
 	selectErr error
 	result    sql.Result
+	items     []cameraCalibrationResponse
 }
 
-func (db *fakeCameraCalibrationDatabase) SelectContext(context.Context, interface{}, string, ...interface{}) error {
-	return db.selectErr
+func (db *fakeCameraCalibrationDatabase) SelectContext(_ context.Context, dest interface{}, _ string, _ ...interface{}) error {
+	if db.selectErr != nil {
+		return db.selectErr
+	}
+	items, ok := dest.(*[]cameraCalibrationResponse)
+	if !ok {
+		return errors.New("unexpected list destination")
+	}
+	*items = append(*items, db.items...)
+	return nil
 }
 
 func (db *fakeCameraCalibrationDatabase) ExecContext(_ context.Context, _ string, args ...interface{}) (sql.Result, error) {
@@ -169,6 +183,20 @@ func TestCameraCalibrationListReturnsInternalServerErrorWhenQueryFails(t *testin
 	}
 }
 
+func TestCameraCalibrationListReturnsCurrentCalibrations(t *testing.T) {
+	handler := NewCameraCalibrationHandler(&fakeCameraCalibrationDatabase{items: []cameraCalibrationResponse{{
+		CameraSerial: "camera-1", Bucket: "bucket-1", ObjectKey: "derived/camera-1/calibration.json", Source: "manual",
+	}}}, nil, "")
+	router := gin.New()
+	router.GET("/camera-calibrations", handler.List)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/camera-calibrations", nil))
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"camera_serial":"camera-1"`) {
+		t.Fatalf("response = status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestCameraCalibrationDeleteReturnsInternalServerErrorWhenRowsAffectedFails(t *testing.T) {
 	handler := NewCameraCalibrationHandler(&fakeCameraCalibrationDatabase{
 		result: fakeCameraCalibrationResult{rowsErr: errors.New("rows affected unavailable")},
@@ -180,6 +208,66 @@ func TestCameraCalibrationDeleteReturnsInternalServerErrorWhenRowsAffectedFails(
 
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("response status = %d, want %d; body=%s", response.Code, http.StatusInternalServerError, response.Body.String())
+	}
+}
+
+func TestCameraCalibrationDeleteReturnsExpectedStatuses(t *testing.T) {
+	tests := []struct {
+		name       string
+		db         *fakeCameraCalibrationDatabase
+		wantStatus int
+	}{
+		{name: "deleted", db: &fakeCameraCalibrationDatabase{result: fakeCameraCalibrationResult{rows: 1}}, wantStatus: http.StatusNoContent},
+		{name: "not found", db: &fakeCameraCalibrationDatabase{result: fakeCameraCalibrationResult{}}, wantStatus: http.StatusNotFound},
+		{name: "execute failure", db: &fakeCameraCalibrationDatabase{execErr: errors.New("database unavailable")}, wantStatus: http.StatusInternalServerError},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := NewCameraCalibrationHandler(test.db, nil, "")
+			router := gin.New()
+			router.DELETE("/camera-calibrations/:camera_serial", handler.Delete)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/camera-calibrations/camera-1", nil))
+			if response.Code != test.wantStatus {
+				t.Fatalf("response status = %d, want %d; body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestCameraCalibrationRoutesRequireAdmin(t *testing.T) {
+	authConfig := config.AuthConfig{JWTSecret: "camera-calibration-test-secret-at-least-32-bytes", Issuer: "camera-calibration-test", JWTExpiryHours: 1}
+	adminToken, err := auth.GenerateToken(auth.NewAdminClaims(), &authConfig)
+	if err != nil {
+		t.Fatalf("generate admin token: %v", err)
+	}
+	collectorToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "collector-7"), &authConfig)
+	if err != nil {
+		t.Fatalf("generate collector token: %v", err)
+	}
+	router := gin.New()
+	handler := NewCameraCalibrationHandler(&fakeCameraCalibrationDatabase{}, &fakeCameraCalibrationStore{}, "bucket-1")
+	handler.RegisterRoutes(router.Group("/api/v1", middleware.JWTAuth(&authConfig), middleware.RequireRole("admin")))
+
+	for _, test := range []struct {
+		name, token string
+		wantStatus  int
+	}{
+		{name: "anonymous", wantStatus: http.StatusUnauthorized},
+		{name: "collector", token: collectorToken, wantStatus: http.StatusForbidden},
+		{name: "admin", token: adminToken, wantStatus: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/camera-calibrations", nil)
+			if test.token != "" {
+				req.Header.Set("Authorization", "Bearer "+test.token)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			if response.Code != test.wantStatus {
+				t.Fatalf("response status = %d, want %d; body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
 	}
 }
 
