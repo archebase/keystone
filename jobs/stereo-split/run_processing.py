@@ -29,7 +29,7 @@ COPY_ATTEMPTS = 3
 COPY_RETRY_SECONDS = 1
 SCRATCH_SPACE_MULTIPLIER = 3
 MCAP_MAGIC = b"\x89MCAP0\r\n"
-CALIBRATION_ATTACHMENT_NAME = "archebase/calibration/result.json"
+CALIBRATION_ATTACHMENT_NAME = "archebase/calibration/calibration.json"
 CALIBRATION_MEDIA_TYPE = "application/json"
 
 
@@ -136,8 +136,6 @@ def load_calibration_result(args: argparse.Namespace) -> tuple[bytes, dict[str, 
     values = (
         args.calibration_result,
         args.calibration_camera_serial,
-        args.calibration_session_id,
-        args.calibration_capture_id,
         args.expected_calibration_size,
         args.expected_calibration_checksum,
     )
@@ -167,22 +165,12 @@ def load_calibration_result(args: argparse.Namespace) -> tuple[bytes, dict[str, 
         raise RuntimeError("calibration result JSON is invalid") from error
     if not isinstance(document, dict):
         raise RuntimeError("calibration result JSON must contain an object")
-    if (
-        document.get("schema_version") != 1
-        or document.get("status") != "succeeded"
-        or document.get("camera_serial") != args.calibration_camera_serial
-        or document.get("calibration_session_id") != args.calibration_session_id
-        or document.get("capture_id") != args.calibration_capture_id
-        or not isinstance(document.get("result"), dict)
-        or not document["result"]
-    ):
-        raise RuntimeError("calibration result JSON does not match the frozen selection")
+    if not document:
+        raise RuntimeError("calibration JSON must contain an object")
     return data, {
         "attachment_name": CALIBRATION_ATTACHMENT_NAME,
         "media_type": CALIBRATION_MEDIA_TYPE,
         "camera_serial": args.calibration_camera_serial,
-        "session_id": args.calibration_session_id,
-        "capture_id": args.calibration_capture_id,
         "size_bytes": len(data),
         "sha256": digest,
     }

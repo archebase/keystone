@@ -159,7 +159,7 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 		resultBucket := strings.TrimSpace(input.Calibration.ResultBucket)
 		resultKey := strings.Trim(strings.TrimSpace(input.Calibration.ResultObjectKey), "/")
 		resultChecksum := normalizedSHA256(input.Calibration.ResultSHA256)
-		if cameraSerial == "" || sessionID == "" || captureID == "" || resultBucket == "" ||
+		if cameraSerial == "" || resultBucket == "" ||
 			resultKey == "" || resultChecksum == "" || path.Clean(resultKey) != resultKey ||
 			strings.HasPrefix(resultKey, "../") {
 			return ExecutionSnapshot{}, fmt.Errorf("invalid calibration result identity")
@@ -356,8 +356,7 @@ func (m *Manager) verifyFrozenCalibrationResult(ctx context.Context, calibration
 	if calibration == nil {
 		return nil
 	}
-	if strings.TrimSpace(calibration.CameraSerial) == "" || strings.TrimSpace(calibration.SessionID) == "" ||
-		strings.TrimSpace(calibration.CaptureID) == "" || calibration.ResultSizeBytes <= 0 ||
+	if strings.TrimSpace(calibration.CameraSerial) == "" || calibration.ResultSizeBytes <= 0 ||
 		objectrange.NormalizeETag(calibration.ResultETag) == "" ||
 		normalizedSHA256(calibration.ResultSHA256) == "" {
 		return fmt.Errorf("frozen calibration result identity is incomplete")

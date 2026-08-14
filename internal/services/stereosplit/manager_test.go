@@ -319,6 +319,71 @@ func TestManagerFreezesEpisodeCalibrationIntoDerivativeExecution(t *testing.T) {
 	}
 }
 
+func TestManagerLoadsCurrentCameraCalibrationByExactSerial(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec(`
+		CREATE TABLE camera_calibrations (
+			camera_serial TEXT COLLATE BINARY NOT NULL UNIQUE,
+			bucket TEXT NOT NULL,
+			object_key TEXT NOT NULL,
+			size_bytes INTEGER NOT NULL,
+			sha256 TEXT NOT NULL,
+			calibration_session_id TEXT,
+			capture_id TEXT
+		)
+	`); err != nil {
+		t.Fatalf("create current camera calibrations: %v", err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO camera_calibrations (
+			camera_serial, bucket, object_key, size_bytes, sha256
+		) VALUES (
+			'CAMERA-A', 'source-bucket', 'derived/calibrations/upper.json', 100, '` + strings.Repeat("a", 64) + `'
+		)`,
+		`INSERT INTO camera_calibrations (
+			camera_serial, bucket, object_key, size_bytes, sha256
+		) VALUES (
+			'camera-a', 'source-bucket', 'derived/calibrations/lower.json', 200, '` + strings.Repeat("b", 64) + `'
+		)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed current camera calibration: %v", err)
+		}
+	}
+
+	manager := NewManager(db, nil, nil, testManagerConfig())
+	for _, test := range []struct {
+		serial         string
+		wantObjectKey  string
+		wantResultHash string
+	}{
+		{
+			serial:         "CAMERA-A",
+			wantObjectKey:  "derived/calibrations/upper.json",
+			wantResultHash: strings.Repeat("a", 64),
+		},
+		{
+			serial:         "camera-a",
+			wantObjectKey:  "derived/calibrations/lower.json",
+			wantResultHash: strings.Repeat("b", 64),
+		},
+	} {
+		t.Run(test.serial, func(t *testing.T) {
+			calibration, err := manager.loadCalibrationInput(context.Background(), reconcileEpisodeRow{
+				CameraSerial: sql.NullString{String: test.serial, Valid: true},
+			})
+			if err != nil {
+				t.Fatalf("loadCalibrationInput() error = %v", err)
+			}
+			if calibration == nil || calibration.CameraSerial != test.serial ||
+				calibration.ResultObjectKey != test.wantObjectKey ||
+				calibration.ResultSHA256 != test.wantResultHash {
+				t.Fatalf("loadCalibrationInput() = %+v", calibration)
+			}
+		})
+	}
+}
+
 func TestManagerVerifiesReusableStereoSplitExecution(t *testing.T) {
 	db := newTestDB(t)
 	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {

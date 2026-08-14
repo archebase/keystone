@@ -142,6 +142,7 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 		"finished_at": "2026-08-02T10:00:01Z"
 	}`
 	calibrationBody := `{"schema":"archebase.calibration","schema_version":"1.0"}`
+	resultDigest := sha256.Sum256([]byte(resultBody))
 	calibrationDigest := sha256.Sum256([]byte(calibrationBody))
 	objects.objects["derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json"] = fakeObject{
 		size: int64(len(calibrationBody)),
@@ -161,9 +162,21 @@ func TestManagerProcessesOneCaptureThroughOrbitAndSucceedsSession(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if capture.Status != StatusSucceeded || capture.ResultObjectKey == "" ||
-		capture.ResultChecksumSHA256 != hex.EncodeToString(calibrationDigest[:]) {
+	if capture.Status != StatusSucceeded ||
+		capture.ResultObjectKey != "derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/result.json" ||
+		capture.ResultChecksumSHA256 != hex.EncodeToString(resultDigest[:]) {
 		t.Fatalf("completed capture = %+v", capture)
+	}
+	var currentCalibration struct {
+		ObjectKey string `db:"object_key"`
+		SHA256    string `db:"sha256"`
+	}
+	if err := db.Get(&currentCalibration, `SELECT object_key, sha256 FROM camera_calibrations WHERE camera_serial = ?`, testCalibrationCameraSerial); err != nil {
+		t.Fatalf("get current camera calibration: %v", err)
+	}
+	if currentCalibration.ObjectKey != "derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json" ||
+		currentCalibration.SHA256 != hex.EncodeToString(calibrationDigest[:]) {
+		t.Fatalf("current camera calibration = %+v", currentCalibration)
 	}
 	session, err := manager.GetSessionStatus(context.Background(), sessionID, 1)
 	if err != nil {
@@ -279,7 +292,7 @@ func TestManagerFailedCaptureLeavesSessionRunning(t *testing.T) {
 			body: resultBody,
 		},
 		"derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json": {
-			size: 2, etag: "calibration-etag", body: "{}",
+			size: 18, etag: "calibration-etag", body: `{"calibration":{}}`,
 		},
 	}}
 	manager := NewManager(db, nil, objects, testCalibrationConfig())
@@ -629,7 +642,7 @@ func TestManagerSuccessfulCaptureStopsOtherActiveJobs(t *testing.T) {
 			body: resultBody,
 		},
 		"derived/calibration-results/101/7f9af590-75c2-47ad-b6e0-76ebf05c44f7/92cd6f2f-d131-4bf0-9b4a-d96258d09011/calibration.json": {
-			size: 2, etag: "calibration-etag", body: "{}",
+			size: 18, etag: "calibration-etag", body: `{"calibration":{}}`,
 		},
 	}}
 	orbit := &fakeOrbit{job: orbitapi.Job{JobID: "abs-job-calibration-2", Status: "RUNNING"}}
@@ -1243,6 +1256,20 @@ func newCalibrationTestDB(t *testing.T) *sqlx.DB {
 			created_by TEXT,
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE TABLE camera_calibrations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			camera_serial TEXT NOT NULL UNIQUE,
+			bucket TEXT NOT NULL,
+			object_key TEXT NOT NULL,
+			size_bytes INTEGER NOT NULL,
+			sha256 TEXT NOT NULL,
+			source TEXT NOT NULL,
+			calibration_session_id TEXT,
+			capture_id TEXT,
+			updated_by TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`INSERT INTO calibration_sessions (
 			session_id, camera_serial, robot_id, device_id, workspace_id, status, created_at, updated_at

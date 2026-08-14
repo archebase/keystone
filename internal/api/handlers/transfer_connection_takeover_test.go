@@ -47,12 +47,22 @@ func TestTransferWebSocketResolvesDeviceNameToDeviceID(t *testing.T) {
 		}
 	}()
 
-	if hub.Get("456") == nil {
-		t.Fatalf("transfer was not registered under canonical device_id")
-	}
+	waitForTransferHubConnected(t, hub, "456")
 	if hub.Get("robot_dc87") != nil {
 		t.Fatalf("transfer was registered under device_name instead of canonical device_id")
 	}
+}
+
+func waitForTransferHubConnected(t *testing.T, hub *services.TransferHub, deviceID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hub.Get(deviceID) != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("transfer %s was not registered", deviceID)
 }
 
 func TestTransferIgnoresUploadFailedFromReplacedConnection(t *testing.T) {

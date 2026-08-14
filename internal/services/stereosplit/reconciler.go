@@ -618,15 +618,52 @@ func (m *Manager) loadCalibrationInput(
 	ctx context.Context,
 	episode reconcileEpisodeRow,
 ) (*CalibrationInput, error) {
-	if !episode.CalibrationCaptureID.Valid || strings.TrimSpace(episode.CalibrationCaptureID.String) == "" {
-		if episode.CalibrationResultSHA256.Valid && strings.TrimSpace(episode.CalibrationResultSHA256.String) != "" {
-			return nil, fmt.Errorf("episode calibration checksum exists without a Capture")
-		}
+	if !episode.CameraSerial.Valid || strings.TrimSpace(episode.CameraSerial.String) == "" {
 		return nil, nil
 	}
-	if !episode.CameraSerial.Valid || strings.TrimSpace(episode.CameraSerial.String) == "" ||
-		!episode.CalibrationResultSHA256.Valid || normalizedSHA256(episode.CalibrationResultSHA256.String) == "" {
-		return nil, fmt.Errorf("episode calibration selection is incomplete")
+	var result struct {
+		CameraSerial string         `db:"camera_serial"`
+		Bucket       string         `db:"bucket"`
+		ObjectKey    string         `db:"object_key"`
+		SizeBytes    int64          `db:"size_bytes"`
+		SHA256       string         `db:"sha256"`
+		SessionID    sql.NullString `db:"calibration_session_id"`
+		CaptureID    sql.NullString `db:"capture_id"`
+	}
+	cameraSerialComparison := "camera_serial = ?"
+	if m.db.DriverName() != "sqlite" {
+		cameraSerialComparison = "BINARY camera_serial = BINARY ?"
+	}
+	if err := m.db.GetContext(ctx, &result, `
+		SELECT camera_serial, bucket, object_key, size_bytes, sha256,
+		       calibration_session_id, capture_id
+		FROM camera_calibrations WHERE `+cameraSerialComparison+`
+	`, episode.CameraSerial.String); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return m.loadLegacyCalibrationInput(ctx, episode)
+		}
+		return nil, fmt.Errorf("load frozen episode calibration result: %w", err)
+	}
+	if result.CameraSerial != episode.CameraSerial.String || strings.TrimSpace(result.Bucket) == "" ||
+		strings.TrimSpace(result.ObjectKey) == "" || result.SizeBytes <= 0 || normalizedSHA256(result.SHA256) == "" {
+		return nil, fmt.Errorf("current camera calibration identity is incomplete")
+	}
+	return &CalibrationInput{
+		CameraSerial:    result.CameraSerial,
+		SessionID:       result.SessionID.String,
+		CaptureID:       result.CaptureID.String,
+		ResultBucket:    result.Bucket,
+		ResultObjectKey: result.ObjectKey,
+		ResultSHA256:    result.SHA256,
+	}, nil
+}
+
+func (m *Manager) loadLegacyCalibrationInput(ctx context.Context, episode reconcileEpisodeRow) (*CalibrationInput, error) {
+	if !episode.CalibrationCaptureID.Valid || strings.TrimSpace(episode.CalibrationCaptureID.String) == "" {
+		return nil, nil
 	}
 	var result calibrationResultRow
 	if err := m.db.GetContext(ctx, &result, `
@@ -636,22 +673,12 @@ func (m *Manager) loadCalibrationInput(
 		INNER JOIN calibration_sessions s ON s.session_id = c.calibration_session_id
 		WHERE c.capture_id = ?
 	`, episode.CalibrationCaptureID.String); err != nil {
-		return nil, fmt.Errorf("load frozen episode calibration result: %w", err)
+		return nil, fmt.Errorf("load legacy episode calibration result: %w", err)
 	}
-	if result.Status != "succeeded" || result.CameraSerial != episode.CameraSerial.String ||
-		result.CaptureID != episode.CalibrationCaptureID.String ||
-		normalizedSHA256(result.ResultSHA256) != normalizedSHA256(episode.CalibrationResultSHA256.String) ||
-		strings.TrimSpace(result.ResultKey) == "" || result.ResultSize <= 0 {
-		return nil, fmt.Errorf("frozen episode calibration result identity changed")
+	if result.Status != "succeeded" || strings.TrimSpace(result.ResultKey) == "" || result.ResultSize <= 0 {
+		return nil, nil
 	}
-	return &CalibrationInput{
-		CameraSerial:    result.CameraSerial,
-		SessionID:       result.SessionID,
-		CaptureID:       result.CaptureID,
-		ResultBucket:    result.Bucket,
-		ResultObjectKey: result.ResultKey,
-		ResultSHA256:    result.ResultSHA256,
-	}, nil
+	return &CalibrationInput{CameraSerial: result.CameraSerial, SessionID: result.SessionID, CaptureID: result.CaptureID, ResultBucket: result.Bucket, ResultObjectKey: result.ResultKey, ResultSHA256: result.ResultSHA256}, nil
 }
 
 func (m *Manager) reconcileSubmitting(ctx context.Context, derivativeID int64) error {
@@ -1119,17 +1146,15 @@ func calibrationSnapshotFromColumns(
 	resultSize sql.NullInt64,
 	resultSHA256 sql.NullString,
 ) (*CalibrationSnapshot, error) {
-	present := []bool{
+	required := []bool{
 		cameraSerial.Valid,
-		sessionID.Valid,
-		captureID.Valid,
 		resultURI.Valid,
 		resultETag.Valid,
 		resultSize.Valid,
 		resultSHA256.Valid,
 	}
 	count := 0
-	for _, value := range present {
+	for _, value := range required {
 		if value {
 			count++
 		}
@@ -1137,7 +1162,7 @@ func calibrationSnapshotFromColumns(
 	if count == 0 {
 		return nil, nil
 	}
-	if count != len(present) {
+	if count != len(required) {
 		return nil, fmt.Errorf("frozen calibration result identity is incomplete")
 	}
 	return &CalibrationSnapshot{
@@ -1202,8 +1227,7 @@ func validateManifestCalibration(manifest processingManifest, expected *Calibrat
 	}
 	actual := manifest.Calibration
 	if actual.AttachmentName != calibrationAttachment || actual.MediaType != calibrationMediaType ||
-		actual.CameraSerial != expected.CameraSerial || actual.SessionID != expected.SessionID ||
-		actual.CaptureID != expected.CaptureID || actual.SizeBytes != expected.ResultSizeBytes ||
+		actual.CameraSerial != expected.CameraSerial || actual.SizeBytes != expected.ResultSizeBytes ||
 		normalizedSHA256(actual.SHA256) == "" ||
 		normalizedSHA256(actual.SHA256) != normalizedSHA256(expected.ResultSHA256) {
 		return fmt.Errorf("processing manifest calibration does not match frozen execution snapshot")
@@ -1615,7 +1639,6 @@ func (m *Manager) inspectOutputMCAP(
 func validateManifestCalibrationShape(calibration *manifestCalibration) error {
 	if calibration == nil || calibration.AttachmentName != calibrationAttachment ||
 		calibration.MediaType != calibrationMediaType || strings.TrimSpace(calibration.CameraSerial) == "" ||
-		strings.TrimSpace(calibration.SessionID) == "" || strings.TrimSpace(calibration.CaptureID) == "" ||
 		calibration.SizeBytes <= 0 || normalizedSHA256(calibration.SHA256) == "" {
 		return fmt.Errorf("processing manifest v3 has invalid calibration data")
 	}
@@ -1655,26 +1678,18 @@ func validateCalibrationAttachment(
 	if parsedCRC != 0 && parsedCRC != computedCRC {
 		return fmt.Errorf("output MCAP calibration attachment CRC is invalid")
 	}
-	var document struct {
-		SchemaVersion        int             `json:"schema_version"`
-		Status               string          `json:"status"`
-		CameraSerial         string          `json:"camera_serial"`
-		CalibrationSessionID string          `json:"calibration_session_id"`
-		CaptureID            string          `json:"capture_id"`
-		Result               json.RawMessage `json:"result"`
-	}
+	var document map[string]json.RawMessage
 	if err := json.Unmarshal(data, &document); err != nil {
 		return fmt.Errorf("output MCAP calibration attachment is invalid JSON: %w", err)
 	}
-	var result map[string]json.RawMessage
-	if err := json.Unmarshal(document.Result, &result); err != nil {
-		return fmt.Errorf("output MCAP calibration attachment result is invalid JSON: %w", err)
+	if len(document) == 0 {
+		return fmt.Errorf("output MCAP calibration attachment JSON is empty")
 	}
-	if document.SchemaVersion != 1 || document.Status != "succeeded" ||
-		document.CameraSerial != expected.CameraSerial ||
-		document.CalibrationSessionID != expected.SessionID || document.CaptureID != expected.CaptureID ||
-		len(result) == 0 {
-		return fmt.Errorf("output MCAP calibration attachment identity does not match manifest")
+	if rawSerial, ok := document["camera_serial"]; ok {
+		var serial string
+		if err := json.Unmarshal(rawSerial, &serial); err != nil || serial != expected.CameraSerial {
+			return fmt.Errorf("output MCAP calibration attachment identity does not match manifest")
+		}
 	}
 	return nil
 }
