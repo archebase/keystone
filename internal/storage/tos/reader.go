@@ -24,15 +24,16 @@ import (
 	"sync"
 	"time"
 
-	"archebase.com/keystone-edge/internal/config"
-	"archebase.com/keystone-edge/internal/logger"
-	"archebase.com/keystone-edge/internal/storage/objectrange"
-	"archebase.com/keystone-edge/internal/volcengineauth"
 	"github.com/volcengine/volcengine-go-sdk/service/sts"
 	"github.com/volcengine/volcengine-go-sdk/volcengine"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/request"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/session"
 	"github.com/volcengine/volcengine-go-sdk/volcengine/volcengineerr"
+
+	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
+	"archebase.com/keystone-edge/internal/storage/objectrange"
+	"archebase.com/keystone-edge/internal/volcengineauth"
 )
 
 const (
