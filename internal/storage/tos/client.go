@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-// Package tos provides a small native Volcengine TOS object reader.
+// Package tos provides native Volcengine TOS object access for Keystone.
 package tos
 
 import (
@@ -53,8 +53,15 @@ type credentialsSet struct {
 	expiration      time.Time
 }
 
-// Reader reads objects from native TOS endpoints using TOS4 request signing.
-type Reader struct {
+type objectAccess string
+
+const (
+	objectReadAccess objectAccess = "read"
+	objectPutAccess  objectAccess = "put"
+)
+
+// Client reads and writes objects through scoped TOS4-signed requests.
+type Client struct {
 	endpoint  string
 	region    string
 	accessKey string
@@ -97,17 +104,17 @@ func InternalStorageConfig(cfg config.StorageConfig, mode string) config.Storage
 	return cfg
 }
 
-// NewReader creates a native TOS reader from Keystone storage config.
-func NewReader(cfg config.StorageConfig, timeout time.Duration) *Reader {
+// NewClient creates a native TOS client from Keystone storage config.
+func NewClient(cfg config.StorageConfig, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  strings.TrimSpace(cfg.Endpoint),
 		region:    strings.TrimSpace(cfg.Region),
 		accessKey: strings.TrimSpace(cfg.AccessKey),
 		secretKey: strings.TrimSpace(cfg.SecretKey),
-		roleTRN:   strings.TrimSpace(cfg.STSRoleTRN),
+		roleTRN:   strings.TrimSpace(cfg.StorageRoleTRN),
 		useSSL:    cfg.UseSSL,
 		client:    &http.Client{Timeout: timeout},
 	}
@@ -145,8 +152,8 @@ func sourceEndpointForMode(endpoint, mode string) string {
 }
 
 // StatObject returns the object size and ETag used to pin subsequent ranges.
-func (r *Reader) StatObject(ctx context.Context, bucket, objectName string) (int64, string, error) {
-	req, err := r.newRequest(ctx, http.MethodHead, bucket, objectName, nil)
+func (r *Client) StatObject(ctx context.Context, bucket, objectName string) (int64, string, error) {
+	req, err := r.newRequest(ctx, http.MethodHead, bucket, objectName, nil, objectReadAccess)
 	if err != nil {
 		return 0, "", err
 	}
@@ -170,8 +177,8 @@ func (r *Reader) StatObject(ctx context.Context, bucket, objectName string) (int
 }
 
 // OpenObject opens the object body for streaming.
-func (r *Reader) OpenObject(ctx context.Context, bucket, objectName string) (io.ReadCloser, error) {
-	req, err := r.newRequest(ctx, http.MethodGet, bucket, objectName, nil)
+func (r *Client) OpenObject(ctx context.Context, bucket, objectName string) (io.ReadCloser, error) {
+	req, err := r.newRequest(ctx, http.MethodGet, bucket, objectName, nil, objectReadAccess)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +198,7 @@ func (r *Reader) OpenObject(ctx context.Context, bucket, objectName string) (io.
 // OpenObjectRange opens one bounded byte range. The caller is expected to use
 // a fresh context for every range so large-object reads do not share one
 // whole-object deadline.
-func (r *Reader) OpenObjectRange(ctx context.Context, bucket, objectName string, offset, length, totalSize int64, etag string) (io.ReadCloser, error) {
+func (r *Client) OpenObjectRange(ctx context.Context, bucket, objectName string, offset, length, totalSize int64, etag string) (io.ReadCloser, error) {
 	if offset < 0 || length <= 0 {
 		return nil, fmt.Errorf("invalid tos object range offset=%d length=%d", offset, length)
 	}
@@ -199,7 +206,7 @@ func (r *Reader) OpenObjectRange(ctx context.Context, bucket, objectName string,
 	if end < offset {
 		return nil, fmt.Errorf("tos object range overflows offset=%d length=%d", offset, length)
 	}
-	req, err := r.newRequest(ctx, http.MethodGet, bucket, objectName, nil)
+	req, err := r.newRequest(ctx, http.MethodGet, bucket, objectName, nil, objectReadAccess)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +232,33 @@ func (r *Reader) OpenObjectRange(ctx context.Context, bucket, objectName string,
 	return resp.Body, nil
 }
 
-func (r *Reader) newRequest(ctx context.Context, method, bucket, objectName string, body []byte) (*http.Request, error) {
+// PutObject writes one Keystone-managed object and returns its normalized ETag.
+// The storage role and per-request session policy remain authoritative for
+// which prefixes may be written.
+func (r *Client) PutObject(ctx context.Context, bucket, objectName, contentType string, body []byte) (string, error) {
+	req, err := r.newRequest(ctx, http.MethodPut, bucket, objectName, body, objectPutAccess)
+	if err != nil {
+		return "", err
+	}
+	if contentType = strings.TrimSpace(contentType); contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := r.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and objectURL validation.
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", errorFromResponse(resp)
+	}
+	etag := objectrange.NormalizeETag(resp.Header.Get("ETag"))
+	if etag == "" {
+		return "", fmt.Errorf("tos put missing object ETag")
+	}
+	return etag, nil
+}
+
+func (r *Client) newRequest(ctx context.Context, method, bucket, objectName string, body []byte, access objectAccess) (*http.Request, error) {
 	u, err := r.objectURL(bucket, objectName)
 	if err != nil {
 		return nil, err
@@ -234,7 +267,7 @@ func (r *Reader) newRequest(ctx context.Context, method, bucket, objectName stri
 	if err != nil {
 		return nil, err
 	}
-	creds, err := r.credentials(ctx, bucket, objectName)
+	creds, err := r.credentials(ctx, bucket, objectName, access)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +277,7 @@ func (r *Reader) newRequest(ctx context.Context, method, bucket, objectName stri
 	return req, nil
 }
 
-func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (credentialsSet, error) {
+func (r *Client) credentials(ctx context.Context, bucket, objectName string, access objectAccess) (credentialsSet, error) {
 	if strings.TrimSpace(r.roleTRN) == "" {
 		if r.accessKey == "" || r.secretKey == "" {
 			return credentialsSet{}, fmt.Errorf("tos static credentials are incomplete")
@@ -252,20 +285,20 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 		return credentialsSet{accessKeyID: r.accessKey, accessKeySecret: r.secretKey}, nil
 	}
 	if r.stsClient == nil {
-		return credentialsSet{}, fmt.Errorf("volcengine STS client is not configured for TOS reads")
+		return credentialsSet{}, fmt.Errorf("volcengine STS client is not configured for TOS access")
 	}
-	cacheKey := bucket + "\x00" + objectName
+	cacheKey := bucket + "\x00" + objectName + "\x00" + string(access)
 	now := time.Now().UTC()
 	if cached, ok := r.cachedCredentials(cacheKey, now); ok {
 		return cached, nil
 	}
-	policy, err := readPolicy(bucket, objectName)
+	policy, err := objectPolicy(bucket, objectName, access)
 	if err != nil {
 		return credentialsSet{}, err
 	}
-	sessionName := fmt.Sprintf("keystone-sync-read-%d", time.Now().UTC().Unix())
-	logger.Printf("[TOS] AssumeRole start role_trn=%s session_name=%s bucket=%s object=%s policy_sha256=%s policy_bytes=%d",
-		r.roleTRN, sessionName, bucket, objectName, sha256Hex([]byte(policy)), len(policy))
+	sessionName := fmt.Sprintf("keystone-storage-%s-%d", access, time.Now().UTC().Unix())
+	logger.Printf("[TOS] AssumeRole start role_trn=%s session_name=%s access=%s bucket=%s object=%s policy_sha256=%s policy_bytes=%d",
+		r.roleTRN, sessionName, access, bucket, objectName, sha256Hex([]byte(policy)), len(policy))
 	output, err := r.stsClient.AssumeRoleWithContext(ctx, (&sts.AssumeRoleInput{}).
 		SetDurationSeconds(900).
 		SetPolicy(policy).
@@ -276,16 +309,16 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 		if errors.As(err, &sdkErr) {
 			logger.Printf("[TOS] AssumeRole failed role_trn=%s bucket=%s object=%s error_code=%s",
 				r.roleTRN, bucket, objectName, sdkErr.Code())
-			return credentialsSet{}, fmt.Errorf("volcengine STS AssumeRole for TOS read failed: %s", sdkErr.Code())
+			return credentialsSet{}, fmt.Errorf("volcengine STS AssumeRole for TOS %s failed: %s", access, sdkErr.Code())
 		}
 		logger.Printf("[TOS] AssumeRole failed role_trn=%s bucket=%s object=%s", r.roleTRN, bucket, objectName)
-		return credentialsSet{}, fmt.Errorf("volcengine STS AssumeRole for TOS read failed")
+		return credentialsSet{}, fmt.Errorf("volcengine STS AssumeRole for TOS %s failed", access)
 	}
 	if output == nil || output.Credentials == nil ||
 		output.Credentials.AccessKeyId == nil ||
 		output.Credentials.SecretAccessKey == nil ||
 		output.Credentials.SessionToken == nil {
-		return credentialsSet{}, fmt.Errorf("volcengine STS response missing TOS read credentials")
+		return credentialsSet{}, fmt.Errorf("volcengine STS response missing TOS storage credentials")
 	}
 	result := credentialsSet{
 		accessKeyID:     strings.TrimSpace(*output.Credentials.AccessKeyId),
@@ -298,7 +331,7 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 		}
 	}
 	if result.accessKeyID == "" || result.accessKeySecret == "" || result.securityToken == "" {
-		return credentialsSet{}, fmt.Errorf("volcengine STS response contains empty TOS read credentials")
+		return credentialsSet{}, fmt.Errorf("volcengine STS response contains empty TOS storage credentials")
 	}
 	r.cacheCredentials(cacheKey, result, now)
 	logger.Printf("[TOS] AssumeRole success role_trn=%s bucket=%s object=%s expires_at=%s access_key_suffix=%s",
@@ -306,7 +339,7 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 	return result, nil
 }
 
-func (r *Reader) cachedCredentials(key string, now time.Time) (credentialsSet, bool) {
+func (r *Client) cachedCredentials(key string, now time.Time) (credentialsSet, bool) {
 	r.credentialsMu.Lock()
 	defer r.credentialsMu.Unlock()
 	cached, ok := r.credentialsCache[key]
@@ -319,7 +352,7 @@ func (r *Reader) cachedCredentials(key string, now time.Time) (credentialsSet, b
 	return cached, true
 }
 
-func (r *Reader) cacheCredentials(key string, credentials credentialsSet, now time.Time) {
+func (r *Client) cacheCredentials(key string, credentials credentialsSet, now time.Time) {
 	if credentials.expiration.IsZero() || !credentials.expiration.After(now.Add(credentialsRefreshBefore)) {
 		return
 	}
@@ -336,7 +369,7 @@ func (r *Reader) cacheCredentials(key string, credentials credentialsSet, now ti
 	r.credentialsCache[key] = credentials
 }
 
-func (r *Reader) objectURL(bucket, objectName string) (string, error) {
+func (r *Client) objectURL(bucket, objectName string) (string, error) {
 	bucket = strings.TrimSpace(bucket)
 	objectName = strings.Trim(strings.TrimSpace(objectName), "/")
 	if bucket == "" || objectName == "" || r.endpoint == "" {
@@ -355,7 +388,7 @@ func (r *Reader) objectURL(bucket, objectName string) (string, error) {
 	return u.String(), nil
 }
 
-func (r *Reader) sign(req *http.Request, payload []byte, now time.Time, creds credentialsSet) error {
+func (r *Client) sign(req *http.Request, payload []byte, now time.Time, creds credentialsSet) error {
 	if req == nil || req.URL == nil || req.URL.Host == "" || r.region == "" || creds.accessKeyID == "" || creds.accessKeySecret == "" {
 		return fmt.Errorf("tos signing configuration is incomplete")
 	}
@@ -408,25 +441,28 @@ func (r *Reader) sign(req *http.Request, payload []byte, now time.Time, creds cr
 	return nil
 }
 
-func readPolicy(bucket, objectName string) (string, error) {
+func objectPolicy(bucket, objectName string, access objectAccess) (string, error) {
 	bucket = strings.TrimSpace(bucket)
 	objectName = strings.TrimSpace(objectName)
 	if bucket == "" || objectName == "" {
-		return "", fmt.Errorf("TOS read scope requires bucket and object key")
+		return "", fmt.Errorf("TOS storage scope requires bucket and object key")
+	}
+	actions := []string{"tos:GetObject", "tos:HeadObject"}
+	if access == objectPutAccess {
+		actions = []string{"tos:HeadObject", "tos:PutObject"}
+	} else if access != objectReadAccess {
+		return "", fmt.Errorf("unsupported TOS object access %q", access)
 	}
 	policy := map[string]any{
 		"Statement": []map[string]any{{
-			"Effect": "Allow",
-			"Action": []string{
-				"tos:GetObject",
-				"tos:HeadObject",
-			},
+			"Effect":   "Allow",
+			"Action":   actions,
 			"Resource": []string{"trn:tos:::" + bucket + "/" + objectName},
 		}},
 	}
 	encoded, err := json.Marshal(policy)
 	if err != nil {
-		return "", fmt.Errorf("encode TOS read STS policy: %w", err)
+		return "", fmt.Errorf("encode TOS storage STS policy: %w", err)
 	}
 	return string(encoded), nil
 }

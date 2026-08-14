@@ -115,6 +115,7 @@ app.kubernetes.io/component: {{ $component | quote }}
   {{- if empty .Values.storage.tos.bucket -}}{{ fail "storage.tos.bucket is required when storage.type=tos" }}{{- end -}}
   {{- if empty .Values.storage.tos.region -}}{{ fail "storage.tos.region is required when storage.type=tos" }}{{- end -}}
   {{- if and (not .Values.storage.tos.mockSTS) (empty .Values.storage.tos.stsRoleTRN) -}}{{ fail "storage.tos.stsRoleTRN is required when storage.type=tos and mockSTS=false" }}{{- end -}}
+  {{- if empty .Values.storage.tos.storageSTSRoleTRN -}}{{ fail "storage.tos.storageSTSRoleTRN is required when storage.type=tos" }}{{- end -}}
   {{- if empty .Values.keystone.hilbert.baseURL -}}{{ fail "keystone.hilbert.baseURL is required when storage.type=tos" }}{{- end -}}
   {{- if empty .Values.credentials.existingSecret -}}
     {{- if empty .Values.credentials.hilbertAccessKey -}}{{ fail "credentials.hilbertAccessKey is required when storage.type=tos" }}{{- end -}}

@@ -164,8 +164,8 @@ spec:
               value: {{ .Values.storage.tos.uploadPartSizeBytes | int64 | quote }}
             - name: KEYSTONE_DGW_VOLCENGINE_STS_ROLE_TRN
               value: {{ .Values.storage.tos.stsRoleTRN | quote }}
-            - name: KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN
-              value: {{ .Values.storage.tos.qaReadSTSRoleTRN | quote }}
+            - name: KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN
+              value: {{ .Values.storage.tos.storageSTSRoleTRN | quote }}
             - name: KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT
               value: {{ .Values.storage.tos.stsEndpoint | quote }}
             - name: KEYSTONE_DGW_STS_SESSION_TTL_SECONDS

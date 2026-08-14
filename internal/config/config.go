@@ -61,16 +61,16 @@ type DatabaseConfig struct {
 
 // StorageConfig storage configuration
 type StorageConfig struct {
-	Type         string // "s3"
-	Endpoint     string
-	AccessKey    string `json:"-"`
-	SecretKey    string `json:"-"`
-	Bucket       string
-	UseSSL       bool
-	EnsureBucket bool
-	Region       string
-	STSRoleTRN   string
-	STSEndpoint  string
+	Type           string // "s3"
+	Endpoint       string
+	AccessKey      string `json:"-"`
+	SecretKey      string `json:"-"`
+	Bucket         string
+	UseSSL         bool
+	EnsureBucket   bool
+	Region         string
+	StorageRoleTRN string
+	STSEndpoint    string
 }
 
 // QAConfig QA engine configuration
@@ -381,21 +381,21 @@ func loadTOSStorageConfig() StorageConfig {
 		tosRegion := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_TOS_REGION"))
 		tosAccessKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_ID"))
 		tosSecretKey := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_ACCESS_KEY_SECRET"))
-		tosSTSRoleTRN := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN"))
+		tosStorageRoleTRN := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN"))
 		tosSTSEndpoint := strings.TrimSpace(os.Getenv("KEYSTONE_DGW_VOLCENGINE_STS_ENDPOINT"))
-		if tosEndpoint != "" || tosBucket != "" || tosRegion != "" || tosAccessKey != "" || tosSecretKey != "" || tosSTSRoleTRN != "" || tosSTSEndpoint != "" {
+		if tosEndpoint != "" || tosBucket != "" || tosRegion != "" || tosAccessKey != "" || tosSecretKey != "" || tosStorageRoleTRN != "" || tosSTSEndpoint != "" {
 			endpoint, useSSL := normalizeObjectStorageEndpoint(tosEndpoint, true)
 			return StorageConfig{
-				Type:         "tos",
-				Endpoint:     endpoint,
-				AccessKey:    tosAccessKey,
-				SecretKey:    tosSecretKey,
-				Bucket:       tosBucket,
-				UseSSL:       useSSL,
-				EnsureBucket: false,
-				Region:       tosRegion,
-				STSRoleTRN:   tosSTSRoleTRN,
-				STSEndpoint:  tosSTSEndpoint,
+				Type:           "tos",
+				Endpoint:       endpoint,
+				AccessKey:      tosAccessKey,
+				SecretKey:      tosSecretKey,
+				Bucket:         tosBucket,
+				UseSSL:         useSSL,
+				EnsureBucket:   false,
+				Region:         tosRegion,
+				StorageRoleTRN: tosStorageRoleTRN,
+				STSEndpoint:    tosSTSEndpoint,
 			}
 		}
 	}
@@ -452,7 +452,7 @@ func (c *Config) Validate() error {
 		strings.TrimSpace(c.TOSStorage.Region) != "" ||
 		strings.TrimSpace(c.TOSStorage.AccessKey) != "" ||
 		strings.TrimSpace(c.TOSStorage.SecretKey) != "" ||
-		strings.TrimSpace(c.TOSStorage.STSRoleTRN) != "" ||
+		strings.TrimSpace(c.TOSStorage.StorageRoleTRN) != "" ||
 		strings.TrimSpace(c.TOSStorage.STSEndpoint) != ""
 	if tosConfigured {
 		c.TOSStorage.Type = strings.ToLower(strings.TrimSpace(c.TOSStorage.Type))

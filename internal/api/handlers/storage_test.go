@@ -47,14 +47,14 @@ func TestStorageHandlerProxiesTOSRangeResponse(t *testing.T) {
 
 	authCfg := &config.AuthConfig{JWTSecret: "test-secret"}
 	handler := NewStorageHandler(nil, authCfg, &config.StorageConfig{
-		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.volces.com",
-		Bucket:     "bucket-a",
-		Region:     "cn-beijing",
-		AccessKey:  "test-ak",
-		SecretKey:  "test-sk",
-		UseSSL:     true,
-		STSRoleTRN: "trn:iam::123:role/qa-read",
+		Type:           "tos",
+		Endpoint:       "tos-cn-beijing.volces.com",
+		Bucket:         "bucket-a",
+		Region:         "cn-beijing",
+		AccessKey:      "test-ak",
+		SecretKey:      "test-sk",
+		UseSSL:         true,
+		StorageRoleTRN: "trn:iam::123:role/storage",
 	})
 	handler.tos.stsClient = fakeEpisodeQASTSClient{}
 	handler.tos.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -110,14 +110,14 @@ func TestStorageHandlerRedirectsTOSDownloadToPresignedURL(t *testing.T) {
 
 	authCfg := &config.AuthConfig{JWTSecret: "test-secret"}
 	handler := NewStorageHandler(nil, authCfg, &config.StorageConfig{
-		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.ivolces.com",
-		Bucket:     "tos-bucket",
-		Region:     "cn-beijing",
-		AccessKey:  "test-ak",
-		SecretKey:  "test-sk",
-		UseSSL:     true,
-		STSRoleTRN: "trn:iam::123:role/qa-read",
+		Type:           "tos",
+		Endpoint:       "tos-cn-beijing.ivolces.com",
+		Bucket:         "tos-bucket",
+		Region:         "cn-beijing",
+		AccessKey:      "test-ak",
+		SecretKey:      "test-sk",
+		UseSSL:         true,
+		StorageRoleTRN: "trn:iam::123:role/storage",
 	})
 	handler.tos.stsClient = fakeEpisodeQASTSClient{}
 	handler.tos.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -183,14 +183,14 @@ func TestStorageHandlerPresignReturnsProxyURLForTOSWithoutS3(t *testing.T) {
 
 	authCfg := &config.AuthConfig{JWTSecret: "test-secret", JWTExpiryHours: 1}
 	handler := NewStorageHandler(nil, authCfg, &config.StorageConfig{
-		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.volces.com",
-		Bucket:     "tos-bucket",
-		Region:     "cn-beijing",
-		AccessKey:  "test-ak",
-		SecretKey:  "test-sk",
-		UseSSL:     true,
-		STSRoleTRN: "trn:iam::123:role/qa-read",
+		Type:           "tos",
+		Endpoint:       "tos-cn-beijing.volces.com",
+		Bucket:         "tos-bucket",
+		Region:         "cn-beijing",
+		AccessKey:      "test-ak",
+		SecretKey:      "test-sk",
+		UseSSL:         true,
+		StorageRoleTRN: "trn:iam::123:role/storage",
 	})
 	token, err := auth.GenerateToken(auth.NewCollectorClaims(1, "operator-1"), authCfg)
 	if err != nil {
@@ -261,14 +261,14 @@ func testTOSOnlyEpisodePreview(t *testing.T) {
 
 	authCfg := testAuthConfig()
 	tosCfg := &config.StorageConfig{
-		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.volces.com",
-		Bucket:     bucket,
-		Region:     "cn-beijing",
-		AccessKey:  "test-ak",
-		SecretKey:  "test-sk",
-		UseSSL:     true,
-		STSRoleTRN: "trn:iam::123:role/qa-read",
+		Type:           "tos",
+		Endpoint:       "tos-cn-beijing.volces.com",
+		Bucket:         bucket,
+		Region:         "cn-beijing",
+		AccessKey:      "test-ak",
+		SecretKey:      "test-sk",
+		UseSSL:         true,
+		StorageRoleTRN: "trn:iam::123:role/storage",
 	}
 	storageHandler := NewStorageHandler(nil, authCfg, tosCfg)
 	storageHandler.tos.stsClient = fakeEpisodeQASTSClient{}
@@ -368,11 +368,11 @@ func testMinIOEpisodePresignIgnoresMetadataBucket(t *testing.T) {
 
 func TestStorageHandlersRouteOnlyConfiguredTOSBucketToTOS(t *testing.T) {
 	tosCfg := &config.StorageConfig{
-		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.volces.com",
-		Bucket:     "tos-bucket",
-		Region:     "cn-beijing",
-		STSRoleTRN: "trn:iam::123:role/qa-read",
+		Type:           "tos",
+		Endpoint:       "tos-cn-beijing.volces.com",
+		Bucket:         "tos-bucket",
+		Region:         "cn-beijing",
+		StorageRoleTRN: "trn:iam::123:role/storage",
 	}
 
 	storageHandler := NewStorageHandler(nil, nil, tosCfg)
