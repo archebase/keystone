@@ -60,7 +60,7 @@ func TestEpisodeQATOSReaderSignsWithTOSAuthorization(t *testing.T) {
 	}
 }
 
-func TestEpisodeQATOSReaderRequiresQAReadRole(t *testing.T) {
+func TestEpisodeQATOSReaderRequiresStorageRole(t *testing.T) {
 	reader := newEpisodeQATOSReader(config.StorageConfig{
 		Endpoint:  "tos-cn-beijing.volces.com",
 		Region:    "cn-beijing",
@@ -71,9 +71,9 @@ func TestEpisodeQATOSReaderRequiresQAReadRole(t *testing.T) {
 
 	_, err := reader.credentials(context.Background(), "bucket-a", "device-uploads/capture.mcap")
 	if err == nil {
-		t.Fatal("credentials() error = nil, want QA read role configuration error")
+		t.Fatal("credentials() error = nil, want storage role configuration error")
 	}
-	if !strings.Contains(err.Error(), "KEYSTONE_DGW_VOLCENGINE_QA_READ_STS_ROLE_TRN") {
-		t.Fatalf("credentials() error = %q, want QA read role configuration error", err.Error())
+	if !strings.Contains(err.Error(), "KEYSTONE_DGW_VOLCENGINE_STORAGE_STS_ROLE_TRN") {
+		t.Fatalf("credentials() error = %q, want storage role configuration error", err.Error())
 	}
 }

@@ -141,7 +141,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 				return nil, fmt.Errorf("initialize calibration Orbit client: %w", err)
 			}
 			orbitClient = client
-			objectReader = tosstorage.NewReader(
+			objectReader = tosstorage.NewClient(
 				cfg.TOSStorage,
 				time.Duration(cfg.Calibration.OrbitTimeoutSec)*time.Second,
 			)
@@ -230,7 +230,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		if err != nil {
 			return nil, fmt.Errorf("initialize Orbit client: %w", err)
 		}
-		objectReader := tosstorage.NewReader(
+		objectReader := tosstorage.NewClient(
 			cfg.TOSStorage,
 			time.Duration(cfg.Derivatives.OrbitTimeoutSec)*time.Second,
 		)

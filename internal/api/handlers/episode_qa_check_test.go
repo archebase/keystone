@@ -264,14 +264,14 @@ func TestSizeFromTOSRangeResponse(t *testing.T) {
 
 func TestRunMcapMagicQACheckUsesTOSWithoutS3(t *testing.T) {
 	handler := NewEpisodeQAHandler(nil, nil, "edge-mercury", nil, &config.StorageConfig{
-		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.volces.com",
-		Bucket:     "tos-bucket",
-		Region:     "cn-beijing",
-		AccessKey:  "test-ak",
-		SecretKey:  "test-sk",
-		UseSSL:     true,
-		STSRoleTRN: "trn:iam::123:role/qa-read",
+		Type:           "tos",
+		Endpoint:       "tos-cn-beijing.volces.com",
+		Bucket:         "tos-bucket",
+		Region:         "cn-beijing",
+		AccessKey:      "test-ak",
+		SecretKey:      "test-sk",
+		UseSSL:         true,
+		StorageRoleTRN: "trn:iam::123:role/storage",
 	})
 	handler.tos.stsClient = fakeEpisodeQASTSClient{}
 	handler.tos.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -314,14 +314,14 @@ func TestRunMcapMagicQACheckUsesTOSWithoutS3(t *testing.T) {
 
 func TestRunRecordingNotEmptyQACheckUsesTOSWithoutS3(t *testing.T) {
 	handler := NewEpisodeQAHandler(nil, nil, "edge-mercury", nil, &config.StorageConfig{
-		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.volces.com",
-		Bucket:     "tos-bucket",
-		Region:     "cn-beijing",
-		AccessKey:  "test-ak",
-		SecretKey:  "test-sk",
-		UseSSL:     true,
-		STSRoleTRN: "trn:iam::123:role/qa-read",
+		Type:           "tos",
+		Endpoint:       "tos-cn-beijing.volces.com",
+		Bucket:         "tos-bucket",
+		Region:         "cn-beijing",
+		AccessKey:      "test-ak",
+		SecretKey:      "test-sk",
+		UseSSL:         true,
+		StorageRoleTRN: "trn:iam::123:role/storage",
 	})
 	handler.tos.stsClient = fakeEpisodeQASTSClient{}
 	body := `{"recording":{"message_count":1,"topics_recorded":["/camera"]}}`

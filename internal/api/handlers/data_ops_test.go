@@ -767,14 +767,14 @@ func TestOpenBulkMP4ObjectKeepsMinIOAndTOSRoutesSeparate(t *testing.T) {
 	}
 
 	qa := NewEpisodeQAHandler(nil, minioClient, "minio-bucket", nil, &config.StorageConfig{
-		Type:       "tos",
-		Endpoint:   "tos-cn-beijing.volces.com",
-		Bucket:     "tos-bucket",
-		Region:     "cn-beijing",
-		AccessKey:  "tos-ak",
-		SecretKey:  "tos-sk",
-		UseSSL:     true,
-		STSRoleTRN: "trn:iam::123:role/qa-read",
+		Type:           "tos",
+		Endpoint:       "tos-cn-beijing.volces.com",
+		Bucket:         "tos-bucket",
+		Region:         "cn-beijing",
+		AccessKey:      "tos-ak",
+		SecretKey:      "tos-sk",
+		UseSSL:         true,
+		StorageRoleTRN: "trn:iam::123:role/storage",
 	})
 	qa.tos.stsClient = fakeEpisodeQASTSClient{}
 	var tosRequests int

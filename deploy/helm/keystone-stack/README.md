@@ -218,7 +218,7 @@ staging infrastructure outputs and application configuration:
 - `STAGING_KEYSTONE_INGRESS_CLASS`
 - `STAGING_KEYSTONE_TOS_BUCKET`
 - `STAGING_KEYSTONE_TOS_UPLOAD_ROLE_TRN`
-- `STAGING_KEYSTONE_TOS_READ_ROLE_TRN`
+- `STAGING_KEYSTONE_TOS_STORAGE_ROLE_TRN`
 - `STAGING_KEYSTONE_IRSA_ROLE_TRN`: cloud-infra output
   `tos_irsa_workload_role_trns["keystone"]`
 - `STAGING_KEYSTONE_GRPC_LISTENER_PORT`
@@ -240,7 +240,7 @@ The staging cluster must already contain:
 - a staging-only Keystone IngressClass backed by a running Standard
   `ALBInstance`, with HTTP/2 HTTPS listeners on port `443` and the dedicated
   gRPC port configured in `STAGING_KEYSTONE_GRPC_LISTENER_PORT`;
-- a staging TOS bucket plus upload and read roles that the Keystone workload
+- a staging TOS bucket plus upload and storage roles that the Keystone workload
   identity can assume;
 - a CNAME from `keystone-staging.archebase.cn` to
   `STAGING_KEYSTONE_ALB_DNS_NAME`.

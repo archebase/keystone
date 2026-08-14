@@ -68,7 +68,7 @@ func TestInternalStorageConfigRoutesSourceEndpointUsingMode(t *testing.T) {
 				SecretKey: "test-sk",
 				UseSSL:    true,
 			}
-			reader := NewReader(InternalStorageConfig(storageCfg, tt.mode), time.Minute)
+			reader := NewClient(InternalStorageConfig(storageCfg, tt.mode), time.Minute)
 			reader.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				gotRequest = req
 				header := make(http.Header)
@@ -100,7 +100,7 @@ func TestInternalStorageConfigRoutesSourceEndpointUsingMode(t *testing.T) {
 
 func TestOpenObjectRangeSendsBoundedRangeRequest(t *testing.T) {
 	var gotRequest *http.Request
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  "tos-cn-beijing.volces.com",
 		region:    "cn-beijing",
 		accessKey: "test-ak",
@@ -154,7 +154,7 @@ func TestOpenObjectRangeSendsBoundedRangeRequest(t *testing.T) {
 
 func TestStatObjectReturnsSizeAndNormalizedETag(t *testing.T) {
 	var gotRequest *http.Request
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  "tos-cn-beijing.volces.com",
 		region:    "cn-beijing",
 		accessKey: "test-ak",
@@ -187,7 +187,7 @@ func TestStatObjectReturnsSizeAndNormalizedETag(t *testing.T) {
 }
 
 func TestOpenObjectRangeRejectsNonPartialSuccess(t *testing.T) {
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  "tos-cn-beijing.volces.com",
 		region:    "cn-beijing",
 		accessKey: "test-ak",
@@ -210,7 +210,7 @@ func TestOpenObjectRangeRejectsNonPartialSuccess(t *testing.T) {
 }
 
 func TestOpenObjectRangeRejectsWrongContentRange(t *testing.T) {
-	reader := &Reader{
+	reader := &Client{
 		endpoint:  "tos-cn-beijing.volces.com",
 		region:    "cn-beijing",
 		accessKey: "test-ak",
@@ -236,7 +236,7 @@ func TestOpenObjectRangeRejectsWrongContentRange(t *testing.T) {
 	}
 }
 
-func TestReaderReusesUnexpiredSTSCredentialsForObjectRanges(t *testing.T) {
+func TestClientCachesCredentialsByObjectAndAccess(t *testing.T) {
 	expiresAt := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
 	stsClient := &fakeSTSClient{output: (&sts.AssumeRoleOutput{}).SetCredentials(
 		(&sts.CredentialsForAssumeRoleOutput{}).
@@ -245,16 +245,16 @@ func TestReaderReusesUnexpiredSTSCredentialsForObjectRanges(t *testing.T) {
 			SetSessionToken("temporary-token").
 			SetExpiredTime(expiresAt),
 	)}
-	reader := &Reader{
-		roleTRN:   "trn:iam::123:role/tos-read",
+	reader := &Client{
+		roleTRN:   "trn:iam::123:role/tos-storage",
 		stsClient: stsClient,
 	}
 
-	first, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap")
+	first, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap", objectReadAccess)
 	if err != nil {
 		t.Fatalf("first credentials() error = %v", err)
 	}
-	second, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap")
+	second, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap", objectReadAccess)
 	if err != nil {
 		t.Fatalf("second credentials() error = %v", err)
 	}
@@ -265,11 +265,62 @@ func TestReaderReusesUnexpiredSTSCredentialsForObjectRanges(t *testing.T) {
 		t.Fatalf("AssumeRole calls = %d, want 1 for repeated ranges of one object", stsClient.calls)
 	}
 
-	if _, err := reader.credentials(context.Background(), "source-bucket", "path/other.mcap"); err != nil {
+	if _, err := reader.credentials(context.Background(), "source-bucket", "path/other.mcap", objectReadAccess); err != nil {
 		t.Fatalf("other object credentials() error = %v", err)
 	}
 	if stsClient.calls != 2 {
 		t.Fatalf("AssumeRole calls = %d, want separate credentials for another object", stsClient.calls)
+	}
+
+	if _, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap", objectPutAccess); err != nil {
+		t.Fatalf("put credentials() error = %v", err)
+	}
+	if stsClient.calls != 3 {
+		t.Fatalf("AssumeRole calls = %d, want separate credentials for write access", stsClient.calls)
+	}
+	policyInput := stsClient.inputs[len(stsClient.inputs)-1].Policy
+	if policyInput == nil {
+		t.Fatal("write session policy is nil")
+	}
+	policy := *policyInput
+	if !strings.Contains(policy, `"tos:PutObject"`) || strings.Contains(policy, `"tos:GetObject"`) {
+		t.Fatalf("write session policy = %s, want PutObject without GetObject", policy)
+	}
+}
+
+func TestClientPutObjectUsesWriteScopedSignedRequest(t *testing.T) {
+	var gotRequest *http.Request
+	client := &Client{
+		endpoint:  "tos-cn-beijing.volces.com",
+		region:    "cn-beijing",
+		accessKey: "test-ak",
+		secretKey: "test-sk",
+		useSSL:    true,
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotRequest = req
+			header := make(http.Header)
+			header.Set("ETag", `"written-etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    req,
+			}, nil
+		})},
+	}
+
+	etag, err := client.PutObject(context.Background(), "bucket-a", "derived/result.json", "application/json", []byte(`{"ok":true}`))
+	if err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+	if etag != "written-etag" {
+		t.Fatalf("PutObject() ETag = %q, want written-etag", etag)
+	}
+	if gotRequest == nil || gotRequest.Method != http.MethodPut || gotRequest.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("PutObject() request = %#v", gotRequest)
+	}
+	if !strings.HasPrefix(gotRequest.Header.Get("Authorization"), algorithm+" ") {
+		t.Fatalf("PutObject() Authorization = %q", gotRequest.Header.Get("Authorization"))
 	}
 }
 
@@ -281,10 +332,12 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 
 type fakeSTSClient struct {
 	calls  int
+	inputs []*sts.AssumeRoleInput
 	output *sts.AssumeRoleOutput
 }
 
-func (c *fakeSTSClient) AssumeRoleWithContext(volcengine.Context, *sts.AssumeRoleInput, ...request.Option) (*sts.AssumeRoleOutput, error) {
+func (c *fakeSTSClient) AssumeRoleWithContext(_ volcengine.Context, input *sts.AssumeRoleInput, _ ...request.Option) (*sts.AssumeRoleOutput, error) {
 	c.calls++
+	c.inputs = append(c.inputs, input)
 	return c.output, nil
 }

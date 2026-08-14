@@ -15,7 +15,7 @@ set -euo pipefail
 : "${STAGING_INGRESS_CLASS:?STAGING_KEYSTONE_INGRESS_CLASS repository or staging environment variable is required}"
 : "${STAGING_TOS_BUCKET:?STAGING_KEYSTONE_TOS_BUCKET repository or staging environment variable is required}"
 : "${STAGING_TOS_UPLOAD_ROLE_TRN:?STAGING_KEYSTONE_TOS_UPLOAD_ROLE_TRN repository or staging environment variable is required}"
-: "${STAGING_TOS_READ_ROLE_TRN:?STAGING_KEYSTONE_TOS_READ_ROLE_TRN repository or staging environment variable is required}"
+: "${STAGING_TOS_STORAGE_ROLE_TRN:?STAGING_KEYSTONE_TOS_STORAGE_ROLE_TRN repository or staging environment variable is required}"
 : "${STAGING_IRSA_ROLE_TRN:?STAGING_KEYSTONE_IRSA_ROLE_TRN repository or staging environment variable is required}"
 : "${STAGING_GRPC_LISTENER_PORT:?STAGING_KEYSTONE_GRPC_LISTENER_PORT repository or staging environment variable is required}"
 : "${STAGING_HILBERT_BASE_URL:?STAGING_KEYSTONE_HILBERT_BASE_URL repository or staging environment variable is required}"
@@ -78,8 +78,8 @@ if ! [[ "$STAGING_TOS_UPLOAD_ROLE_TRN" =~ ^trn:iam::[0-9]+:role/[^[:space:]]*sta
   exit 1
 fi
 
-if ! [[ "$STAGING_TOS_READ_ROLE_TRN" =~ ^trn:iam::[0-9]+:role/[^[:space:]]*staging[^[:space:]]*$ ]]; then
-  echo "STAGING_KEYSTONE_TOS_READ_ROLE_TRN must be a staging Volcengine IAM role TRN" >&2
+if ! [[ "$STAGING_TOS_STORAGE_ROLE_TRN" =~ ^trn:iam::[0-9]+:role/[^[:space:]]*staging[^[:space:]]*$ ]]; then
+  echo "STAGING_KEYSTONE_TOS_STORAGE_ROLE_TRN must be a staging Volcengine IAM role TRN" >&2
   exit 1
 fi
 

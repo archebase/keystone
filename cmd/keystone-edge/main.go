@@ -128,7 +128,7 @@ func main() {
 	}
 	var tosSourceReader services.SourceObjectReader
 	if cfg.TOSStorage.Type == "tos" {
-		tosSourceReader = tosstorage.NewReader(cfg.TOSStorage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
+		tosSourceReader = tosstorage.NewClient(cfg.TOSStorage, time.Duration(cfg.Sync.OSSTimeoutSec)*time.Second)
 	}
 	if cfg.Sync.Enabled && cfg.Hilbert.BaseURL != "" && cfg.Hilbert.AccessKey != "" && cfg.Hilbert.SecretKey != "" &&
 		(minioSourceReader != nil || tosSourceReader != nil) {
