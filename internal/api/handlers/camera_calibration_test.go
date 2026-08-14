@@ -35,12 +35,14 @@ func (s *fakeCameraCalibrationStore) PutObject(_ context.Context, bucket, object
 }
 
 type fakeCameraCalibrationDatabase struct {
-	execArgs []interface{}
-	execErr  error
+	execArgs  []interface{}
+	execErr   error
+	selectErr error
+	result    sql.Result
 }
 
 func (db *fakeCameraCalibrationDatabase) SelectContext(context.Context, interface{}, string, ...interface{}) error {
-	return nil
+	return db.selectErr
 }
 
 func (db *fakeCameraCalibrationDatabase) ExecContext(_ context.Context, _ string, args ...interface{}) (sql.Result, error) {
@@ -48,8 +50,20 @@ func (db *fakeCameraCalibrationDatabase) ExecContext(_ context.Context, _ string
 	if db.execErr != nil {
 		return nil, db.execErr
 	}
+	if db.result != nil {
+		return db.result, nil
+	}
 	return driver.RowsAffected(1), nil
 }
+
+type fakeCameraCalibrationResult struct {
+	rows    int64
+	rowsErr error
+}
+
+func (r fakeCameraCalibrationResult) LastInsertId() (int64, error) { return 0, nil }
+
+func (r fakeCameraCalibrationResult) RowsAffected() (int64, error) { return r.rows, r.rowsErr }
 
 func TestCameraCalibrationUploadRequiresCameraSerialFormField(t *testing.T) {
 	var body bytes.Buffer
@@ -126,6 +140,46 @@ func TestCameraCalibrationUploadRegistersCurrentManualCalibration(t *testing.T) 
 		db.execArgs[2] != store.objectName || db.execArgs[3] != len(document) ||
 		db.execArgs[4] != hex.EncodeToString(digest[:]) || db.execArgs[5] != "" {
 		t.Fatalf("database upsert args = %#v", db.execArgs)
+	}
+}
+
+func TestCameraCalibrationUploadReturnsInternalServerErrorWhenRegistrationFails(t *testing.T) {
+	store := &fakeCameraCalibrationStore{}
+	db := &fakeCameraCalibrationDatabase{execErr: errors.New("database unavailable")}
+	handler := NewCameraCalibrationHandler(db, store, "test-bucket")
+	response := uploadCameraCalibration(t, handler, "camera-1", `{"camera_serial":"camera-1"}`)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("response status = %d, want %d; body=%s", response.Code, http.StatusInternalServerError, response.Body.String())
+	}
+	if store.objectName == "" {
+		t.Fatal("object store was not called before registration failure")
+	}
+}
+
+func TestCameraCalibrationListReturnsInternalServerErrorWhenQueryFails(t *testing.T) {
+	handler := NewCameraCalibrationHandler(&fakeCameraCalibrationDatabase{selectErr: errors.New("database unavailable")}, nil, "")
+	router := gin.New()
+	router.GET("/camera-calibrations", handler.List)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/camera-calibrations", nil))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("response status = %d, want %d; body=%s", response.Code, http.StatusInternalServerError, response.Body.String())
+	}
+}
+
+func TestCameraCalibrationDeleteReturnsInternalServerErrorWhenRowsAffectedFails(t *testing.T) {
+	handler := NewCameraCalibrationHandler(&fakeCameraCalibrationDatabase{
+		result: fakeCameraCalibrationResult{rowsErr: errors.New("rows affected unavailable")},
+	}, nil, "")
+	router := gin.New()
+	router.DELETE("/camera-calibrations/:camera_serial", handler.Delete)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/camera-calibrations/camera-1", nil))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("response status = %d, want %d; body=%s", response.Code, http.StatusInternalServerError, response.Body.String())
 	}
 }
 

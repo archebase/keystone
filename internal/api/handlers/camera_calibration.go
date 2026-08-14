@@ -97,7 +97,9 @@ func (h *CameraCalibrationHandler) List(c *gin.Context) {
 // @Param        file           formData  file    true  "calibration.json"
 // @Success      204
 // @Failure      400  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
 // @Failure      502  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
 // @Router       /camera-calibrations [post]
 func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 	if h.objects == nil || h.bucket == "" {
@@ -170,7 +172,11 @@ func (h *CameraCalibrationHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete camera calibration"})
 		return
 	}
-	count, _ := result.RowsAffected()
+	count, err := result.RowsAffected()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete camera calibration"})
+		return
+	}
 	if count == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "camera calibration not found"})
 		return
