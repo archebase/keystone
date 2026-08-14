@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,11 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"archebase.com/keystone-edge/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jmoiron/sqlx"
-
-	"archebase.com/keystone-edge/internal/middleware"
 )
 
 const maxCameraCalibrationBytes = 4 << 20
@@ -29,9 +28,14 @@ var cameraSerialPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$
 
 // CameraCalibrationHandler manages the current calibration file for each camera.
 type CameraCalibrationHandler struct {
-	db      *sqlx.DB
+	db      cameraCalibrationDatabase
 	objects cameraCalibrationObjectStore
 	bucket  string
+}
+
+type cameraCalibrationDatabase interface {
+	SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 }
 
 type cameraCalibrationObjectStore interface {
@@ -39,7 +43,7 @@ type cameraCalibrationObjectStore interface {
 }
 
 // NewCameraCalibrationHandler creates a handler backed by the supplied object store.
-func NewCameraCalibrationHandler(db *sqlx.DB, objects cameraCalibrationObjectStore, bucket string) *CameraCalibrationHandler {
+func NewCameraCalibrationHandler(db cameraCalibrationDatabase, objects cameraCalibrationObjectStore, bucket string) *CameraCalibrationHandler {
 	return &CameraCalibrationHandler{db: db, objects: objects, bucket: strings.TrimSpace(bucket)}
 }
 

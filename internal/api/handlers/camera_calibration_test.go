@@ -7,6 +7,10 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"database/sql/driver"
+	"encoding/hex"
 	"errors"
 	"mime/multipart"
 	"net/http"
@@ -28,6 +32,23 @@ func (s *fakeCameraCalibrationStore) PutObject(_ context.Context, bucket, object
 	s.objectName = objectName
 	s.body = append([]byte(nil), body...)
 	return "", s.err
+}
+
+type fakeCameraCalibrationDatabase struct {
+	execArgs []interface{}
+	execErr  error
+}
+
+func (db *fakeCameraCalibrationDatabase) SelectContext(context.Context, interface{}, string, ...interface{}) error {
+	return nil
+}
+
+func (db *fakeCameraCalibrationDatabase) ExecContext(_ context.Context, _ string, args ...interface{}) (sql.Result, error) {
+	db.execArgs = append([]interface{}(nil), args...)
+	if db.execErr != nil {
+		return nil, db.execErr
+	}
+	return driver.RowsAffected(1), nil
 }
 
 func TestCameraCalibrationUploadRequiresCameraSerialFormField(t *testing.T) {
@@ -84,6 +105,27 @@ func TestCameraCalibrationUploadReturnsBadGatewayWhenObjectStoreFails(t *testing
 	}
 	if store.bucket != "test-bucket" || store.objectName == "" || string(store.body) != `{"camera_serial":"camera-1"}` {
 		t.Fatalf("object store call = bucket=%q object=%q body=%q", store.bucket, store.objectName, store.body)
+	}
+}
+
+func TestCameraCalibrationUploadRegistersCurrentManualCalibration(t *testing.T) {
+	store := &fakeCameraCalibrationStore{}
+	db := &fakeCameraCalibrationDatabase{}
+	handler := NewCameraCalibrationHandler(db, store, "test-bucket")
+	document := `{"camera_serial":"camera-1"}`
+	response := uploadCameraCalibration(t, handler, "camera-1", document)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response status = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if store.bucket != "test-bucket" || store.objectName == "" || string(store.body) != document {
+		t.Fatalf("object store call = bucket=%q object=%q body=%q", store.bucket, store.objectName, store.body)
+	}
+	digest := sha256.Sum256([]byte(document))
+	if len(db.execArgs) != 6 || db.execArgs[0] != "camera-1" || db.execArgs[1] != "test-bucket" ||
+		db.execArgs[2] != store.objectName || db.execArgs[3] != len(document) ||
+		db.execArgs[4] != hex.EncodeToString(digest[:]) || db.execArgs[5] != "" {
+		t.Fatalf("database upsert args = %#v", db.execArgs)
 	}
 }
 
