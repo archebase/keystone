@@ -1143,17 +1143,15 @@ func calibrationSnapshotFromColumns(
 	resultSize sql.NullInt64,
 	resultSHA256 sql.NullString,
 ) (*CalibrationSnapshot, error) {
-	present := []bool{
+	required := []bool{
 		cameraSerial.Valid,
-		sessionID.Valid,
-		captureID.Valid,
 		resultURI.Valid,
 		resultETag.Valid,
 		resultSize.Valid,
 		resultSHA256.Valid,
 	}
 	count := 0
-	for _, value := range present {
+	for _, value := range required {
 		if value {
 			count++
 		}
@@ -1161,7 +1159,7 @@ func calibrationSnapshotFromColumns(
 	if count == 0 {
 		return nil, nil
 	}
-	if count != len(present) {
+	if count != len(required) {
 		return nil, fmt.Errorf("frozen calibration result identity is incomplete")
 	}
 	return &CalibrationSnapshot{
