@@ -146,7 +146,9 @@ func TestCameraCalibrationUploadRegistersCurrentManualCalibration(t *testing.T) 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("response status = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
 	}
-	if store.bucket != "test-bucket" || store.objectName == "" || string(store.body) != document {
+	if store.bucket != "test-bucket" ||
+		!strings.HasPrefix(store.objectName, "derived/calibration-results/manual/camera-1/") ||
+		!strings.HasSuffix(store.objectName, "/calibration.json") || string(store.body) != document {
 		t.Fatalf("object store call = bucket=%q object=%q body=%q", store.bucket, store.objectName, store.body)
 	}
 	digest := sha256.Sum256([]byte(document))

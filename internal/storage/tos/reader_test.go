@@ -354,7 +354,7 @@ func TestReaderUsesWriteOnlySTSPolicyForPutObject(t *testing.T) {
 		stsClient: stsClient,
 	}
 
-	if _, err := reader.credentials(context.Background(), http.MethodPut, "source-bucket", "derived/camera-calibrations/camera-1/id/calibration.json"); err != nil {
+	if _, err := reader.credentials(context.Background(), http.MethodPut, "source-bucket", "derived/calibration-results/manual/camera-1/id/calibration.json"); err != nil {
 		t.Fatalf("credentials() error = %v", err)
 	}
 	if stsClient.input == nil {
@@ -372,7 +372,7 @@ func TestReaderUsesWriteOnlySTSPolicyForPutObject(t *testing.T) {
 	if len(policy.Statement) != 1 || !reflect.DeepEqual(policy.Statement[0].Action, []string{"tos:PutObject"}) {
 		t.Fatalf("STS actions = %#v, want only tos:PutObject", policy.Statement)
 	}
-	if got, want := policy.Statement[0].Resource, []string{"trn:tos:::source-bucket/derived/camera-calibrations/camera-1/id/calibration.json"}; !reflect.DeepEqual(got, want) {
+	if got, want := policy.Statement[0].Resource, []string{"trn:tos:::source-bucket/derived/calibration-results/manual/camera-1/id/calibration.json"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("STS resources = %#v, want %#v", got, want)
 	}
 }

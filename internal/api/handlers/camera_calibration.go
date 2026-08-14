@@ -140,7 +140,7 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 		return
 	}
 	digest := sha256.Sum256(data)
-	objectKey := path.Join("derived/camera-calibrations", serial, uuid.NewString(), "calibration.json")
+	objectKey := path.Join("derived/calibration-results/manual", serial, uuid.NewString(), "calibration.json")
 	if _, err := h.objects.PutObject(c.Request.Context(), h.bucket, objectKey, data); err != nil {
 		logger.Printf("[CAMERA_CALIBRATION] store failed: camera_serial=%s error=%v", serial, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to store calibration file"})
