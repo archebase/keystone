@@ -17,9 +17,10 @@ import (
 	"strings"
 	"time"
 
-	"archebase.com/keystone-edge/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"archebase.com/keystone-edge/internal/middleware"
 )
 
 const maxCameraCalibrationBytes = 4 << 20
@@ -72,6 +73,7 @@ type cameraCalibrationResponse struct {
 // @Summary      List current camera calibrations
 // @Tags         calibration
 // @Produce      json
+// @Security     BearerAuth
 // @Success      200  {object}  map[string]interface{}
 // @Failure      500  {object}  map[string]string
 // @Router       /camera-calibrations [get]
@@ -90,6 +92,7 @@ func (h *CameraCalibrationHandler) List(c *gin.Context) {
 // @Tags         calibration
 // @Accept       mpfd
 // @Produce      json
+// @Security     BearerAuth
 // @Param        camera_serial  formData  string  true  "Camera serial"
 // @Param        file           formData  file    true  "calibration.json"
 // @Success      204
@@ -154,6 +157,7 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 // @Summary      Delete current camera calibration
 // @Tags         calibration
 // @Produce      json
+// @Security     BearerAuth
 // @Param        camera_serial  path  string  true  "Camera serial"
 // @Success      204
 // @Failure      404  {object}  map[string]string
