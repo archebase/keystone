@@ -11,9 +11,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"archebase.com/keystone-edge/internal/storage/tos"
-
 	"github.com/gin-gonic/gin"
+
+	"archebase.com/keystone-edge/internal/storage/tos"
 )
 
 func TestCameraCalibrationUploadRequiresCameraSerialFormField(t *testing.T) {
