@@ -627,12 +627,11 @@ func (m *Manager) loadCalibrationInput(
 		ObjectKey    string         `db:"object_key"`
 		SizeBytes    int64          `db:"size_bytes"`
 		SHA256       string         `db:"sha256"`
-		Source       string         `db:"source"`
 		SessionID    sql.NullString `db:"calibration_session_id"`
 		CaptureID    sql.NullString `db:"capture_id"`
 	}
 	if err := m.db.GetContext(ctx, &result, `
-		SELECT camera_serial, bucket, object_key, size_bytes, sha256, source,
+		SELECT camera_serial, bucket, object_key, size_bytes, sha256,
 		       calibration_session_id, capture_id
 		FROM camera_calibrations WHERE camera_serial = ?
 	`, episode.CameraSerial.String); err != nil {

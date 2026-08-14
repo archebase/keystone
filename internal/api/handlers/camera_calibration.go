@@ -15,12 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"archebase.com/keystone-edge/internal/middleware"
-
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 
+	"archebase.com/keystone-edge/internal/middleware"
 	"archebase.com/keystone-edge/internal/storage/tos"
 )
 
@@ -93,12 +92,8 @@ func (h *CameraCalibrationHandler) Upload(c *gin.Context) {
 		return
 	}
 	serial := strings.TrimSpace(c.PostForm("camera_serial"))
-	if serial == "" {
-		serial, _ = document["camera_serial"].(string)
-		serial = strings.TrimSpace(serial)
-	}
 	if !cameraSerialPattern.MatchString(serial) || serial == "." || serial == ".." {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "calibration.json camera_serial is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "camera_serial is required"})
 		return
 	}
 	if documentSerial, _ := document["camera_serial"].(string); strings.TrimSpace(documentSerial) != "" &&
