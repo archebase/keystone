@@ -194,7 +194,6 @@ func (r *Reader) PutObject(ctx context.Context, bucket, objectName string, body 
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := r.client.Do(req) // #nosec G704 -- TOS endpoint comes from Keystone storage config and objectURL validation.
 	if err != nil {
 		return "", err
@@ -256,7 +255,10 @@ func (r *Reader) newRequest(ctx context.Context, method, bucket, objectName stri
 	if err != nil {
 		return nil, err
 	}
-	creds, err := r.credentials(ctx, bucket, objectName)
+	if method == http.MethodPut {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	creds, err := r.credentials(ctx, method, bucket, objectName)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +268,7 @@ func (r *Reader) newRequest(ctx context.Context, method, bucket, objectName stri
 	return req, nil
 }
 
-func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (credentialsSet, error) {
+func (r *Reader) credentials(ctx context.Context, method, bucket, objectName string) (credentialsSet, error) {
 	if strings.TrimSpace(r.roleTRN) == "" {
 		if r.accessKey == "" || r.secretKey == "" {
 			return credentialsSet{}, fmt.Errorf("tos static credentials are incomplete")
@@ -276,16 +278,16 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 	if r.stsClient == nil {
 		return credentialsSet{}, fmt.Errorf("volcengine STS client is not configured for TOS reads")
 	}
-	cacheKey := bucket + "\x00" + objectName
+	accessMode, policy, err := policyForMethod(method, bucket, objectName)
+	if err != nil {
+		return credentialsSet{}, err
+	}
+	cacheKey := accessMode + "\x00" + bucket + "\x00" + objectName
 	now := time.Now().UTC()
 	if cached, ok := r.cachedCredentials(cacheKey, now); ok {
 		return cached, nil
 	}
-	policy, err := readPolicy(bucket, objectName)
-	if err != nil {
-		return credentialsSet{}, err
-	}
-	sessionName := fmt.Sprintf("keystone-sync-read-%d", time.Now().UTC().Unix())
+	sessionName := fmt.Sprintf("keystone-%s-%d", accessMode, time.Now().UTC().Unix())
 	logger.Printf("[TOS] AssumeRole start role_trn=%s session_name=%s bucket=%s object=%s policy_sha256=%s policy_bytes=%d",
 		r.roleTRN, sessionName, bucket, objectName, sha256Hex([]byte(policy)), len(policy))
 	output, err := r.stsClient.AssumeRoleWithContext(ctx, (&sts.AssumeRoleInput{}).
@@ -298,16 +300,16 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 		if errors.As(err, &sdkErr) {
 			logger.Printf("[TOS] AssumeRole failed role_trn=%s bucket=%s object=%s error_code=%s",
 				r.roleTRN, bucket, objectName, sdkErr.Code())
-			return credentialsSet{}, fmt.Errorf("volcengine STS AssumeRole for TOS read failed: %s", sdkErr.Code())
+			return credentialsSet{}, fmt.Errorf("volcengine STS AssumeRole for TOS %s failed: %s", accessMode, sdkErr.Code())
 		}
 		logger.Printf("[TOS] AssumeRole failed role_trn=%s bucket=%s object=%s", r.roleTRN, bucket, objectName)
-		return credentialsSet{}, fmt.Errorf("volcengine STS AssumeRole for TOS read failed")
+		return credentialsSet{}, fmt.Errorf("volcengine STS AssumeRole for TOS %s failed", accessMode)
 	}
 	if output == nil || output.Credentials == nil ||
 		output.Credentials.AccessKeyId == nil ||
 		output.Credentials.SecretAccessKey == nil ||
 		output.Credentials.SessionToken == nil {
-		return credentialsSet{}, fmt.Errorf("volcengine STS response missing TOS read credentials")
+		return credentialsSet{}, fmt.Errorf("volcengine STS response missing TOS %s credentials", accessMode)
 	}
 	result := credentialsSet{
 		accessKeyID:     strings.TrimSpace(*output.Credentials.AccessKeyId),
@@ -320,7 +322,7 @@ func (r *Reader) credentials(ctx context.Context, bucket, objectName string) (cr
 		}
 	}
 	if result.accessKeyID == "" || result.accessKeySecret == "" || result.securityToken == "" {
-		return credentialsSet{}, fmt.Errorf("volcengine STS response contains empty TOS read credentials")
+		return credentialsSet{}, fmt.Errorf("volcengine STS response contains empty TOS %s credentials", accessMode)
 	}
 	r.cacheCredentials(cacheKey, result, now)
 	logger.Printf("[TOS] AssumeRole success role_trn=%s bucket=%s object=%s expires_at=%s access_key_suffix=%s",
@@ -431,24 +433,42 @@ func (r *Reader) sign(req *http.Request, payload []byte, now time.Time, creds cr
 }
 
 func readPolicy(bucket, objectName string) (string, error) {
+	return objectPolicy(bucket, objectName, []string{"tos:GetObject", "tos:HeadObject"})
+}
+
+func writePolicy(bucket, objectName string) (string, error) {
+	return objectPolicy(bucket, objectName, []string{"tos:PutObject"})
+}
+
+func policyForMethod(method, bucket, objectName string) (string, string, error) {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		policy, err := readPolicy(bucket, objectName)
+		return "read", policy, err
+	case http.MethodPut:
+		policy, err := writePolicy(bucket, objectName)
+		return "write", policy, err
+	default:
+		return "", "", fmt.Errorf("unsupported TOS STS request method %q", method)
+	}
+}
+
+func objectPolicy(bucket, objectName string, actions []string) (string, error) {
 	bucket = strings.TrimSpace(bucket)
 	objectName = strings.TrimSpace(objectName)
 	if bucket == "" || objectName == "" {
-		return "", fmt.Errorf("TOS read scope requires bucket and object key")
+		return "", fmt.Errorf("TOS scope requires bucket and object key")
 	}
 	policy := map[string]any{
 		"Statement": []map[string]any{{
-			"Effect": "Allow",
-			"Action": []string{
-				"tos:GetObject",
-				"tos:HeadObject",
-			},
+			"Effect":   "Allow",
+			"Action":   actions,
 			"Resource": []string{"trn:tos:::" + bucket + "/" + objectName},
 		}},
 	}
 	encoded, err := json.Marshal(policy)
 	if err != nil {
-		return "", fmt.Errorf("encode TOS read STS policy: %w", err)
+		return "", fmt.Errorf("encode TOS STS policy: %w", err)
 	}
 	return string(encoded), nil
 }

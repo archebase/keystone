@@ -6,8 +6,10 @@ package tos
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -250,11 +252,11 @@ func TestReaderReusesUnexpiredSTSCredentialsForObjectRanges(t *testing.T) {
 		stsClient: stsClient,
 	}
 
-	first, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap")
+	first, err := reader.credentials(context.Background(), http.MethodGet, "source-bucket", "path/capture.mcap")
 	if err != nil {
 		t.Fatalf("first credentials() error = %v", err)
 	}
-	second, err := reader.credentials(context.Background(), "source-bucket", "path/capture.mcap")
+	second, err := reader.credentials(context.Background(), http.MethodGet, "source-bucket", "path/capture.mcap")
 	if err != nil {
 		t.Fatalf("second credentials() error = %v", err)
 	}
@@ -265,11 +267,48 @@ func TestReaderReusesUnexpiredSTSCredentialsForObjectRanges(t *testing.T) {
 		t.Fatalf("AssumeRole calls = %d, want 1 for repeated ranges of one object", stsClient.calls)
 	}
 
-	if _, err := reader.credentials(context.Background(), "source-bucket", "path/other.mcap"); err != nil {
+	if _, err := reader.credentials(context.Background(), http.MethodGet, "source-bucket", "path/other.mcap"); err != nil {
 		t.Fatalf("other object credentials() error = %v", err)
 	}
 	if stsClient.calls != 2 {
 		t.Fatalf("AssumeRole calls = %d, want separate credentials for another object", stsClient.calls)
+	}
+}
+
+func TestReaderUsesWriteOnlySTSPolicyForPutObject(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
+	stsClient := &fakeSTSClient{output: (&sts.AssumeRoleOutput{}).SetCredentials(
+		(&sts.CredentialsForAssumeRoleOutput{}).
+			SetAccessKeyId("temporary-ak").
+			SetSecretAccessKey("temporary-sk").
+			SetSessionToken("temporary-token").
+			SetExpiredTime(expiresAt),
+	)}
+	reader := &Reader{
+		roleTRN:   "trn:iam::123:role/tos-read",
+		stsClient: stsClient,
+	}
+
+	if _, err := reader.credentials(context.Background(), http.MethodPut, "source-bucket", "derived/camera-calibrations/camera-1/id/calibration.json"); err != nil {
+		t.Fatalf("credentials() error = %v", err)
+	}
+	if stsClient.input == nil {
+		t.Fatal("AssumeRole input is nil")
+	}
+	var policy struct {
+		Statement []struct {
+			Action   []string `json:"Action"`
+			Resource []string `json:"Resource"`
+		} `json:"Statement"`
+	}
+	if err := json.Unmarshal([]byte(volcengine.StringValue(stsClient.input.Policy)), &policy); err != nil {
+		t.Fatalf("decode STS policy: %v", err)
+	}
+	if len(policy.Statement) != 1 || !reflect.DeepEqual(policy.Statement[0].Action, []string{"tos:PutObject"}) {
+		t.Fatalf("STS actions = %#v, want only tos:PutObject", policy.Statement)
+	}
+	if got, want := policy.Statement[0].Resource, []string{"trn:tos:::source-bucket/derived/camera-calibrations/camera-1/id/calibration.json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("STS resources = %#v, want %#v", got, want)
 	}
 }
 
@@ -282,9 +321,11 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 type fakeSTSClient struct {
 	calls  int
 	output *sts.AssumeRoleOutput
+	input  *sts.AssumeRoleInput
 }
 
-func (c *fakeSTSClient) AssumeRoleWithContext(volcengine.Context, *sts.AssumeRoleInput, ...request.Option) (*sts.AssumeRoleOutput, error) {
+func (c *fakeSTSClient) AssumeRoleWithContext(_ volcengine.Context, input *sts.AssumeRoleInput, _ ...request.Option) (*sts.AssumeRoleOutput, error) {
 	c.calls++
+	c.input = input
 	return c.output, nil
 }
