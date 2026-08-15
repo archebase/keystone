@@ -1512,7 +1512,7 @@ func TestVerifySucceededRestoresFrozenCalibrationSnapshot(t *testing.T) {
 		"processor_image":"` + testImageDigest + `",
 		"source":{"uri":"tos://source-bucket/raw/source.mcap","size_bytes":1024,"sha256":""},
 		"calibration":{
-			"attachment_name":"archebase/calibration/calibration.json",
+			"attachment_name":"calibration.json",
 			"media_type":"application/json",
 			"camera_serial":"CAMERA-SN-001",
 			"session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
@@ -2039,7 +2039,7 @@ func TestValidateManifestSnapshotRequiresV3CalibrationToMatchFrozenExecution(t *
 		"processor_image":"` + testImageDigest + `",
 		"source":{"uri":"tos://source-bucket/raw/source.mcap","size_bytes":123,"sha256":""},
 		"calibration":{
-			"attachment_name":"archebase/calibration/calibration.json",
+			"attachment_name":"calibration.json",
 			"media_type":"application/json",
 			"camera_serial":"CAMERA-SN-001",
 			"session_id":"7f9af590-75c2-47ad-b6e0-76ebf05c44f7",

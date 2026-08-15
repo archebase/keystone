@@ -29,7 +29,7 @@ COPY_ATTEMPTS = 3
 COPY_RETRY_SECONDS = 1
 SCRATCH_SPACE_MULTIPLIER = 3
 MCAP_MAGIC = b"\x89MCAP0\r\n"
-CALIBRATION_ATTACHMENT_NAME = "archebase/calibration/calibration.json"
+CALIBRATION_ATTACHMENT_NAME = "calibration.json"
 CALIBRATION_MEDIA_TYPE = "application/json"
 
 
