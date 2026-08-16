@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -429,6 +430,63 @@ class RunProcessingTest(unittest.TestCase):
                     "sha256": hashlib.sha256(calibration_result.read_bytes()).hexdigest(),
                     "size_bytes": calibration_result.stat().st_size,
                 },
+            )
+
+    def test_accepts_calibration_json_without_provenance_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "calibration.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "archebase.calibration",
+                        "schema_version": "1.0",
+                        "cameras": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            data = path.read_bytes()
+            args = argparse.Namespace(
+                calibration_result=path,
+                calibration_camera_serial="CAMERA-SN-001",
+                calibration_session_id="",
+                calibration_capture_id="",
+                expected_calibration_size=len(data),
+                expected_calibration_checksum=hashlib.sha256(data).hexdigest(),
+            )
+
+            _, metadata = processing_runner.load_calibration_result(args)
+
+            self.assertEqual(metadata["camera_serial"], "CAMERA-SN-001")
+            self.assertEqual(metadata["session_id"], "")
+            self.assertEqual(metadata["capture_id"], "")
+
+    def test_uses_command_line_provenance_ids_for_raw_calibration_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "calibration.json"
+            path.write_text(
+                json.dumps({"schema": "archebase.calibration"}),
+                encoding="utf-8",
+            )
+            data = path.read_bytes()
+            args = argparse.Namespace(
+                calibration_result=path,
+                calibration_camera_serial="CAMERA-SN-001",
+                calibration_session_id="7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+                calibration_capture_id="92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+                expected_calibration_size=len(data),
+                expected_calibration_checksum=hashlib.sha256(data).hexdigest(),
+            )
+
+            _, metadata = processing_runner.load_calibration_result(args)
+
+            self.assertEqual(
+                metadata["session_id"],
+                "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+            )
+            self.assertEqual(
+                metadata["capture_id"],
+                "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
             )
 
     def test_same_source_produces_deterministic_outputs(self) -> None:

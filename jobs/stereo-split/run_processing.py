@@ -133,6 +133,44 @@ def require_scratch_capacity(scratch: Path, source_size_bytes: int) -> None:
         raise RuntimeError(f"insufficient scratch space: required {required} bytes, available {available} bytes")
 
 
+def calibration_provenance(
+    document: dict[str, object], args: argparse.Namespace
+) -> tuple[str, str]:
+    document_session_id = str(document.get("calibration_session_id", "")).strip()
+    document_capture_id = str(document.get("capture_id", "")).strip()
+    argument_session_id = str(getattr(args, "calibration_session_id", "")).strip()
+    argument_capture_id = str(getattr(args, "calibration_capture_id", "")).strip()
+
+    if bool(document_session_id) != bool(document_capture_id):
+        raise RuntimeError(
+            "calibration JSON must contain calibration_session_id and capture_id together"
+        )
+    if bool(argument_session_id) != bool(argument_capture_id):
+        raise RuntimeError(
+            "calibration result arguments must contain calibration_session_id "
+            "and capture_id together"
+        )
+    if (
+        document_session_id
+        and argument_session_id
+        and document_session_id != argument_session_id
+    ):
+        raise RuntimeError(
+            "calibration JSON calibration_session_id does not match the argument"
+        )
+    if (
+        document_capture_id
+        and argument_capture_id
+        and document_capture_id != argument_capture_id
+    ):
+        raise RuntimeError("calibration JSON capture_id does not match the argument")
+
+    return (
+        argument_session_id or document_session_id,
+        argument_capture_id or document_capture_id,
+    )
+
+
 def load_calibration_result(args: argparse.Namespace) -> tuple[bytes, dict[str, object]] | None:
     values = (
         args.calibration_result,
@@ -168,12 +206,7 @@ def load_calibration_result(args: argparse.Namespace) -> tuple[bytes, dict[str, 
         raise RuntimeError("calibration result JSON must contain an object")
     if not document:
         raise RuntimeError("calibration JSON must contain an object")
-    session_id = str(document.get("calibration_session_id", "")).strip()
-    capture_id = str(document.get("capture_id", "")).strip()
-    if not session_id or not capture_id:
-        raise RuntimeError(
-            "calibration JSON must contain calibration_session_id and capture_id"
-        )
+    session_id, capture_id = calibration_provenance(document, args)
     return data, {
         "attachment_name": CALIBRATION_ATTACHMENT_NAME,
         "media_type": CALIBRATION_MEDIA_TYPE,
@@ -206,10 +239,14 @@ def load_embedded_calibration(path: Path) -> dict[str, object] | None:
     camera_serial = str(document.get("camera_serial", "")).strip()
     session_id = str(document.get("calibration_session_id", "")).strip()
     capture_id = str(document.get("capture_id", "")).strip()
-    if not camera_serial or not session_id or not capture_id:
+    if bool(session_id) != bool(capture_id):
         raise RuntimeError(
-            "embedded calibration attachment is missing camera_serial, "
-            "calibration_session_id, or capture_id"
+            "embedded calibration attachment must contain calibration_session_id "
+            "and capture_id together"
+        )
+    if not camera_serial:
+        raise RuntimeError(
+            "embedded calibration attachment is missing camera_serial"
         )
     data = bytes(attachment.data)
     return {
