@@ -777,8 +777,13 @@ type CreateLogicalUploadRequest struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	ClientHints         map[string]string      `protobuf:"bytes,1,rep,name=client_hints,json=clientHints,proto3" json:"client_hints,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	RestartFromUploadId string                 `protobuf:"bytes,2,opt,name=restart_from_upload_id,json=restartFromUploadId,proto3" json:"restart_from_upload_id,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// When true, Keystone resolves and reserves a pending task for dc_plan_id
+	// using the authenticated device. Existing clients leave this false and
+	// continue to provide task_id through client_hints.
+	AutoAssignTask bool  `protobuf:"varint,3,opt,name=auto_assign_task,json=autoAssignTask,proto3" json:"auto_assign_task,omitempty"`
+	DcPlanId       int64 `protobuf:"varint,4,opt,name=dc_plan_id,json=dcPlanId,proto3" json:"dc_plan_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateLogicalUploadRequest) Reset() {
@@ -825,13 +830,31 @@ func (x *CreateLogicalUploadRequest) GetRestartFromUploadId() string {
 	return ""
 }
 
+func (x *CreateLogicalUploadRequest) GetAutoAssignTask() bool {
+	if x != nil {
+		return x.AutoAssignTask
+	}
+	return false
+}
+
+func (x *CreateLogicalUploadRequest) GetDcPlanId() int64 {
+	if x != nil {
+		return x.DcPlanId
+	}
+	return 0
+}
+
 type CreateLogicalUploadResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	LogicalUploadId string                 `protobuf:"bytes,1,opt,name=logical_upload_id,json=logicalUploadId,proto3" json:"logical_upload_id,omitempty"`
 	UploadId        string                 `protobuf:"bytes,2,opt,name=upload_id,json=uploadId,proto3" json:"upload_id,omitempty"`
 	Credentials     *UploadCredentials     `protobuf:"bytes,3,opt,name=credentials,proto3" json:"credentials,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Populated when auto_assign_task was requested.
+	ResolvedTaskId      string `protobuf:"bytes,4,opt,name=resolved_task_id,json=resolvedTaskId,proto3" json:"resolved_task_id,omitempty"`
+	ResolvedDcPlanId    int64  `protobuf:"varint,5,opt,name=resolved_dc_plan_id,json=resolvedDcPlanId,proto3" json:"resolved_dc_plan_id,omitempty"`
+	ResolvedWorkspaceId int64  `protobuf:"varint,6,opt,name=resolved_workspace_id,json=resolvedWorkspaceId,proto3" json:"resolved_workspace_id,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *CreateLogicalUploadResponse) Reset() {
@@ -883,6 +906,27 @@ func (x *CreateLogicalUploadResponse) GetCredentials() *UploadCredentials {
 		return x.Credentials
 	}
 	return nil
+}
+
+func (x *CreateLogicalUploadResponse) GetResolvedTaskId() string {
+	if x != nil {
+		return x.ResolvedTaskId
+	}
+	return ""
+}
+
+func (x *CreateLogicalUploadResponse) GetResolvedDcPlanId() int64 {
+	if x != nil {
+		return x.ResolvedDcPlanId
+	}
+	return 0
+}
+
+func (x *CreateLogicalUploadResponse) GetResolvedWorkspaceId() int64 {
+	if x != nil {
+		return x.ResolvedWorkspaceId
+	}
+	return 0
 }
 
 type GetUploadRecoveryRequest struct {
@@ -3086,17 +3130,23 @@ const file_data_gateway_proto_rawDesc = "" +
 	"\x0fpart_size_bytes\x18\b \x01(\x03R\rpartSizeBytes\x120\n" +
 	"\x14object_store_backend\x18\t \x01(\tR\x12objectStoreBackend\x12.\n" +
 	"\x13object_store_region\x18\n" +
-	" \x01(\tR\x11objectStoreRegion\"\xfc\x01\n" +
+	" \x01(\tR\x11objectStoreRegion\"\xc4\x02\n" +
 	"\x1aCreateLogicalUploadRequest\x12i\n" +
 	"\fclient_hints\x18\x01 \x03(\v2F.archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntryR\vclientHints\x123\n" +
-	"\x16restart_from_upload_id\x18\x02 \x01(\tR\x13restartFromUploadId\x1a>\n" +
+	"\x16restart_from_upload_id\x18\x02 \x01(\tR\x13restartFromUploadId\x12(\n" +
+	"\x10auto_assign_task\x18\x03 \x01(\bR\x0eautoAssignTask\x12\x1c\n" +
+	"\n" +
+	"dc_plan_id\x18\x04 \x01(\x03R\bdcPlanId\x1a>\n" +
 	"\x10ClientHintsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb6\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc3\x02\n" +
 	"\x1bCreateLogicalUploadResponse\x12*\n" +
 	"\x11logical_upload_id\x18\x01 \x01(\tR\x0flogicalUploadId\x12\x1b\n" +
 	"\tupload_id\x18\x02 \x01(\tR\buploadId\x12N\n" +
-	"\vcredentials\x18\x03 \x01(\v2,.archebase.data_gateway.v1.UploadCredentialsR\vcredentials\"F\n" +
+	"\vcredentials\x18\x03 \x01(\v2,.archebase.data_gateway.v1.UploadCredentialsR\vcredentials\x12(\n" +
+	"\x10resolved_task_id\x18\x04 \x01(\tR\x0eresolvedTaskId\x12-\n" +
+	"\x13resolved_dc_plan_id\x18\x05 \x01(\x03R\x10resolvedDcPlanId\x122\n" +
+	"\x15resolved_workspace_id\x18\x06 \x01(\x03R\x13resolvedWorkspaceId\"F\n" +
 	"\x18GetUploadRecoveryRequest\x12*\n" +
 	"\x11logical_upload_id\x18\x01 \x01(\tR\x0flogicalUploadId\"\xc8\x05\n" +
 	"\x19GetUploadRecoveryResponse\x12*\n" +

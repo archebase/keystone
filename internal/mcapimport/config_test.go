@@ -5,6 +5,7 @@
 package mcapimport
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,6 +95,47 @@ func TestParseConfigLoadsCredentialFile(t *testing.T) {
 	}
 	if cfg.DeviceID != "17" || cfg.DeviceCredential != "device-secret" {
 		t.Fatalf("loaded credentials = device %q secret %q", cfg.DeviceID, cfg.DeviceCredential)
+	}
+}
+
+func TestParseConfigLoadsCompleteProfileFromCredentialFile(t *testing.T) {
+	credentialsPath := filepath.Join(t.TempDir(), "device-profile.json")
+	useTLS := true
+	payload := persistedDeviceCredential{
+		Endpoint:     "keystone-mercury.archebase.cn:50053",
+		TLS:          &useTLS,
+		DeviceID:     "73",
+		DeviceAPIKey: "device-secret",
+		WorkspaceID:  4,
+		CameraSerial: "CMD-000026",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal profile: %v", err)
+	}
+	if err := os.WriteFile(credentialsPath, data, 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	cfg, err := ParseConfig([]string{
+		"--file", writeTestMCAP(t, "mcap payload"),
+		"--plan-id", "84",
+		"--device-credentials-file", credentialsPath,
+	})
+	if err != nil {
+		t.Fatalf("ParseConfig() error = %v", err)
+	}
+	if cfg.Endpoint != payload.Endpoint || !cfg.UseTLS {
+		t.Fatalf("profile connection = endpoint %q tls %t", cfg.Endpoint, cfg.UseTLS)
+	}
+	if cfg.DeviceID != payload.DeviceID || cfg.DeviceCredential != payload.DeviceAPIKey {
+		t.Fatalf("profile credentials = device %q secret %q", cfg.DeviceID, cfg.DeviceCredential)
+	}
+	if cfg.WorkspaceID != payload.WorkspaceID || cfg.CameraSerial != payload.CameraSerial {
+		t.Fatalf("profile metadata = workspace %d camera %q", cfg.WorkspaceID, cfg.CameraSerial)
+	}
+	if !cfg.AutoAssignTask || cfg.TaskID != "" {
+		t.Fatalf("task mode = auto %t task %q", cfg.AutoAssignTask, cfg.TaskID)
 	}
 }
 

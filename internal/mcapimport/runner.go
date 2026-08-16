@@ -32,6 +32,9 @@ type DeviceCredential struct {
 type UploadSession struct {
 	LogicalUploadID string
 	UploadID        string
+	TaskID          string
+	DCPlanID        int64
+	WorkspaceID     int64
 	Bucket          string
 	Endpoint        string
 	Region          string
@@ -69,6 +72,9 @@ type UploadRecovery struct {
 type Result struct {
 	LogicalUploadID string `json:"logical_upload_id"`
 	UploadID        string `json:"upload_id"`
+	TaskID          string `json:"task_id"`
+	DCPlanID        int64  `json:"dc_plan_id"`
+	WorkspaceID     int64  `json:"workspace_id"`
 	Bucket          string `json:"bucket"`
 	ObjectKey       string `json:"object_key"`
 	FileSize        int64  `json:"file_size"`
@@ -123,7 +129,11 @@ func (r Runner) Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, err
 	}
 	hints, rawTags := buildUploadMetadata(cfg, facts)
-	r.logf("Creating logical upload for task %s", cfg.TaskID)
+	if cfg.AutoAssignTask {
+		r.logf("Creating logical upload for plan %d", cfg.DCPlanID)
+	} else {
+		r.logf("Creating logical upload for task %s", cfg.TaskID)
+	}
 	session, err := r.Control.CreateLogicalUpload(ctx, credential, hints)
 	if err != nil {
 		return nil, fmt.Errorf("create logical upload: %w", err)
@@ -131,6 +141,14 @@ func (r Runner) Run(ctx context.Context, cfg Config) (*Result, error) {
 	if err := validateUploadSession(session); err != nil {
 		r.abort(credential, session.LogicalUploadID)
 		return nil, err
+	}
+	if cfg.AutoAssignTask {
+		if strings.TrimSpace(session.TaskID) == "" {
+			r.abort(credential, session.LogicalUploadID)
+			return nil, fmt.Errorf("create logical upload returned no assigned task ID")
+		}
+		rawTags["task_id"] = strings.TrimSpace(session.TaskID)
+		hints["task_id"] = strings.TrimSpace(session.TaskID)
 	}
 
 	finished := false
@@ -201,12 +219,24 @@ func (r Runner) Run(ctx context.Context, cfg Config) (*Result, error) {
 	return &Result{
 		LogicalUploadID: session.LogicalUploadID,
 		UploadID:        session.UploadID,
+		TaskID:          firstNonEmpty(session.TaskID, cfg.TaskID),
+		DCPlanID:        cfg.DCPlanID,
+		WorkspaceID:     cfg.WorkspaceID,
 		Bucket:          session.Bucket,
 		ObjectKey:       session.ObjectKey,
 		FileSize:        facts.Size,
 		SHA256:          facts.SHA256,
 		ObjectETag:      objectResult.ETag,
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (r Runner) resolveDevice(ctx context.Context, cfg Config) (DeviceCredential, error) {
@@ -224,7 +254,11 @@ func (r Runner) resolveDevice(ctx context.Context, cfg Config) (DeviceCredential
 	if workspaceID != cfg.WorkspaceID {
 		return DeviceCredential{}, fmt.Errorf("initialized device belongs to workspace %d, not %d", workspaceID, cfg.WorkspaceID)
 	}
-	if err := saveDeviceCredential(cfg.CredentialsFile, credential, workspaceID); err != nil {
+	if err := saveDeviceCredential(cfg.CredentialsFile, credential, workspaceID, deviceCredentialFileOptions{
+		Endpoint:     cfg.Endpoint,
+		UseTLS:       cfg.UseTLS,
+		CameraSerial: cfg.CameraSerial,
+	}); err != nil {
 		return DeviceCredential{}, err
 	}
 	r.logf("Saved device credentials to %s", cfg.CredentialsFile)
@@ -291,6 +325,9 @@ func buildUploadMetadata(cfg Config, facts fileFacts) (map[string]string, map[st
 		"checksum_md5":    facts.MD5,
 		"checksum_sha256": facts.SHA256,
 	}
+	if cfg.AutoAssignTask {
+		hints["auto_assign_task"] = "true"
+	}
 	if cameraSerial := strings.TrimSpace(cfg.CameraSerial); cameraSerial != "" {
 		hints["camera_serial"] = cameraSerial
 	}
@@ -327,12 +364,30 @@ func validateUploadSession(session UploadSession) error {
 	}
 }
 
-func saveDeviceCredential(path string, credential DeviceCredential, workspaceID int64) (retErr error) {
-	payload, err := json.MarshalIndent(persistedDeviceCredential{
+type deviceCredentialFileOptions struct {
+	Endpoint     string
+	UseTLS       bool
+	CameraSerial string
+}
+
+func saveDeviceCredential(
+	path string,
+	credential DeviceCredential,
+	workspaceID int64,
+	options ...deviceCredentialFileOptions,
+) (retErr error) {
+	persisted := persistedDeviceCredential{
 		DeviceID:     credential.DeviceID,
 		DeviceAPIKey: credential.Secret,
 		WorkspaceID:  workspaceID,
-	}, "", "  ")
+	}
+	if len(options) > 0 {
+		persisted.Endpoint = strings.TrimSpace(options[0].Endpoint)
+		persisted.TLS = new(bool)
+		*persisted.TLS = options[0].UseTLS
+		persisted.CameraSerial = strings.TrimSpace(options[0].CameraSerial)
+	}
+	payload, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode device credentials: %w", err)
 	}

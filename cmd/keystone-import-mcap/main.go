@@ -103,7 +103,7 @@ func run(args []string) (exitCode int) {
 
 func printUsage(output io.Writer) error {
 	_, err := fmt.Fprint(output, `Usage:
-  keystone-import-mcap --endpoint HOST:PORT --file FILE.mcap --workspace-id ID --dc-plan-id ID --task-id ID [device authentication]
+  keystone-import-mcap --file FILE.mcap --plan-id ID [device authentication]
 
 Device authentication (choose one):
   KEYSTONE_IMPORT_DEVICE_API_KEY=KEY ... --device-id ID
@@ -111,6 +111,10 @@ Device authentication (choose one):
   KEYSTONE_IMPORT_DEVICE_AUTH_TOKEN=TOKEN ... --device-name NAME --device-credentials-file NEW_FILE
 
 Optional:
+  --endpoint HOST:PORT    override the endpoint from the credentials file
+  --workspace-id ID       override the workspace from the credentials file
+  --dc-plan-id ID         deprecated alias for --plan-id
+  --task-id ID            use an explicitly selected existing task
   --capture-id UUID       generated automatically when omitted
   --duration-sec SECONDS  positive recording duration
   --camera-serial SERIAL  optional camera serial for calibration association

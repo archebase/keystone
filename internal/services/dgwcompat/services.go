@@ -19,6 +19,7 @@ import (
 
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
 	"archebase.com/keystone-edge/internal/logger"
+	keystoneServices "archebase.com/keystone-edge/internal/services"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"google.golang.org/grpc/codes"
@@ -56,6 +57,7 @@ type uploadSession struct {
 	FileSize               int64
 	CredentialRefreshCount int32
 	LastSTSExpireAt        time.Time
+	AutoAssignedTask       bool
 }
 
 type sessionStore struct {
@@ -133,6 +135,21 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	logicalUploadID := uuid.NewString()
 	uploadID := uuid.NewString()
 	hints := cloneMap(req.GetClientHints())
+	autoAssignTask := req.GetAutoAssignTask()
+	if autoAssignTask {
+		if req.GetDcPlanId() <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "dc_plan_id is required for automatic task assignment")
+		}
+		planID := strconv.FormatInt(req.GetDcPlanId(), 10)
+		if hinted := strings.TrimSpace(hints["dc_plan_id"]); hinted != "" && hinted != planID {
+			return nil, status.Error(codes.FailedPrecondition, "dc_plan_id hints do not match request")
+		}
+		if strings.TrimSpace(hints["task_id"]) != "" {
+			return nil, status.Error(codes.InvalidArgument, "task_id cannot be provided with automatic task assignment")
+		}
+		hints["dc_plan_id"] = planID
+		hints["auto_assign_task"] = "true"
+	}
 	if hints["product"] == "ego_portal_lite" &&
 		!strings.EqualFold(strings.TrimSpace(hints["upload_kind"]), string(uploadKindCalibrationCapture)) {
 		checksumMD5 := strings.ToLower(strings.TrimSpace(hints["checksum_md5"]))
@@ -160,31 +177,42 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	}
 	var taskBinding uploadTaskBinding
 	if intent.Kind == uploadKindTaskEpisode {
+		if autoAssignTask {
+			assigned, assignErr := s.assignTaskForDevice(ctx, principal, req.GetDcPlanId())
+			if assignErr != nil {
+				return nil, assignErr
+			}
+			hints["task_id"] = assigned.TaskID
+		}
 		taskBinding, err = s.validateCreateLogicalUpload(ctx, principal, hints)
 		if err != nil {
+			if autoAssignTask {
+				s.releaseAutoAssignedTask(ctx, principal, hints["task_id"], "automatic task assignment validation failed")
+			}
 			return nil, err
 		}
 	}
 	objectKey := buildObjectKey(s.cfg.TOSKeyPrefix, hints, uploadID)
 	session := &uploadSession{
-		Kind:            intent.Kind,
-		LogicalUploadID: logicalUploadID,
-		UploadID:        uploadID,
-		RobotID:         principal.RobotID,
-		TaskPK:          taskBinding.TaskPK,
-		TaskID:          taskBinding.TaskID,
-		WorkstationID:   taskBinding.WorkstationID,
-		OrganizationID:  taskBinding.OrganizationID,
-		DCPlanID:        taskBinding.DCPlanID.Int64,
-		LocalDCPlanID:   taskBinding.LocalDCPlanID,
-		DeviceID:        principal.DeviceID,
-		WorkspaceID:     principal.WorkspaceID,
-		AuthEpoch:       principal.AuthEpoch,
-		Bucket:          s.cfg.TOSBucket,
-		Endpoint:        s.cfg.TOSEndpoint,
-		ObjectKey:       objectKey,
-		ClientHints:     hints,
-		CreatedAt:       s.now(),
+		Kind:             intent.Kind,
+		LogicalUploadID:  logicalUploadID,
+		UploadID:         uploadID,
+		RobotID:          principal.RobotID,
+		TaskPK:           taskBinding.TaskPK,
+		TaskID:           taskBinding.TaskID,
+		WorkstationID:    taskBinding.WorkstationID,
+		OrganizationID:   taskBinding.OrganizationID,
+		DCPlanID:         taskBinding.DCPlanID.Int64,
+		LocalDCPlanID:    taskBinding.LocalDCPlanID,
+		DeviceID:         principal.DeviceID,
+		WorkspaceID:      principal.WorkspaceID,
+		AuthEpoch:        principal.AuthEpoch,
+		Bucket:           s.cfg.TOSBucket,
+		Endpoint:         s.cfg.TOSEndpoint,
+		ObjectKey:        objectKey,
+		ClientHints:      hints,
+		CreatedAt:        s.now(),
+		AutoAssignedTask: autoAssignTask,
 	}
 	if intent.Kind == uploadKindCalibrationCapture {
 		if err := s.persistCalibrationUploadStart(ctx, principal, intent, session); err != nil {
@@ -208,6 +236,9 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	)
 	creds, err := s.sts.AssumeRole(ctx, stsScope{Bucket: s.cfg.TOSBucket, ObjectKey: objectKey})
 	if err != nil {
+		if autoAssignTask {
+			s.releaseAutoAssignedTask(ctx, principal, hints["task_id"], "failed to create object-store upload credentials")
+		}
 		logger.Printf("[DGW_COMPAT] CreateLogicalUpload assume_role_failed upload_id=%s logical_upload_id=%s bucket=%s object_key=%s error=%v",
 			uploadID, logicalUploadID, s.cfg.TOSBucket, objectKey, err)
 		return nil, status.Errorf(codes.Unavailable, "assume role: %v", err)
@@ -225,11 +256,17 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 		hints["task_id"],
 		hints["device_id"],
 	)
-	return &cloudpb.CreateLogicalUploadResponse{
+	response := &cloudpb.CreateLogicalUploadResponse{
 		LogicalUploadId: logicalUploadID,
 		UploadId:        uploadID,
 		Credentials:     s.uploadCredentials(session, creds),
-	}, nil
+	}
+	if autoAssignTask {
+		response.ResolvedTaskId = taskBinding.TaskID
+		response.ResolvedDcPlanId = taskBinding.DCPlanID.Int64
+		response.ResolvedWorkspaceId = taskBinding.PlanWorkspaceID
+	}
+	return response, nil
 }
 
 func (s *gatewayService) GetUploadRecovery(ctx context.Context, req *cloudpb.GetUploadRecoveryRequest) (*cloudpb.GetUploadRecoveryResponse, error) {
@@ -341,6 +378,12 @@ func (s *gatewayService) AbortUpload(ctx context.Context, req *cloudpb.AbortUplo
 	if !ok {
 		return nil, status.Error(codes.NotFound, "upload not found")
 	}
+	if updated.AutoAssignedTask {
+		principal, principalErr := principalFromContext(ctx)
+		if principalErr == nil {
+			s.releaseAutoAssignedTask(ctx, principal, updated.TaskID, "keystone import aborted")
+		}
+	}
 	logger.Printf("[DGW_COMPAT] AbortUpload upload_id=%s logical_upload_id=%s reason=%q",
 		updated.UploadID, updated.LogicalUploadID, req.GetReason())
 	return &cloudpb.AbortUploadResponse{
@@ -422,6 +465,130 @@ type uploadTaskBinding struct {
 	LocalDCPlanID   sql.NullInt64 `db:"local_dc_plan_id"`
 	PlanWorkspaceID int64         `db:"plan_workspace_id"`
 	EpisodePK       sql.NullInt64 `db:"episode_pk"`
+}
+
+// assignTaskForDevice obtains and atomically reserves the next task for a
+// plan bound to the authenticated device. It deliberately resolves the
+// workstation without activating it, so an offline import cannot replace the
+// real Ego Portal workstation session.
+func (s *gatewayService) assignTaskForDevice(
+	ctx context.Context,
+	principal devicePrincipal,
+	planID int64,
+) (keystoneServices.DCPlanSuppliedTask, error) {
+	if s == nil || s.db == nil || planID <= 0 {
+		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "task assignment unavailable")
+	}
+
+	var plan struct {
+		WorkspaceID int64  `db:"workspace_id"`
+		DeviceID    string `db:"device_id"`
+		Operator    string `db:"operator"`
+	}
+	if err := s.db.GetContext(ctx, &plan, `
+		SELECT workspace_id, CAST(dc_device_id AS CHAR) AS device_id, operator
+		FROM dc_plan
+		WHERE id = ? AND deleted_at IS NULL
+		LIMIT 1
+	`, planID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.NotFound, "dc plan not found")
+		}
+		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "dc plan lookup unavailable")
+	}
+	if plan.WorkspaceID != principal.WorkspaceID {
+		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.PermissionDenied, "dc plan belongs to another workspace")
+	}
+	if strings.TrimSpace(plan.DeviceID) != strings.TrimSpace(principal.DeviceID) {
+		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.PermissionDenied, "dc plan is not assigned to this device")
+	}
+
+	var workstationID int64
+	if err := s.db.GetContext(ctx, &workstationID, `
+		SELECT ws.id
+		FROM workstations ws
+		INNER JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
+		INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE ws.workspace_id = ?
+			AND ws.deleted_at IS NULL
+			AND dc.operator_id = ?
+			AND r.id = ?
+			AND r.device_id = ?
+		LIMIT 1
+	`, plan.WorkspaceID, strings.TrimSpace(plan.Operator), principal.RobotID, strings.TrimSpace(principal.DeviceID)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.PermissionDenied, "no workstation is assigned to this device for the dc plan")
+		}
+		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "workstation lookup unavailable")
+	}
+
+	supply := keystoneServices.NewDCPlanTaskSupplyService(s.db)
+	for attempt := 0; attempt < 5; attempt++ {
+		result, err := supply.EnsureNextTask(ctx, planID, workstationID, s.now())
+		if err != nil {
+			switch {
+			case errors.Is(err, keystoneServices.ErrDCPlanTaskSupplyNotFound):
+				return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.NotFound, "dc plan not found")
+			case errors.Is(err, keystoneServices.ErrDCPlanTaskSupplyWorkstationMismatch):
+				return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.PermissionDenied, "dc plan workstation mismatch")
+			case errors.Is(err, keystoneServices.ErrDCPlanTaskSupplyTargetReached):
+				return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.FailedPrecondition, "dc plan target has been reached")
+			case errors.Is(err, keystoneServices.ErrDCPlanTaskSupplyActiveTask):
+				return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Aborted, "dc plan has an active task")
+			default:
+				return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "task assignment unavailable")
+			}
+		}
+		if result == nil || result.Task.ID <= 0 || strings.TrimSpace(result.Task.TaskID) == "" {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "task assignment returned an incomplete task")
+		}
+		updated, err := s.db.ExecContext(ctx, `
+			UPDATE tasks
+			SET status = 'uploading', error_message = NULL, updated_at = ?
+			WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
+		`, s.now(), result.Task.ID)
+		if err != nil {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "reserve task unavailable")
+		}
+		affected, err := updated.RowsAffected()
+		if err != nil {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "reserve task result unavailable")
+		}
+		if affected == 1 {
+			result.Task.Status = "uploading"
+			return result.Task, nil
+		}
+	}
+	return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Aborted, "could not reserve a pending task")
+}
+
+func (s *gatewayService) releaseAutoAssignedTask(
+	ctx context.Context,
+	principal devicePrincipal,
+	taskID string,
+	reason string,
+) {
+	if s == nil || s.db == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE tasks
+		SET status = 'failed',
+			completed_at = COALESCE(completed_at, ?),
+			error_message = ?,
+			updated_at = ?
+		WHERE task_id = ? AND status = 'uploading' AND episode_id IS NULL AND deleted_at IS NULL
+			AND EXISTS (
+				SELECT 1
+				FROM workstations ws
+				INNER JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+				WHERE ws.id = tasks.workstation_id
+					AND ws.deleted_at IS NULL
+					AND r.id = ? AND r.device_id = ?
+			)
+	`, s.now(), strings.TrimSpace(reason), s.now(), strings.TrimSpace(taskID), principal.RobotID, strings.TrimSpace(principal.DeviceID)); err != nil {
+		logger.Printf("[DGW_COMPAT] failed to release auto-assigned task task_id=%s device_id=%s error=%v", taskID, principal.DeviceID, err)
+	}
 }
 
 func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, principal devicePrincipal, hints map[string]string) (uploadTaskBinding, error) {

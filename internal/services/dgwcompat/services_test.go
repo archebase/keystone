@@ -1413,6 +1413,75 @@ func TestGatewayCreateLogicalUploadRejectsMismatchedPlan(t *testing.T) {
 	}
 }
 
+func TestGatewayCreateLogicalUploadAutoAssignsTaskForDevice(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	sessions := newSessionStore()
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, sessions, db, nil)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		AutoAssignTask: true,
+		DcPlanId:       1001,
+		ClientHints: map[string]string{
+			"device_id":       "101",
+			"capture_id":      "capture-auto",
+			"product":         "ego_portal_lite",
+			"checksum_md5":    "9777442976c95a2f302786b97e60ceb5",
+			"checksum_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	if created.GetResolvedTaskId() != "task-1" || created.GetResolvedDcPlanId() != 1001 || created.GetResolvedWorkspaceId() != 10 {
+		t.Fatalf("resolved target = task %q plan %d workspace %d", created.GetResolvedTaskId(), created.GetResolvedDcPlanId(), created.GetResolvedWorkspaceId())
+	}
+	var statusValue string
+	if err := db.Get(&statusValue, `SELECT status FROM tasks WHERE id = 1`); err != nil {
+		t.Fatalf("query reserved task: %v", err)
+	}
+	if statusValue != "uploading" {
+		t.Fatalf("reserved task status = %q, want uploading", statusValue)
+	}
+	session, ok := sessions.getByLogical(created.GetLogicalUploadId())
+	if !ok || session.TaskID != "task-1" || !session.AutoAssignedTask {
+		t.Fatalf("stored session = %#v, found=%t", session, ok)
+	}
+}
+
+func TestGatewayAbortAutoAssignedUploadFailsReservedTask(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{
+		AutoAssignTask: true,
+		DcPlanId:       1001,
+		ClientHints: map[string]string{
+			"capture_id":      "capture-abort",
+			"product":         "ego_portal_lite",
+			"checksum_md5":    "9777442976c95a2f302786b97e60ceb5",
+			"checksum_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	if _, err := service.AbortUpload(ctx, &cloudpb.AbortUploadRequest{LogicalUploadId: created.GetLogicalUploadId()}); err != nil {
+		t.Fatalf("AbortUpload() error = %v", err)
+	}
+	var statusValue, errorMessage string
+	if err := db.QueryRowx(`SELECT status, error_message FROM tasks WHERE id = 1`).Scan(&statusValue, &errorMessage); err != nil {
+		t.Fatalf("query aborted task: %v", err)
+	}
+	if statusValue != "failed" || errorMessage == "" {
+		t.Fatalf("aborted task = status %q error %q, want failed with reason", statusValue, errorMessage)
+	}
+}
+
 func TestGatewayCreateLogicalUploadRejectsTaskFromAnotherWorkstation(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	for _, statement := range []string{
@@ -1544,6 +1613,7 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 		`CREATE TABLE robots (
 			id INTEGER PRIMARY KEY,
 			device_id TEXT NOT NULL,
+			device_type TEXT,
 			workspace_id INTEGER NOT NULL,
 			status TEXT NOT NULL,
 			auth_epoch INTEGER NOT NULL,
@@ -1552,12 +1622,27 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 		`CREATE TABLE workstations (
 			id INTEGER PRIMARY KEY,
 			robot_id INTEGER NOT NULL,
+			data_collector_id INTEGER,
 			workspace_id INTEGER NOT NULL,
+			deleted_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE data_collectors (
+			id INTEGER PRIMARY KEY,
+			operator_id TEXT NOT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE dc_plan (
 			id INTEGER PRIMARY KEY,
 			workspace_id INTEGER NOT NULL,
+			name TEXT,
+			operator TEXT,
+			dc_project_description TEXT,
+			dc_task_description TEXT,
+			dc_device_id INTEGER,
+			dc_type TEXT,
+			target_count INTEGER,
+			cur_count INTEGER DEFAULT 0,
+			target_duration INTEGER,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE tasks (
@@ -1568,9 +1653,12 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 			dc_plan_id INTEGER,
 			local_dc_plan_id INTEGER,
 			status TEXT NOT NULL,
+			assigned_at TIMESTAMP NULL,
 			completed_at TIMESTAMP NULL,
 			episode_id INTEGER,
 			error_message TEXT,
+			metadata TEXT,
+			created_at TIMESTAMP NULL,
 			deleted_at TIMESTAMP NULL,
 			updated_at TIMESTAMP NULL
 		)`,
@@ -1591,6 +1679,7 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 			duration_sec REAL,
 			checksum TEXT,
 			qa_status TEXT,
+			cloud_synced BOOLEAN DEFAULT FALSE,
 			metadata TEXT,
 			camera_serial TEXT,
 			calibration_capture_id TEXT,
@@ -1642,9 +1731,13 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 			updated_at TIMESTAMP NOT NULL,
 			uploaded_at TIMESTAMP
 		)`,
-		`INSERT INTO robots (id, device_id, workspace_id, status, auth_epoch) VALUES (1, '101', 10, 'active', 1)`,
-		`INSERT INTO workstations (id, robot_id, workspace_id) VALUES (40, 1, 10)`,
-		`INSERT INTO dc_plan (id, workspace_id) VALUES (1001, 10)`,
+		`INSERT INTO robots (id, device_id, device_type, workspace_id, status, auth_epoch) VALUES (1, '101', 'Ego Portal Stereo', 10, 'active', 1)`,
+		`INSERT INTO data_collectors (id, operator_id) VALUES (7, 'collector-1')`,
+		`INSERT INTO workstations (id, robot_id, data_collector_id, workspace_id) VALUES (40, 1, 7, 10)`,
+		`INSERT INTO dc_plan (
+			id, workspace_id, name, operator, dc_device_id, dc_type,
+			target_count, cur_count, target_duration
+		) VALUES (1001, 10, 'Plan 1001', 'collector-1', 101, 'ego', 10, 0, 3600)`,
 		`INSERT INTO tasks (id, task_id, workstation_id, organization_id, dc_plan_id, status) VALUES (1, 'task-1', 40, 10, 1001, 'pending')`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
