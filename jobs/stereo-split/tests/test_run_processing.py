@@ -27,7 +27,11 @@ RUNNER = JOB_ROOT / "run_processing.py"
 MCAP_MAGIC = b"\x89MCAP0\r\n"
 sys.path.insert(0, str(JOB_ROOT))
 import run_processing as processing_runner  # noqa: E402
-from convert_mcap_stereo_h264 import CompressedVideo, FOXGLOVE_SCHEMA_NAME  # noqa: E402
+from convert_mcap_stereo_h264 import (  # noqa: E402
+    CompressedVideo,
+    FOXGLOVE_SCHEMA_NAME,
+    StereoSplitH264Converter,
+)
 sys.path.remove(str(JOB_ROOT))
 
 
@@ -314,6 +318,65 @@ class RunProcessingTest(unittest.TestCase):
             self.assertAlmostEqual(first_imu.angular_velocity.x, 4000 * gyro_scale)
             self.assertAlmostEqual(first_imu.angular_velocity.y, -5000 * gyro_scale)
             self.assertAlmostEqual(first_imu.angular_velocity.z, 6000 * gyro_scale)
+
+    def test_processes_already_split_input_and_records_repair_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            joined_source = make_source_mcap(root)
+            split_source = root / "split-source.mcap"
+            StereoSplitH264Converter().convert(joined_source, split_source)
+            output_binding = root / "published"
+            output_binding.mkdir()
+
+            result = run_job(split_source, output_binding, root / "scratch")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(
+                (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["processing_mode"], "timestamp_repair")
+            self.assertEqual(manifest["stats"]["input_mode"], "split_h264")
+            self.assertEqual(manifest["stats"]["decoded_images"], 0)
+            self.assertEqual(manifest["stats"]["left_videos"], 2)
+            self.assertEqual(manifest["stats"]["right_videos"], 2)
+
+    def test_preserves_embedded_calibration_in_split_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            joined_source = make_source_mcap(root)
+            calibration = {
+                "schema_version": 1,
+                "status": "succeeded",
+                "camera_serial": "CAMERA-SN-001",
+                "calibration_session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+                "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+                "result": {"calibration": {"fx": 100.0}},
+            }
+            calibration_bytes = (json.dumps(calibration, sort_keys=True) + "\n").encode()
+            split_source = root / "split-source.mcap"
+            StereoSplitH264Converter().convert(
+                joined_source, split_source, calibration_attachment=calibration_bytes
+            )
+            output_binding = root / "published"
+            output_binding.mkdir()
+
+            result = run_job(split_source, output_binding, root / "scratch")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(
+                (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(manifest["calibration"]["attachment_name"], "calibration.json")
+            self.assertEqual(manifest["calibration"]["camera_serial"], "CAMERA-SN-001")
+            self.assertEqual(
+                manifest["calibration"]["session_id"],
+                "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
+            )
+            self.assertEqual(
+                manifest["calibration"]["capture_id"],
+                "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+            )
 
     def test_embeds_frozen_calibration_result_as_json_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

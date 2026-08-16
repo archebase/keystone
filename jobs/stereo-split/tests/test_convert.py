@@ -23,6 +23,7 @@ sys.path.insert(0, str(JOB_ROOT))
 from convert_mcap_stereo_h264 import (  # noqa: E402
     CompressedVideo,
     ConverterConfig,
+    FOXGLOVE_DESCRIPTOR_SET,
     FOXGLOVE_SCHEMA_NAME,
     StereoSplitH264Converter,
     _TimestampSample,
@@ -298,6 +299,100 @@ def make_timestamp_source(
     )
 
 
+def make_split_h264_source(
+    path: Path,
+    *,
+    frame_count: int = 3,
+    log_times: list[int] | None = None,
+    publish_times: list[int] | None = None,
+    embedded_times: list[int] | None = None,
+    attachment_name: str | None = None,
+    attachment_data: bytes = b"",
+    metadata: dict[str, str] | None = None,
+    include_summary: bool = True,
+) -> None:
+    typestore = get_typestore(Stores.ROS2_JAZZY)
+    messages = typestore.types
+    imu_definition, _ = typestore.generate_msgdef("sensor_msgs/msg/Imu", ros_version=2)
+    log_times = log_times or regular_frame_times(frame_count)
+    publish_times = publish_times or log_times
+    embedded_times = embedded_times or log_times
+    if not (len(log_times) == len(publish_times) == len(embedded_times) == frame_count):
+        raise ValueError("split H.264 timestamp counts must match frame count")
+    with path.open("wb") as stream:
+        writer = Writer(
+            stream,
+            index_types=IndexType.ALL if include_summary else IndexType.NONE,
+            repeat_channels=include_summary,
+            repeat_schemas=include_summary,
+            use_statistics=include_summary,
+            use_summary_offsets=include_summary,
+        )
+        writer.start()
+        video_schema = writer.register_schema(
+            FOXGLOVE_SCHEMA_NAME, "protobuf", FOXGLOVE_DESCRIPTOR_SET
+        )
+        left_channel = writer.register_channel(
+            "/decxin/left_rgb/h264", "protobuf", video_schema
+        )
+        right_channel = writer.register_channel(
+            "/decxin/right_rgb/h264", "protobuf", video_schema
+        )
+        imu_schema = writer.register_schema(
+            "sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode()
+        )
+        imu_channel = writer.register_channel("/decxin/imu", "cdr", imu_schema)
+        vector = messages["geometry_msgs/msg/Vector3"]
+        quaternion = messages["geometry_msgs/msg/Quaternion"]
+        for index in range(frame_count):
+            seconds, nanos = divmod(embedded_times[index], 1_000_000_000)
+            video = CompressedVideo()
+            video.timestamp.seconds = seconds
+            video.timestamp.nanos = nanos
+            video.frame_id = "decxin_left_camera"
+            video.data = f"h264-payload-{index}".encode()
+            video.format = "h264"
+            left_data = video.SerializeToString()
+            video.frame_id = "decxin_right_camera"
+            right_data = video.SerializeToString()
+            writer.add_message(
+                left_channel, log_times[index], left_data, publish_times[index], index
+            )
+            writer.add_message(
+                right_channel, log_times[index], right_data, publish_times[index], index
+            )
+            stamp = messages["builtin_interfaces/msg/Time"](sec=seconds, nanosec=nanos)
+            imu = messages["sensor_msgs/msg/Imu"](
+                header=messages["std_msgs/msg/Header"](
+                    stamp=stamp, frame_id="source_imu"
+                ),
+                orientation=quaternion(x=0.0, y=0.0, z=0.0, w=1.0),
+                orientation_covariance=np.full(9, index, dtype=np.float64),
+                angular_velocity=vector(x=float(index), y=2.0, z=3.0),
+                angular_velocity_covariance=np.zeros(9, dtype=np.float64),
+                linear_acceleration=vector(x=4.0, y=5.0, z=6.0),
+                linear_acceleration_covariance=np.zeros(9, dtype=np.float64),
+            )
+            writer.add_message(
+                imu_channel,
+                log_times[index] + 1,
+                bytes(typestore.serialize_cdr(imu, "sensor_msgs/msg/Imu")),
+                publish_times[index] + 1,
+                index,
+            )
+        if attachment_name is not None:
+            writer.add_attachment(
+                create_time=0,
+                log_time=0,
+                name=attachment_name,
+                media_type="application/json",
+                data=attachment_data,
+            )
+        if metadata is not None:
+            writer.add_metadata("source-metadata", metadata)
+        writer.finish()
+
+
 def topic_records(path: Path, topic: str) -> list[tuple[object, ...]]:
     records: list[tuple[object, ...]] = []
     with path.open("rb") as stream:
@@ -362,6 +457,145 @@ def summary_channel(path: Path, topic: str) -> tuple[object, ...] | None:
 
 
 class ConvertTest(unittest.TestCase):
+    def test_repairs_already_split_h264_without_reencoding(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_split_h264_source(source)
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.input_mode, "split_h264")
+            self.assertEqual(stats.left_videos, 3)
+            self.assertEqual(stats.right_videos, 3)
+            self.assertEqual(
+                [record[8] for record in topic_records(output, "/decxin/left_rgb/h264")],
+                [record[8] for record in topic_records(source, "/decxin/left_rgb/h264")],
+            )
+            self.assertEqual(
+                [record[8] for record in topic_records(output, "/decxin/right_rgb/h264")],
+                [record[8] for record in topic_records(source, "/decxin/right_rgb/h264")],
+            )
+            self.assertEqual(
+                [record[5:8] for record in topic_records(output, "/decxin/imu")],
+                [record[5:8] for record in topic_records(source, "/decxin/imu")],
+            )
+
+    def test_repairs_timestamps_in_already_split_h264(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            embedded_times = regular_frame_times()
+            log_times = bursty_frame_times()
+            make_split_h264_source(
+                source,
+                frame_count=len(embedded_times),
+                log_times=log_times,
+                publish_times=log_times,
+                embedded_times=embedded_times,
+            )
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertTrue(stats.timestamp_repair_applied)
+            self.assertEqual(stats.timestamp_repair_reason, "log_bursty,publish_bursty")
+            expected_times = [
+                log_times[0] + timestamp - embedded_times[0]
+                for timestamp in embedded_times
+            ]
+            for topic in ("/decxin/left_rgb/h264", "/decxin/right_rgb/h264"):
+                records = topic_records(output, topic)
+                self.assertEqual([record[5] for record in records], expected_times)
+                self.assertEqual(
+                    [record[8] for record in records],
+                    [record[8] for record in topic_records(source, topic)],
+                )
+
+    def test_normalizes_existing_calibration_attachment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            calibration = b'{"status":"succeeded"}'
+            make_split_h264_source(
+                source,
+                attachment_name="archebase/calibration/calibration.json",
+                attachment_data=calibration,
+            )
+
+            StereoSplitH264Converter().convert(source, output)
+
+            with output.open("rb") as stream:
+                attachments = list(make_reader(stream).iter_attachments())
+            self.assertEqual(len(attachments), 1)
+            self.assertEqual(attachments[0].name, "calibration.json")
+            self.assertEqual(attachments[0].data, calibration)
+
+    def test_replaces_existing_calibration_attachment_when_result_is_supplied(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_split_h264_source(
+                source,
+                attachment_name="calibration.json",
+                attachment_data=b'{"status":"old"}',
+            )
+            replacement = b'{"status":"new"}'
+
+            StereoSplitH264Converter().convert(
+                source, output, calibration_attachment=replacement
+            )
+
+            with output.open("rb") as stream:
+                attachments = list(make_reader(stream).iter_attachments())
+            self.assertEqual(len(attachments), 1)
+            self.assertEqual(attachments[0].name, "calibration.json")
+            self.assertEqual(attachments[0].data, replacement)
+
+    def test_preserves_existing_mcap_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_split_h264_source(source, metadata={"source": "original"})
+
+            StereoSplitH264Converter().convert(source, output)
+
+            with output.open("rb") as stream:
+                metadata = list(make_reader(stream).iter_metadata())
+            self.assertEqual(len(metadata), 1)
+            self.assertEqual(metadata[0].name, "source-metadata")
+            self.assertEqual(metadata[0].metadata, {"source": "original"})
+
+    def test_detects_already_split_h264_without_mcap_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            output = root / "output.mcap"
+            make_split_h264_source(source, include_summary=False)
+
+            stats = StereoSplitH264Converter().convert(source, output)
+
+            self.assertEqual(stats.input_mode, "split_h264")
+            self.assertEqual(stats.left_videos, 3)
+            self.assertEqual(stats.right_videos, 3)
+
+    def test_rejects_non_monotonic_embedded_split_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mcap"
+            embedded_times = regular_frame_times()
+            embedded_times[1] = embedded_times[0]
+            make_split_h264_source(
+                source, frame_count=len(embedded_times), embedded_times=embedded_times
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "embedded timestamps"):
+                StereoSplitH264Converter().convert(source, root / "output.mcap")
+
     def test_timestamp_plan_repairs_publish_only(self) -> None:
         header_times = regular_frame_times()
         log_times = [timestamp + 5_000_000 for timestamp in header_times]

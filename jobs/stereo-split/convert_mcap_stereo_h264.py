@@ -150,6 +150,7 @@ class ConverterConfig:
 
 @dataclass
 class ConvertStats:
+    input_mode: str = "joined"
     input_messages: int = 0
     decoded_images: int = 0
     left_videos: int = 0
@@ -264,8 +265,11 @@ class _TimestampRepairCursor:
             self.plan.publish_repair.message_time(publish_time, self.sample_index),
         )
 
-    def video_message_times(self, sample: _TimestampSample) -> tuple[int, int]:
-        self.sample_index += 1
+    def video_message_times(
+        self, sample: _TimestampSample, *, advance: bool = True
+    ) -> tuple[int, int]:
+        if advance:
+            self.sample_index += 1
         return self.plan.video_message_times(sample)
 
 
@@ -883,6 +887,11 @@ class StereoSplitH264Converter:
             reader = make_reader(source)
             summary = reader.get_summary()
             if summary:
+                if self._is_split_h264_summary(summary, config):
+                    source.seek(0)
+                    return self._convert_existing_split_h264(
+                        source, destination, config, stats, calibration_attachment
+                    )
                 collisions = sorted(
                     channel.topic
                     for channel in summary.channels.values()
@@ -890,6 +899,13 @@ class StereoSplitH264Converter:
                 )
                 if collisions:
                     raise RuntimeError(f"input already contains output topic(s): {', '.join(collisions)}")
+            else:
+                source.seek(0)
+                if self._has_split_h264_topics(make_reader(source), config):
+                    source.seek(0)
+                    return self._convert_existing_split_h264(
+                        source, destination, config, stats, calibration_attachment
+                    )
             input_codec = self._detect_input_codec(reader)
             source.seek(0)
             timestamp_repair = self._timestamp_repair_plan(make_reader(source))
@@ -1130,6 +1146,165 @@ class StereoSplitH264Converter:
                 raise
 
         stats.copied_topics = len(copied_topic_ids)
+        return stats
+
+    @staticmethod
+    def _is_split_h264_summary(summary, config: ConverterConfig) -> bool:
+        topics = {channel.topic for channel in summary.channels.values()}
+        return {config.left_topic, config.right_topic}.issubset(topics)
+
+    @staticmethod
+    def _has_split_h264_topics(reader, config: ConverterConfig) -> bool:
+        topics: set[str] = set()
+        for _, channel, _ in reader.iter_messages(log_time_order=False):
+            topics.add(channel.topic)
+            if {config.left_topic, config.right_topic}.issubset(topics):
+                return True
+        return False
+
+    def _convert_existing_split_h264(
+        self,
+        source: BinaryIO,
+        destination: BinaryIO,
+        config: ConverterConfig,
+        stats: ConvertStats,
+        calibration_attachment: bytes | None,
+    ) -> ConvertStats:
+        stats.input_mode = "split_h264"
+        reader = make_reader(source)
+        video_samples: dict[str, list[_TimestampSample]] = {}
+        for topic in (config.left_topic, config.right_topic):
+            samples: list[_TimestampSample] = []
+            for schema, channel, message in reader.iter_messages(
+                topics=[topic], log_time_order=False
+            ):
+                if schema is None or schema.name != FOXGLOVE_SCHEMA_NAME:
+                    raise RuntimeError(f"{topic} must use {FOXGLOVE_SCHEMA_NAME}")
+                if channel.message_encoding != "protobuf":
+                    raise RuntimeError(f"{topic} must use protobuf message encoding")
+                try:
+                    video = CompressedVideo.FromString(message.data)
+                except Exception as error:
+                    raise RuntimeError(
+                        f"{topic} contains an invalid CompressedVideo message"
+                    ) from error
+                if video.format.lower().strip() != OUTPUT_FORMAT:
+                    raise RuntimeError(f"{topic} must contain H.264 video messages")
+                header_time = video.timestamp.seconds * 1_000_000_000 + video.timestamp.nanos
+                if header_time <= 0:
+                    raise RuntimeError(f"{topic} contains a missing video timestamp")
+                samples.append(
+                    _TimestampSample(
+                        log_time=message.log_time,
+                        publish_time=message.publish_time,
+                        header_time=header_time,
+                    )
+                )
+            if not samples:
+                raise RuntimeError(f"{topic} contains no video messages")
+            video_samples[topic] = samples
+
+        left_samples = video_samples[config.left_topic]
+        right_samples = video_samples[config.right_topic]
+        if len(left_samples) != len(right_samples):
+            raise RuntimeError("split H.264 left/right frame counts do not match")
+        left_embedded_times = [sample.header_time for sample in left_samples]
+        right_embedded_times = [sample.header_time for sample in right_samples]
+        if left_embedded_times != right_embedded_times:
+            raise RuntimeError("split H.264 left/right embedded timestamps do not match")
+        if any(
+            current <= previous
+            for previous, current in zip(left_embedded_times, left_embedded_times[1:])
+        ):
+            raise RuntimeError("split H.264 embedded timestamps are not strictly increasing")
+        timestamp_repair = _build_timestamp_repair_plan(left_samples)
+        stats.timestamp_repair_applied = timestamp_repair.applied
+        stats.timestamp_repair_reason = timestamp_repair.reason
+        stats.timestamp_log_repair_applied = timestamp_repair.log_repair_applied
+        stats.timestamp_publish_repair_applied = timestamp_repair.publish_repair_applied
+        stats.input_messages = len(left_samples)
+        stats.left_videos = len(left_samples)
+        stats.right_videos = len(right_samples)
+
+        writer = Writer(destination, compression=CompressionType.ZSTD)
+        writer.start(profile="", library="archebase stereo-split-repair")
+        schema_ids: dict[int, int] = {}
+        channel_ids: dict[int, int] = {}
+        ordered_writer = OrderedMessageWriter(writer)
+        timestamp_cursor = timestamp_repair.new_cursor()
+        video_indexes = {config.left_topic: 0, config.right_topic: 0}
+        copied_topics: set[str] = set()
+        source.seek(0)
+        reader = make_reader(source)
+        for schema, channel, message in reader.iter_messages(log_time_order=False):
+            output_channel = self._copy_channel(
+                writer, schema, channel, schema_ids, channel_ids
+            )
+            topic = channel.topic
+            if topic in video_samples:
+                index = video_indexes[topic]
+                sample = video_samples[topic][index]
+                video_indexes[topic] += 1
+                log_time, publish_time = timestamp_cursor.video_message_times(
+                    sample, advance=topic == config.left_topic
+                )
+                if stats.timestamp_repair_applied:
+                    stats.timestamp_repaired_messages += 1
+            else:
+                log_time, publish_time = timestamp_cursor.message_times(
+                    message.log_time, message.publish_time
+                )
+                stats.copied_messages += 1
+                if stats.timestamp_repair_applied:
+                    stats.timestamp_repaired_messages += 1
+                if topic == config.imu_topic:
+                    stats.imu_messages += 1
+            copied_topics.add(topic)
+            ordered_writer.add_message(
+                output_channel,
+                log_time,
+                message.data,
+                publish_time,
+                message.sequence,
+            )
+            ordered_writer.flush_before(log_time + 1)
+        ordered_writer.flush_all()
+        stats.copied_topics = len(copied_topics)
+        if stats.imu_messages == 0:
+            raise RuntimeError(f"H.264 input requires source IMU topic: {config.imu_topic}")
+
+        source.seek(0)
+        reader = make_reader(source)
+        calibration_names = {"calibration.json", "archebase/calibration/calibration.json"}
+        seen_calibration = False
+        for attachment in reader.iter_attachments():
+            if attachment.name in calibration_names:
+                if seen_calibration:
+                    raise RuntimeError("input contains duplicate calibration attachments")
+                seen_calibration = True
+                if calibration_attachment is not None:
+                    continue
+                attachment_name = "calibration.json"
+            else:
+                attachment_name = attachment.name
+            writer.add_attachment(
+                attachment.create_time,
+                attachment.log_time,
+                attachment_name,
+                attachment.media_type,
+                attachment.data,
+            )
+        if calibration_attachment is not None:
+            writer.add_attachment(
+                create_time=0,
+                log_time=0,
+                name="calibration.json",
+                media_type="application/json",
+                data=calibration_attachment,
+            )
+        for metadata in reader.iter_metadata():
+            writer.add_metadata(metadata.name, metadata.metadata)
+        writer.finish()
         return stats
 
     def _detect_input_codec(self, reader) -> str:

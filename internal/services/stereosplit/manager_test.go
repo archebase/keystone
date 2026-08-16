@@ -2014,6 +2014,29 @@ func TestValidateManifestSnapshotSupportsStereoSplitV1AndV2(t *testing.T) {
 	}
 }
 
+func TestValidateManifestStatsAcceptsTimestampRepairMode(t *testing.T) {
+	manifest := processingManifest{
+		SchemaVersion:  manifestSchemaV2,
+		ProcessingMode: "timestamp_repair",
+		OutputFormat:   stereoH264OutputFormat,
+		Stats: manifestStats{
+			InputMode:     "split_h264",
+			InputMessages: 10,
+			LeftVideos:    10,
+			RightVideos:   10,
+			IMUMessages:   100,
+		},
+	}
+
+	contract, err := validateManifestStats(manifest)
+	if err != nil {
+		t.Fatalf("validateManifestStats() error = %v", err)
+	}
+	if contract.ExpectedLeft != 10 || contract.ExpectedRight != 10 || contract.ExpectedIMU != 100 {
+		t.Fatalf("timestamp repair contract = %+v", contract)
+	}
+}
+
 func TestValidateManifestSnapshotRequiresV3CalibrationToMatchFrozenExecution(t *testing.T) {
 	execution := ExecutionSnapshot{
 		Generation:      1,
