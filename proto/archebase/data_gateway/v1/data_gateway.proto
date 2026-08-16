@@ -146,12 +146,21 @@ enum LogicalUploadStatus {
 message CreateLogicalUploadRequest {
   map<string, string> client_hints = 1;
   string restart_from_upload_id = 2;
+  // When true, Keystone resolves and reserves a pending task for dc_plan_id
+  // using the authenticated device. Existing clients leave this false and
+  // continue to provide task_id through client_hints.
+  bool auto_assign_task = 3;
+  int64 dc_plan_id = 4;
 }
 
 message CreateLogicalUploadResponse {
   string logical_upload_id = 1;
   string upload_id = 2;
   UploadCredentials credentials = 3;
+  // Populated when auto_assign_task was requested.
+  string resolved_task_id = 4;
+  int64 resolved_dc_plan_id = 5;
+  int64 resolved_workspace_id = 6;
 }
 
 message GetUploadRecoveryRequest {

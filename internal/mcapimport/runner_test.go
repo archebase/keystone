@@ -68,6 +68,40 @@ func TestRunnerUploadsAndCompletes(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesServerAssignedTask(t *testing.T) {
+	cfg := validTestConfig(t)
+	cfg.TaskID = ""
+	cfg.AutoAssignTask = true
+	control := &fakeControlPlane{session: UploadSession{
+		LogicalUploadID: "logical-auto",
+		UploadID:        "upload-auto",
+		TaskID:          "task-assigned-by-server",
+		Bucket:          "bucket-1",
+		Endpoint:        "https://tos-cn-beijing.volces.com",
+		Region:          "cn-beijing",
+		ObjectKey:       "device-uploads/17/capture-1/upload-auto/capture.mcap",
+		AccessKeyID:     "sts-access-key",
+		AccessKeySecret: "sts-secret-key",
+		SecurityToken:   "sts-token",
+		PartSizeBytes:   8 * 1024 * 1024,
+	}}
+	uploader := &fakeObjectUploader{result: ObjectUploadResult{ETag: "object-etag", PartCount: 1}}
+
+	result, err := (Runner{Control: control, Uploader: uploader}).Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.TaskID != "task-assigned-by-server" {
+		t.Fatalf("result task_id = %q, want assigned task", result.TaskID)
+	}
+	if control.hints["auto_assign_task"] != "true" || control.hints["task_id"] != "" {
+		t.Fatalf("create hints = %#v, want auto assignment without task id", control.hints)
+	}
+	if control.complete.RawTags["task_id"] != "task-assigned-by-server" {
+		t.Fatalf("complete task_id = %q, want assigned task", control.complete.RawTags["task_id"])
+	}
+}
+
 func TestBuildUploadMetadataIncludesCameraSerial(t *testing.T) {
 	cfg := validTestConfig(t)
 	cfg.CameraSerial = "  CAMERA-SN-001  "

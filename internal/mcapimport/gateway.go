@@ -87,9 +87,16 @@ func (c *GatewayClient) CreateLogicalUpload(ctx context.Context, credential Devi
 		return UploadSession{}, err
 	}
 	defer cancel()
-	response, err := cloudpb.NewDataGatewayServiceClient(c.conn).CreateLogicalUpload(authCtx, &cloudpb.CreateLogicalUploadRequest{
-		ClientHints: clientHints,
-	})
+	request := &cloudpb.CreateLogicalUploadRequest{ClientHints: clientHints}
+	if strings.TrimSpace(clientHints["task_id"]) == "" && strings.EqualFold(strings.TrimSpace(clientHints["auto_assign_task"]), "true") {
+		planID, parseErr := strconv.ParseInt(strings.TrimSpace(clientHints["dc_plan_id"]), 10, 64)
+		if parseErr != nil || planID <= 0 {
+			return UploadSession{}, fmt.Errorf("auto-assigned upload requires a positive dc_plan_id")
+		}
+		request.AutoAssignTask = true
+		request.DcPlanId = planID
+	}
+	response, err := cloudpb.NewDataGatewayServiceClient(c.conn).CreateLogicalUpload(authCtx, request)
 	if err != nil {
 		return UploadSession{}, fmt.Errorf("DataGatewayService.CreateLogicalUpload: %w", err)
 	}
@@ -103,6 +110,9 @@ func (c *GatewayClient) CreateLogicalUpload(ctx context.Context, credential Devi
 	return UploadSession{
 		LogicalUploadID: strings.TrimSpace(response.GetLogicalUploadId()),
 		UploadID:        strings.TrimSpace(response.GetUploadId()),
+		TaskID:          strings.TrimSpace(response.GetResolvedTaskId()),
+		DCPlanID:        response.GetResolvedDcPlanId(),
+		WorkspaceID:     response.GetResolvedWorkspaceId(),
 		Bucket:          strings.TrimSpace(issued.GetBucket()),
 		Endpoint:        strings.TrimSpace(issued.GetEndpoint()),
 		Region:          strings.TrimSpace(issued.GetObjectStoreRegion()),

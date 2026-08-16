@@ -33,14 +33,15 @@ type Config struct {
 	TLSServerName string
 	RPCTimeout    time.Duration
 
-	FilePath     string
-	WorkspaceID  int64
-	DCPlanID     int64
-	TaskID       string
-	CaptureID    string
-	DurationSec  float64
-	CameraSerial string
-	Parallel     int
+	FilePath       string
+	WorkspaceID    int64
+	DCPlanID       int64
+	TaskID         string
+	AutoAssignTask bool
+	CaptureID      string
+	DurationSec    float64
+	CameraSerial   string
+	Parallel       int
 
 	DeviceID         string
 	DeviceCredential string // #nosec G117 -- device credential is held in memory only
@@ -50,9 +51,12 @@ type Config struct {
 }
 
 type persistedDeviceCredential struct {
+	Endpoint     string `json:"endpoint,omitempty"`
+	TLS          *bool  `json:"tls,omitempty"`
 	DeviceID     string `json:"device_id"`
 	DeviceAPIKey string `json:"device_api_key"` // #nosec G117 -- intentionally persisted in an operator-owned 0600 file
 	WorkspaceID  int64  `json:"workspace_id"`
+	CameraSerial string `json:"camera_serial,omitempty"`
 }
 
 // ParseConfig parses command-line arguments and validates the resulting configuration.
@@ -72,7 +76,8 @@ func ParseConfig(args []string) (Config, error) {
 
 	flags.StringVar(&cfg.FilePath, "file", "", "local MCAP file to upload")
 	flags.Int64Var(&cfg.WorkspaceID, "workspace-id", 0, "target workspace ID")
-	flags.Int64Var(&cfg.DCPlanID, "dc-plan-id", 0, "data-collection plan ID bound to the task")
+	flags.Int64Var(&cfg.DCPlanID, "plan-id", 0, "data-collection plan ID")
+	flags.Int64Var(&cfg.DCPlanID, "dc-plan-id", 0, "deprecated alias for --plan-id")
 	flags.StringVar(&cfg.TaskID, "task-id", "", "existing uploadable Keystone task ID")
 	flags.StringVar(&cfg.CaptureID, "capture-id", "", "capture ID (defaults to a generated UUID)")
 	flags.Float64Var(&cfg.DurationSec, "duration-sec", 0, "optional positive recording duration in seconds")
@@ -81,11 +86,15 @@ func ParseConfig(args []string) (Config, error) {
 
 	flags.StringVar(&cfg.DeviceID, "device-id", strings.TrimSpace(os.Getenv("KEYSTONE_IMPORT_DEVICE_ID")), "initialized device ID")
 	flags.StringVar(&cfg.DeviceName, "device-name", strings.TrimSpace(os.Getenv("KEYSTONE_IMPORT_DEVICE_NAME")), "device name for first-time initialization")
-	flags.StringVar(&cfg.CredentialsFile, "device-credentials-file", "", "load device credentials, or save them after first-time initialization")
+	flags.StringVar(&cfg.CredentialsFile, "device-credentials-file", "", "load device profile, or save it after first-time initialization")
 
 	if err := flags.Parse(args); err != nil {
 		return Config{}, err
 	}
+	explicitFlags := make(map[string]bool)
+	flags.Visit(func(flag *flag.Flag) {
+		explicitFlags[flag.Name] = true
+	})
 	if flags.NArg() != 0 {
 		return Config{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(flags.Args(), " "))
 	}
@@ -96,18 +105,32 @@ func ParseConfig(args []string) (Config, error) {
 		}
 		cfg.CredentialsFile = absCredentialsPath
 	}
-	directAny := strings.TrimSpace(cfg.DeviceID) != "" || strings.TrimSpace(cfg.DeviceCredential) != ""
 	initAny := strings.TrimSpace(cfg.DeviceName) != "" || strings.TrimSpace(cfg.DeviceAuthToken) != ""
-	if !directAny && !initAny && cfg.CredentialsFile != "" {
+	directAny := strings.TrimSpace(cfg.DeviceID) != "" || strings.TrimSpace(cfg.DeviceCredential) != ""
+	if cfg.CredentialsFile != "" && !initAny {
 		persisted, err := loadDeviceCredential(cfg.CredentialsFile)
 		if err != nil {
 			return Config{}, err
 		}
+		if strings.TrimSpace(cfg.Endpoint) == "" {
+			cfg.Endpoint = strings.TrimSpace(persisted.Endpoint)
+		}
+		if persisted.TLS != nil && !explicitFlags["tls"] {
+			cfg.UseTLS = *persisted.TLS
+		}
+		if strings.TrimSpace(cfg.CameraSerial) == "" {
+			cfg.CameraSerial = persisted.CameraSerial
+		}
 		if cfg.WorkspaceID > 0 && persisted.WorkspaceID != cfg.WorkspaceID {
 			return Config{}, fmt.Errorf("device credentials belong to workspace %d, not %d", persisted.WorkspaceID, cfg.WorkspaceID)
 		}
-		cfg.DeviceID = persisted.DeviceID
-		cfg.DeviceCredential = persisted.DeviceAPIKey
+		if cfg.WorkspaceID == 0 {
+			cfg.WorkspaceID = persisted.WorkspaceID
+		}
+		if !directAny {
+			cfg.DeviceID = persisted.DeviceID
+			cfg.DeviceCredential = persisted.DeviceAPIKey
+		}
 	}
 	normalizedCameraSerial, err := normalizeCameraSerial(cfg.CameraSerial)
 	if err != nil {
@@ -117,6 +140,7 @@ func ParseConfig(args []string) (Config, error) {
 	if strings.TrimSpace(cfg.CaptureID) == "" {
 		cfg.CaptureID = uuid.NewString()
 	}
+	cfg.AutoAssignTask = strings.TrimSpace(cfg.TaskID) == ""
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -156,10 +180,13 @@ func (c Config) Validate() error {
 		return fmt.Errorf("--workspace-id must be a positive integer")
 	}
 	if c.DCPlanID <= 0 {
-		return fmt.Errorf("--dc-plan-id must be a positive integer")
+		return fmt.Errorf("--plan-id must be a positive integer")
 	}
-	if strings.TrimSpace(c.TaskID) == "" {
+	if strings.TrimSpace(c.TaskID) == "" && !c.AutoAssignTask {
 		return fmt.Errorf("--task-id is required")
+	}
+	if strings.TrimSpace(c.TaskID) != "" && c.AutoAssignTask {
+		return fmt.Errorf("automatic task assignment cannot be combined with --task-id")
 	}
 	if strings.TrimSpace(c.CaptureID) == "" {
 		return fmt.Errorf("--capture-id is required")
