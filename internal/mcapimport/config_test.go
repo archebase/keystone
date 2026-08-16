@@ -21,6 +21,7 @@ func TestParseConfigDirectDevice(t *testing.T) {
 		"--dc-plan-id", "41",
 		"--task-id", "task-1",
 		"--device-id", "17",
+		"--camera-serial", "  CAMERA-SN-001  ",
 	})
 	if err != nil {
 		t.Fatalf("ParseConfig() error = %v", err)
@@ -36,6 +37,9 @@ func TestParseConfigDirectDevice(t *testing.T) {
 	}
 	if !cfg.UseTLS {
 		t.Fatal("UseTLS = false, want true")
+	}
+	if cfg.CameraSerial != "CAMERA-SN-001" {
+		t.Fatalf("CameraSerial = %q, want normalized serial", cfg.CameraSerial)
 	}
 }
 
@@ -122,6 +126,13 @@ func TestConfigValidateRejectsInvalidAuthentication(t *testing.T) {
 				cfg.DeviceAuthToken = "one-time-token"
 			},
 			want: "not both",
+		},
+		{
+			name: "invalid camera serial",
+			configure: func(cfg *Config) {
+				cfg.CameraSerial = "camera\nserial"
+			},
+			want: "camera-serial must not contain control characters",
 		},
 	}
 	for _, tt := range tests {

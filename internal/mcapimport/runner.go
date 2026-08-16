@@ -291,6 +291,9 @@ func buildUploadMetadata(cfg Config, facts fileFacts) (map[string]string, map[st
 		"checksum_md5":    facts.MD5,
 		"checksum_sha256": facts.SHA256,
 	}
+	if cameraSerial := strings.TrimSpace(cfg.CameraSerial); cameraSerial != "" {
+		hints["camera_serial"] = cameraSerial
+	}
 	rawTags := make(map[string]string, len(hints))
 	for key, value := range hints {
 		rawTags[key] = value

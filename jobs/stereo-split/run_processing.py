@@ -19,6 +19,7 @@ import time
 from typing import Iterable
 
 from convert_mcap_stereo_h264 import ConverterConfig, StereoSplitH264Converter
+from mcap.reader import make_reader
 
 
 OUTPUT_MCAP_NAME = "output_bag.mcap"
@@ -29,7 +30,7 @@ COPY_ATTEMPTS = 3
 COPY_RETRY_SECONDS = 1
 SCRATCH_SPACE_MULTIPLIER = 3
 MCAP_MAGIC = b"\x89MCAP0\r\n"
-CALIBRATION_ATTACHMENT_NAME = "archebase/calibration/calibration.json"
+CALIBRATION_ATTACHMENT_NAME = "calibration.json"
 CALIBRATION_MEDIA_TYPE = "application/json"
 
 
@@ -167,12 +168,58 @@ def load_calibration_result(args: argparse.Namespace) -> tuple[bytes, dict[str, 
         raise RuntimeError("calibration result JSON must contain an object")
     if not document:
         raise RuntimeError("calibration JSON must contain an object")
+    session_id = str(document.get("calibration_session_id", "")).strip()
+    capture_id = str(document.get("capture_id", "")).strip()
+    if not session_id or not capture_id:
+        raise RuntimeError(
+            "calibration JSON must contain calibration_session_id and capture_id"
+        )
     return data, {
         "attachment_name": CALIBRATION_ATTACHMENT_NAME,
         "media_type": CALIBRATION_MEDIA_TYPE,
         "camera_serial": args.calibration_camera_serial,
+        "session_id": session_id,
+        "capture_id": capture_id,
         "size_bytes": len(data),
         "sha256": digest,
+    }
+
+
+def load_embedded_calibration(path: Path) -> dict[str, object] | None:
+    with path.open("rb") as stream:
+        attachments = [
+            attachment
+            for attachment in make_reader(stream).iter_attachments()
+            if attachment.name == CALIBRATION_ATTACHMENT_NAME
+        ]
+    if not attachments:
+        return None
+    if len(attachments) != 1:
+        raise RuntimeError("output MCAP contains duplicate calibration attachments")
+    attachment = attachments[0]
+    try:
+        document = json.loads(attachment.data)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("embedded calibration attachment JSON is invalid") from error
+    if not isinstance(document, dict) or not document:
+        raise RuntimeError("embedded calibration attachment must contain an object")
+    camera_serial = str(document.get("camera_serial", "")).strip()
+    session_id = str(document.get("calibration_session_id", "")).strip()
+    capture_id = str(document.get("capture_id", "")).strip()
+    if not camera_serial or not session_id or not capture_id:
+        raise RuntimeError(
+            "embedded calibration attachment is missing camera_serial, "
+            "calibration_session_id, or capture_id"
+        )
+    data = bytes(attachment.data)
+    return {
+        "attachment_name": CALIBRATION_ATTACHMENT_NAME,
+        "media_type": attachment.media_type,
+        "camera_serial": camera_serial,
+        "session_id": session_id,
+        "capture_id": capture_id,
+        "size_bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
     }
 
 
@@ -210,9 +257,14 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         local_mcap,
         calibration_attachment=calibration[0] if calibration is not None else None,
     )
+    manifest_calibration = (
+        calibration[1] if calibration is not None else load_embedded_calibration(local_mcap)
+    )
+    processing_mode = "timestamp_repair" if stats.input_mode == "split_h264" else "convert"
     metadata: dict[str, object] = {
         "schema_version": 1,
         "format": "mcap",
+        "processing_mode": processing_mode,
         "video": {
             "codec": "h264",
             "profile": "high",
@@ -234,9 +286,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     publish_file(local_metadata, output_binding / OUTPUT_METADATA_NAME, metadata_identity)
 
     manifest: dict[str, object] = {
-        "schema_version": 3 if calibration is not None else 2,
+        "schema_version": 3 if manifest_calibration is not None else 2,
         "status": "succeeded",
         "kind": args.kind,
+        "processing_mode": processing_mode,
         "output_format": "stereo_h264",
         "generation": args.generation,
         "processor_image": args.processor_image,
@@ -254,8 +307,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "started_at": started_at,
         "finished_at": utc_now(),
     }
-    if calibration is not None:
-        manifest["calibration"] = calibration[1]
+    if manifest_calibration is not None:
+        manifest["calibration"] = manifest_calibration
     write_json(local_manifest, manifest)
     publish_file(local_manifest, output_binding / MANIFEST_NAME, hash_file(local_manifest))
     return manifest

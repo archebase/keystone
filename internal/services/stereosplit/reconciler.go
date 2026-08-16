@@ -33,7 +33,7 @@ const (
 	manifestSchemaV2        = 2
 	manifestSchemaV3        = 3
 	stereoH264OutputFormat  = "stereo_h264"
-	calibrationAttachment   = "archebase/calibration/calibration.json"
+	calibrationAttachment   = "calibration.json"
 	calibrationMediaType    = "application/json"
 
 	leftImageTopic  = "/decxin/left_rgb/compressed"
@@ -996,6 +996,7 @@ type processingManifest struct {
 	SchemaVersion  int    `json:"schema_version"`
 	Status         string `json:"status"`
 	Kind           string `json:"kind"`
+	ProcessingMode string `json:"processing_mode,omitempty"`
 	OutputFormat   string `json:"output_format,omitempty"`
 	Generation     int    `json:"generation"`
 	ProcessorImage string `json:"processor_image"`
@@ -1031,16 +1032,20 @@ type manifestOutput struct {
 }
 
 type manifestStats struct {
-	InputMessages   int64 `json:"input_messages"`
-	DecodedImages   int64 `json:"decoded_images"`
-	LeftImages      int64 `json:"left_images,omitempty"`
-	RightImages     int64 `json:"right_images,omitempty"`
-	LeftVideos      int64 `json:"left_videos,omitempty"`
-	RightVideos     int64 `json:"right_videos,omitempty"`
-	IMUMessages     int64 `json:"imu_messages"`
-	CopiedMessages  int64 `json:"copied_messages,omitempty"`
-	CopiedTopics    int64 `json:"copied_topics,omitempty"`
-	SkippedMessages int64 `json:"skipped_messages"`
+	InputMode                 string `json:"input_mode,omitempty"`
+	InputMessages             int64  `json:"input_messages"`
+	DecodedImages             int64  `json:"decoded_images"`
+	LeftImages                int64  `json:"left_images,omitempty"`
+	RightImages               int64  `json:"right_images,omitempty"`
+	LeftVideos                int64  `json:"left_videos,omitempty"`
+	RightVideos               int64  `json:"right_videos,omitempty"`
+	IMUMessages               int64  `json:"imu_messages"`
+	CopiedMessages            int64  `json:"copied_messages,omitempty"`
+	CopiedTopics              int64  `json:"copied_topics,omitempty"`
+	SkippedMessages           int64  `json:"skipped_messages"`
+	TimestampRepairApplied    bool   `json:"timestamp_repair_applied,omitempty"`
+	TimestampRepairReason     string `json:"timestamp_repair_reason,omitempty"`
+	TimestampRepairedMessages int64  `json:"timestamp_repaired_messages,omitempty"`
 }
 
 type verificationRow struct {
@@ -1398,6 +1403,13 @@ type mcapOutputContract struct {
 
 func validateManifestStats(manifest processingManifest) (mcapOutputContract, error) {
 	stats := manifest.Stats
+	processingMode := manifest.ProcessingMode
+	if processingMode == "" {
+		processingMode = "convert"
+	}
+	if processingMode != "convert" && processingMode != "timestamp_repair" {
+		return mcapOutputContract{}, fmt.Errorf("processing manifest has unsupported processing mode %q", processingMode)
+	}
 	contract := mcapOutputContract{
 		SchemaVersion: manifest.SchemaVersion,
 		ExpectedIMU:   stats.IMUMessages,
@@ -1448,6 +1460,19 @@ func validateManifestStats(manifest processingManifest) (mcapOutputContract, err
 		}
 	default:
 		return mcapOutputContract{}, fmt.Errorf("processing manifest schema version %d is unsupported", manifest.SchemaVersion)
+	}
+	if processingMode == "timestamp_repair" {
+		if manifest.SchemaVersion == manifestSchemaV1 {
+			return mcapOutputContract{}, fmt.Errorf("timestamp repair requires a stereo H.264 manifest")
+		}
+		if stats.InputMode != "split_h264" || stats.InputMessages <= 0 || stats.DecodedImages != 0 || stats.IMUMessages <= 0 ||
+			stats.SkippedMessages != 0 {
+			return mcapOutputContract{}, fmt.Errorf("timestamp repair manifest contains invalid processing statistics")
+		}
+		if stats.InputMessages != contract.ExpectedLeft || contract.ExpectedLeft != contract.ExpectedRight {
+			return mcapOutputContract{}, fmt.Errorf("timestamp repair manifest frame counts are inconsistent")
+		}
+		return contract, nil
 	}
 	if stats.InputMessages <= 0 || stats.DecodedImages <= 0 || contract.ExpectedLeft <= 0 ||
 		contract.ExpectedRight <= 0 || stats.IMUMessages <= 0 || stats.SkippedMessages < 0 {

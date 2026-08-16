@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -32,13 +33,14 @@ type Config struct {
 	TLSServerName string
 	RPCTimeout    time.Duration
 
-	FilePath    string
-	WorkspaceID int64
-	DCPlanID    int64
-	TaskID      string
-	CaptureID   string
-	DurationSec float64
-	Parallel    int
+	FilePath     string
+	WorkspaceID  int64
+	DCPlanID     int64
+	TaskID       string
+	CaptureID    string
+	DurationSec  float64
+	CameraSerial string
+	Parallel     int
 
 	DeviceID         string
 	DeviceCredential string // #nosec G117 -- device credential is held in memory only
@@ -74,6 +76,7 @@ func ParseConfig(args []string) (Config, error) {
 	flags.StringVar(&cfg.TaskID, "task-id", "", "existing uploadable Keystone task ID")
 	flags.StringVar(&cfg.CaptureID, "capture-id", "", "capture ID (defaults to a generated UUID)")
 	flags.Float64Var(&cfg.DurationSec, "duration-sec", 0, "optional positive recording duration in seconds")
+	flags.StringVar(&cfg.CameraSerial, "camera-serial", "", "optional camera serial for calibration association")
 	flags.IntVar(&cfg.Parallel, "parallel", defaultParallelUploads, "number of concurrent TOS part uploads")
 
 	flags.StringVar(&cfg.DeviceID, "device-id", strings.TrimSpace(os.Getenv("KEYSTONE_IMPORT_DEVICE_ID")), "initialized device ID")
@@ -106,6 +109,11 @@ func ParseConfig(args []string) (Config, error) {
 		cfg.DeviceID = persisted.DeviceID
 		cfg.DeviceCredential = persisted.DeviceAPIKey
 	}
+	normalizedCameraSerial, err := normalizeCameraSerial(cfg.CameraSerial)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CameraSerial = normalizedCameraSerial
 	if strings.TrimSpace(cfg.CaptureID) == "" {
 		cfg.CaptureID = uuid.NewString()
 	}
@@ -159,6 +167,9 @@ func (c Config) Validate() error {
 	if c.DurationSec < 0 {
 		return fmt.Errorf("--duration-sec must be greater than zero when provided")
 	}
+	if _, err := normalizeCameraSerial(c.CameraSerial); err != nil {
+		return err
+	}
 	if c.Parallel < 1 || c.Parallel > 32 {
 		return fmt.Errorf("--parallel must be between 1 and 32")
 	}
@@ -196,6 +207,22 @@ func (c Config) Validate() error {
 		return nil
 	}
 	return fmt.Errorf("device authentication is required")
+}
+
+func normalizeCameraSerial(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if len([]rune(value)) > 255 {
+		return "", fmt.Errorf("--camera-serial must not exceed 255 characters")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("--camera-serial must not contain control characters")
+		}
+	}
+	return value, nil
 }
 
 func loadDeviceCredential(path string) (persistedDeviceCredential, error) {

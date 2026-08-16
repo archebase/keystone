@@ -13,6 +13,13 @@ Successful runs publish these files to the output binding:
 - `metadata.yaml`
 - `processing_manifest.json`
 
+The runner detects already-split H.264 inputs containing both `/decxin/left_rgb/h264` and
+`/decxin/right_rgb/h264`. For those inputs it preserves the H.264 payloads and repairs MCAP
+`log_time`/`publish_time` only when the embedded `foxglove.CompressedVideo.timestamp` timeline
+shows a non-monotonic, bursty, or rate-mismatched outer clock. Existing attachments and metadata
+are copied; legacy `archebase/calibration/calibration.json` attachments are normalized to
+`calibration.json`.
+
 ## Output versions
 
 | Manifest | Stereo topics | Schema | Statistics |
