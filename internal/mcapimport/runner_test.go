@@ -68,6 +68,24 @@ func TestRunnerUploadsAndCompletes(t *testing.T) {
 	}
 }
 
+func TestBuildUploadMetadataIncludesCameraSerial(t *testing.T) {
+	cfg := validTestConfig(t)
+	cfg.CameraSerial = "  CAMERA-SN-001  "
+	cfg.DurationSec = 12.345
+	facts := fileFacts{MD5: "md5", SHA256: "sha256"}
+
+	hints, rawTags := buildUploadMetadata(cfg, facts)
+	if hints["camera_serial"] != "CAMERA-SN-001" {
+		t.Fatalf("camera_serial hint = %q, want normalized serial", hints["camera_serial"])
+	}
+	if rawTags["camera_serial"] != "CAMERA-SN-001" {
+		t.Fatalf("camera_serial raw tag = %q, want normalized serial", rawTags["camera_serial"])
+	}
+	if rawTags["duration_sec"] != "12.345" {
+		t.Fatalf("duration_sec raw tag = %q, want 12.345", rawTags["duration_sec"])
+	}
+}
+
 func TestRunnerAbortsWhenObjectUploadFails(t *testing.T) {
 	cfg := validTestConfig(t)
 	control := &fakeControlPlane{session: validUploadSession()}

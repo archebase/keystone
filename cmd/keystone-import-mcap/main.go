@@ -113,6 +113,7 @@ Device authentication (choose one):
 Optional:
   --capture-id UUID       generated automatically when omitted
   --duration-sec SECONDS  positive recording duration
+  --camera-serial SERIAL  optional camera serial for calibration association
   --parallel N            concurrent TOS parts (default 4, maximum 32)
   --rpc-timeout DURATION  per-gRPC-call timeout (default 30s)
   --tls=false             disable TLS for a local endpoint
