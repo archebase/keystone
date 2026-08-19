@@ -49,7 +49,11 @@ func TestEnqueueEpisodeManual_SelectsSuccessfulApprovedStereoSplit(t *testing.T)
 func TestEnqueueDepthNormalizationAutomaticUsesApprovedDerivative(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	insertEpisodeForSyncWorkerTest(t, db, 43, "approved", false)
-	if _, err := db.Exec(`UPDATE episodes SET auto_sync_device_type='ZJ-WA1-D' WHERE id=43`); err != nil {
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (43, 'ZJ-WA1-D');
+		INSERT INTO workstations (id, robot_id) VALUES (43, 43);
+		UPDATE episodes SET workstation_id=43 WHERE id=43;
+	`); err != nil {
 		t.Fatalf("seed device type: %v", err)
 	}
 	if _, err := db.Exec(`
@@ -84,7 +88,11 @@ func TestEnqueueDepthNormalizationAutomaticUsesApprovedDerivative(t *testing.T) 
 func TestEnqueueEpisodeManualBlocksZJWA1DWithoutReadyDerivative(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	insertEpisodeForSyncWorkerTest(t, db, 44, "approved", false)
-	if _, err := db.Exec(`UPDATE episodes SET auto_sync_device_type='ZJ-WA1-D' WHERE id=44`); err != nil {
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (44, 'ZJ-WA1-D');
+		INSERT INTO workstations (id, robot_id) VALUES (44, 44);
+		UPDATE episodes SET workstation_id=44 WHERE id=44;
+	`); err != nil {
 		t.Fatalf("seed device type: %v", err)
 	}
 	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
@@ -103,7 +111,11 @@ func TestEnqueueEpisodeManualUsesZJWA1DAlreadyTargetOriginal(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	insertEpisodeForSyncWorkerTest(t, db, 45, "approved", false)
 	metadata := `{"depth_normalization":{"required":false,"reason":"already_target"}}`
-	if _, err := db.Exec(`UPDATE episodes SET auto_sync_device_type='ZJ-WA1-D', metadata=? WHERE id=45`, metadata); err != nil {
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (45, 'ZJ-WA1-D');
+		INSERT INTO workstations (id, robot_id) VALUES (45, 45);
+		UPDATE episodes SET workstation_id=45, metadata=? WHERE id=45;
+	`, metadata); err != nil {
 		t.Fatalf("seed already-compressed episode: %v", err)
 	}
 	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)

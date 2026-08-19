@@ -18,6 +18,7 @@ func TestStartCreatesQueuedDerivative(t *testing.T) {
 	db := newDepthNormTestDB(t)
 	defer db.Close()
 	seedDepthNormEpisode(t, db, 1, "episode-1", "bucket/object.mcap", "ZJ-WA1-D")
+	seedCurrentDepthNormRobot(t, db, 1, "ZJ-WA1-D")
 
 	manager := NewManager(db, &s3.Client{}, "bucket", Config{Enabled: true, Script: "script"})
 	derivative, started, err := manager.Start(context.Background(), 1, "auto-sync")
@@ -40,6 +41,7 @@ func TestStartRejectsActiveAndRetriesFailed(t *testing.T) {
 	db := newDepthNormTestDB(t)
 	defer db.Close()
 	seedDepthNormEpisode(t, db, 2, "episode-2", "bucket/object.mcap", "ZJ-WA1-D")
+	seedCurrentDepthNormRobot(t, db, 2, "ZJ-WA1-D")
 
 	manager := NewManager(db, &s3.Client{}, "bucket", Config{Enabled: true, Script: "script"})
 	first, started, err := manager.Start(context.Background(), 2, "auto-sync")
@@ -61,21 +63,78 @@ func TestStartRejectsActiveAndRetriesFailed(t *testing.T) {
 	}
 }
 
+func TestStartUsesCurrentWorkstationDeviceType(t *testing.T) {
+	db := newDepthNormTestDB(t)
+	defer db.Close()
+	seedDepthNormEpisode(t, db, 5, "episode-5", "bucket/object.mcap", "Ego Portal Lite")
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (90, 'ZJ-WA1-D');
+		INSERT INTO workstations (id, robot_id) VALUES (91, 90);
+		UPDATE episodes SET workstation_id=91 WHERE id=5;
+	`); err != nil {
+		t.Fatalf("seed current workstation: %v", err)
+	}
+
+	manager := NewManager(db, &s3.Client{}, "bucket", Config{Enabled: true, Script: "script"})
+	derivative, started, err := manager.Start(context.Background(), 5, "auto-sync")
+	if err != nil || !started {
+		t.Fatalf("Start() = %+v, %t, %v; want created, true, nil", derivative, started, err)
+	}
+	if derivative.ProcessingStatus != statusQueued {
+		t.Fatalf("processing status = %q, want queued", derivative.ProcessingStatus)
+	}
+}
+
+func TestStartRejectsStaleAutoSyncDeviceSnapshot(t *testing.T) {
+	db := newDepthNormTestDB(t)
+	defer db.Close()
+	seedDepthNormEpisode(t, db, 6, "episode-6", "bucket/object.mcap", "ZJ-WA1-D")
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (91, 'Ego Portal Lite');
+		INSERT INTO workstations (id, robot_id) VALUES (92, 91);
+		UPDATE episodes SET workstation_id=92 WHERE id=6;
+	`); err != nil {
+		t.Fatalf("seed current workstation: %v", err)
+	}
+
+	manager := NewManager(db, &s3.Client{}, "bucket", Config{Enabled: true, Script: "script"})
+	if _, _, err := manager.Start(context.Background(), 6, "auto-sync"); err == nil {
+		t.Fatal("Start() error = nil, want current non-ZJ device rejection")
+	}
+}
+
 func TestStartRejectsOtherDeviceAndLockedSource(t *testing.T) {
 	db := newDepthNormTestDB(t)
 	defer db.Close()
 	seedDepthNormEpisode(t, db, 3, "episode-3", "bucket/object.mcap", "Ego Portal Lite")
+	seedCurrentDepthNormRobot(t, db, 3, "Ego Portal Lite")
 	manager := NewManager(db, &s3.Client{}, "bucket", Config{Enabled: true, Script: "script"})
 	if _, _, err := manager.Start(context.Background(), 3, "auto-sync"); err == nil {
 		t.Fatal("Start() error = nil, want device rejection")
 	}
 
 	seedDepthNormEpisode(t, db, 4, "episode-4", "bucket/object.mcap", "ZJ-WA1-D")
+	seedCurrentDepthNormRobot(t, db, 4, "ZJ-WA1-D")
 	if _, err := db.Exec(`UPDATE episodes SET cloud_publish_source='original' WHERE id=4`); err != nil {
 		t.Fatalf("lock source: %v", err)
 	}
 	if _, _, err := manager.Start(context.Background(), 4, "auto-sync"); !errors.Is(err, ErrCloudSourceLocked) {
 		t.Fatalf("locked Start() error = %v, want %v", err, ErrCloudSourceLocked)
+	}
+}
+
+func seedCurrentDepthNormRobot(t *testing.T, db *sqlx.DB, episodeID int64, deviceType string) {
+	t.Helper()
+	robotID := 300 + episodeID
+	workstationID := 400 + episodeID
+	if _, err := db.Exec(`INSERT INTO robots (id, device_type) VALUES (?, ?)`, robotID, deviceType); err != nil {
+		t.Fatalf("seed current robot: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workstations (id, robot_id) VALUES (?, ?)`, workstationID, robotID); err != nil {
+		t.Fatalf("seed current workstation: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE episodes SET workstation_id=? WHERE id=?`, workstationID, episodeID); err != nil {
+		t.Fatalf("connect episode to current workstation: %v", err)
 	}
 }
 
@@ -87,9 +146,26 @@ func newDepthNormTestDB(t *testing.T) *sqlx.DB {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`
+		CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY,
+			workstation_id INTEGER,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY,
+			robot_id INTEGER,
+			deleted_at TIMESTAMP
+		);
+		CREATE TABLE robots (
+			id INTEGER PRIMARY KEY,
+			device_type TEXT,
+			deleted_at TIMESTAMP
+		);
 		CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY,
 			episode_id TEXT NOT NULL,
+			task_id INTEGER,
+			workstation_id INTEGER,
 			mcap_path TEXT,
 			storage_backend TEXT,
 			checksum TEXT,
@@ -133,7 +209,7 @@ func newDepthNormTestDB(t *testing.T) *sqlx.DB {
 	return db
 }
 
-func seedDepthNormEpisode(t *testing.T, db *sqlx.DB, id int64, episodeID, mcapPath, deviceType string) {
+func seedDepthNormEpisode(t *testing.T, db *sqlx.DB, id int64, episodeID, mcapPath string, deviceType any) {
 	t.Helper()
 	if _, err := db.Exec(`
 		INSERT INTO episodes (

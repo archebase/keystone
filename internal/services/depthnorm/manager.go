@@ -111,16 +111,20 @@ type episodeRow struct {
 	CloudPublish   sql.NullString `db:"cloud_publish_source"`
 	CloudSynced    bool           `db:"cloud_synced"`
 	Metadata       sql.NullString `db:"metadata"`
-	AutoSyncDevice sql.NullString `db:"auto_sync_device_type"`
+	DeviceType     sql.NullString `db:"device_type"`
 }
 
 func (m *Manager) loadEpisode(ctx context.Context, q sqlx.QueryerContext, id int64) (episodeRow, error) {
 	var row episodeRow
 	err := sqlx.GetContext(ctx, q, &row, `
-		SELECT id, episode_id, COALESCE(mcap_path, '') AS mcap_path, storage_backend,
-		       checksum, file_size_bytes, cloud_publish_source, cloud_synced,
-		       metadata, auto_sync_device_type
-		FROM episodes WHERE id = ? AND deleted_at IS NULL
+		SELECT e.id, e.episode_id, COALESCE(e.mcap_path, '') AS mcap_path, e.storage_backend,
+		       e.checksum, e.file_size_bytes, e.cloud_publish_source, e.cloud_synced,
+		       e.metadata, r.device_type AS device_type
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id=e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN workstations ws ON ws.id=COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id=ws.robot_id AND r.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
 	`, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return row, ErrEpisodeNotFound
@@ -158,7 +162,7 @@ func (m *Manager) Start(ctx context.Context, episodeID int64, actor string) (Der
 	if err != nil {
 		return Derivative{}, false, err
 	}
-	if !strings.EqualFold(strings.TrimSpace(episode.AutoSyncDevice.String), DeviceTypeZJWA1D) {
+	if !strings.EqualFold(strings.TrimSpace(episode.DeviceType.String), DeviceTypeZJWA1D) {
 		return Derivative{}, false, fmt.Errorf("episode %d device type is not %s", episodeID, DeviceTypeZJWA1D)
 	}
 	if episode.CloudSynced {
