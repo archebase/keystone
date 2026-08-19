@@ -8,6 +8,7 @@ package autosync
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
+	"archebase.com/keystone-edge/internal/services/depthnorm"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 )
 
@@ -26,6 +28,8 @@ const (
 	DeviceTypeEgoPortalStereo = "Ego Portal Stereo"
 	// DeviceTypeEgoPortalLite requires QA followed by original Episode cloud sync.
 	DeviceTypeEgoPortalLite = "Ego Portal Lite"
+	// DeviceTypeZJWA1D requires local depth normalization before cloud sync.
+	DeviceTypeZJWA1D = depthnorm.DeviceTypeZJWA1D
 )
 
 var (
@@ -51,6 +55,12 @@ type StereoSplitter interface {
 type CloudSyncEnqueuer interface {
 	EnqueueOriginalAutomatic(ctx context.Context, episodeID int64) error
 	EnqueueStereoSplitManual(ctx context.Context, episodeID int64) error
+	EnqueueDepthNormalizationAutomatic(ctx context.Context, episodeID int64) error
+}
+
+// DepthNormalizer admits one Episode into the local derivative queue.
+type DepthNormalizer interface {
+	Start(ctx context.Context, episodeID int64, actor string) (depthnorm.Derivative, bool, error)
 }
 
 // QAEnqueuer restores captured Episodes to the existing automatic QA queue.
@@ -62,6 +72,7 @@ type QAEnqueuer interface {
 type Manager struct {
 	db           *sqlx.DB
 	stereo       StereoSplitter
+	depthNorm    DepthNormalizer
 	cloud        CloudSyncEnqueuer
 	qa           QAEnqueuer
 	pollInterval time.Duration
@@ -82,17 +93,25 @@ func (m *Manager) SetQAEnqueuer(qa QAEnqueuer) {
 }
 
 // NewManager constructs the automatic-sync module.
-func NewManager(db *sqlx.DB, stereo StereoSplitter, cloud CloudSyncEnqueuer, pollInterval time.Duration) *Manager {
+func NewManager(db *sqlx.DB, stereo StereoSplitter, cloud CloudSyncEnqueuer, pollInterval time.Duration, normalizers ...DepthNormalizer) *Manager {
 	if pollInterval <= 0 {
 		pollInterval = defaultPollInterval
 	}
 	return &Manager{
 		db:           db,
 		stereo:       stereo,
+		depthNorm:    firstDepthNormalizer(normalizers),
 		cloud:        cloud,
 		pollInterval: pollInterval,
 		wake:         make(chan struct{}, 1),
 	}
+}
+
+func firstDepthNormalizer(values []DepthNormalizer) DepthNormalizer {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
 }
 
 // CurrentConfig returns the effective automatic-sync setting revision.
@@ -142,7 +161,8 @@ func (m *Manager) CaptureEpisode(ctx context.Context, episodeID int64) (bool, er
 	`, episodeID); err != nil {
 		return false, fmt.Errorf("resolve auto sync upload eligibility for episode %d: %w", episodeID, err)
 	}
-	if !upload.AutoSyncEnabled || !supportedDeviceType(upload.DeviceType) {
+	if !upload.AutoSyncEnabled || !supportedDeviceType(upload.DeviceType) ||
+		(strings.EqualFold(strings.TrimSpace(upload.DeviceType), DeviceTypeZJWA1D) && m.depthNorm == nil) {
 		return false, nil
 	}
 
@@ -201,7 +221,12 @@ func (m *Manager) recoverMissedCapture(ctx context.Context) (bool, error) {
 		DeviceType string    `db:"device_type"`
 		ObservedAt time.Time `db:"auto_sync_observed_at"`
 	}
-	err := m.db.GetContext(ctx, &candidate, `
+	deviceTypes := autoSyncDeviceTypeArgs(m.depthNorm != nil)
+	deviceArgs := make([]any, 0, len(deviceTypes))
+	for _, deviceType := range deviceTypes {
+		deviceArgs = append(deviceArgs, deviceType)
+	}
+	recoverQuery := fmt.Sprintf(`
 		SELECT e.id, r.device_type, e.auto_sync_observed_at
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
@@ -212,7 +237,7 @@ func (m *Manager) recoverMissedCapture(ctx context.Context) (bool, error) {
 		  AND e.cloud_synced = FALSE
 		  AND e.cloud_publish_source IS NULL
 		  AND e.deleted_at IS NULL
-		  AND HEX(r.device_type) IN (HEX(?), HEX(?))
+		  AND HEX(r.device_type) IN (%s)
 		  AND e.auto_sync_observed_at >= (
 			SELECT MIN(enabled_cfg.created_at)
 			FROM auto_sync_configs enabled_cfg
@@ -228,7 +253,8 @@ func (m *Manager) recoverMissedCapture(ctx context.Context) (bool, error) {
 		  ) = TRUE
 		ORDER BY e.auto_sync_observed_at ASC, e.id ASC
 		LIMIT 1
-	`, DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite)
+	`, autoSyncDeviceTypeSQL(len(deviceTypes)))
+	err := m.db.GetContext(ctx, &candidate, recoverQuery, deviceArgs...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -316,6 +342,10 @@ func (m *Manager) reconcileDownstream(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("select approved automatic stereo derivative: %w", err)
 	}
 
+	if worked, err := m.reconcileZJWA1D(ctx); worked || err != nil {
+		return worked, err
+	}
+
 	err = m.db.GetContext(ctx, &episodeID, `
 		SELECT e.id
 		FROM episodes e
@@ -346,6 +376,85 @@ func (m *Manager) reconcileDownstream(ctx context.Context) (bool, error) {
 	}
 	m.wakeWorker()
 	return true, nil
+}
+
+func zjwa1dMetadataNotRequired(raw sql.NullString) bool {
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return false
+	}
+	var metadata struct {
+		DepthNormalization struct {
+			Required bool   `json:"required"`
+			Reason   string `json:"reason"`
+		} `json:"depth_normalization"`
+	}
+	if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
+		return false
+	}
+	return !metadata.DepthNormalization.Required &&
+		strings.EqualFold(strings.TrimSpace(metadata.DepthNormalization.Reason), "already_compresseddepth")
+}
+
+func (m *Manager) reconcileZJWA1D(ctx context.Context) (bool, error) {
+	var rows []struct {
+		ID               int64          `db:"id"`
+		CloudSynced      bool           `db:"cloud_synced"`
+		CloudPublish     sql.NullString `db:"cloud_publish_source"`
+		Metadata         sql.NullString `db:"metadata"`
+		DerivativeID     sql.NullInt64  `db:"derivative_id"`
+		ProcessingStatus sql.NullString `db:"processing_status"`
+		QAStatus         sql.NullString `db:"derivative_qa_status"`
+	}
+	err := m.db.SelectContext(ctx, &rows, `
+		SELECT e.id, e.cloud_synced, e.cloud_publish_source, e.metadata,
+		       ed.id AS derivative_id, ed.processing_status,
+		       ed.qa_status AS derivative_qa_status
+		FROM episodes e
+		LEFT JOIN episode_derivatives ed
+		  ON ed.episode_id=e.id AND ed.kind='depth_normalization'
+		WHERE e.auto_sync_requested=TRUE
+		  AND e.auto_sync_device_type=?
+		  AND e.qa_status='approved'
+		  AND e.cloud_synced=FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source='depth_normalization')
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id=e.id)
+		ORDER BY e.auto_sync_requested_at, e.id
+		LIMIT 20
+	`, DeviceTypeZJWA1D)
+	if err != nil {
+		return false, fmt.Errorf("select ZJ-WA1-D auto sync candidates: %w", err)
+	}
+	for _, row := range rows {
+		if m.cloud == nil {
+			return false, fmt.Errorf("automatic cloud sync is not configured")
+		}
+		if zjwa1dMetadataNotRequired(row.Metadata) {
+			if err := m.cloud.EnqueueOriginalAutomatic(ctx, row.ID); err != nil {
+				return false, fmt.Errorf("enqueue ZJ-WA1-D original sync for episode %d: %w", row.ID, err)
+			}
+			m.wakeWorker()
+			return true, nil
+		}
+		if row.DerivativeID.Valid && row.ProcessingStatus.String == "succeeded" && row.QAStatus.String == "approved" {
+			if err := m.cloud.EnqueueDepthNormalizationAutomatic(ctx, row.ID); err != nil {
+				return false, fmt.Errorf("enqueue ZJ-WA1-D depth normalization sync for episode %d: %w", row.ID, err)
+			}
+			m.wakeWorker()
+			return true, nil
+		}
+		if !row.DerivativeID.Valid {
+			if m.depthNorm == nil {
+				return false, fmt.Errorf("automatic depth normalization is not configured")
+			}
+			if _, _, err := m.depthNorm.Start(ctx, row.ID, "auto-sync"); err != nil && !errors.Is(err, depthnorm.ErrAlreadyDerived) {
+				return false, fmt.Errorf("start automatic depth normalization for episode %d: %w", row.ID, err)
+			}
+			m.wakeWorker()
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *Manager) reconcilePendingQA(ctx context.Context) (bool, error) {
@@ -455,9 +564,21 @@ func (m *Manager) wakeWorker() {
 	}
 }
 
+func autoSyncDeviceTypeArgs(includeZJWA1D bool) []string {
+	values := []string{DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite}
+	if includeZJWA1D {
+		values = append(values, DeviceTypeZJWA1D)
+	}
+	return values
+}
+
+func autoSyncDeviceTypeSQL(count int) string {
+	return strings.TrimRight(strings.Repeat("HEX(?), ", count), ", ")
+}
+
 func supportedDeviceType(deviceType string) bool {
 	switch deviceType {
-	case DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite:
+	case DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeZJWA1D:
 		return true
 	default:
 		return false

@@ -22,6 +22,9 @@ const (
 	SyncSourceOriginal = "original"
 	// SyncSourceStereoSplit selects the approved derivative for cloud upload.
 	SyncSourceStereoSplit = "stereo_split"
+	// SyncSourceDepthNormalization selects the approved local depth-normalization
+	// derivative as the canonical cloud upload source.
+	SyncSourceDepthNormalization = "depth_normalization"
 	// SyncBackendMinIO reads the frozen source object through Keystone's MinIO client.
 	SyncBackendMinIO = "minio"
 	// SyncBackendTOS reads the frozen source object through Keystone's TOS client.
@@ -51,7 +54,8 @@ type SyncSourceSnapshot struct {
 }
 
 func (s SyncSourceSnapshot) validate() error {
-	if s.SourceType != SyncSourceOriginal && s.SourceType != SyncSourceStereoSplit {
+	if s.SourceType != SyncSourceOriginal && s.SourceType != SyncSourceStereoSplit &&
+		s.SourceType != SyncSourceDepthNormalization {
 		return fmt.Errorf("unsupported sync source type %q", s.SourceType)
 	}
 	if s.Backend != SyncBackendMinIO && s.Backend != SyncBackendTOS {
@@ -70,8 +74,9 @@ func (s SyncSourceSnapshot) validate() error {
 	if _, err := hex.DecodeString(checksum); err != nil {
 		return fmt.Errorf("sync source snapshot has invalid SHA-256")
 	}
-	if s.SourceType == SyncSourceStereoSplit && (s.DerivativeID <= 0 || s.Generation <= 0) {
-		return fmt.Errorf("stereo split sync snapshot is missing generation identity")
+	if (s.SourceType == SyncSourceStereoSplit || s.SourceType == SyncSourceDepthNormalization) &&
+		(s.DerivativeID <= 0 || s.Generation <= 0) {
+		return fmt.Errorf("%s sync snapshot is missing generation identity", s.SourceType)
 	}
 	return nil
 }
@@ -193,7 +198,52 @@ func (w *SyncWorker) buildStereoSplitSourceSnapshot(ctx context.Context, tx *sql
 	return snapshot, nil
 }
 
+func (w *SyncWorker) buildDepthNormalizationSourceSnapshot(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (SyncSourceSnapshot, error) {
+	var derivative struct {
+		ID         int64          `db:"id"`
+		Generation int            `db:"generation"`
+		Status     string         `db:"processing_status"`
+		QAStatus   string         `db:"qa_status"`
+		McapPath   sql.NullString `db:"mcap_path"`
+		Checksum   sql.NullString `db:"checksum"`
+		SizeBytes  sql.NullInt64  `db:"file_size_bytes"`
+	}
+	if err := tx.GetContext(ctx, &derivative, `
+		SELECT id, generation, processing_status, qa_status, mcap_path, checksum, file_size_bytes
+		FROM episode_derivatives
+		WHERE episode_id = ? AND kind = 'depth_normalization'
+	`+txLockClause(tx), ep.ID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SyncSourceSnapshot{}, fmt.Errorf("depth normalization derivative not found for episode %d", ep.ID)
+		}
+		return SyncSourceSnapshot{}, fmt.Errorf("load depth normalization sync source: %w", err)
+	}
+	if derivative.Status != "succeeded" || derivative.QAStatus != "approved" {
+		return SyncSourceSnapshot{}, fmt.Errorf("depth normalization derivative must be succeeded and QA approved")
+	}
+	objectKey := strings.TrimLeft(strings.TrimSpace(derivative.McapPath.String), "/")
+	snapshot := SyncSourceSnapshot{
+		SourceType:   SyncSourceDepthNormalization,
+		Backend:      SyncBackendMinIO,
+		Bucket:       strings.TrimSpace(w.minioBucket),
+		ObjectKey:    objectKey,
+		SizeBytes:    derivative.SizeBytes.Int64,
+		SHA256:       strings.ToLower(strings.TrimSpace(derivative.Checksum.String)),
+		BagName:      hilbertBagName(ep, objectKey),
+		DerivativeID: derivative.ID,
+		Generation:   derivative.Generation,
+	}
+	if _, err := encodeSyncSourceSnapshot(snapshot); err != nil {
+		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid depth normalization sync source: %v", ep.ID, err)
+	}
+	return snapshot, nil
+}
+
 func (w *SyncWorker) resolveManualSyncSourceTx(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (string, error) {
+	if strings.EqualFold(strings.TrimSpace(ep.DeviceType), DeviceTypeZJWA1D) {
+		return w.resolveZJWA1DSyncSourceTx(ctx, tx, ep)
+	}
+
 	claimedSource := strings.TrimSpace(ep.CloudPublishSource.String)
 	switch claimedSource {
 	case SyncSourceOriginal:
@@ -225,6 +275,77 @@ func (w *SyncWorker) resolveManualSyncSourceTx(ctx context.Context, tx *sqlx.Tx,
 	}
 	return "", fmt.Errorf(
 		"%w: stereo split processing_status=%q qa_status=%q",
+		ErrSyncSourceUnavailable,
+		derivative.ProcessingStatus,
+		derivative.QAStatus,
+	)
+}
+
+type depthNormalizationEpisodeMetadata struct {
+	DepthNormalization struct {
+		Required   bool   `json:"required"`
+		Reason     string `json:"reason"`
+		CheckedAt  string `json:"checked_at,omitempty"`
+		OutputOnly bool   `json:"output_only,omitempty"`
+	} `json:"depth_normalization"`
+}
+
+func zjwa1dDepthNormalizationNotRequired(ep syncEpisodeUploadRow) bool {
+	if !ep.Metadata.Valid {
+		return false
+	}
+	var metadata depthNormalizationEpisodeMetadata
+	if err := json.Unmarshal([]byte(ep.Metadata.String), &metadata); err != nil {
+		return false
+	}
+	return !metadata.DepthNormalization.Required &&
+		strings.EqualFold(strings.TrimSpace(metadata.DepthNormalization.Reason), "already_compresseddepth")
+}
+
+func (w *SyncWorker) resolveZJWA1DSyncSourceTx(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (string, error) {
+	claimedSource := strings.TrimSpace(ep.CloudPublishSource.String)
+	if claimedSource != SyncSourceDepthNormalization && zjwa1dDepthNormalizationNotRequired(ep) {
+		return SyncSourceOriginal, nil
+	}
+	switch claimedSource {
+	case SyncSourceDepthNormalization:
+	case SyncSourceOriginal:
+		if !zjwa1dDepthNormalizationNotRequired(ep) {
+			return "", fmt.Errorf("%w: ZJ-WA1-D original source must be marked already_compresseddepth", ErrSyncSourceUnavailable)
+		}
+		return SyncSourceOriginal, nil
+	case "":
+	default:
+		return "", fmt.Errorf("%w: unsupported claimed source %q", ErrCloudPublishSourceLocked, claimedSource)
+	}
+
+	var derivative struct {
+		ProcessingStatus string `db:"processing_status"`
+		QAStatus         string `db:"qa_status"`
+	}
+	if zjwa1dDepthNormalizationNotRequired(ep) {
+		return SyncSourceOriginal, nil
+	}
+
+	err := tx.GetContext(ctx, &derivative, `
+		SELECT processing_status, qa_status
+		FROM episode_derivatives
+		WHERE episode_id = ? AND kind = 'depth_normalization'
+	`+txLockClause(tx), ep.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		if zjwa1dDepthNormalizationNotRequired(ep) {
+			return SyncSourceOriginal, nil
+		}
+		return "", fmt.Errorf("%w: depth normalization is required", ErrSyncSourceUnavailable)
+	}
+	if err != nil {
+		return "", fmt.Errorf("load depth normalization sync state: %w", err)
+	}
+	if derivative.ProcessingStatus == "succeeded" && derivative.QAStatus == "approved" {
+		return SyncSourceDepthNormalization, nil
+	}
+	return "", fmt.Errorf(
+		"%w: depth normalization processing_status=%q qa_status=%q",
 		ErrSyncSourceUnavailable,
 		derivative.ProcessingStatus,
 		derivative.QAStatus,
@@ -280,13 +401,13 @@ func (w *SyncWorker) validateSyncSourceGateTx(ctx context.Context, tx *sqlx.Tx, 
 	var count int
 	if err := tx.GetContext(ctx, &count, `
 		SELECT COUNT(*) FROM episode_derivatives
-		WHERE id = ? AND episode_id = ? AND kind = 'stereo_split' AND generation = ?
+		WHERE id = ? AND episode_id = ? AND kind = ? AND generation = ?
 		  AND processing_status = 'succeeded' AND qa_status = 'approved'
-	`, snapshot.DerivativeID, episodeID, snapshot.Generation); err != nil {
-		return fmt.Errorf("validate stereo split sync gate: %w", err)
+	`, snapshot.DerivativeID, episodeID, snapshot.SourceType, snapshot.Generation); err != nil {
+		return fmt.Errorf("validate %s sync gate: %w", snapshot.SourceType, err)
 	}
 	if count != 1 {
-		return fmt.Errorf("stereo split generation is no longer eligible for sync")
+		return fmt.Errorf("%s generation is no longer eligible for sync", snapshot.SourceType)
 	}
 	return nil
 }

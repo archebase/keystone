@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,7 @@ import (
 	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/services/autosync"
 	"archebase.com/keystone-edge/internal/services/calibration"
+	"archebase.com/keystone-edge/internal/services/depthnorm"
 	"archebase.com/keystone-edge/internal/services/deviceauth"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"archebase.com/keystone-edge/internal/storage/s3"
@@ -75,6 +77,7 @@ type Server struct {
 	autoSync            *autosync.Manager
 	autoSyncSettings    *handlers.AutoSyncSettingsHandler
 	stereoSplit         *stereosplit.Manager
+	depthNorm           *depthnorm.Manager
 	calibration         *calibration.Manager
 	calibrationHandler  *handlers.CalibrationHandler
 	cameraCalibration   *handlers.CameraCalibrationHandler
@@ -257,10 +260,30 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		syncHandler = handlers.NewSyncHandler(db, syncWorker)
 	}
 
+	var depthNormManager *depthnorm.Manager
+	if cfg.Server.Mode == config.ModeEdge && cfg.DepthNormalization.Enabled {
+		if _, err := os.Stat(cfg.DepthNormalization.Script); err != nil {
+			return nil, fmt.Errorf("depth normalization script is unavailable: %w", err)
+		}
+	}
+	if db != nil && s3Client != nil && cfg.Server.Mode == config.ModeEdge && cfg.DepthNormalization.Enabled {
+		depthNormManager = depthnorm.NewManager(db, s3Client, cfg.Storage.Bucket, depthnorm.Config{
+			Enabled:      cfg.DepthNormalization.Enabled,
+			Script:       cfg.DepthNormalization.Script,
+			Timeout:      time.Duration(cfg.DepthNormalization.TimeoutSec) * time.Second,
+			MinFreeDisk:  int64(cfg.DepthNormalization.MinFreeDiskGB),
+			OutputPrefix: cfg.DepthNormalization.OutputPrefix,
+		})
+	}
+
+	if depthNormManager != nil {
+		dataOpsHandler.SetDepthNormalizer(depthNormManager)
+	}
+
 	var autoSyncManager *autosync.Manager
 	var autoSyncSettingsHandler *handlers.AutoSyncSettingsHandler
 	if db != nil && syncWorker != nil && stereoSplitManager != nil {
-		autoSyncManager = autosync.NewManager(db, stereoSplitManager, syncWorker, 0)
+		autoSyncManager = autosync.NewManager(db, stereoSplitManager, syncWorker, 0, depthNormManager)
 		autoSyncManager.SetQAEnqueuer(qaHandler)
 		qaHandler.SetAutoSyncCapturer(autoSyncManager)
 		autoSyncSettingsHandler = handlers.NewAutoSyncSettingsHandler(autoSyncManager)
@@ -292,6 +315,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		autoSync:            autoSyncManager,
 		autoSyncSettings:    autoSyncSettingsHandler,
 		stereoSplit:         stereoSplitManager,
+		depthNorm:           depthNormManager,
 		calibration:         calibrationManager,
 		calibrationHandler:  calibrationHandler,
 		cameraCalibration:   cameraCalibrationHandler,
@@ -521,6 +545,11 @@ func (s *Server) Start() error {
 			return fmt.Errorf("start calibration reconciler: %w", err)
 		}
 	}
+	if s.depthNorm != nil {
+		if err := s.depthNorm.StartWorker(); err != nil {
+			return fmt.Errorf("start depth normalization worker: %w", err)
+		}
+	}
 	if s.autoSync != nil {
 		if err := s.autoSync.StartReconciler(); err != nil {
 			return fmt.Errorf("start auto sync reconciler: %w", err)
@@ -708,6 +737,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	var shutdownErr error
+	if s.depthNorm != nil {
+		if err := s.depthNorm.StopWorker(ctx); err != nil {
+			logShutdownError("Depth normalization worker", err)
+			shutdownErr = fmt.Errorf("depth normalization worker shutdown: %w", err)
+		}
+	}
 	if s.autoSync != nil {
 		if err := s.autoSync.StopReconciler(ctx); err != nil {
 			logShutdownError("Auto sync reconciler", err)

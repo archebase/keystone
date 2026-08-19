@@ -69,6 +69,7 @@ type syncEpisodeUploadRow struct {
 	DataCollectorOperatorID sql.NullString      `db:"data_collector_operator_id"`
 	DataCollectorName       sql.NullString      `db:"data_collector_name"`
 	DurationSec             sql.NullFloat64     `db:"duration_sec"`
+	DeviceType              string              `db:"device_type"`
 	Metadata                sql.NullString      `db:"metadata"`
 	HilbertRawDataID        sql.NullInt64       `db:"hilbert_raw_data_id"`
 	CreatedAt               time.Time           `db:"created_at"`
@@ -254,6 +255,9 @@ var (
 	ErrEpisodeAlreadySynced = errors.New("episode already synced to cloud")
 	// ErrSyncWorkerNotRunning is returned when Start has not been called or after Stop.
 	ErrSyncWorkerNotRunning = errors.New("sync worker is not running")
+
+	// DeviceTypeZJWA1D identifies the device family requiring depth normalization.
+	DeviceTypeZJWA1D = "ZJ-WA1-D"
 
 	errSyncRetryBackoffActive = errors.New("sync retry backoff active")
 	errSyncRetryExhausted     = errors.New("sync retry max retries exceeded")
@@ -567,6 +571,12 @@ func (w *SyncWorker) EnqueueStereoSplitManual(ctx context.Context, episodeID int
 	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceStereoSplit)
 }
 
+// EnqueueDepthNormalizationAutomatic claims the approved local depth-normalized
+// MCAP generation as the Episode's canonical Hilbert upload source.
+func (w *SyncWorker) EnqueueDepthNormalizationAutomatic(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceDepthNormalization)
+}
+
 // EnqueueEpisodeManualForBulkRun persists an automatically sourced manual sync
 // request with its originating bulk run.
 func (w *SyncWorker) EnqueueEpisodeManualForBulkRun(ctx context.Context, episodeID int64, bulkRunID string) error {
@@ -666,7 +676,8 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 	if w.db == nil {
 		return nil
 	}
-	if sourceType != syncSourceAuto && sourceType != SyncSourceOriginal && sourceType != SyncSourceStereoSplit {
+	if sourceType != syncSourceAuto && sourceType != SyncSourceOriginal && sourceType != SyncSourceStereoSplit &&
+		sourceType != SyncSourceDepthNormalization {
 		return fmt.Errorf("unsupported sync source type %q", sourceType)
 	}
 	automaticSource := sourceType == syncSourceAuto
@@ -680,12 +691,19 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 	lockClause := txLockClause(tx)
 	var episode syncEpisodeUploadRow
 	if err := tx.GetContext(ctx, &episode, `
-		SELECT id, episode_id, COALESCE(storage_backend, '') AS storage_backend,
-		       COALESCE(mcap_path, '') AS mcap_path, checksum, file_size_bytes,
-		       metadata, cloud_synced, COALESCE(qa_status, '') AS qa_status,
-		       cloud_publish_source, created_at, duration_sec
-		FROM episodes
-		WHERE id = ? AND deleted_at IS NULL
+		SELECT e.id, e.episode_id, COALESCE(e.storage_backend, '') AS storage_backend,
+		       COALESCE(e.mcap_path, '') AS mcap_path, e.checksum, e.file_size_bytes,
+		       e.metadata, e.cloud_synced, COALESCE(e.qa_status, '') AS qa_status,
+		       e.cloud_publish_source, e.created_at, e.duration_sec,
+		       COALESCE(e.auto_sync_device_type,
+		           COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '')) AS device_type
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id=e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN workstations current_ws ON current_ws.id=e.workstation_id AND current_ws.deleted_at IS NULL
+		LEFT JOIN robots current_ws_robot ON current_ws_robot.id=current_ws.robot_id AND current_ws_robot.deleted_at IS NULL
+		LEFT JOIN workstations task_ws ON task_ws.id=t.workstation_id AND task_ws.deleted_at IS NULL
+		LEFT JOIN robots task_ws_robot ON task_ws_robot.id=task_ws.robot_id AND task_ws_robot.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
 	`+lockClause, episodeID); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("episode %d not found", episodeID)
@@ -721,7 +739,8 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 				return err
 			}
 		}
-		if sourceType == SyncSourceOriginal {
+		switch sourceType {
+		case SyncSourceOriginal:
 			if episode.QAStatus != "approved" {
 				return fmt.Errorf("episode %d qa_status is %q, must be approved", episodeID, episode.QAStatus)
 			}
@@ -739,7 +758,9 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 				}
 			}
 			snapshot, err = w.buildOriginalSourceSnapshot(episode)
-		} else {
+		case SyncSourceDepthNormalization:
+			snapshot, err = w.buildDepthNormalizationSourceSnapshot(ctx, tx, episode)
+		default:
 			snapshot, err = w.buildStereoSplitSourceSnapshot(ctx, tx, episode)
 		}
 		if err != nil {
@@ -1279,6 +1300,7 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual
 			e.file_size_bytes,
 			e.workstation_id,
 			e.duration_sec,
+			COALESCE(e.auto_sync_device_type, COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '')) AS device_type,
 			e.metadata,
 			e.hilbert_raw_data_id,
 			e.created_at,
@@ -1288,6 +1310,8 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual
 		LEFT JOIN dc_plan dp ON dp.id = e.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
+		LEFT JOIN robots current_ws_robot ON current_ws_robot.id=ws.robot_id AND current_ws_robot.deleted_at IS NULL
+		LEFT JOIN robots task_ws_robot ON task_ws_robot.id=ws.robot_id AND task_ws_robot.deleted_at IS NULL
 		LEFT JOIN data_collectors dc ON dc.id = ws.data_collector_id AND dc.deleted_at IS NULL
 		WHERE e.id = ? AND e.deleted_at IS NULL
 	`, episodeID)

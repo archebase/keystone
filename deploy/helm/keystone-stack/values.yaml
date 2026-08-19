@@ -54,6 +54,12 @@ keystone:
     orbitBaseURL: http://orbit.archebase-system.svc.cluster.local:8080
     tosPrefix: derived/episodes
 
+  depthNormalization:
+    enabled: true
+    timeoutSeconds: 1800
+    minFreeDiskGB: 8
+    outputPrefix: depth-normalized
+
   service:
     type: NodePort
     annotations: {}

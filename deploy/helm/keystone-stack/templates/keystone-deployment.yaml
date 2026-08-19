@@ -102,6 +102,16 @@ spec:
               value: {{ .Values.keystone.syncEnabled | quote }}
             - name: KEYSTONE_QA_ENABLED
               value: {{ .Values.keystone.qaEnabled | quote }}
+            {{- if and (eq .Values.keystone.mode "edge") .Values.keystone.depthNormalization.enabled }}
+            - name: KEYSTONE_DEPTH_NORMALIZATION_ENABLED
+              value: "true"
+            - name: KEYSTONE_DEPTH_NORMALIZATION_TIMEOUT
+              value: {{ .Values.keystone.depthNormalization.timeoutSeconds | quote }}
+            - name: KEYSTONE_DEPTH_NORMALIZATION_MIN_FREE_DISK_GB
+              value: {{ .Values.keystone.depthNormalization.minFreeDiskGB | quote }}
+            - name: KEYSTONE_DEPTH_NORMALIZATION_OUTPUT_PREFIX
+              value: {{ .Values.keystone.depthNormalization.outputPrefix | quote }}
+            {{- end }}
             - name: KEYSTONE_ORBIT_BASE_URL
               value: {{ .Values.keystone.derivatives.orbitBaseURL | quote }}
             - name: KEYSTONE_DERIVATIVE_TOS_PREFIX

@@ -46,6 +46,85 @@ func TestEnqueueEpisodeManual_SelectsSuccessfulApprovedStereoSplit(t *testing.T)
 	}
 }
 
+func TestEnqueueDepthNormalizationAutomaticUsesApprovedDerivative(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 43, "approved", false)
+	if _, err := db.Exec(`UPDATE episodes SET auto_sync_device_type='ZJ-WA1-D' WHERE id=43`); err != nil {
+		t.Fatalf("seed device type: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO episode_derivatives (
+			episode_id, kind, generation, processing_status, qa_status,
+			mcap_path, checksum, file_size_bytes
+		) VALUES (43, 'depth_normalization', 1, 'succeeded', 'approved',
+		          'depth-normalized/episode-43/generation-1/source.mcap', ?, 200)
+	`, testSyncSHA256); err != nil {
+		t.Fatalf("insert derivative: %v", err)
+	}
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	if err := worker.EnqueueDepthNormalizationAutomatic(context.Background(), 43); err != nil {
+		t.Fatalf("EnqueueDepthNormalizationAutomatic() error=%v", err)
+	}
+	var rawSnapshot string
+	if err := db.Get(&rawSnapshot, "SELECT source_snapshot FROM sync_logs WHERE episode_id=43"); err != nil {
+		t.Fatalf("load source snapshot: %v", err)
+	}
+	snapshot, err := decodeSyncSourceSnapshot(rawSnapshot)
+	if err != nil {
+		t.Fatalf("decode source snapshot: %v", err)
+	}
+	if snapshot.SourceType != SyncSourceDepthNormalization || snapshot.Backend != SyncBackendMinIO ||
+		snapshot.Bucket != "test-bucket" || snapshot.Generation != 1 {
+		t.Fatalf("source snapshot=%+v, want approved depth normalization", snapshot)
+	}
+}
+
+func TestEnqueueEpisodeManualBlocksZJWA1DWithoutReadyDerivative(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 44, "approved", false)
+	if _, err := db.Exec(`UPDATE episodes SET auto_sync_device_type='ZJ-WA1-D' WHERE id=44`); err != nil {
+		t.Fatalf("seed device type: %v", err)
+	}
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	if err := worker.EnqueueEpisodeManual(context.Background(), 44); !errors.Is(err, ErrSyncSourceUnavailable) {
+		t.Fatalf("EnqueueEpisodeManual() error=%v, want %v", err, ErrSyncSourceUnavailable)
+	}
+	var count int
+	if err := db.Get(&count, "SELECT COUNT(*) FROM sync_logs WHERE episode_id=44"); err != nil || count != 0 {
+		t.Fatalf("sync logs count=%d err=%v, want none", count, err)
+	}
+}
+
+func TestEnqueueEpisodeManualUsesZJWA1DAlreadyCompressedOriginal(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 45, "approved", false)
+	metadata := `{"depth_normalization":{"required":false,"reason":"already_compresseddepth"}}`
+	if _, err := db.Exec(`UPDATE episodes SET auto_sync_device_type='ZJ-WA1-D', metadata=? WHERE id=45`, metadata); err != nil {
+		t.Fatalf("seed already-compressed episode: %v", err)
+	}
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	if err := worker.EnqueueEpisodeManual(context.Background(), 45); err != nil {
+		t.Fatalf("EnqueueEpisodeManual() error=%v", err)
+	}
+	var rawSnapshot string
+	if err := db.Get(&rawSnapshot, "SELECT source_snapshot FROM sync_logs WHERE episode_id=45"); err != nil {
+		t.Fatalf("load source snapshot: %v", err)
+	}
+	snapshot, err := decodeSyncSourceSnapshot(rawSnapshot)
+	if err != nil {
+		t.Fatalf("decode source snapshot: %v", err)
+	}
+	if snapshot.SourceType != SyncSourceOriginal {
+		t.Fatalf("source type=%q, want original", snapshot.SourceType)
+	}
+}
+
 func TestEnqueueOriginalAutomaticPinsOriginalSource(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	insertEpisodeForSyncWorkerTest(t, db, 39, "approved", false)

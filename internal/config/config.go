@@ -23,21 +23,22 @@ const (
 
 // Config represents the complete configuration for Keystone Edge
 type Config struct {
-	Server       ServerConfig
-	Database     DatabaseConfig
-	Storage      StorageConfig
-	TOSStorage   StorageConfig
-	QA           QAConfig
-	Sync         SyncConfig
-	Auth         AuthConfig
-	Hilbert      HilbertConfig
-	Features     FeaturesConfig
-	Monitoring   MonitoringConfig
-	Resources    ResourceLimitsConfig
-	AxonTransfer TransferConfig
-	AxonRecorder RecorderConfig
-	Derivatives  DerivativeConfig
-	Calibration  CalibrationConfig
+	Server             ServerConfig
+	Database           DatabaseConfig
+	Storage            StorageConfig
+	TOSStorage         StorageConfig
+	QA                 QAConfig
+	Sync               SyncConfig
+	Auth               AuthConfig
+	Hilbert            HilbertConfig
+	Features           FeaturesConfig
+	Monitoring         MonitoringConfig
+	Resources          ResourceLimitsConfig
+	AxonTransfer       TransferConfig
+	AxonRecorder       RecorderConfig
+	Derivatives        DerivativeConfig
+	Calibration        CalibrationConfig
+	DepthNormalization DepthNormalizationConfig
 }
 
 // ServerConfig server configuration
@@ -182,6 +183,15 @@ type CalibrationConfig struct {
 	OrbitLogTailBytes   int
 }
 
+// DepthNormalizationConfig controls edge-local MCAP depth normalization.
+type DepthNormalizationConfig struct {
+	Enabled       bool
+	Script        string
+	TimeoutSec    int
+	MinFreeDiskGB int
+	OutputPrefix  string
+}
+
 // KubernetesResourcesConfig is the trusted resource envelope sent to Orbit.
 type KubernetesResourcesConfig struct {
 	Requests map[string]string `json:"requests"`
@@ -317,6 +327,13 @@ func Load() (*Config, error) {
 		},
 		Derivatives: derivatives,
 		Calibration: calibration,
+		DepthNormalization: DepthNormalizationConfig{
+			Enabled:       getEnvBool("KEYSTONE_DEPTH_NORMALIZATION_ENABLED", true),
+			Script:        getEnv("KEYSTONE_DEPTH_NORMALIZATION_SCRIPT", "scripts/normalize_ros2_depth_to_ros1_compresseddepth.py"),
+			TimeoutSec:    getEnvInt("KEYSTONE_DEPTH_NORMALIZATION_TIMEOUT", 1800),
+			MinFreeDiskGB: getEnvInt("KEYSTONE_DEPTH_NORMALIZATION_MIN_FREE_DISK_GB", 8),
+			OutputPrefix:  getEnv("KEYSTONE_DEPTH_NORMALIZATION_OUTPUT_PREFIX", "depth-normalized"),
+		},
 	}
 
 	return cfg, nil
@@ -481,6 +498,22 @@ func (c *Config) Validate() error {
 	adminPass := strings.TrimSpace(c.Auth.AdminPassword)
 	if (adminUser == "") != (adminPass == "") {
 		return fmt.Errorf("KEYSTONE_ADMIN_USERNAME and KEYSTONE_ADMIN_PASSWORD must both be set or both be empty")
+	}
+	if c.DepthNormalization.Enabled {
+		c.DepthNormalization.Script = strings.TrimSpace(c.DepthNormalization.Script)
+		c.DepthNormalization.OutputPrefix = strings.Trim(c.DepthNormalization.OutputPrefix, "/")
+		if c.DepthNormalization.Script == "" {
+			return fmt.Errorf("KEYSTONE_DEPTH_NORMALIZATION_SCRIPT must not be empty when depth normalization is enabled")
+		}
+		if c.DepthNormalization.TimeoutSec <= 0 {
+			return fmt.Errorf("depth normalization timeout must be greater than 0 when enabled")
+		}
+		if c.DepthNormalization.MinFreeDiskGB <= 0 {
+			return fmt.Errorf("depth normalization minimum free disk must be greater than 0 when enabled")
+		}
+		if c.DepthNormalization.OutputPrefix == "" {
+			c.DepthNormalization.OutputPrefix = "depth-normalized"
+		}
 	}
 	c.Hilbert.BaseURL = strings.TrimRight(strings.TrimSpace(c.Hilbert.BaseURL), "/")
 	c.Hilbert.AccessKey = strings.TrimSpace(c.Hilbert.AccessKey)

@@ -46,7 +46,8 @@ ARG ALPINE_MIRROR=http://mirrors.aliyun.com/alpine
 
 RUN printf '%s/v3.20/main\n' "$ALPINE_MIRROR" > /etc/apk/repositories && \
     printf '%s/v3.20/community\n' "$ALPINE_MIRROR" >> /etc/apk/repositories && \
-    apk add --no-cache ca-certificates tzdata && \
+    apk add --no-cache ca-certificates tzdata python3 py3-numpy py3-opencv py3-pip && \
+    python3 -m pip install --no-cache-dir --break-system-packages 'mcap[zstd,lz4]==1.4.0' && \
     addgroup -g 1000 keystone && \
     adduser -D -u 1000 -G keystone -h /app keystone
 
@@ -55,6 +56,7 @@ ENV TZ=Asia/Shanghai
 WORKDIR /app
 
 COPY --from=builder --chown=keystone:keystone /out/keystone-edge /app/keystone-edge
+COPY --chown=keystone:keystone scripts/normalize_ros2_depth_to_ros1_compresseddepth.py /app/scripts/normalize_ros2_depth_to_ros1_compresseddepth.py
 
 USER keystone
 

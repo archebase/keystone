@@ -1993,10 +1993,13 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY,
 			episode_id TEXT NOT NULL,
+			task_id INTEGER,
+			workstation_id INTEGER,
 			storage_backend TEXT NOT NULL DEFAULT 'minio',
 			mcap_path TEXT NOT NULL DEFAULT 'test-bucket/source.mcap',
 			file_size_bytes INTEGER,
 			metadata TEXT,
+			auto_sync_device_type TEXT,
 			qa_status TEXT NOT NULL,
 			checksum TEXT,
 			hilbert_raw_data_id INTEGER,
@@ -2025,6 +2028,21 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 				next_retry_at TIMESTAMP NULL,
 				started_at TIMESTAMP NULL,
 			completed_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE tasks (
+			id INTEGER PRIMARY KEY,
+			workstation_id INTEGER,
+			deleted_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE workstations (
+			id INTEGER PRIMARY KEY,
+			robot_id INTEGER,
+			deleted_at TIMESTAMP NULL
+		)`,
+		`CREATE TABLE robots (
+			id INTEGER PRIMARY KEY,
+			device_type TEXT,
+			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE episode_derivatives (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
