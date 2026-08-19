@@ -695,8 +695,7 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 		       COALESCE(e.mcap_path, '') AS mcap_path, e.checksum, e.file_size_bytes,
 		       e.metadata, e.cloud_synced, COALESCE(e.qa_status, '') AS qa_status,
 		       e.cloud_publish_source, e.created_at, e.duration_sec,
-		       COALESCE(e.auto_sync_device_type,
-		           COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '')) AS device_type
+		       COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '') AS device_type
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id=e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN workstations current_ws ON current_ws.id=e.workstation_id AND current_ws.deleted_at IS NULL
@@ -1300,7 +1299,7 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual
 			e.file_size_bytes,
 			e.workstation_id,
 			e.duration_sec,
-			COALESCE(e.auto_sync_device_type, COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '')) AS device_type,
+			COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '') AS device_type,
 			e.metadata,
 			e.hilbert_raw_data_id,
 			e.created_at,
