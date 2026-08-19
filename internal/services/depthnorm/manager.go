@@ -457,8 +457,8 @@ func (m *Manager) processTask(ctx context.Context, task taskRow) error {
 	if err := decodeJSON(inspectOutput, &inspection); err != nil {
 		return err
 	}
-	if inspection.Status == "already_target" || inspection.Status == "already_compresseddepth" {
-		metadata, mergeErr := mergeNotRequiredMetadata(task.Metadata, inspection.Status)
+	if inspection.Status == "already_target" {
+		metadata, mergeErr := mergeNotRequiredMetadata(task.Metadata, "already_target")
 		if mergeErr != nil {
 			return mergeErr
 		}
@@ -476,7 +476,7 @@ func (m *Manager) processTask(ctx context.Context, task taskRow) error {
 		}
 		return nil
 	}
-	if inspection.Status != "requires_normalization" {
+	if inspection.Status != "requires_normalization" && inspection.Status != "requires_chest_normalization" {
 		return fmt.Errorf("unsupported depth format %q", inspection.Status)
 	}
 

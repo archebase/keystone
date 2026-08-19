@@ -49,21 +49,7 @@ uint32 seq
 time stamp
 string frame_id
 """
-ROS1_IMAGE_SCHEMA = b"""# This message contains an uncompressed image
 
-Header header
-uint32 height
-uint32 width
-string encoding
-uint8 is_bigendian
-uint32 step
-uint8[] data
-================================================================================
-MSG: std_msgs/Header
-uint32 seq
-time stamp
-string frame_id
-"""
 
 
 @dataclass
@@ -88,17 +74,12 @@ class ByteReader:
 class Ros1Reader:
     pos: int = 0
 
-    def align(self, size: int) -> None:
-        self.pos = (self.pos + size - 1) // size * size
-
     def unpack(self, fmt: str, buf: bytes) -> Tuple:
-        self.align(struct.calcsize(fmt))
         value = struct.unpack_from(fmt, buf, self.pos)
         self.pos += struct.calcsize(fmt)
         return value
 
     def string(self, buf: bytes) -> str:
-        self.align(4)
         (size,) = self.unpack("<I", buf)
         value = buf[self.pos:self.pos + size]
         if len(value) != size:
@@ -224,14 +205,12 @@ def inspect(path: Path) -> Dict[str, object]:
         "up_raw_ros1": ros1_raw(info, UP_RAW),
         "up_compressed_ros1": ros1_compressed(info, UP_COMPRESSED),
     }
-    if state["head_compressed_ros1"] and state["up_raw_ros1"]:
+    if state["head_compressed_ros1"] and state["up_compressed_ros1"]:
         status = "already_target"
     elif state["head_raw_packed_ros2"] and state["up_raw_packed_ros2"]:
         status = "requires_normalization"
-    elif state["head_compressed_ros1"] and state["up_compressed_ros1"]:
-        # Legacy 0818-style recordings are already internally consistent and do
-        # not need the edge normalization derivative for the current target.
-        status = "already_compresseddepth"
+    elif state["head_compressed_ros1"] and state["up_raw_ros1"]:
+        status = "requires_chest_normalization"
     else:
         status = "unsupported"
     return {
@@ -255,8 +234,6 @@ class Ros1Writer:
         self.out = bytearray()
 
     def put(self, fmt: str, *values: object) -> None:
-        size = struct.calcsize(fmt)
-        self.out.extend(b"\0" * ((-len(self.out)) % size))
         self.out.extend(struct.pack(fmt, *values))
 
     def put_bytes(self, value: bytes) -> None:
@@ -264,18 +241,6 @@ class Ros1Writer:
         self.out.extend(value)
 
 
-def serialize_ros1_image(image: Dict[str, object]) -> bytes:
-    writer = Ros1Writer()
-    writer.put("<I", image["seq"])
-    writer.put("<i", image["sec"])
-    writer.put("<I", image["nsec"])
-    writer.put_bytes(str(image["frame_id"]).encode("utf-8"))
-    writer.put("<II", image["height"], image["width"])
-    writer.put_bytes(str(image["encoding"]).encode("utf-8"))
-    writer.put("<B", image["is_bigendian"])
-    writer.put("<I", image["step"])
-    writer.put_bytes(image["data"])  # type: ignore[arg-type]
-    return bytes(writer.out)
 
 
 def serialize_ros1_compressed_depth(image: Dict[str, object], png: bytes) -> bytes:
@@ -313,42 +278,51 @@ def sample_equal(source: Path, output: Path, source_topic: str, output_topic: st
     output_data = first_message(output, output_topic)
     if source_data is None or output_data is None:
         return False
-    source_info = inspect(source)
-    if source_topic == HEAD_RAW:
-        raw = parse_packed_ros2_image(source_data)
+
+    if source_topic in (HEAD_RAW, UP_RAW):
+        source_info = inspect(source)
+        raw = (parse_packed_ros2_image(source_data) if source_info["depth_channels"][  # type: ignore[index]
+                "head_raw_packed_ros2" if source_topic == HEAD_RAW else "up_raw_packed_ros2"]
+               else parse_ros1_image(source_data))
         compressed = parse_ros1_compressed_image(output_data)
         decoded = cv2.imdecode(
             np.frombuffer(compressed["data"][len(DEPTH_PREFIX):], dtype=np.uint8),
             cv2.IMREAD_UNCHANGED,
         )
-        expected = np.frombuffer(raw["data"], dtype="<u2").reshape(raw["height"], raw["width"])
+        expected = np.frombuffer(raw["data"], dtype="<u2").reshape(raw["height"], raw["width"])  # type: ignore[attr-defined]
         return decoded is not None and decoded.dtype == expected.dtype and bool(np.array_equal(decoded, expected))
-    if source_topic == UP_RAW:
-        raw = parse_packed_ros2_image(source_data)
-        output = parse_ros1_image(output_data)
-        return raw["data"] == output["data"]
-    del source_info
-    return False
+    return source_data == output_data
 
 
 def verify(source: Path, output: Path) -> Dict[str, object]:
     source_info = inspect(source)
     output_info = inspect(output)
+    source_status = source_info["status"]
     checks = {
-        "source_requires_normalization": source_info["status"] == "requires_normalization",
+        "source_requires_normalization": source_status in (
+            "requires_normalization", "requires_chest_normalization"
+        ),
         "output_target": output_info["status"] == "already_target",
         "total_count_equal": source_info["total_count"] == output_info["total_count"],
     }
-    pairs = ((HEAD_RAW, HEAD_COMPRESSED), (UP_RAW, UP_RAW))
+    if source_status == "requires_normalization":
+        pairs = ((HEAD_RAW, HEAD_COMPRESSED), (UP_RAW, UP_COMPRESSED))
+    elif source_status == "requires_chest_normalization":
+        pairs = ((HEAD_COMPRESSED, HEAD_COMPRESSED), (UP_RAW, UP_COMPRESSED))
+    else:
+        pairs = ()
+
     topic_counts = {}
     for source_topic, output_topic in pairs:
         source_count = topic_info(source_info, source_topic)["count"]
         output_count = topic_info(output_info, output_topic)["count"]
         checks[f"count_equal:{output_topic}"] = source_count == output_count
         topic_counts[output_topic] = {"source": source_count, "output": output_count}
-        checks[f"lossless_sample:{output_topic}"] = sample_equal(source, output, source_topic, output_topic)
+        checks[f"lossless_sample:{output_topic}"] = sample_equal(
+            source, output, source_topic, output_topic
+        )
     return {
-        "source_status": source_info["status"],
+        "source_status": source_status,
         "output_status": output_info["status"],
         "source_total_count": source_info["total_count"],
         "output_total_count": output_info["total_count"],
@@ -362,8 +336,8 @@ def convert(source_path: Path, output_path: Path, limit: int | None, no_compress
     if source_path.resolve() == output_path.resolve():
         raise RuntimeError("input and output must be different files")
     admission = inspect(source_path)
-    if admission["status"] != "requires_normalization":
-        raise RuntimeError(f"input depth format is {admission['status']}, expected requires_normalization")
+    if admission["status"] not in ("requires_normalization", "requires_chest_normalization"):
+        raise RuntimeError(f"input depth format is {admission['status']}, expected normalization")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with source_path.open("rb") as source_file:
@@ -380,9 +354,6 @@ def convert(source_path: Path, output_path: Path, limit: int | None, no_compress
             compressed_schema_id = writer.register_schema(
                 "sensor_msgs/CompressedImage", "ros1msg", ROS1_COMPRESSED_SCHEMA
             )
-            image_schema_id = writer.register_schema(
-                "sensor_msgs/Image", "ros1msg", ROS1_IMAGE_SCHEMA
-            )
             copied_schema_ids: Dict[int, int] = {}
             def copied_schema_id(schema_id: int) -> int:
                 if schema_id not in copied_schema_ids:
@@ -398,9 +369,9 @@ def convert(source_path: Path, output_path: Path, limit: int | None, no_compress
                     channel_ids[channel.id] = writer.register_channel(
                         HEAD_COMPRESSED, "ros1", compressed_schema_id, channel.metadata
                     )
-                elif channel.topic == UP_RAW and channel.message_encoding == "cdr":
+                elif channel.topic == UP_RAW:
                     channel_ids[channel.id] = writer.register_channel(
-                        UP_RAW, "ros1", image_schema_id, channel.metadata
+                        UP_COMPRESSED, "ros1", compressed_schema_id, channel.metadata
                     )
                 else:
                     channel_ids[channel.id] = writer.register_channel(
@@ -422,12 +393,14 @@ def convert(source_path: Path, output_path: Path, limit: int | None, no_compress
                         message.publish_time, message.sequence,
                     )
                     converted_head += 1
-                elif channel.topic == UP_RAW and channel.message_encoding == "cdr":
-                    image = parse_packed_ros2_image(message.data)
+                elif channel.topic == UP_RAW:
+                    image = (parse_packed_ros2_image(message.data)
+                             if channel.message_encoding == "cdr" else parse_ros1_image(message.data))
                     validate_packed_depth(image, channel.topic)
+                    png = encode_lossless_depth_png(image["data"], image["height"], image["width"])
                     writer.add_message(
                         channel_ids[channel.id], message.log_time,
-                        serialize_ros1_image(image), message.publish_time, message.sequence,
+                        serialize_ros1_compressed_depth(image, png), message.publish_time, message.sequence,
                     )
                     converted_up += 1
                 else:
@@ -451,7 +424,7 @@ def convert(source_path: Path, output_path: Path, limit: int | None, no_compress
         "message_count": count,
         "converted_count": converted_head + converted_up,
         "converted_head_to_compresseddepth": converted_head,
-        "converted_up_to_ros1_raw": converted_up,
+        "converted_up_to_compresseddepth": converted_up,
         "copied_count": copied,
     }
     if limit is None:
