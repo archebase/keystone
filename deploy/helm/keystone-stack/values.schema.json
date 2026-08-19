@@ -77,6 +77,7 @@
         "factoryId": { "type": "string" },
         "callbackPublicBaseURL": { "type": "string" },
         "adminUsername": { "type": "string" },
+        "jwtExpiryHours": { "type": "integer", "minimum": 1 },
         "syncEnabled": { "type": "boolean" },
         "qaEnabled": { "type": "boolean" },
         "hilbert": {

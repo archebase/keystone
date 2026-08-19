@@ -16,6 +16,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 
+	"archebase.com/keystone-edge/internal/services/depthnorm"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 )
 
@@ -353,6 +354,102 @@ func TestManagerReconcileOnceEnqueuesApprovedLiteOriginal(t *testing.T) {
 	}
 }
 
+func TestManagerReconcileOnceStartsZJWA1DDepthNormalization(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 40, DeviceTypeZJWA1D)
+
+	cloud := &fakeCloudSyncEnqueuer{}
+	normalizer := &fakeDepthNormalizer{}
+	manager := NewManager(db, &fakeStereoSplitter{}, cloud, 0, normalizer)
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 40); err != nil || !captured {
+		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
+	}
+	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'approved' WHERE id = 40`); err != nil {
+		t.Fatalf("approve episode: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	if !worked {
+		t.Fatal("ReconcileOnce() worked = false, want true")
+	}
+	if normalizer.episodeID != 40 || normalizer.actor != "auto-sync" {
+		t.Fatalf("depth normalizer = episode %d actor %q, want 40/auto-sync", normalizer.episodeID, normalizer.actor)
+	}
+	if len(cloud.originalEpisodeIDs()) != 0 || len(cloud.stereoEpisodeIDs()) != 0 || len(cloud.depthEpisodeIDs()) != 0 {
+		t.Fatal("cloud sync started before depth normalization completed")
+	}
+}
+
+func TestManagerReconcileOnceEnqueuesApprovedZJWA1DDerivative(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 41, DeviceTypeZJWA1D)
+
+	cloud := &fakeCloudSyncEnqueuer{}
+	manager := NewManager(db, nil, cloud, 0, &fakeDepthNormalizer{})
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 41); err != nil || !captured {
+		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
+	}
+	if _, err := db.Exec(`
+		UPDATE episodes SET qa_status = 'approved' WHERE id = 41;
+		INSERT INTO episode_derivatives (episode_id, kind, processing_status, qa_status)
+		VALUES (41, 'depth_normalization', 'succeeded', 'approved');
+	`); err != nil {
+		t.Fatalf("seed approved derivative: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	if !worked {
+		t.Fatal("ReconcileOnce() worked = false, want true")
+	}
+	if got := cloud.depthEpisodeIDs(); len(got) != 1 || got[0] != 41 {
+		t.Fatalf("depth sync episodes = %#v, want [41]", got)
+	}
+}
+
+func TestManagerReconcileOnceEnqueuesZJWA1DAlreadyTargetOriginal(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 42, DeviceTypeZJWA1D)
+
+	cloud := &fakeCloudSyncEnqueuer{}
+	manager := NewManager(db, nil, cloud, 0, &fakeDepthNormalizer{})
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 42); err != nil || !captured {
+		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
+	}
+	metadata := `{"depth_normalization":{"required":false,"reason":"already_target"}}`
+	if _, err := db.Exec(`UPDATE episodes SET qa_status='approved', metadata=? WHERE id=?`, metadata, 42); err != nil {
+		t.Fatalf("seed already-compressed episode: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	if !worked {
+		t.Fatal("ReconcileOnce() worked = false, want true")
+	}
+	if got := cloud.originalEpisodeIDs(); len(got) != 1 || got[0] != 42 {
+		t.Fatalf("original sync episodes = %#v, want [42]", got)
+	}
+}
+
 func TestManagerReconcileOnceAdvancesApprovedBeforeRecoveringPendingQA(t *testing.T) {
 	db := newAutoSyncTestDB(t)
 	defer db.Close()
@@ -611,6 +708,7 @@ func newAutoSyncTestDB(t *testing.T) *sqlx.DB {
 			qa_status TEXT NOT NULL DEFAULT 'pending_qa',
 			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
 			cloud_publish_source TEXT,
+			metadata TEXT,
 			auto_sync_requested BOOLEAN NOT NULL DEFAULT FALSE,
 			auto_sync_device_type TEXT,
 			auto_sync_requested_at TIMESTAMP,
@@ -677,11 +775,23 @@ type fakeCloudSyncEnqueuer struct {
 	mu       sync.Mutex
 	original []int64
 	stereo   []int64
+	depth    []int64
 }
 
 type fakeStereoSplitter struct {
 	episodeID int64
 	actor     string
+}
+
+type fakeDepthNormalizer struct {
+	episodeID int64
+	actor     string
+}
+
+func (f *fakeDepthNormalizer) Start(_ context.Context, episodeID int64, actor string) (depthnorm.Derivative, bool, error) {
+	f.episodeID = episodeID
+	f.actor = actor
+	return depthnorm.Derivative{EpisodeID: episodeID}, true, nil
 }
 
 type fakeQAEnqueuer struct {
@@ -746,11 +856,24 @@ func (f *fakeCloudSyncEnqueuer) EnqueueOriginalAutomatic(_ context.Context, epis
 	return nil
 }
 
+func (f *fakeCloudSyncEnqueuer) EnqueueDepthNormalizationAutomatic(_ context.Context, episodeID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.depth = append(f.depth, episodeID)
+	return nil
+}
+
 func (f *fakeCloudSyncEnqueuer) EnqueueStereoSplitManual(_ context.Context, episodeID int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stereo = append(f.stereo, episodeID)
 	return nil
+}
+
+func (f *fakeCloudSyncEnqueuer) depthEpisodeIDs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.depth...)
 }
 
 func (f *fakeCloudSyncEnqueuer) originalEpisodeIDs() []int64 {

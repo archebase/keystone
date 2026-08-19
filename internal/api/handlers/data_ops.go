@@ -46,6 +46,7 @@ type DataOpsHandler struct {
 	bulkRunExecutions map[string]*dataOpsBulkRunExecution
 	bulkMP4Converter  func(context.Context, dataOpsBulkMP4EpisodeRow, string, string) (string, func(), error)
 	stereoSplit       dataOpsStereoSplitManager
+	depthNorm         dataOpsDepthNormalizer
 	stereoBulkMu      sync.Mutex
 	stereoBulkRuns    map[string]struct{}
 }
@@ -110,6 +111,10 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/bulk-runs/:run_id/cancel", h.CancelBulkRun)
 	apiV1.GET("/bulk-runs/:run_id/download", h.DownloadBulkMP4)
 	apiV1.GET("/bulk-runs/:run_id/stream", h.StreamBulkRun)
+	apiV1.GET("/episodes/:id/derivatives/depth-normalization", h.GetDepthNormalization)
+	if h.depthNorm != nil {
+		apiV1.POST("/episodes/:id/derivatives/depth-normalization", h.StartDepthNormalization)
+	}
 	h.registerStereoSplitSettingsRoutes(apiV1)
 	if h.stereoSplit != nil {
 		h.registerStereoSplitRoutes(apiV1)
