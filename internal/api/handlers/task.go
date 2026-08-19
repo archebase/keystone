@@ -1047,8 +1047,23 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 		return
 	}
 
+	now := time.Now()
+	nowStr := now.Format(time.RFC3339)
 	taskStatus := "unknown"
 	if h.db != nil {
+		if status, ok, _ := currentTaskStatus(h.db, callback.TaskID); ok {
+			taskStatus = taskStatusLogValue(status, "unknown")
+		}
+		if !h.recorderStillOwnsActiveRecording(callback.DeviceID, callback.TaskID) {
+			logger.Printf("%s start callback ignored: synced recorder state is no longer active for task", recorderTaskLogPrefix(callback.DeviceID, callback.TaskID))
+			c.JSON(http.StatusOK, gin.H{
+				"status":               "acknowledged",
+				"task_status":          taskStatus,
+				"stale_recorder_state": true,
+				"acknowledged_at":      nowStr,
+			})
+			return
+		}
 		rowsAffected, previousStatus, err := advanceTaskPendingOrReadyToInProgress(h.db, callback.TaskID)
 		if err != nil {
 			logger.Printf("%s failed to advance task pending/ready->in_progress after start callback: err=%v", recorderTaskLogPrefix(callback.DeviceID, callback.TaskID), err)
@@ -1058,13 +1073,38 @@ func (h *TaskHandler) OnRecordingStart(c *gin.Context) {
 		}
 	}
 
-	now := time.Now()
-	nowStr := now.Format(time.RFC3339)
 	c.JSON(http.StatusOK, gin.H{
 		"status":          "acknowledged",
 		"task_status":     taskStatus,
 		"acknowledged_at": nowStr,
 	})
+}
+
+// recorderStillOwnsActiveRecording reports whether an authoritative recorder snapshot still
+// shows the callback task as recording or paused. A callback can race a cancel: recorder may
+// already have returned to idle and deleted the artifact before its delayed start callback
+// reaches Keystone. In that case the callback must not resurrect the cancelled task.
+func (h *TaskHandler) recorderStillOwnsActiveRecording(deviceID, taskID string) bool {
+	if h == nil || h.recorderHub == nil {
+		return true
+	}
+	deviceID = strings.TrimSpace(deviceID)
+	taskID = strings.TrimSpace(taskID)
+	if deviceID == "" || taskID == "" {
+		return true
+	}
+	rc := h.recorderHub.Get(deviceID)
+	if rc == nil || !rc.IsStateSynced() {
+		return true
+	}
+	state := rc.GetState()
+	currentTaskID := strings.TrimSpace(state.TaskID)
+	switch strings.ToLower(strings.TrimSpace(state.CurrentState)) {
+	case "recording", "paused":
+		return currentTaskID == "" || currentTaskID == taskID
+	default:
+		return false
+	}
 }
 
 // OnRecordingFinish handles callback from axon recorder when recording finishes.
