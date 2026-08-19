@@ -298,8 +298,11 @@ func zjwa1dDepthNormalizationNotRequired(ep syncEpisodeUploadRow) bool {
 	if err := json.Unmarshal([]byte(ep.Metadata.String), &metadata); err != nil {
 		return false
 	}
-	return !metadata.DepthNormalization.Required &&
-		strings.EqualFold(strings.TrimSpace(metadata.DepthNormalization.Reason), "already_compresseddepth")
+	if metadata.DepthNormalization.Required {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(metadata.DepthNormalization.Reason))
+	return reason == "already_target" || reason == "already_compresseddepth"
 }
 
 func (w *SyncWorker) resolveZJWA1DSyncSourceTx(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (string, error) {
@@ -311,7 +314,7 @@ func (w *SyncWorker) resolveZJWA1DSyncSourceTx(ctx context.Context, tx *sqlx.Tx,
 	case SyncSourceDepthNormalization:
 	case SyncSourceOriginal:
 		if !zjwa1dDepthNormalizationNotRequired(ep) {
-			return "", fmt.Errorf("%w: ZJ-WA1-D original source must be marked already_compresseddepth", ErrSyncSourceUnavailable)
+			return "", fmt.Errorf("%w: ZJ-WA1-D original source must already use a supported depth format", ErrSyncSourceUnavailable)
 		}
 		return SyncSourceOriginal, nil
 	case "":

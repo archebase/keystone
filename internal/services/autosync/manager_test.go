@@ -420,7 +420,7 @@ func TestManagerReconcileOnceEnqueuesApprovedZJWA1DDerivative(t *testing.T) {
 	}
 }
 
-func TestManagerReconcileOnceEnqueuesZJWA1DAlreadyCompressedOriginal(t *testing.T) {
+func TestManagerReconcileOnceEnqueuesZJWA1DAlreadyTargetOriginal(t *testing.T) {
 	db := newAutoSyncTestDB(t)
 	defer db.Close()
 	seedAutoSyncEpisode(t, db, 42, DeviceTypeZJWA1D)
@@ -433,7 +433,7 @@ func TestManagerReconcileOnceEnqueuesZJWA1DAlreadyCompressedOriginal(t *testing.
 	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 42); err != nil || !captured {
 		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
 	}
-	metadata := `{"depth_normalization":{"required":false,"reason":"already_compresseddepth"}}`
+	metadata := `{"depth_normalization":{"required":false,"reason":"already_target"}}`
 	if _, err := db.Exec(`UPDATE episodes SET qa_status='approved', metadata=? WHERE id=?`, metadata, 42); err != nil {
 		t.Fatalf("seed already-compressed episode: %v", err)
 	}

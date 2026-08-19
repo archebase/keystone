@@ -398,7 +398,7 @@ func decodeJSON(output []byte, target any) error {
 	return nil
 }
 
-func mergeNotRequiredMetadata(raw sql.NullString) (string, error) {
+func mergeNotRequiredMetadata(raw sql.NullString, reason string) (string, error) {
 	value := map[string]any{}
 	if raw.Valid && strings.TrimSpace(raw.String) != "" {
 		if err := json.Unmarshal([]byte(raw.String), &value); err != nil {
@@ -407,7 +407,7 @@ func mergeNotRequiredMetadata(raw sql.NullString) (string, error) {
 	}
 	value["depth_normalization"] = map[string]any{
 		"required":    false,
-		"reason":      "already_compresseddepth",
+		"reason":      reason,
 		"checked_at":  time.Now().UTC().Format(time.RFC3339Nano),
 		"output_only": true,
 	}
@@ -457,8 +457,8 @@ func (m *Manager) processTask(ctx context.Context, task taskRow) error {
 	if err := decodeJSON(inspectOutput, &inspection); err != nil {
 		return err
 	}
-	if inspection.Status == "already_compresseddepth" {
-		metadata, mergeErr := mergeNotRequiredMetadata(task.Metadata)
+	if inspection.Status == "already_target" || inspection.Status == "already_compresseddepth" {
+		metadata, mergeErr := mergeNotRequiredMetadata(task.Metadata, inspection.Status)
 		if mergeErr != nil {
 			return mergeErr
 		}

@@ -99,10 +99,10 @@ func TestEnqueueEpisodeManualBlocksZJWA1DWithoutReadyDerivative(t *testing.T) {
 	}
 }
 
-func TestEnqueueEpisodeManualUsesZJWA1DAlreadyCompressedOriginal(t *testing.T) {
+func TestEnqueueEpisodeManualUsesZJWA1DAlreadyTargetOriginal(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	insertEpisodeForSyncWorkerTest(t, db, 45, "approved", false)
-	metadata := `{"depth_normalization":{"required":false,"reason":"already_compresseddepth"}}`
+	metadata := `{"depth_normalization":{"required":false,"reason":"already_target"}}`
 	if _, err := db.Exec(`UPDATE episodes SET auto_sync_device_type='ZJ-WA1-D', metadata=? WHERE id=45`, metadata); err != nil {
 		t.Fatalf("seed already-compressed episode: %v", err)
 	}

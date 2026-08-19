@@ -391,8 +391,11 @@ func zjwa1dMetadataNotRequired(raw sql.NullString) bool {
 	if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
 		return false
 	}
-	return !metadata.DepthNormalization.Required &&
-		strings.EqualFold(strings.TrimSpace(metadata.DepthNormalization.Reason), "already_compresseddepth")
+	if metadata.DepthNormalization.Required {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(metadata.DepthNormalization.Reason))
+	return reason == "already_target" || reason == "already_compresseddepth"
 }
 
 func (m *Manager) reconcileZJWA1D(ctx context.Context) (bool, error) {
