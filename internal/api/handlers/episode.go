@@ -86,6 +86,7 @@ type episodeRow struct {
 	DCType             sql.NullString  `db:"dc_type"`
 	RobotDeviceID      sql.NullString  `db:"robot_device_id"`
 	RobotDeviceName    sql.NullString  `db:"robot_device_name"`
+	RobotDeviceType    sql.NullString  `db:"robot_device_type"`
 	CollectorOperator  sql.NullString  `db:"collector_operator_id"`
 	McapPath           string          `db:"mcap_path"`
 	SidecarPath        string          `db:"sidecar_path"`
@@ -118,6 +119,7 @@ type Episode struct {
 	DCType             *string  `json:"dc_type"`
 	RobotDeviceID      *string  `json:"robot_device_id"`
 	RobotDeviceName    *string  `json:"robot_device_name,omitempty"`
+	RobotDeviceType    *string  `json:"robot_device_type,omitempty"`
 	CollectorOperator  *string  `json:"collector_operator_id"`
 	McapPath           string   `json:"mcap_path"`
 	SidecarPath        string   `json:"sidecar_path"`
@@ -296,6 +298,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 				dp.dc_type,
 			r.device_id AS robot_device_id,
 			NULLIF(TRIM(r.device_name), '') AS robot_device_name,
+			r.device_type AS robot_device_type,
 			dc.operator_id AS collector_operator_id,
 			e.mcap_path,
 			e.sidecar_path,
@@ -485,6 +488,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			DCType:             nullableString(r.DCType),
 			RobotDeviceID:      nullableString(r.RobotDeviceID),
 			RobotDeviceName:    nullableString(r.RobotDeviceName),
+			RobotDeviceType:    nullableString(r.RobotDeviceType),
 			CollectorOperator:  nullableString(r.CollectorOperator),
 			McapPath:           r.McapPath,
 			SidecarPath:        r.SidecarPath,
