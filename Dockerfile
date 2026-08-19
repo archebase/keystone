@@ -46,10 +46,9 @@ ARG ALPINE_MIRROR=http://mirrors.aliyun.com/alpine
 
 RUN printf '%s/v3.20/main\n' "$ALPINE_MIRROR" > /etc/apk/repositories && \
     printf '%s/v3.20/community\n' "$ALPINE_MIRROR" >> /etc/apk/repositories && \
-    apk add --no-cache ca-certificates tzdata python3 py3-numpy py3-opencv py3-pip && \
-    python3 -m pip install --no-cache-dir --break-system-packages \
-        'mcap==1.4.0' \
-        'zstandard==0.25.0' && \
+    apk add --no-cache ca-certificates tzdata python3 py3-numpy py3-opencv py3-pip py3-zstandard && \
+    python3 -m pip install --no-cache-dir --break-system-packages --no-deps \
+        'mcap==1.4.0' && \
     addgroup -g 1000 keystone && \
     adduser -D -u 1000 -G keystone -h /app keystone
 
