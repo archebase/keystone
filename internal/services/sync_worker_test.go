@@ -1643,6 +1643,56 @@ func TestRetryFailedEpisodes_PromotesDueFailureToPendingBeforeDispatch(t *testin
 	}
 }
 
+func TestRetryFailedEpisodesReusesPersistedSourceSnapshot(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	w := &SyncWorker{
+		db:              db,
+		cfg:             SyncWorkerConfig{BatchSize: 10, MaxRetries: 3},
+		jobCh:           make(chan syncEnqueueRequest, 1),
+		enqueuedEpisode: make(map[int64]struct{}),
+	}
+
+	episodeID := int64(18)
+	insertEpisodeForSyncWorkerTest(t, db, episodeID, "approved", false)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (?, 'Ego Portal Stereo');
+		INSERT INTO workstations (id, robot_id) VALUES (?, ?);
+		UPDATE episodes SET workstation_id=?, cloud_publish_source='stereo_split' WHERE id=?;
+		INSERT INTO episode_derivatives (
+			episode_id, kind, generation, processing_status, qa_status,
+			mcap_path, checksum, file_size_bytes
+		) VALUES (?, 'stereo_split', 2, 'succeeded', 'approved',
+		          'derived/source.mcap', ?, 200);
+	`, episodeID, episodeID, episodeID, episodeID, episodeID, episodeID, testSyncSHA256); err != nil {
+		t.Fatalf("seed stereo source: %v", err)
+	}
+	startedAt := time.Date(2026, 2, 18, 0, 0, 0, 0, time.UTC)
+	snapshot := `{"source_type":"stereo_split","backend":"tos","bucket":"derivative-bucket",` +
+		`"object_key":"derived/source.mcap","size_bytes":200,"sha256":"` + testSyncSHA256 + `",` +
+		`"bag_name":"episode-18.mcap","derivative_id":1,"generation":2}`
+	if _, err := db.Exec(`
+		INSERT INTO sync_logs (episode_id, status, attempt_count, started_at, next_retry_at, source_snapshot)
+		VALUES (?, 'failed', 1, ?, ?, ?)
+	`, episodeID, startedAt, startedAt.Add(time.Second), snapshot); err != nil {
+		t.Fatalf("seed failed source snapshot: %v", err)
+	}
+
+	w.retryFailedEpisodes(context.Background())
+
+	latest := latestSyncLogForSyncWorkerTest(t, db, episodeID)
+	if latest.Status != "pending" {
+		t.Fatalf("latest status = %q, want pending", latest.Status)
+	}
+	select {
+	case got := <-w.jobCh:
+		if got.episodeID != episodeID {
+			t.Fatalf("unexpected episode id: got %d want %d", got.episodeID, episodeID)
+		}
+	default:
+		t.Fatal("expected persisted-source retry to be dispatched")
+	}
+}
+
 func TestRetryFailedEpisodesIgnoresMissingDeletedAndAlreadySyncedEpisodes(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	w := &SyncWorker{
