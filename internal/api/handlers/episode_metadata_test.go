@@ -250,6 +250,7 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			device_id TEXT,
 			device_name TEXT,
+			device_type TEXT,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE data_collectors (
@@ -288,8 +289,8 @@ func seedEpisodeMetadataTestRow(t *testing.T, db *sqlx.DB) {
 		t.Fatalf("seed dc plan: %v", err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO robots (id, device_id, device_name, deleted_at)
-		VALUES (30, 'device-01', 'Ego iPhone 01', NULL)
+		INSERT INTO robots (id, device_id, device_name, device_type, deleted_at)
+		VALUES (30, 'device-01', 'Ego iPhone 01', NULL, NULL)
 	`); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
