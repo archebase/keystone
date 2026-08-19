@@ -65,6 +65,9 @@ func TestGetEpisodeReturnsMetadata(t *testing.T) {
 	if recording["recorder_version"] != "axon_recorder 0.5.0" {
 		t.Fatalf("recorder.recording.recorder_version=%v want axon_recorder 0.5.0", recording["recorder_version"])
 	}
+	if got := body["robot_device_type"]; got != "ZJ-WA1-D" {
+		t.Fatalf("robot_device_type=%v want ZJ-WA1-D", got)
+	}
 	assertEpisodePlanFields(t, body)
 }
 
@@ -290,7 +293,7 @@ func seedEpisodeMetadataTestRow(t *testing.T, db *sqlx.DB) {
 	}
 	if _, err := db.Exec(`
 		INSERT INTO robots (id, device_id, device_name, device_type, deleted_at)
-		VALUES (30, 'device-01', 'Ego iPhone 01', NULL, NULL)
+		VALUES (30, 'device-01', 'Ego iPhone 01', 'ZJ-WA1-D', NULL)
 	`); err != nil {
 		t.Fatalf("seed robot: %v", err)
 	}
