@@ -17,6 +17,13 @@ func TestEnqueueEpisodeManual_SelectsSuccessfulApprovedStereoSplit(t *testing.T)
 	db := newTestSyncWorkerDB(t)
 	insertEpisodeForSyncWorkerTest(t, db, 40, "approved", false)
 	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (40, 'Ego Portal Stereo');
+		INSERT INTO workstations (id, robot_id) VALUES (40, 40);
+		UPDATE episodes SET workstation_id=40 WHERE id=40;
+	`); err != nil {
+		t.Fatalf("seed stereo device: %v", err)
+	}
+	if _, err := db.Exec(`
 		INSERT INTO episode_derivatives (
 			episode_id, kind, generation, processing_status, qa_status,
 			mcap_path, checksum, file_size_bytes
@@ -43,6 +50,37 @@ func TestEnqueueEpisodeManual_SelectsSuccessfulApprovedStereoSplit(t *testing.T)
 	if snapshot.SourceType != SyncSourceStereoSplit || snapshot.Bucket != "derivative-bucket" ||
 		snapshot.ObjectKey != "derived/40/output_bag.mcap" {
 		t.Fatalf("source snapshot=%+v, want approved stereo split", snapshot)
+	}
+}
+
+func TestEnqueueEpisodeManualUsesOriginalForNonStereoDevice(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 46, "approved", false)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (46, 'Ego Portal Lite');
+		INSERT INTO workstations (id, robot_id) VALUES (46, 46);
+		UPDATE episodes SET workstation_id=46 WHERE id=46;
+		INSERT INTO episode_derivatives (episode_id, kind, generation, processing_status, qa_status)
+		VALUES (46, 'stereo_split', 1, 'failed', 'not_started');
+	`); err != nil {
+		t.Fatalf("seed unrelated stereo derivative: %v", err)
+	}
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	if err := worker.EnqueueEpisodeManual(context.Background(), 46); err != nil {
+		t.Fatalf("EnqueueEpisodeManual() error=%v", err)
+	}
+	var rawSnapshot string
+	if err := db.Get(&rawSnapshot, "SELECT source_snapshot FROM sync_logs WHERE episode_id=46"); err != nil {
+		t.Fatalf("load source snapshot: %v", err)
+	}
+	snapshot, err := decodeSyncSourceSnapshot(rawSnapshot)
+	if err != nil {
+		t.Fatalf("decode source snapshot: %v", err)
+	}
+	if snapshot.SourceType != SyncSourceOriginal {
+		t.Fatalf("source type=%q, want original", snapshot.SourceType)
 	}
 }
 
@@ -175,6 +213,13 @@ func TestEnqueueEpisodeManual_WaitsForUnavailableStereoSplit(t *testing.T) {
 			db := newTestSyncWorkerDB(t)
 			episodeID := int64(43 + index)
 			insertEpisodeForSyncWorkerTest(t, db, episodeID, "approved", false)
+			if _, err := db.Exec(`
+				INSERT INTO robots (id, device_type) VALUES (?, 'Ego Portal Stereo');
+				INSERT INTO workstations (id, robot_id) VALUES (?, ?);
+				UPDATE episodes SET workstation_id=? WHERE id=?;
+			`, episodeID, episodeID, episodeID, episodeID, episodeID); err != nil {
+				t.Fatalf("seed stereo device: %v", err)
+			}
 			if _, err := db.Exec(`
 				INSERT INTO episode_derivatives (
 					episode_id, kind, generation, processing_status, qa_status,
