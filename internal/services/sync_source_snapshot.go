@@ -253,6 +253,12 @@ func (w *SyncWorker) resolveManualSyncSourceTx(ctx context.Context, tx *sqlx.Tx,
 		return "", fmt.Errorf("%w: unsupported claimed source %q", ErrCloudPublishSourceLocked, claimedSource)
 	}
 
+	// Stereo split is only canonical for Ego Portal Stereo. Every other device
+	// syncs the original object unless another source has already been claimed.
+	if claimedSource == "" && !strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal Stereo") {
+		return SyncSourceOriginal, nil
+	}
+
 	var derivative struct {
 		ProcessingStatus string `db:"processing_status"`
 		QAStatus         string `db:"qa_status"`
