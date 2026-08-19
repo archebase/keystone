@@ -41,6 +41,7 @@ keystone:
   factoryId: ""
   callbackPublicBaseURL: ""
   adminUsername: admin
+  jwtExpiryHours: 72
   syncEnabled: false
   qaEnabled: true
 

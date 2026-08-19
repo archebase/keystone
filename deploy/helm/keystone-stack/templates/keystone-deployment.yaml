@@ -89,6 +89,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "keystone-stack.credentialsSecretName" . }}
                   key: jwt-secret
+            - name: KEYSTONE_JWT_EXPIRY_HOURS
+              value: {{ .Values.keystone.jwtExpiryHours | quote }}
             - name: KEYSTONE_ADMIN_USERNAME
               value: {{ .Values.keystone.adminUsername | quote }}
             {{- if .Values.keystone.adminUsername }}
