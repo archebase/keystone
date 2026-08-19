@@ -843,3 +843,84 @@ func newRecorderHandlerTestWebSocketPair(t *testing.T) (*websocket.Conn, *websoc
 	}
 	return nil, nil
 }
+
+func TestRecordingStartCallbackRespectsRecorderCancellationRace(t *testing.T) {
+	tests := []struct {
+		name        string
+		state       services.RecorderState
+		wantStatus  string
+		wantStale   bool
+		description string
+	}{
+		{
+			name:        "active matching recorder advances task",
+			state:       services.RecorderState{CurrentState: "recording", TaskID: "task-cancel-race"},
+			wantStatus:  "in_progress",
+			description: "recording",
+		},
+		{
+			name:        "idle recorder ignores delayed callback",
+			state:       services.RecorderState{CurrentState: "idle", TaskID: ""},
+			wantStatus:  "pending",
+			wantStale:   true,
+			description: "idle",
+		},
+		{
+			name:        "recorder bound to another task ignores callback",
+			state:       services.RecorderState{CurrentState: "recording", TaskID: "task-other"},
+			wantStatus:  "pending",
+			wantStale:   true,
+			description: "recording",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newTaskStateRecoveryDB(t)
+			defer db.Close()
+			seedTaskStateRecoveryTask(t, db, "task-cancel-race", "pending")
+
+			hub := services.NewRecorderHub()
+			rc := hub.NewRecorderConn(nil, "robot-001", "127.0.0.1")
+			if !hub.Connect("robot-001", rc) {
+				t.Fatalf("connect recorder failed")
+			}
+			rc.UpdateState(tt.state)
+
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			NewTaskHandler(db, nil, hub, 0).RegisterCallbackRoutes(router.Group("/callbacks"))
+
+			body, err := json.Marshal(RecordingStartCallback{
+				TaskID:   "task-cancel-race",
+				DeviceID: "robot-001",
+				Status:   tt.description,
+			})
+			if err != nil {
+				t.Fatalf("marshal callback: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/callbacks/start", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+			var response struct {
+				TaskStatus         string `json:"task_status"`
+				StaleRecorderState bool   `json:"stale_recorder_state"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			assertTaskStateRecoveryStatus(t, db, "task-cancel-race", tt.wantStatus)
+			if response.TaskStatus != tt.wantStatus {
+				t.Fatalf("response task_status=%q want %q", response.TaskStatus, tt.wantStatus)
+			}
+			if response.StaleRecorderState != tt.wantStale {
+				t.Fatalf("stale_recorder_state=%v want %v", response.StaleRecorderState, tt.wantStale)
+			}
+		})
+	}
+}
