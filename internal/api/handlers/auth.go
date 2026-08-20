@@ -545,31 +545,6 @@ func resolveActivationWorkstation(
 	return workstation, tokenID, nil
 }
 
-func resolveDeviceRobot(
-	ctx context.Context,
-	tx *sqlx.Tx,
-	deviceToken string,
-	lockClause string,
-) (int64, string, error) {
-	var robot struct {
-		RobotID  int64  `db:"robot_id"`
-		DeviceID string `db:"device_id"`
-	}
-	if err := tx.GetContext(ctx, &robot, `
-		SELECT r.id AS robot_id, r.device_id
-		FROM ws_client_auth_tokens t
-		JOIN robots r ON r.id = t.robot_id
-		WHERE t.token_hash = ? AND t.revoked_at IS NULL
-			AND r.status = 'active' AND r.deleted_at IS NULL
-		LIMIT 1`+lockClause, hashWSClientAuthToken(deviceToken)); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, "", errInvalidDeviceCredential
-		}
-		return 0, "", fmt.Errorf("query device robot: %w", err)
-	}
-	return robot.RobotID, strings.TrimSpace(robot.DeviceID), nil
-}
-
 func (h *AuthHandler) bindUnboundEgoPlans(
 	ctx context.Context,
 	tx *sqlx.Tx,

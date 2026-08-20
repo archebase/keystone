@@ -16,16 +16,22 @@ import (
 )
 
 var (
-	ErrLocalCleanupNotSynced         = errors.New("episode is not cloud-synced")
-	ErrLocalCleanupSyncActive        = errors.New("episode cloud sync is active")
+	// ErrLocalCleanupNotSynced indicates that cloud durability has not been confirmed.
+	ErrLocalCleanupNotSynced = errors.New("episode is not cloud-synced")
+	// ErrLocalCleanupSyncActive prevents removal while an upload can read the source.
+	ErrLocalCleanupSyncActive = errors.New("episode cloud sync is active")
+	// ErrLocalCleanupUnsupportedSource prevents deletion of non-MinIO objects.
 	ErrLocalCleanupUnsupportedSource = errors.New("episode source is not local MinIO")
+	// ErrLocalCleanupSourceUnavailable means no immutable source location was retained.
 	ErrLocalCleanupSourceUnavailable = errors.New("local source object identity is unavailable")
 )
 
+// LocalObjectDeleter deletes a local object. Its operation must be idempotent.
 type LocalObjectDeleter interface {
 	DeleteObject(ctx context.Context, bucket, objectKey string) error
 }
 
+// LocalCleanupResult describes the terminal state of one local-object cleanup.
 type LocalCleanupResult struct {
 	JobID     int64  `json:"cleanup_job_id"`
 	EpisodeID int64  `json:"episode_id"`
@@ -34,6 +40,7 @@ type LocalCleanupResult struct {
 	Status    string `json:"status"`
 }
 
+// LocalCleanupJob describes the persisted state of a cleanup request.
 type LocalCleanupJob struct {
 	JobID        int64          `json:"cleanup_job_id" db:"id"`
 	EpisodeID    int64          `json:"episode_id" db:"episode_id"`
@@ -53,16 +60,20 @@ type cleanupObject struct {
 	Key    string `db:"object_key"`
 }
 
+// LocalCleanupService validates and deletes durable local episode objects.
 type LocalCleanupService struct {
 	db     *sqlx.DB
 	store  LocalObjectDeleter
 	bucket string
 }
 
+// NewLocalCleanupService creates a cleanup service for objects in bucket.
 func NewLocalCleanupService(db *sqlx.DB, store LocalObjectDeleter, bucket string) *LocalCleanupService {
 	return &LocalCleanupService{db: db, store: store, bucket: strings.TrimSpace(bucket)}
 }
 
+// LocalCleanupWorker processes persisted cleanup jobs and can be safely
+// restarted because object deletion is idempotent.
 type LocalCleanupWorker struct {
 	service  *LocalCleanupService
 	interval time.Duration
@@ -70,6 +81,7 @@ type LocalCleanupWorker struct {
 	done     chan struct{}
 }
 
+// NewLocalCleanupWorker creates a worker for pending and interrupted jobs.
 func NewLocalCleanupWorker(service *LocalCleanupService, interval time.Duration) *LocalCleanupWorker {
 	if interval <= 0 {
 		interval = time.Minute
@@ -77,6 +89,7 @@ func NewLocalCleanupWorker(service *LocalCleanupService, interval time.Duration)
 	return &LocalCleanupWorker{service: service, interval: interval}
 }
 
+// Start begins cleanup processing. It is safe to call once.
 func (w *LocalCleanupWorker) Start() {
 	if w == nil || w.service == nil || w.stop != nil {
 		return
@@ -99,6 +112,7 @@ func (w *LocalCleanupWorker) Start() {
 	}()
 }
 
+// Stop waits for the worker to finish its current database/object operation.
 func (w *LocalCleanupWorker) Stop(ctx context.Context) error {
 	if w == nil || w.stop == nil {
 		return nil
@@ -176,6 +190,7 @@ func (s *LocalCleanupService) sourceAndObjects(ctx context.Context, tx *sqlx.Tx,
 	return s.cleanupObjects(ctx, tx, episodeID, source)
 }
 
+// RequestCleanupEpisode validates and queues a cleanup without touching MinIO.
 func (s *LocalCleanupService) RequestCleanupEpisode(ctx context.Context, episodeID int64, requestedBy string) (LocalCleanupJob, error) {
 	if s == nil || s.db == nil || s.store == nil {
 		return LocalCleanupJob{}, fmt.Errorf("local cleanup is not configured")
@@ -243,6 +258,7 @@ func (s *LocalCleanupService) RequestCleanupEpisode(ctx context.Context, episode
 	return s.GetCleanupJob(ctx, episodeID)
 }
 
+// GetCleanupJob returns the cleanup job for an episode.
 func (s *LocalCleanupService) GetCleanupJob(ctx context.Context, episodeID int64) (LocalCleanupJob, error) {
 	var job LocalCleanupJob
 	err := s.db.GetContext(ctx, &job, `SELECT id,episode_id,bucket,object_key,status,requested_by,requested_at,started_at,completed_at,retry_count,error_message FROM local_cleanup_jobs WHERE episode_id=?`, episodeID)
@@ -273,6 +289,7 @@ func (s *LocalCleanupService) processJob(ctx context.Context, job LocalCleanupJo
 	return err
 }
 
+// CleanupEpisode synchronously queues and processes one local cleanup request.
 func (s *LocalCleanupService) CleanupEpisode(ctx context.Context, episodeID int64, requestedBy string) (LocalCleanupResult, error) {
 	job, err := s.RequestCleanupEpisode(ctx, episodeID, requestedBy)
 	if err != nil {
