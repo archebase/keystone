@@ -51,6 +51,20 @@ func newDCPlanWorkstationProjector(db *sqlx.DB) *dcPlanWorkstationProjector {
 	return &dcPlanWorkstationProjector{db: db}
 }
 
+// EnsureDCPlanWorkstation creates or reuses the workstation required to execute one bound Hilbert plan.
+func EnsureDCPlanWorkstation(
+	ctx context.Context,
+	db *sqlx.DB,
+	plan auth.HilbertDCPlan,
+	now time.Time,
+) error {
+	if db == nil || plan.DCDeviceID == nil {
+		return fmt.Errorf("dc plan workstation projection requires a bound device")
+	}
+	_, err := newDCPlanWorkstationProjector(db).projectPlan(ctx, plan, now)
+	return err
+}
+
 func projectionForUpdateClause(tx *sqlx.Tx) string {
 	if tx != nil && tx.DriverName() == "sqlite" {
 		return ""
@@ -70,15 +84,20 @@ func (p *dcPlanWorkstationProjector) project(
 	}
 
 	for _, plan := range plans {
+		if plan.DCDeviceID == nil {
+			// 无设备的 Ego 计划先保留投影，等待设备接单时由 Keystone 补绑。
+			summary.BlockedCount++
+			continue
+		}
 		created, err := p.projectPlan(ctx, plan, now)
 		if err != nil {
 			summary.BlockedCount++
 			logger.Printf(
-				"[DC_PLAN] Workstation projection blocked: workspace_id=%d dc_plan_id=%d operator=%s dc_device_id=%d err=%v",
+				"[DC_PLAN] Workstation projection blocked: workspace_id=%d dc_plan_id=%d operator=%s dc_device_id=%v err=%v",
 				plan.WorkspaceID,
 				plan.ID,
 				strings.TrimSpace(plan.Operator),
-				plan.DCDeviceID,
+				nullableInt64ForLog(plan.DCDeviceID),
 				err,
 			)
 			continue
@@ -147,6 +166,13 @@ func resolveProjectionCollector(
 	return collector, nil
 }
 
+func nullableInt64ForLog(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 func resolveProjectionRobot(
 	ctx context.Context,
 	tx *sqlx.Tx,
@@ -157,7 +183,7 @@ func resolveProjectionRobot(
 		SELECT id, device_id, COALESCE(device_name, '') AS device_name, workspace_id
 		FROM robots
 		WHERE device_id = ? AND deleted_at IS NULL
-		LIMIT 1`+projectionForUpdateClause(tx), strconv.FormatInt(plan.DCDeviceID, 10)); err != nil {
+		LIMIT 1`+projectionForUpdateClause(tx), strconv.FormatInt(*plan.DCDeviceID, 10)); err != nil {
 		if err == sql.ErrNoRows {
 			return robot, fmt.Errorf("robot missing")
 		}
@@ -205,7 +231,7 @@ func ensureProjectedWorkstation(
 		"source":       "hilbert_dc_plan",
 		"dc_plan_id":   plan.ID,
 		"workspace_id": plan.WorkspaceID,
-		"dc_device_id": plan.DCDeviceID,
+		"dc_device_id": nullableInt64ForLog(plan.DCDeviceID),
 		"operator":     strings.TrimSpace(plan.Operator),
 		"last_seen_at": now.UTC().Format(time.RFC3339),
 	})

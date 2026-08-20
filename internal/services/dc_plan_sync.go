@@ -151,6 +151,9 @@ func (s *DCPlanSyncService) maintainEgoPortalPendingPools(
 	createdCount := 0
 	failedCount := 0
 	for _, plan := range plans {
+		if plan.DCDeviceID == nil {
+			continue
+		}
 		result, err := s.taskSupply.EnsureEgoPortalPendingPool(ctx, plan.ID, now)
 		if err != nil {
 			failedCount++
@@ -287,7 +290,7 @@ func validateHilbertDCPlans(workspaceID int64, plans []auth.HilbertDCPlan) error
 			plan.DCServiceProviderID <= 0 ||
 			plan.DCProjectID <= 0 ||
 			plan.DCTaskID <= 0 ||
-			plan.DCDeviceID <= 0 ||
+			(plan.DCDeviceID != nil && *plan.DCDeviceID <= 0) ||
 			plan.TargetCount <= 0 ||
 			plan.CurCount < 0 ||
 			plan.TargetDuration <= 0 ||

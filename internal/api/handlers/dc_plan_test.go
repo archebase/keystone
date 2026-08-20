@@ -190,7 +190,7 @@ func (f *fakeDCPlanHandlerHilbertClient) QueryDCPlans(_ context.Context, _ int64
 func newTestDCPlanRouter(db *sqlx.DB, syncService *services.DCPlanSyncService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	NewDCPlanHandler(db, syncService).RegisterRoutes(router.Group("/api/v1"))
+	NewDCPlanHandler(db, syncService, nil).RegisterRoutes(router.Group("/api/v1"))
 	return router
 }
 
@@ -213,7 +213,7 @@ func testDCPlanHandlerHilbertPlan(id int64, workspaceID int64) auth.HilbertDCPla
 		Operator:            "alice",
 		DCProjectID:         13,
 		DCTaskID:            14,
-		DCDeviceID:          15,
+		DCDeviceID:          dcPlanHandlerTestInt64Ptr(15),
 		DCType:              "ego",
 		DCDate:              "2026-07-09",
 		TargetCount:         20,
@@ -321,4 +321,8 @@ func newTestDCPlanHandlerDB(t *testing.T) *sqlx.DB {
 		t.Fatalf("create tables: %v", err)
 	}
 	return db
+}
+
+func dcPlanHandlerTestInt64Ptr(value int64) *int64 {
+	return &value
 }

@@ -19,7 +19,7 @@ func TestGetTaskConfigUsesConfiguredCallbackPublicBaseURL(t *testing.T) {
 	db := newTestTaskConfigCallbackDB(t)
 	defer db.Close()
 
-	handler := NewTaskHandler(db, nil, nil, 0)
+	handler := NewTaskHandler(db, nil, nil, 0, nil)
 	handler.SetCallbackPublicBaseURL("http://192.168.1.20:9999")
 
 	gin.SetMode(gin.TestMode)
@@ -70,7 +70,7 @@ func TestGetTaskConfigUsesTaskPlanSnapshot(t *testing.T) {
 		t.Fatalf("update live plan: %v", err)
 	}
 
-	handler := NewTaskHandler(db, nil, nil, 0)
+	handler := NewTaskHandler(db, nil, nil, 0, nil)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.GET("/tasks/:id/config", handler.GetTaskConfig)

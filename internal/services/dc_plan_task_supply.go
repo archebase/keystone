@@ -75,7 +75,7 @@ type taskSupplyPlanRow struct {
 	Operator             string `db:"operator"`
 	DCProjectDescription string `db:"dc_project_description"`
 	DCTaskDescription    string `db:"dc_task_description"`
-	DCDeviceID           int64  `db:"dc_device_id"`
+	DCDeviceID           *int64 `db:"dc_device_id"`
 	DCType               string `db:"dc_type"`
 	TargetCount          int64  `db:"target_count"`
 	CurCount             int64  `db:"cur_count"`
@@ -214,6 +214,52 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 	return &DCPlanTaskSupplyResult{Task: *supplied, Created: true}, nil
 }
 
+// EnsureUnboundEgoCandidateTask ensures one pending candidate task exists for a Hilbert plan
+// that has not been bound to a device yet. The workstation is derived from the currently
+// authenticated Ego device and operator, not from dc_plan.dc_device_id, so the plan remains
+// selectable by both ego-portal and ego-portal-lite before the real device binding happens.
+func (s *DCPlanTaskSupplyService) EnsureUnboundEgoCandidateTask(
+	ctx context.Context,
+	planID int64,
+	workstationID int64,
+	now time.Time,
+) error {
+	if s == nil || s.db == nil || planID <= 0 || workstationID <= 0 {
+		return ErrDCPlanTaskSupplyNotFound
+	}
+
+	var count int
+	if err := s.db.GetContext(ctx, &count, `
+		SELECT COUNT(*)
+		FROM tasks
+		WHERE dc_plan_id = ? AND workstation_id = ?
+			AND status = 'pending' AND deleted_at IS NULL
+	`, planID, workstationID); err != nil {
+		return fmt.Errorf("count unbound candidate tasks: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin unbound candidate task transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	plan, err := loadTaskSupplyPlan(ctx, tx, planID)
+	if err != nil {
+		return err
+	}
+	if plan.DCDeviceID != nil {
+		return nil
+	}
+	if _, err := insertPendingPlanTask(ctx, tx, plan, workstationID, now, 0, false); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // EnsureEgoPortalPendingPool fills the pending-task pool for an offline-capable Ego Portal plan.
 func (s *DCPlanTaskSupplyService) EnsureEgoPortalPendingPool(
 	ctx context.Context,
@@ -312,6 +358,9 @@ func loadTaskSupplyWorkstation(
 	plan taskSupplyPlanRow,
 	workstationID int64,
 ) (taskSupplyWorkstationRow, error) {
+	if plan.DCDeviceID == nil {
+		return taskSupplyWorkstationRow{}, sql.ErrNoRows
+	}
 	query := `
 		SELECT ws.id, COALESCE(r.device_type, '') AS device_type
 		FROM workstations ws
@@ -321,7 +370,7 @@ func loadTaskSupplyWorkstation(
 			AND ws.deleted_at IS NULL
 			AND dc.operator_id = ?
 			AND r.device_id = ?`
-	args := []any{plan.WorkspaceID, strings.TrimSpace(plan.Operator), strconv.FormatInt(plan.DCDeviceID, 10)}
+	args := []any{plan.WorkspaceID, strings.TrimSpace(plan.Operator), strconv.FormatInt(*plan.DCDeviceID, 10)}
 	if workstationID > 0 {
 		query += " AND ws.id = ?"
 		args = append(args, workstationID)
@@ -450,4 +499,46 @@ func insertPendingPlanTask(
 		DCPlanID:      plan.ID,
 		WorkstationID: workstationID,
 	}, nil
+}
+
+// EnsureUnboundEgoCandidateTasksForWorkstation binds the current device to every unbound Ego
+// dc plan owned by the given operator, then ensures a pending candidate task exists for each
+// newly bound plan. It is safe to call from both /operator/plans/refresh and /tasks list flows;
+// existing pending tasks are reused and already-bound plans are left untouched.
+func EnsureUnboundEgoCandidateTasksForWorkstation(
+	ctx context.Context,
+	db *sqlx.DB,
+	hilbert HilbertDCPlanBinder,
+	workspaceID int64,
+	operator string,
+	workstationID int64,
+	deviceID int64,
+	now time.Time,
+) error {
+	if db == nil || workspaceID <= 0 || strings.TrimSpace(operator) == "" || workstationID <= 0 || deviceID <= 0 {
+		return nil
+	}
+	planIDs := []int64{}
+	if err := db.SelectContext(ctx, &planIDs, `
+		SELECT id
+		FROM dc_plan
+		WHERE workspace_id = ?
+			AND operator = ?
+			AND LOWER(dc_type) = 'ego'
+			AND dc_device_id IS NULL
+			AND deleted_at IS NULL
+		ORDER BY id
+	`, workspaceID, strings.TrimSpace(operator)); err != nil {
+		return err
+	}
+	supply := NewDCPlanTaskSupplyService(db)
+	for _, planID := range planIDs {
+		if err := BindDCPlanDevice(ctx, db, hilbert, workspaceID, planID, deviceID); err != nil {
+			continue
+		}
+		if err := supply.EnsureUnboundEgoCandidateTask(ctx, planID, workstationID, now); err != nil {
+			continue
+		}
+	}
+	return nil
 }

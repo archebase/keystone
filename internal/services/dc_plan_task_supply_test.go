@@ -486,7 +486,7 @@ func testTaskSupplyPlan(id int64, workspaceID int64, targetCount int64) auth.Hil
 		DCProjectDescription: "Collect objects in the kitchen",
 		DCTaskID:             14,
 		DCTaskDescription:    "Follow the collection instructions",
-		DCDeviceID:           456,
+		DCDeviceID:           dcPlanSupplyTestInt64Ptr(456),
 		DCType:               "ego",
 		DCDate:               "2026-07-21",
 		TargetCount:          targetCount,
@@ -634,4 +634,8 @@ func seedCurrentTaskSupplyWorkstation(t *testing.T, db *sqlx.DB, workspaceID int
 		t.Fatalf("workstation id: %v", err)
 	}
 	return id
+}
+
+func dcPlanSupplyTestInt64Ptr(value int64) *int64 {
+	return &value
 }

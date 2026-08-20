@@ -417,7 +417,7 @@ func testHilbertDCPlan(id int64, workspaceID int64, name string) auth.HilbertDCP
 		DCTaskID:             14,
 		DCTaskName:           "Task " + strconv.FormatInt(id, 10),
 		DCTaskDescription:    "Description " + strconv.FormatInt(id, 10),
-		DCDeviceID:           15,
+		DCDeviceID:           dcPlanTestInt64Ptr(15),
 		DCDeviceName:         "Device " + strconv.FormatInt(id, 10),
 		DCType:               "ego",
 		DCDate:               "2026-07-09",
@@ -611,4 +611,8 @@ func newTestDCPlanSyncDB(t *testing.T) *sqlx.DB {
 		t.Fatalf("create tables: %v", err)
 	}
 	return db
+}
+
+func dcPlanTestInt64Ptr(value int64) *int64 {
+	return &value
 }

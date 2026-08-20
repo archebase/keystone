@@ -29,7 +29,7 @@ func TestEnsureNextPlanTaskUsesAuthenticatedWorkstation(t *testing.T) {
 		c.Set(middleware.ClaimsKey, auth.NewCollectorWorkstationClaims(7, "collector-a", 11, 9, 123))
 		c.Next()
 	})
-	handler := NewTaskHandler(db, nil, nil, 0)
+	handler := NewTaskHandler(db, nil, nil, 0, nil)
 	handler.RegisterCollectorRoutes(router.Group("/api/v1"))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/dc-plans/1001/tasks/next", nil)
