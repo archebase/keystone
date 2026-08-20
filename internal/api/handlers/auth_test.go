@@ -6,6 +6,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -82,6 +83,51 @@ func TestAuthHandlerLoginWithHilbertSuccessIssuesIdentityJWT(t *testing.T) {
 	}
 }
 
+func TestAuthHandlerActivateBoundDeviceBindsUnboundEgoPlans(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	deviceToken := "kda_v1_unbound-plan-device-token"
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES (7, 'Collector', 'dc01', 'active');
+		INSERT INTO robots (id, device_id, device_name, workspace_id, status) VALUES (101, '23', 'Ego 23', 10, 'active');
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_type, status, dc_device_id) VALUES
+			(1001, 10, 'dc01', 'ego', 'pending_collection', NULL),
+			(1002, 10, 'dc01', 'ego', 'pending_collection', NULL),
+			(1003, 10, 'dc01', 'ego', 'pending_collection', 24);
+		INSERT INTO ws_client_auth_tokens (robot_id, token_hash) VALUES (101, ?)
+	`, hashWSClientAuthToken(deviceToken)); err != nil {
+		t.Fatalf("seed unbound plan login: %v", err)
+	}
+	binder := &testDCPlanBinder{}
+	handler := NewAuthHandler(db, testAuthConfig(), nil)
+	handler.hilbert = binder
+
+	workstation, err := handler.activateWorkstation(context.Background(), 7, "dc01", 0, deviceToken)
+	if err != nil {
+		t.Fatalf("activate bound device: %v", err)
+	}
+	if workstation.DeviceID != "23" || !workstation.IsCurrent {
+		t.Fatalf("workstation=%#v", workstation)
+	}
+	if len(binder.bound) != 2 || binder.bound[0] != 1001 || binder.bound[1] != 1002 {
+		t.Fatalf("Hilbert bound plans=%v want [1001 1002]", binder.bound)
+	}
+	var plans []struct {
+		ID       int64         `db:"id"`
+		DeviceID sql.NullInt64 `db:"dc_device_id"`
+	}
+	if err := db.Select(&plans, `SELECT id, dc_device_id FROM dc_plan ORDER BY id`); err != nil {
+		t.Fatalf("query plans: %v", err)
+	}
+	for _, plan := range plans[:2] {
+		if !plan.DeviceID.Valid || plan.DeviceID.Int64 != 23 {
+			t.Fatalf("plan=%d device=%#v want 23", plan.ID, plan.DeviceID)
+		}
+	}
+	if !plans[2].DeviceID.Valid || plans[2].DeviceID.Int64 != 24 {
+		t.Fatalf("bound plan changed: %#v", plans[2])
+	}
+}
 func TestAuthHandlerActivateWorkstationForWebSelection(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
@@ -658,6 +704,15 @@ type testHilbertBehavior struct {
 	body       string
 }
 
+type testDCPlanBinder struct {
+	bound []int64
+}
+
+func (b *testDCPlanBinder) PatchDCPlanDCDeviceID(_ context.Context, _, planID, _ int64) (bool, error) {
+	b.bound = append(b.bound, planID)
+	return true, nil
+}
+
 func newTestHilbertServer(t *testing.T, behavior testHilbertBehavior) *httptest.Server {
 	t.Helper()
 
@@ -775,8 +830,14 @@ func newTestAuthDB(t *testing.T) *sqlx.DB {
 			data_collector_id INTEGER,
 			workspace_id INTEGER NOT NULL DEFAULT 0,
 			robot_id INTEGER NOT NULL DEFAULT 0,
+			robot_name TEXT,
+			robot_serial TEXT,
 			collector_name TEXT,
+			collector_operator_id TEXT,
+			name TEXT,
 			status TEXT,
+			metadata TEXT,
+			created_at TEXT,
 			is_current BOOLEAN,
 			superseded_at TEXT,
 			superseded_by INTEGER,
@@ -793,7 +854,11 @@ func newTestAuthDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			workspace_id INTEGER NOT NULL,
 			operator TEXT NOT NULL,
+			dc_type TEXT NOT NULL DEFAULT 'ego',
+			status TEXT NOT NULL DEFAULT 'pending_collection',
 			dc_device_id INTEGER,
+			dc_device_name TEXT,
+			local_updated_at TEXT,
 			deleted_at TEXT
 		)`,
 		`CREATE TABLE ws_client_auth_tokens (

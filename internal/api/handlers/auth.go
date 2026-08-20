@@ -29,11 +29,13 @@ type AuthHandler struct {
 	db            *sqlx.DB
 	cfg           *config.AuthConfig
 	hilbertClient *auth.HilbertClient
+	hilbert       services.HilbertDCPlanBinder
 }
 
 // NewAuthHandler constructs an AuthHandler with required dependencies.
 func NewAuthHandler(db *sqlx.DB, cfg *config.AuthConfig, hilbertCfg *config.HilbertConfig) *AuthHandler {
-	return &AuthHandler{db: db, cfg: cfg, hilbertClient: auth.NewHilbertClient(hilbertCfg)}
+	hilbertClient := auth.NewHilbertClient(hilbertCfg)
+	return &AuthHandler{db: db, cfg: cfg, hilbertClient: hilbertClient, hilbert: hilbertClient}
 }
 
 // LoginRequest is the unified login request body.
@@ -384,6 +386,21 @@ func (h *AuthHandler) activateWorkstation(
 	workstation, tokenID, err := resolveActivationWorkstation(
 		ctx, tx, collectorID, requestedWorkstationID, deviceToken, lockClause,
 	)
+	if errors.Is(err, errWorkstationNotAssigned) && deviceToken != "" {
+		robotID, robotDeviceID, ensureErr := resolveDeviceRobot(ctx, tx, deviceToken, lockClause)
+		if ensureErr != nil {
+			return authWorkstationRow{}, ensureErr
+		}
+		now := time.Now().UTC()
+		if ensureErr = h.ensureUnboundEgoWorkstation(
+			ctx, tx, collectorID, operatorID, robotID, robotDeviceID, now,
+		); ensureErr != nil {
+			return authWorkstationRow{}, ensureErr
+		}
+		workstation, tokenID, err = resolveActivationWorkstation(
+			ctx, tx, collectorID, requestedWorkstationID, deviceToken, lockClause,
+		)
+	}
 	if err != nil {
 		return authWorkstationRow{}, err
 	}
@@ -540,6 +557,126 @@ func resolveActivationWorkstation(
 	return workstation, tokenID, nil
 }
 
+func resolveDeviceRobot(
+	ctx context.Context,
+	tx *sqlx.Tx,
+	deviceToken string,
+	lockClause string,
+) (int64, string, error) {
+	var robot struct {
+		RobotID  int64  `db:"robot_id"`
+		DeviceID string `db:"device_id"`
+	}
+	if err := tx.GetContext(ctx, &robot, `
+		SELECT r.id AS robot_id, r.device_id
+		FROM ws_client_auth_tokens t
+		JOIN robots r ON r.id = t.robot_id
+		WHERE t.token_hash = ? AND t.revoked_at IS NULL
+			AND r.status = 'active' AND r.deleted_at IS NULL
+		LIMIT 1`+lockClause, hashWSClientAuthToken(deviceToken)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, "", errInvalidDeviceCredential
+		}
+		return 0, "", fmt.Errorf("query device robot: %w", err)
+	}
+	return robot.RobotID, strings.TrimSpace(robot.DeviceID), nil
+}
+
+func (h *AuthHandler) ensureUnboundEgoWorkstation(
+	ctx context.Context,
+	tx *sqlx.Tx,
+	collectorID int64,
+	operatorID string,
+	robotID int64,
+	deviceID string,
+	now time.Time,
+) error {
+	numericDeviceID, err := strconv.ParseInt(strings.TrimSpace(deviceID), 10, 64)
+	if err != nil || numericDeviceID <= 0 {
+		return errWorkstationNotAssigned
+	}
+	var robot struct {
+		WorkspaceID int64  `db:"workspace_id"`
+		DeviceName  string `db:"device_name"`
+	}
+	if err := tx.GetContext(ctx, &robot, `
+		SELECT workspace_id, COALESCE(device_name, '') AS device_name
+		FROM robots WHERE id = ? AND deleted_at IS NULL
+		LIMIT 1`+projectionLockClause(tx), robotID); err != nil {
+		return fmt.Errorf("query device workspace: %w", err)
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(ctx, tx, operatorID, robot.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("check workspace access: %w", err)
+	}
+	if !allowed {
+		return errWorkstationNotAssigned
+	}
+	var planIDs []int64
+	if err := tx.SelectContext(ctx, &planIDs, `
+		SELECT id FROM dc_plan
+		WHERE operator = ? AND workspace_id = ?
+			AND LOWER(dc_type) = 'ego' AND dc_device_id IS NULL
+			AND COALESCE(status, 'pending_collection') <> 'collected'
+			AND deleted_at IS NULL
+		ORDER BY id`+projectionLockClause(tx), operatorID, robot.WorkspaceID); err != nil {
+		return fmt.Errorf("query unbound ego plans: %w", err)
+	}
+	if len(planIDs) == 0 {
+		return errWorkstationNotAssigned
+	}
+
+	deviceName := strings.TrimSpace(robot.DeviceName)
+	if deviceName == "" {
+		deviceName = deviceID
+	}
+	for _, planID := range planIDs {
+		if h.hilbert == nil {
+			return fmt.Errorf("bind unbound ego plan: Hilbert binder unavailable")
+		}
+		bound, err := h.hilbert.PatchDCPlanDCDeviceID(ctx, robot.WorkspaceID, planID, numericDeviceID)
+		if err != nil {
+			return fmt.Errorf("patch dc plan %d device: %w", planID, err)
+		}
+		if !bound {
+			return fmt.Errorf("patch dc plan %d device returned false", planID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE dc_plan
+			SET dc_device_id = ?, dc_device_name = ?, local_updated_at = ?
+			WHERE id = ? AND workspace_id = ? AND dc_device_id IS NULL AND deleted_at IS NULL
+		`, numericDeviceID, deviceName, now, planID, robot.WorkspaceID); err != nil {
+			return fmt.Errorf("update dc plan %d device projection: %w", planID, err)
+		}
+	}
+
+	var collector struct {
+		Name string `db:"name"`
+	}
+	if err := tx.GetContext(ctx, &collector, `SELECT name FROM data_collectors WHERE id = ? AND deleted_at IS NULL`, collectorID); err != nil {
+		return fmt.Errorf("query collector for workstation: %w", err)
+	}
+	metadata := fmt.Sprintf(`{"source":"unbound_ego_plan_login","workspace_id":%d,"device_id":%d,"operator":%q}`, robot.WorkspaceID, numericDeviceID, operatorID)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO workstations (
+			robot_id, robot_name, robot_serial, data_collector_id, collector_name,
+			collector_operator_id, workspace_id, name, status, metadata,
+			created_at, updated_at, is_current
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?, ?, FALSE)
+	`, robotID, deviceName, deviceID, collectorID, collector.Name, operatorID,
+		robot.WorkspaceID, fmt.Sprintf("Hilbert Device %s Workstation", deviceID), metadata, now, now)
+	if err != nil {
+		return fmt.Errorf("create workstation for unbound ego plans: %w", err)
+	}
+	return nil
+}
+
+func projectionLockClause(tx *sqlx.Tx) string {
+	if tx != nil && tx.DriverName() == "sqlite" {
+		return ""
+	}
+	return " FOR UPDATE"
+}
 func collectorHasDevicePlan(
 	ctx context.Context,
 	q sqlx.QueryerContext,
