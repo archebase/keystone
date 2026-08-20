@@ -101,9 +101,15 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/episodes/bulk-qa/preview", h.PreviewBulkEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync/preview", h.PreviewBulkEpisodeSync)
 	apiV1.POST("/episodes/bulk-mp4/preview", h.PreviewBulkEpisodeMP4)
+	if h.depthNorm != nil {
+		apiV1.POST("/episodes/bulk-depth-normalization/preview", h.PreviewBulkDepthNormalization)
+	}
 	apiV1.POST("/episodes/bulk-qa", h.BulkRunEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync", h.BulkSyncEpisodes)
 	apiV1.POST("/episodes/bulk-mp4", h.BulkExportEpisodeMP4)
+	if h.depthNorm != nil {
+		apiV1.POST("/episodes/bulk-depth-normalization", h.BulkDepthNormalization)
+	}
 	apiV1.GET("/episodes/:id/mp4", h.DownloadEpisodeMP4)
 	apiV1.GET("/bulk-runs/current", h.GetCurrentBulkRun)
 	apiV1.GET("/bulk-runs/:run_id", h.GetBulkRun)
