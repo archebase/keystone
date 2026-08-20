@@ -43,8 +43,8 @@ func ResolveDCPlanDeviceName(ctx context.Context, db *sqlx.DB, workspaceID, devi
 	return fmt.Sprintf("%d", deviceID), nil
 }
 
-// operator selects a device for their unbound plans, not only at first upload. Already-bound
-// plans are left untouched, so concurrent device selection cannot overwrite the Hilbert record.
+// BindDCPlanDevice binds a Hilbert dc plan when an operator selects a device for an unbound plan.
+// Already-bound plans are left untouched, so concurrent device selection cannot overwrite the Hilbert record.
 func BindDCPlanDevice(
 	ctx context.Context,
 	db *sqlx.DB,
