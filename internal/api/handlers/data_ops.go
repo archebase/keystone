@@ -103,6 +103,7 @@ func (h *DataOpsHandler) SetLocalCleanupService(cleanup *services.LocalCleanupSe
 	}
 }
 
+// RegisterRoutes registers data operations routes under /data-ops.
 func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/episodes", h.ListEpisodes)
 	apiV1.POST("/episodes/bulk-qa/preview", h.PreviewBulkEpisodeQA)

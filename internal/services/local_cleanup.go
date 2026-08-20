@@ -195,7 +195,11 @@ func (s *LocalCleanupService) RequestCleanupEpisode(ctx context.Context, episode
 		if insertErr != nil {
 			return LocalCleanupJob{}, insertErr
 		}
-		jobID, err = res.LastInsertId()
+		newJobID, err := res.LastInsertId()
+		if err != nil {
+			return LocalCleanupJob{}, fmt.Errorf("load new local cleanup job id: %w", err)
+		}
+		jobID = newJobID
 	} else if err != nil {
 		return LocalCleanupJob{}, err
 	} else {
@@ -221,6 +225,7 @@ func (s *LocalCleanupService) GetCleanupJob(ctx context.Context, episodeID int64
 	return job, nil
 }
 
+// LocalCleanupService owns validation, auditing, and deletion of an episode's
 // original MinIO source object. Callers need only supply its numeric ID.
 type LocalCleanupService struct {
 	db     *sqlx.DB
