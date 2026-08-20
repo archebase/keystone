@@ -74,6 +74,8 @@ type Server struct {
 	dataStats           *handlers.DataProductionStatisticsHandler
 	productionDashboard *handlers.ProductionDashboardHandler
 	syncHandler         *handlers.SyncHandler
+	localCleanup        *handlers.LocalCleanupHandler
+	localCleanupWorker  *services.LocalCleanupWorker
 	syncWorker          *services.SyncWorker
 	autoSync            *autosync.Manager
 	autoSyncSettings    *handlers.AutoSyncSettingsHandler
@@ -258,8 +260,16 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 
 	// Create SyncHandler for cloud sync API
 	var syncHandler *handlers.SyncHandler
+	var localCleanupHandler *handlers.LocalCleanupHandler
+	var localCleanupWorker *services.LocalCleanupWorker
 	if db != nil {
 		syncHandler = handlers.NewSyncHandler(db, syncWorker)
+		if s3Client != nil {
+			cleanupService := services.NewLocalCleanupService(db, s3Client, cfg.Storage.Bucket)
+			localCleanupHandler = handlers.NewLocalCleanupHandler(cleanupService)
+			localCleanupWorker = services.NewLocalCleanupWorker(cleanupService, time.Minute)
+			dataOpsHandler.SetLocalCleanupService(cleanupService)
+		}
 	}
 
 	var depthNormManager *depthnorm.Manager
@@ -313,6 +323,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		dataStats:           dataStatsHandler,
 		productionDashboard: productionDashboardHandler,
 		syncHandler:         syncHandler,
+		localCleanup:        localCleanupHandler,
+		localCleanupWorker:  localCleanupWorker,
 		syncWorker:          syncWorker,
 		autoSync:            autoSyncManager,
 		autoSyncSettings:    autoSyncSettingsHandler,
@@ -474,6 +486,9 @@ func (s *Server) buildRoutes() http.Handler {
 		s.syncHandler.RegisterReadRoutes(readSync)
 		s.syncHandler.RegisterAdminRoutes(adminSync)
 	}
+	if s.localCleanup != nil {
+		s.localCleanup.RegisterAdminRoutes(v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin")))
+	}
 	if s.autoSyncSettings != nil {
 		adminAutoSync := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
 		s.autoSyncSettings.RegisterRoutes(adminAutoSync)
@@ -537,6 +552,9 @@ func (s *Server) buildRecorderWSRoutes(recorderHandler *handlers.RecorderHandler
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
+	if s.localCleanupWorker != nil {
+		s.localCleanupWorker.Start()
+	}
 	if s.stereoSplit != nil {
 		if err := s.stereoSplit.StartReconciler(); err != nil {
 			return fmt.Errorf("start stereo split reconciler: %w", err)
@@ -783,6 +801,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			logShutdownError("Recorder WebSocket server", err)
 			if shutdownErr == nil {
 				shutdownErr = fmt.Errorf("recorder websocket shutdown: %w", err)
+			}
+		}
+	}
+
+	if s.localCleanupWorker != nil {
+		if err := s.localCleanupWorker.Stop(ctx); err != nil {
+			logShutdownError("Local cleanup worker", err)
+			if shutdownErr == nil {
+				shutdownErr = fmt.Errorf("local cleanup worker shutdown: %w", err)
 			}
 		}
 	}

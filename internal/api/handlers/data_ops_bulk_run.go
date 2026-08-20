@@ -26,6 +26,7 @@ const (
 	dataOpsBulkRunActionQA                 = "bulk_qa"
 	dataOpsBulkRunActionMP4                = "bulk_mp4"
 	dataOpsBulkRunActionSync               = "bulk_sync"
+	dataOpsBulkRunActionLocalCleanup       = "local_cleanup"
 	dataOpsBulkRunActionStereoSplit        = "stereo_split"
 	dataOpsBulkRunActionDepthNormalization = "depth_normalization"
 
@@ -803,7 +804,7 @@ func (h *DataOpsHandler) currentBulkRun(ctx context.Context, action string) (Dat
 
 func isAllowedDataOpsBulkRunAction(action string) bool {
 	switch action {
-	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync, dataOpsBulkRunActionStereoSplit, dataOpsBulkRunActionDepthNormalization:
+	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync, dataOpsBulkRunActionLocalCleanup, dataOpsBulkRunActionStereoSplit, dataOpsBulkRunActionDepthNormalization:
 		return true
 	default:
 		return false

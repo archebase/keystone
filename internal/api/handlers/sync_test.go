@@ -462,6 +462,9 @@ func setupSyncHandlerTestDB(t *testing.T) *sqlx.DB {
 			cloud_synced BOOLEAN DEFAULT FALSE,
 			cloud_processed BOOLEAN DEFAULT FALSE,
 			cloud_synced_at TIMESTAMP NULL,
+			local_storage_status TEXT DEFAULT 'available',
+			local_storage_deleted_at TIMESTAMP NULL,
+			local_storage_delete_error TEXT NULL,
 			deleted_at TIMESTAMP NULL
 		)`,
 		`CREATE TABLE sync_logs (
