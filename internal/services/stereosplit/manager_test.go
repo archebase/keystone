@@ -130,6 +130,28 @@ func TestManagerPreparesExecutionWithDynamicScratchStorage(t *testing.T) {
 	}
 }
 
+func TestManagerOmitsResourcesWhenResourceLimitsDisabled(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, resource_limits_enabled, created_by) VALUES (?, 0, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+	manager := NewManager(db, nil, &fakeObjectStore{size: 10 * 1024 * 1024 * 1024, etag: "source-etag"}, testManagerConfig())
+
+	execution, err := manager.PrepareExecution(context.Background(), ExecutionInput{
+		SourceBucket:    "source-bucket",
+		SourceObjectKey: "raw/source.mcap",
+		OutputScope:     "42/stereo-split",
+		SubmissionID:    "derivative-42-stereo-split-g1",
+		Generation:      1,
+	})
+	if err != nil {
+		t.Fatalf("PrepareExecution() error = %v", err)
+	}
+	if len(execution.Request.Resources.Requests) != 0 || len(execution.Request.Resources.Limits) != 0 {
+		t.Fatalf("resources = %+v, want empty requests and limits", execution.Request.Resources)
+	}
+}
+
 func TestManagerRoundsDynamicScratchStorageRequestsUpToGiB(t *testing.T) {
 	db := newTestDB(t)
 	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
@@ -1073,7 +1095,7 @@ func TestManagerConcurrencySettingTakesEffectWithoutRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentImageConfig() error = %v", err)
 	}
-	updated, err := manager.UpdateImageConfig(context.Background(), testImageDigest, 2, current.ID, "admin")
+	updated, err := manager.UpdateImageConfig(context.Background(), testImageDigest, 2, true, current.ID, "admin")
 	if err != nil {
 		t.Fatalf("UpdateImageConfig() error = %v", err)
 	}
@@ -1124,7 +1146,7 @@ func TestManagerConcurrencyUpdateWaitsForInFlightSubmission(t *testing.T) {
 
 	updateDone := make(chan error, 1)
 	go func() {
-		_, updateErr := manager.UpdateImageConfig(context.Background(), testImageDigest, 1, current.ID, "admin")
+		_, updateErr := manager.UpdateImageConfig(context.Background(), testImageDigest, 1, true, current.ID, "admin")
 		updateDone <- updateErr
 	}()
 	select {
@@ -1153,6 +1175,7 @@ func TestManagerUpdateImageAcceptsAnyValidDigestRepository(t *testing.T) {
 		context.Background(),
 		"registry.example.com/team/stereo-split@sha256:"+strings.Repeat("c", 64),
 		1,
+		true,
 		1,
 		"admin",
 	)
@@ -2438,6 +2461,8 @@ func newTestDB(t *testing.T) *sqlx.DB {
 			previous_image_ref TEXT,
 			max_concurrent INTEGER NOT NULL DEFAULT 1,
 			previous_max_concurrent INTEGER,
+			resource_limits_enabled BOOLEAN NOT NULL DEFAULT 1,
+			previous_resource_limits_enabled BOOLEAN,
 			created_by TEXT,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,

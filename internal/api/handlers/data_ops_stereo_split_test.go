@@ -227,10 +227,11 @@ func (f *fakeDataOpsStereoSplitManager) CurrentImageConfig(context.Context) (ste
 	return f.imageConfig, nil
 }
 
-func (f *fakeDataOpsStereoSplitManager) UpdateImageConfig(_ context.Context, imageRef string, maxConcurrent int, expectedRevisionID int64, _ string) (stereosplit.ImageConfig, error) {
+func (f *fakeDataOpsStereoSplitManager) UpdateImageConfig(_ context.Context, imageRef string, maxConcurrent int, resourceLimitsEnabled bool, expectedRevisionID int64, _ string) (stereosplit.ImageConfig, error) {
 	f.updatedImage = imageRef
 	f.updatedMaxConcurrent = maxConcurrent
 	f.expectedRevision = expectedRevisionID
+	f.imageConfig.ResourceLimitsEnabled = resourceLimitsEnabled
 	return f.imageConfig, nil
 }
 

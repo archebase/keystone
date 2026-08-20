@@ -185,16 +185,20 @@ func (m *Manager) PrepareExecution(ctx context.Context, input ExecutionInput) (E
 	backoffLimit := int32(0)
 	ttlSeconds := m.cfg.TTLSecondsAfterDone
 	deadline := m.cfg.ActiveDeadline
-	resourceRequests := cloneStringMap(m.cfg.Resources.Requests)
-	if resourceRequests == nil {
-		resourceRequests = make(map[string]string)
+	resourceRequests := make(map[string]string)
+	resourceLimits := make(map[string]string)
+	if currentImage.ResourceLimitsEnabled {
+		resourceRequests = cloneStringMap(m.cfg.Resources.Requests)
+		if resourceRequests == nil {
+			resourceRequests = make(map[string]string)
+		}
+		resourceLimits = cloneStringMap(m.cfg.Resources.Limits)
+		if resourceLimits == nil {
+			resourceLimits = make(map[string]string)
+		}
+		resourceRequests["ephemeral-storage"] = scratchRequest
+		resourceLimits["ephemeral-storage"] = fmt.Sprintf("%dGi", scratchStorageLimitGiB)
 	}
-	resourceLimits := cloneStringMap(m.cfg.Resources.Limits)
-	if resourceLimits == nil {
-		resourceLimits = make(map[string]string)
-	}
-	resourceRequests["ephemeral-storage"] = scratchRequest
-	resourceLimits["ephemeral-storage"] = fmt.Sprintf("%dGi", scratchStorageLimitGiB)
 	request := orbitapi.SubmitRequest{
 		SubmissionID: submissionID,
 		Image:        imageRef,
