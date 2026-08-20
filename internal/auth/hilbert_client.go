@@ -32,6 +32,7 @@ const (
 	hilbertAccountGetCurPath      = "/v1/console/account/get-cur"
 	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
 	hilbertDCPlanQueryPath        = "/v1/data-collection/dc-plan/query"
+	hilbertDCPlanPatchDevicePath  = "/v1/data-collection/dc-plan/patch-dc-device-id"
 	hilbertDCDeviceQueryPath      = "/v1/data-collection/dc-device/query"
 	hilbertDCDeviceGetKeyPath     = "/v1/data-collection/dc-device/get-api-key"
 	hilbertDCDeviceGeneratePath   = "/v1/data-collection/dc-device/generate-api-key"
@@ -125,7 +126,7 @@ type HilbertDCPlan struct {
 	DCTaskName           string            `json:"dcTaskName,omitempty"`
 	DCTaskDescription    string            `json:"dcTaskDescription,omitempty"`
 	DCTask               *HilbertDCPlanRef `json:"dcTask,omitempty"`
-	DCDeviceID           int64             `json:"dcDeviceId"`
+	DCDeviceID           *int64            `json:"dcDeviceId"`
 	DCDeviceName         string            `json:"dcDeviceName,omitempty"`
 	DCDevice             *HilbertDCPlanRef `json:"dcDevice,omitempty"`
 	DCType               string            `json:"dcType"`
@@ -392,6 +393,33 @@ func (c *HilbertClient) QueryDCPlans(ctx context.Context, workspaceID int64, pag
 		return nil, fmt.Errorf("%w: dc plan query response code %d", ErrHilbertUnavailable, resp.Code)
 	}
 	return &resp.Data, nil
+}
+
+// PatchDCPlanDCDeviceID binds a Hilbert data collection plan to a device once.
+func (c *HilbertClient) PatchDCPlanDCDeviceID(ctx context.Context, workspaceID, planID, deviceID int64) (bool, error) {
+	if workspaceID <= 0 || planID <= 0 || deviceID <= 0 {
+		return false, fmt.Errorf("%w: invalid dc plan device binding parameters", ErrHilbertUnavailable)
+	}
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCPlanPatchDevicePath, map[string]int64{
+		"workspaceId": workspaceID,
+		"id":          planID,
+		"dcDeviceId":  deviceID,
+	})
+	if err != nil {
+		return false, err
+	}
+	var resp hilbertCommonResponse[bool]
+	if err := c.doJSON(req, &resp); err != nil {
+		return false, err
+	}
+	if resp.Code != 0 {
+		message := resp.errorMessage()
+		if message == "" {
+			message = fmt.Sprintf("response code %d", resp.Code)
+		}
+		return false, fmt.Errorf("%w: patch dc plan device: %s", ErrHilbertUnavailable, message)
+	}
+	return resp.Data, nil
 }
 
 // QueryAccountByCode fetches one Hilbert account by exact account code.

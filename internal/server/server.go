@@ -32,6 +32,7 @@ import (
 
 	"archebase.com/keystone-edge/docs"
 	"archebase.com/keystone-edge/internal/api/handlers"
+	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
@@ -196,7 +197,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	transferWriteTimeout := axonTransferWriteTimeout(&cfg.AxonTransfer)
 
 	// Create TaskHandler for task configuration
-	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout, transferWriteTimeout)
+	hilbertBinder := auth.NewHilbertClient(&cfg.Hilbert)
+	taskHandler := handlers.NewTaskHandler(db, transferHub, recorderHub, recorderRPCTimeout, hilbertBinder, transferWriteTimeout)
 	taskHandler.SetCallbackPublicBaseURL(cfg.Server.CallbackPublicBaseURL)
 
 	// Create database-dependent handlers only when DB is available
@@ -221,7 +223,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		dataCollectorHandler = handlers.NewDataCollectorHandler(db)
 		stationHandler = handlers.NewStationHandler(db)
 		workspaceHandler = handlers.NewWorkspaceHandler(db, workspaceSyncService)
-		dcPlanHandler = handlers.NewDCPlanHandler(db, dcPlanSyncService)
+		dcPlanHandler = handlers.NewDCPlanHandler(db, dcPlanSyncService, hilbertBinder)
 		dataOpsHandler = handlers.NewDataOpsHandler(db)
 		dataOpsHandler.SetBulkActionDeps(qaHandler, syncWorker)
 		if err := dataOpsHandler.InterruptActiveBulkRuns(context.Background(), cfg.Sync.MaxRetries); err != nil {

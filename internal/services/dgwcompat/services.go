@@ -17,7 +17,9 @@ import (
 	"sync"
 	"time"
 
+	keystoneauth "archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
+	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	keystoneServices "archebase.com/keystone-edge/internal/services"
 	"github.com/google/uuid"
@@ -105,6 +107,10 @@ func (s *sessionStore) update(uploadID string, update func(*uploadSession)) (*up
 	return session, true
 }
 
+type hilbertDCPlanBinder interface {
+	PatchDCPlanDCDeviceID(ctx context.Context, workspaceID, planID, deviceID int64) (bool, error)
+}
+
 type gatewayService struct {
 	cloudpb.UnimplementedDataGatewayServiceServer
 	cfg      Config
@@ -112,6 +118,7 @@ type gatewayService struct {
 	sts      stsProvider
 	sessions *sessionStore
 	qa       episodeQAEnqueuer
+	hilbert  hilbertDCPlanBinder
 	now      func() time.Time
 }
 
@@ -123,7 +130,13 @@ func newGatewayService(cfg Config, sts stsProvider, sessions *sessionStore, db *
 		sts:      sts,
 		sessions: sessions,
 		qa:       qa,
-		now:      func() time.Time { return time.Now().UTC() },
+		hilbert: keystoneauth.NewHilbertClient(&config.HilbertConfig{
+			BaseURL:        cfg.HilbertBaseURL,
+			TimeoutSeconds: 5,
+			AccessKey:      cfg.HilbertAccessKey,
+			SecretKey:      cfg.HilbertSecretKey,
+		}),
+		now: func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -464,6 +477,8 @@ type uploadTaskBinding struct {
 	DCPlanID        sql.NullInt64 `db:"dc_plan_id"`
 	LocalDCPlanID   sql.NullInt64 `db:"local_dc_plan_id"`
 	PlanWorkspaceID int64         `db:"plan_workspace_id"`
+	PlanDeviceID    sql.NullInt64 `db:"plan_device_id"`
+	PlanOperator    string        `db:"plan_operator"`
 	EpisodePK       sql.NullInt64 `db:"episode_pk"`
 }
 
@@ -481,9 +496,9 @@ func (s *gatewayService) assignTaskForDevice(
 	}
 
 	var plan struct {
-		WorkspaceID int64  `db:"workspace_id"`
-		DeviceID    string `db:"device_id"`
-		Operator    string `db:"operator"`
+		WorkspaceID int64          `db:"workspace_id"`
+		DeviceID    sql.NullString `db:"device_id"`
+		Operator    string         `db:"operator"`
 	}
 	if err := s.db.GetContext(ctx, &plan, `
 		SELECT workspace_id, CAST(dc_device_id AS CHAR) AS device_id, operator
@@ -499,7 +514,35 @@ func (s *gatewayService) assignTaskForDevice(
 	if plan.WorkspaceID != principal.WorkspaceID {
 		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.PermissionDenied, "dc plan belongs to another workspace")
 	}
-	if strings.TrimSpace(plan.DeviceID) != strings.TrimSpace(principal.DeviceID) {
+	deviceID := strings.TrimSpace(principal.DeviceID)
+	if !plan.DeviceID.Valid {
+		hilbertDeviceID, parseErr := parseHilbertDeviceID(deviceID)
+		if parseErr != nil || s.hilbert == nil {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.FailedPrecondition, "dc plan device binding unavailable")
+		}
+		bound, bindErr := s.hilbert.PatchDCPlanDCDeviceID(ctx, plan.WorkspaceID, planID, hilbertDeviceID)
+		if bindErr != nil || !bound {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Aborted, "dc plan device binding failed")
+		}
+		now := s.now()
+		if _, updateErr := s.db.ExecContext(ctx, `
+			UPDATE dc_plan SET dc_device_id = ?, dc_device_name = ?, local_updated_at = ?
+			WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
+		`, hilbertDeviceID, deviceID, now, planID, principal.WorkspaceID); updateErr != nil {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "dc plan device projection unavailable")
+		}
+		if projectionErr := keystoneServices.EnsureDCPlanWorkstation(ctx, s.db, keystoneauth.HilbertDCPlan{
+			ID:          planID,
+			WorkspaceID: plan.WorkspaceID,
+			Operator:    plan.Operator,
+			DCDeviceID:  &hilbertDeviceID,
+		}, now); projectionErr != nil {
+			logger.Printf("[DGW_COMPAT] project workstation after dc plan device binding failed: workspace_id=%d dc_plan_id=%d device_id=%s error=%v", plan.WorkspaceID, planID, deviceID, projectionErr)
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.FailedPrecondition, "no workstation is assigned to this device for the dc plan")
+		}
+		plan.DeviceID = sql.NullString{String: deviceID, Valid: true}
+	}
+	if strings.TrimSpace(plan.DeviceID.String) != deviceID {
 		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.PermissionDenied, "dc plan is not assigned to this device")
 	}
 
@@ -625,6 +668,8 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 			t.dc_plan_id,
 			t.local_dc_plan_id,
 			dp.workspace_id AS plan_workspace_id,
+			dp.dc_device_id AS plan_device_id,
+			dp.operator AS plan_operator,
 			e.id AS episode_pk
 		FROM tasks t
 		INNER JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
@@ -659,7 +704,37 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 	default:
 		return uploadTaskBinding{}, status.Error(codes.FailedPrecondition, "task is not uploadable")
 	}
+	if err := s.bindDCPlanDeviceOnFirstUpload(ctx, principal, row); err != nil {
+		return uploadTaskBinding{}, err
+	}
 	return row, nil
+}
+
+// bindDCPlanDeviceOnFirstUpload binds a Hilbert dc plan to the authenticated device when the
+// plan has not been bound yet. It is invoked on the first real upload path, which is the common
+// point shared by ego-portal and ego-portal-lite after an operator selects a task.
+func (s *gatewayService) bindDCPlanDeviceOnFirstUpload(
+	ctx context.Context,
+	principal devicePrincipal,
+	row uploadTaskBinding,
+) error {
+	if s == nil || s.hilbert == nil || !row.DCPlanID.Valid {
+		return nil
+	}
+	deviceID, err := parseHilbertDeviceID(strings.TrimSpace(principal.DeviceID))
+	if err != nil {
+		return status.Error(codes.FailedPrecondition, "dc plan device binding unavailable")
+	}
+	if row.PlanDeviceID.Valid && row.PlanDeviceID.Int64 == deviceID {
+		return nil
+	}
+	if row.PlanDeviceID.Valid {
+		return status.Error(codes.PermissionDenied, "dc plan is not assigned to this device")
+	}
+	if err := keystoneServices.BindDCPlanDevice(ctx, s.db, s.hilbert, row.PlanWorkspaceID, row.DCPlanID.Int64, deviceID); err != nil {
+		return status.Error(codes.Aborted, "dc plan device binding failed")
+	}
+	return nil
 }
 
 type completedUploadEpisode struct {

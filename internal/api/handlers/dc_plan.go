@@ -25,6 +25,7 @@ import (
 type DCPlanHandler struct {
 	db          *sqlx.DB
 	syncService dcPlanWorkspaceSyncer
+	hilbert     services.HilbertDCPlanBinder
 }
 
 type dcPlanWorkspaceSyncer interface {
@@ -33,8 +34,8 @@ type dcPlanWorkspaceSyncer interface {
 }
 
 // NewDCPlanHandler creates a new DCPlanHandler.
-func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer) *DCPlanHandler {
-	return &DCPlanHandler{db: db, syncService: syncService}
+func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer, hilbert services.HilbertDCPlanBinder) *DCPlanHandler {
+	return &DCPlanHandler{db: db, syncService: syncService, hilbert: hilbert}
 }
 
 // DCPlanResponse represents one Hilbert dc_plan projection.
@@ -86,7 +87,8 @@ type DCPlanSyncResponse struct {
 	LastSyncedAt string `json:"last_synced_at"`
 }
 
-// OperatorPlanItem represents one plan currently executable by the logged-in collector.
+// OperatorPlanItem represents one plan currently available to the logged-in collector.
+// A plan without a Hilbert device is exposed with the current robot device ID as its effective device so the collector can select it; the actual Hilbert binding still happens when the task is requested.
 type OperatorPlanItem struct {
 	ID                    int64  `json:"id"`
 	WorkspaceID           int64  `json:"workspace_id"`
@@ -170,7 +172,8 @@ func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/operator/plans/refresh", h.RefreshOperatorPlans)
 }
 
-// RefreshOperatorPlans synchronizes and returns plans assigned to the authenticated workstation.
+// RefreshOperatorPlans synchronizes and returns plans available to the authenticated workstation.
+// It includes plans already bound to the current Ego device and plans without a device whose operator matches the logged-in collector; the latter are bound when the device requests a task.
 //
 // @Summary      Refresh operator plans
 // @Description  Synchronizes Hilbert plans and returns plans assigned to the authenticated collector workstation.
@@ -223,6 +226,12 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 		)
 	}
 
+	// 为当前 Ego 设备可见但尚未绑定 Hilbert 设备的 Ego 计划创建候选任务，
+	// 让传统 ego-portal 和 ego-portal-lite 都能在用户真正选择并上传前看到该计划。
+	if err := services.EnsureUnboundEgoCandidateTasksForWorkstation(c.Request.Context(), h.db, h.hilbert, claims.WorkspaceID, claims.OperatorID, claims.WorkstationID, dcDeviceID, time.Now().UTC()); err != nil {
+		logger.Printf("[DC_PLAN] Ensure unbound ego candidate tasks failed: workspace_id=%d operator=%s error=%v", claims.WorkspaceID, claims.OperatorID, err)
+	}
+
 	rows := []struct {
 		ID                    int64        `db:"id"`
 		WorkspaceID           int64        `db:"workspace_id"`
@@ -260,7 +269,7 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 			dp.dc_task_id,
 			COALESCE(dp.dc_task_name, '') AS dc_task_name,
 			COALESCE(dp.dc_task_description, '') AS dc_task_description,
-			dp.dc_device_id,
+			COALESCE(dp.dc_device_id, ?) AS dc_device_id,
 			COALESCE(dp.dc_device_name, '') AS dc_device_name,
 			dp.dc_type,
 			dp.target_count,
@@ -321,10 +330,11 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 		) progress ON progress.dc_plan_id = dp.id
 		WHERE dp.workspace_id = ?
 			AND dp.operator = ?
-			AND dp.dc_device_id = ?
+			AND LOWER(dp.dc_type) = 'ego'
+			AND (dp.dc_device_id = ? OR dp.dc_device_id IS NULL)
 			AND dp.deleted_at IS NULL
 		ORDER BY dp.id
-	`, claims.WorkspaceID, strings.TrimSpace(claims.OperatorID), dcDeviceID); err != nil {
+	`, dcDeviceID, claims.WorkspaceID, strings.TrimSpace(claims.OperatorID), dcDeviceID); err != nil {
 		logger.Printf("[DC_PLAN] Failed to list operator plans: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh operator plans"})
 		return
