@@ -386,21 +386,6 @@ func (h *AuthHandler) activateWorkstation(
 	workstation, tokenID, err := resolveActivationWorkstation(
 		ctx, tx, collectorID, requestedWorkstationID, deviceToken, lockClause,
 	)
-	if errors.Is(err, errWorkstationNotAssigned) && deviceToken != "" {
-		robotID, robotDeviceID, ensureErr := resolveDeviceRobot(ctx, tx, deviceToken, lockClause)
-		if ensureErr != nil {
-			return authWorkstationRow{}, ensureErr
-		}
-		now := time.Now().UTC()
-		if ensureErr = h.ensureUnboundEgoWorkstation(
-			ctx, tx, collectorID, operatorID, robotID, robotDeviceID, now,
-		); ensureErr != nil {
-			return authWorkstationRow{}, ensureErr
-		}
-		workstation, tokenID, err = resolveActivationWorkstation(
-			ctx, tx, collectorID, requestedWorkstationID, deviceToken, lockClause,
-		)
-	}
 	if err != nil {
 		return authWorkstationRow{}, err
 	}
@@ -408,6 +393,9 @@ func (h *AuthHandler) activateWorkstation(
 	allowed, err := services.OperatorHasWorkspaceAccess(ctx, tx, operatorID, workstation.WorkspaceID)
 	if err != nil {
 		return authWorkstationRow{}, fmt.Errorf("check workspace access: %w", err)
+	}
+	if err := h.bindUnboundEgoPlans(ctx, tx, operatorID, workstation.WorkspaceID, workstation.DeviceID, time.Now().UTC()); err != nil {
+		return authWorkstationRow{}, err
 	}
 	eligible, err := collectorHasDevicePlan(ctx, tx, operatorID, workstation.WorkspaceID, workstation.DeviceID)
 	if err != nil {
@@ -582,12 +570,11 @@ func resolveDeviceRobot(
 	return robot.RobotID, strings.TrimSpace(robot.DeviceID), nil
 }
 
-func (h *AuthHandler) ensureUnboundEgoWorkstation(
+func (h *AuthHandler) bindUnboundEgoPlans(
 	ctx context.Context,
 	tx *sqlx.Tx,
-	collectorID int64,
 	operatorID string,
-	robotID int64,
+	workspaceID int64,
 	deviceID string,
 	now time.Time,
 ) error {
@@ -595,88 +582,48 @@ func (h *AuthHandler) ensureUnboundEgoWorkstation(
 	if err != nil || numericDeviceID <= 0 {
 		return errWorkstationNotAssigned
 	}
-	var robot struct {
-		WorkspaceID int64  `db:"workspace_id"`
-		DeviceName  string `db:"device_name"`
+	var deviceName string
+	if err := tx.GetContext(ctx, &deviceName, `
+		SELECT COALESCE(device_name, device_id) FROM robots
+		WHERE workspace_id = ? AND device_id = ? AND deleted_at IS NULL
+		LIMIT 1`, workspaceID, deviceID); err != nil {
+		return fmt.Errorf("query device name: %w", err)
 	}
-	if err := tx.GetContext(ctx, &robot, `
-		SELECT workspace_id, COALESCE(device_name, '') AS device_name
-		FROM robots WHERE id = ? AND deleted_at IS NULL
-		LIMIT 1`+projectionLockClause(tx), robotID); err != nil {
-		return fmt.Errorf("query device workspace: %w", err)
-	}
-	allowed, err := services.OperatorHasWorkspaceAccess(ctx, tx, operatorID, robot.WorkspaceID)
-	if err != nil {
-		return fmt.Errorf("check workspace access: %w", err)
-	}
-	if !allowed {
-		return errWorkstationNotAssigned
-	}
-	var planIDs []int64
+	planIDs := []int64{}
 	if err := tx.SelectContext(ctx, &planIDs, `
 		SELECT id FROM dc_plan
 		WHERE operator = ? AND workspace_id = ?
 			AND LOWER(dc_type) = 'ego' AND dc_device_id IS NULL
 			AND COALESCE(status, 'pending_collection') <> 'collected'
 			AND deleted_at IS NULL
-		ORDER BY id`+projectionLockClause(tx), operatorID, robot.WorkspaceID); err != nil {
+		ORDER BY id`+projectionLockClause(tx), operatorID, workspaceID); err != nil {
 		return fmt.Errorf("query unbound ego plans: %w", err)
-	}
-	if len(planIDs) == 0 {
-		return errWorkstationNotAssigned
-	}
-
-	deviceName := strings.TrimSpace(robot.DeviceName)
-	if deviceName == "" {
-		deviceName = deviceID
 	}
 	for _, planID := range planIDs {
 		if h.hilbert == nil {
 			return fmt.Errorf("bind unbound ego plan: Hilbert binder unavailable")
 		}
-		bound, err := h.hilbert.PatchDCPlanDCDeviceID(ctx, robot.WorkspaceID, planID, numericDeviceID)
-		if err != nil {
+		bound, err := h.hilbert.PatchDCPlanDCDeviceID(ctx, workspaceID, planID, numericDeviceID)
+		if err != nil || !bound {
 			return fmt.Errorf("patch dc plan %d device: %w", planID, err)
-		}
-		if !bound {
-			return fmt.Errorf("patch dc plan %d device returned false", planID)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE dc_plan
 			SET dc_device_id = ?, dc_device_name = ?, local_updated_at = ?
 			WHERE id = ? AND workspace_id = ? AND dc_device_id IS NULL AND deleted_at IS NULL
-		`, numericDeviceID, deviceName, now, planID, robot.WorkspaceID); err != nil {
+		`, numericDeviceID, deviceName, now, planID, workspaceID); err != nil {
 			return fmt.Errorf("update dc plan %d device projection: %w", planID, err)
 		}
 	}
-
-	var collector struct {
-		Name string `db:"name"`
-	}
-	if err := tx.GetContext(ctx, &collector, `SELECT name FROM data_collectors WHERE id = ? AND deleted_at IS NULL`, collectorID); err != nil {
-		return fmt.Errorf("query collector for workstation: %w", err)
-	}
-	metadata := fmt.Sprintf(`{"source":"unbound_ego_plan_login","workspace_id":%d,"device_id":%d,"operator":%q}`, robot.WorkspaceID, numericDeviceID, operatorID)
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO workstations (
-			robot_id, robot_name, robot_serial, data_collector_id, collector_name,
-			collector_operator_id, workspace_id, name, status, metadata,
-			created_at, updated_at, is_current
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?, ?, FALSE)
-	`, robotID, deviceName, deviceID, collectorID, collector.Name, operatorID,
-		robot.WorkspaceID, fmt.Sprintf("Hilbert Device %s Workstation", deviceID), metadata, now, now)
-	if err != nil {
-		return fmt.Errorf("create workstation for unbound ego plans: %w", err)
-	}
 	return nil
 }
-
 func projectionLockClause(tx *sqlx.Tx) string {
 	if tx != nil && tx.DriverName() == "sqlite" {
 		return ""
 	}
 	return " FOR UPDATE"
 }
+
 func collectorHasDevicePlan(
 	ctx context.Context,
 	q sqlx.QueryerContext,
@@ -692,7 +639,9 @@ func collectorHasDevicePlan(
 	if err := sqlx.GetContext(ctx, q, &eligible, `
 		SELECT EXISTS(
 			SELECT 1 FROM dc_plan
-			WHERE operator = ? AND workspace_id = ? AND dc_device_id = ? AND deleted_at IS NULL
+			WHERE operator = ? AND workspace_id = ?
+				AND (dc_device_id = ? OR dc_device_id IS NULL)
+				AND deleted_at IS NULL
 		)
 	`, operatorID, workspaceID, numericDeviceID); err != nil {
 		return false, err
@@ -947,52 +896,29 @@ func (h *AuthHandler) availableWorkstations(
 		return []authWorkstationRow{}, err
 	}
 	query, args, err := sqlx.In(`
-		SELECT DISTINCT workspace_id, dc_device_id
-		FROM dc_plan
-		WHERE operator = ? AND workspace_id IN (?) AND deleted_at IS NULL AND dc_device_id IS NOT NULL
-		ORDER BY workspace_id, dc_device_id
-	`, operatorID, workspaceIDs)
+		SELECT ws.id, ws.workspace_id, w.name AS workspace_name, ws.robot_id, ws.status,
+			r.device_id, COALESCE(r.device_name, '') AS device_name,
+			ws.is_current,
+			EXISTS(
+				SELECT 1 FROM workstations occupied_ws
+				WHERE occupied_ws.robot_id = ws.robot_id
+					AND occupied_ws.is_current = TRUE
+					AND occupied_ws.deleted_at IS NULL
+					AND occupied_ws.data_collector_id != ?
+			) AS occupied
+		FROM workstations ws
+		JOIN robots r ON r.id = ws.robot_id AND r.status = 'active' AND r.deleted_at IS NULL
+		JOIN workspaces w ON w.id = ws.workspace_id AND w.deleted_at IS NULL
+		WHERE ws.data_collector_id = ? AND ws.workspace_id IN (?)
+			AND ws.is_current = FALSE AND ws.deleted_at IS NULL
+		ORDER BY ws.workspace_id, ws.id
+	`, collectorID, collectorID, workspaceIDs)
 	if err != nil {
 		return nil, err
 	}
-	var plans []struct {
-		WorkspaceID int64 `db:"workspace_id"`
-		DeviceID    int64 `db:"dc_device_id"`
-	}
-	if err := h.db.SelectContext(ctx, &plans, h.db.Rebind(query), args...); err != nil {
+	rows := []authWorkstationRow{}
+	if err := h.db.SelectContext(ctx, &rows, h.db.Rebind(query), args...); err != nil {
 		return nil, err
-	}
-
-	rows := make([]authWorkstationRow, 0, len(plans))
-	for _, plan := range plans {
-		var row authWorkstationRow
-		err := h.db.GetContext(ctx, &row, `
-			SELECT ws.id, ws.workspace_id, w.name AS workspace_name, ws.robot_id, ws.status,
-				r.device_id, COALESCE(r.device_name, '') AS device_name,
-				ws.is_current,
-				EXISTS(
-					SELECT 1 FROM workstations occupied_ws
-					WHERE occupied_ws.robot_id = ws.robot_id
-						AND occupied_ws.is_current = TRUE
-						AND occupied_ws.deleted_at IS NULL
-						AND occupied_ws.data_collector_id != ?
-				) AS occupied
-			FROM workstations ws
-			JOIN robots r ON r.id = ws.robot_id
-			JOIN workspaces w ON w.id = ws.workspace_id AND w.deleted_at IS NULL
-			WHERE ws.data_collector_id = ? AND ws.workspace_id = ?
-				AND r.device_id = ? AND r.status = 'active'
-				AND ws.deleted_at IS NULL AND r.deleted_at IS NULL
-			ORDER BY ws.is_current DESC, ws.id DESC
-			LIMIT 1
-		`, collectorID, collectorID, plan.WorkspaceID, strconv.FormatInt(plan.DeviceID, 10))
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, row)
 	}
 	return rows, nil
 }

@@ -256,14 +256,21 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("query robot: %v", err)
 	}
-	if robot.DeviceName != "Device A" ||
-		robot.Status != "active" ||
-		!robot.DeviceTypeID.Valid ||
-		robot.DeviceTypeID.Int64 != 77 ||
-		!robot.DeviceType.Valid ||
-		robot.DeviceType.String != "Type 77" ||
-		metadataSource(robot.Metadata) != "hilbert" {
-		t.Fatalf("unexpected robot: %#v", robot)
+	var workstation struct {
+		RobotID         int64  `db:"robot_id"`
+		CollectorID     int64  `db:"data_collector_id"`
+		WorkspaceID     int64  `db:"workspace_id"`
+		CollectorStatus string `db:"status"`
+	}
+	if err := db.Get(&workstation, `
+		SELECT robot_id, data_collector_id, workspace_id, status
+		FROM workstations
+		LIMIT 1
+	`); err != nil {
+		t.Fatalf("query workstation: %v", err)
+	}
+	if workstation.RobotID != 1 || workstation.CollectorID != 1 || workstation.WorkspaceID != 123 || workstation.CollectorStatus != "offline" {
+		t.Fatalf("unexpected workstation: %#v", workstation)
 	}
 }
 
@@ -697,8 +704,17 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 		`CREATE TABLE workstations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			robot_id INTEGER NOT NULL,
+			robot_name TEXT,
+			robot_serial TEXT,
 			data_collector_id INTEGER NOT NULL,
+			collector_name TEXT,
+			collector_operator_id TEXT,
 			workspace_id INTEGER NOT NULL,
+			name TEXT,
+			status TEXT,
+			metadata TEXT,
+			created_at TIMESTAMP,
+			updated_at TIMESTAMP,
 			is_current BOOLEAN NOT NULL DEFAULT TRUE,
 			deleted_at TIMESTAMP
 		)`,

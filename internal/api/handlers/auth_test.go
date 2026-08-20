@@ -90,6 +90,10 @@ func TestAuthHandlerActivateBoundDeviceBindsUnboundEgoPlans(t *testing.T) {
 	if _, err := db.Exec(`
 		INSERT INTO data_collectors (id, name, operator_id, status) VALUES (7, 'Collector', 'dc01', 'active');
 		INSERT INTO robots (id, device_id, device_name, workspace_id, status) VALUES (101, '23', 'Ego 23', 10, 'active');
+		INSERT INTO workstations (
+			id, robot_id, robot_name, robot_serial, data_collector_id, collector_name,
+			collector_operator_id, workspace_id, name, status, is_current
+		) VALUES (11, 101, 'Ego 23', '23', 7, 'Collector', 'dc01', 10, 'Workspace 10 Device 23', 'offline', FALSE);
 		INSERT INTO dc_plan (id, workspace_id, operator, dc_type, status, dc_device_id) VALUES
 			(1001, 10, 'dc01', 'ego', 'pending_collection', NULL),
 			(1002, 10, 'dc01', 'ego', 'pending_collection', NULL),
@@ -229,7 +233,7 @@ func TestAuthHandlerMeListsPlanEligibleNonCurrentWorkstation(t *testing.T) {
 	}
 }
 
-func TestAuthHandlerMeIgnoresUnboundPlansWhenListingAvailableWorkstations(t *testing.T) {
+func TestAuthHandlerMeListsUnboundPlanWorkstation(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
 	if _, err := db.Exec(`
@@ -256,8 +260,8 @@ func TestAuthHandlerMeIgnoresUnboundPlansWhenListingAvailableWorkstations(t *tes
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal me response: %v", err)
 	}
-	if len(resp.AvailableWorkstations) != 0 {
-		t.Fatalf("available=%#v want empty for unbound plan", resp.AvailableWorkstations)
+	if len(resp.AvailableWorkstations) != 1 || resp.AvailableWorkstations[0].DeviceID != "101" {
+		t.Fatalf("available=%#v want workstation for unbound plan", resp.AvailableWorkstations)
 	}
 }
 
