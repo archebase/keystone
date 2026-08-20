@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	dataOpsBulkRunActionQA          = "bulk_qa"
-	dataOpsBulkRunActionMP4         = "bulk_mp4"
-	dataOpsBulkRunActionSync        = "bulk_sync"
-	dataOpsBulkRunActionStereoSplit = "stereo_split"
+	dataOpsBulkRunActionQA                 = "bulk_qa"
+	dataOpsBulkRunActionMP4                = "bulk_mp4"
+	dataOpsBulkRunActionSync               = "bulk_sync"
+	dataOpsBulkRunActionStereoSplit        = "stereo_split"
+	dataOpsBulkRunActionDepthNormalization = "depth_normalization"
 
 	dataOpsBulkRunStatusQueued          = "queued"
 	dataOpsBulkRunStatusRunning         = "running"
@@ -690,7 +691,7 @@ func (h *DataOpsHandler) GetCurrentBulkRun(c *gin.Context) {
 	}
 	action := c.Query("action")
 	if !isAllowedDataOpsBulkRunAction(action) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be bulk_qa, bulk_mp4, bulk_sync, or stereo_split"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be bulk_qa, bulk_mp4, bulk_sync, stereo_split, or depth_normalization"})
 		return
 	}
 
@@ -802,7 +803,7 @@ func (h *DataOpsHandler) currentBulkRun(ctx context.Context, action string) (Dat
 
 func isAllowedDataOpsBulkRunAction(action string) bool {
 	switch action {
-	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync, dataOpsBulkRunActionStereoSplit:
+	case dataOpsBulkRunActionQA, dataOpsBulkRunActionMP4, dataOpsBulkRunActionSync, dataOpsBulkRunActionStereoSplit, dataOpsBulkRunActionDepthNormalization:
 		return true
 	default:
 		return false
