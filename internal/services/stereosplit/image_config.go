@@ -31,14 +31,16 @@ var (
 
 // ImageConfig is one immutable revision of the stereo-split processing settings.
 type ImageConfig struct {
-	ID                    int64     `db:"id" json:"revision_id"`
-	ImageRef              string    `db:"image_ref_value" json:"image_ref,omitempty"`
-	PreviousImageRef      string    `db:"previous_image_ref_value" json:"previous_image_ref,omitempty"`
-	MaxConcurrent         int       `db:"max_concurrent" json:"max_concurrent"`
-	PreviousMaxConcurrent *int      `db:"previous_max_concurrent" json:"previous_max_concurrent,omitempty"`
-	CreatedBy             string    `db:"created_by_value" json:"created_by,omitempty"`
-	CreatedAt             time.Time `db:"created_at" json:"created_at"`
-	Source                string    `db:"-" json:"source"`
+	ID                            int64     `db:"id" json:"revision_id"`
+	ImageRef                      string    `db:"image_ref_value" json:"image_ref,omitempty"`
+	PreviousImageRef              string    `db:"previous_image_ref_value" json:"previous_image_ref,omitempty"`
+	MaxConcurrent                 int       `db:"max_concurrent" json:"max_concurrent"`
+	PreviousMaxConcurrent         *int      `db:"previous_max_concurrent" json:"previous_max_concurrent,omitempty"`
+	ResourceLimitsEnabled         bool      `db:"resource_limits_enabled" json:"resource_limits_enabled"`
+	PreviousResourceLimitsEnabled *bool     `db:"previous_resource_limits_enabled" json:"previous_resource_limits_enabled,omitempty"`
+	CreatedBy                     string    `db:"created_by_value" json:"created_by,omitempty"`
+	CreatedAt                     time.Time `db:"created_at" json:"created_at"`
+	Source                        string    `db:"-" json:"source"`
 }
 
 // CurrentImageConfig returns the immutable current processing-settings revision.
@@ -59,7 +61,7 @@ func (m *Manager) CurrentImageConfig(ctx context.Context) (ImageConfig, error) {
 // UpdateImageConfig atomically appends a new audited processing-settings
 // revision. The migration bootstrap row is locked as a singleton mutex so
 // correctness does not depend on InnoDB gap-lock behavior for MAX(id).
-func (m *Manager) UpdateImageConfig(ctx context.Context, rawImageRef string, maxConcurrent int, expectedRevisionID int64, actor string) (ImageConfig, error) {
+func (m *Manager) UpdateImageConfig(ctx context.Context, rawImageRef string, maxConcurrent int, resourceLimitsEnabled bool, expectedRevisionID int64, actor string) (ImageConfig, error) {
 	if m == nil || m.db == nil {
 		return ImageConfig{}, fmt.Errorf("update stereo split image: database is not configured")
 	}
@@ -87,7 +89,7 @@ func (m *Manager) UpdateImageConfig(ctx context.Context, rawImageRef string, max
 	if current.ID != expectedRevisionID {
 		return ImageConfig{}, fmt.Errorf("%w: current revision is %d", ErrConfigChanged, current.ID)
 	}
-	if current.ImageRef == imageRef && current.MaxConcurrent == maxConcurrent {
+	if current.ImageRef == imageRef && current.MaxConcurrent == maxConcurrent && current.ResourceLimitsEnabled == resourceLimitsEnabled {
 		if err := tx.Commit(); err != nil {
 			return ImageConfig{}, fmt.Errorf("commit idempotent image update: %w", err)
 		}
@@ -100,6 +102,8 @@ func (m *Manager) UpdateImageConfig(ctx context.Context, rawImageRef string, max
 		current.ImageRef,
 		maxConcurrent,
 		current.MaxConcurrent,
+		resourceLimitsEnabled,
+		current.ResourceLimitsEnabled,
 		strings.TrimSpace(actor),
 	)
 	if err != nil {
@@ -139,6 +143,8 @@ const imageConfigSelect = `
 	       COALESCE(previous_image_ref, '') AS previous_image_ref_value,
 	       max_concurrent,
 	       previous_max_concurrent,
+	       resource_limits_enabled,
+	       previous_resource_limits_enabled,
 	       COALESCE(created_by, '') AS created_by_value,
 	       created_at
 	FROM stereo_split_image_configs`
@@ -167,15 +173,18 @@ func insertImageConfigTx(
 	previousImageRef string,
 	maxConcurrent int,
 	previousMaxConcurrent int,
+	resourceLimitsEnabled bool,
+	previousResourceLimitsEnabled bool,
 	actor string,
 ) (ImageConfig, error) {
 	now := time.Now().UTC()
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO stereo_split_image_configs (
 			image_ref, previous_image_ref, max_concurrent, previous_max_concurrent,
-			created_by, created_at
-		) VALUES (NULLIF(?, ''), NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?)
-	`, imageRef, previousImageRef, maxConcurrent, previousMaxConcurrent, actor, now)
+			resource_limits_enabled, previous_resource_limits_enabled, created_by, created_at
+		) VALUES (NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, NULLIF(?, ''), ?)
+	`, imageRef, previousImageRef, maxConcurrent, previousMaxConcurrent,
+		resourceLimitsEnabled, previousResourceLimitsEnabled, actor, now)
 	if err != nil {
 		return ImageConfig{}, fmt.Errorf("insert image config revision: %w", err)
 	}

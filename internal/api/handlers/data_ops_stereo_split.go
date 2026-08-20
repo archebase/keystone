@@ -26,7 +26,7 @@ type dataOpsStereoSplitManager interface {
 	RetryQA(ctx context.Context, episodeID int64, actor string) (stereosplit.Derivative, error)
 	Logs(ctx context.Context, episodeID int64) (string, error)
 	CurrentImageConfig(ctx context.Context) (stereosplit.ImageConfig, error)
-	UpdateImageConfig(ctx context.Context, imageRef string, maxConcurrent int, expectedRevisionID int64, actor string) (stereosplit.ImageConfig, error)
+	UpdateImageConfig(ctx context.Context, imageRef string, maxConcurrent int, resourceLimitsEnabled bool, expectedRevisionID int64, actor string) (stereosplit.ImageConfig, error)
 	ListImageConfigHistory(ctx context.Context, limit, offset int) ([]stereosplit.ImageConfig, error)
 	AdmitBulk(ctx context.Context, runID string, episodeID int64, actor string) (stereosplit.BulkAdmission, error)
 }
@@ -245,9 +245,10 @@ func (h *DataOpsHandler) SyncStereoSplit(c *gin.Context) {
 
 // UpdateStereoSplitSettingsRequest updates the audited settings used by the reconciler.
 type UpdateStereoSplitSettingsRequest struct {
-	ImageRef           string `json:"image_ref" binding:"required"`
-	MaxConcurrent      int    `json:"max_concurrent" binding:"required"`
-	ExpectedRevisionID int64  `json:"expected_revision_id" binding:"required"`
+	ImageRef              string `json:"image_ref" binding:"required"`
+	MaxConcurrent         int    `json:"max_concurrent" binding:"required"`
+	ResourceLimitsEnabled *bool  `json:"resource_limits_enabled"`
+	ExpectedRevisionID    int64  `json:"expected_revision_id" binding:"required"`
 }
 
 // GetStereoSplitSettings returns the current processing settings and safe limits.
@@ -295,10 +296,15 @@ func (h *DataOpsHandler) UpdateStereoSplitSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "image_ref, max_concurrent between 1 and 100, and positive expected_revision_id are required"})
 		return
 	}
+	resourceLimitsEnabled := true
+	if request.ResourceLimitsEnabled != nil {
+		resourceLimitsEnabled = *request.ResourceLimitsEnabled
+	}
 	config, err := h.stereoSplit.UpdateImageConfig(
 		c.Request.Context(),
 		request.ImageRef,
 		request.MaxConcurrent,
+		resourceLimitsEnabled,
 		request.ExpectedRevisionID,
 		stereoSplitActor(c),
 	)
