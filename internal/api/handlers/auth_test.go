@@ -183,6 +183,38 @@ func TestAuthHandlerMeListsPlanEligibleNonCurrentWorkstation(t *testing.T) {
 	}
 }
 
+func TestAuthHandlerMeIgnoresUnboundPlansWhenListingAvailableWorkstations(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES (7, 'Collector', 'dc01', 'active');
+		INSERT INTO robots (id, device_id, device_name, workspace_id, status) VALUES (101, '101', 'Ego iPhone 01', 10, 'active');
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current)
+		VALUES (11, 7, 10, 101, 'offline', FALSE);
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_device_id) VALUES (1001, 10, 'dc01', NULL)
+	`); err != nil {
+		t.Fatalf("seed unbound plan: %v", err)
+	}
+	token, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	newTestAuthRouter(db, "").ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp AuthMeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal me response: %v", err)
+	}
+	if len(resp.AvailableWorkstations) != 0 {
+		t.Fatalf("available=%#v want empty for unbound plan", resp.AvailableWorkstations)
+	}
+}
+
 func TestAuthHandlerActivateWorkstationForEgoPortalDeviceCredential(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
@@ -761,7 +793,7 @@ func newTestAuthDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY,
 			workspace_id INTEGER NOT NULL,
 			operator TEXT NOT NULL,
-			dc_device_id INTEGER NOT NULL,
+			dc_device_id INTEGER,
 			deleted_at TEXT
 		)`,
 		`CREATE TABLE ws_client_auth_tokens (

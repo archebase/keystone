@@ -812,7 +812,7 @@ func (h *AuthHandler) availableWorkstations(
 	query, args, err := sqlx.In(`
 		SELECT DISTINCT workspace_id, dc_device_id
 		FROM dc_plan
-		WHERE operator = ? AND workspace_id IN (?) AND deleted_at IS NULL
+		WHERE operator = ? AND workspace_id IN (?) AND deleted_at IS NULL AND dc_device_id IS NOT NULL
 		ORDER BY workspace_id, dc_device_id
 	`, operatorID, workspaceIDs)
 	if err != nil {
