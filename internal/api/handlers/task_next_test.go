@@ -59,7 +59,7 @@ func newTestNextPlanTaskDB(t *testing.T) *sqlx.DB {
 			id INTEGER PRIMARY KEY, workspace_id INTEGER, name TEXT, operator TEXT,
 			dc_project_description TEXT,
 			dc_task_description TEXT,
-			dc_device_id INTEGER, dc_type TEXT, target_count INTEGER, cur_count INTEGER DEFAULT 0, target_duration INTEGER,
+			dc_device_id INTEGER, status TEXT, dc_type TEXT, target_count INTEGER, cur_count INTEGER DEFAULT 0, target_duration INTEGER,
 			deleted_at TIMESTAMP
 		);
 		CREATE TABLE data_collectors (

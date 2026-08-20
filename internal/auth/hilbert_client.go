@@ -114,6 +114,7 @@ type HilbertDCPlan struct {
 	WorkspaceID          int64             `json:"workspaceId"`
 	Name                 string            `json:"name"`
 	Description          *string           `json:"description"`
+	Status               string            `json:"status"`
 	DCFactoryID          int64             `json:"dcFactoryId"`
 	DCServiceProviderID  int64             `json:"dcServiceProviderId"`
 	Operator             string            `json:"operator"`

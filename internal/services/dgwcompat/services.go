@@ -479,6 +479,7 @@ type uploadTaskBinding struct {
 	PlanWorkspaceID int64         `db:"plan_workspace_id"`
 	PlanDeviceID    sql.NullInt64 `db:"plan_device_id"`
 	PlanOperator    string        `db:"plan_operator"`
+	PlanStatus      string        `db:"plan_status"`
 	EpisodePK       sql.NullInt64 `db:"episode_pk"`
 }
 
@@ -499,9 +500,11 @@ func (s *gatewayService) assignTaskForDevice(
 		WorkspaceID int64          `db:"workspace_id"`
 		DeviceID    sql.NullString `db:"device_id"`
 		Operator    string         `db:"operator"`
+		Status      string         `db:"status"`
 	}
 	if err := s.db.GetContext(ctx, &plan, `
-		SELECT workspace_id, CAST(dc_device_id AS CHAR) AS device_id, operator
+		SELECT workspace_id, CAST(dc_device_id AS CHAR) AS device_id, operator,
+			COALESCE(status, 'pending_collection') AS status
 		FROM dc_plan
 		WHERE id = ? AND deleted_at IS NULL
 		LIMIT 1
@@ -513,6 +516,9 @@ func (s *gatewayService) assignTaskForDevice(
 	}
 	if plan.WorkspaceID != principal.WorkspaceID {
 		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.PermissionDenied, "dc plan belongs to another workspace")
+	}
+	if strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
+		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.FailedPrecondition, "dc plan is closed")
 	}
 	deviceID := strings.TrimSpace(principal.DeviceID)
 	if !plan.DeviceID.Valid {
@@ -670,6 +676,7 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 			dp.workspace_id AS plan_workspace_id,
 			dp.dc_device_id AS plan_device_id,
 			dp.operator AS plan_operator,
+			COALESCE(dp.status, 'pending_collection') AS plan_status,
 			e.id AS episode_pk
 		FROM tasks t
 		INNER JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
@@ -698,6 +705,9 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 	}
 	if !row.WorkstationID.Valid || !row.RobotID.Valid || row.RobotID.Int64 != principal.RobotID {
 		return uploadTaskBinding{}, status.Error(codes.PermissionDenied, "task workstation does not belong to authenticated device")
+	}
+	if strings.EqualFold(strings.TrimSpace(row.PlanStatus), "collected") {
+		return uploadTaskBinding{}, status.Error(codes.FailedPrecondition, "dc plan is closed")
 	}
 	switch row.Status {
 	case "pending", "ready", "in_progress", "uploading":

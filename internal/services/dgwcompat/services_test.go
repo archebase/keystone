@@ -1639,6 +1639,7 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 			dc_project_description TEXT,
 			dc_task_description TEXT,
 			dc_device_id INTEGER,
+			status TEXT,
 			dc_type TEXT,
 			target_count INTEGER,
 			cur_count INTEGER DEFAULT 0,

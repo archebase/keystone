@@ -145,7 +145,7 @@ func newTestTaskConfigCallbackDB(t *testing.T) *sqlx.DB {
 			name TEXT,
 			operator TEXT,
 			dc_type TEXT,
-			dc_device_id INTEGER,
+			dc_device_id INTEGER, status TEXT,
 			target_count INTEGER,
 			target_duration INTEGER,
 			deleted_at TIMESTAMP NULL

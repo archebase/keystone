@@ -84,7 +84,7 @@ func (p *dcPlanWorkstationProjector) project(
 	}
 
 	for _, plan := range plans {
-		if plan.DCDeviceID == nil {
+		if plan.DCDeviceID == nil || strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
 			// 无设备的 Ego 计划先保留投影，等待设备接单时由 Keystone 补绑。
 			summary.BlockedCount++
 			continue

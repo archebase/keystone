@@ -67,6 +67,34 @@ func TestDCPlanListFiltersByWorkspaceAndFields(t *testing.T) {
 	}
 }
 
+func TestDCPlanListAllowsUnboundDevice(t *testing.T) {
+	db := newTestDCPlanHandlerDB(t)
+	defer db.Close()
+	seedDCPlanHandlerPlan(t, db, 1001, 123, "Ego Kitchen", "ego", "alice", "2026-07-09")
+	if _, err := db.Exec(`UPDATE dc_plan SET dc_device_id = NULL, dc_device_name = NULL WHERE id = ?`, 1001); err != nil {
+		t.Fatalf("clear dc device: %v", err)
+	}
+	router := newTestDCPlanRouter(db, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dc-plans?workspace_id=123&limit=20&offset=0", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp DCPlanListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("items=%d want=1 response=%#v", len(resp.Items), resp)
+	}
+	if resp.Items[0].DCDeviceID != 0 || resp.Items[0].DCDeviceName != "" {
+		t.Fatalf("unexpected device fields: %#v", resp.Items[0])
+	}
+}
+
 func TestDCPlanListUsesLocalEpisodeProgress(t *testing.T) {
 	db := newTestDCPlanHandlerDB(t)
 	defer db.Close()
@@ -280,7 +308,8 @@ func newTestDCPlanHandlerDB(t *testing.T) *sqlx.DB {
 			dc_task_id INTEGER NOT NULL,
 			dc_task_name TEXT,
 			dc_task_description TEXT,
-			dc_device_id INTEGER NOT NULL,
+			dc_device_id INTEGER,
+			status TEXT,
 			dc_device_name TEXT,
 			dc_type TEXT NOT NULL,
 			dc_date TEXT NOT NULL,

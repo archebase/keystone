@@ -151,7 +151,7 @@ func (s *DCPlanSyncService) maintainEgoPortalPendingPools(
 	createdCount := 0
 	failedCount := 0
 	for _, plan := range plans {
-		if plan.DCDeviceID == nil {
+		if plan.DCDeviceID == nil || strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
 			continue
 		}
 		result, err := s.taskSupply.EnsureEgoPortalPendingPool(ctx, plan.ID, now)
@@ -337,6 +337,15 @@ func (s *DCPlanSyncService) upsertDCPlans(ctx context.Context, workspaceID int64
 		if err := upsertDCPlan(ctx, tx, plan, syncedAt); err != nil {
 			return err
 		}
+		if strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE tasks
+				SET status = 'cancelled', updated_at = ?
+				WHERE dc_plan_id = ? AND status = 'pending' AND deleted_at IS NULL
+			`, syncedAt, plan.ID); err != nil {
+				return err
+			}
+		}
 	}
 	return tx.Commit()
 }
@@ -363,6 +372,7 @@ func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syn
 		plan.ID,
 		plan.WorkspaceID,
 		strings.TrimSpace(plan.Name),
+		strings.TrimSpace(plan.Status),
 		description,
 		plan.DCFactoryID,
 		plan.DCServiceProviderID,
@@ -396,15 +406,16 @@ func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syn
 	if tx.DriverName() == "sqlite" {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO dc_plan (
-				id, workspace_id, name, description, dc_factory_id, dc_service_provider_id,
+				id, workspace_id, name, status, description, dc_factory_id, dc_service_provider_id,
 				operator, operator_display_name, dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, dc_date,
 				target_count, cur_count, target_duration, cur_duration, created_by, created_time,
 				updated_by, updated_time, raw_payload, last_synced_at, sync_error,
 				local_created_at, local_updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				workspace_id = excluded.workspace_id,
 				name = excluded.name,
+				status = excluded.status,
 				description = excluded.description,
 				dc_factory_id = excluded.dc_factory_id,
 				dc_service_provider_id = excluded.dc_service_provider_id,
@@ -439,15 +450,16 @@ func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syn
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO dc_plan (
-			id, workspace_id, name, description, dc_factory_id, dc_service_provider_id,
+			id, workspace_id, name, status, description, dc_factory_id, dc_service_provider_id,
 			operator, operator_display_name, dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, dc_date,
 			target_count, cur_count, target_duration, cur_duration, created_by, created_time,
 			updated_by, updated_time, raw_payload, last_synced_at, sync_error,
 			local_created_at, local_updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			workspace_id = VALUES(workspace_id),
 			name = VALUES(name),
+			status = VALUES(status),
 			description = VALUES(description),
 			dc_factory_id = VALUES(dc_factory_id),
 			dc_service_provider_id = VALUES(dc_service_provider_id),
