@@ -614,7 +614,7 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		}
 	}
 
-	conditions := []string{"tasks.deleted_at IS NULL"}
+	conditions := []string{"tasks.deleted_at IS NULL", "COALESCE(dp.status, 'pending_collection') != 'collected'"}
 	args := make([]interface{}, 0, 6)
 
 	if taskID != "" {

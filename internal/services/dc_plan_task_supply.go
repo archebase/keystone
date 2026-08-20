@@ -76,6 +76,7 @@ type taskSupplyPlanRow struct {
 	DCProjectDescription string `db:"dc_project_description"`
 	DCTaskDescription    string `db:"dc_task_description"`
 	DCDeviceID           *int64 `db:"dc_device_id"`
+	Status               string `db:"status"`
 	DCType               string `db:"dc_type"`
 	TargetCount          int64  `db:"target_count"`
 	CurCount             int64  `db:"cur_count"`
@@ -119,6 +120,9 @@ func (s *DCPlanTaskSupplyService) EnsureNextTask(
 	plan, err := loadTaskSupplyPlan(ctx, tx, planID)
 	if err != nil {
 		return nil, err
+	}
+	if strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
+		return nil, ErrDCPlanTaskSupplyTargetReached
 	}
 	workstation, err := loadTaskSupplyWorkstation(ctx, tx, plan, workstationID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -251,7 +255,7 @@ func (s *DCPlanTaskSupplyService) EnsureUnboundEgoCandidateTask(
 	if err != nil {
 		return err
 	}
-	if plan.DCDeviceID != nil {
+	if plan.DCDeviceID != nil || strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
 		return nil
 	}
 	if _, err := insertPendingPlanTask(ctx, tx, plan, workstationID, now, 0, false); err != nil {
@@ -279,6 +283,9 @@ func (s *DCPlanTaskSupplyService) EnsureEgoPortalPendingPool(
 	plan, err := loadTaskSupplyPlan(ctx, tx, planID)
 	if err != nil {
 		return nil, err
+	}
+	if strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
+		return nil, ErrDCPlanTaskSupplyTargetReached
 	}
 	workstation, err := loadTaskSupplyWorkstation(ctx, tx, plan, 0)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -338,6 +345,7 @@ func loadTaskSupplyPlan(
 	var plan taskSupplyPlanRow
 	if err := tx.GetContext(ctx, &plan, `
 		SELECT id, workspace_id, name, operator,
+			COALESCE(status, 'pending_collection') AS status,
 			COALESCE(dc_project_description, '') AS dc_project_description,
 			COALESCE(dc_task_description, '') AS dc_task_description,
 			dc_device_id, dc_type, target_count, cur_count, target_duration
@@ -526,6 +534,7 @@ func EnsureUnboundEgoCandidateTasksForWorkstation(
 			AND operator = ?
 			AND LOWER(dc_type) = 'ego'
 			AND dc_device_id IS NULL
+			AND COALESCE(status, 'pending_collection') != 'collected'
 			AND deleted_at IS NULL
 		ORDER BY id
 	`, workspaceID, strings.TrimSpace(operator)); err != nil {

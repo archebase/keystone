@@ -552,6 +552,7 @@ func newTestDCPlanTaskSupplyDB(t *testing.T) *sqlx.DB {
 			dc_project_description TEXT,
 			dc_task_description TEXT,
 			dc_device_id INTEGER NOT NULL,
+			status TEXT,
 			dc_type TEXT NOT NULL,
 			target_count INTEGER NOT NULL,
 			cur_count INTEGER NOT NULL DEFAULT 0,

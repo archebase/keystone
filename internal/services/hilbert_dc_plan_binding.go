@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"archebase.com/keystone-edge/internal/auth"
@@ -34,22 +35,29 @@ func BindDCPlanDevice(
 		return fmt.Errorf("dc plan device binding unavailable")
 	}
 
-	var currentDeviceID sql.NullInt64
-	var operator string
-	if err := db.GetContext(ctx, &currentDeviceID, `
-		SELECT dc_device_id
+	var planRow struct {
+		CurrentDeviceID sql.NullInt64 `db:"dc_device_id"`
+		Status          string        `db:"status"`
+	}
+	if err := db.GetContext(ctx, &planRow, `
+		SELECT dc_device_id, COALESCE(status, 'pending_collection') AS status
 		FROM dc_plan
 		WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
 		LIMIT 1
 	`, planID, workspaceID); err != nil {
 		return fmt.Errorf("query dc plan for device binding: %w", err)
 	}
+	if strings.EqualFold(strings.TrimSpace(planRow.Status), "collected") {
+		return fmt.Errorf("dc plan %d is closed", planID)
+	}
+	currentDeviceID := planRow.CurrentDeviceID
 	if currentDeviceID.Valid && currentDeviceID.Int64 == deviceID {
 		return nil
 	}
 	if currentDeviceID.Valid {
 		return fmt.Errorf("dc plan %d is already bound to device %d", planID, currentDeviceID.Int64)
 	}
+	var operator string
 	if err := db.GetContext(ctx, &operator, `
 		SELECT operator
 		FROM dc_plan

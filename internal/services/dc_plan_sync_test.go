@@ -528,6 +528,7 @@ func newTestDCPlanSyncDB(t *testing.T) *sqlx.DB {
 			dc_task_name TEXT,
 			dc_task_description TEXT,
 			dc_device_id INTEGER NOT NULL,
+			status TEXT,
 			dc_device_name TEXT,
 			dc_type TEXT NOT NULL,
 			dc_date TEXT NOT NULL,

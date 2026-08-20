@@ -225,7 +225,7 @@ func newTestOperatorPlanDB(t *testing.T) *sqlx.DB {
 		CREATE TABLE dc_plan (
 			id INTEGER PRIMARY KEY, workspace_id INTEGER, name TEXT, operator TEXT,
 			dc_project_id INTEGER, dc_project_name TEXT, dc_project_description TEXT, dc_task_id INTEGER, dc_task_name TEXT, dc_task_description TEXT,
-			dc_device_id INTEGER, dc_device_name TEXT, dc_type TEXT, target_count INTEGER, cur_count INTEGER,
+			dc_device_id INTEGER, status TEXT, dc_device_name TEXT, dc_type TEXT, target_count INTEGER, cur_count INTEGER,
 			target_duration INTEGER, cur_duration INTEGER,
 			last_synced_at TIMESTAMP, deleted_at TIMESTAMP
 		);
