@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -486,6 +487,71 @@ func TestManagerListDoesNotLoadStoredCaptureResult(t *testing.T) {
 
 	if _, err := manager.Get(context.Background(), captures[0].CaptureID); err == nil {
 		t.Fatal("Get() error = nil, want invalid stored result error")
+	}
+}
+
+func TestManagerFillsAvailableOrbitCapacityFromQueuedCaptures(t *testing.T) {
+	db := newCalibrationTestDB(t)
+	orbit := &fakeOrbit{}
+	objects := &fakeObjectStore{}
+	manager := NewManager(db, orbit, objects, testCalibrationConfig())
+	manager.SetStereoPreprocessor(newTestStereoPreprocessor())
+	if _, err := db.Exec(`UPDATE calibration_processing_configs SET max_concurrent = 3 WHERE id = 1`); err != nil {
+		t.Fatalf("set max concurrency: %v", err)
+	}
+
+	captureIDs := []string{
+		"92cd6f2f-d131-4bf0-9b4a-d96258d09011",
+		"d4ad1825-35b4-4572-83aa-70cf3d8dd083",
+		"e5be2936-46c6-5683-8cbb-81cf05e99ef4",
+	}
+	for index, captureID := range captureIDs {
+		if index == 0 {
+			if _, _, err := manager.Start(context.Background(), captureID, "admin-user"); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			if _, err := db.Exec(`UPDATE calibration_captures SET processing_stage = ? WHERE capture_id = ?`, StageStereoSplit, captureID); err != nil {
+				t.Fatalf("set first capture stage: %v", err)
+			}
+			continue
+		}
+		if _, err := db.Exec(`
+			INSERT INTO calibration_captures (
+				capture_id, calibration_session_id, attempt_no, status, bucket, object_key,
+				file_size_bytes, checksum_sha256, logical_upload_id, upload_id, processing_stage,
+				created_at, updated_at, uploaded_at
+			) VALUES (?, '7f9af590-75c2-47ad-b6e0-76ebf05c44f7', ?, 'queued', 'bucket-1', ?,
+				1024, ?, ?, ?, 'stereo_split', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		`, captureID, index+1, "capture-"+strconv.Itoa(index)+".mcap", testUploadChecksum,
+			"logical-"+strconv.Itoa(index), "upload-"+strconv.Itoa(index)); err != nil {
+			t.Fatalf("insert queued capture %d: %v", index, err)
+		}
+	}
+
+	for i := 0; i < 6; i++ {
+		worked, err := manager.ReconcileOnce(context.Background())
+		if err != nil || !worked {
+			t.Fatalf("ReconcileOnce() %d worked=%t error=%v", i, worked, err)
+		}
+	}
+
+	var counts struct {
+		Active int `db:"active"`
+		Queued int `db:"queued"`
+	}
+	if err := db.Get(&counts, `
+		SELECT
+			SUM(CASE WHEN status IN ('submitting', 'pending', 'running') THEN 1 ELSE 0 END) AS active,
+			SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued
+		FROM calibration_captures
+	`); err != nil {
+		t.Fatalf("count capture states: %v", err)
+	}
+	if counts.Active != 3 || counts.Queued != 0 {
+		t.Fatalf("capture counts = %+v, want active=3 queued=0", counts)
+	}
+	if orbit.submitCalls != 3 {
+		t.Fatalf("Orbit submit calls = %d, want 3", orbit.submitCalls)
 	}
 }
 

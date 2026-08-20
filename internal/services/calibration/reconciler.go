@@ -29,54 +29,68 @@ const (
 	maxVerificationAttempts = 5
 )
 
-// ReconcileOnce advances at most one durable Capture state transition.
+// ReconcileOnce advances one durable Capture state transition. When Orbit has spare
+// capacity, queued captures are admitted before polling already-running jobs so that
+// available slots are filled promptly. Submitting captures are always handled first to
+// finish the admission transition before another queued capture consumes a slot.
 func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 	if m == nil || m.db == nil {
 		return false, nil
 	}
-	var candidate struct {
-		ID              int64  `db:"id"`
-		Status          string `db:"status"`
-		CancelRequested bool   `db:"cancel_requested"`
-	}
-	err := m.db.GetContext(ctx, &candidate, `
-		SELECT id, status, cancel_requested_at IS NOT NULL AS cancel_requested
-		FROM calibration_captures
-		WHERE status IN (?, ?, ?, ?, ?)
-		  AND (reconcile_after IS NULL OR reconcile_after <= ?)
-		ORDER BY CASE
-		  WHEN cancel_requested_at IS NOT NULL THEN 0
-		  WHEN status IN ('submitting', 'pending', 'running') THEN 1
-		  WHEN status = 'verifying' THEN 2
-		  WHEN status = 'queued' AND processing_stage = 'calibration' THEN 3
-		  ELSE 4 END,
-		  updated_at, id
-		LIMIT 1
-	`, StatusQueued, StatusSubmitting, StatusPending, StatusRunning, StatusVerifying, m.now().UTC())
+
+	candidate, found, err := m.reconciliationCandidate(ctx, `
+		cancel_requested_at IS NOT NULL
+	`, "cancel_requested_at, updated_at, id")
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("select calibration reconciliation candidate: %w", err)
+		return false, err
 	}
-	if candidate.CancelRequested {
+	if found {
 		return true, m.reconcileCancellation(ctx, candidate.ID)
 	}
 
-	switch candidate.Status {
-	case StatusQueued:
-		m.configMu.RLock()
-		defer m.configMu.RUnlock()
-		atCapacity, err := m.atOrbitCapacity(ctx)
-		if err != nil {
-			return true, err
-		}
-		if atCapacity {
-			return false, nil
-		}
-		return true, m.freezeQueued(ctx, candidate.ID)
-	case StatusSubmitting:
+	// A frozen request is already counted against the concurrency limit. Submit it
+	// before admitting another queued capture, otherwise the queue could fill the
+	// limit with captures that are all waiting for their submission transition.
+	candidate, found, err = m.reconciliationCandidate(ctx, `
+		status = ?
+	`, "updated_at, id", StatusSubmitting)
+	if err != nil {
+		return false, err
+	}
+	if found {
 		return true, m.reconcileSubmitting(ctx, candidate.ID)
+	}
+
+	m.configMu.RLock()
+	atCapacity, err := m.atOrbitCapacity(ctx)
+	m.configMu.RUnlock()
+	if err != nil {
+		return true, err
+	}
+
+	if !atCapacity {
+		candidate, found, err = m.reconciliationCandidate(ctx, `
+			status = ?
+		`, `CASE WHEN processing_stage = 'calibration' THEN 0 ELSE 1 END, updated_at, id`, StatusQueued)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			return true, m.freezeQueued(ctx, candidate.ID)
+		}
+	}
+
+	candidate, found, err = m.reconciliationCandidate(ctx, `
+		status IN (?, ?, ?)
+	`, "CASE WHEN status IN ('pending', 'running') THEN 0 ELSE 1 END, updated_at, id", StatusPending, StatusRunning, StatusVerifying)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+
+	switch candidate.Status {
 	case StatusPending, StatusRunning:
 		return true, m.reconcileOrbitStatus(ctx, candidate.ID)
 	case StatusVerifying:
@@ -84,6 +98,39 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+func (m *Manager) reconciliationCandidate(
+	ctx context.Context,
+	condition string,
+	orderBy string,
+	args ...any,
+) (struct {
+	ID              int64  `db:"id"`
+	Status          string `db:"status"`
+	CancelRequested bool   `db:"cancel_requested"`
+}, bool, error) {
+	var candidate struct {
+		ID              int64  `db:"id"`
+		Status          string `db:"status"`
+		CancelRequested bool   `db:"cancel_requested"`
+	}
+	queryArgs := append(append([]any{}, args...), m.now().UTC())
+	query := `
+		SELECT id, status, cancel_requested_at IS NOT NULL AS cancel_requested
+		FROM calibration_captures
+		WHERE ` + condition + `
+		  AND (reconcile_after IS NULL OR reconcile_after <= ?)
+		ORDER BY ` + orderBy + `
+		LIMIT 1
+	`
+	if err := m.db.GetContext(ctx, &candidate, query, queryArgs...); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return candidate, false, nil
+		}
+		return candidate, false, fmt.Errorf("select calibration reconciliation candidate: %w", err)
+	}
+	return candidate, true, nil
 }
 
 func (m *Manager) atOrbitCapacity(ctx context.Context) (bool, error) {
