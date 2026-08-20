@@ -530,11 +530,15 @@ func (s *gatewayService) assignTaskForDevice(
 		if bindErr != nil || !bound {
 			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Aborted, "dc plan device binding failed")
 		}
+		deviceName, nameErr := keystoneServices.ResolveDCPlanDeviceName(ctx, s.db, plan.WorkspaceID, hilbertDeviceID)
+		if nameErr != nil {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "dc plan device name unavailable")
+		}
 		now := s.now()
 		if _, updateErr := s.db.ExecContext(ctx, `
 			UPDATE dc_plan SET dc_device_id = ?, dc_device_name = ?, local_updated_at = ?
 			WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
-		`, hilbertDeviceID, deviceID, now, planID, principal.WorkspaceID); updateErr != nil {
+		`, hilbertDeviceID, deviceName, now, planID, principal.WorkspaceID); updateErr != nil {
 			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "dc plan device projection unavailable")
 		}
 		if projectionErr := keystoneServices.EnsureDCPlanWorkstation(ctx, s.db, keystoneauth.HilbertDCPlan{

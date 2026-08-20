@@ -20,7 +20,29 @@ type HilbertDCPlanBinder interface {
 	PatchDCPlanDCDeviceID(ctx context.Context, workspaceID, planID, deviceID int64) (bool, error)
 }
 
-// BindDCPlanDevice binds a Hilbert dc plan to the authenticated device. It is called when an
+// ResolveDCPlanDeviceName returns the local display name for a Hilbert device.
+// The numeric device ID is used as a fallback only when the local name is empty.
+func ResolveDCPlanDeviceName(ctx context.Context, db *sqlx.DB, workspaceID, deviceID int64) (string, error) {
+	if db == nil || workspaceID <= 0 || deviceID <= 0 {
+		return "", fmt.Errorf("invalid dc plan device name lookup")
+	}
+	var device struct {
+		DeviceName sql.NullString `db:"device_name"`
+	}
+	if err := db.GetContext(ctx, &device, `
+		SELECT device_name
+		FROM robots
+		WHERE workspace_id = ? AND device_id = ? AND deleted_at IS NULL
+		LIMIT 1
+	`, workspaceID, fmt.Sprintf("%d", deviceID)); err != nil {
+		return "", fmt.Errorf("query dc plan device name: %w", err)
+	}
+	if device.DeviceName.Valid && strings.TrimSpace(device.DeviceName.String) != "" {
+		return strings.TrimSpace(device.DeviceName.String), nil
+	}
+	return fmt.Sprintf("%d", deviceID), nil
+}
+
 // operator selects a device for their unbound plans, not only at first upload. Already-bound
 // plans are left untouched, so concurrent device selection cannot overwrite the Hilbert record.
 func BindDCPlanDevice(
@@ -71,10 +93,14 @@ func BindDCPlanDevice(
 	if err != nil || !bound {
 		return fmt.Errorf("patch dc plan device: %w", err)
 	}
+	deviceName, err := ResolveDCPlanDeviceName(ctx, db, workspaceID, deviceID)
+	if err != nil {
+		return fmt.Errorf("resolve dc plan device name: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `
 		UPDATE dc_plan SET dc_device_id = ?, dc_device_name = ?, local_updated_at = ?
 		WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
-	`, deviceID, fmt.Sprintf("%d", deviceID), time.Now().UTC(), planID, workspaceID); err != nil {
+	`, deviceID, deviceName, time.Now().UTC(), planID, workspaceID); err != nil {
 		return fmt.Errorf("update dc plan device projection: %w", err)
 	}
 	return EnsureDCPlanWorkstation(ctx, db, auth.HilbertDCPlan{
