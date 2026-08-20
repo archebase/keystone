@@ -1592,6 +1592,7 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 			workstation_id INTEGER,
 			qa_status TEXT,
 			cloud_synced BOOLEAN NOT NULL DEFAULT 0,
+			local_storage_status TEXT NOT NULL DEFAULT 'available',
 			cloud_publish_source TEXT,
 			deleted_at TEXT,
 			created_at TEXT NOT NULL

@@ -227,6 +227,7 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 			quality_flag TEXT,
 			auto_approved BOOLEAN DEFAULT FALSE,
 			cloud_synced BOOLEAN DEFAULT FALSE,
+			local_storage_status TEXT DEFAULT 'available',
 			cloud_publish_source TEXT,
 			cloud_processed BOOLEAN DEFAULT FALSE,
 			cloud_synced_at TIMESTAMP NULL,

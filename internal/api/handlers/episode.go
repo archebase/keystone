@@ -98,6 +98,7 @@ type episodeRow struct {
 	QualityFlag        sql.NullString  `db:"quality_flag"`
 	AutoApproved       bool            `db:"auto_approved"`
 	CloudSynced        bool            `db:"cloud_synced"`
+	LocalStorageStatus sql.NullString  `db:"local_storage_status"`
 	CloudPublishSource sql.NullString  `db:"cloud_publish_source"`
 	CloudProcessed     bool            `db:"cloud_processed"`
 	CloudSyncedAt      sql.NullTime    `db:"cloud_synced_at"`
@@ -131,6 +132,7 @@ type Episode struct {
 	QualityFlag        *string  `json:"quality_flag,omitempty"`
 	AutoApproved       bool     `json:"auto_approved"`
 	CloudSynced        bool     `json:"cloud_synced"`
+	LocalStorageStatus string   `json:"local_storage_status"`
 	CloudPublishSource *string  `json:"cloud_publish_source,omitempty"`
 	CloudProcessed     bool     `json:"cloud_processed"`
 	CloudSyncedAt      *string  `json:"cloud_synced_at"`
@@ -310,6 +312,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.quality_flag,
 			e.auto_approved,
 			e.cloud_synced,
+			e.local_storage_status,
 			e.cloud_publish_source,
 			e.cloud_processed,
 			e.cloud_synced_at,
@@ -500,6 +503,7 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			QualityFlag:        nullableString(r.QualityFlag),
 			AutoApproved:       r.AutoApproved,
 			CloudSynced:        r.CloudSynced,
+			LocalStorageStatus: r.LocalStorageStatus.String,
 			CloudPublishSource: nullableString(r.CloudPublishSource),
 			CloudProcessed:     r.CloudProcessed,
 			CloudSyncedAt:      nullableTime(r.CloudSyncedAt),
@@ -683,6 +687,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.quality_flag,
 			e.auto_approved,
 			e.cloud_synced,
+			e.local_storage_status,
 			e.cloud_publish_source,
 			e.cloud_processed,
 			e.cloud_synced_at,
@@ -734,6 +739,7 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 		QualityFlag:        nullableString(row.QualityFlag),
 		AutoApproved:       row.AutoApproved,
 		CloudSynced:        row.CloudSynced,
+		LocalStorageStatus: row.LocalStorageStatus.String,
 		CloudPublishSource: nullableString(row.CloudPublishSource),
 		CloudProcessed:     row.CloudProcessed,
 		CloudSyncedAt:      nullableTime(row.CloudSyncedAt),

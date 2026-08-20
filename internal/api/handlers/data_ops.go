@@ -181,6 +181,7 @@ type dataOpsEpisodeRow struct {
 	QAStatus            string          `db:"qa_status"`
 	QualityFlag         sql.NullString  `db:"quality_flag"`
 	CloudSynced         bool            `db:"cloud_synced"`
+	LocalStorageStatus  string          `db:"local_storage_status"`
 	DurationSec         sql.NullFloat64 `db:"duration_sec"`
 	FileSizeBytes       sql.NullInt64   `db:"file_size_bytes"`
 	LabelsJSON          sql.NullString  `db:"labels"`
@@ -208,6 +209,7 @@ type DataOpsEpisodeItemResponse struct {
 	SyncStatus          string                        `json:"sync_status"`
 	LatestSyncLog       *SyncJobResponse              `json:"latest_sync_log,omitempty"`
 	CloudSynced         bool                          `json:"cloud_synced"`
+	LocalStorageStatus  string                        `json:"local_storage_status"`
 	DurationSec         *float64                      `json:"duration_sec,omitempty"`
 	FileSizeBytes       *int64                        `json:"file_size_bytes,omitempty"`
 	Labels              []string                      `json:"labels"`
@@ -559,6 +561,7 @@ func dataOpsEpisodeListSQL(fromSQL string, where string) string {
 			COALESCE(e.qa_status, '') AS qa_status,
 			e.quality_flag,
 			e.cloud_synced,
+			e.local_storage_status,
 			e.duration_sec,
 			e.file_size_bytes,
 			e.labels,
@@ -684,6 +687,7 @@ func dataOpsEpisodeItemFromRow(row dataOpsEpisodeRow) DataOpsEpisodeItemResponse
 		QualityFlag:         nullableString(row.QualityFlag),
 		SyncStatus:          syncStatusNotStarted,
 		CloudSynced:         row.CloudSynced,
+		LocalStorageStatus:  row.LocalStorageStatus,
 		DurationSec:         nullableFloat64(row.DurationSec),
 		FileSizeBytes:       nullableInt64(row.FileSizeBytes),
 		Labels:              episodeLabelsFromDB(row.LabelsJSON),
