@@ -148,17 +148,18 @@ func TestDataOpsEpisodeListSQLUsesCurrentProductionMetadata(t *testing.T) {
 
 func TestDataOpsEpisodeItemIncludesTaskAndRobotDisplayNames(t *testing.T) {
 	item := dataOpsEpisodeItemFromRow(dataOpsEpisodeRow{
-		ID:            1,
-		EpisodeID:     "episode-1",
-		TaskID:        10,
-		DCProjectID:   sql.NullInt64{Int64: 13, Valid: true},
-		DCProjectName: sql.NullString{String: "Project One", Valid: true},
-		DCTaskID:      sql.NullInt64{Int64: 14, Valid: true},
-		DCTaskName:    sql.NullString{String: "Task One", Valid: true},
-		RobotDeviceID: sql.NullString{String: "robot-001", Valid: true},
-		RobotMetadata: sql.NullString{String: `{"hilbert_dc_device_name":"Device One"}`, Valid: true},
-		QAStatus:      "pending_qa",
-		CreatedAt:     time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+		ID:              1,
+		EpisodeID:       "episode-1",
+		TaskID:          10,
+		DCProjectID:     sql.NullInt64{Int64: 13, Valid: true},
+		DCProjectName:   sql.NullString{String: "Project One", Valid: true},
+		DCTaskID:        sql.NullInt64{Int64: 14, Valid: true},
+		DCTaskName:      sql.NullString{String: "Task One", Valid: true},
+		RobotDeviceID:   sql.NullString{String: "robot-001", Valid: true},
+		RobotDeviceType: sql.NullString{String: "ZJ-WA1-D", Valid: true},
+		RobotMetadata:   sql.NullString{String: `{"hilbert_dc_device_name":"Device One"}`, Valid: true},
+		QAStatus:        "pending_qa",
+		CreatedAt:       time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
 	})
 	if item.DCTaskID == nil || *item.DCTaskID != 14 || item.DCTaskName == nil || *item.DCTaskName != "Task One" {
 		t.Fatalf("task fields=%v/%v want 14/Task One", item.DCTaskID, item.DCTaskName)
@@ -168,6 +169,9 @@ func TestDataOpsEpisodeItemIncludesTaskAndRobotDisplayNames(t *testing.T) {
 	}
 	if item.RobotDeviceName == nil || *item.RobotDeviceName != "Device One" {
 		t.Fatalf("RobotDeviceName=%v want Device One", item.RobotDeviceName)
+	}
+	if item.RobotDeviceType == nil || *item.RobotDeviceType != "ZJ-WA1-D" {
+		t.Fatalf("RobotDeviceType=%v want ZJ-WA1-D", item.RobotDeviceType)
 	}
 }
 

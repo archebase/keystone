@@ -1266,7 +1266,7 @@ func (w *SyncWorker) retryFailedEpisodes(ctx context.Context) {
 	}
 
 	for _, row := range rows {
-		if err := w.persistPendingSyncLog(ctx, row.EpisodeID, false, ""); err != nil {
+		if err := w.persistPendingSyncLogForSource(ctx, row.EpisodeID, false, "", syncSourceAuto); err != nil {
 			if isSkippablePendingError(err) {
 				continue
 			}

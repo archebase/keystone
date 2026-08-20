@@ -101,9 +101,15 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/episodes/bulk-qa/preview", h.PreviewBulkEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync/preview", h.PreviewBulkEpisodeSync)
 	apiV1.POST("/episodes/bulk-mp4/preview", h.PreviewBulkEpisodeMP4)
+	if h.depthNorm != nil {
+		apiV1.POST("/episodes/bulk-depth-normalization/preview", h.PreviewBulkDepthNormalization)
+	}
 	apiV1.POST("/episodes/bulk-qa", h.BulkRunEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync", h.BulkSyncEpisodes)
 	apiV1.POST("/episodes/bulk-mp4", h.BulkExportEpisodeMP4)
+	if h.depthNorm != nil {
+		apiV1.POST("/episodes/bulk-depth-normalization", h.BulkDepthNormalization)
+	}
 	apiV1.GET("/episodes/:id/mp4", h.DownloadEpisodeMP4)
 	apiV1.GET("/bulk-runs/current", h.GetCurrentBulkRun)
 	apiV1.GET("/bulk-runs/:run_id", h.GetBulkRun)
@@ -154,6 +160,7 @@ type dataOpsEpisodeRow struct {
 	DCTaskID            sql.NullInt64   `db:"dc_task_id"`
 	DCTaskName          sql.NullString  `db:"dc_task_name"`
 	RobotDeviceID       sql.NullString  `db:"robot_device_id"`
+	RobotDeviceType     sql.NullString  `db:"robot_device_type"`
 	RobotMetadata       sql.NullString  `db:"robot_metadata"`
 	CollectorOperatorID sql.NullString  `db:"collector_operator_id"`
 	CollectorName       sql.NullString  `db:"collector_name"`
@@ -178,6 +185,7 @@ type DataOpsEpisodeItemResponse struct {
 	DCTaskName          *string                       `json:"dc_task_name,omitempty"`
 	RobotDeviceID       *string                       `json:"robot_device_id,omitempty"`
 	RobotDeviceName     *string                       `json:"robot_device_name,omitempty"`
+	RobotDeviceType     *string                       `json:"robot_device_type,omitempty"`
 	CollectorOperatorID *string                       `json:"collector_operator_id,omitempty"`
 	CollectorName       *string                       `json:"collector_name,omitempty"`
 	QAStatus            string                        `json:"qa_status"`
@@ -530,6 +538,7 @@ func dataOpsEpisodeListSQL(fromSQL string, where string) string {
 			dp.dc_task_id,
 			dp.dc_task_name,
 			COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, '')) AS robot_device_id,
+			r.device_type AS robot_device_type,
 			r.metadata AS robot_metadata,
 			COALESCE(NULLIF(dc.operator_id, ''), NULLIF(ws.collector_operator_id, '')) AS collector_operator_id,
 			COALESCE(NULLIF(dc.name, ''), NULLIF(ws.collector_name, '')) AS collector_name,
@@ -654,6 +663,7 @@ func dataOpsEpisodeItemFromRow(row dataOpsEpisodeRow) DataOpsEpisodeItemResponse
 		DCTaskName:          nullableString(row.DCTaskName),
 		RobotDeviceID:       nullableString(row.RobotDeviceID),
 		RobotDeviceName:     nullableString(sql.NullString{String: robotDeviceName, Valid: robotDeviceName != ""}),
+		RobotDeviceType:     nullableString(row.RobotDeviceType),
 		CollectorOperatorID: nullableString(row.CollectorOperatorID),
 		CollectorName:       nullableString(row.CollectorName),
 		QAStatus:            row.QAStatus,
