@@ -33,11 +33,12 @@ var validDataOpsSyncStatuses = map[string]struct{}{
 
 // DataOpsHandler handles data operations APIs for the admin workbench.
 type DataOpsHandler struct {
-	db         *sqlx.DB
-	qa         *EpisodeQAHandler
-	qaRunner   dataOpsEpisodeQARunner
-	syncWorker dataOpsBulkSyncWorker
-	bulkRunMu  sync.Mutex
+	db           *sqlx.DB
+	qa           *EpisodeQAHandler
+	qaRunner     dataOpsEpisodeQARunner
+	syncWorker   dataOpsBulkSyncWorker
+	localCleanup *services.LocalCleanupService
+	bulkRunMu    sync.Mutex
 	// bulkRunBrokerMu protects lazy initialization of bulkRunBroker.
 	bulkRunBrokerMu sync.Mutex
 	bulkRunBroker   *dataOpsBulkRunBroker
@@ -95,17 +96,29 @@ func (h *DataOpsHandler) SetBulkActionDeps(qa *EpisodeQAHandler, syncWorker *ser
 	}
 }
 
-// RegisterRoutes registers data operations routes under /data-ops.
+// SetLocalCleanupService wires local MinIO cleanup into bulk data operations.
+func (h *DataOpsHandler) SetLocalCleanupService(cleanup *services.LocalCleanupService) {
+	if h != nil {
+		h.localCleanup = cleanup
+	}
+}
+
 func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/episodes", h.ListEpisodes)
 	apiV1.POST("/episodes/bulk-qa/preview", h.PreviewBulkEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync/preview", h.PreviewBulkEpisodeSync)
+	if h.localCleanup != nil {
+		apiV1.POST("/episodes/bulk-local-cleanup/preview", h.PreviewBulkLocalCleanup)
+	}
 	apiV1.POST("/episodes/bulk-mp4/preview", h.PreviewBulkEpisodeMP4)
 	if h.depthNorm != nil {
 		apiV1.POST("/episodes/bulk-depth-normalization/preview", h.PreviewBulkDepthNormalization)
 	}
 	apiV1.POST("/episodes/bulk-qa", h.BulkRunEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync", h.BulkSyncEpisodes)
+	if h.localCleanup != nil {
+		apiV1.POST("/episodes/bulk-local-cleanup", h.BulkLocalCleanup)
+	}
 	apiV1.POST("/episodes/bulk-mp4", h.BulkExportEpisodeMP4)
 	if h.depthNorm != nil {
 		apiV1.POST("/episodes/bulk-depth-normalization", h.BulkDepthNormalization)

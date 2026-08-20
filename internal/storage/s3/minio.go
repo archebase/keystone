@@ -8,6 +8,7 @@ package s3
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"archebase.com/keystone-edge/internal/logger"
 	"github.com/minio/minio-go/v7"
@@ -71,6 +72,27 @@ func Connect(cfg *Config) (*Client, error) {
 		endpoint: cfg.Endpoint,
 		useSSL:   cfg.UseSSL,
 	}, nil
+}
+
+// DeleteObject removes one object from the specified bucket. Missing objects are
+// treated as success so cleanup requests remain idempotent.
+func (c *Client) DeleteObject(ctx context.Context, bucket, objectName string) error {
+	if c == nil || c.Client == nil {
+		return fmt.Errorf("minio client not available")
+	}
+	bucket = strings.TrimSpace(bucket)
+	objectName = strings.TrimLeft(strings.TrimSpace(objectName), "/")
+	if bucket == "" || objectName == "" {
+		return fmt.Errorf("bucket and object name are required")
+	}
+	if err := c.RemoveObject(ctx, bucket, objectName, minio.RemoveObjectOptions{}); err != nil {
+		errResp := minio.ToErrorResponse(err)
+		if errResp.Code == "NoSuchKey" || errResp.StatusCode == 404 {
+			return nil
+		}
+		return fmt.Errorf("delete MinIO object %s/%s: %w", bucket, objectName, err)
+	}
+	return nil
 }
 
 // GetObjectURL returns object URL
