@@ -143,7 +143,7 @@ type dcPlanRow struct {
 	DCTaskID             int64           `db:"dc_task_id"`
 	DCTaskName           sql.NullString  `db:"dc_task_name"`
 	DCTaskDescription    sql.NullString  `db:"dc_task_description"`
-	DCDeviceID           int64           `db:"dc_device_id"`
+	DCDeviceID           sql.NullInt64   `db:"dc_device_id"`
 	DCDeviceName         sql.NullString  `db:"dc_device_name"`
 	DCType               string          `db:"dc_type"`
 	DCDate               string          `db:"dc_date"`
@@ -629,6 +629,10 @@ func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
 	if row.LocalCurDuration.Valid {
 		curDuration += int64(math.Round(row.LocalCurDuration.Float64))
 	}
+	var dcDeviceID int64
+	if row.DCDeviceID.Valid {
+		dcDeviceID = row.DCDeviceID.Int64
+	}
 	return DCPlanResponse{
 		ID:                   row.ID,
 		WorkspaceID:          row.WorkspaceID,
@@ -644,7 +648,7 @@ func dcPlanResponseFromRow(row dcPlanRow) DCPlanResponse {
 		DCTaskID:             row.DCTaskID,
 		DCTaskName:           row.DCTaskName.String,
 		DCTaskDescription:    row.DCTaskDescription.String,
-		DCDeviceID:           row.DCDeviceID,
+		DCDeviceID:           dcDeviceID,
 		DCDeviceName:         row.DCDeviceName.String,
 		DCType:               row.DCType,
 		DCDate:               row.DCDate,
