@@ -885,8 +885,9 @@ func (h *AuthHandler) availableWorkstations(
 		JOIN robots r ON r.id = ws.robot_id AND r.status = 'active' AND r.deleted_at IS NULL
 		JOIN workspaces w ON w.id = ws.workspace_id AND w.deleted_at IS NULL
 		WHERE ws.data_collector_id = ? AND ws.workspace_id IN (?)
-			AND ws.is_current = FALSE AND ws.deleted_at IS NULL
-		ORDER BY ws.workspace_id, ws.id
+			AND ws.deleted_at IS NULL
+			AND (ws.is_current = TRUE OR ws.superseded_at IS NULL)
+		ORDER BY ws.is_current DESC, ws.workspace_id, ws.id
 	`, collectorID, collectorID, workspaceIDs)
 	if err != nil {
 		return nil, err

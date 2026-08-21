@@ -265,6 +265,44 @@ func TestAuthHandlerMeListsUnboundPlanWorkstation(t *testing.T) {
 	}
 }
 
+func TestAuthHandlerMeListsCurrentWorkstationExcludesSuperseded(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES (7, 'Collector', 'dc01', 'active');
+		INSERT INTO robots (id, device_id, device_name, workspace_id, status) VALUES (101, '101', 'Ego iPhone 01', 10, 'active');
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current)
+		VALUES (11, 7, 10, 101, 'offline', TRUE);
+		INSERT INTO workstations (id, data_collector_id, workspace_id, robot_id, status, is_current, superseded_at)
+		VALUES (12, 7, 10, 102, 'offline', FALSE, '2026-08-21 00:00:00');
+		INSERT INTO robots (id, device_id, device_name, workspace_id, status) VALUES (102, '102', 'Ego iPhone 02', 10, 'active')
+	`); err != nil {
+		t.Fatalf("seed current and superseded workstations: %v", err)
+	}
+	token, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	newTestAuthRouter(db, "").ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp AuthMeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal me response: %v", err)
+	}
+	if len(resp.AvailableWorkstations) != 1 {
+		t.Fatalf("available=%#v want exactly the current workstation", resp.AvailableWorkstations)
+	}
+	available := resp.AvailableWorkstations[0]
+	if available.ID != "11" || available.DeviceID != "101" || !available.IsCurrent {
+		t.Fatalf("unexpected available workstation: %#v", available)
+	}
+}
+
 func TestAuthHandlerActivateWorkstationForEgoPortalDeviceCredential(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
