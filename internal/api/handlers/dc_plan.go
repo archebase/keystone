@@ -173,7 +173,7 @@ func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
 }
 
 // RefreshOperatorPlans synchronizes and returns plans available to the authenticated workstation.
-// It includes plans already bound to the current Ego device and plans without a device whose operator matches the logged-in collector; the latter are bound when the device requests a task.
+// It includes plans already bound to the current device and plans without a device whose operator matches the logged-in collector; the latter are bound when the device requests a task.
 //
 // @Summary      Refresh operator plans
 // @Description  Synchronizes Hilbert plans and returns plans assigned to the authenticated collector workstation.
@@ -330,7 +330,6 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 		) progress ON progress.dc_plan_id = dp.id
 		WHERE dp.workspace_id = ?
 			AND dp.operator = ?
-			AND LOWER(dp.dc_type) = 'ego'
 			AND (dp.dc_device_id = ? OR dp.dc_device_id IS NULL)
 			AND dp.deleted_at IS NULL
 		ORDER BY dp.id

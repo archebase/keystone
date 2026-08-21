@@ -568,7 +568,7 @@ func (h *AuthHandler) bindUnboundEgoPlans(
 	if err := tx.SelectContext(ctx, &planIDs, `
 		SELECT id FROM dc_plan
 		WHERE operator = ? AND workspace_id = ?
-			AND LOWER(dc_type) = 'ego' AND dc_device_id IS NULL
+			AND dc_device_id IS NULL
 			AND COALESCE(status, 'pending_collection') <> 'collected'
 			AND deleted_at IS NULL
 		ORDER BY id`+projectionLockClause(tx), operatorID, workspaceID); err != nil {

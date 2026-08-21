@@ -532,7 +532,6 @@ func EnsureUnboundEgoCandidateTasksForWorkstation(
 		FROM dc_plan
 		WHERE workspace_id = ?
 			AND operator = ?
-			AND LOWER(dc_type) = 'ego'
 			AND dc_device_id IS NULL
 			AND COALESCE(status, 'pending_collection') != 'collected'
 			AND deleted_at IS NULL
