@@ -40,7 +40,6 @@ type TaskHandler struct {
 	transferWriteTimeout time.Duration
 	callbackURLs         callbackURLs
 	taskSupply           *services.DCPlanTaskSupplyService
-	hilbert              services.HilbertDCPlanBinder
 }
 
 // NewTaskHandler creates a new TaskHandler.
@@ -49,7 +48,6 @@ func NewTaskHandler(
 	hub *services.TransferHub,
 	recorderHub *services.RecorderHub,
 	recorderRPCTimeout time.Duration,
-	hilbert services.HilbertDCPlanBinder,
 	transferWriteTimeout ...time.Duration,
 ) *TaskHandler {
 	writeTimeout := services.DefaultTransferWriteTimeout
@@ -63,7 +61,6 @@ func NewTaskHandler(
 		recorderRPCTimeout:   recorderRPCTimeout,
 		transferWriteTimeout: writeTimeout,
 		taskSupply:           services.NewDCPlanTaskSupplyService(db),
-		hilbert:              hilbert,
 	}
 }
 
@@ -584,34 +581,6 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		}
 		c.JSON(http.StatusForbidden, gin.H{"error": "workstation activation required"})
 		return
-	}
-
-	// 传统 ego-portal 通过 /api/v1/tasks 拉取任务；这里提前为当前 operator 名下
-	// 尚未绑定 Hilbert 设备的 Ego 计划绑定当前设备并创建候选任务，保证该客户端也能看到并选择。
-	if claims != nil && claims.Role == "data_collector" && claims.RobotID > 0 && claims.WorkstationID > 0 && strings.TrimSpace(claims.OperatorID) != "" {
-		var robotDeviceID string
-		if err := h.db.GetContext(c.Request.Context(), &robotDeviceID, `
-			SELECT device_id
-			FROM robots
-			WHERE id = ? AND deleted_at IS NULL
-		`, claims.RobotID); err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				logger.Printf("[TASK] Failed to resolve collector robot for unbound ego candidate tasks: %v", err)
-			}
-		} else if dcDeviceID, parseErr := strconv.ParseInt(strings.TrimSpace(robotDeviceID), 10, 64); parseErr == nil && dcDeviceID > 0 {
-			if err := services.EnsureUnboundEgoCandidateTasksForWorkstation(
-				c.Request.Context(),
-				h.db,
-				h.hilbert,
-				claims.WorkspaceID,
-				claims.OperatorID,
-				claims.WorkstationID,
-				dcDeviceID,
-				time.Now().UTC(),
-			); err != nil {
-				logger.Printf("[TASK] Ensure unbound ego candidate tasks failed: workspace_id=%d operator=%s workstation_id=%d error=%v", claims.WorkspaceID, claims.OperatorID, claims.WorkstationID, err)
-			}
-		}
 	}
 
 	conditions := []string{"tasks.deleted_at IS NULL", "COALESCE(dp.status, 'pending_collection') != 'collected'"}

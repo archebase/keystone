@@ -1,0 +1,399 @@
+<!--
+SPDX-FileCopyrightText: 2026 ArcheBase
+SPDX-License-Identifier: MulanPSL-2.0
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keystone 与 Ego Portal 对接现状</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --ink: #172033;
+      --muted: #5d6b82;
+      --line: #dce4ef;
+      --blue: #2563eb;
+      --blue-soft: #eaf2ff;
+      --green: #16805c;
+      --green-soft: #e8f7f0;
+      --amber: #9a5b00;
+      --amber-soft: #fff4dc;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --shadow: 0 12px 35px rgba(31, 52, 84, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 34px 22px 70px; }
+    header {
+      background: linear-gradient(135deg, #172d55 0%, #2563eb 100%);
+      color: #fff;
+      padding: 42px 44px;
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+    }
+    header h1 { margin: 0 0 10px; font-size: clamp(28px, 4vw, 46px); line-height: 1.2; letter-spacing: -.03em; }
+    header p { margin: 0; color: #dce9ff; max-width: 850px; font-size: 16px; }
+    .meta { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 9px; }
+    .tag { display: inline-block; border: 1px solid rgba(255,255,255,.25); color: #eef5ff; border-radius: 999px; padding: 4px 11px; font-size: 12px; }
+    nav, section, .callout, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+    nav { padding: 18px 22px; margin-bottom: 24px; }
+    nav strong { display: block; margin-bottom: 8px; }
+    nav a { color: var(--blue); text-decoration: none; margin-right: 18px; white-space: nowrap; }
+    nav a:hover { text-decoration: underline; }
+    section { padding: 28px 30px; margin: 24px 0; }
+    h2 { margin: 0 0 15px; font-size: 27px; line-height: 1.3; }
+    h3 { margin: 24px 0 10px; font-size: 20px; line-height: 1.35; }
+    h4 { margin: 18px 0 6px; font-size: 16px; }
+    p { margin: 9px 0; }
+    .lead { color: var(--muted); font-size: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .card { padding: 19px 20px; box-shadow: none; }
+    .card h3 { margin-top: 0; }
+    .card p:last-child { margin-bottom: 0; }
+    .status { border-left: 5px solid var(--green); background: var(--green-soft); padding: 16px 18px; border-radius: 10px; }
+    .warning { border-left: 5px solid var(--amber); background: var(--amber-soft); padding: 16px 18px; border-radius: 10px; }
+    .risk { border-left: 5px solid var(--red); background: var(--red-soft); padding: 16px 18px; border-radius: 10px; }
+    .blue { border-left: 5px solid var(--blue); background: var(--blue-soft); padding: 16px 18px; border-radius: 10px; }
+    code { background: #eef2f7; border-radius: 5px; padding: 1px 5px; color: #243754; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
+    pre { overflow: auto; background: #101827; color: #e7eefb; padding: 17px 18px; border-radius: 10px; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 4px; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); padding: 12px 10px; }
+    th { background: #f5f8fc; font-weight: 700; }
+    tr:last-child td { border-bottom: 0; }
+    ol, ul { padding-left: 23px; }
+    li { margin: 5px 0; }
+    .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0; }
+    .step { background: var(--blue-soft); border: 1px solid #c9dcff; color: #194fae; border-radius: 9px; padding: 8px 11px; font-weight: 600; }
+    .arrow { color: var(--muted); font-weight: 700; }
+    .small { color: var(--muted); font-size: 13px; }
+    .repo { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #254a82; }
+    footer { color: var(--muted); font-size: 13px; text-align: center; padding-top: 28px; }
+    @media (max-width: 760px) {
+      header { padding: 30px 24px; }
+      section { padding: 22px 19px; }
+      .grid, .grid-3 { grid-template-columns: 1fr; }
+      th, td { padding: 9px 6px; }
+      table { font-size: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Keystone 与 Ego Portal 对接现状</h1>
+      <p>聚焦 DC Plan 延迟设备绑定、workstation 激活，以及 <strong>ego-portal</strong> 与 <strong>ego-portal-lite</strong> 当前对接 Keystone 的真实路径。</p>
+      <div class="meta">
+        <span class="tag">Keystone HEAD: fead623</span>
+        <span class="tag">ego-portal HEAD: cc61eb7</span>
+        <span class="tag">ego-portal-lite HEAD: 485f307</span>
+        <span class="tag">梳理范围：当前代码状态</span>
+      </div>
+    </header>
+
+    <nav>
+      <strong>目录</strong>
+      <a href="#summary">结论摘要</a>
+      <a href="#keystone">Keystone 行为</a>
+      <a href="#ego-portal">ego-portal</a>
+      <a href="#lite">ego-portal-lite</a>
+      <a href="#compare">差异对比</a>
+      <a href="#flow">完整流程</a>
+      <a href="#risks">风险与判断</a>
+    </nav>
+
+    <section id="summary">
+      <h2>一、结论摘要</h2>
+      <div class="status">
+        <strong>当前系统已经支持未绑定设备的 DC Plan。</strong>
+        <p>但实际不是“只在首次上传时绑定”，而是 Keystone 会在 workstation 激活、Plan 刷新、任务列表、领取任务和首次上传等多个节点尝试完成绑定。</p>
+      </div>
+      <div class="grid" style="margin-top:16px">
+        <div class="card">
+          <h3>ego-portal</h3>
+          <p>主要采用<strong>用户登录 → 查询 <code>/auth/me</code> → 找 workstation → 使用 <code>workstation_id</code> 激活 → 拉取 <code>/tasks</code></strong>的旧式兼容路径。</p>
+          <p class="small">上传仍通过 Data Gateway gRPC 完成。</p>
+        </div>
+        <div class="card">
+          <h3>ego-portal-lite</h3>
+          <p>主要采用<strong>用户登录 → 使用 <code>Device-Authorization</code> 激活设备 → 刷新 <code>/operator/plans/refresh</code> → 拉取 <code>/tasks</code></strong>的路径。</p>
+          <p class="small">这一条路径与 Keystone 当前新增的设备激活和 Plan 刷新逻辑更匹配。</p>
+        </div>
+      </div>
+      <div class="warning" style="margin-top:16px">
+        <strong>当前最重要的兼容前提：</strong> ego-portal 仍要求在进入 workstation 激活之前，先从 <code>/auth/me</code> 找到与本机设备匹配的 workstation。如果此时 workstation 尚不存在，它可能会在 Keystone 自动绑定逻辑执行前就失败。
+      </div>
+    </section>
+
+    <section id="keystone">
+      <h2>二、Keystone 当前的真实行为</h2>
+      <p class="lead">Keystone 已经把“Plan 必须先绑定设备”改成了“Plan 可以先存在，之后再与具体设备建立归属”。</p>
+
+      <h3>2.1 DC Plan 可以没有设备</h3>
+      <p>当前 <code>dc_plan.dc_device_id</code> 可以为 <code>NULL</code>：</p>
+      <pre>dc_plan
+├── operator = 当前操作员
+├── workspace_id = 当前工作空间
+└── dc_device_id = NULL</pre>
+      <p>未绑定 Plan 的可见条件大致是：</p>
+      <pre>operator = 当前操作员
+AND workspace_id = 当前工作空间
+AND (dc_device_id = 当前设备 OR dc_device_id IS NULL)</pre>
+      <p>因此当前操作员可以看到：</p>
+      <ul>
+        <li>已经绑定当前设备的 Plan；</li>
+        <li>尚未绑定任何设备的 Plan。</li>
+      </ul>
+      <p>最后的 <code>fead623</code> 还去掉了部分 <code>dc_type = 'ego'</code> 限制，因此 Operator Flow 已不再严格只处理 Ego Plan。</p>
+
+      <h3>2.2 Keystone 有多个绑定触发点</h3>
+      <div class="grid-3">
+        <div class="card"><h3>A. workstation 激活</h3><p><code>POST /api/v1/auth/workstation/activate</code> 激活过程中，会查找当前 operator/workspace 下尚未绑定且未完成的 Plan，并调用 Hilbert 绑定当前设备。</p></div>
+        <div class="card"><h3>B. Plan 刷新</h3><p><code>POST /api/v1/operator/plans/refresh</code> 会同步 Plan，并尝试绑定未绑定 Plan、创建 pending candidate task。</p></div>
+        <div class="card"><h3>C. 任务列表</h3><p><code>GET /api/v1/tasks</code> 为兼容传统 ego-portal，也会尝试绑定未绑定 Plan 并准备候选任务。</p></div>
+        <div class="card"><h3>D. 领取任务</h3><p>Data Gateway 的 <code>assignTaskForDevice</code> 发现 Plan 仍未绑定时，会绑定到当前设备，再创建/预留任务。</p></div>
+        <div class="card"><h3>E. 首次上传</h3><p>真实上传前会再次校验 Plan 的设备归属。Plan 已属于其他设备时，当前设备会被拒绝。</p></div>
+        <div class="card"><h3>绑定语义</h3><p>绑定主要是从“未绑定”变为“绑定当前设备”，已经绑定到其他设备的 Plan 不应被覆盖。</p></div>
+      </div>
+
+      <div class="blue" style="margin-top:18px">
+        <strong>更准确的现状描述：</strong> Plan 可以先不绑定设备，但 Keystone 会在多个客户端交互节点尽早尝试绑定；首次上传是最后一道兜底，而不是唯一的主路径。
+      </div>
+
+      <h3>2.3 Workstation 当前不是简单按 workspace membership 批量生成</h3>
+      <p>最终代码中，workspace 同步不再因为“workspace 成员 × workspace 下 robot”就无条件批量创建所有 workstation。当前 workstation 主要来自：</p>
+      <ul>
+        <li>已有设备、采集员和 workspace 的关联；</li>
+        <li>已绑定 DC Plan 的 workstation projection；</li>
+        <li>Plan 设备绑定后调用 <code>EnsureDCPlanWorkstation</code> 创建或复用对应 workstation。</li>
+      </ul>
+      <p>因此，认证激活通常要求先能解析到一个 workstation；Plan 绑定和 workstation projection 负责补齐执行所需的关联。</p>
+    </section>
+
+    <section id="ego-portal">
+      <h2>三、ego-portal 当前如何对接 Keystone</h2>
+      <p class="lead">主要代码：<span class="repo">ego-portal/backend/app/services/auth_service.py</span>、<span class="repo">keystone_client.py</span>、<span class="repo">sync_service.py</span>。</p>
+
+      <h3>3.1 登录与 workstation 激活</h3>
+      <div class="flow">
+        <span class="step">POST /auth/login</span><span class="arrow">→</span>
+        <span class="step">GET /auth/me</span><span class="arrow">→</span>
+        <span class="step">按本机 device_id 找 workstation</span><span class="arrow">→</span>
+        <span class="step">POST /auth/workstation/activate</span><span class="arrow">→</span>
+        <span class="step">保存 workstation token</span>
+      </div>
+      <p>当前主流程相当于：</p>
+      <pre>login_keystone()
+  1. POST /api/v1/auth/login
+  2. GET /api/v1/auth/me
+  3. 在 workstations / available_workstations 中按 device_id 找 workstation_id
+  4. POST /api/v1/auth/workstation/activate
+     body: {"workstation_id": 123}
+  5. 保存返回的 workstation-scoped access token</pre>
+      <p>虽然客户端代码提供了 <code>activate_bound_device()</code>，可以发送：</p>
+      <pre>POST /auth/workstation/activate
+Device-Authorization: &lt;device-token&gt;
+{}</pre>
+      <p>但当前 <code>login_keystone()</code> 的主流程使用的仍是 <code>activate_workstation(workstation_id)</code>。</p>
+
+      <h3>3.2 任务拉取</h3>
+      <p>ego-portal 主要通过：</p>
+      <pre>GET /api/v1/tasks?status=pending&amp;limit=100&amp;offset=...</pre>
+      <p>拉取任务，并按以下字段过滤和聚合：</p>
+      <ul>
+        <li><code>dc_plan_id</code></li>
+        <li><code>workstation_id</code></li>
+        <li><code>robot_device_id</code></li>
+        <li><code>collector_operator_id</code></li>
+      </ul>
+      <p>之后把 Keystone 任务同步到本地 SQLite，录制 session 在开始前绑定具体的 Keystone <code>task_id</code>。</p>
+
+      <h3>3.3 上传路径</h3>
+      <p>上传不走 REST，而走 Data Gateway gRPC：</p>
+      <div class="flow">
+        <span class="step">ExchangeCredential</span><span class="arrow">→</span>
+        <span class="step">CreateLogicalUpload</span><span class="arrow">→</span>
+        <span class="step">对象存储上传</span><span class="arrow">→</span>
+        <span class="step">CompleteUpload</span>
+      </div>
+      <p>上传时会携带 <code>task_id</code>、<code>dc_plan_id</code>、<code>workspace_id</code>、<code>capture_id</code>、设备和产品来源等信息。Keystone 会校验这些字段是否与上传会话、任务和当前设备匹配。</p>
+
+      <h3>3.4 ego-portal 与延迟绑定的关系</h3>
+      <div class="status">
+        <strong>正常路径：</strong>
+        <p>已有 workstation → 激活 workstation → Keystone 绑定未绑定 Plan → ego-portal 拉取 <code>/tasks</code> → 录制和上传。</p>
+      </div>
+      <div class="risk" style="margin-top:14px">
+        <strong>潜在循环依赖：</strong>
+        <p>如果 workstation 尚未存在，ego-portal 会在 <code>/auth/me</code> 阶段找不到匹配的 workstation，并在进入 Keystone 的自动绑定逻辑前失败。</p>
+      </div>
+    </section>
+
+    <section id="lite">
+      <h2>四、ego-portal-lite 当前如何对接 Keystone</h2>
+      <p class="lead">主要代码：<span class="repo">ego-portal-lite/Platforms/iOS/EgoPortalLiteApp/EgoPortalViewModel.swift</span>。</p>
+
+      <h3>4.1 登录与设备激活</h3>
+      <p>ego-portal-lite 使用设备凭证激活：</p>
+      <pre>1. POST /api/v1/auth/login
+2. POST /api/v1/auth/workstation/activate
+   Authorization: Bearer &lt;identity-token&gt;
+   Device-Authorization: &lt;persistent-device-token&gt;
+   body: {}</pre>
+      <p>Keystone 根据 Device-Authorization 解析：</p>
+      <div class="flow">
+        <span class="step">device token</span><span class="arrow">→</span>
+        <span class="step">robot</span><span class="arrow">→</span>
+        <span class="step">device_id</span><span class="arrow">→</span>
+        <span class="step">workstation</span>
+      </div>
+      <p>因此 lite 不要求客户端先通过 <code>/auth/me</code> 自己找 workstation_id，和 Keystone 当前设备激活模型更一致。</p>
+
+      <h3>4.2 Plan 与任务刷新</h3>
+      <p>登录后，lite 会：</p>
+      <ol>
+        <li>调用 <code>GET /api/v1/auth/me</code> 获取当前 workstation 上下文；</li>
+        <li>调用 <code>POST /api/v1/operator/plans/refresh</code>；</li>
+        <li>使用 workstation_id 分页调用 <code>GET /api/v1/tasks</code>；</li>
+        <li>按 <code>dc_plan_id</code> 将 Plan 和 Task 合并成本地快照。</li>
+      </ol>
+      <p>这条路径会直接命中 Keystone 的新逻辑：Plan refresh 会尝试为未绑定 Plan 绑定当前设备并创建 pending candidate task。</p>
+
+      <h3>4.3 lite 上传的额外约束</h3>
+      <p>lite 的 Data Gateway 上传 metadata 中明确包含：</p>
+      <ul>
+        <li><code>product = ego_portal_lite</code></li>
+        <li><code>dc_plan_id</code></li>
+        <li><code>task_id</code></li>
+        <li><code>workspace_id</code></li>
+        <li><code>checksum_md5</code></li>
+        <li><code>checksum_sha256</code></li>
+      </ul>
+      <p>Keystone 会额外校验 MD5 和 SHA-256 是否与上传会话匹配，且格式必须正确。</p>
+
+      <div class="status" style="margin-top:16px">
+        <strong>当前判断：</strong> ego-portal-lite 已经直接使用“设备凭证激活 + operator plans refresh”路径，对 Keystone 新增的延迟绑定机制适配得更完整。
+      </div>
+    </section>
+
+    <section id="compare">
+      <h2>五、两个客户端的关键差异</h2>
+      <table>
+        <thead>
+          <tr><th>方面</th><th>ego-portal</th><th>ego-portal-lite</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>设备激活</td><td>先从 <code>/auth/me</code> 找 workstation，再提交 <code>workstation_id</code></td><td>提交 <code>Device-Authorization</code>，由 Keystone 根据设备解析 workstation</td></tr>
+          <tr><td>设备凭证激活</td><td>客户端有方法，但主登录流程没有使用</td><td>主登录流程正在使用</td></tr>
+          <tr><td>Plan 刷新</td><td>主要依赖 <code>/tasks</code></td><td>明确调用 <code>/operator/plans/refresh</code>，再拉 <code>/tasks</code></td></tr>
+          <tr><td>任务本地化</td><td>按设备、workstation、operator 和 Plan 聚合到本地任务</td><td>按 Plan refresh 结果和任务列表生成本地 Plan/Task snapshot</td></tr>
+          <tr><td>上传协议</td><td>Data Gateway gRPC</td><td>Data Gateway gRPC</td></tr>
+          <tr><td>上传识别</td><td>通常识别为 <code>source=ego-portal</code></td><td>识别为 <code>product=ego_portal_lite</code></td></tr>
+          <tr><td>上传校验</td><td>常规 task/plan/workspace/device 校验</td><td>在常规校验之外，额外校验 MD5/SHA-256</td></tr>
+          <tr><td>离线能力</td><td>本地任务、录制和上传队列</td><td>本地任务包恢复和离线录制</td></tr>
+          <tr><td>新协议适配度</td><td>间接，仍保留旧式 workstation_id 依赖</td><td>直接，使用 device-token activation 和 Plan refresh</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="flow">
+      <h2>六、当前完整线上流程</h2>
+      <h3>6.1 ego-portal</h3>
+      <pre>设备已初始化，保存 device API key
+        ↓
+用户输入 Keystone 账号密码
+        ↓
+POST /auth/login
+        ↓
+GET /auth/me
+        ↓
+按本机 device_id 找 workstation_id
+        ↓
+POST /auth/workstation/activate {"workstation_id": ...}
+        ↓
+Keystone 激活 workstation，并尝试绑定当前 operator 的未绑定 Plan
+        ↓
+GET /tasks?status=pending
+        ↓
+按 device_id / workstation_id 过滤并同步本地任务
+        ↓
+录制 MCAP
+        ↓
+Data Gateway gRPC 上传
+        ↓
+CompleteUpload 创建 Episode 并完成 Task</pre>
+
+      <h3>6.2 ego-portal-lite</h3>
+      <pre>设备已绑定 device auth token
+        ↓
+用户输入 Keystone 账号密码
+        ↓
+POST /auth/login
+        ↓
+POST /auth/workstation/activate
+  Device-Authorization: &lt;device-token&gt;
+        ↓
+Keystone 根据设备 token 找 workstation
+        ↓
+激活 workstation，并尝试绑定当前 operator 的未绑定 Plan
+        ↓
+GET /auth/me
+        ↓
+POST /operator/plans/refresh
+        ↓
+GET /tasks?workstation_id=...
+        ↓
+生成本地 Plan/Task snapshot
+        ↓
+录制
+        ↓
+Data Gateway gRPC 上传
+        ↓
+CompleteUpload 校验 checksum，创建 Episode 并完成 Task</pre>
+    </section>
+
+    <section id="risks">
+      <h2>七、当前风险与判断</h2>
+      <h3>7.1 主要风险：ego-portal 的 workstation 前置依赖</h3>
+      <p>ego-portal 当前的登录实现要求：</p>
+      <pre>/auth/me 能返回匹配本机 device_id 的 workstation
+        ↓
+客户端拿到 workstation_id
+        ↓
+客户端才调用 /auth/workstation/activate
+        ↓
+Keystone 才能执行激活阶段的自动 Plan 绑定</pre>
+      <p>如果产品预期是“首次设备登录时完全自动创建 workstation 并绑定 Plan”，那么 ego-portal 当前实现还没有完全覆盖该场景。</p>
+
+      <h3>7.2 当前系统实际上是多点幂等绑定</h3>
+      <p>当前设计通过多个入口提高兼容性：</p>
+      <ul>
+        <li>新客户端走 device-token activation；</li>
+        <li>旧客户端走 workstation_id activation；</li>
+        <li>两者都可以通过 Plan refresh 或 task list 触发候选任务准备；</li>
+        <li>Data Gateway 领取任务和首次上传提供兜底校验和绑定。</li>
+      </ul>
+      <p>这增强了兼容性，但也让“Plan 到底在哪一刻完成绑定”的行为不再单一，需要重点观察并发绑定、错误重试以及 workstation 尚未创建时的异常路径。</p>
+
+      <h3>7.3 最终现状一句话</h3>
+      <div class="blue">
+        <strong>Keystone 已能让 DC Plan 先脱离设备存在，并在设备激活、Plan 刷新、任务列表或 Data Gateway 操作中绑定到当前设备；ego-portal-lite 已按这套新路径对接，而 ego-portal 仍通过旧的 workstation_id + /tasks 路径接入，并依赖 workstation 在登录前已可被发现。</strong>
+      </div>
+    </section>
+
+    <footer>
+      本文根据当前工作区代码状态整理，涉及仓库：<span class="repo">keystone</span>、<span class="repo">ego-portal</span>、<span class="repo">ego-portal-lite</span>。
+    </footer>
+  </div>
+</body>
+</html>

@@ -390,7 +390,7 @@ func TestRecordingStartCallbackAdvancesPendingTask(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	NewTaskHandler(db, nil, nil, 0, nil).RegisterCallbackRoutes(router.Group("/callbacks"))
+	NewTaskHandler(db, nil, nil, 0).RegisterCallbackRoutes(router.Group("/callbacks"))
 
 	body, err := json.Marshal(RecordingStartCallback{
 		TaskID:    "task-start",
@@ -416,12 +416,12 @@ func TestRecordingStartCallbackAdvancesPendingTask(t *testing.T) {
 
 func TestTaskHandlerAxonTransferWriteTimeout(t *testing.T) {
 	custom := 250 * time.Millisecond
-	handler := NewTaskHandler(nil, nil, nil, 0, nil, custom)
+	handler := NewTaskHandler(nil, nil, nil, 0, custom)
 	if got := handler.axonTransferWriteTimeout(); got != custom {
 		t.Fatalf("axonTransferWriteTimeout()=%s want=%s", got, custom)
 	}
 
-	handler = NewTaskHandler(nil, nil, nil, 0, nil, 0)
+	handler = NewTaskHandler(nil, nil, nil, 0, 0)
 	if got := handler.axonTransferWriteTimeout(); got != services.DefaultTransferWriteTimeout {
 		t.Fatalf("default axonTransferWriteTimeout()=%s want=%s", got, services.DefaultTransferWriteTimeout)
 	}
@@ -889,7 +889,7 @@ func TestRecordingStartCallbackRespectsRecorderCancellationRace(t *testing.T) {
 
 			gin.SetMode(gin.TestMode)
 			router := gin.New()
-			NewTaskHandler(db, nil, hub, 0, nil).RegisterCallbackRoutes(router.Group("/callbacks"))
+			NewTaskHandler(db, nil, hub, 0).RegisterCallbackRoutes(router.Group("/callbacks"))
 
 			body, err := json.Marshal(RecordingStartCallback{
 				TaskID:   "task-cancel-race",

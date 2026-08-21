@@ -23,7 +23,7 @@ func TestTaskHandlerCompleteTasksScopesToCurrentWorkstationAndPlanGroup(t *testi
 	db := newTaskCompleteTestDB(t)
 	defer db.Close()
 
-	handler := NewTaskHandler(db, nil, nil, 0, nil)
+	handler := NewTaskHandler(db, nil, nil, 0)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.POST("/tasks/complete", func(c *gin.Context) {
@@ -58,7 +58,7 @@ func TestTaskHandlerCompleteTasksRejectsRevokedWorkspace(t *testing.T) {
 	if _, err := db.Exec(`UPDATE workspaces SET members = '[]' WHERE id = 123`); err != nil {
 		t.Fatalf("revoke membership: %v", err)
 	}
-	handler := NewTaskHandler(db, nil, nil, 0, nil)
+	handler := NewTaskHandler(db, nil, nil, 0)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.POST("/tasks/complete", func(c *gin.Context) {

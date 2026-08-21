@@ -386,6 +386,14 @@ func (h *AuthHandler) activateWorkstation(
 	workstation, tokenID, err := resolveActivationWorkstation(
 		ctx, tx, collectorID, requestedWorkstationID, deviceToken, lockClause,
 	)
+	if errors.Is(err, errWorkstationNotAssigned) && deviceToken != "" {
+		if err := h.bootstrapUnboundPlanWorkstation(ctx, tx, collectorID, operatorID, deviceToken, lockClause, time.Now().UTC()); err != nil {
+			return authWorkstationRow{}, err
+		}
+		workstation, tokenID, err = resolveActivationWorkstation(
+			ctx, tx, collectorID, requestedWorkstationID, deviceToken, lockClause,
+		)
+	}
 	if err != nil {
 		return authWorkstationRow{}, err
 	}
@@ -462,6 +470,11 @@ func (h *AuthHandler) activateWorkstation(
 	}
 	if err := tx.Commit(); err != nil {
 		return authWorkstationRow{}, fmt.Errorf("commit workstation activation: %w", err)
+	}
+	if deviceID, parseErr := strconv.ParseInt(strings.TrimSpace(workstation.DeviceID), 10, 64); parseErr == nil && deviceID > 0 {
+		if err := services.EnsureUnboundEgoCandidateTasksForWorkstation(ctx, h.db, h.hilbert, workstation.WorkspaceID, operatorID, workstation.ID, deviceID, now); err != nil {
+			logger.Printf("[AUTH] Failed to ensure workstation tasks: workstation=%d error=%v", workstation.ID, err)
+		}
 	}
 	if takesOverCurrentSession {
 		logger.Printf(
@@ -545,6 +558,77 @@ func resolveActivationWorkstation(
 	return workstation, tokenID, nil
 }
 
+func (h *AuthHandler) bootstrapUnboundPlanWorkstation(
+	ctx context.Context,
+	tx *sqlx.Tx,
+	collectorID int64,
+	operatorID string,
+	deviceToken string,
+	lockClause string,
+	now time.Time,
+) error {
+	var device struct {
+		RobotID     int64  `db:"robot_id"`
+		WorkspaceID int64  `db:"workspace_id"`
+		DeviceID    string `db:"device_id"`
+		DeviceName  string `db:"device_name"`
+	}
+	if err := tx.GetContext(ctx, &device, `
+		SELECT r.id AS robot_id, r.workspace_id, r.device_id,
+			COALESCE(r.device_name, '') AS device_name
+		FROM ws_client_auth_tokens t
+		JOIN robots r ON r.id = t.robot_id
+		WHERE t.token_hash = ? AND t.revoked_at IS NULL
+			AND r.status = 'active' AND r.deleted_at IS NULL
+		LIMIT 1`+lockClause, hashWSClientAuthToken(deviceToken)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errInvalidDeviceCredential
+		}
+		return fmt.Errorf("query bootstrap device: %w", err)
+	}
+	allowed, err := services.OperatorHasWorkspaceAccess(ctx, tx, operatorID, device.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("check bootstrap workspace access: %w", err)
+	}
+	if !allowed {
+		return errWorkstationNotAssigned
+	}
+	var planID int64
+	if err := tx.GetContext(ctx, &planID, `
+		SELECT id FROM dc_plan
+		WHERE workspace_id = ? AND operator = ? AND dc_device_id IS NULL
+			AND COALESCE(status, 'pending_collection') <> 'collected'
+			AND deleted_at IS NULL
+		ORDER BY id
+		LIMIT 1`+lockClause, device.WorkspaceID, operatorID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errWorkstationNotAssigned
+		}
+		return fmt.Errorf("query bootstrap dc plan: %w", err)
+	}
+	var collectorName string
+	if err := tx.GetContext(ctx, &collectorName, `
+		SELECT name FROM data_collectors WHERE id = ? AND deleted_at IS NULL
+	`, collectorID); err != nil {
+		return fmt.Errorf("query bootstrap collector: %w", err)
+	}
+	robotName := strings.TrimSpace(device.DeviceName)
+	if robotName == "" {
+		robotName = device.DeviceID
+	}
+	metadata := fmt.Sprintf(`{"source":"unbound_dc_plan_device_activation","dc_plan_id":%d,"workspace_id":%d,"operator":%q}`, planID, device.WorkspaceID, operatorID)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO workstations (
+			robot_id, robot_name, robot_serial, data_collector_id, collector_name,
+			collector_operator_id, workspace_id, name, status, metadata,
+			created_at, updated_at, is_current
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?, ?, FALSE)
+	`, device.RobotID, robotName, device.DeviceID, collectorID, collectorName, operatorID,
+		device.WorkspaceID, fmt.Sprintf("Hilbert Device %s Workstation", device.DeviceID), metadata, now, now); err != nil {
+		return fmt.Errorf("create bootstrap workstation: %w", err)
+	}
+	return nil
+}
 func (h *AuthHandler) bindUnboundEgoPlans(
 	ctx context.Context,
 	tx *sqlx.Tx,

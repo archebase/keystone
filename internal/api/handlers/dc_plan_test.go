@@ -218,7 +218,7 @@ func (f *fakeDCPlanHandlerHilbertClient) QueryDCPlans(_ context.Context, _ int64
 func newTestDCPlanRouter(db *sqlx.DB, syncService *services.DCPlanSyncService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	NewDCPlanHandler(db, syncService, nil).RegisterRoutes(router.Group("/api/v1"))
+	NewDCPlanHandler(db, syncService).RegisterRoutes(router.Group("/api/v1"))
 	return router
 }
 
