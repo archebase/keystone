@@ -209,7 +209,7 @@ func newTestOperatorPlanRouter(db *sqlx.DB, syncer dcPlanWorkspaceSyncer) *gin.E
 		c.Set(middleware.ClaimsKey, auth.NewCollectorWorkstationClaims(7, "collector-a", 11, 9, 123))
 		c.Next()
 	})
-	handler := NewDCPlanHandler(db, syncer, nil)
+	handler := NewDCPlanHandler(db, syncer)
 	handler.RegisterReadRoutes(router.Group("/api/v1"))
 	return router
 }

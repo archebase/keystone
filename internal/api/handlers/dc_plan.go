@@ -25,7 +25,6 @@ import (
 type DCPlanHandler struct {
 	db          *sqlx.DB
 	syncService dcPlanWorkspaceSyncer
-	hilbert     services.HilbertDCPlanBinder
 }
 
 type dcPlanWorkspaceSyncer interface {
@@ -34,8 +33,8 @@ type dcPlanWorkspaceSyncer interface {
 }
 
 // NewDCPlanHandler creates a new DCPlanHandler.
-func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer, hilbert services.HilbertDCPlanBinder) *DCPlanHandler {
-	return &DCPlanHandler{db: db, syncService: syncService, hilbert: hilbert}
+func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer) *DCPlanHandler {
+	return &DCPlanHandler{db: db, syncService: syncService}
 }
 
 // DCPlanResponse represents one Hilbert dc_plan projection.
@@ -224,12 +223,6 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 			claims.OperatorID,
 			err,
 		)
-	}
-
-	// 为当前 Ego 设备可见但尚未绑定 Hilbert 设备的 Ego 计划创建候选任务，
-	// 让传统 ego-portal 和 ego-portal-lite 都能在用户真正选择并上传前看到该计划。
-	if err := services.EnsureUnboundEgoCandidateTasksForWorkstation(c.Request.Context(), h.db, h.hilbert, claims.WorkspaceID, claims.OperatorID, claims.WorkstationID, dcDeviceID, time.Now().UTC()); err != nil {
-		logger.Printf("[DC_PLAN] Ensure unbound ego candidate tasks failed: workspace_id=%d operator=%s error=%v", claims.WorkspaceID, claims.OperatorID, err)
 	}
 
 	rows := []struct {

@@ -53,7 +53,7 @@ func TestCollectorCaptureStateTransitions(t *testing.T) {
 		t.Fatalf("create schema: %v", err)
 	}
 
-	handler := NewTaskHandler(db, nil, nil, time.Second, nil)
+	handler := NewTaskHandler(db, nil, nil, time.Second)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(func(c *gin.Context) {

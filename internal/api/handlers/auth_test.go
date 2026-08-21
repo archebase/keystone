@@ -83,6 +83,49 @@ func TestAuthHandlerLoginWithHilbertSuccessIssuesIdentityJWT(t *testing.T) {
 	}
 }
 
+func TestAuthHandlerActivateBoundDeviceBootstrapsWorkstationForUnboundPlan(t *testing.T) {
+	db := newTestAuthDB(t)
+	defer db.Close()
+	deviceToken := "kda_v1_bootstrap-device-token"
+	if _, err := db.Exec(`
+		INSERT INTO data_collectors (id, name, operator_id, status) VALUES (7, 'Collector', 'dc01', 'active');
+		INSERT INTO robots (id, device_id, device_name, workspace_id, status) VALUES (101, '23', 'Ego 23', 10, 'active');
+		INSERT INTO dc_plan (id, workspace_id, operator, dc_type, status, dc_device_id) VALUES
+			(1001, 10, 'dc01', 'ego', 'pending_collection', NULL);
+		INSERT INTO ws_client_auth_tokens (robot_id, token_hash) VALUES (101, ?)
+	`, hashWSClientAuthToken(deviceToken)); err != nil {
+		t.Fatalf("seed bootstrap login: %v", err)
+	}
+	binder := &testDCPlanBinder{}
+	handler := NewAuthHandler(db, testAuthConfig(), nil)
+	handler.hilbert = binder
+
+	workstation, err := handler.activateWorkstation(context.Background(), 7, "dc01", 0, deviceToken)
+	if err != nil {
+		t.Fatalf("activate bound device: %v", err)
+	}
+	if workstation.RobotID != 101 || !workstation.IsCurrent {
+		t.Fatalf("workstation=%#v", workstation)
+	}
+	if len(binder.bound) != 1 || binder.bound[0] != 1001 {
+		t.Fatalf("Hilbert bound plans=%v want [1001]", binder.bound)
+	}
+	var planDeviceID sql.NullInt64
+	if err := db.Get(&planDeviceID, `SELECT dc_device_id FROM dc_plan WHERE id = 1001`); err != nil {
+		t.Fatalf("query bound plan: %v", err)
+	}
+	if !planDeviceID.Valid || planDeviceID.Int64 != 23 {
+		t.Fatalf("plan device=%#v want 23", planDeviceID)
+	}
+	var workstationCount int
+	if err := db.Get(&workstationCount, `SELECT COUNT(*) FROM workstations WHERE data_collector_id = 7 AND robot_id = 101 AND workspace_id = 10`); err != nil {
+		t.Fatalf("count bootstrapped workstations: %v", err)
+	}
+	if workstationCount != 1 {
+		t.Fatalf("workstation count=%d want 1", workstationCount)
+	}
+}
+
 func TestAuthHandlerActivateBoundDeviceBindsUnboundEgoPlans(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
