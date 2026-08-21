@@ -256,21 +256,12 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("query robot: %v", err)
 	}
-	var workstation struct {
-		RobotID         int64  `db:"robot_id"`
-		CollectorID     int64  `db:"data_collector_id"`
-		WorkspaceID     int64  `db:"workspace_id"`
-		CollectorStatus string `db:"status"`
+	var workstationCount int
+	if err := db.Get(&workstationCount, "SELECT COUNT(*) FROM workstations"); err != nil {
+		t.Fatalf("count workstations: %v", err)
 	}
-	if err := db.Get(&workstation, `
-		SELECT robot_id, data_collector_id, workspace_id, status
-		FROM workstations
-		LIMIT 1
-	`); err != nil {
-		t.Fatalf("query workstation: %v", err)
-	}
-	if workstation.RobotID != 1 || workstation.CollectorID != 1 || workstation.WorkspaceID != 123 || workstation.CollectorStatus != "offline" {
-		t.Fatalf("unexpected workstation: %#v", workstation)
+	if workstationCount != 0 {
+		t.Fatalf("workstationCount=%d want 0 (workspace membership workstation projection removed)", workstationCount)
 	}
 }
 

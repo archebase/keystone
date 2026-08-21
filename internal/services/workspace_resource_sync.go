@@ -176,11 +176,6 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(
 			result.RobotUpsertedCount++
 		}
 	}
-	if err := ensureWorkspaceCollectorWorkstations(ctx, tx, workspace, syncedAt); err != nil {
-		result.addError("workstation", strconv.FormatInt(workspace.ID, 10), "workstation_projection_failed", err.Error())
-		result.discardUncommittedCounts()
-		return result
-	}
 
 	if err := tx.Commit(); err != nil {
 		result.addError("workspace", strconv.FormatInt(workspace.ID, 10), "transaction_commit_failed", err.Error())
@@ -230,86 +225,6 @@ func (s *WorkspaceResourceSyncService) syncCollectors(
 			result.CollectorUpsertedCount++
 		}
 	}
-}
-
-func ensureWorkspaceCollectorWorkstations(
-	ctx context.Context,
-	tx *sqlx.Tx,
-	workspace auth.HilbertWorkspace,
-	now time.Time,
-) error {
-	operatorIDs := normalizeWorkspacePeople(append(workspace.Admins, workspace.Members...))
-	if len(operatorIDs) == 0 {
-		return nil
-	}
-	query, args, err := sqlx.In(`
-		SELECT id, name, operator_id
-		FROM data_collectors
-		WHERE operator_id IN (?) AND status = 'active' AND deleted_at IS NULL
-	`, operatorIDs)
-	if err != nil {
-		return err
-	}
-	collectors := []struct {
-		ID         int64  `db:"id"`
-		Name       string `db:"name"`
-		OperatorID string `db:"operator_id"`
-	}{}
-	if err := tx.SelectContext(ctx, &collectors, tx.Rebind(query), args...); err != nil {
-		return fmt.Errorf("query workspace collectors: %w", err)
-	}
-	robots := []struct {
-		ID         int64  `db:"id"`
-		DeviceID   string `db:"device_id"`
-		DeviceName string `db:"device_name"`
-	}{}
-	if err := tx.SelectContext(ctx, &robots, `
-		SELECT id, device_id, COALESCE(device_name, '') AS device_name
-		FROM robots
-		WHERE workspace_id = ? AND status = 'active' AND deleted_at IS NULL
-	`, workspace.ID); err != nil {
-		return fmt.Errorf("query workspace robots: %w", err)
-	}
-	for _, collector := range collectors {
-		for _, robot := range robots {
-			var existing int
-			if err := tx.GetContext(ctx, &existing, `
-				SELECT COUNT(*) FROM workstations
-				WHERE data_collector_id = ? AND workspace_id = ? AND robot_id = ? AND deleted_at IS NULL
-			`, collector.ID, workspace.ID, robot.ID); err != nil {
-				return fmt.Errorf("query workstation: %w", err)
-			}
-			if existing > 0 {
-				continue
-			}
-			robotName := strings.TrimSpace(robot.DeviceName)
-			if robotName == "" {
-				robotName = robot.DeviceID
-			}
-			metadata, err := marshalMetadata(map[string]any{
-				"source":       "hilbert_workspace_membership",
-				"workspace_id": workspace.ID,
-				"operator":     collector.OperatorID,
-				"device_id":    robot.DeviceID,
-			})
-			if err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO workstations (
-					robot_id, robot_name, robot_serial, data_collector_id, collector_name,
-					collector_operator_id, workspace_id, name, status, metadata,
-					created_at, updated_at, is_current
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?, ?, FALSE)
-			`, robot.ID, robotName, robot.DeviceID, collector.ID, collector.Name,
-				collector.OperatorID, workspace.ID,
-				fmt.Sprintf("Hilbert Workspace %d Device %s", workspace.ID, robot.DeviceID),
-				metadata, now, now); err != nil {
-				return fmt.Errorf("create workstation: %w", err)
-			}
-		}
-	}
-	return nil
 }
 
 func upsertHilbertDataCollector(ctx context.Context, tx *sqlx.Tx, account auth.HilbertAccount, syncedAt time.Time) (bool, error) {
