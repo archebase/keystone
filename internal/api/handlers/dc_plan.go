@@ -324,6 +324,7 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 		WHERE dp.workspace_id = ?
 			AND dp.operator = ?
 			AND (dp.dc_device_id = ? OR dp.dc_device_id IS NULL)
+			AND COALESCE(dp.status, '') <> 'collected'
 			AND dp.deleted_at IS NULL
 		ORDER BY dp.id
 	`, dcDeviceID, claims.WorkspaceID, strings.TrimSpace(claims.OperatorID), dcDeviceID); err != nil {

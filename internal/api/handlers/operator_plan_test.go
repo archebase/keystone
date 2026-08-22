@@ -73,6 +73,27 @@ func TestRefreshOperatorPlansFiltersAssignmentAndReportsProgress(t *testing.T) {
 	}
 }
 
+func TestRefreshOperatorPlansExcludesCollectedPlans(t *testing.T) {
+	db := newTestOperatorPlanDB(t)
+	defer db.Close()
+	seedOperatorPlanFixture(t, db)
+
+	router := newTestOperatorPlanRouter(db, &fakeOperatorPlanSyncer{})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/plans/refresh", nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var response OperatorPlanRefreshResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.Items) != 1 || response.Items[0].ID != 1001 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
 func TestRefreshOperatorPlansFallsBackToStaleProjection(t *testing.T) {
 	db := newTestOperatorPlanDB(t)
 	defer db.Close()
@@ -251,6 +272,7 @@ func seedOperatorPlanFixture(t *testing.T, db *sqlx.DB) {
 		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_project_description, dc_task_id, dc_task_name, dc_task_description, dc_device_id, dc_device_name, dc_type, target_count, cur_count, target_duration, cur_duration, last_synced_at) VALUES (1001, 123, 'Plan A', 'collector-a', 31, 'Project A', 'Kitchen collection project', 41, 'Task A', 'Stack each item in order', 456, 'Phone A', 'ego', 10, 2, 3600, 120, '2026-07-21 01:00:00')`,
 		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, target_count, cur_count, target_duration, cur_duration, last_synced_at) VALUES (1002, 123, 'Other operator', 'collector-b', 32, 'Project B', 42, 'Task B', 456, 'Phone A', 'ego', 5, 0, 3600, 0, '2026-07-21 01:00:00')`,
 		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, dc_device_name, dc_type, target_count, cur_count, target_duration, cur_duration, last_synced_at) VALUES (1003, 123, 'Other robot', 'collector-a', 33, 'Project C', 43, 'Task C', 999, 'Phone C', 'ego', 5, 0, 3600, 0, '2026-07-21 01:00:00')`,
+		`INSERT INTO dc_plan (id, workspace_id, name, operator, dc_project_id, dc_project_name, dc_task_id, dc_task_name, dc_device_id, status, dc_device_name, dc_type, target_count, cur_count, target_duration, cur_duration, last_synced_at) VALUES (1004, 123, 'Collected plan', 'collector-a', 34, 'Project D', 44, 'Task D', 456, 'collected', 'Phone A', 'ego', 5, 5, 3600, 3600, '2026-07-21 01:00:00')`,
 		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (1, 1001, 'completed')`,
 		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (2, 1001, 'completed')`,
 		`INSERT INTO tasks (id, dc_plan_id, status) VALUES (3, 1001, 'uploading')`,
