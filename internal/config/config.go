@@ -200,12 +200,13 @@ type KubernetesResourcesConfig struct {
 
 // AuthConfig JWT authentication configuration (collector login).
 type AuthConfig struct {
-	JWTSecret             string // #nosec G117 -- signing secret loaded from env; must exist in config struct
-	Issuer                string
-	JWTExpiryHours        int
-	AdminUsername         string // #nosec G101 -- admin account name loaded from env
-	AdminPassword         string // #nosec G101 -- admin password loaded from env; never logged
-	DashboardDisplayToken string // #nosec G101 -- optional long-lived dashboard display token loaded from env
+	JWTSecret               string // #nosec G117 -- signing secret loaded from env; must exist in config struct
+	Issuer                  string
+	JWTExpiryHours          int
+	RefreshTokenExpiryHours int
+	AdminUsername           string // #nosec G101 -- admin account name loaded from env
+	AdminPassword           string // #nosec G101 -- admin password loaded from env; never logged
+	DashboardDisplayToken   string // #nosec G101 -- optional long-lived dashboard display token loaded from env
 }
 
 // HilbertConfig owns Hilbert endpoint and Keystone service identity settings.
@@ -274,12 +275,13 @@ func Load() (*Config, error) {
 			DPConfigPath:       getEnv("KEYSTONE_SYNC_DP_CONFIG", defaultDPConfigPath()),
 		},
 		Auth: AuthConfig{
-			JWTSecret:             getEnv("KEYSTONE_JWT_SECRET", ""),
-			Issuer:                getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
-			JWTExpiryHours:        getEnvInt("KEYSTONE_JWT_EXPIRY_HOURS", 24),
-			AdminUsername:         getEnv("KEYSTONE_ADMIN_USERNAME", ""),
-			AdminPassword:         getEnv("KEYSTONE_ADMIN_PASSWORD", ""),
-			DashboardDisplayToken: getEnv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", ""),
+			JWTSecret:               getEnv("KEYSTONE_JWT_SECRET", ""),
+			Issuer:                  getEnv("KEYSTONE_JWT_ISSUER", "keystone-edge"),
+			JWTExpiryHours:          getEnvInt("KEYSTONE_JWT_EXPIRY_HOURS", 24),
+			RefreshTokenExpiryHours: getEnvInt("KEYSTONE_REFRESH_TOKEN_EXPIRY_HOURS", 720),
+			AdminUsername:           getEnv("KEYSTONE_ADMIN_USERNAME", ""),
+			AdminPassword:           getEnv("KEYSTONE_ADMIN_PASSWORD", ""),
+			DashboardDisplayToken:   getEnv("KEYSTONE_DASHBOARD_DISPLAY_TOKEN", ""),
 		},
 		Hilbert: HilbertConfig{
 			BaseURL:        getEnv("KEYSTONE_HILBERT_BASE_URL", ""),

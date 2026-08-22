@@ -15,6 +15,7 @@ type Claims struct {
 	RobotID       int64  `json:"robot_id,omitempty"`
 	WorkspaceID   int64  `json:"workspace_id,omitempty"`
 	Role          string `json:"role"`
+	TokenType     string `json:"token_type,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -42,6 +43,25 @@ func NewCollectorWorkstationClaims(
 		RobotID:       robotID,
 		WorkspaceID:   workspaceID,
 		Role:          "data_collector",
+	}
+}
+
+// NewCollectorWorkstationRefreshClaims creates claims for refreshing one active workstation session.
+func NewCollectorWorkstationRefreshClaims(
+	collectorID int64,
+	operatorID string,
+	workstationID int64,
+	robotID int64,
+	workspaceID int64,
+) *Claims {
+	return &Claims{
+		CollectorID:   collectorID,
+		OperatorID:    operatorID,
+		WorkstationID: workstationID,
+		RobotID:       robotID,
+		WorkspaceID:   workspaceID,
+		Role:          "data_collector",
+		TokenType:     "workstation_refresh",
 	}
 }
 
