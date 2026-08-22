@@ -201,6 +201,7 @@ func TestLoad(t *testing.T) {
 func TestLoadStereoSplitConfig(t *testing.T) {
 	t.Setenv("KEYSTONE_ORBIT_BASE_URL", "http://orbit.archebase-system.svc.cluster.local:8080")
 	t.Setenv("KEYSTONE_DERIVATIVE_TOS_PREFIX", "derived/local-test")
+	t.Setenv("KEYSTONE_DERIVATIVE_POLL_INTERVAL_SECONDS", "17")
 	t.Setenv("KEYSTONE_DGW_COMPAT_ENABLED", "true")
 	t.Setenv("KEYSTONE_DGW_TOS_ENDPOINT", "https://tos-cn-beijing.volces.com")
 	t.Setenv("KEYSTONE_DGW_TOS_BUCKET", "keystone-managed-bucket")
@@ -217,6 +218,7 @@ func TestLoadStereoSplitConfig(t *testing.T) {
 		t.Fatalf("Load().Derivatives output = %+v", cfg.Derivatives)
 	}
 	if cfg.Derivatives.OrbitTimeoutSec != 10 ||
+		cfg.Derivatives.PollIntervalSec != 17 ||
 		cfg.Derivatives.Resources.Requests["cpu"] != "2" ||
 		cfg.Derivatives.Resources.Limits["memory"] != "8Gi" ||
 		cfg.Derivatives.Resources.Limits["ephemeral-storage"] != "100Gi" {

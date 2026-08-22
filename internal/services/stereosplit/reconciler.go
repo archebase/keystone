@@ -134,8 +134,12 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 	if !m.cfg.Enabled {
 		return false, nil
 	}
+	preferQueued, err := m.shouldPreferQueuedDispatch(ctx)
+	if err != nil {
+		return true, err
+	}
 	var candidate frozenDerivativeRow
-	err := m.db.GetContext(ctx, &candidate, `
+	err = m.db.GetContext(ctx, &candidate, `
 		SELECT id, episode_id, generation, processing_status,
 		       cancel_requested_at,
 		       orbit_submission_id, orbit_request, orbit_job_id,
@@ -150,19 +154,22 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 		    OR orbit_delete_status = ?
 		  )
 		ORDER BY CASE
+		  WHEN cancel_requested_at IS NOT NULL
+		       AND processing_status IN ('submitting', 'pending', 'running') THEN 0
+		  WHEN ? = 1 AND processing_status = 'queued' THEN 1
 		  WHEN processing_status IN ('submitting', 'pending', 'running', 'verifying') THEN CASE processing_status
-		    WHEN 'submitting' THEN 0
-		    WHEN 'pending' THEN 1
-		    WHEN 'running' THEN 1
-		    WHEN 'verifying' THEN 2
-		    ELSE 3 END
-		  WHEN processing_status = 'succeeded' AND qa_status IN ('pending', 'running') THEN 3
-		  WHEN orbit_delete_status = 'pending' THEN 4
-		  ELSE 5 END,
+		    WHEN 'submitting' THEN 2
+		    WHEN 'pending' THEN 3
+		    WHEN 'running' THEN 3
+		    WHEN 'verifying' THEN 4
+		    ELSE 5 END
+		  WHEN processing_status = 'succeeded' AND qa_status IN ('pending', 'running') THEN 5
+		  WHEN orbit_delete_status = 'pending' THEN 6
+		  ELSE 7 END,
 		  updated_at ASC, id ASC
 		LIMIT 1
 	`, Kind, m.now().UTC(), ProcessingQueued, ProcessingSubmitting, ProcessingPending, ProcessingRunning, ProcessingVerifying,
-		ProcessingSucceeded, QAPending, QARunning, DeletePending)
+		ProcessingSucceeded, QAPending, QARunning, DeletePending, boolInt(preferQueued))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
@@ -276,20 +283,75 @@ func (m *Manager) failBeforeSubmission(ctx context.Context, derivativeID int64, 
 	return cause
 }
 
+type dispatchCapacity struct {
+	Active    int
+	Limit     int
+	QueuedDue bool
+}
+
 func (m *Manager) atOrbitCapacity(ctx context.Context) (bool, error) {
+	capacity, err := m.loadDispatchCapacity(ctx, false)
+	if errors.Is(err, ErrImageNotConfigured) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return capacity.Active >= capacity.Limit, nil
+}
+
+func (m *Manager) shouldPreferQueuedDispatch(ctx context.Context) (bool, error) {
+	capacity, err := m.loadDispatchCapacity(ctx, true)
+	if err != nil {
+		return false, err
+	}
+	return capacity.QueuedDue && capacity.Active < capacity.Limit, nil
+}
+
+// loadDispatchCapacity centralizes the durable concurrency calculation. The
+// in-process dispatch lock serializes the final capacity recheck and freeze;
+// the deployment must remain single-replica until admission is guarded by a
+// database-backed lease or transaction that spans Keystone replicas.
+func (m *Manager) loadDispatchCapacity(ctx context.Context, includeQueued bool) (dispatchCapacity, error) {
+	capacity := dispatchCapacity{}
+	if includeQueued {
+		var queuedDue int
+		if err := m.db.GetContext(ctx, &queuedDue, `
+			SELECT CASE WHEN EXISTS (
+				SELECT 1 FROM episode_derivatives
+				WHERE kind = ? AND processing_status = ?
+				  AND (reconcile_after IS NULL OR reconcile_after <= ?)
+			) THEN 1 ELSE 0 END
+		`, Kind, ProcessingQueued, m.now().UTC()); err != nil {
+			return dispatchCapacity{}, fmt.Errorf("check queued stereo split work: %w", err)
+		}
+		capacity.QueuedDue = queuedDue == 1
+		if !capacity.QueuedDue {
+			return capacity, nil
+		}
+	}
 	current, err := m.CurrentImageConfig(ctx)
 	if err != nil {
-		return false, fmt.Errorf("load stereo split concurrency setting: %w", err)
+		return dispatchCapacity{}, fmt.Errorf("load stereo split concurrency setting: %w", err)
 	}
-	limit := configuredMaxConcurrent(current.MaxConcurrent)
-	var active int
-	if err := m.db.GetContext(ctx, &active, `
+	capacity.Limit = configuredMaxConcurrent(current.MaxConcurrent)
+	if err := m.db.GetContext(ctx, &capacity.Active, `
 		SELECT COUNT(*) FROM episode_derivatives
 		WHERE kind = ? AND processing_status IN (?, ?, ?)
 	`, Kind, ProcessingSubmitting, ProcessingPending, ProcessingRunning); err != nil {
-		return false, fmt.Errorf("count active stereo split jobs: %w", err)
+		return dispatchCapacity{}, fmt.Errorf("count active stereo split jobs: %w", err)
 	}
-	return active >= limit, nil
+	if !includeQueued {
+		return capacity, nil
+	}
+	return capacity, nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (m *Manager) cancelRequested(ctx context.Context, derivativeID int64) (bool, error) {
@@ -903,14 +965,11 @@ func (m *Manager) reconcileOrbitStatus(ctx context.Context, derivativeID int64) 
 			    orbit_job_missing_since = NULL, processing_error = NULL, updated_at = ? WHERE id = ?
 		`, ProcessingPending, now.Add(m.pollInterval()), now, derivativeID)
 	case "RUNNING":
-		logs, logsErr := m.orbitLogTail(ctx, row.OrbitJobID.String)
 		_, err = m.db.ExecContext(ctx, `
 			UPDATE episode_derivatives SET processing_status = ?, reconcile_after = ?,
 			    processing_started_at = COALESCE(processing_started_at, ?),
-			    orbit_job_missing_since = NULL, orbit_log_tail = COALESCE(?, orbit_log_tail),
-			    processing_error = NULL, updated_at = ? WHERE id = ?
-		`, ProcessingRunning, now.Add(m.pollInterval()), now,
-			nullableLogTail(logs, logsErr), now, derivativeID)
+			    orbit_job_missing_since = NULL, processing_error = NULL, updated_at = ? WHERE id = ?
+		`, ProcessingRunning, now.Add(m.pollInterval()), now, now, derivativeID)
 	case "SUCCEEDED":
 		logs, logsErr := m.orbitLogTail(ctx, row.OrbitJobID.String)
 		if logsErr != nil {

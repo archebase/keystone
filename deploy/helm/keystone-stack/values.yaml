@@ -54,6 +54,7 @@ keystone:
   derivatives:
     orbitBaseURL: http://orbit.archebase-system.svc.cluster.local:8080
     tosPrefix: derived/episodes
+    pollIntervalSeconds: 5
 
   depthNormalization:
     enabled: true

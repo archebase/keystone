@@ -118,6 +118,8 @@ spec:
               value: {{ .Values.keystone.derivatives.orbitBaseURL | quote }}
             - name: KEYSTONE_DERIVATIVE_TOS_PREFIX
               value: {{ .Values.keystone.derivatives.tosPrefix | quote }}
+            - name: KEYSTONE_DERIVATIVE_POLL_INTERVAL_SECONDS
+              value: {{ .Values.keystone.derivatives.pollIntervalSeconds | quote }}
             - name: KEYSTONE_AXON_TRANSFER_WS_PORT
               value: {{ .Values.keystone.service.ports.transferWebSocket | quote }}
             - name: KEYSTONE_AXON_RECORDER_WS_PORT

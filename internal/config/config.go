@@ -354,7 +354,7 @@ func loadDerivativeConfig() DerivativeConfig {
 		},
 		ActiveDeadlineSec:   3600,
 		TTLSecondsAfterDone: 604800,
-		PollIntervalSec:     5,
+		PollIntervalSec:     getEnvInt("KEYSTONE_DERIVATIVE_POLL_INTERVAL_SECONDS", 5),
 		MaxSourceBytes:      500 * 1024 * 1024 * 1024,
 		OrbitLogTailBytes:   1024 * 1024,
 	}

@@ -835,7 +835,7 @@ func TestReconcileDeleteWaitsForPersistedOrbitLogs(t *testing.T) {
 	}
 }
 
-func TestReconcileRunningPersistsLatestOrbitLogTail(t *testing.T) {
+func TestReconcileRunningDoesNotPollOrbitLogs(t *testing.T) {
 	db := newTestDB(t)
 	insertTestEpisode(t, db, 49, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
 	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
@@ -873,21 +873,7 @@ func TestReconcileRunningPersistsLatestOrbitLogTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if derivative.ProcessingStatus != ProcessingRunning || derivative.OrbitLogTail != fake.logs || fake.logsCalls != 1 {
-		t.Fatalf("derivative=%+v logs_calls=%d", derivative, fake.logsCalls)
-	}
-
-	lastLogs := fake.logs
-	fake.logs = " \n"
-	now = now.Add(2 * time.Second)
-	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
-		t.Fatalf("empty logs ReconcileOnce() error = %v", err)
-	}
-	derivative, err = manager.Get(context.Background(), 49)
-	if err != nil {
-		t.Fatalf("Get() after empty logs error = %v", err)
-	}
-	if derivative.OrbitLogTail != lastLogs || fake.logsCalls != 2 {
+	if derivative.ProcessingStatus != ProcessingRunning || derivative.OrbitLogTail != "" || fake.logsCalls != 0 {
 		t.Fatalf("derivative=%+v logs_calls=%d", derivative, fake.logsCalls)
 	}
 }
@@ -963,7 +949,6 @@ func TestReconcileTerminalLogFailurePersistsFallbackBeforeDelete(t *testing.T) {
 				t.Fatalf("Get() terminal error = %v", err)
 			}
 			for _, want := range []string{
-				"copied 8167930399 bytes",
 				"[keystone] Orbit terminal diagnostics",
 				"status=FAILED",
 				"Job has reached the specified backoff limit",
