@@ -672,13 +672,40 @@ func (s *Server) startPeriodicDCPlanSync() {
 		for {
 			select {
 			case <-ticker.C:
-				s.syncDCPlansOnce(ctx, "Periodic")
+				s.syncHilbertResourcesAndDCPlans(ctx, "Periodic")
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 	logger.Printf("[DC_PLAN] Periodic Hilbert dc plan sync started: interval=%s", dcPlanAutoSyncInterval)
+}
+
+func (s *Server) syncHilbertResourcesAndDCPlans(ctx context.Context, label string) {
+	if s.workspaceSync == nil || !s.workspaceSync.Configured() {
+		logger.Printf("[HILBERT-SYNC] %s workspace sync skipped: service identity config incomplete", label)
+	} else {
+		timeout := time.Duration(s.cfg.Hilbert.TimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		syncCtx, cancel := context.WithTimeout(ctx, timeout)
+		result, err := s.workspaceSync.Sync(syncCtx)
+		cancel()
+		if err != nil {
+			logger.Printf("[HILBERT-SYNC] %s workspace sync failed; continuing with cached workspaces: %v", label, err)
+		} else {
+			resourceErrors := 0
+			if result.ResourceSync != nil {
+				for _, workspaceResult := range result.ResourceSync.WorkspaceResults {
+					resourceErrors += len(workspaceResult.Errors)
+				}
+			}
+			logger.Printf("[HILBERT-SYNC] %s workspace and resource sync completed: workspaces=%d resource_errors=%d", label, result.SyncedCount, resourceErrors)
+		}
+	}
+
+	s.syncDCPlansOnce(ctx, label)
 }
 
 func (s *Server) syncDCPlansOnce(ctx context.Context, label string) {
