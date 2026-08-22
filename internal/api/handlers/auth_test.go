@@ -226,6 +226,28 @@ func TestAuthHandlerActivateWorkstationForWebSelection(t *testing.T) {
 	if claims.WorkstationID != 12 {
 		t.Fatalf("workstation_id=%d want 12", claims.WorkstationID)
 	}
+	if resp.RefreshToken == "" || resp.RefreshExpiresIn != 720*3600 {
+		t.Fatalf("unexpected refresh response: %#v", resp)
+	}
+	refreshClaims, err := auth.ParseToken(resp.RefreshToken, testAuthConfig())
+	if err != nil {
+		t.Fatalf("parse refresh token: %v", err)
+	}
+	if refreshClaims.TokenType != "workstation_refresh" || refreshClaims.WorkstationID != 12 {
+		t.Fatalf("unexpected refresh claims: %#v", refreshClaims)
+	}
+
+	refresh := performAuthRefresh(router, resp.RefreshToken)
+	if refresh.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d want=%d body=%s", refresh.Code, http.StatusOK, refresh.Body.String())
+	}
+	var refreshResp WorkstationRefreshResponse
+	if err := json.Unmarshal(refresh.Body.Bytes(), &refreshResp); err != nil {
+		t.Fatalf("unmarshal refresh response: %v", err)
+	}
+	if refreshResp.AccessToken == "" || refreshResp.Workstation.ID != "12" {
+		t.Fatalf("unexpected refresh response: %#v", refreshResp)
+	}
 
 	var currentIDs []int64
 	if err := db.Select(&currentIDs, `
@@ -863,11 +885,20 @@ func performAuthActivation(router *gin.Engine, token string, body string, device
 	return w
 }
 
+func performAuthRefresh(router *gin.Engine, refreshToken string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/workstation/refresh", bytes.NewBufferString(`{"refresh_token":"`+refreshToken+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
 func testAuthConfig() *config.AuthConfig {
 	return &config.AuthConfig{
-		JWTSecret:      "test-jwt-secret-at-least-32-bytes-long",
-		Issuer:         "keystone-test",
-		JWTExpiryHours: 24,
+		JWTSecret:               "test-jwt-secret-at-least-32-bytes-long",
+		Issuer:                  "keystone-test",
+		JWTExpiryHours:          24,
+		RefreshTokenExpiryHours: 720,
 	}
 }
 

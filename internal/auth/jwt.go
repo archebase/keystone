@@ -22,8 +22,20 @@ var (
 
 // GenerateToken signs the given claims into a JWT string using the auth config.
 func GenerateToken(claims *Claims, cfg *config.AuthConfig) (string, error) {
+	return generateToken(claims, cfg, time.Duration(cfg.JWTExpiryHours)*time.Hour)
+}
+
+// GenerateWorkstationRefreshToken signs a long-lived refresh token for one workstation session.
+func GenerateWorkstationRefreshToken(claims *Claims, cfg *config.AuthConfig) (string, error) {
+	if claims.TokenType != "workstation_refresh" {
+		return "", errors.New("invalid workstation refresh claims")
+	}
+	return generateToken(claims, cfg, time.Duration(cfg.RefreshTokenExpiryHours)*time.Hour)
+}
+
+func generateToken(claims *Claims, cfg *config.AuthConfig, expiry time.Duration) (string, error) {
 	claims.Issuer = cfg.Issuer
-	claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(time.Duration(cfg.JWTExpiryHours) * time.Hour))
+	claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(expiry))
 	claims.IssuedAt = jwt.NewNumericDate(time.Now())
 	claims.NotBefore = jwt.NewNumericDate(time.Now())
 

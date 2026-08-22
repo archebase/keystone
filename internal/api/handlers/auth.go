@@ -118,6 +118,21 @@ type WorkstationActivationRequest struct {
 
 // WorkstationActivationResponse returns the existing workstation-scoped JWT shape.
 type WorkstationActivationResponse struct {
+	AccessToken      string              `json:"access_token"`  // #nosec G117 -- response DTO intentionally returns access token
+	RefreshToken     string              `json:"refresh_token"` // #nosec G117 -- response DTO intentionally returns refresh token
+	RefreshExpiresIn int                 `json:"refresh_expires_in"`
+	TokenType        string              `json:"token_type"`
+	ExpiresIn        int                 `json:"expires_in"`
+	Role             string              `json:"role"`
+	Workstation      authWorkstationInfo `json:"workstation"`
+}
+
+type WorkstationRefreshRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
+// WorkstationRefreshResponse returns a renewed workstation-scoped JWT.
+type WorkstationRefreshResponse struct {
 	AccessToken string              `json:"access_token"` // #nosec G117 -- response DTO intentionally returns access token
 	TokenType   string              `json:"token_type"`
 	ExpiresIn   int                 `json:"expires_in"`
@@ -146,6 +161,7 @@ func (h *AuthHandler) RegisterRoutes(r *gin.RouterGroup) {
 	// Public — no auth required
 	r.POST("/auth/login", h.Login)
 	r.POST("/auth/logout", h.Logout)
+	r.POST("/auth/workstation/refresh", h.RefreshWorkstation)
 }
 
 // RegisterAuthenticatedRoutes registers auth endpoints that require a valid JWT.
@@ -357,8 +373,79 @@ func (h *AuthHandler) ActivateWorkstation(c *gin.Context) {
 		return
 	}
 
+	refreshToken, err := auth.GenerateWorkstationRefreshToken(auth.NewCollectorWorkstationRefreshClaims(
+		claims.CollectorID,
+		claims.OperatorID,
+		workstation.ID,
+		workstation.RobotID,
+		workstation.WorkspaceID,
+	), h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate refresh token"})
+		return
+	}
+
 	c.JSON(http.StatusOK, WorkstationActivationResponse{
-		AccessToken: token,
+		AccessToken:      token,
+		RefreshToken:     refreshToken,
+		RefreshExpiresIn: h.cfg.RefreshTokenExpiryHours * 3600,
+		TokenType:        "Bearer",
+		ExpiresIn:        h.cfg.JWTExpiryHours * 3600,
+		Role:             "data_collector",
+		Workstation:      workstation.info(),
+	})
+}
+
+// RefreshWorkstation renews a workstation access token while the workstation remains current.
+// It does not activate or take over a workstation.
+func (h *AuthHandler) RefreshWorkstation(c *gin.Context) {
+	var req WorkstationRefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	claims, err := auth.ParseToken(req.RefreshToken, h.cfg)
+	if err != nil || claims.TokenType != "workstation_refresh" || claims.Role != "data_collector" || claims.WorkstationID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "invalid_refresh_token", "error": "invalid or expired refresh token"})
+		return
+	}
+
+	var workstation authWorkstationRow
+	err = h.db.GetContext(c.Request.Context(), &workstation, `
+		SELECT ws.id, ws.workspace_id, w.name AS workspace_name, ws.robot_id, ws.status,
+			r.device_id, COALESCE(r.device_name, '') AS device_name,
+			ws.is_current, FALSE AS occupied
+		FROM workstations ws
+		JOIN data_collectors dc ON dc.id = ws.data_collector_id
+		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		JOIN workspaces w ON w.id = ws.workspace_id AND w.deleted_at IS NULL
+		WHERE ws.id = ? AND ws.data_collector_id = ? AND dc.status = 'active'
+			AND ws.is_current = TRUE AND ws.deleted_at IS NULL
+		LIMIT 1
+	`, claims.WorkstationID, claims.CollectorID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusUnauthorized, gin.H{"code": "workstation_session_invalid", "error": "workstation session is no longer active"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if workstation.RobotID != claims.RobotID || workstation.WorkspaceID != claims.WorkspaceID {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "invalid_refresh_token", "error": "invalid or expired refresh token"})
+		return
+	}
+
+	accessToken, err := auth.GenerateToken(auth.NewCollectorWorkstationClaims(
+		claims.CollectorID, claims.OperatorID, workstation.ID, workstation.RobotID, workstation.WorkspaceID,
+	), h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+		return
+	}
+	c.JSON(http.StatusOK, WorkstationRefreshResponse{
+		AccessToken: accessToken,
 		TokenType:   "Bearer",
 		ExpiresIn:   h.cfg.JWTExpiryHours * 3600,
 		Role:        "data_collector",
