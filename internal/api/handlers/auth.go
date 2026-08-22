@@ -127,6 +127,7 @@ type WorkstationActivationResponse struct {
 	Workstation      authWorkstationInfo `json:"workstation"`
 }
 
+// WorkstationRefreshRequest contains a workstation refresh token.
 type WorkstationRefreshRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
