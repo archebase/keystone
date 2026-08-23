@@ -287,7 +287,83 @@ func scratchStorageRequest(sourceSizeBytes int64) (string, error) {
 	return fmt.Sprintf("%dGi", requiredGiB), nil
 }
 
-// VerifyExecution validates the frozen source, manifest and fixed output objects.
+type verifiedStereoSplitQA struct {
+	Status      string
+	Score       float64
+	QualityFlag string
+	Error       string
+	ResultJSON  string
+	DurationSec *float64
+}
+
+func (m *Manager) verifyExecutionAndQA(ctx context.Context, execution ExecutionSnapshot) (VerifiedOutput, verifiedStereoSplitQA, error) {
+	output, err := m.VerifyExecution(ctx, execution)
+	if err != nil {
+		return VerifiedOutput{}, verifiedStereoSplitQA{}, err
+	}
+	var manifest processingManifest
+	if err := json.Unmarshal([]byte(output.ManifestJSON), &manifest); err != nil {
+		return VerifiedOutput{}, verifiedStereoSplitQA{}, fmt.Errorf("decode verified processing manifest for QA: %w", err)
+	}
+	qa := verifiedStereoSplitQA{Status: QAApproved, Score: 1}
+	var observed mcapQAObservation
+	contract, qaErr := validateManifestStats(manifest)
+	if qaErr == nil {
+		if execution.Calibration != nil {
+			observed, qaErr = m.inspectOutputMCAP(ctx, output.MCAPObjectKey, output.MCAPChecksumSHA256, contract)
+		} else {
+			observed = manifestQAObservation(manifest, output.MCAPChecksumSHA256)
+		}
+	}
+	if qaErr != nil {
+		qa.Status = QAFailed
+		qa.Score = 0
+		qa.QualityFlag = "双目拆分输出统计不满足质检规则"
+		qa.Error = qaErr.Error()
+	}
+	observationSource := "manifest"
+	if execution.Calibration != nil {
+		observationSource = "mcap_scan"
+	}
+	qaResult, err := json.Marshal(map[string]any{
+		"approved":           qaErr == nil,
+		"observation_source": observationSource,
+		"manifest_stats":     manifest.Stats,
+		"observed":           observed,
+	})
+	if err != nil {
+		return VerifiedOutput{}, verifiedStereoSplitQA{}, fmt.Errorf("encode verified stereo split QA result: %w", err)
+	}
+	qa.ResultJSON = string(qaResult)
+	if observed.DurationSec > 0 {
+		qa.DurationSec = &observed.DurationSec
+	}
+	return output, qa, nil
+}
+
+func manifestQAObservation(manifest processingManifest, checksum string) mcapQAObservation {
+	stats := manifest.Stats
+	observed := mcapQAObservation{
+		SchemaVersion: manifest.SchemaVersion,
+		IMUMessages:   stats.IMUMessages,
+		FirstLogTime:  0,
+		LastLogTime:   0,
+		DurationSec:   manifest.FinishedAt.Sub(manifest.StartedAt).Seconds(),
+		OutputSHA256:  normalizedSHA256(checksum),
+	}
+	if observed.DurationSec < 0 {
+		observed.DurationSec = 0
+	}
+	if manifest.SchemaVersion == manifestSchemaV1 {
+		observed.LeftImages = stats.LeftImages
+		observed.RightImages = stats.RightImages
+	} else {
+		observed.LeftVideos = stats.LeftVideos
+		observed.RightVideos = stats.RightVideos
+	}
+	return observed
+}
+
 func (m *Manager) VerifyExecution(ctx context.Context, execution ExecutionSnapshot) (VerifiedOutput, error) {
 	if m == nil || m.objects == nil {
 		return VerifiedOutput{}, fmt.Errorf("verify stereo split: TOS object reader is not configured")

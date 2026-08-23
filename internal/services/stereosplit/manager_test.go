@@ -1322,14 +1322,11 @@ func TestReconcileOnceVerifiesRunsQAAndRequestsOrbitDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() after output verification error = %v", err)
 	}
-	if derivative.DurationSec != nil {
-		t.Fatalf("duration_sec after output verification = %v, want nil until QA", *derivative.DurationSec)
+	if derivative.ProcessingStatus != ProcessingSucceeded || derivative.QAStatus != QAApproved || derivative.OrbitDeleteStatus != DeletePending {
+		t.Fatalf("after combined verification/QA derivative = %+v", derivative)
 	}
-	if derivative.ProcessingDurationSec == nil || *derivative.ProcessingDurationSec != 10 {
-		t.Fatalf("processing_duration_sec after output verification = %v, want 10", derivative.ProcessingDurationSec)
-	}
-	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
-		t.Fatalf("QA ReconcileOnce() error = %v", err)
+	if derivative.DurationSec == nil || *derivative.DurationSec != 10 {
+		t.Fatalf("duration_sec after combined verification/QA = %v, want 10", derivative.DurationSec)
 	}
 	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
 		t.Fatalf("delete ReconcileOnce() error = %v", err)
@@ -1345,8 +1342,8 @@ func TestReconcileOnceVerifiesRunsQAAndRequestsOrbitDelete(t *testing.T) {
 	if derivative.McapPath == "" || derivative.Checksum != outputChecksum || fake.deleteCalls != 1 {
 		t.Fatalf("final outputs/delete = %+v delete_calls=%d", derivative, fake.deleteCalls)
 	}
-	if derivative.DurationSec == nil || *derivative.DurationSec != 0.1 {
-		t.Fatalf("final duration_sec = %v, want 0.1", derivative.DurationSec)
+	if derivative.DurationSec == nil || *derivative.DurationSec != 10 {
+		t.Fatalf("final duration_sec = %v, want 10", derivative.DurationSec)
 	}
 	if derivative.ProcessingDurationSec == nil || *derivative.ProcessingDurationSec != 10 {
 		t.Fatalf("final processing_duration_sec = %v, want 10", derivative.ProcessingDurationSec)
@@ -1532,6 +1529,7 @@ func TestVerifySucceededRestoresFrozenCalibrationSnapshot(t *testing.T) {
 			"mcap":{"name":"output_bag.mcap","size_bytes":32,"sha256":"` + strings.Repeat("b", 64) + `"},
 			"metadata":{"name":"metadata.yaml","size_bytes":16,"sha256":"` + strings.Repeat("c", 64) + `"}
 		},
+		"stats":{"input_messages":1,"decoded_images":1,"left_videos":1,"right_videos":1,"imu_messages":1,"skipped_messages":0},
 		"started_at":"2026-08-02T10:00:00Z",
 		"finished_at":"2026-08-02T10:00:01Z"
 	}`
@@ -1565,7 +1563,7 @@ func TestVerifySucceededRestoresFrozenCalibrationSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if derivative.ProcessingStatus != ProcessingSucceeded || derivative.QAStatus != QAPending {
+	if derivative.ProcessingStatus != ProcessingSucceeded {
 		t.Fatalf("verified derivative = %+v", derivative)
 	}
 }
