@@ -53,6 +53,11 @@ type Manager struct {
 	runnerDone   chan struct{}
 	wake         chan struct{}
 	dispatchMu   sync.RWMutex
+
+	verificationMu     sync.Mutex
+	verificationCancel context.CancelFunc
+	verificationDone   chan struct{}
+	verificationClaim  sync.Mutex
 }
 
 // NewManager constructs the stereo-split module.

@@ -138,6 +138,7 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 	if err != nil {
 		return true, err
 	}
+	verificationWorkersActive := m.verificationWorkersActive()
 	var candidate frozenDerivativeRow
 	err = m.db.GetContext(ctx, &candidate, `
 		SELECT id, episode_id, generation, processing_status,
@@ -147,6 +148,7 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 		       orbit_delete_status, qa_status
 		FROM episode_derivatives
 		WHERE kind = ?
+		  AND (processing_status <> ? OR ? = 0)
 		  AND (reconcile_after IS NULL OR reconcile_after <= ?)
 		  AND (
 		    processing_status IN (?, ?, ?, ?, ?)
@@ -168,7 +170,7 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 		  ELSE 7 END,
 		  updated_at ASC, id ASC
 		LIMIT 1
-	`, Kind, m.now().UTC(), ProcessingQueued, ProcessingSubmitting, ProcessingPending, ProcessingRunning, ProcessingVerifying,
+	`, Kind, ProcessingVerifying, boolInt(verificationWorkersActive), m.now().UTC(), ProcessingQueued, ProcessingSubmitting, ProcessingPending, ProcessingRunning, ProcessingVerifying,
 		ProcessingSucceeded, QAPending, QARunning, DeletePending, boolInt(preferQueued))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -289,6 +291,11 @@ type dispatchCapacity struct {
 	QueuedDue bool
 }
 
+func (m *Manager) verificationWorkersActive() bool {
+	m.verificationMu.Lock()
+	defer m.verificationMu.Unlock()
+	return m.verificationCancel != nil
+}
 func (m *Manager) atOrbitCapacity(ctx context.Context) (bool, error) {
 	capacity, err := m.loadDispatchCapacity(ctx, false)
 	if errors.Is(err, ErrImageNotConfigured) {
@@ -1146,7 +1153,7 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	if err != nil {
 		return m.failVerification(ctx, derivativeID, err)
 	}
-	output, err := m.VerifyExecution(ctx, ExecutionSnapshot{
+	output, qa, err := m.verifyExecutionAndQA(ctx, ExecutionSnapshot{
 		Generation:      row.Generation,
 		ProcessorImage:  row.ProcessorImage,
 		SourceURI:       row.SourceURI,
@@ -1167,17 +1174,20 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	result, err := m.db.ExecContext(ctx, `
 		UPDATE episode_derivatives
 		SET mcap_path = ?, metadata_path = ?, manifest_path = ?, checksum = ?,
-		    file_size_bytes = ?, processing_duration_sec = ?, processing_result = ?,
+		    file_size_bytes = ?, processing_duration_sec = ?, duration_sec = COALESCE(?, duration_sec), processing_result = ?,
 		    processing_status = ?, processing_error = NULL, processing_finished_at = ?,
-		    qa_status = ?, qa_next_retry_at = NULL, orbit_delete_status = ?,
+		    qa_status = ?, qa_attempt_count = qa_attempt_count + 1,
+		    qa_started_at = COALESCE(qa_started_at, ?), qa_score = ?,
+		    quality_flag = NULLIF(?, ''), qa_result = ?, qa_error = NULLIF(?, ''),
+		    qa_finished_at = ?, qa_next_retry_at = NULL, orbit_delete_status = ?,
 		    reconcile_after = NULL, updated_at = ?
 		WHERE id = ? AND processing_status = ?
 	`, output.MCAPObjectKey, output.MetadataObjectKey, output.ManifestObjectKey, output.MCAPChecksumSHA256,
-		output.MCAPSizeBytes, output.ProcessingDurationSec, output.ManifestJSON,
-		ProcessingSucceeded, now, QAPending, DeletePending, now,
-		derivativeID, ProcessingVerifying)
+		output.MCAPSizeBytes, output.ProcessingDurationSec, qa.DurationSec, output.ManifestJSON,
+		ProcessingSucceeded, now, qa.Status, now, qa.Score, qa.QualityFlag, qa.ResultJSON,
+		qa.Error, now, DeletePending, now, derivativeID, ProcessingVerifying)
 	if err != nil {
-		return fmt.Errorf("persist verified stereo split output: %w", err)
+		return fmt.Errorf("persist verified stereo split output and QA: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
