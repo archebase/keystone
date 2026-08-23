@@ -364,6 +364,7 @@ func manifestQAObservation(manifest processingManifest, checksum string) mcapQAO
 	return observed
 }
 
+// VerifyExecution validates the frozen source, manifest, and fixed output objects.
 func (m *Manager) VerifyExecution(ctx context.Context, execution ExecutionSnapshot) (VerifiedOutput, error) {
 	if m == nil || m.objects == nil {
 		return VerifiedOutput{}, fmt.Errorf("verify stereo split: TOS object reader is not configured")
