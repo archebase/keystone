@@ -86,6 +86,35 @@ func TestManagerReconcileOnceStartsStereoSplitAfterEpisodeQA(t *testing.T) {
 	}
 }
 
+func TestManagerReconcileOnceEnqueuesRoboPocketUMIOriginalAfterEpisodeQA(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 43, DeviceTypeRoboPocketUMI)
+
+	cloud := &fakeCloudSyncEnqueuer{}
+	manager := NewManager(db, nil, cloud, 0)
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 43); err != nil || !captured {
+		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
+	}
+	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'approved' WHERE id = 43`); err != nil {
+		t.Fatalf("approve episode: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	if !worked {
+		t.Fatal("ReconcileOnce() worked = false, want true")
+	}
+	if got := cloud.originalEpisodeIDs(); len(got) != 1 || got[0] != 43 {
+		t.Fatalf("original cloud sync episodes = %#v, want [43]", got)
+	}
+}
+
 func TestManagerReconcileOnceReenqueuesCapturedPendingQA(t *testing.T) {
 	db := newAutoSyncTestDB(t)
 	defer db.Close()
