@@ -189,8 +189,10 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 			String: "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08",
 			Valid:  true,
 		},
-		DurationSec: sql.NullFloat64{Float64: 2.5, Valid: true},
-		CreatedAt:   createdAt,
+		DurationSec:         sql.NullFloat64{Float64: 2.5, Valid: true},
+		RecordingStartedAt:  sql.NullTime{Time: createdAt.Add(-time.Minute), Valid: true},
+		RecordingFinishedAt: sql.NullTime{Time: createdAt.Add(-time.Minute + 2500*time.Millisecond), Valid: true},
+		CreatedAt:           createdAt,
 	})
 	if err != nil {
 		t.Fatalf("uploadEpisodeDirect() error = %v", err)
@@ -205,8 +207,9 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	if hilbert.register.BagDigest != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
 		t.Fatalf("register BagDigest = %q, want persisted SHA-256", hilbert.register.BagDigest)
 	}
-	if !hilbert.register.BagStartTime.Equal(createdAt) || !hilbert.register.BagEndTime.Equal(createdAt.Add(2500*time.Millisecond)) {
-		t.Fatalf("register bag times = %s-%s", hilbert.register.BagStartTime, hilbert.register.BagEndTime)
+	if !hilbert.register.BagStartTime.Equal(createdAt.Add(-time.Minute)) ||
+		!hilbert.register.BagEndTime.Equal(createdAt.Add(-time.Minute+2500*time.Millisecond)) {
+		t.Fatalf("register bag times = %s-%s, want client range", hilbert.register.BagStartTime, hilbert.register.BagEndTime)
 	}
 	if hilbert.credentialsWorkspaceID != 123 || hilbert.credentialsRawDataID != 9876 || !hilbert.finished {
 		t.Fatalf("Hilbert calls not completed: credentials workspace=%d raw=%d finished=%t",
@@ -778,8 +781,17 @@ func (u *fakeTOSObjectUploader) PutObject(_ context.Context, target cloud.TOSS3U
 func TestSyncEpisodeUploadRowBagTimes(t *testing.T) {
 	createdAt := time.Date(2026, 7, 15, 2, 0, 0, 0, time.UTC)
 	row := syncEpisodeUploadRow{
-		CreatedAt:   createdAt,
-		DurationSec: sql.NullFloat64{Float64: 1.5, Valid: true},
+		CreatedAt:           createdAt,
+		DurationSec:         sql.NullFloat64{Float64: 1.5, Valid: true},
+		RecordingStartedAt:  sql.NullTime{Time: createdAt.Add(-time.Minute), Valid: true},
+		RecordingFinishedAt: sql.NullTime{Time: createdAt.Add(-time.Minute + 1500*time.Millisecond), Valid: true},
+	}
+	startTime, endTime, err := row.hilbertRecordingTimeRange()
+	if err != nil {
+		t.Fatalf("hilbertRecordingTimeRange() error = %v", err)
+	}
+	if !startTime.Equal(row.RecordingStartedAt.Time) || !endTime.Equal(row.RecordingFinishedAt.Time) {
+		t.Fatalf("hilbertRecordingTimeRange() = %s -> %s, want client range", startTime, endTime)
 	}
 	if got := row.bagStartTime(); !got.Equal(createdAt) {
 		t.Fatalf("bagStartTime() = %s, want %s", got, createdAt)
@@ -795,6 +807,20 @@ func TestSyncEpisodeUploadRowBagTimes(t *testing.T) {
 	}
 }
 
+func TestSyncEpisodeUploadRowBagTimesRejectsIncompleteClientRange(t *testing.T) {
+	row := syncEpisodeUploadRow{
+		ID:                 4181,
+		CreatedAt:          time.Date(2026, 7, 15, 2, 0, 0, 0, time.UTC),
+		RecordingStartedAt: sql.NullTime{Time: time.Date(2026, 7, 15, 1, 59, 0, 0, time.UTC), Valid: true},
+	}
+	_, _, err := row.hilbertRecordingTimeRange()
+	if err == nil || !strings.Contains(err.Error(), "incomplete recording time range") {
+		t.Fatalf("hilbertRecordingTimeRange() error = %v, want incomplete range error", err)
+	}
+	if !isNonRetryableSyncError(err) {
+		t.Fatalf("error = %v, want non-retryable", err)
+	}
+}
 func TestHilbertBagNameIsStableAndUnique(t *testing.T) {
 	row := syncEpisodeUploadRow{ID: 4181, EpisodeUUID: "episode-uuid"}
 	got := hilbertBagName(row, "device-uploads/3/capture_20260715T044250Z_b2d9911e/5b9e8785-d568-4b1e-82fe-26cbc1320e44/capture.mcap")
@@ -2060,6 +2086,8 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 			cloud_mcap_path TEXT,
 			cloud_processed BOOLEAN NOT NULL DEFAULT 0,
 			duration_sec REAL,
+			recording_started_at TIMESTAMP NULL,
+			recording_finished_at TIMESTAMP NULL,
 			deleted_at TIMESTAMP NULL,
 			created_at TIMESTAMP NOT NULL
 		)`,

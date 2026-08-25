@@ -382,6 +382,8 @@ func openTransferDCPlanTestDB(t *testing.T) *sqlx.DB {
 			mcap_path TEXT NOT NULL,
 			sidecar_path TEXT NOT NULL,
 			duration_sec REAL,
+			recording_started_at TIMESTAMP NULL,
+			recording_finished_at TIMESTAMP NULL,
 			file_size_bytes INTEGER,
 			checksum TEXT,
 			qa_status TEXT,

@@ -68,6 +68,12 @@ func TestGetEpisodeReturnsMetadata(t *testing.T) {
 	if got := body["robot_device_type"]; got != "ZJ-WA1-D" {
 		t.Fatalf("robot_device_type=%v want ZJ-WA1-D", got)
 	}
+	if got := body["recording_started_at"]; got != "2026-06-24T08:00:00Z" {
+		t.Fatalf("recording_started_at=%v want 2026-06-24T08:00:00Z", got)
+	}
+	if got := body["recording_finished_at"]; got != "2026-06-24T08:00:12Z" {
+		t.Fatalf("recording_finished_at=%v want 2026-06-24T08:00:12Z", got)
+	}
 	assertEpisodePlanFields(t, body)
 }
 
@@ -136,7 +142,44 @@ func TestListEpisodesOmitsMetadata(t *testing.T) {
 	if got := body.Items[0]["robot_device_name"]; got != "Ego iPhone 01" {
 		t.Fatalf("robot_device_name=%v want Ego iPhone 01", got)
 	}
+	if got := body.Items[0]["recording_started_at"]; got != "2026-06-24T08:00:00Z" {
+		t.Fatalf("recording_started_at=%v want 2026-06-24T08:00:00Z", got)
+	}
+	if got := body.Items[0]["recording_finished_at"]; got != "2026-06-24T08:00:12Z" {
+		t.Fatalf("recording_finished_at=%v want 2026-06-24T08:00:12Z", got)
+	}
 	assertEpisodePlanFields(t, body.Items[0])
+}
+
+func TestEpisodeResponseOmitsNullRecordingTimes(t *testing.T) {
+	db := openEpisodeMetadataTestDB(t)
+	defer db.Close()
+	seedEpisodeMetadataTestRow(t, db)
+	if _, err := db.Exec("UPDATE episodes SET recording_started_at = NULL, recording_finished_at = NULL WHERE id = 1"); err != nil {
+		t.Fatalf("clear recording times: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handler := NewEpisodeHandler(db, "", nil)
+	router.GET("/episodes/:id", handler.GetEpisode)
+
+	req := httptest.NewRequest(http.MethodGet, "/episodes/1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	for _, field := range []string{"recording_started_at", "recording_finished_at"} {
+		if _, ok := body[field]; ok {
+			t.Fatalf("response unexpectedly contains null recording field %q", field)
+		}
+	}
 }
 
 func TestGetEpisodePresignedURLUsesTOSBucketWithoutS3(t *testing.T) {
@@ -222,6 +265,8 @@ func openEpisodeMetadataTestDB(t *testing.T) *sqlx.DB {
 			checksum TEXT,
 			file_size_bytes INTEGER,
 			duration_sec REAL,
+			recording_started_at TIMESTAMP NULL,
+			recording_finished_at TIMESTAMP NULL,
 			qa_status TEXT,
 			qa_score REAL,
 			quality_flag TEXT,
@@ -307,12 +352,12 @@ func seedEpisodeMetadataTestRow(t *testing.T, db *sqlx.DB) {
 	if _, err := db.Exec(`
 		INSERT INTO episodes (
 			id, episode_id, task_id, dc_plan_id, local_dc_plan_id, workstation_id, mcap_path, sidecar_path,
-			checksum, file_size_bytes, duration_sec, qa_status, qa_score,
+			checksum, file_size_bytes, duration_sec, recording_started_at, recording_finished_at, qa_status, qa_score,
 			quality_flag, auto_approved, cloud_synced, cloud_processed,
 			cloud_synced_at, created_at, labels, metadata, deleted_at
 		) VALUES (
 			1, 'episode-public-1', 10, 1001, 2001, 20, 'bucket/a.mcap', 'bucket/a.json',
-			'abc', 1024, 12.5, 'pending_qa', NULL,
+			'abc', 1024, 12.5, '2026-06-24T08:00:00Z', '2026-06-24T08:00:12Z', 'pending_qa', NULL,
 			NULL, FALSE, FALSE, FALSE,
 			NULL, '2026-06-24T00:00:00Z', '[]', ?, NULL
 		)

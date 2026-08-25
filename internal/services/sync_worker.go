@@ -49,31 +49,35 @@ type syncEnqueueRequest struct {
 }
 
 type syncEpisodeUploadRow struct {
-	ID                      int64               `db:"id"`
-	EpisodeUUID             string              `db:"episode_id"`
-	DCPlanID                sql.NullInt64       `db:"dc_plan_id"`
-	LocalDCPlanID           sql.NullInt64       `db:"local_dc_plan_id"`
-	ProjectedDCPlanID       sql.NullInt64       `db:"projected_dc_plan_id"`
-	WorkspaceID             sql.NullInt64       `db:"workspace_id"`
-	DCPlanName              sql.NullString      `db:"dc_plan_name"`
-	DCType                  sql.NullString      `db:"dc_type"`
-	McapPath                string              `db:"mcap_path"`
-	StorageBackend          string              `db:"storage_backend"`
-	SidecarPath             string              `db:"sidecar_path"`
-	CloudSynced             bool                `db:"cloud_synced"`
-	QAStatus                string              `db:"qa_status"`
-	CloudPublishSource      sql.NullString      `db:"cloud_publish_source"`
-	Checksum                sql.NullString      `db:"checksum"`
-	FileSizeBytes           sql.NullInt64       `db:"file_size_bytes"`
-	WorkstationID           sql.NullInt64       `db:"workstation_id"`
-	DataCollectorOperatorID sql.NullString      `db:"data_collector_operator_id"`
-	DataCollectorName       sql.NullString      `db:"data_collector_name"`
-	DurationSec             sql.NullFloat64     `db:"duration_sec"`
-	DeviceType              string              `db:"device_type"`
-	Metadata                sql.NullString      `db:"metadata"`
-	HilbertRawDataID        sql.NullInt64       `db:"hilbert_raw_data_id"`
-	CreatedAt               time.Time           `db:"created_at"`
-	SourceSnapshot          *SyncSourceSnapshot `db:"-"`
+	ID                      int64           `db:"id"`
+	EpisodeUUID             string          `db:"episode_id"`
+	DCPlanID                sql.NullInt64   `db:"dc_plan_id"`
+	LocalDCPlanID           sql.NullInt64   `db:"local_dc_plan_id"`
+	ProjectedDCPlanID       sql.NullInt64   `db:"projected_dc_plan_id"`
+	WorkspaceID             sql.NullInt64   `db:"workspace_id"`
+	DCPlanName              sql.NullString  `db:"dc_plan_name"`
+	DCType                  sql.NullString  `db:"dc_type"`
+	McapPath                string          `db:"mcap_path"`
+	StorageBackend          string          `db:"storage_backend"`
+	SidecarPath             string          `db:"sidecar_path"`
+	CloudSynced             bool            `db:"cloud_synced"`
+	QAStatus                string          `db:"qa_status"`
+	CloudPublishSource      sql.NullString  `db:"cloud_publish_source"`
+	Checksum                sql.NullString  `db:"checksum"`
+	FileSizeBytes           sql.NullInt64   `db:"file_size_bytes"`
+	WorkstationID           sql.NullInt64   `db:"workstation_id"`
+	DataCollectorOperatorID sql.NullString  `db:"data_collector_operator_id"`
+	DataCollectorName       sql.NullString  `db:"data_collector_name"`
+	DurationSec             sql.NullFloat64 `db:"duration_sec"`
+	// RecordingStartedAt 保存客户端上报的录制开始时间。
+	RecordingStartedAt sql.NullTime `db:"recording_started_at"`
+	// RecordingFinishedAt 保存客户端上报的录制结束时间。
+	RecordingFinishedAt sql.NullTime        `db:"recording_finished_at"`
+	DeviceType          string              `db:"device_type"`
+	Metadata            sql.NullString      `db:"metadata"`
+	HilbertRawDataID    sql.NullInt64       `db:"hilbert_raw_data_id"`
+	CreatedAt           time.Time           `db:"created_at"`
+	SourceSnapshot      *SyncSourceSnapshot `db:"-"`
 }
 
 type hilbertRawDataClient interface {
@@ -1299,6 +1303,8 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual
 			e.file_size_bytes,
 			e.workstation_id,
 			e.duration_sec,
+			e.recording_started_at,
+			e.recording_finished_at,
 			COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '') AS device_type,
 			e.metadata,
 			e.hilbert_raw_data_id,
@@ -1425,12 +1431,16 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		if ep.SourceSnapshot != nil {
 			bagName = ep.SourceSnapshot.BagName
 		}
+		startTime, endTime, err := ep.hilbertRecordingTimeRange()
+		if err != nil {
+			return nil, err
+		}
 		registerRequest := auth.HilbertRawDataRegisterRequest{
 			WorkspaceID:  uploadContext.WorkspaceID,
 			DCPlanID:     uploadContext.DCPlanID,
 			BagName:      bagName,
-			BagStartTime: ep.bagStartTime(),
-			BagEndTime:   ep.bagEndTime(),
+			BagStartTime: startTime,
+			BagEndTime:   endTime,
 			BagSize:      objectSize,
 			BagDigest:    bagDigest,
 		}
@@ -1576,6 +1586,26 @@ func directCloudUploadRequest(
 		ClientHints: uploadContext.clientHints(),
 		Progress:    progress,
 	}
+}
+
+// hilbertRecordingTimeRange 选择完整且有效的客户端录制时间；缺失时回退到旧的 created_at 加 duration 逻辑。
+func (ep syncEpisodeUploadRow) hilbertRecordingTimeRange() (time.Time, time.Time, error) {
+	if !ep.RecordingStartedAt.Valid && !ep.RecordingFinishedAt.Valid {
+		return ep.bagStartTime(), ep.bagEndTime(), nil
+	}
+	if !ep.RecordingStartedAt.Valid || !ep.RecordingFinishedAt.Valid {
+		return time.Time{}, time.Time{}, newNonRetryableSyncError(
+			"episode %d has an incomplete recording time range",
+			ep.ID,
+		)
+	}
+	if !ep.RecordingFinishedAt.Time.After(ep.RecordingStartedAt.Time) {
+		return time.Time{}, time.Time{}, newNonRetryableSyncError(
+			"episode %d has an invalid recording time range",
+			ep.ID,
+		)
+	}
+	return ep.RecordingStartedAt.Time.UTC(), ep.RecordingFinishedAt.Time.UTC(), nil
 }
 
 func (ep syncEpisodeUploadRow) bagStartTime() time.Time {

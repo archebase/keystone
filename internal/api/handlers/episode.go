@@ -75,70 +75,78 @@ func (h *EpisodeHandler) requireEpisodePresignAuth(c *gin.Context, kind string) 
 
 // episodeRow represents an episode row from the database.
 type episodeRow struct {
-	ID                 int64           `db:"id"`
-	EpisodeID          string          `db:"episode_id"`
-	TaskID             int64           `db:"task_id"`
-	TaskPublicID       sql.NullString  `db:"task_public_id"`
-	DCPlanID           sql.NullInt64   `db:"dc_plan_id"`
-	LocalDCPlanID      sql.NullInt64   `db:"local_dc_plan_id"`
-	WorkspaceID        sql.NullInt64   `db:"workspace_id"`
-	DCPlanName         sql.NullString  `db:"dc_plan_name"`
-	DCType             sql.NullString  `db:"dc_type"`
-	RobotDeviceID      sql.NullString  `db:"robot_device_id"`
-	RobotDeviceName    sql.NullString  `db:"robot_device_name"`
-	RobotDeviceType    sql.NullString  `db:"robot_device_type"`
-	CollectorOperator  sql.NullString  `db:"collector_operator_id"`
-	McapPath           string          `db:"mcap_path"`
-	SidecarPath        string          `db:"sidecar_path"`
-	Checksum           sql.NullString  `db:"checksum"`
-	FileSizeBytes      sql.NullInt64   `db:"file_size_bytes"`
-	DurationSec        sql.NullFloat64 `db:"duration_sec"`
-	QaStatus           string          `db:"qa_status"`
-	QaScore            sql.NullFloat64 `db:"qa_score"`
-	QualityFlag        sql.NullString  `db:"quality_flag"`
-	AutoApproved       bool            `db:"auto_approved"`
-	CloudSynced        bool            `db:"cloud_synced"`
-	LocalStorageStatus sql.NullString  `db:"local_storage_status"`
-	CloudPublishSource sql.NullString  `db:"cloud_publish_source"`
-	CloudProcessed     bool            `db:"cloud_processed"`
-	CloudSyncedAt      sql.NullTime    `db:"cloud_synced_at"`
-	CreatedAt          time.Time       `db:"created_at"`
-	LabelsJSON         sql.NullString  `db:"labels"`
-	Metadata           sql.NullString  `db:"metadata"`
+	ID                int64           `db:"id"`
+	EpisodeID         string          `db:"episode_id"`
+	TaskID            int64           `db:"task_id"`
+	TaskPublicID      sql.NullString  `db:"task_public_id"`
+	DCPlanID          sql.NullInt64   `db:"dc_plan_id"`
+	LocalDCPlanID     sql.NullInt64   `db:"local_dc_plan_id"`
+	WorkspaceID       sql.NullInt64   `db:"workspace_id"`
+	DCPlanName        sql.NullString  `db:"dc_plan_name"`
+	DCType            sql.NullString  `db:"dc_type"`
+	RobotDeviceID     sql.NullString  `db:"robot_device_id"`
+	RobotDeviceName   sql.NullString  `db:"robot_device_name"`
+	RobotDeviceType   sql.NullString  `db:"robot_device_type"`
+	CollectorOperator sql.NullString  `db:"collector_operator_id"`
+	McapPath          string          `db:"mcap_path"`
+	SidecarPath       string          `db:"sidecar_path"`
+	Checksum          sql.NullString  `db:"checksum"`
+	FileSizeBytes     sql.NullInt64   `db:"file_size_bytes"`
+	DurationSec       sql.NullFloat64 `db:"duration_sec"`
+	// RecordingStartedAt 保存客户端上报的录制开始时间。
+	RecordingStartedAt sql.NullTime `db:"recording_started_at"`
+	// RecordingFinishedAt 保存客户端上报的录制结束时间。
+	RecordingFinishedAt sql.NullTime    `db:"recording_finished_at"`
+	QaStatus            string          `db:"qa_status"`
+	QaScore             sql.NullFloat64 `db:"qa_score"`
+	QualityFlag         sql.NullString  `db:"quality_flag"`
+	AutoApproved        bool            `db:"auto_approved"`
+	CloudSynced         bool            `db:"cloud_synced"`
+	LocalStorageStatus  sql.NullString  `db:"local_storage_status"`
+	CloudPublishSource  sql.NullString  `db:"cloud_publish_source"`
+	CloudProcessed      bool            `db:"cloud_processed"`
+	CloudSyncedAt       sql.NullTime    `db:"cloud_synced_at"`
+	CreatedAt           time.Time       `db:"created_at"`
+	LabelsJSON          sql.NullString  `db:"labels"`
+	Metadata            sql.NullString  `db:"metadata"`
 }
 
 // Episode represents an episode in the API response
 type Episode struct {
-	ID                 int64    `json:"id"`
-	EpisodeID          string   `json:"episode_id,omitempty"`
-	TaskID             int64    `json:"task_id"`
-	TaskPublicID       *string  `json:"task_public_id,omitempty"`
-	DCPlanID           *int64   `json:"dc_plan_id"`
-	LocalDCPlanID      *int64   `json:"local_dc_plan_id"`
-	WorkspaceID        *int64   `json:"workspace_id"`
-	DCPlanName         *string  `json:"dc_plan_name"`
-	DCType             *string  `json:"dc_type"`
-	RobotDeviceID      *string  `json:"robot_device_id"`
-	RobotDeviceName    *string  `json:"robot_device_name,omitempty"`
-	RobotDeviceType    *string  `json:"robot_device_type,omitempty"`
-	CollectorOperator  *string  `json:"collector_operator_id"`
-	McapPath           string   `json:"mcap_path"`
-	SidecarPath        string   `json:"sidecar_path"`
-	Checksum           *string  `json:"checksum"`
-	FileSizeBytes      *int64   `json:"file_size_bytes"`
-	DurationSec        *float64 `json:"duration_sec"`
-	QaStatus           string   `json:"qa_status"`
-	QaScore            *float64 `json:"qa_score"`
-	QualityFlag        *string  `json:"quality_flag,omitempty"`
-	AutoApproved       bool     `json:"auto_approved"`
-	CloudSynced        bool     `json:"cloud_synced"`
-	LocalStorageStatus string   `json:"local_storage_status"`
-	CloudPublishSource *string  `json:"cloud_publish_source,omitempty"`
-	CloudProcessed     bool     `json:"cloud_processed"`
-	CloudSyncedAt      *string  `json:"cloud_synced_at"`
-	CreatedAt          string   `json:"created_at"`
-	Labels             []string `json:"labels"`
-	Metadata           any      `json:"metadata,omitempty"`
+	ID                int64    `json:"id"`
+	EpisodeID         string   `json:"episode_id,omitempty"`
+	TaskID            int64    `json:"task_id"`
+	TaskPublicID      *string  `json:"task_public_id,omitempty"`
+	DCPlanID          *int64   `json:"dc_plan_id"`
+	LocalDCPlanID     *int64   `json:"local_dc_plan_id"`
+	WorkspaceID       *int64   `json:"workspace_id"`
+	DCPlanName        *string  `json:"dc_plan_name"`
+	DCType            *string  `json:"dc_type"`
+	RobotDeviceID     *string  `json:"robot_device_id"`
+	RobotDeviceName   *string  `json:"robot_device_name,omitempty"`
+	RobotDeviceType   *string  `json:"robot_device_type,omitempty"`
+	CollectorOperator *string  `json:"collector_operator_id"`
+	McapPath          string   `json:"mcap_path"`
+	SidecarPath       string   `json:"sidecar_path"`
+	Checksum          *string  `json:"checksum"`
+	FileSizeBytes     *int64   `json:"file_size_bytes"`
+	DurationSec       *float64 `json:"duration_sec"`
+	// RecordingStartedAt 对外返回客户端上报的录制开始时间。
+	RecordingStartedAt *string `json:"recording_started_at,omitempty"`
+	// RecordingFinishedAt 对外返回客户端上报的录制结束时间。
+	RecordingFinishedAt *string  `json:"recording_finished_at,omitempty"`
+	QaStatus            string   `json:"qa_status"`
+	QaScore             *float64 `json:"qa_score"`
+	QualityFlag         *string  `json:"quality_flag,omitempty"`
+	AutoApproved        bool     `json:"auto_approved"`
+	CloudSynced         bool     `json:"cloud_synced"`
+	LocalStorageStatus  string   `json:"local_storage_status"`
+	CloudPublishSource  *string  `json:"cloud_publish_source,omitempty"`
+	CloudProcessed      bool     `json:"cloud_processed"`
+	CloudSyncedAt       *string  `json:"cloud_synced_at"`
+	CreatedAt           string   `json:"created_at"`
+	Labels              []string `json:"labels"`
+	Metadata            any      `json:"metadata,omitempty"`
 }
 
 // EpisodeListResponse represents the response for listing episodes
@@ -307,6 +315,8 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 			e.checksum,
 			e.file_size_bytes,
 			e.duration_sec,
+			e.recording_started_at,
+			e.recording_finished_at,
 			COALESCE(e.qa_status, '') as qa_status,
 			e.qa_score,
 			e.quality_flag,
@@ -480,35 +490,37 @@ func (h *EpisodeHandler) ListEpisodes(c *gin.Context) {
 	episodes := make([]Episode, len(rows))
 	for i, r := range rows {
 		episodes[i] = Episode{
-			ID:                 r.ID,
-			EpisodeID:          r.EpisodeID,
-			TaskID:             r.TaskID,
-			TaskPublicID:       nullableString(r.TaskPublicID),
-			DCPlanID:           nullableInt64(r.DCPlanID),
-			LocalDCPlanID:      nullableInt64(r.LocalDCPlanID),
-			WorkspaceID:        nullableInt64(r.WorkspaceID),
-			DCPlanName:         nullableString(r.DCPlanName),
-			DCType:             nullableString(r.DCType),
-			RobotDeviceID:      nullableString(r.RobotDeviceID),
-			RobotDeviceName:    nullableString(r.RobotDeviceName),
-			RobotDeviceType:    nullableString(r.RobotDeviceType),
-			CollectorOperator:  nullableString(r.CollectorOperator),
-			McapPath:           r.McapPath,
-			SidecarPath:        r.SidecarPath,
-			Checksum:           nullableString(r.Checksum),
-			FileSizeBytes:      nullableInt64(r.FileSizeBytes),
-			DurationSec:        nullableFloat64(r.DurationSec),
-			QaStatus:           r.QaStatus,
-			QaScore:            nullableFloat64(r.QaScore),
-			QualityFlag:        nullableString(r.QualityFlag),
-			AutoApproved:       r.AutoApproved,
-			CloudSynced:        r.CloudSynced,
-			LocalStorageStatus: r.LocalStorageStatus.String,
-			CloudPublishSource: nullableString(r.CloudPublishSource),
-			CloudProcessed:     r.CloudProcessed,
-			CloudSyncedAt:      nullableTime(r.CloudSyncedAt),
-			CreatedAt:          r.CreatedAt.UTC().Format(time.RFC3339),
-			Labels:             episodeLabelsFromDB(r.LabelsJSON),
+			ID:                  r.ID,
+			EpisodeID:           r.EpisodeID,
+			TaskID:              r.TaskID,
+			TaskPublicID:        nullableString(r.TaskPublicID),
+			DCPlanID:            nullableInt64(r.DCPlanID),
+			LocalDCPlanID:       nullableInt64(r.LocalDCPlanID),
+			WorkspaceID:         nullableInt64(r.WorkspaceID),
+			DCPlanName:          nullableString(r.DCPlanName),
+			DCType:              nullableString(r.DCType),
+			RobotDeviceID:       nullableString(r.RobotDeviceID),
+			RobotDeviceName:     nullableString(r.RobotDeviceName),
+			RobotDeviceType:     nullableString(r.RobotDeviceType),
+			CollectorOperator:   nullableString(r.CollectorOperator),
+			McapPath:            r.McapPath,
+			SidecarPath:         r.SidecarPath,
+			Checksum:            nullableString(r.Checksum),
+			FileSizeBytes:       nullableInt64(r.FileSizeBytes),
+			DurationSec:         nullableFloat64(r.DurationSec),
+			RecordingStartedAt:  nullableTime(r.RecordingStartedAt),
+			RecordingFinishedAt: nullableTime(r.RecordingFinishedAt),
+			QaStatus:            r.QaStatus,
+			QaScore:             nullableFloat64(r.QaScore),
+			QualityFlag:         nullableString(r.QualityFlag),
+			AutoApproved:        r.AutoApproved,
+			CloudSynced:         r.CloudSynced,
+			LocalStorageStatus:  r.LocalStorageStatus.String,
+			CloudPublishSource:  nullableString(r.CloudPublishSource),
+			CloudProcessed:      r.CloudProcessed,
+			CloudSyncedAt:       nullableTime(r.CloudSyncedAt),
+			CreatedAt:           r.CreatedAt.UTC().Format(time.RFC3339),
+			Labels:              episodeLabelsFromDB(r.LabelsJSON),
 		}
 	}
 
@@ -682,6 +694,8 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 			e.checksum,
 			e.file_size_bytes,
 			e.duration_sec,
+			e.recording_started_at,
+			e.recording_finished_at,
 			COALESCE(e.qa_status, '') AS qa_status,
 			e.qa_score,
 			e.quality_flag,
@@ -717,35 +731,37 @@ func (h *EpisodeHandler) GetEpisode(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, Episode{
-		ID:                 row.ID,
-		EpisodeID:          row.EpisodeID,
-		TaskID:             row.TaskID,
-		TaskPublicID:       nullableString(row.TaskPublicID),
-		DCPlanID:           nullableInt64(row.DCPlanID),
-		LocalDCPlanID:      nullableInt64(row.LocalDCPlanID),
-		WorkspaceID:        nullableInt64(row.WorkspaceID),
-		DCPlanName:         nullableString(row.DCPlanName),
-		DCType:             nullableString(row.DCType),
-		RobotDeviceID:      nullableString(row.RobotDeviceID),
-		RobotDeviceType:    nullableString(row.RobotDeviceType),
-		CollectorOperator:  nullableString(row.CollectorOperator),
-		McapPath:           row.McapPath,
-		SidecarPath:        row.SidecarPath,
-		Checksum:           nullableString(row.Checksum),
-		FileSizeBytes:      nullableInt64(row.FileSizeBytes),
-		DurationSec:        nullableFloat64(row.DurationSec),
-		QaStatus:           row.QaStatus,
-		QaScore:            nullableFloat64(row.QaScore),
-		QualityFlag:        nullableString(row.QualityFlag),
-		AutoApproved:       row.AutoApproved,
-		CloudSynced:        row.CloudSynced,
-		LocalStorageStatus: row.LocalStorageStatus.String,
-		CloudPublishSource: nullableString(row.CloudPublishSource),
-		CloudProcessed:     row.CloudProcessed,
-		CloudSyncedAt:      nullableTime(row.CloudSyncedAt),
-		CreatedAt:          row.CreatedAt.UTC().Format(time.RFC3339),
-		Labels:             episodeLabelsFromDB(row.LabelsJSON),
-		Metadata:           parseJSONRaw(row.Metadata.String),
+		ID:                  row.ID,
+		EpisodeID:           row.EpisodeID,
+		TaskID:              row.TaskID,
+		TaskPublicID:        nullableString(row.TaskPublicID),
+		DCPlanID:            nullableInt64(row.DCPlanID),
+		LocalDCPlanID:       nullableInt64(row.LocalDCPlanID),
+		WorkspaceID:         nullableInt64(row.WorkspaceID),
+		DCPlanName:          nullableString(row.DCPlanName),
+		DCType:              nullableString(row.DCType),
+		RobotDeviceID:       nullableString(row.RobotDeviceID),
+		RobotDeviceType:     nullableString(row.RobotDeviceType),
+		CollectorOperator:   nullableString(row.CollectorOperator),
+		McapPath:            row.McapPath,
+		SidecarPath:         row.SidecarPath,
+		Checksum:            nullableString(row.Checksum),
+		FileSizeBytes:       nullableInt64(row.FileSizeBytes),
+		DurationSec:         nullableFloat64(row.DurationSec),
+		RecordingStartedAt:  nullableTime(row.RecordingStartedAt),
+		RecordingFinishedAt: nullableTime(row.RecordingFinishedAt),
+		QaStatus:            row.QaStatus,
+		QaScore:             nullableFloat64(row.QaScore),
+		QualityFlag:         nullableString(row.QualityFlag),
+		AutoApproved:        row.AutoApproved,
+		CloudSynced:         row.CloudSynced,
+		LocalStorageStatus:  row.LocalStorageStatus.String,
+		CloudPublishSource:  nullableString(row.CloudPublishSource),
+		CloudProcessed:      row.CloudProcessed,
+		CloudSyncedAt:       nullableTime(row.CloudSyncedAt),
+		CreatedAt:           row.CreatedAt.UTC().Format(time.RFC3339),
+		Labels:              episodeLabelsFromDB(row.LabelsJSON),
+		Metadata:            parseJSONRaw(row.Metadata.String),
 	})
 }
 
