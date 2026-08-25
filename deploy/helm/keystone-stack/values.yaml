@@ -49,7 +49,7 @@ keystone:
     # Keystone and Hilbert share archebase-system in production, so keep
     # service-to-service traffic inside the cluster.
     baseURL: http://hilbert-be-backend:8080/hilbert-be-backend
-    timeoutSeconds: 5
+    timeoutSeconds: 60
 
   derivatives:
     orbitBaseURL: http://orbit.archebase-system.svc.cluster.local:8080
