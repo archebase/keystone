@@ -273,18 +273,14 @@ type HilbertClient struct {
 // NewHilbertClient creates a Hilbert API client from Keystone Hilbert configuration.
 func NewHilbertClient(cfg *config.HilbertConfig) *HilbertClient {
 	if cfg == nil {
-		return &HilbertClient{httpClient: &http.Client{Timeout: 5 * time.Second}, now: time.Now}
-	}
-	timeoutSeconds := cfg.TimeoutSeconds
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 5
+		return &HilbertClient{httpClient: &http.Client{Timeout: config.HilbertRequestTimeout}, now: time.Now}
 	}
 	return &HilbertClient{
 		baseURL:   strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
 		accessKey: strings.TrimSpace(cfg.AccessKey),
 		secretKey: strings.TrimSpace(cfg.SecretKey),
 		httpClient: &http.Client{
-			Timeout: time.Duration(timeoutSeconds) * time.Second,
+			Timeout: config.HilbertRequestTimeout,
 		},
 		now: time.Now,
 	}

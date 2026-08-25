@@ -95,6 +95,9 @@ func (s *DCPlanSyncService) Configured() bool {
 
 // SyncWorkspace logs into Hilbert, fetches one workspace's dc plans, validates every record, and transactionally upserts them.
 func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64) (*DCPlanSyncResult, error) {
+	workspaceCtx, cancel := context.WithTimeout(ctx, config.HilbertWorkspaceSyncTimeout)
+	defer cancel()
+	ctx = workspaceCtx
 	if !s.Configured() {
 		return nil, ErrDCPlanSyncNotConfigured
 	}
@@ -243,7 +246,10 @@ func (s *DCPlanSyncService) SyncAllWorkspaces(ctx context.Context) (*DCPlanSyncA
 		return nil, ErrDCPlanSyncNotConfigured
 	}
 
-	workspaceIDs, err := s.listHilbertWorkspaceIDs(ctx)
+	batchCtx, batchCancel := context.WithTimeout(ctx, config.HilbertSyncBatchTimeout)
+	defer batchCancel()
+
+	workspaceIDs, err := s.listHilbertWorkspaceIDs(batchCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +260,7 @@ func (s *DCPlanSyncService) SyncAllWorkspaces(ctx context.Context) (*DCPlanSyncA
 		Errors:         []DCPlanSyncWorkspaceError{},
 	}
 	for _, workspaceID := range workspaceIDs {
-		workspaceResult, syncErr := s.SyncWorkspace(ctx, workspaceID)
+		workspaceResult, syncErr := s.SyncWorkspace(batchCtx, workspaceID)
 		if syncErr != nil {
 			result.FailedCount++
 			result.Errors = append(result.Errors, DCPlanSyncWorkspaceError{

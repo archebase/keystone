@@ -211,7 +211,8 @@ type AuthConfig struct {
 
 // HilbertConfig owns Hilbert endpoint and Keystone service identity settings.
 type HilbertConfig struct {
-	BaseURL        string
+	BaseURL string
+	// TimeoutSeconds is retained for compatibility with existing callers. Hilbert sync uses fixed timeouts.
 	TimeoutSeconds int
 	AccessKey      string `json:"-"` // #nosec G101 -- Hilbert AK loaded from env; never logged
 	SecretKey      string `json:"-"` // #nosec G101 -- Hilbert SK loaded from env; never logged
@@ -285,7 +286,7 @@ func Load() (*Config, error) {
 		},
 		Hilbert: HilbertConfig{
 			BaseURL:        getEnv("KEYSTONE_HILBERT_BASE_URL", ""),
-			TimeoutSeconds: getEnvInt("KEYSTONE_HILBERT_TIMEOUT_SECONDS", 5),
+			TimeoutSeconds: getEnvInt("KEYSTONE_HILBERT_TIMEOUT_SECONDS", 5), // Deprecated; sync uses fixed timeouts.
 			AccessKey:      getEnv("KEYSTONE_HILBERT_ACCESS_KEY", ""),
 			SecretKey:      getEnv("KEYSTONE_HILBERT_SECRET_KEY", ""),
 		},
@@ -520,9 +521,6 @@ func (c *Config) Validate() error {
 	c.Hilbert.BaseURL = strings.TrimRight(strings.TrimSpace(c.Hilbert.BaseURL), "/")
 	c.Hilbert.AccessKey = strings.TrimSpace(c.Hilbert.AccessKey)
 	c.Hilbert.SecretKey = strings.TrimSpace(c.Hilbert.SecretKey)
-	if c.Hilbert.TimeoutSeconds <= 0 {
-		c.Hilbert.TimeoutSeconds = 5
-	}
 	if c.Sync.Enabled {
 		c.Sync.DPConfigPath = strings.TrimSpace(c.Sync.DPConfigPath)
 		if c.Hilbert.BaseURL == "" || c.Hilbert.AccessKey == "" || c.Hilbert.SecretKey == "" {

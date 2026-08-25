@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"archebase.com/keystone-edge/internal/auth"
+	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"github.com/jmoiron/sqlx"
 )
@@ -100,7 +101,9 @@ func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, works
 		if workspace.ID <= defaultWorkspaceID {
 			continue
 		}
-		result := s.syncWorkspace(ctx, workspace, syncedAt, excludedOperatorIDs)
+		workspaceCtx, cancel := context.WithTimeout(ctx, config.HilbertWorkspaceSyncTimeout)
+		result := s.syncWorkspace(workspaceCtx, workspace, syncedAt, excludedOperatorIDs)
+		cancel()
 		summary.CollectorUpsertedCount += result.CollectorUpsertedCount
 		summary.CollectorSkippedCount += result.CollectorSkippedCount
 		summary.RobotUpsertedCount += result.RobotUpsertedCount

@@ -127,8 +127,6 @@ spec:
             {{- if or (eq .Values.storage.type "tos") .Values.keystone.syncEnabled }}
             - name: KEYSTONE_HILBERT_BASE_URL
               value: {{ .Values.keystone.hilbert.baseURL | quote }}
-            - name: KEYSTONE_HILBERT_TIMEOUT_SECONDS
-              value: {{ .Values.keystone.hilbert.timeoutSeconds | quote }}
             - name: KEYSTONE_HILBERT_ACCESS_KEY
               valueFrom:
                 secretKeyRef:

@@ -635,14 +635,7 @@ func (s *Server) syncWorkspacesOnStartup() {
 		logger.Printf("[WORKSPACE] Startup Hilbert workspace sync skipped: service identity config incomplete")
 		return
 	}
-	timeout := time.Duration(s.cfg.Hilbert.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	result, err := s.workspaceSync.Sync(ctx)
+	result, err := s.workspaceSync.Sync(context.Background())
 	if err != nil {
 		logger.Printf("[WORKSPACE] Startup Hilbert workspace sync failed: %v", err)
 		return
@@ -688,13 +681,7 @@ func (s *Server) syncHilbertResourcesAndDCPlans(ctx context.Context, label strin
 	if s.workspaceSync == nil || !s.workspaceSync.Configured() {
 		logger.Printf("[HILBERT-SYNC] %s workspace sync skipped: service identity config incomplete", label)
 	} else {
-		timeout := time.Duration(s.cfg.Hilbert.TimeoutSeconds) * time.Second
-		if timeout <= 0 {
-			timeout = 5 * time.Second
-		}
-		syncCtx, cancel := context.WithTimeout(ctx, timeout)
-		result, err := s.workspaceSync.Sync(syncCtx)
-		cancel()
+		result, err := s.workspaceSync.Sync(ctx)
 		if err != nil {
 			logger.Printf("[HILBERT-SYNC] %s workspace sync failed; continuing with cached workspaces: %v", label, err)
 		} else {
@@ -716,14 +703,7 @@ func (s *Server) syncDCPlansOnce(ctx context.Context, label string) {
 		logger.Printf("[DC_PLAN] %s Hilbert dc plan sync skipped: service identity config incomplete", label)
 		return
 	}
-	timeout := time.Duration(s.cfg.Hilbert.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	syncCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	result, err := s.dcPlanSync.SyncAllWorkspaces(syncCtx)
+	result, err := s.dcPlanSync.SyncAllWorkspaces(ctx)
 	if err != nil {
 		logger.Printf("[DC_PLAN] %s Hilbert dc plan sync failed: %v", label, err)
 		return

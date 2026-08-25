@@ -86,6 +86,9 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 	if !s.Configured() {
 		return nil, ErrWorkspaceSyncNotConfigured
 	}
+	batchCtx, cancel := context.WithTimeout(ctx, config.HilbertSyncBatchTimeout)
+	defer cancel()
+	ctx = batchCtx
 
 	now := time.Now().UTC()
 	if err := ensureDefaultWorkspace(ctx, s.db, now); err != nil {
