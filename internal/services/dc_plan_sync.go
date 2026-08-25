@@ -115,7 +115,11 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 	if err != nil {
 		return nil, fmt.Errorf("%w: upsert dc plans: %v", ErrDCPlanSyncFailed, err)
 	}
-	projection := s.projector.project(ctx, changedPlans, now)
+	projectionPlans, err := s.workstationProjectionPlans(ctx, workspaceID, plans, changedPlans)
+	if err != nil {
+		return nil, fmt.Errorf("%w: select workstation repair plans: %v", ErrDCPlanSyncFailed, err)
+	}
+	projection := s.projector.project(ctx, projectionPlans, now)
 	poolPlans, poolTasks, poolFailures := s.maintainEgoPortalPendingPools(ctx, changedPlans, now)
 	logger.Printf("[DC_PLAN] Hilbert dc plan sync committed: workspace_id=%d synced_count=%d page_count=%d", workspaceID, len(plans), pageCount)
 	logger.Printf(
@@ -174,7 +178,62 @@ func (s *DCPlanSyncService) maintainEgoPortalPendingPools(
 	return enabledCount, createdCount, failedCount
 }
 
-// SyncAllWorkspaces syncs dc_plan projections for every local Hilbert workspace.
+func (s *DCPlanSyncService) workstationProjectionPlans(
+	ctx context.Context,
+	workspaceID int64,
+	allPlans []auth.HilbertDCPlan,
+	changedPlans []auth.HilbertDCPlan,
+) ([]auth.HilbertDCPlan, error) {
+	var missingIDs []int64
+	if err := s.db.SelectContext(ctx, &missingIDs, `
+		SELECT dp.id
+		FROM dc_plan dp
+		LEFT JOIN robots r
+		  ON r.device_id = CAST(dp.dc_device_id AS CHAR)
+		 AND r.deleted_at IS NULL
+		LEFT JOIN data_collectors dc
+		  ON dc.operator_id = dp.operator
+		 AND dc.deleted_at IS NULL
+		LEFT JOIN workstations ws
+		  ON ws.robot_id = r.id
+		 AND ws.data_collector_id = dc.id
+		 AND ws.workspace_id = dp.workspace_id
+		 AND ws.deleted_at IS NULL
+		 AND ws.superseded_at IS NULL
+		WHERE dp.workspace_id = ?
+		  AND dp.deleted_at IS NULL
+		  AND dp.dc_device_id IS NOT NULL
+		  AND LOWER(COALESCE(dp.status, '')) <> 'collected'
+		  AND ws.id IS NULL
+	`, workspaceID); err != nil {
+		return nil, err
+	}
+	missing := make(map[int64]struct{}, len(missingIDs))
+	for _, id := range missingIDs {
+		missing[id] = struct{}{}
+	}
+	plansByID := make(map[int64]auth.HilbertDCPlan, len(allPlans))
+	for _, plan := range allPlans {
+		plansByID[plan.ID] = plan
+	}
+	selected := make(map[int64]auth.HilbertDCPlan, len(changedPlans)+len(missingIDs))
+	for _, plan := range changedPlans {
+		selected[plan.ID] = plan
+	}
+	for id := range missing {
+		if plan, ok := plansByID[id]; ok {
+			selected[id] = plan
+		}
+	}
+	result := make([]auth.HilbertDCPlan, 0, len(selected))
+	for _, plan := range allPlans {
+		if _, ok := selected[plan.ID]; ok {
+			result = append(result, plan)
+		}
+	}
+	return result, nil
+}
+
 func (s *DCPlanSyncService) SyncAllWorkspaces(ctx context.Context) (*DCPlanSyncAllResult, error) {
 	if !s.Configured() {
 		return nil, ErrDCPlanSyncNotConfigured
