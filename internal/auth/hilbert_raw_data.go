@@ -156,6 +156,7 @@ func (c *HilbertClient) FinishParamFileUpload(ctx context.Context, workspaceID i
 	return nil
 }
 
+// RegisterRawData creates a Hilbert raw-data row and returns its rawDataId.
 func (c *HilbertClient) RegisterRawData(ctx context.Context, request HilbertRawDataRegisterRequest) (int64, error) {
 	if !c.ServiceAuthConfigured() {
 		return 0, ErrHilbertUnavailable
