@@ -634,6 +634,10 @@ type fakeHilbertRawDataClient struct {
 	finishWorkspaceID      int64
 	finishRawDataID        int64
 	finished               bool
+	paramFileID            string
+	paramFileRegister      auth.HilbertParamFileRegisterRequest
+	paramFileCredentials   *auth.HilbertParamFileUploadCredentials
+	paramFileFinished      bool
 }
 
 func (c *fakeHilbertRawDataClient) RegisterRawData(_ context.Context, request auth.HilbertRawDataRegisterRequest) (int64, error) {
@@ -671,6 +675,23 @@ func (c *fakeHilbertRawDataClient) FinishRawDataUpload(_ context.Context, worksp
 	c.finishWorkspaceID = workspaceID
 	c.finishRawDataID = rawDataID
 	c.finished = true
+	return nil
+}
+
+func (c *fakeHilbertRawDataClient) RegisterParamFile(_ context.Context, request auth.HilbertParamFileRegisterRequest) (string, error) {
+	c.paramFileRegister = request
+	if c.paramFileID == "" {
+		c.paramFileID = "param-file-1"
+	}
+	return c.paramFileID, nil
+}
+
+func (c *fakeHilbertRawDataClient) GetParamFileUploadCredentials(_ context.Context, _ int64, _ string) (*auth.HilbertParamFileUploadCredentials, error) {
+	return c.paramFileCredentials, nil
+}
+
+func (c *fakeHilbertRawDataClient) FinishParamFileUpload(context.Context, int64, string) error {
+	c.paramFileFinished = true
 	return nil
 }
 
@@ -2088,6 +2109,7 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 			duration_sec REAL,
 			recording_started_at TIMESTAMP NULL,
 			recording_finished_at TIMESTAMP NULL,
+			camera_serial TEXT,
 			deleted_at TIMESTAMP NULL,
 			created_at TIMESTAMP NOT NULL
 		)`,

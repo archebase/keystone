@@ -15,11 +15,14 @@ import (
 )
 
 const (
-	hilbertRawDataRegisterPath                   = "/v1/data-collection/raw-data/register"
-	hilbertRawDataQueryPath                      = "/v1/data-collection/raw-data/query"
-	hilbertRawDataGetUploadCredentialsPath       = "/v1/data-collection/raw-data/get-upload-credentials" // #nosec G101 -- API path, not a credential.
-	hilbertRawDataFinishUploadPath               = "/v1/data-collection/raw-data/finish-upload"
-	hilbertRawDataQueryPageSize            int64 = 200
+	hilbertRawDataRegisterPath                     = "/v1/data-collection/raw-data/register"
+	hilbertRawDataQueryPath                        = "/v1/data-collection/raw-data/query"
+	hilbertRawDataGetUploadCredentialsPath         = "/v1/data-collection/raw-data/get-upload-credentials" // #nosec G101 -- API path, not a credential.
+	hilbertRawDataFinishUploadPath                 = "/v1/data-collection/raw-data/finish-upload"
+	hilbertParamFileRegisterPath                   = "/v1/data-collection/raw-data/register-param-file"
+	hilbertParamFileGetUploadCredentialsPath       = "/v1/data-collection/raw-data/get-param-file-upload-credentials" // #nosec G101 -- API path, not a credential.
+	hilbertParamFileFinishUploadPath               = "/v1/data-collection/raw-data/finish-param-file-upload"
+	hilbertRawDataQueryPageSize              int64 = 200
 )
 
 // HilbertRawDataRegisterRequest contains the fields Hilbert requires before it
@@ -32,6 +35,16 @@ type HilbertRawDataRegisterRequest struct {
 	BagEndTime   time.Time `json:"bagEndTime"`
 	BagSize      int64     `json:"bagSize"`
 	BagDigest    string    `json:"bagDigest"`
+	// ParamFileMotionStoreID optionally binds a completed Hilbert CalibrationSnapshot.
+	ParamFileMotionStoreID *string `json:"paramFileMotionStoreId,omitempty"`
+}
+
+// HilbertParamFileRegisterRequest contains the metadata Hilbert requires before
+// issuing credentials for a calibration.json CalibrationSnapshot.
+type HilbertParamFileRegisterRequest struct {
+	WorkspaceID   int64  `json:"workspaceId"`
+	ContentSHA256 string `json:"contentSha256"`
+	SizeBytes     int64  `json:"sizeBytes"`
 }
 
 // HilbertRawData contains the immutable registration fields Keystone verifies
@@ -54,6 +67,10 @@ type hilbertRawDataPage struct {
 	PageSize int64            `json:"pageSize"`
 }
 
+// HilbertParamFileUploadCredentials uses the same object-storage credential
+// contract as raw-data uploads.
+type HilbertParamFileUploadCredentials = HilbertRawDataUploadCredentials
+
 // HilbertRawDataUploadCredentials is the object-storage target and temporary
 // credential set returned by Hilbert.
 type HilbertRawDataUploadCredentials struct {
@@ -68,6 +85,75 @@ type HilbertRawDataUploadCredentials struct {
 		TemporaryToken  string    `json:"session_token"` // #nosec G117 -- Hilbert API field name is session_token for temporary TOS auth.
 		ExpireTime      time.Time `json:"expire_time"`
 	} `json:"credentials"`
+}
+
+// RegisterParamFile creates a Hilbert CalibrationSnapshot resource and returns its resource name.
+func (c *HilbertClient) RegisterParamFile(ctx context.Context, request HilbertParamFileRegisterRequest) (string, error) {
+	if !c.ServiceAuthConfigured() {
+		return "", ErrHilbertUnavailable
+	}
+	if request.WorkspaceID <= 0 || request.SizeBytes <= 0 || len(strings.TrimSpace(request.ContentSHA256)) != 64 {
+		return "", fmt.Errorf("%w: invalid param-file register request", ErrHilbertUnavailable)
+	}
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertParamFileRegisterPath, request)
+	if err != nil {
+		return "", err
+	}
+	var resp hilbertCommonResponse[string]
+	if err := c.doJSON(req, &resp); err != nil {
+		return "", err
+	}
+	if resp.Code != 0 || strings.TrimSpace(resp.Data) == "" {
+		return "", fmt.Errorf("%w: param-file register response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
+	}
+	return resp.Data, nil
+}
+
+// GetParamFileUploadCredentials fetches temporary storage credentials for a registered CalibrationSnapshot.
+func (c *HilbertClient) GetParamFileUploadCredentials(ctx context.Context, workspaceID int64, paramFileID string) (*HilbertParamFileUploadCredentials, error) {
+	if !c.ServiceAuthConfigured() {
+		return nil, ErrHilbertUnavailable
+	}
+	query := url.Values{}
+	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))
+	query.Set("paramFileMotionStoreId", strings.TrimSpace(paramFileID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertParamFileGetUploadCredentialsPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create param-file credentials request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
+	var resp hilbertCommonResponse[HilbertParamFileUploadCredentials]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: param-file credentials response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
+	}
+	if strings.TrimSpace(resp.Data.Bucket) == "" || strings.TrimSpace(resp.Data.Key) == "" {
+		return nil, fmt.Errorf("%w: param-file credentials response missing storage fields", ErrHilbertUnavailable)
+	}
+	return &resp.Data, nil
+}
+
+// FinishParamFileUpload marks a CalibrationSnapshot object as completely uploaded.
+func (c *HilbertClient) FinishParamFileUpload(ctx context.Context, workspaceID int64, paramFileID string) error {
+	if !c.ServiceAuthConfigured() {
+		return ErrHilbertUnavailable
+	}
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertParamFileFinishUploadPath, map[string]interface{}{"workspaceId": workspaceID, "paramFileMotionStoreId": paramFileID})
+	if err != nil {
+		return err
+	}
+	var resp hilbertCommonResponse[bool]
+	if err := c.doJSON(req, &resp); err != nil {
+		return err
+	}
+	if resp.Code != 0 || !resp.Data {
+		return fmt.Errorf("%w: param-file finish response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
+	}
+	return nil
 }
 
 // RegisterRawData creates a Hilbert raw-data row and returns its rawDataId.

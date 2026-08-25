@@ -74,6 +74,7 @@ type syncEpisodeUploadRow struct {
 	// RecordingFinishedAt 保存客户端上报的录制结束时间。
 	RecordingFinishedAt sql.NullTime        `db:"recording_finished_at"`
 	DeviceType          string              `db:"device_type"`
+	CameraSerial        sql.NullString      `db:"camera_serial"`
 	Metadata            sql.NullString      `db:"metadata"`
 	HilbertRawDataID    sql.NullInt64       `db:"hilbert_raw_data_id"`
 	CreatedAt           time.Time           `db:"created_at"`
@@ -85,6 +86,9 @@ type hilbertRawDataClient interface {
 	FindRawDataByBagName(ctx context.Context, workspaceID int64, bagName string) (*auth.HilbertRawData, error)
 	GetRawDataUploadCredentials(ctx context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawDataUploadCredentials, error)
 	FinishRawDataUpload(ctx context.Context, workspaceID, rawDataID int64) error
+	RegisterParamFile(ctx context.Context, request auth.HilbertParamFileRegisterRequest) (string, error)
+	GetParamFileUploadCredentials(ctx context.Context, workspaceID int64, paramFileID string) (*auth.HilbertParamFileUploadCredentials, error)
+	FinishParamFileUpload(ctx context.Context, workspaceID int64, paramFileID string) error
 }
 
 type tosObjectUploader interface {
@@ -699,7 +703,8 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 		       COALESCE(e.mcap_path, '') AS mcap_path, e.checksum, e.file_size_bytes,
 		       e.metadata, e.cloud_synced, COALESCE(e.qa_status, '') AS qa_status,
 		       e.cloud_publish_source, e.created_at, e.duration_sec,
-		       COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '') AS device_type
+		       COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '') AS device_type,
+		       e.camera_serial
 		FROM episodes e
 		LEFT JOIN tasks t ON t.id=e.task_id AND t.deleted_at IS NULL
 		LEFT JOIN workstations current_ws ON current_ws.id=e.workstation_id AND current_ws.deleted_at IS NULL
@@ -1306,6 +1311,7 @@ func (w *SyncWorker) processEpisode(ctx context.Context, episodeID int64, manual
 			e.recording_started_at,
 			e.recording_finished_at,
 			COALESCE(current_ws_robot.device_type, task_ws_robot.device_type, '') AS device_type,
+			e.camera_serial,
 			e.metadata,
 			e.hilbert_raw_data_id,
 			e.created_at,
@@ -1444,6 +1450,11 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 			BagSize:      objectSize,
 			BagDigest:    bagDigest,
 		}
+		if calibrationID, calibrationErr := w.uploadMatchingCalibration(ctx, uploadContext, ep, ep.SourceSnapshot, syncLogID); calibrationErr != nil {
+			return nil, calibrationErr
+		} else if calibrationID != "" {
+			registerRequest.ParamFileMotionStoreID = &calibrationID
+		}
 		rawDataID, err = w.registerOrRecoverHilbertRawData(ctx, registerRequest)
 		if err != nil {
 			return nil, err
@@ -1502,6 +1513,102 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 		FileSize:        objectSize,
 		OSSObjectETag:   objectETag,
 	}, nil
+}
+
+type cameraCalibrationUploadRow struct {
+	Bucket    string `db:"bucket"`
+	ObjectKey string `db:"object_key"`
+	SizeBytes int64  `db:"size_bytes"`
+	SHA256    string `db:"sha256"`
+}
+
+func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContext hilbertEpisodeUploadContext, ep syncEpisodeUploadRow, snapshot *SyncSourceSnapshot, syncLogID int64) (string, error) {
+	if snapshot != nil && strings.TrimSpace(snapshot.ParamFileMotionStoreID) != "" {
+		return strings.TrimSpace(snapshot.ParamFileMotionStoreID), nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal Stereo") || !ep.CameraSerial.Valid || strings.TrimSpace(ep.CameraSerial.String) == "" {
+		return "", nil
+	}
+	var calibration cameraCalibrationUploadRow
+	if snapshot != nil && snapshot.CalibrationObjectKey != "" {
+		calibration = cameraCalibrationUploadRow{Bucket: snapshot.CalibrationBucket, ObjectKey: snapshot.CalibrationObjectKey, SizeBytes: snapshot.CalibrationSizeBytes, SHA256: snapshot.CalibrationSHA256}
+	} else {
+		err := w.db.GetContext(ctx, &calibration, `
+		SELECT bucket, object_key, size_bytes, sha256
+		FROM camera_calibrations
+		WHERE BINARY camera_serial = BINARY ?
+	`, strings.TrimSpace(ep.CameraSerial.String))
+		if errors.Is(err, sql.ErrNoRows) {
+			logger.Printf("[SYNC-WORKER] Episode %d has no calibration.json for camera_serial=%s", ep.ID, ep.CameraSerial.String)
+			return "", nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("query calibration.json for camera_serial %s: %w", ep.CameraSerial.String, err)
+		}
+	}
+	if calibration.SizeBytes <= 0 || len(strings.TrimSpace(calibration.SHA256)) != 64 {
+		return "", newNonRetryableSyncError("camera calibration record for %s has invalid metadata", ep.CameraSerial.String)
+	}
+	bucket := strings.TrimSpace(calibration.Bucket)
+	objectKey := strings.TrimLeft(strings.TrimSpace(calibration.ObjectKey), "/")
+	if bucket == "" || objectKey == "" {
+		return "", newNonRetryableSyncError("camera calibration record for %s has invalid object location", ep.CameraSerial.String)
+	}
+	reader := w.sourceReader()
+	if strings.EqualFold(bucket, strings.TrimSpace(w.tosBucket)) {
+		reader = w.tosSource
+	}
+	if reader == nil {
+		return "", fmt.Errorf("calibration source object reader not available")
+	}
+	size, etag, err := reader.StatObject(ctx, bucket, objectKey)
+	if err != nil {
+		return "", fmt.Errorf("stat calibration.json %s: %w", objectKey, err)
+	}
+	if size != calibration.SizeBytes {
+		return "", newNonRetryableSyncError("calibration.json size changed for %s: got %d want %d", ep.CameraSerial.String, size, calibration.SizeBytes)
+	}
+	paramFileID, err := w.hilbert.RegisterParamFile(ctx, auth.HilbertParamFileRegisterRequest{
+		WorkspaceID: uploadContext.WorkspaceID, ContentSHA256: strings.ToLower(strings.TrimSpace(calibration.SHA256)), SizeBytes: size,
+	})
+	if err != nil {
+		return "", fmt.Errorf("register Hilbert calibration.json: %w", err)
+	}
+	if snapshot != nil {
+		snapshot.CalibrationCameraSerial = strings.TrimSpace(ep.CameraSerial.String)
+		snapshot.CalibrationBucket = bucket
+		snapshot.CalibrationObjectKey = objectKey
+		snapshot.CalibrationSizeBytes = size
+		snapshot.CalibrationSHA256 = strings.ToLower(strings.TrimSpace(calibration.SHA256))
+		snapshot.ParamFileMotionStoreID = paramFileID
+		encoded, encodeErr := encodeSyncSourceSnapshot(*snapshot)
+		if encodeErr != nil {
+			return "", encodeErr
+		}
+		if _, updateErr := w.db.ExecContext(ctx, `UPDATE sync_logs SET source_snapshot = ? WHERE id = ?`, encoded, syncLogID); updateErr != nil {
+			return "", fmt.Errorf("persist calibration sync snapshot: %w", updateErr)
+		}
+	}
+	credentials, err := w.hilbert.GetParamFileUploadCredentials(ctx, uploadContext.WorkspaceID, paramFileID)
+	if err != nil {
+		return "", fmt.Errorf("get Hilbert calibration upload credentials: %w", err)
+	}
+	obj, err := w.openSourceObjectRangeStream(ctx, reader, bucket, objectKey, size, etag)
+	if err != nil {
+		return "", fmt.Errorf("open calibration.json %s: %w", objectKey, err)
+	}
+	defer func() { _ = obj.Close() }()
+	uploader := w.tosUploader
+	if uploader == nil {
+		uploader = cloud.NewTOSS3Uploader(w.syncOSSTimeout(), config.ModeEdge)
+	}
+	if _, err := uploader.PutObject(ctx, hilbertUploadTarget(credentials), obj, size, strings.ToLower(strings.TrimSpace(calibration.SHA256)), nil); err != nil {
+		return "", fmt.Errorf("upload calibration.json to Hilbert: %w", err)
+	}
+	if err := w.hilbert.FinishParamFileUpload(ctx, uploadContext.WorkspaceID, paramFileID); err != nil {
+		return "", fmt.Errorf("finish Hilbert calibration upload: %w", err)
+	}
+	return paramFileID, nil
 }
 
 func (w *SyncWorker) registerOrRecoverHilbertRawData(
