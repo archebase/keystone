@@ -510,9 +510,9 @@ func insertPendingPlanTask(
 }
 
 // EnsureUnboundEgoCandidateTasksForWorkstation binds every unbound dc plan owned by the
-// operator to the current device, then ensures one pending task exists for every executable
-// plan now assigned to that device. It is safe to call from both /operator/plans/refresh and
-// /tasks list flows; existing pending tasks are reused.
+// operator to the current device, then ensures one pending task exists for every newly
+// executable plan assigned to that device. It is safe to call from both /operator/plans/refresh
+// and /tasks list flows; existing pending tasks are reused.
 func EnsureUnboundEgoCandidateTasksForWorkstation(
 	ctx context.Context,
 	db *sqlx.DB,
@@ -532,11 +532,11 @@ func EnsureUnboundEgoCandidateTasksForWorkstation(
 		FROM dc_plan
 		WHERE workspace_id = ?
 			AND operator = ?
-			AND (dc_device_id IS NULL OR dc_device_id = ?)
+			AND dc_device_id IS NULL
 			AND COALESCE(status, 'pending_collection') != 'collected'
 			AND deleted_at IS NULL
 		ORDER BY id
-	`, workspaceID, strings.TrimSpace(operator), deviceID); err != nil {
+	`, workspaceID, strings.TrimSpace(operator)); err != nil {
 		return err
 	}
 	supply := NewDCPlanTaskSupplyService(db)
