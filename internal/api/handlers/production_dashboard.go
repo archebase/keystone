@@ -24,12 +24,13 @@ import (
 )
 
 const (
-	defaultDashboardTrendDays    = 7
-	maxDashboardTrendDays        = 31
-	defaultDashboardRecentLimit  = 10
-	maxDashboardRecentLimit      = 50
-	defaultDashboardPreviewLimit = 8
-	maxDashboardPreviewLimit     = 20
+	defaultDashboardTrendDays            = 7
+	maxDashboardTrendDays                = 31
+	defaultDashboardRecentLimit          = 10
+	maxDashboardRecentLimit              = 50
+	defaultDashboardPreviewLimit         = 8
+	maxDashboardPreviewLimit             = 20
+	productionDashboardPreviewDeviceType = "ZJ-WA1-D"
 )
 
 // ProductionDashboardHandler serves aggregate data for production dashboard pages.
@@ -858,8 +859,11 @@ func dashboardRecentTaskUpdatedAtSQL(taskAlias string) string {
 }
 
 func (h *ProductionDashboardHandler) dashboardPreviews(db dashboardDB, scope productionDashboardScope, limit int) ([]dashboardPreviewItem, error) {
-	conditions := []string{"e.deleted_at IS NULL"}
-	args := []interface{}{}
+	conditions := []string{
+		"e.deleted_at IS NULL",
+		"COALESCE(r.device_type, '') = ?",
+	}
+	args := []interface{}{productionDashboardPreviewDeviceType}
 	conditions, args = appendDashboardEpisodeScope(conditions, args, scope)
 	query := `
 		SELECT
