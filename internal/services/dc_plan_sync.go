@@ -206,6 +206,9 @@ func (s *DCPlanSyncService) workstationProjectionPlans(
 		  AND LOWER(COALESCE(dp.status, '')) <> 'collected'
 		  AND ws.id IS NULL
 	`, workspaceID); err != nil {
+		if s.db.DriverName() == "sqlite" && strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return changedPlans, nil
+		}
 		return nil, err
 	}
 	missing := make(map[int64]struct{}, len(missingIDs))
@@ -234,6 +237,7 @@ func (s *DCPlanSyncService) workstationProjectionPlans(
 	return result, nil
 }
 
+// SyncAllWorkspaces syncs dc_plan projections for every local Hilbert workspace.
 func (s *DCPlanSyncService) SyncAllWorkspaces(ctx context.Context) (*DCPlanSyncAllResult, error) {
 	if !s.Configured() {
 		return nil, ErrDCPlanSyncNotConfigured
