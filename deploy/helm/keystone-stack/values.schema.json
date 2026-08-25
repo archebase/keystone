@@ -82,10 +82,9 @@
         "qaEnabled": { "type": "boolean" },
         "hilbert": {
           "type": "object",
-          "required": ["baseURL", "timeoutSeconds"],
+          "required": ["baseURL"],
           "properties": {
-            "baseURL": { "type": "string" },
-            "timeoutSeconds": { "type": "integer", "minimum": 1 }
+            "baseURL": { "type": "string" }
           }
         },
         "service": {
