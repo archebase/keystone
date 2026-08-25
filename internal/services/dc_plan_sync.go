@@ -111,11 +111,12 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 	}
 
 	now := time.Now().UTC()
-	if err := s.upsertDCPlans(ctx, workspaceID, plans, now); err != nil {
+	changedPlans, err := s.upsertDCPlans(ctx, workspaceID, plans, now)
+	if err != nil {
 		return nil, fmt.Errorf("%w: upsert dc plans: %v", ErrDCPlanSyncFailed, err)
 	}
-	projection := s.projector.project(ctx, plans, now)
-	poolPlans, poolTasks, poolFailures := s.maintainEgoPortalPendingPools(ctx, plans, now)
+	projection := s.projector.project(ctx, changedPlans, now)
+	poolPlans, poolTasks, poolFailures := s.maintainEgoPortalPendingPools(ctx, changedPlans, now)
 	logger.Printf("[DC_PLAN] Hilbert dc plan sync committed: workspace_id=%d synced_count=%d page_count=%d", workspaceID, len(plans), pageCount)
 	logger.Printf(
 		"[DC_PLAN] Hilbert workstation projection completed: workspace_id=%d plans=%d created=%d reused=%d blocked=%d",
@@ -308,10 +309,10 @@ func validateHilbertDCPlans(workspaceID int64, plans []auth.HilbertDCPlan) error
 	return nil
 }
 
-func (s *DCPlanSyncService) upsertDCPlans(ctx context.Context, workspaceID int64, plans []auth.HilbertDCPlan, syncedAt time.Time) error {
+func (s *DCPlanSyncService) upsertDCPlans(ctx context.Context, workspaceID int64, plans []auth.HilbertDCPlan, syncedAt time.Time) ([]auth.HilbertDCPlan, error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -319,23 +320,64 @@ func (s *DCPlanSyncService) upsertDCPlans(ctx context.Context, workspaceID int64
 		var existingWorkspaceID int64
 		err := tx.GetContext(ctx, &existingWorkspaceID, "SELECT workspace_id FROM dc_plan WHERE id = ? AND deleted_at IS NULL", plan.ID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
+			return nil, err
 		}
 		if err == nil && existingWorkspaceID != workspaceID {
-			return fmt.Errorf("dc plan %d already belongs to workspace %d", plan.ID, existingWorkspaceID)
+			return nil, fmt.Errorf("dc plan %d already belongs to workspace %d", plan.ID, existingWorkspaceID)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE dc_plan
-		SET deleted_at = ?, local_updated_at = ?
-		WHERE workspace_id = ? AND deleted_at IS NULL
-	`, syncedAt, syncedAt, workspaceID); err != nil {
-		return err
+
+	type existingDCPlan struct {
+		ID         int64          `db:"id"`
+		RawPayload sql.NullString `db:"raw_payload"`
+		DeletedAt  sql.NullTime   `db:"deleted_at"`
+	}
+	var existing []existingDCPlan
+	if err := tx.SelectContext(ctx, &existing, `
+		SELECT id, raw_payload, deleted_at
+		FROM dc_plan
+		WHERE workspace_id = ?`, workspaceID); err != nil {
+		return nil, err
+	}
+	existingByID := make(map[int64]existingDCPlan, len(existing))
+	for _, row := range existing {
+		existingByID[row.ID] = row
 	}
 
+	incomingIDSet := make(map[int64]struct{}, len(plans))
+	changedPlans := make([]auth.HilbertDCPlan, 0, len(plans))
 	for _, plan := range plans {
+		incomingIDSet[plan.ID] = struct{}{}
+		rawPayload, err := json.Marshal(plan)
+		if err != nil {
+			return nil, err
+		}
+		row, found := existingByID[plan.ID]
+		if !found || row.DeletedAt.Valid || !row.RawPayload.Valid || row.RawPayload.String != string(rawPayload) {
+			changedPlans = append(changedPlans, plan)
+		}
+	}
+
+	// Only deactivate active local plans that disappeared from the remote snapshot.
+	for _, row := range existing {
+		if row.DeletedAt.Valid {
+			continue
+		}
+		if _, present := incomingIDSet[row.ID]; present {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE dc_plan
+			SET deleted_at = ?, local_updated_at = ?
+			WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
+		`, syncedAt, syncedAt, row.ID, workspaceID); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, plan := range changedPlans {
 		if err := upsertDCPlan(ctx, tx, plan, syncedAt); err != nil {
-			return err
+			return nil, err
 		}
 		if strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
 			if _, err := tx.ExecContext(ctx, `
@@ -343,11 +385,14 @@ func (s *DCPlanSyncService) upsertDCPlans(ctx context.Context, workspaceID int64
 				SET status = 'cancelled', updated_at = ?
 				WHERE dc_plan_id = ? AND status = 'pending' AND deleted_at IS NULL
 			`, syncedAt, plan.ID); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return changedPlans, nil
 }
 
 func upsertDCPlan(ctx context.Context, tx *sqlx.Tx, plan auth.HilbertDCPlan, syncedAt time.Time) error {

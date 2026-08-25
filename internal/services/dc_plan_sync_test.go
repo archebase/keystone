@@ -85,6 +85,58 @@ func TestDCPlanSyncServiceSyncsPagedPlans(t *testing.T) {
 	}
 }
 
+func TestDCPlanSyncServiceSkipsUnchangedPlansOnRepeatSync(t *testing.T) {
+	db := newTestDCPlanSyncDB(t)
+	defer db.Close()
+	seedDCPlanWorkspace(t, db, 123, workspaceSourceHilbert)
+
+	plan := testHilbertDCPlan(1001, 123, "Plan A")
+	client := &fakeHilbertDCPlanClient{
+		pages: []*auth.HilbertDCPlanPage{
+			{Records: []auth.HilbertDCPlan{plan}, Total: 1, PageNum: 1, PageSize: dcPlanSyncPageSize},
+		},
+	}
+	service := NewDCPlanSyncService(db, testDCPlanSyncHilbertConfig(), client)
+
+	first, err := service.SyncWorkspace(context.Background(), 123)
+	if err != nil {
+		t.Fatalf("first SyncWorkspace() error = %v", err)
+	}
+	if first.SyncedCount != 1 {
+		t.Fatalf("first synced_count=%d want 1", first.SyncedCount)
+	}
+
+	var before struct {
+		RawPayload     string    `db:"raw_payload"`
+		LastSyncedAt   time.Time `db:"last_synced_at"`
+		LocalUpdatedAt time.Time `db:"local_updated_at"`
+	}
+	if err := db.Get(&before, "SELECT raw_payload, last_synced_at, local_updated_at FROM dc_plan WHERE id = ?", plan.ID); err != nil {
+		t.Fatalf("query first sync row: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	second, err := service.SyncWorkspace(context.Background(), 123)
+	if err != nil {
+		t.Fatalf("second SyncWorkspace() error = %v", err)
+	}
+	if second.SyncedCount != 1 {
+		t.Fatalf("second synced_count=%d want 1", second.SyncedCount)
+	}
+
+	var after struct {
+		RawPayload     string    `db:"raw_payload"`
+		LastSyncedAt   time.Time `db:"last_synced_at"`
+		LocalUpdatedAt time.Time `db:"local_updated_at"`
+	}
+	if err := db.Get(&after, "SELECT raw_payload, last_synced_at, local_updated_at FROM dc_plan WHERE id = ?", plan.ID); err != nil {
+		t.Fatalf("query second sync row: %v", err)
+	}
+	if before.RawPayload != after.RawPayload || !before.LastSyncedAt.Equal(after.LastSyncedAt) || !before.LocalUpdatedAt.Equal(after.LocalUpdatedAt) {
+		t.Fatalf("unchanged plan was updated: before=%#v after=%#v", before, after)
+	}
+}
+
 func TestDCPlanSyncServiceInvalidPlanDoesNotPartiallyUpsert(t *testing.T) {
 	db := newTestDCPlanSyncDB(t)
 	defer db.Close()
