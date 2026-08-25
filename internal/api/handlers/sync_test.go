@@ -475,6 +475,8 @@ func setupSyncHandlerTestDB(t *testing.T) *sqlx.DB {
 			status TEXT,
 			bytes_transferred INTEGER,
 			duration_sec INTEGER,
+			recording_started_at TIMESTAMP NULL,
+			recording_finished_at TIMESTAMP NULL,
 			error_message TEXT,
 			attempt_count INTEGER NOT NULL DEFAULT 0,
 			next_retry_at TIMESTAMP NULL,

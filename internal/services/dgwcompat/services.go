@@ -678,18 +678,22 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 }
 
 type completedUploadEpisode struct {
-	ID                      int64           `db:"id"`
-	EpisodeID               string          `db:"episode_id"`
-	IngestionChannel        string          `db:"ingestion_channel"`
-	StorageBackend          string          `db:"storage_backend"`
-	MCAPPath                string          `db:"mcap_path"`
-	FileSize                sql.NullInt64   `db:"file_size_bytes"`
-	Duration                sql.NullFloat64 `db:"duration_sec"`
-	Checksum                sql.NullString  `db:"checksum"`
-	Metadata                sql.NullString  `db:"metadata"`
-	CameraSerial            sql.NullString  `db:"camera_serial"`
-	CalibrationCaptureID    sql.NullString  `db:"calibration_capture_id"`
-	CalibrationResultSHA256 sql.NullString  `db:"calibration_result_sha256"`
+	ID               int64           `db:"id"`
+	EpisodeID        string          `db:"episode_id"`
+	IngestionChannel string          `db:"ingestion_channel"`
+	StorageBackend   string          `db:"storage_backend"`
+	MCAPPath         string          `db:"mcap_path"`
+	FileSize         sql.NullInt64   `db:"file_size_bytes"`
+	Duration         sql.NullFloat64 `db:"duration_sec"`
+	// RecordingStartedAt 保存客户端上报的录制开始时间。
+	RecordingStartedAt sql.NullTime `db:"recording_started_at"`
+	// RecordingFinishedAt 保存客户端上报的录制结束时间。
+	RecordingFinishedAt     sql.NullTime   `db:"recording_finished_at"`
+	Checksum                sql.NullString `db:"checksum"`
+	Metadata                sql.NullString `db:"metadata"`
+	CameraSerial            sql.NullString `db:"camera_serial"`
+	CalibrationCaptureID    sql.NullString `db:"calibration_capture_id"`
+	CalibrationResultSHA256 sql.NullString `db:"calibration_result_sha256"`
 }
 
 type episodeCalibrationSelection struct {
@@ -789,7 +793,7 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	var existing completedUploadEpisode
 	err = tx.GetContext(ctx, &existing, `
 		SELECT id, episode_id, ingestion_channel, storage_backend,
-			mcap_path, file_size_bytes, duration_sec, checksum, metadata,
+			mcap_path, file_size_bytes, duration_sec, recording_started_at, recording_finished_at, checksum, metadata,
 			camera_serial, calibration_capture_id, calibration_result_sha256
 		FROM episodes
 		WHERE task_id = ? AND deleted_at IS NULL
@@ -849,6 +853,10 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 	if err != nil {
 		return "", 0, false, err
 	}
+	recordingStartedAt, recordingFinishedAt, err := uploadRecordingTimeRange(req.GetRawTags())
+	if err != nil {
+		return "", 0, false, err
+	}
 	insertRes, err := tx.ExecContext(ctx, `
 		INSERT INTO episodes (
 			episode_id,
@@ -863,6 +871,8 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			sidecar_path,
 			file_size_bytes,
 			duration_sec,
+			recording_started_at,
+			recording_finished_at,
 			checksum,
 			qa_status,
 			metadata,
@@ -871,10 +881,10 @@ func (s *gatewayService) completeBusinessUpload(ctx context.Context, session *up
 			calibration_result_sha256,
 			created_at,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, NULLIF(?, ''), ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_qa', ?, NULLIF(?, ''), ?, ?, ?, ?)
 	`, episodeID, task.TaskPK, task.WorkstationID, task.OrganizationID, task.DCPlanID, task.LocalDCPlanID,
 		dataGatewayEpisodeIngestionChannel, dataGatewayEpisodeStorageBackend,
-		session.ObjectKey, "", req.GetFileSize(), durationSec, episodeChecksumSHA256, metadata,
+		session.ObjectKey, "", req.GetFileSize(), durationSec, recordingStartedAt, recordingFinishedAt, episodeChecksumSHA256, metadata,
 		session.ClientHints["camera_serial"], nullableCalibrationValue(matched, selection.CaptureID),
 		nullableCalibrationValue(matched, selection.ResultSHA256), now, now)
 	if err != nil {
@@ -1057,6 +1067,14 @@ func validateIdempotentComplete(
 			return status.Error(codes.FailedPrecondition, "duration_sec differs from completed upload")
 		}
 	}
+	requestStartedAt, requestFinishedAt, err := uploadRecordingTimeRange(req.GetRawTags())
+	if err != nil {
+		return err
+	}
+	if !nullableUploadTimeEqual(episode.RecordingStartedAt, requestStartedAt) ||
+		!nullableUploadTimeEqual(episode.RecordingFinishedAt, requestFinishedAt) {
+		return status.Error(codes.FailedPrecondition, "recording time range differs from completed upload")
+	}
 	if episode.Checksum.Valid {
 		checksumTag := "checksum_sha256"
 		requestChecksum := strings.ToLower(strings.TrimSpace(req.GetRawTags()[checksumTag]))
@@ -1092,6 +1110,50 @@ func validateIdempotentComplete(
 		return status.Error(codes.FailedPrecondition, "completed_part_count differs from completed upload")
 	}
 	return nil
+}
+
+// uploadRecordingTimeRange 解析客户端可选的录制时间区间。两个时间必须同时提供，且结束时间晚于开始时间。
+func uploadRecordingTimeRange(tags map[string]string) (sql.NullTime, sql.NullTime, error) {
+	startedRaw := strings.TrimSpace(tags["recording_started_at"])
+	finishedRaw := strings.TrimSpace(tags["recording_finished_at"])
+	if startedRaw == "" && finishedRaw == "" {
+		return sql.NullTime{}, sql.NullTime{}, nil
+	}
+	if startedRaw == "" || finishedRaw == "" {
+		return sql.NullTime{}, sql.NullTime{}, status.Error(codes.InvalidArgument, "recording_started_at and recording_finished_at must be provided together")
+	}
+	startedAt, err := parseUploadTimestamp(startedRaw, "recording_started_at")
+	if err != nil {
+		return sql.NullTime{}, sql.NullTime{}, err
+	}
+	finishedAt, err := parseUploadTimestamp(finishedRaw, "recording_finished_at")
+	if err != nil {
+		return sql.NullTime{}, sql.NullTime{}, err
+	}
+	if !finishedAt.After(startedAt) {
+		return sql.NullTime{}, sql.NullTime{}, status.Error(codes.InvalidArgument, "recording_finished_at must be after recording_started_at")
+	}
+	return sql.NullTime{Time: startedAt, Valid: true}, sql.NullTime{Time: finishedAt, Valid: true}, nil
+}
+
+// parseUploadTimestamp 解析单个客户端时间并统一转换为 UTC。
+func parseUploadTimestamp(value, field string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, status.Errorf(codes.InvalidArgument, "%s must be RFC3339", field)
+	}
+	return parsed.UTC(), nil
+}
+
+// nullableUploadTimeEqual 按数据库精度比较两个可空录制时间。
+func nullableUploadTimeEqual(left, right sql.NullTime) bool {
+	if left.Valid != right.Valid {
+		return false
+	}
+	if !left.Valid {
+		return true
+	}
+	return left.Time.UTC().Truncate(time.Microsecond).Equal(right.Time.UTC().Truncate(time.Microsecond))
 }
 
 func uploadDurationSec(tags map[string]string) (sql.NullFloat64, error) {

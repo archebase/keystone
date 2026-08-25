@@ -284,14 +284,16 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 		CompletedPartCount: 1,
 		ObjectEtag:         "etag-1",
 		RawTags: map[string]string{
-			"capture_id":      "capture-1",
-			"checksum_md5":    "9777442976c95a2f302786b97e60ceb5",
-			"checksum_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-			"task_id":         "task-1",
-			"dc_plan_id":      "1001",
-			"workspace_id":    "10",
-			"device_id":       "101",
-			"duration_sec":    "6.4",
+			"capture_id":            "capture-1",
+			"checksum_md5":          "9777442976c95a2f302786b97e60ceb5",
+			"checksum_sha256":       "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+			"task_id":               "task-1",
+			"dc_plan_id":            "1001",
+			"workspace_id":          "10",
+			"device_id":             "101",
+			"duration_sec":          "6.4",
+			"recording_started_at":  "2026-08-25T10:00:00.123Z",
+			"recording_finished_at": "2026-08-25T10:00:06.523Z",
 		},
 	}
 	if _, err := service.CompleteUpload(ctx, complete); err != nil {
@@ -319,21 +321,28 @@ func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 		t.Fatalf("task status=%q episode_id=%d, want completed with episode", task.Status, task.EpisodeID)
 	}
 	var episode struct {
-		Metadata         string        `db:"metadata"`
-		SidecarPath      string        `db:"sidecar_path"`
-		Checksum         string        `db:"checksum"`
-		DurationSec      float64       `db:"duration_sec"`
-		IngestionChannel string        `db:"ingestion_channel"`
-		StorageBackend   string        `db:"storage_backend"`
-		HilbertRawDataID sql.NullInt64 `db:"hilbert_raw_data_id"`
+		Metadata            string        `db:"metadata"`
+		SidecarPath         string        `db:"sidecar_path"`
+		Checksum            string        `db:"checksum"`
+		DurationSec         float64       `db:"duration_sec"`
+		RecordingStartedAt  time.Time     `db:"recording_started_at"`
+		RecordingFinishedAt time.Time     `db:"recording_finished_at"`
+		IngestionChannel    string        `db:"ingestion_channel"`
+		StorageBackend      string        `db:"storage_backend"`
+		HilbertRawDataID    sql.NullInt64 `db:"hilbert_raw_data_id"`
 	}
 	if err := db.Get(&episode, `
 		SELECT metadata, sidecar_path, checksum, duration_sec,
+			recording_started_at, recording_finished_at,
 			ingestion_channel, storage_backend, hilbert_raw_data_id
 		FROM episodes
 		WHERE id = ?
 	`, task.EpisodeID); err != nil {
 		t.Fatalf("query episode metadata: %v", err)
+	}
+	if episode.RecordingStartedAt.UTC().Format(time.RFC3339) != "2026-08-25T10:00:00Z" ||
+		episode.RecordingFinishedAt.UTC().Format(time.RFC3339) != "2026-08-25T10:00:06Z" {
+		t.Fatalf("episode recording times = %s - %s", episode.RecordingStartedAt, episode.RecordingFinishedAt)
 	}
 	if episode.Checksum != "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" {
 		t.Fatalf("episode checksum = %q", episode.Checksum)
@@ -1678,6 +1687,8 @@ func newGatewayServiceTestDBWithDriver(t *testing.T, driverName, dsn string) *sq
 			sidecar_path TEXT NOT NULL,
 			file_size_bytes INTEGER,
 			duration_sec REAL,
+			recording_started_at TIMESTAMP NULL,
+			recording_finished_at TIMESTAMP NULL,
 			checksum TEXT,
 			qa_status TEXT,
 			cloud_synced BOOLEAN DEFAULT FALSE,

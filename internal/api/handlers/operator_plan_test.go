@@ -255,6 +255,8 @@ func newTestOperatorPlanDB(t *testing.T) *sqlx.DB {
 		);
 		CREATE TABLE episodes (
 			id INTEGER PRIMARY KEY, task_id INTEGER, dc_plan_id INTEGER, duration_sec REAL,
+			recording_started_at TIMESTAMP NULL,
+			recording_finished_at TIMESTAMP NULL,
 			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
 			qa_status TEXT NOT NULL DEFAULT 'pending_qa', deleted_at TIMESTAMP
 		);

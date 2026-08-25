@@ -341,6 +341,8 @@ func newTestDCPlanHandlerDB(t *testing.T) *sqlx.DB {
 			task_id INTEGER NOT NULL,
 			dc_plan_id INTEGER,
 			duration_sec REAL,
+			recording_started_at TIMESTAMP NULL,
+			recording_finished_at TIMESTAMP NULL,
 			cloud_synced BOOLEAN NOT NULL DEFAULT FALSE,
 			qa_status TEXT NOT NULL DEFAULT 'pending_qa',
 			deleted_at TIMESTAMP
