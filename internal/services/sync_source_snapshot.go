@@ -51,6 +51,13 @@ type SyncSourceSnapshot struct {
 	BagName      string `json:"bag_name"`
 	DerivativeID int64  `json:"derivative_id,omitempty"`
 	Generation   int    `json:"generation,omitempty"`
+	// Calibration fields freeze the optional calibration.json selected for this sync.
+	CalibrationCameraSerial string `json:"calibration_camera_serial,omitempty"`
+	CalibrationBucket       string `json:"calibration_bucket,omitempty"`
+	CalibrationObjectKey    string `json:"calibration_object_key,omitempty"`
+	CalibrationSizeBytes    int64  `json:"calibration_size_bytes,omitempty"`
+	CalibrationSHA256       string `json:"calibration_sha256,omitempty"`
+	ParamFileMotionStoreID  string `json:"param_file_motion_store_id,omitempty"`
 }
 
 func (s SyncSourceSnapshot) validate() error {
@@ -88,6 +95,11 @@ func encodeSyncSourceSnapshot(snapshot SyncSourceSnapshot) (string, error) {
 	snapshot.ObjectKey = strings.TrimLeft(strings.TrimSpace(snapshot.ObjectKey), "/")
 	snapshot.SHA256 = strings.ToLower(strings.TrimSpace(snapshot.SHA256))
 	snapshot.BagName = strings.TrimSpace(snapshot.BagName)
+	snapshot.CalibrationCameraSerial = strings.TrimSpace(snapshot.CalibrationCameraSerial)
+	snapshot.CalibrationBucket = strings.TrimSpace(snapshot.CalibrationBucket)
+	snapshot.CalibrationObjectKey = strings.TrimLeft(strings.TrimSpace(snapshot.CalibrationObjectKey), "/")
+	snapshot.CalibrationSHA256 = strings.ToLower(strings.TrimSpace(snapshot.CalibrationSHA256))
+	snapshot.ParamFileMotionStoreID = strings.TrimSpace(snapshot.ParamFileMotionStoreID)
 	if err := snapshot.validate(); err != nil {
 		return "", err
 	}
