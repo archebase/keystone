@@ -49,6 +49,7 @@ import (
 )
 
 const dcPlanAutoSyncInterval = 5 * time.Minute
+const dcPlanSyncTimeout = 2 * time.Minute
 
 // Server represents the HTTP server
 type Server struct {
@@ -90,6 +91,8 @@ type Server struct {
 	recorderWSServer    *http.Server
 	dcPlanSyncCancel    context.CancelFunc
 	dcPlanSyncDone      chan struct{}
+	dcPlanSyncMu        sync.Mutex
+	dcPlanSyncActive    bool
 	shutdownMu          sync.RWMutex
 	isRunning           bool
 	engine              *gin.Engine
@@ -650,7 +653,26 @@ func (s *Server) syncWorkspacesOnStartup() {
 	logger.Printf("[WORKSPACE] Startup Hilbert workspace sync completed: synced_count=%d", result.SyncedCount)
 }
 
+func (s *Server) tryBeginDCPlanSync() bool {
+	s.dcPlanSyncMu.Lock()
+	defer s.dcPlanSyncMu.Unlock()
+	if s.dcPlanSyncActive {
+		return false
+	}
+	s.dcPlanSyncActive = true
+	return true
+}
+
+func (s *Server) endDCPlanSync() {
+	s.dcPlanSyncMu.Lock()
+	s.dcPlanSyncActive = false
+	s.dcPlanSyncMu.Unlock()
+}
 func (s *Server) syncDCPlansOnStartup() {
+	if !s.tryBeginDCPlanSync() {
+		return
+	}
+	defer s.endDCPlanSync()
 	s.syncDCPlansOnce(context.Background(), "Startup")
 }
 
@@ -675,7 +697,12 @@ func (s *Server) startPeriodicDCPlanSync() {
 		for {
 			select {
 			case <-ticker.C:
+				if !s.tryBeginDCPlanSync() {
+					logger.Printf("[DC_PLAN] Periodic sync skipped: sync already in progress")
+					continue
+				}
 				s.syncHilbertResourcesAndDCPlans(ctx, "Periodic")
+				s.endDCPlanSync()
 			case <-ctx.Done():
 				return
 			}
@@ -712,14 +739,18 @@ func (s *Server) syncHilbertResourcesAndDCPlans(ctx context.Context, label strin
 }
 
 func (s *Server) syncDCPlansOnce(ctx context.Context, label string) {
+	if !s.dcPlanSyncActive {
+		if !s.tryBeginDCPlanSync() {
+			logger.Printf("[DC_PLAN] %s sync skipped: sync already in progress", label)
+			return
+		}
+		defer s.endDCPlanSync()
+	}
 	if s.dcPlanSync == nil || !s.dcPlanSync.Configured() {
 		logger.Printf("[DC_PLAN] %s Hilbert dc plan sync skipped: service identity config incomplete", label)
 		return
 	}
-	timeout := time.Duration(s.cfg.Hilbert.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
+	timeout := dcPlanSyncTimeout
 	syncCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

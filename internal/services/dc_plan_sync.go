@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"archebase.com/keystone-edge/internal/auth"
@@ -19,7 +20,11 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-const dcPlanSyncPageSize int64 = 200
+const (
+	dcPlanSyncPageSize     int64 = 200
+	dcPlanWorkspaceTimeout       = 30 * time.Second
+	dcPlanDeadlockRetries        = 3
+)
 
 var (
 	// ErrDCPlanSyncNotConfigured indicates Hilbert service identity bootstrap is incomplete.
@@ -69,6 +74,7 @@ type DCPlanSyncService struct {
 	hilbertClient HilbertDCPlanClient
 	projector     *dcPlanWorkstationProjector
 	taskSupply    *DCPlanTaskSupplyService
+	syncMu        sync.Mutex
 }
 
 // NewDCPlanSyncService creates a DCPlanSyncService.
@@ -95,13 +101,23 @@ func (s *DCPlanSyncService) Configured() bool {
 
 // SyncWorkspace logs into Hilbert, fetches one workspace's dc plans, validates every record, and transactionally upserts them.
 func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64) (*DCPlanSyncResult, error) {
+	if !s.syncMu.TryLock() {
+		return nil, fmt.Errorf("dc plan sync already in progress")
+	}
+	defer s.syncMu.Unlock()
+	return s.syncWorkspace(ctx, workspaceID)
+}
+
+func (s *DCPlanSyncService) syncWorkspace(ctx context.Context, workspaceID int64) (*DCPlanSyncResult, error) {
+	workspaceCtx, cancel := context.WithTimeout(ctx, dcPlanWorkspaceTimeout)
+	defer cancel()
+	ctx = workspaceCtx
 	if !s.Configured() {
 		return nil, ErrDCPlanSyncNotConfigured
 	}
 	if err := s.requireHilbertWorkspace(ctx, workspaceID); err != nil {
 		return nil, err
 	}
-
 	plans, pageCount, err := s.fetchAllPlans(ctx, workspaceID)
 	if err != nil {
 		return nil, err
@@ -111,7 +127,7 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 	}
 
 	now := time.Now().UTC()
-	changedPlans, err := s.upsertDCPlans(ctx, workspaceID, plans, now)
+	changedPlans, err := s.upsertDCPlansWithRetry(ctx, workspaceID, plans, now)
 	if err != nil {
 		return nil, fmt.Errorf("%w: upsert dc plans: %v", ErrDCPlanSyncFailed, err)
 	}
@@ -119,7 +135,7 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 	if err != nil {
 		return nil, fmt.Errorf("%w: select workstation repair plans: %v", ErrDCPlanSyncFailed, err)
 	}
-	projection := s.projector.project(ctx, projectionPlans, now)
+	projection := s.projectPlansWithRetry(ctx, projectionPlans, now)
 	poolPlans, poolTasks, poolFailures := s.maintainEgoPortalPendingPools(ctx, changedPlans, now)
 	logger.Printf("[DC_PLAN] Hilbert dc plan sync committed: workspace_id=%d synced_count=%d page_count=%d", workspaceID, len(plans), pageCount)
 	logger.Printf(
@@ -147,6 +163,85 @@ func (s *DCPlanSyncService) SyncWorkspace(ctx context.Context, workspaceID int64
 	}, nil
 }
 
+func (s *DCPlanSyncService) upsertDCPlansWithRetry(ctx context.Context, workspaceID int64, plans []auth.HilbertDCPlan, syncedAt time.Time) ([]auth.HilbertDCPlan, error) {
+	var changed []auth.HilbertDCPlan
+	var err error
+	for attempt := 0; attempt < dcPlanDeadlockRetries; attempt++ {
+		changed, err = s.upsertDCPlans(ctx, workspaceID, plans, syncedAt)
+		if err == nil || !isRetryableMySQLLockError(err) {
+			return changed, err
+		}
+		if err := waitDCPlanRetry(ctx, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return changed, err
+}
+func (s *DCPlanSyncService) projectPlansWithRetry(ctx context.Context, plans []auth.HilbertDCPlan, now time.Time) *DCPlanWorkstationProjectionSummary {
+	summary := &DCPlanWorkstationProjectionSummary{TotalPlans: len(plans)}
+	for _, plan := range plans {
+		created, err := s.projectWithRetry(ctx, plan, now)
+		if err != nil {
+			summary.BlockedCount++
+			logger.Printf("[DC_PLAN] Workstation projection blocked: workspace_id=%d dc_plan_id=%d operator=%s dc_device_id=%v err=%v", plan.WorkspaceID, plan.ID, strings.TrimSpace(plan.Operator), nullableInt64ForLog(plan.DCDeviceID), err)
+			continue
+		}
+		if created {
+			summary.CreatedCount++
+		} else {
+			summary.ReusedCount++
+		}
+	}
+	return summary
+}
+
+func (s *DCPlanSyncService) projectWithRetry(ctx context.Context, plan auth.HilbertDCPlan, now time.Time) (bool, error) {
+	var created bool
+	var err error
+	for attempt := 0; attempt < dcPlanDeadlockRetries; attempt++ {
+		created, err = s.projector.projectPlan(ctx, plan, now)
+		if err == nil || !isRetryableMySQLLockError(err) {
+			return created, err
+		}
+		if err := waitDCPlanRetry(ctx, attempt); err != nil {
+			return created, err
+		}
+	}
+	return created, err
+}
+
+func isRetryableMySQLLockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "deadlock") || strings.Contains(message, "lock wait timeout") || strings.Contains(message, "error 1213")
+}
+func waitDCPlanRetry(ctx context.Context, attempt int) error {
+	timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (s *DCPlanSyncService) ensurePendingPoolWithRetry(ctx context.Context, planID int64, now time.Time) (*EgoPortalPendingPoolResult, error) {
+	var result *EgoPortalPendingPoolResult
+	var err error
+	for attempt := 0; attempt < dcPlanDeadlockRetries; attempt++ {
+		result, err = s.taskSupply.EnsureEgoPortalPendingPool(ctx, planID, now)
+		if err == nil || !isRetryableMySQLLockError(err) {
+			return result, err
+		}
+		if waitErr := waitDCPlanRetry(ctx, attempt); waitErr != nil {
+			return nil, waitErr
+		}
+	}
+	return result, err
+}
 func (s *DCPlanSyncService) maintainEgoPortalPendingPools(
 	ctx context.Context,
 	plans []auth.HilbertDCPlan,
@@ -159,7 +254,7 @@ func (s *DCPlanSyncService) maintainEgoPortalPendingPools(
 		if plan.DCDeviceID == nil || strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
 			continue
 		}
-		result, err := s.taskSupply.EnsureEgoPortalPendingPool(ctx, plan.ID, now)
+		result, err := s.ensurePendingPoolWithRetry(ctx, plan.ID, now)
 		if err != nil {
 			failedCount++
 			logger.Printf(
@@ -242,6 +337,10 @@ func (s *DCPlanSyncService) SyncAllWorkspaces(ctx context.Context) (*DCPlanSyncA
 	if !s.Configured() {
 		return nil, ErrDCPlanSyncNotConfigured
 	}
+	if !s.syncMu.TryLock() {
+		return nil, fmt.Errorf("dc plan sync already in progress")
+	}
+	defer s.syncMu.Unlock()
 
 	workspaceIDs, err := s.listHilbertWorkspaceIDs(ctx)
 	if err != nil {
@@ -254,7 +353,9 @@ func (s *DCPlanSyncService) SyncAllWorkspaces(ctx context.Context) (*DCPlanSyncA
 		Errors:         []DCPlanSyncWorkspaceError{},
 	}
 	for _, workspaceID := range workspaceIDs {
-		workspaceResult, syncErr := s.SyncWorkspace(ctx, workspaceID)
+		workspaceCtx, cancel := context.WithTimeout(ctx, dcPlanWorkspaceTimeout)
+		workspaceResult, syncErr := s.syncWorkspace(workspaceCtx, workspaceID)
+		cancel()
 		if syncErr != nil {
 			result.FailedCount++
 			result.Errors = append(result.Errors, DCPlanSyncWorkspaceError{
