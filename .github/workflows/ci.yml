@@ -10,6 +10,10 @@ on:
   pull_request:
     branches: [ main, main-v2 ]
 
+concurrency:
+  group: keystone-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     shell: bash
