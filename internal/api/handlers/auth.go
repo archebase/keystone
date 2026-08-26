@@ -493,11 +493,7 @@ func (h *AuthHandler) activateWorkstation(
 	if err := h.bindUnboundEgoPlans(ctx, tx, operatorID, workstation.WorkspaceID, workstation.DeviceID, time.Now().UTC()); err != nil {
 		return authWorkstationRow{}, err
 	}
-	eligible, err := collectorHasDevicePlan(ctx, tx, operatorID, workstation.WorkspaceID, workstation.DeviceID)
-	if err != nil {
-		return authWorkstationRow{}, fmt.Errorf("check device plan eligibility: %w", err)
-	}
-	if !allowed || !eligible {
+	if !allowed {
 		return authWorkstationRow{}, errWorkstationNotAssigned
 	}
 
@@ -769,31 +765,6 @@ func projectionLockClause(tx *sqlx.Tx) string {
 		return ""
 	}
 	return " FOR UPDATE"
-}
-
-func collectorHasDevicePlan(
-	ctx context.Context,
-	q sqlx.QueryerContext,
-	operatorID string,
-	workspaceID int64,
-	deviceID string,
-) (bool, error) {
-	numericDeviceID, err := strconv.ParseInt(strings.TrimSpace(deviceID), 10, 64)
-	if err != nil || numericDeviceID <= 0 {
-		return false, nil
-	}
-	var eligible bool
-	if err := sqlx.GetContext(ctx, q, &eligible, `
-		SELECT EXISTS(
-			SELECT 1 FROM dc_plan
-			WHERE operator = ? AND workspace_id = ?
-				AND (dc_device_id = ? OR dc_device_id IS NULL)
-				AND deleted_at IS NULL
-		)
-	`, operatorID, workspaceID, numericDeviceID); err != nil {
-		return false, err
-	}
-	return eligible, nil
 }
 
 func parseDeviceAuthorization(header string) string {

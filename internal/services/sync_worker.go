@@ -1524,7 +1524,10 @@ type cameraCalibrationUploadRow struct {
 
 func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContext hilbertEpisodeUploadContext, ep syncEpisodeUploadRow, snapshot *SyncSourceSnapshot, syncLogID int64) (string, error) {
 	if snapshot != nil && strings.TrimSpace(snapshot.ParamFileMotionStoreID) != "" {
-		return strings.TrimSpace(snapshot.ParamFileMotionStoreID), nil
+		paramFileID := strings.TrimSpace(snapshot.ParamFileMotionStoreID)
+		logger.Printf("[SYNC-WORKER] Episode %d reusing Hilbert calibration registration: param_file_id=%s object_key=%s",
+			ep.ID, paramFileID, snapshot.CalibrationObjectKey)
+		return paramFileID, nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal Stereo") || !ep.CameraSerial.Valid || strings.TrimSpace(ep.CameraSerial.String) == "" {
 		return "", nil
@@ -1561,6 +1564,8 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 	if reader == nil {
 		return "", fmt.Errorf("calibration source object reader not available")
 	}
+	logger.Printf("[SYNC-WORKER] Episode %d calibration sync start: camera_serial=%s bucket=%s object_key=%s size=%d sha256=%s",
+		ep.ID, ep.CameraSerial.String, bucket, objectKey, calibration.SizeBytes, strings.ToLower(strings.TrimSpace(calibration.SHA256)))
 	size, etag, err := reader.StatObject(ctx, bucket, objectKey)
 	if err != nil {
 		return "", fmt.Errorf("stat calibration.json %s: %w", objectKey, err)
@@ -1574,6 +1579,8 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 	if err != nil {
 		return "", fmt.Errorf("register Hilbert calibration.json: %w", err)
 	}
+	logger.Printf("[SYNC-WORKER] Episode %d calibration registration resolved: param_file_id=%s object_key=%s size=%d",
+		ep.ID, paramFileID, objectKey, size)
 	if snapshot != nil {
 		snapshot.CalibrationCameraSerial = strings.TrimSpace(ep.CameraSerial.String)
 		snapshot.CalibrationBucket = bucket
@@ -1593,6 +1600,8 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 	if err != nil {
 		return "", fmt.Errorf("get Hilbert calibration upload credentials: %w", err)
 	}
+	logger.Printf("[SYNC-WORKER] Episode %d calibration upload target resolved: param_file_id=%s endpoint=%s bucket=%s object_key=%s size=%d",
+		ep.ID, paramFileID, credentials.Endpoint, credentials.Bucket, credentials.Key, size)
 	obj, err := w.openSourceObjectRangeStream(ctx, reader, bucket, objectKey, size, etag)
 	if err != nil {
 		return "", fmt.Errorf("open calibration.json %s: %w", objectKey, err)
@@ -1602,12 +1611,19 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 	if uploader == nil {
 		uploader = cloud.NewTOSS3Uploader(w.syncOSSTimeout(), config.ModeEdge)
 	}
-	if _, err := uploader.PutObject(ctx, hilbertUploadTarget(credentials), obj, size, strings.ToLower(strings.TrimSpace(calibration.SHA256)), nil); err != nil {
+	logger.Printf("[SYNC-WORKER] Episode %d calibration upload start: param_file_id=%s object_key=%s size=%d",
+		ep.ID, paramFileID, credentials.Key, size)
+	objectETag, err := uploader.PutObject(ctx, hilbertUploadTarget(credentials), obj, size, strings.ToLower(strings.TrimSpace(calibration.SHA256)), nil)
+	if err != nil {
 		return "", fmt.Errorf("upload calibration.json to Hilbert: %w", err)
 	}
+	logger.Printf("[SYNC-WORKER] Episode %d calibration upload complete: param_file_id=%s object_key=%s size=%d etag=%s",
+		ep.ID, paramFileID, credentials.Key, size, objectETag)
 	if err := w.hilbert.FinishParamFileUpload(ctx, uploadContext.WorkspaceID, paramFileID); err != nil {
 		return "", fmt.Errorf("finish Hilbert calibration upload: %w", err)
 	}
+	logger.Printf("[SYNC-WORKER] Episode %d calibration sync complete: param_file_id=%s object_key=%s size=%d",
+		ep.ID, paramFileID, credentials.Key, size)
 	return paramFileID, nil
 }
 
