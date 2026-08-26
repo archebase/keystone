@@ -52,12 +52,13 @@ type SyncSourceSnapshot struct {
 	DerivativeID int64  `json:"derivative_id,omitempty"`
 	Generation   int    `json:"generation,omitempty"`
 	// Calibration fields freeze the optional calibration.json selected for this sync.
-	CalibrationCameraSerial string `json:"calibration_camera_serial,omitempty"`
-	CalibrationBucket       string `json:"calibration_bucket,omitempty"`
-	CalibrationObjectKey    string `json:"calibration_object_key,omitempty"`
-	CalibrationSizeBytes    int64  `json:"calibration_size_bytes,omitempty"`
-	CalibrationSHA256       string `json:"calibration_sha256,omitempty"`
-	ParamFileMotionStoreID  string `json:"param_file_motion_store_id,omitempty"`
+	CalibrationCameraSerial    string `json:"calibration_camera_serial,omitempty"`
+	CalibrationBucket          string `json:"calibration_bucket,omitempty"`
+	CalibrationObjectKey       string `json:"calibration_object_key,omitempty"`
+	CalibrationSizeBytes       int64  `json:"calibration_size_bytes,omitempty"`
+	CalibrationSHA256          string `json:"calibration_sha256,omitempty"`
+	ParamFileMotionStoreID     string `json:"param_file_motion_store_id,omitempty"`
+	CalibrationUploadCompleted bool   `json:"calibration_upload_completed,omitempty"`
 }
 
 func (s SyncSourceSnapshot) validate() error {

@@ -1408,6 +1408,12 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if err != nil {
 		return nil, err
 	}
+	calibrationID, calibrationErr := w.uploadMatchingCalibration(ctx, uploadContext, ep, ep.SourceSnapshot, syncLogID)
+	if calibrationErr != nil {
+		logger.Printf("[SYNC-WORKER] Episode %d calibration sync unavailable; continuing MCAP sync without calibration parameter: %v",
+			ep.ID, calibrationErr)
+		calibrationID = ""
+	}
 	rawDataID := int64(0)
 	if ep.HilbertRawDataID.Valid {
 		if ep.HilbertRawDataID.Int64 <= 0 {
@@ -1450,9 +1456,7 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 			BagSize:      objectSize,
 			BagDigest:    bagDigest,
 		}
-		if calibrationID, calibrationErr := w.uploadMatchingCalibration(ctx, uploadContext, ep, ep.SourceSnapshot, syncLogID); calibrationErr != nil {
-			return nil, calibrationErr
-		} else if calibrationID != "" {
+		if calibrationID != "" {
 			registerRequest.ParamFileMotionStoreID = &calibrationID
 		}
 		rawDataID, err = w.registerOrRecoverHilbertRawData(ctx, registerRequest)
@@ -1523,11 +1527,15 @@ type cameraCalibrationUploadRow struct {
 }
 
 func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContext hilbertEpisodeUploadContext, ep syncEpisodeUploadRow, snapshot *SyncSourceSnapshot, syncLogID int64) (string, error) {
-	if snapshot != nil && strings.TrimSpace(snapshot.ParamFileMotionStoreID) != "" {
+	if snapshot != nil && strings.TrimSpace(snapshot.ParamFileMotionStoreID) != "" && snapshot.CalibrationUploadCompleted {
 		paramFileID := strings.TrimSpace(snapshot.ParamFileMotionStoreID)
-		logger.Printf("[SYNC-WORKER] Episode %d reusing Hilbert calibration registration: param_file_id=%s object_key=%s",
+		logger.Printf("[SYNC-WORKER] Episode %d reusing completed Hilbert calibration registration: param_file_id=%s object_key=%s",
 			ep.ID, paramFileID, snapshot.CalibrationObjectKey)
 		return paramFileID, nil
+	}
+	if snapshot != nil && strings.TrimSpace(snapshot.ParamFileMotionStoreID) != "" {
+		logger.Printf("[SYNC-WORKER] Episode %d ignoring incomplete Hilbert calibration registration: param_file_id=%s object_key=%s",
+			ep.ID, snapshot.ParamFileMotionStoreID, snapshot.CalibrationObjectKey)
 	}
 	if !strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal Stereo") || !ep.CameraSerial.Valid || strings.TrimSpace(ep.CameraSerial.String) == "" {
 		return "", nil
@@ -1621,6 +1629,22 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 		ep.ID, paramFileID, credentials.Key, size, objectETag)
 	if err := w.hilbert.FinishParamFileUpload(ctx, uploadContext.WorkspaceID, paramFileID); err != nil {
 		return "", fmt.Errorf("finish Hilbert calibration upload: %w", err)
+	}
+	if snapshot != nil {
+		snapshot.CalibrationCameraSerial = strings.TrimSpace(ep.CameraSerial.String)
+		snapshot.CalibrationBucket = bucket
+		snapshot.CalibrationObjectKey = objectKey
+		snapshot.CalibrationSizeBytes = size
+		snapshot.CalibrationSHA256 = strings.ToLower(strings.TrimSpace(calibration.SHA256))
+		snapshot.ParamFileMotionStoreID = paramFileID
+		snapshot.CalibrationUploadCompleted = true
+		encoded, encodeErr := encodeSyncSourceSnapshot(*snapshot)
+		if encodeErr != nil {
+			return "", encodeErr
+		}
+		if _, updateErr := w.db.ExecContext(ctx, `UPDATE sync_logs SET source_snapshot = ? WHERE id = ?`, encoded, syncLogID); updateErr != nil {
+			return "", fmt.Errorf("persist completed calibration sync snapshot: %w", updateErr)
+		}
 	}
 	logger.Printf("[SYNC-WORKER] Episode %d calibration sync complete: param_file_id=%s object_key=%s size=%d",
 		ep.ID, paramFileID, credentials.Key, size)
