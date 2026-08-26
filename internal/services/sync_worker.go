@@ -86,7 +86,7 @@ type hilbertRawDataClient interface {
 	FindRawDataByBagName(ctx context.Context, workspaceID int64, bagName string) (*auth.HilbertRawData, error)
 	GetRawDataUploadCredentials(ctx context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawDataUploadCredentials, error)
 	FinishRawDataUpload(ctx context.Context, workspaceID, rawDataID int64) error
-	RegisterParamFile(ctx context.Context, request auth.HilbertParamFileRegisterRequest) (string, error)
+	RegisterParamFile(ctx context.Context, request auth.HilbertParamFileRegisterRequest) (*auth.HilbertParamFileRegistration, error)
 	GetParamFileUploadCredentials(ctx context.Context, workspaceID int64, paramFileID string) (*auth.HilbertParamFileUploadCredentials, error)
 	FinishParamFileUpload(ctx context.Context, workspaceID int64, paramFileID string) error
 }
@@ -267,11 +267,12 @@ var (
 	// DeviceTypeZJWA1D identifies the device family requiring depth normalization.
 	DeviceTypeZJWA1D = "ZJ-WA1-D"
 
-	errSyncRetryBackoffActive = errors.New("sync retry backoff active")
-	errSyncRetryExhausted     = errors.New("sync retry max retries exceeded")
-	errSyncAlreadyCompleted   = errors.New("sync already completed")
-	errSyncNonRetryableFailed = errors.New("sync latest failure is non-retryable")
-	errSyncCanceled           = errors.New("sync was canceled")
+	errSyncRetryBackoffActive      = errors.New("sync retry backoff active")
+	errSyncRetryExhausted          = errors.New("sync retry max retries exceeded")
+	errSyncAlreadyCompleted        = errors.New("sync already completed")
+	errSyncNonRetryableFailed      = errors.New("sync latest failure is non-retryable")
+	errSyncCanceled                = errors.New("sync was canceled")
+	ErrCalibrationStateUnsupported = errors.New("unsupported Hilbert calibration snapshot state")
 
 	hilbertRawDataIDDestinationPrefix = "hilbert:raw_data_id:"
 )
@@ -1410,6 +1411,9 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	}
 	calibrationID, calibrationErr := w.uploadMatchingCalibration(ctx, uploadContext, ep, ep.SourceSnapshot, syncLogID)
 	if calibrationErr != nil {
+		if errors.Is(calibrationErr, ErrCalibrationStateUnsupported) {
+			return nil, calibrationErr
+		}
 		logger.Printf("[SYNC-WORKER] Episode %d calibration sync unavailable; continuing MCAP sync without calibration parameter: %v",
 			ep.ID, calibrationErr)
 		calibrationID = ""
@@ -1581,28 +1585,38 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 	if size != calibration.SizeBytes {
 		return "", newNonRetryableSyncError("calibration.json size changed for %s: got %d want %d", ep.CameraSerial.String, size, calibration.SizeBytes)
 	}
-	paramFileID, err := w.hilbert.RegisterParamFile(ctx, auth.HilbertParamFileRegisterRequest{
+	registration, err := w.hilbert.RegisterParamFile(ctx, auth.HilbertParamFileRegisterRequest{
 		WorkspaceID: uploadContext.WorkspaceID, ContentSHA256: strings.ToLower(strings.TrimSpace(calibration.SHA256)), SizeBytes: size,
 	})
 	if err != nil {
 		return "", fmt.Errorf("register Hilbert calibration.json: %w", err)
 	}
-	logger.Printf("[SYNC-WORKER] Episode %d calibration registration resolved: param_file_id=%s object_key=%s size=%d",
-		ep.ID, paramFileID, objectKey, size)
-	if snapshot != nil {
-		snapshot.CalibrationCameraSerial = strings.TrimSpace(ep.CameraSerial.String)
-		snapshot.CalibrationBucket = bucket
-		snapshot.CalibrationObjectKey = objectKey
-		snapshot.CalibrationSizeBytes = size
-		snapshot.CalibrationSHA256 = strings.ToLower(strings.TrimSpace(calibration.SHA256))
-		snapshot.ParamFileMotionStoreID = paramFileID
-		encoded, encodeErr := encodeSyncSourceSnapshot(*snapshot)
-		if encodeErr != nil {
-			return "", encodeErr
+	paramFileID := strings.TrimSpace(registration.ParamFileMotionStoreID)
+	logger.Printf("[SYNC-WORKER] Episode %d calibration registration resolved: param_file_id=%s state=%s object_key=%s size=%d",
+		ep.ID, paramFileID, registration.State, objectKey, size)
+	if registration.State == auth.CalibrationSnapshotStateReady {
+		if snapshot != nil {
+			snapshot.CalibrationCameraSerial = strings.TrimSpace(ep.CameraSerial.String)
+			snapshot.CalibrationBucket = bucket
+			snapshot.CalibrationObjectKey = objectKey
+			snapshot.CalibrationSizeBytes = size
+			snapshot.CalibrationSHA256 = strings.ToLower(strings.TrimSpace(calibration.SHA256))
+			snapshot.ParamFileMotionStoreID = paramFileID
+			snapshot.CalibrationUploadCompleted = true
+			encoded, encodeErr := encodeSyncSourceSnapshot(*snapshot)
+			if encodeErr != nil {
+				return "", encodeErr
+			}
+			if _, updateErr := w.db.ExecContext(ctx, `UPDATE sync_logs SET source_snapshot = ? WHERE id = ?`, encoded, syncLogID); updateErr != nil {
+				return "", fmt.Errorf("persist ready calibration sync snapshot: %w", updateErr)
+			}
 		}
-		if _, updateErr := w.db.ExecContext(ctx, `UPDATE sync_logs SET source_snapshot = ? WHERE id = ?`, encoded, syncLogID); updateErr != nil {
-			return "", fmt.Errorf("persist calibration sync snapshot: %w", updateErr)
-		}
+		logger.Printf("[SYNC-WORKER] Episode %d calibration already ready; skipping upload: param_file_id=%s object_key=%s size=%d",
+			ep.ID, paramFileID, objectKey, size)
+		return paramFileID, nil
+	}
+	if registration.State != auth.CalibrationSnapshotStateUploading {
+		return "", fmt.Errorf("%w: %q", ErrCalibrationStateUnsupported, registration.State)
 	}
 	credentials, err := w.hilbert.GetParamFileUploadCredentials(ctx, uploadContext.WorkspaceID, paramFileID)
 	if err != nil {

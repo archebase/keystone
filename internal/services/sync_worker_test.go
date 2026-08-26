@@ -678,12 +678,12 @@ func (c *fakeHilbertRawDataClient) FinishRawDataUpload(_ context.Context, worksp
 	return nil
 }
 
-func (c *fakeHilbertRawDataClient) RegisterParamFile(_ context.Context, request auth.HilbertParamFileRegisterRequest) (string, error) {
+func (c *fakeHilbertRawDataClient) RegisterParamFile(_ context.Context, request auth.HilbertParamFileRegisterRequest) (*auth.HilbertParamFileRegistration, error) {
 	c.paramFileRegister = request
 	if c.paramFileID == "" {
 		c.paramFileID = "param-file-1"
 	}
-	return c.paramFileID, nil
+	return &auth.HilbertParamFileRegistration{ParamFileMotionStoreID: c.paramFileID, State: auth.CalibrationSnapshotStateUploading}, nil
 }
 
 func (c *fakeHilbertRawDataClient) GetParamFileUploadCredentials(_ context.Context, _ int64, _ string) (*auth.HilbertParamFileUploadCredentials, error) {

@@ -87,26 +87,39 @@ type HilbertRawDataUploadCredentials struct {
 	} `json:"credentials"`
 }
 
-// RegisterParamFile creates a Hilbert CalibrationSnapshot resource and returns its resource name.
-func (c *HilbertClient) RegisterParamFile(ctx context.Context, request HilbertParamFileRegisterRequest) (string, error) {
+// HilbertParamFileRegistration describes a CalibrationSnapshot registration returned by Hilbert.
+type HilbertParamFileRegistration struct {
+	ParamFileMotionStoreID string `json:"paramFileMotionStoreId"`
+	State                  string `json:"state"`
+}
+
+const (
+	// CalibrationSnapshotStateUploading indicates that the calibration object still needs to be uploaded.
+	CalibrationSnapshotStateUploading = "UPLOADING"
+	// CalibrationSnapshotStateReady indicates that the calibration object is complete and bindable.
+	CalibrationSnapshotStateReady = "READY"
+)
+
+// RegisterParamFile creates or resolves a Hilbert CalibrationSnapshot resource and returns its state.
+func (c *HilbertClient) RegisterParamFile(ctx context.Context, request HilbertParamFileRegisterRequest) (*HilbertParamFileRegistration, error) {
 	if !c.ServiceAuthConfigured() {
-		return "", ErrHilbertUnavailable
+		return nil, ErrHilbertUnavailable
 	}
 	if request.WorkspaceID <= 0 || request.SizeBytes <= 0 || len(strings.TrimSpace(request.ContentSHA256)) != 64 {
-		return "", fmt.Errorf("%w: invalid param-file register request", ErrHilbertUnavailable)
+		return nil, fmt.Errorf("%w: invalid param-file register request", ErrHilbertUnavailable)
 	}
 	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertParamFileRegisterPath, request)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var resp hilbertCommonResponse[string]
+	var resp hilbertCommonResponse[HilbertParamFileRegistration]
 	if err := c.doJSON(req, &resp); err != nil {
-		return "", err
+		return nil, err
 	}
-	if resp.Code != 0 || strings.TrimSpace(resp.Data) == "" {
-		return "", fmt.Errorf("%w: param-file register response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
+	if resp.Code != 0 || strings.TrimSpace(resp.Data.ParamFileMotionStoreID) == "" || strings.TrimSpace(resp.Data.State) == "" {
+		return nil, fmt.Errorf("%w: param-file register response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
 	}
-	return resp.Data, nil
+	return &resp.Data, nil
 }
 
 // GetParamFileUploadCredentials fetches temporary storage credentials for a registered CalibrationSnapshot.
