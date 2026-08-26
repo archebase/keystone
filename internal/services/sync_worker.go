@@ -267,11 +267,12 @@ var (
 	// DeviceTypeZJWA1D identifies the device family requiring depth normalization.
 	DeviceTypeZJWA1D = "ZJ-WA1-D"
 
-	errSyncRetryBackoffActive      = errors.New("sync retry backoff active")
-	errSyncRetryExhausted          = errors.New("sync retry max retries exceeded")
-	errSyncAlreadyCompleted        = errors.New("sync already completed")
-	errSyncNonRetryableFailed      = errors.New("sync latest failure is non-retryable")
-	errSyncCanceled                = errors.New("sync was canceled")
+	errSyncRetryBackoffActive = errors.New("sync retry backoff active")
+	errSyncRetryExhausted     = errors.New("sync retry max retries exceeded")
+	errSyncAlreadyCompleted   = errors.New("sync already completed")
+	errSyncNonRetryableFailed = errors.New("sync latest failure is non-retryable")
+	errSyncCanceled           = errors.New("sync was canceled")
+	// ErrCalibrationStateUnsupported indicates that a calibration snapshot cannot be used for this sync.
 	ErrCalibrationStateUnsupported = errors.New("unsupported Hilbert calibration snapshot state")
 
 	hilbertRawDataIDDestinationPrefix = "hilbert:raw_data_id:"
