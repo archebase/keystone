@@ -692,6 +692,8 @@ func TestAuthHandlerLogoutDeactivatesBoundWorkstation(t *testing.T) {
 	if _, err := db.Exec(`
 		INSERT INTO data_collectors (id, name, operator_id, status, deleted_at)
 		VALUES (7, 'Collector', 'dc01', 'active', NULL);
+		INSERT INTO robots (id, device_id, workspace_id, status, deleted_at)
+		VALUES (101, 'device-a', 10, 'active', NULL);
 		INSERT INTO workstations (
 			id, data_collector_id, workspace_id, robot_id, collector_name, status, is_current, deleted_at
 		) VALUES (11, 7, 10, 101, 'Collector', 'active', TRUE, NULL)
@@ -711,14 +713,52 @@ func TestAuthHandlerLogoutDeactivatesBoundWorkstation(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	var row struct {
-		Status    string `db:"status"`
-		IsCurrent bool   `db:"is_current"`
+		Status       string       `db:"status"`
+		IsCurrent    bool         `db:"is_current"`
+		SupersededAt sql.NullTime `db:"superseded_at"`
 	}
-	if err := db.Get(&row, `SELECT status, is_current FROM workstations WHERE id = 11`); err != nil {
+	if err := db.Get(&row, `SELECT status, is_current, superseded_at FROM workstations WHERE id = 11`); err != nil {
 		t.Fatalf("query workstation: %v", err)
 	}
 	if row.Status != "offline" || row.IsCurrent {
 		t.Fatalf("workstation after logout: %#v", row)
+	}
+	if row.SupersededAt.Valid {
+		t.Fatalf("logout must not release the workstation (superseded_at=%v), want NULL so it stays re-activatable", row.SupersededAt.Time)
+	}
+
+	// After logout the workstation must still be offered in /auth/me
+	// available_workstations (re-activatable) while absent from the current
+	// workstations list.
+	identityToken, err := auth.GenerateToken(auth.NewCollectorClaims(7, "dc01"), testAuthConfig())
+	if err != nil {
+		t.Fatalf("generate identity token: %v", err)
+	}
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+identityToken)
+	meW := httptest.NewRecorder()
+	router.ServeHTTP(meW, meReq)
+	if meW.Code != http.StatusOK {
+		t.Fatalf("me status=%d body=%s", meW.Code, meW.Body.String())
+	}
+	var me AuthMeResponse
+	if err := json.Unmarshal(meW.Body.Bytes(), &me); err != nil {
+		t.Fatalf("unmarshal me: %v", err)
+	}
+	if len(me.Workstations) != 0 {
+		t.Fatalf("logout workstation must not be current, workstations=%#v", me.Workstations)
+	}
+	found := false
+	for _, ws := range me.AvailableWorkstations {
+		if ws.ID == "11" {
+			found = true
+			if ws.Status != "offline" {
+				t.Fatalf("available workstation status=%q want offline", ws.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("logout workstation must remain available (available_workstations=%#v)", me.AvailableWorkstations)
 	}
 }
 

@@ -812,7 +812,10 @@ func parseDeviceAuthorization(header string) string {
 }
 
 // Logout acknowledges logout. The client discards the token; if a valid Bearer
-// token is present, the handler best-effort sets the workstation status to offline.
+// token is present, the handler best-effort marks the collector's current
+// workstation(s) offline without releasing them: superseded_at stays NULL so the
+// workstation remains re-activatable (visible in /auth/me available_workstations)
+// on the next login.
 func (h *AuthHandler) Logout(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
 	if strings.TrimSpace(authHeader) != "" {
@@ -824,9 +827,9 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 				if claims.WorkstationID > 0 {
 					_, updateErr = h.db.Exec(`
 						UPDATE workstations
-						SET status = 'offline', is_current = FALSE, superseded_at = ?, superseded_by = NULL, updated_at = ?
+						SET status = 'offline', is_current = FALSE, updated_at = ?
 						WHERE id = ? AND data_collector_id = ? AND is_current = TRUE AND deleted_at IS NULL
-					`, now, now, claims.WorkstationID, claims.CollectorID)
+					`, now, claims.WorkstationID, claims.CollectorID)
 				} else {
 					_, updateErr = h.db.Exec(`
 						UPDATE workstations
