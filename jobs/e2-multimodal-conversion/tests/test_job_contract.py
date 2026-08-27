@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 ArcheBase
 # SPDX-License-Identifier: MulanPSL-2.0
 
+import importlib.util
 import io
 import json
 import tarfile
@@ -10,9 +11,14 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from e2_converter import _build_calibration
 from run_processing import find_root, safe_extract
+
+
+def has_module(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
 
 
 class E2JobContractTest(unittest.TestCase):
@@ -25,6 +31,13 @@ class E2JobContractTest(unittest.TestCase):
                 tar.addfile(info, io.BytesIO(data))
         return archive
 
+    @unittest.skipUnless(
+        has_module("numpy")
+        and has_module("google.protobuf")
+        and has_module("mcap")
+        and has_module("rosbags"),
+        "full E2 converter dependencies are available in the Job image",
+    )
     def test_builds_standard_calibration_with_imu_and_time_extrinsics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -56,6 +69,8 @@ class E2JobContractTest(unittest.TestCase):
                     "gyro_bias_std_rads": [0.005, 0.005, 0.005],
                 },
             }))
+
+            from e2_converter import _build_calibration
 
             calibration = _build_calibration(root)
             self.assertEqual(calibration["schema"], "archebase.calibration")
