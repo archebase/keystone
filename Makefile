@@ -88,10 +88,12 @@ e2-multimodal-conversion-container-smoke: e2-multimodal-conversion-image
 	docker run --rm $(E2_MULTIMODAL_CONVERSION_IMAGE) --help > /dev/null
 
 e2-multimodal-conversion-test:
-	$(E2_PYTHON) -m unittest discover \
-		-s jobs/e2-multimodal-conversion/tests \
-		-p 'test_*.py' \
-		-v
+	docker run --rm \
+		--entrypoint python3 \
+		-v $(CURDIR)/jobs/e2-multimodal-conversion:/app \
+		-w /app \
+		$(E2_MULTIMODAL_CONVERSION_IMAGE) \
+		-m unittest discover -s tests -p 'test_*.py' -v
 
 stereo-split-container-smoke: stereo-split-image
 	docker run --rm $(STEREO_SPLIT_IMAGE) --help > /dev/null
