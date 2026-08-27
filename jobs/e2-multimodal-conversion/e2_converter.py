@@ -214,8 +214,138 @@ def _imu_rows(root: Path) -> Iterator[tuple[int, tuple[float, ...]]]:
 
 def _timestamp(ts_ns: int):
     seconds, nanos = divmod(ts_ns, 1_000_000_000)
-    value = timestamp_pb2.Timestamp(seconds=seconds, nanos=nanos)
-    return value
+    return timestamp_pb2.Timestamp(seconds=seconds, nanos=nanos)
+
+
+def _camera_transform(camera: dict[str, object]) -> np.ndarray:
+    extrinsics = camera.get("extrinsics")
+    if not isinstance(extrinsics, dict):
+        raise RuntimeError("camera calibration is missing extrinsics")
+    position = np.asarray(extrinsics.get("position"), dtype=np.float64)
+    quaternion = np.asarray(extrinsics.get("rotation"), dtype=np.float64)
+    if position.shape != (3,) or quaternion.shape != (4,):
+        raise RuntimeError("camera extrinsics must contain a 3D position and XYZW quaternion")
+    norm = np.linalg.norm(quaternion)
+    if not np.isfinite(norm) or norm <= 0:
+        raise RuntimeError("camera extrinsics quaternion is invalid")
+    x, y, z, w = quaternion / norm
+    rotation = np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+    transform = np.eye(4)
+    transform[:3, :3] = rotation
+    transform[:3, 3] = position
+    return transform
+
+
+def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str,
+                        frame_id: str) -> dict[str, object]:
+    intrinsics = camera.get("intrinsics")
+    if not isinstance(intrinsics, dict):
+        raise RuntimeError("camera calibration is missing intrinsics")
+    distortion = intrinsics.get("radialDistortion")
+    if not isinstance(distortion, list) or len(distortion) < 4:
+        raise RuntimeError("camera radialDistortion must contain at least four values")
+    return {
+        "id": camera_id,
+        "name": camera_id,
+        "topic": topic,
+        "frame_id": frame_id,
+        "resolution": [int(camera["width"]), int(camera["height"])],
+        "intrinsics": {
+            "camera_model": "pinhole",
+            "parameters": {
+                "fx": float(intrinsics["focalX"]),
+                "fy": float(intrinsics["focalY"]),
+                "cx": float(intrinsics["centerX"]),
+                "cy": float(intrinsics["centerY"]),
+            },
+            "distortion_model": "equidistant",
+            "distortion_coefficients": [float(value) for value in distortion[:4]],
+        },
+    }
+
+
+def _scalar_calibration_value(values: object, name: str) -> float:
+    if not isinstance(values, list) or not values or not all(np.isfinite(values)):
+        raise RuntimeError(f"IMU calibration field {name} must be a finite array")
+    if max(values) - min(values) > 1e-5:
+        raise RuntimeError(f"IMU calibration field {name} is not axis-uniform")
+    return float(values[0])
+
+
+def _build_calibration(root: Path) -> dict[str, object]:
+    left = json.loads((root / "Camera0/camera_params.json").read_text())["cameras"][0]
+    right = json.loads((root / "Camera1/camera_params.json").read_text())["cameras"][0]
+    imu_document = json.loads((root / "Sensors/imu_calibration.json").read_text())
+    imu = imu_document.get("imu")
+    noise = imu_document.get("noise")
+    if not isinstance(imu, dict) or not isinstance(noise, dict):
+        raise RuntimeError("IMU calibration must contain imu and noise objects")
+    time_alignment = imu.get("time_alignment_s")
+    if not isinstance(time_alignment, dict):
+        raise RuntimeError("IMU calibration is missing time_alignment_s")
+    camera_offsets = time_alignment.get("cameras")
+    if not isinstance(camera_offsets, dict):
+        raise RuntimeError("IMU calibration is missing camera time alignment")
+    left_offset = camera_offsets.get("rgb-left")
+    right_offset = camera_offsets.get("rgb-right")
+    if not isinstance(left_offset, (int, float)) or not np.isfinite(left_offset):
+        raise RuntimeError("IMU calibration has an invalid rgb-left time offset")
+    if not isinstance(right_offset, (int, float)) or not np.isfinite(right_offset):
+        raise RuntimeError("IMU calibration has an invalid rgb-right time offset")
+    left_transform = _camera_transform(left)
+    right_transform = _camera_transform(right)
+    camera_to_camera = right_transform @ np.linalg.inv(left_transform)
+    return {
+        "schema": "archebase.calibration",
+        "schema_version": "1.0",
+        "cameras": [
+            _camera_calibration(left, "cam0", LEFT_TOPIC, "camera_left_optical"),
+            _camera_calibration(right, "cam1", RIGHT_TOPIC, "camera_right_optical"),
+        ],
+        "imus": [{
+            "id": "imu0",
+            "topic": IMU_TOPIC,
+            "model": "calibrated",
+            "update_rate_hz": 800.0,
+            "intrinsics": {
+                "accelerometer_noise_density": _scalar_calibration_value(
+                    noise["accel_noise_std_mps2"], "accel_noise_std_mps2"
+                ),
+                "accelerometer_random_walk": _scalar_calibration_value(
+                    noise["accel_bias_std_mps2"], "accel_bias_std_mps2"
+                ),
+                "gyroscope_noise_density": _scalar_calibration_value(
+                    noise["gyro_noise_std_rads"], "gyro_noise_std_rads"
+                ),
+                "gyroscope_random_walk": _scalar_calibration_value(
+                    noise["gyro_bias_std_rads"], "gyro_bias_std_rads"
+                ),
+            },
+        }],
+        "extrinsics": {
+            "convention": "p_to = R * p_from + t",
+            "transforms": [
+                {"from_frame": "imu0", "to_frame": "cam0", "matrix": left_transform.tolist()},
+                {"from_frame": "cam0", "to_frame": "cam1", "matrix": camera_to_camera.tolist()},
+            ],
+        },
+        "temporal_extrinsics": [
+            {
+                "from_clock": "cam0", "to_clock": "imu0",
+                "offset_seconds": float(left_offset),
+                "convention": "t_imu = t_camera + offset_seconds",
+            },
+            {
+                "from_clock": "cam1", "to_clock": "imu0",
+                "offset_seconds": float(right_offset),
+                "convention": "t_imu = t_camera + offset_seconds",
+            },
+        ],
+    }
 
 
 def _yaml_metadata(message_count: int, start_ns: int, end_ns: int,
@@ -243,7 +373,7 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
     left = root / "Camera0/video.mp4"
     right = root / "Camera1/video.mp4"
     required = [left, right, root / "Camera0/camera_params.json", root / "Camera1/camera_params.json",
-                root / "Sensors/accel.csv", root / "Sensors/gyro.csv"]
+                root / "Sensors/accel.csv", root / "Sensors/gyro.csv", root / "Sensors/imu_calibration.json"]
     missing = [str(path.relative_to(root)) for path in required if not path.is_file()]
     if missing:
         raise RuntimeError(f"missing E2 input files: {', '.join(missing)}")
@@ -355,8 +485,7 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         for channel in summary.channels.values()
     }
     total_message_count = sum(message_counts.values())
-    calibration = {"camera0": json.loads((root / "Camera0/camera_params.json").read_text()),
-                   "camera1": json.loads((root / "Camera1/camera_params.json").read_text())}
+    calibration = _build_calibration(root)
     (output / "calibration.json").write_text(json.dumps(calibration, indent=2, sort_keys=True) + "\n")
     start_ns, end_ns = (min(timestamps), max(timestamps)) if timestamps else (0, 0)
     topics = [(LEFT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[LEFT_TOPIC]),
@@ -364,5 +493,6 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
               (IMU_TOPIC, "sensor_msgs/msg/Imu", "cdr", message_counts[IMU_TOPIC])]
     (output / "metadata.yaml").write_text(_yaml_metadata(total_message_count, start_ns, end_ns, topics))
     return {"stats": stats.__dict__, "nominal_fps": _fps_manifest_value(common_fps),
+            "calibration_schema": calibration["schema"],
             "generation": generation, "processor_image": processor_image,
             "source": {"uri": source_uri, "size_bytes": source_size}, "output_format": "h264_ros2_mcap"}

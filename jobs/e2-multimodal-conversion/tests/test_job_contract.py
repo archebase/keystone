@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MulanPSL-2.0
 
 import io
+import json
 import tarfile
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from e2_converter import _build_calibration
 from run_processing import find_root, safe_extract
 
 
@@ -23,6 +25,51 @@ class E2JobContractTest(unittest.TestCase):
                 tar.addfile(info, io.BytesIO(data))
         return archive
 
+    def test_builds_standard_calibration_with_imu_and_time_extrinsics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for camera, eye, position in (
+                ("Camera0", "left", [0.0, 0.0, 0.0]),
+                ("Camera1", "right", [0.1, 0.0, 0.0]),
+            ):
+                (root / camera).mkdir()
+                (root / camera / "camera_params.json").write_text(json.dumps({
+                    "group": "tracking",
+                    "cameras": [{
+                        "eye": eye, "width": 1600, "height": 1200,
+                        "intrinsics": {
+                            "focalX": 500, "focalY": 501, "centerX": 800, "centerY": 600,
+                            "radialDistortion": [1, 2, 3, 4, 5],
+                        },
+                        "extrinsics": {"position": position, "rotation": [0, 0, 0, 1]},
+                    }],
+                }))
+            (root / "Sensors").mkdir()
+            (root / "Sensors" / "imu_calibration.json").write_text(json.dumps({
+                "imu": {"time_alignment_s": {"cameras": {
+                    "rgb-left": -0.001, "rgb-right": -0.002,
+                }}},
+                "noise": {
+                    "accel_noise_std_mps2": [0.02, 0.02, 0.02],
+                    "accel_bias_std_mps2": [0.05, 0.05, 0.05],
+                    "gyro_noise_std_rads": [0.0016, 0.0016, 0.0016],
+                    "gyro_bias_std_rads": [0.005, 0.005, 0.005],
+                },
+            }))
+
+            calibration = _build_calibration(root)
+            self.assertEqual(calibration["schema"], "archebase.calibration")
+            self.assertEqual([camera["topic"] for camera in calibration["cameras"]], [
+                "/camera/left/image/h264", "/camera/right/image/h264",
+            ])
+            self.assertEqual(calibration["cameras"][0]["intrinsics"]["distortion_coefficients"], [1.0, 2.0, 3.0, 4.0])
+            self.assertEqual(calibration["imus"][0]["intrinsics"]["accelerometer_noise_density"], 0.02)
+            self.assertEqual([(item["from_frame"], item["to_frame"]) for item in calibration["extrinsics"]["transforms"]], [
+                ("imu0", "cam0"), ("cam0", "cam1"),
+            ])
+            self.assertEqual(calibration["extrinsics"]["transforms"][1]["matrix"][0][3], 0.1)
+            self.assertEqual([item["offset_seconds"] for item in calibration["temporal_extrinsics"]], [-0.001, -0.002])
+
     def test_accepts_root_layout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -33,6 +80,7 @@ class E2JobContractTest(unittest.TestCase):
                 "Camera1/camera_params.json": b"{}",
                 "Sensors/accel.csv": b"ts_ns,ax,ay,az\n",
                 "Sensors/gyro.csv": b"ts_ns,gx,gy,gz\n",
+                "Sensors/imu_calibration.json": b"{}",
             }
             archive = self.make_tar(root, names)
             extracted = root / "extracted"
@@ -49,6 +97,7 @@ class E2JobContractTest(unittest.TestCase):
                 "capture/Camera1/camera_params.json": b"{}",
                 "capture/Sensors/accel.csv": b"data",
                 "capture/Sensors/gyro.csv": b"data",
+                "capture/Sensors/imu_calibration.json": b"{}",
             }
             archive = self.make_tar(root, names)
             extracted = root / "extracted"

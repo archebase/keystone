@@ -103,6 +103,14 @@ def main() -> int:
             "outputs": {"mcap": identity(outputs / "output_bag.mcap"),
                         "metadata": identity(outputs / "metadata.yaml"),
                         "calibration": identity(outputs / "calibration.json")},
+            "calibration": {
+                "schema": result["calibration_schema"],
+                "source_files": [
+                    "Camera0/camera_params.json",
+                    "Camera1/camera_params.json",
+                    "Sensors/imu_calibration.json",
+                ],
+            },
             **result, "started_at": now(), "finished_at": now(),
         }
         args.output_binding.mkdir(parents=True, exist_ok=True)
