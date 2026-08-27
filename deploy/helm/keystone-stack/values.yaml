@@ -43,6 +43,7 @@ keystone:
   adminUsername: admin
   jwtExpiryHours: 72
   syncEnabled: false
+  syncMaxConcurrent: 4
   qaEnabled: true
 
   hilbert:

@@ -102,6 +102,8 @@ spec:
             {{- end }}
             - name: KEYSTONE_SYNC_ENABLED
               value: {{ .Values.keystone.syncEnabled | quote }}
+            - name: KEYSTONE_SYNC_MAX_CONCURRENT
+              value: {{ .Values.keystone.syncMaxConcurrent | quote }}
             - name: KEYSTONE_QA_ENABLED
               value: {{ .Values.keystone.qaEnabled | quote }}
             {{- if and (eq .Values.keystone.mode "edge") .Values.keystone.depthNormalization.enabled }}

@@ -79,6 +79,7 @@
         "adminUsername": { "type": "string" },
         "jwtExpiryHours": { "type": "integer", "minimum": 1 },
         "syncEnabled": { "type": "boolean" },
+        "syncMaxConcurrent": { "type": "integer", "minimum": 1 },
         "qaEnabled": { "type": "boolean" },
         "hilbert": {
           "type": "object",
