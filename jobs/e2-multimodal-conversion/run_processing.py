@@ -56,7 +56,10 @@ with tarfile.open(archive, 'r:*') as tar:
                 raise RuntimeError('tar contents exceed size limit')
     tar.extractall(destination, filter='data')
 """
-    subprocess.run([sys.executable, "-c", script, str(archive), str(destination)], check=True)
+    try:
+        subprocess.run([sys.executable, "-c", script, str(archive), str(destination)], check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"tar extraction failed: {archive.name}") from error
 
 
 def find_root(extracted: Path) -> Path:

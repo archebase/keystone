@@ -4,6 +4,7 @@
 
 .PHONY: help build check-cr push run test clean lint helm-lint license proto
 .PHONY: stereo-split-image stereo-split-container-smoke stereo-split-test
+.PHONY: e2-multimodal-conversion-image e2-multimodal-conversion-container-smoke e2-multimodal-conversion-test
 .PHONY: calibration-placeholder-image calibration-placeholder-container-smoke calibration-placeholder-test
 .PHONY: calibration-image calibration-container-smoke calibration-test
 
@@ -21,7 +22,9 @@ help:
 	@echo "  make proto       - Regenerate Go bindings from .proto sources"
 	@echo "  make stereo-split-image - Build the stereo split Job image"
 	@echo "  make stereo-split-container-smoke - Build and smoke-test the Job image"
-	@echo "  make stereo-split-test  - Test the stereo split Job entrypoint"
+	@echo "  make e2-multimodal-conversion-image - Build the E2 conversion Job image"
+	@echo "  make e2-multimodal-conversion-container-smoke - Smoke-test the E2 conversion image"
+	@echo "  make e2-multimodal-conversion-test - Test the E2 conversion Job contract"
 	@echo "  make calibration-placeholder-image - Build the Orbit placeholder calibration image"
 	@echo "  make calibration-placeholder-container-smoke - Smoke-test the placeholder image"
 	@echo "  make calibration-placeholder-test - Test the placeholder Python job"
@@ -39,6 +42,11 @@ CR_REPOSITORY ?= $(IMAGE_NAME)
 FULL_IMAGE = $(CR_REGISTRY)/$(CR_NAMESPACE)/$(CR_REPOSITORY):$(IMAGE_TAG)
 STEREO_SPLIT_IMAGE ?= stereo-split:dev
 STEREO_SPLIT_PLATFORM ?= linux/amd64
+E2_MULTIMODAL_CONVERSION_IMAGE ?= e2-multimodal-conversion:dev
+E2_MULTIMODAL_CONVERSION_PLATFORM ?= linux/amd64
+E2_MULTIMODAL_CONVERSION_DEBIAN_MIRROR ?= http://mirrors.ustc.edu.cn/debian
+E2_MULTIMODAL_CONVERSION_DEBIAN_SECURITY_MIRROR ?= http://mirrors.ustc.edu.cn/debian-security
+E2_MULTIMODAL_CONVERSION_PYPI_INDEX_URL ?= https://pypi.tuna.tsinghua.edu.cn/simple
 CALIBRATION_PLACEHOLDER_IMAGE ?= calibration-placeholder:dev
 CALIBRATION_PLACEHOLDER_PLATFORM ?= linux/amd64
 CALIBRATION_IMAGE ?= archebase-calibration:dev
@@ -64,6 +72,27 @@ stereo-split-image:
 		--file jobs/stereo-split/Dockerfile \
 		--tag $(STEREO_SPLIT_IMAGE) \
 		.
+
+e2-multimodal-conversion-image:
+	docker build \
+		--platform $(E2_MULTIMODAL_CONVERSION_PLATFORM) \
+		--build-arg DEBIAN_MIRROR=$(E2_MULTIMODAL_CONVERSION_DEBIAN_MIRROR) \
+		--build-arg DEBIAN_SECURITY_MIRROR=$(E2_MULTIMODAL_CONVERSION_DEBIAN_SECURITY_MIRROR) \
+		--build-arg PYPI_INDEX_URL=$(E2_MULTIMODAL_CONVERSION_PYPI_INDEX_URL) \
+		--file jobs/e2-multimodal-conversion/Dockerfile \
+		--tag $(E2_MULTIMODAL_CONVERSION_IMAGE) \
+		.
+
+e2-multimodal-conversion-container-smoke: e2-multimodal-conversion-image
+	docker run --rm $(E2_MULTIMODAL_CONVERSION_IMAGE) --help > /dev/null
+
+e2-multimodal-conversion-test: e2-multimodal-conversion-image
+	docker run --rm \
+		--entrypoint python3 \
+		-v $(CURDIR)/jobs/e2-multimodal-conversion:/app \
+		-w /app \
+		$(E2_MULTIMODAL_CONVERSION_IMAGE) \
+		-m unittest discover -s tests -p 'test_*.py' -v
 
 stereo-split-container-smoke: stereo-split-image
 	docker run --rm $(STEREO_SPLIT_IMAGE) --help > /dev/null

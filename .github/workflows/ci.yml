@@ -135,8 +135,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test image publication selection
-        run: bash .github/scripts/select-images_test.sh
+      - name: Test E2 multimodal conversion Job
+        run: make e2-multimodal-conversion-test
+
+      - name: Smoke-test E2 multimodal conversion image
+        run: make e2-multimodal-conversion-container-smoke
+
 
       - name: Test staging deployment resolution
         run: bash .github/scripts/resolve-staging-deploy_test.sh

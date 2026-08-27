@@ -12,6 +12,7 @@ shift 2
 
 publish_keystone=false
 publish_stereo_split=false
+publish_e2_multimodal_conversion=false
 publish_calibration=false
 
 if [[ "$event_name" == "workflow_dispatch" ]]; then
@@ -25,9 +26,13 @@ if [[ "$event_name" == "workflow_dispatch" ]]; then
     calibration)
       publish_calibration=true
       ;;
+    e2-multimodal-conversion)
+      publish_e2_multimodal_conversion=true
+      ;;
     all)
       publish_keystone=true
       publish_stereo_split=true
+      publish_e2_multimodal_conversion=true
       publish_calibration=true
       ;;
     *)
@@ -41,6 +46,9 @@ else
       jobs/stereo-split/split_mcap_stereo_imu.py)
         publish_stereo_split=true
         publish_calibration=true
+        ;;
+      jobs/e2-multimodal-conversion/*)
+        publish_e2_multimodal_conversion=true
         ;;
       jobs/stereo-split/*)
         publish_stereo_split=true
@@ -57,6 +65,7 @@ else
   # Preserve the existing Keystone publication behavior for empty pushes.
   if [[ "$publish_keystone" == "false" \
     && "$publish_stereo_split" == "false" \
+    && "$publish_e2_multimodal_conversion" == "false" \
     && "$publish_calibration" == "false" ]]; then
     publish_keystone=true
   fi
@@ -64,7 +73,9 @@ fi
 
 echo "keystone=$publish_keystone" >> "$GITHUB_OUTPUT"
 echo "stereo_split=$publish_stereo_split" >> "$GITHUB_OUTPUT"
+echo "e2_multimodal_conversion=$publish_e2_multimodal_conversion" >> "$GITHUB_OUTPUT"
 echo "calibration=$publish_calibration" >> "$GITHUB_OUTPUT"
 echo "Publish Keystone: $publish_keystone"
 echo "Publish stereo-split: $publish_stereo_split"
+echo "Publish E2 multimodal conversion: $publish_e2_multimodal_conversion"
 echo "Publish calibration: $publish_calibration"
