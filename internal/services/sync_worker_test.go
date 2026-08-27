@@ -2153,7 +2153,10 @@ func newTestSyncWorkerDB(t *testing.T) *sqlx.DB {
 			qa_status TEXT NOT NULL,
 			mcap_path TEXT,
 			checksum TEXT,
-			file_size_bytes INTEGER
+			file_size_bytes INTEGER,
+			calibration_result_uri TEXT,
+			calibration_result_size_bytes INTEGER,
+			calibration_result_sha256 TEXT
 		)`,
 	}
 

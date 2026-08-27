@@ -581,6 +581,12 @@ func (w *SyncWorker) EnqueueStereoSplitManual(ctx context.Context, episodeID int
 	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceStereoSplit)
 }
 
+// EnqueueE2ConversionManual claims the approved e2-multimodal-conversion
+// generation as the Episode's canonical Hilbert upload source.
+func (w *SyncWorker) EnqueueE2ConversionManual(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceE2Conversion)
+}
+
 // EnqueueDepthNormalizationAutomatic claims the approved local depth-normalized
 // MCAP generation as the Episode's canonical Hilbert upload source.
 func (w *SyncWorker) EnqueueDepthNormalizationAutomatic(ctx context.Context, episodeID int64) error {
@@ -687,7 +693,7 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 		return nil
 	}
 	if sourceType != syncSourceAuto && sourceType != SyncSourceOriginal && sourceType != SyncSourceStereoSplit &&
-		sourceType != SyncSourceDepthNormalization {
+		sourceType != SyncSourceDepthNormalization && sourceType != SyncSourceE2Conversion {
 		return fmt.Errorf("unsupported sync source type %q", sourceType)
 	}
 	automaticSource := sourceType == syncSourceAuto
@@ -770,6 +776,8 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 			snapshot, err = w.buildOriginalSourceSnapshot(episode)
 		case SyncSourceDepthNormalization:
 			snapshot, err = w.buildDepthNormalizationSourceSnapshot(ctx, tx, episode)
+		case SyncSourceE2Conversion:
+			snapshot, err = w.buildE2ConversionSourceSnapshot(ctx, tx, episode)
 		default:
 			snapshot, err = w.buildStereoSplitSourceSnapshot(ctx, tx, episode)
 		}
