@@ -1024,9 +1024,6 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	if row.Status != ProcessingVerifying {
 		return nil
 	}
-	if _, err := calibrationSnapshotFromVerificationRow(row); err != nil {
-		return m.failVerification(ctx, derivativeID, err)
-	}
 	output, qa, err := m.verifyExecutionAndQA(ctx, ExecutionSnapshot{
 		Generation:      row.Generation,
 		ProcessorImage:  row.ProcessorImage,
@@ -1073,10 +1070,6 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 		return fmt.Errorf("persist verified E2 conversion output affected %d rows", rows)
 	}
 	return nil
-}
-
-func calibrationSnapshotFromVerificationRow(row verificationRow) (*CalibrationSnapshot, error) {
-	return nil, nil
 }
 
 func calibrationSnapshotFromColumns(
@@ -1319,6 +1312,9 @@ func validateManifestStats(manifest processingManifest) (mcapOutputContract, err
 	if manifest.ProcessingMode != "" && manifest.ProcessingMode != "convert" {
 		return mcapOutputContract{}, fmt.Errorf("unsupported E2 conversion processing mode %q", manifest.ProcessingMode)
 	}
+	if manifest.Calibration != nil {
+		return mcapOutputContract{}, fmt.Errorf("E2 conversion does not support embedded calibration")
+	}
 	if stats.LeftVideos <= 0 || stats.RightVideos <= 0 || stats.IMUMessages <= 0 ||
 		stats.LeftVideos != stats.RightVideos {
 		return mcapOutputContract{}, fmt.Errorf("E2 conversion manifest contains invalid statistics")
@@ -1494,17 +1490,6 @@ func (m *Manager) inspectOutputMCAP(
 		observed.RightVideos = rightCount
 	}
 	return observed, nil
-}
-
-func validateManifestCalibrationShape(calibration *manifestCalibration) error {
-	return fmt.Errorf("E2 conversion does not support embedded calibration")
-}
-
-func validateCalibrationAttachment(
-	attachment *mcap.AttachmentReader,
-	expected *manifestCalibration,
-) error {
-	return fmt.Errorf("E2 conversion does not support embedded calibration attachment %s", attachment.Name)
 }
 
 func (m *Manager) reconcileDelete(ctx context.Context, derivativeID int64) error {
