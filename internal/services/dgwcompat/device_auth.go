@@ -21,6 +21,7 @@ import (
 	keystoneauth "archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
 	"archebase.com/keystone-edge/internal/config"
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
@@ -104,9 +105,11 @@ func (s *authService) ExchangeCredential(ctx context.Context, req *cloudpb.Excha
 	}
 	valid, err := s.identity.hilbert.ValidateDCDeviceAPIKey(ctx, principal.WorkspaceID, hilbertDeviceID, credential)
 	if err != nil {
+		logger.Printf("[DGW_COMPAT] device API key validation failed: device_id=%s workspace_id=%d error=%v", deviceID, principal.WorkspaceID, err)
 		return nil, status.Error(codes.Unavailable, "device authentication unavailable")
 	}
 	if !valid {
+		logger.Printf("[DGW_COMPAT] device API key rejected: device_id=%s workspace_id=%d", deviceID, principal.WorkspaceID)
 		return nil, status.Error(codes.Unauthenticated, "invalid device credential")
 	}
 	now := s.identity.now()
