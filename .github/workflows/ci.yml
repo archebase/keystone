@@ -136,7 +136,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Test E2 multimodal conversion Job
-        run: make e2-multimodal-conversion-test
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1 && python3 -c 'import numpy, google.protobuf, mcap, rosbags' >/dev/null 2>&1; then
+            make e2-multimodal-conversion-test E2_PYTHON=python3
+          elif command -v /usr/local/bin/python3 >/dev/null 2>&1 && /usr/local/bin/python3 -c 'import numpy, google.protobuf, mcap, rosbags' >/dev/null 2>&1; then
+            make e2-multimodal-conversion-test E2_PYTHON=/usr/local/bin/python3
+          else
+            echo 'E2 Python dependencies are unavailable; Docker is not mounted on this runner.' >&2
+            exit 1
+          fi
       - name: Test staging deployment resolution
         run: bash .github/scripts/resolve-staging-deploy_test.sh
 
