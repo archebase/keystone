@@ -61,6 +61,7 @@ type persistedDeviceCredential struct {
 
 // ParseConfig parses command-line arguments and validates the resulting configuration.
 func ParseConfig(args []string) (Config, error) {
+	envDeviceID := strings.TrimSpace(os.Getenv("KEYSTONE_IMPORT_DEVICE_ID"))
 	cfg := Config{
 		DeviceCredential: strings.TrimSpace(os.Getenv("KEYSTONE_IMPORT_DEVICE_API_KEY")),
 		DeviceAuthToken:  strings.TrimSpace(os.Getenv("KEYSTONE_IMPORT_DEVICE_AUTH_TOKEN")),
@@ -84,7 +85,7 @@ func ParseConfig(args []string) (Config, error) {
 	flags.StringVar(&cfg.CameraSerial, "camera-serial", "", "optional camera serial for calibration association")
 	flags.IntVar(&cfg.Parallel, "parallel", defaultParallelUploads, "number of concurrent TOS part uploads")
 
-	flags.StringVar(&cfg.DeviceID, "device-id", strings.TrimSpace(os.Getenv("KEYSTONE_IMPORT_DEVICE_ID")), "initialized device ID")
+	flags.StringVar(&cfg.DeviceID, "device-id", "", "initialized device ID")
 	flags.StringVar(&cfg.DeviceName, "device-name", strings.TrimSpace(os.Getenv("KEYSTONE_IMPORT_DEVICE_NAME")), "device name for first-time initialization")
 	flags.StringVar(&cfg.CredentialsFile, "device-credentials-file", "", "load device profile, or save it after first-time initialization")
 
@@ -106,8 +107,7 @@ func ParseConfig(args []string) (Config, error) {
 		cfg.CredentialsFile = absCredentialsPath
 	}
 	initAny := strings.TrimSpace(cfg.DeviceName) != "" || strings.TrimSpace(cfg.DeviceAuthToken) != ""
-	directAny := strings.TrimSpace(cfg.DeviceID) != "" || strings.TrimSpace(cfg.DeviceCredential) != ""
-	if cfg.CredentialsFile != "" && !initAny {
+	if cfg.CredentialsFile != "" && !initAny && !explicitFlags["device-id"] && envDeviceID == "" {
 		persisted, err := loadDeviceCredential(cfg.CredentialsFile)
 		if err != nil {
 			return Config{}, err
@@ -127,10 +127,11 @@ func ParseConfig(args []string) (Config, error) {
 		if cfg.WorkspaceID == 0 {
 			cfg.WorkspaceID = persisted.WorkspaceID
 		}
-		if !directAny {
-			cfg.DeviceID = persisted.DeviceID
-			cfg.DeviceCredential = persisted.DeviceAPIKey
-		}
+		cfg.DeviceID = persisted.DeviceID
+		cfg.DeviceCredential = persisted.DeviceAPIKey
+	}
+	if strings.TrimSpace(cfg.DeviceID) == "" {
+		cfg.DeviceID = envDeviceID
 	}
 	normalizedCameraSerial, err := normalizeCameraSerial(cfg.CameraSerial)
 	if err != nil {
