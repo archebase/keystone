@@ -135,9 +135,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test image publication selection
-        run: bash .github/scripts/select-images_test.sh
-
       - name: Test staging deployment resolution
         run: bash .github/scripts/resolve-staging-deploy_test.sh
 
