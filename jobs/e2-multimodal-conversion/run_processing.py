@@ -97,7 +97,8 @@ def main() -> int:
         outputs = work / "outputs"
         manifest = {
             "schema_version": 1, "kind": "e2_multimodal_conversion", "status": "succeeded",
-            "output_format": "h264_ros2_mcap", "ros_distribution": "humble",
+            "output_format": "h264_ros2_mcap", "nominal_fps": result["nominal_fps"],
+            "ros_distribution": "humble",
             "source": {"uri": args.source_uri, "size_bytes": args.expected_source_size},
             "outputs": {"mcap": identity(outputs / "output_bag.mcap"),
                         "metadata": identity(outputs / "metadata.yaml"),

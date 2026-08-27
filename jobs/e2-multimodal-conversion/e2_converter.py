@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
 import json
 from pathlib import Path
 import re
@@ -102,11 +103,11 @@ def _access_units(stream: Iterator[bytes]) -> Iterator[bytes]:
         yield bytes(buffer)
 
 
-def _ffmpeg_video(path: Path) -> Iterator[bytes]:
+def _ffmpeg_video(path: Path, fps: Fraction) -> Iterator[bytes]:
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(path),
         "-map", "0:v:0", "-c:v", "libx264", "-preset", "medium", "-profile:v", "high",
-        "-pix_fmt", "yuv420p", "-bf", "0", "-g", "30", "-keyint_min", "30",
+        "-pix_fmt", "yuv420p", "-r", str(float(fps)), "-bf", "0", "-g", "30", "-keyint_min", "30",
         "-sc_threshold", "0", "-b:v", "12M", "-maxrate", "12M", "-bufsize", "24M",
         "-x264-params", "aud=1:repeat-headers=1", "-an", "-f", "h264", "pipe:1",
     ]
@@ -123,6 +124,40 @@ def _ffmpeg_video(path: Path) -> Iterator[bytes]:
             process.wait()
         process.stdout.close()
         process.stderr.close()
+
+
+def _nominal_fps(path: Path) -> Fraction:
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    streams = json.loads(result.stdout).get("streams", [])
+    if not streams:
+        raise RuntimeError(f"video has no stream: {path.name}")
+    value = streams[0].get("r_frame_rate") or streams[0].get("avg_frame_rate")
+    try:
+        fps = Fraction(value)
+    except (TypeError, ValueError, ZeroDivisionError) as error:
+        raise RuntimeError(f"video has invalid frame rate: {path.name}: {value!r}") from error
+    if fps <= 0:
+        raise RuntimeError(f"video has invalid frame rate: {path.name}: {value!r}")
+    return fps
+
+
+def _common_nominal_fps(left: Path, right: Path) -> Fraction:
+    left_fps = _nominal_fps(left)
+    right_fps = _nominal_fps(right)
+    tolerance = Fraction(1, 1000)
+    if abs(left_fps - right_fps) > tolerance:
+        raise RuntimeError(
+            "left and right videos have different nominal FPS: "
+            f"{float(left_fps):.6f} vs {float(right_fps):.6f}"
+        )
+    return left_fps
+
+
+def _fps_manifest_value(fps: Fraction) -> int | float:
+    return fps.numerator if fps.denominator == 1 else float(fps)
 
 
 def _video_timestamps(path: Path) -> list[int]:
@@ -142,9 +177,9 @@ def _video_timestamps(path: Path) -> list[int]:
     return timestamps
 
 
-def _video_frames(path: Path) -> Iterator[VideoFrame]:
+def _video_frames(path: Path, fps: Fraction) -> Iterator[VideoFrame]:
     timestamps = _video_timestamps(path)
-    for sequence, data in enumerate(_access_units(_ffmpeg_video(path))):
+    for sequence, data in enumerate(_access_units(_ffmpeg_video(path, fps))):
         if sequence >= len(timestamps):
             raise RuntimeError(f"encoded frame count exceeds timestamp count: {path.name}")
         yield VideoFrame(timestamps[sequence], data, sequence)
@@ -213,6 +248,7 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
     if missing:
         raise RuntimeError(f"missing E2 input files: {', '.join(missing)}")
 
+    common_fps = _common_nominal_fps(left, right)
     typestore = get_typestore(Stores.ROS2_HUMBLE)
     imu_type = typestore.types["sensor_msgs/msg/Imu"]
     msg = typestore.types
@@ -226,8 +262,8 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         imu_schema = writer.register_schema("sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode())
         imu_channel = writer.register_channel(IMU_TOPIC, "cdr", imu_schema)
         stats = ConversionStats()
-        left_frames = iter(_video_frames(left))
-        right_frames = iter(_video_frames(right))
+        left_frames = iter(_video_frames(left, common_fps))
+        right_frames = iter(_video_frames(right, common_fps))
 
         left_frame = next(left_frames, None)
         right_frame = next(right_frames, None)
@@ -327,5 +363,6 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
               (RIGHT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[RIGHT_TOPIC]),
               (IMU_TOPIC, "sensor_msgs/msg/Imu", "cdr", message_counts[IMU_TOPIC])]
     (output / "metadata.yaml").write_text(_yaml_metadata(total_message_count, start_ns, end_ns, topics))
-    return {"stats": stats.__dict__, "generation": generation, "processor_image": processor_image,
+    return {"stats": stats.__dict__, "nominal_fps": _fps_manifest_value(common_fps),
+            "generation": generation, "processor_image": processor_image,
             "source": {"uri": source_uri, "size_bytes": source_size}, "output_format": "h264_ros2_mcap"}
