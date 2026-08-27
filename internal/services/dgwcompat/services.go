@@ -29,6 +29,7 @@ import (
 const (
 	dataGatewayEpisodeIngestionChannel = "data_gateway"
 	dataGatewayEpisodeStorageBackend   = "keystone_tos"
+	egoPortalE2DeviceType              = "Ego Portal E2"
 )
 
 type uploadSession struct {
@@ -43,6 +44,7 @@ type uploadSession struct {
 	DCPlanID               int64
 	LocalDCPlanID          sql.NullInt64
 	DeviceID               string
+	DeviceType             string
 	WorkspaceID            int64
 	AuthEpoch              int64
 	Bucket                 string
@@ -192,7 +194,7 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 			return nil, err
 		}
 	}
-	objectKey := buildObjectKey(s.cfg.TOSKeyPrefix, hints, uploadID)
+	objectKey := buildObjectKey(s.cfg.TOSKeyPrefix, hints, uploadID, taskBinding.DeviceType)
 	session := &uploadSession{
 		Kind:             intent.Kind,
 		LogicalUploadID:  logicalUploadID,
@@ -205,6 +207,7 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 		DCPlanID:         taskBinding.DCPlanID.Int64,
 		LocalDCPlanID:    taskBinding.LocalDCPlanID,
 		DeviceID:         principal.DeviceID,
+		DeviceType:       taskBinding.DeviceType,
 		WorkspaceID:      principal.WorkspaceID,
 		AuthEpoch:        principal.AuthEpoch,
 		Bucket:           s.cfg.TOSBucket,
@@ -467,6 +470,7 @@ type uploadTaskBinding struct {
 	PlanDeviceID    sql.NullInt64 `db:"plan_device_id"`
 	PlanOperator    string        `db:"plan_operator"`
 	PlanStatus      string        `db:"plan_status"`
+	DeviceType      string        `db:"device_type"`
 	EpisodePK       sql.NullInt64 `db:"episode_pk"`
 }
 
@@ -636,11 +640,13 @@ func (s *gatewayService) validateCreateLogicalUpload(ctx context.Context, princi
 			dp.workspace_id AS plan_workspace_id,
 			dp.dc_device_id AS plan_device_id,
 			dp.operator AS plan_operator,
+			r.device_type AS device_type,
 			COALESCE(dp.status, 'pending_collection') AS plan_status,
 			e.id AS episode_pk
 		FROM tasks t
 		INNER JOIN dc_plan dp ON dp.id = t.dc_plan_id AND dp.deleted_at IS NULL
 		LEFT JOIN workstations ws ON ws.id = t.workstation_id AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
 		LEFT JOIN episodes e ON e.task_id = t.id AND e.deleted_at IS NULL
 		WHERE t.task_id = ? AND t.deleted_at IS NULL
 		LIMIT 1
