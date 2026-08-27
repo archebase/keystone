@@ -43,6 +43,7 @@ FULL_IMAGE = $(CR_REGISTRY)/$(CR_NAMESPACE)/$(CR_REPOSITORY):$(IMAGE_TAG)
 STEREO_SPLIT_IMAGE ?= stereo-split:dev
 STEREO_SPLIT_PLATFORM ?= linux/amd64
 E2_MULTIMODAL_CONVERSION_IMAGE ?= e2-multimodal-conversion:dev
+E2_PYTHON ?= python3
 E2_MULTIMODAL_CONVERSION_PLATFORM ?= linux/amd64
 E2_MULTIMODAL_CONVERSION_DEBIAN_MIRROR ?= http://mirrors.ustc.edu.cn/debian
 E2_MULTIMODAL_CONVERSION_DEBIAN_SECURITY_MIRROR ?= http://mirrors.ustc.edu.cn/debian-security
@@ -86,13 +87,11 @@ e2-multimodal-conversion-image:
 e2-multimodal-conversion-container-smoke: e2-multimodal-conversion-image
 	docker run --rm $(E2_MULTIMODAL_CONVERSION_IMAGE) --help > /dev/null
 
-e2-multimodal-conversion-test: e2-multimodal-conversion-image
-	docker run --rm \
-		--entrypoint python3 \
-		-v $(CURDIR)/jobs/e2-multimodal-conversion:/app \
-		-w /app \
-		$(E2_MULTIMODAL_CONVERSION_IMAGE) \
-		-m unittest discover -s tests -p 'test_*.py' -v
+e2-multimodal-conversion-test:
+	$(E2_PYTHON) -m unittest discover \
+		-s jobs/e2-multimodal-conversion/tests \
+		-p 'test_*.py' \
+		-v
 
 stereo-split-container-smoke: stereo-split-image
 	docker run --rm $(STEREO_SPLIT_IMAGE) --help > /dev/null

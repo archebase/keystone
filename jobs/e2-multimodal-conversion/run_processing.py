@@ -14,8 +14,6 @@ import shutil
 import subprocess
 import sys
 
-from e2_converter import convert
-
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -92,8 +90,10 @@ def main() -> int:
         work = args.scratch.resolve()
         extracted = work / "extracted"
         safe_extract(source, extracted)
-        result = convert(find_root(extracted), work / "outputs", args.source_uri,
-                         args.expected_source_size, args.generation, args.processor_image)
+        result = __import__("e2_converter").convert(
+            find_root(extracted), work / "outputs", args.source_uri,
+            args.expected_source_size, args.generation, args.processor_image
+        )
         outputs = work / "outputs"
         manifest = {
             "schema_version": 1, "kind": "e2_multimodal_conversion", "status": "succeeded",

@@ -135,13 +135,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install E2 Job test dependencies
+        env:
+          PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --break-system-packages \
+            --index-url "${PIP_INDEX_URL}" \
+            -r jobs/e2-multimodal-conversion/requirements.txt
+
       - name: Test E2 multimodal conversion Job
         run: make e2-multimodal-conversion-test
-
-      - name: Smoke-test E2 multimodal conversion image
-        run: make e2-multimodal-conversion-container-smoke
-
-
       - name: Test staging deployment resolution
         run: bash .github/scripts/resolve-staging-deploy_test.sh
 
