@@ -41,6 +41,7 @@ import (
 	"archebase.com/keystone-edge/internal/services/calibration"
 	"archebase.com/keystone-edge/internal/services/depthnorm"
 	"archebase.com/keystone-edge/internal/services/deviceauth"
+	"archebase.com/keystone-edge/internal/services/e2conversion"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"archebase.com/keystone-edge/internal/storage/s3"
 	tosstorage "archebase.com/keystone-edge/internal/storage/tos"
@@ -79,6 +80,7 @@ type Server struct {
 	autoSync            *autosync.Manager
 	autoSyncSettings    *handlers.AutoSyncSettingsHandler
 	stereoSplit         *stereosplit.Manager
+	e2Conversion        *e2conversion.Manager
 	depthNorm           *depthnorm.Manager
 	calibration         *calibration.Manager
 	calibrationHandler  *handlers.CalibrationHandler
@@ -256,6 +258,22 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		}
 	}
 
+	var e2ConversionManager *e2conversion.Manager
+	if db != nil && cfg.Derivatives.Enabled {
+		orbitClient, err := orbitapi.NewClient(
+			cfg.Derivatives.OrbitBaseURL,
+			time.Duration(cfg.Derivatives.OrbitTimeoutSec)*time.Second,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("initialize E2 conversion Orbit client: %w", err)
+		}
+		objectReader := tosstorage.NewClient(
+			cfg.TOSStorage,
+			time.Duration(cfg.Derivatives.OrbitTimeoutSec)*time.Second,
+		)
+		e2ConversionManager = e2conversion.NewManager(db, orbitClient, objectReader, e2ConversionConfig(cfg.Derivatives))
+	}
+
 	// Create SyncHandler for cloud sync API
 	var syncHandler *handlers.SyncHandler
 	var localCleanupHandler *handlers.LocalCleanupHandler
@@ -327,6 +345,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		autoSync:            autoSyncManager,
 		autoSyncSettings:    autoSyncSettingsHandler,
 		stereoSplit:         stereoSplitManager,
+		e2Conversion:        e2ConversionManager,
 		depthNorm:           depthNormManager,
 		calibration:         calibrationManager,
 		calibrationHandler:  calibrationHandler,
@@ -561,6 +580,14 @@ func (s *Server) Start() error {
 			return fmt.Errorf("start stereo split verification workers: %w", err)
 		}
 	}
+	if s.e2Conversion != nil {
+		if err := s.e2Conversion.StartReconciler(); err != nil {
+			return fmt.Errorf("start E2 conversion reconciler: %w", err)
+		}
+		if err := s.e2Conversion.StartVerificationWorkers(); err != nil {
+			return fmt.Errorf("start E2 conversion verification workers: %w", err)
+		}
+	}
 	if s.calibration != nil {
 		if err := s.calibration.StartReconciler(); err != nil {
 			return fmt.Errorf("start calibration reconciler: %w", err)
@@ -784,6 +811,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	if s.e2Conversion != nil {
+		if err := s.e2Conversion.StopVerificationWorkers(ctx); err != nil {
+			logShutdownError("E2 conversion verification workers", err)
+			shutdownErr = fmt.Errorf("E2 conversion verification workers shutdown: %w", err)
+		}
+		if err := s.e2Conversion.StopReconciler(ctx); err != nil {
+			logShutdownError("E2 conversion reconciler", err)
+			shutdownErr = fmt.Errorf("E2 conversion reconciler shutdown: %w", err)
+		}
+	}
+
 	if s.stereoSplit != nil {
 		if err := s.stereoSplit.StopVerificationWorkers(ctx); err != nil {
 			logShutdownError("Stereo split verification workers", err)
@@ -837,6 +875,27 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	return shutdownErr
+}
+
+func e2ConversionConfig(cfg config.DerivativeConfig) e2conversion.Config {
+	return e2conversion.Config{
+		Enabled:      cfg.Enabled,
+		OutputBucket: cfg.OutputBucket,
+		OutputPrefix: strings.Trim(cfg.OutputPrefix, "/") + "/e2-multimodal-conversion",
+		Resources: e2conversion.Resources{
+			Requests: map[string]string{
+				"cpu": "4", "memory": "8Gi", "ephemeral-storage": "20Gi",
+			},
+			Limits: map[string]string{
+				"cpu": "8", "memory": "16Gi", "ephemeral-storage": "100Gi",
+			},
+		},
+		ActiveDeadline:      cfg.ActiveDeadlineSec,
+		TTLSecondsAfterDone: cfg.TTLSecondsAfterDone,
+		PollInterval:        time.Duration(cfg.PollIntervalSec) * time.Second,
+		MaxSourceBytes:      cfg.MaxSourceBytes,
+		LogTailBytes:        cfg.OrbitLogTailBytes,
+	}
 }
 
 func stereoSplitConfig(cfg config.DerivativeConfig) stereosplit.Config {
