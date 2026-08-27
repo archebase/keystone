@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +31,9 @@ import (
 
 const (
 	episodeQACheckMcapMagic         = "mcap_magic"
+	episodeQACheckTarExtension      = "tar_extension"
 	episodeQACheckRecordingNotEmpty = "recording_not_empty"
+	egoPortalE2DeviceType           = "Ego Portal E2"
 
 	qaRunModeAuto   QARunMode = "auto"
 	qaRunModeManual QARunMode = "manual"
@@ -157,6 +160,7 @@ type episodeQACheckRow struct {
 	SyncActive  bool           `db:"sync_active"`
 	Quality     sql.NullString `db:"quality_flag"`
 	Metadata    sql.NullString `db:"metadata"`
+	DeviceType  string         `db:"device_type"`
 }
 
 type episodeQARunClaim struct {
@@ -887,6 +891,9 @@ func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailed(ctx context.Context, 
 }
 
 func defaultEpisodeQASuite(row episodeQACheckRow) []string {
+	if row.DeviceType == egoPortalE2DeviceType {
+		return []string{episodeQACheckTarExtension}
+	}
 	checks := []string{episodeQACheckMcapMagic}
 	if strings.TrimSpace(row.SidecarPath) != "" && !isTOSOnlyEpisode(row.Metadata) {
 		checks = append(checks, episodeQACheckRecordingNotEmpty)
@@ -900,7 +907,7 @@ func normalizeEpisodeQACheckName(raw string) string {
 
 func isSupportedEpisodeQACheckName(checkName string) bool {
 	switch checkName {
-	case episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty:
+	case episodeQACheckMcapMagic, episodeQACheckTarExtension, episodeQACheckRecordingNotEmpty:
 		return true
 	default:
 		return false
@@ -934,7 +941,34 @@ func (h *EpisodeQAHandler) loadEpisodeForQACheck(ctx context.Context, episodeID 
 	if err != nil {
 		return row, fmt.Errorf("query episode: %w", err)
 	}
+	row.DeviceType, err = h.loadEpisodeDeviceType(ctx, episodeID)
+	if err != nil && !isMissingEpisodeDeviceTypeSchema(h.db, err) {
+		return row, fmt.Errorf("query episode device type: %w", err)
+	}
 	return row, nil
+}
+
+func (h *EpisodeQAHandler) loadEpisodeDeviceType(ctx context.Context, episodeID int64) (string, error) {
+	var deviceType sql.NullString
+	err := h.db.GetContext(ctx, &deviceType, `
+		SELECT COALESCE(r.device_type, '')
+		FROM episodes e
+		LEFT JOIN tasks t ON t.id = e.task_id AND t.deleted_at IS NULL
+		LEFT JOIN workstations ws
+			ON ws.id = COALESCE(e.workstation_id, t.workstation_id) AND ws.deleted_at IS NULL
+		LEFT JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE e.id = ? AND e.deleted_at IS NULL
+		LIMIT 1
+	`, episodeID)
+	return strings.TrimSpace(deviceType.String), err
+}
+
+func isMissingEpisodeDeviceTypeSchema(db *sqlx.DB, err error) bool {
+	if db == nil || db.DriverName() != "sqlite" || err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such table") || strings.Contains(message, "no such column")
 }
 
 func (h *EpisodeQAHandler) ensureEpisodeExists(ctx context.Context, episodeID int64) error {
@@ -1073,10 +1107,36 @@ func (h *EpisodeQAHandler) runEpisodeQACheck(ctx context.Context, checkName stri
 	switch checkName {
 	case episodeQACheckMcapMagic:
 		return h.runMcapMagicQACheck(ctx, row)
+	case episodeQACheckTarExtension:
+		return evaluateTarExtensionCheck(row.McapPath), nil
 	case episodeQACheckRecordingNotEmpty:
 		return h.runRecordingNotEmptyQACheck(ctx, row)
 	default:
 		return episodeQACheckOutcome{}, fmt.Errorf("unsupported qa check %q", checkName)
+	}
+}
+
+func evaluateTarExtensionCheck(path string) episodeQACheckOutcome {
+	passed := strings.EqualFold(filepath.Ext(strings.TrimSpace(path)), ".tar")
+	metadata := map[string]any{
+		"path":      path,
+		"extension": strings.ToLower(filepath.Ext(strings.TrimSpace(path))),
+	}
+	if passed {
+		return episodeQACheckOutcome{
+			CheckName: episodeQACheckTarExtension,
+			Passed:    true,
+			Score:     1,
+			Details:   "tar extension matched",
+			Metadata:  metadata,
+		}
+	}
+	return episodeQACheckOutcome{
+		CheckName: episodeQACheckTarExtension,
+		Passed:    false,
+		Score:     0,
+		Details:   "tar extension check failed: path does not end with .tar",
+		Metadata:  metadata,
 	}
 }
 

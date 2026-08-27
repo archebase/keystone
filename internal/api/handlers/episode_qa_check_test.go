@@ -206,6 +206,34 @@ func TestEvaluateRecordingNotEmptyCheck(t *testing.T) {
 	}
 }
 
+func TestDefaultEpisodeQASuiteUsesTarExtensionForEgoPortalE2(t *testing.T) {
+	got := defaultEpisodeQASuite(episodeQACheckRow{
+		DeviceType: egoPortalE2DeviceType,
+		McapPath:   "device-uploads/e2/capture.tar",
+	})
+	want := []string{episodeQACheckTarExtension}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("suite = %v, want %v", got, want)
+	}
+}
+
+func TestEvaluateTarExtensionCheck(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		pass bool
+	}{
+		{path: "device-uploads/e2/capture.tar", pass: true},
+		{path: "device-uploads/e2/CAPTURE.TAR", pass: true},
+		{path: "device-uploads/e2/capture.tar.gz", pass: false},
+		{path: "device-uploads/e2/capture.mcap", pass: false},
+		{path: "device-uploads/e2/capture", pass: false},
+	} {
+		got := evaluateTarExtensionCheck(test.path)
+		if got.Passed != test.pass || got.CheckName != episodeQACheckTarExtension {
+			t.Fatalf("evaluateTarExtensionCheck(%q) = %#v, want passed=%v", test.path, got, test.pass)
+		}
+	}
+}
 func TestDefaultEpisodeQASuiteIncludesRecordingNotEmptyWhenSidecarExists(t *testing.T) {
 	got := defaultEpisodeQASuite(episodeQACheckRow{SidecarPath: "device-uploads/capture.json"})
 	want := []string{episodeQACheckMcapMagic, episodeQACheckRecordingNotEmpty}
