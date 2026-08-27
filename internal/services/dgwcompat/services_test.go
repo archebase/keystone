@@ -255,6 +255,33 @@ func TestGatewayCreateReissueCompleteFlow(t *testing.T) {
 	}
 }
 
+func TestGatewayCreateLogicalUploadUsesTarForEgoPortalE2(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	if _, err := db.Exec(`UPDATE robots SET device_type = ? WHERE id = 1`, egoPortalE2DeviceType); err != nil {
+		t.Fatalf("update robot device type: %v", err)
+	}
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{ClientHints: map[string]string{
+		"device_id": "101", "capture_id": "capture-e2", "task_id": "task-1",
+		"dc_plan_id": "1001", "workspace_id": "10", "source": "ego-portal",
+	}})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	objectKey := created.GetCredentials().GetObjectKey()
+	if !strings.HasSuffix(objectKey, "/capture.tar") {
+		t.Fatalf("object key = %q, want capture.tar", objectKey)
+	}
+	session, ok := service.sessions.getByUpload(created.GetUploadId())
+	if !ok || session.DeviceType != egoPortalE2DeviceType || session.ObjectKey != objectKey {
+		t.Fatalf("frozen session = %+v, want E2 device type and object key", session)
+	}
+}
+
 func TestGatewayCompleteUploadPersistsEpisodeAndCompletesTask(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	qa := &fakeEpisodeQAEnqueuer{}
@@ -1494,7 +1521,7 @@ func TestGatewayAbortAutoAssignedUploadFailsReservedTask(t *testing.T) {
 func TestGatewayCreateLogicalUploadRejectsTaskFromAnotherWorkstation(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	for _, statement := range []string{
-		`INSERT INTO robots (id, device_id, workspace_id, status, auth_epoch) VALUES (2, '202', 10, 'active', 1)`,
+		`INSERT INTO robots (id, device_id, device_type, workspace_id, status, auth_epoch) VALUES (2, '202', 'Ego Portal Stereo', 10, 'active', 1)`,
 		`INSERT INTO workstations (id, robot_id, workspace_id) VALUES (41, 2, 10)`,
 		`UPDATE tasks SET workstation_id = 41 WHERE id = 1`,
 	} {

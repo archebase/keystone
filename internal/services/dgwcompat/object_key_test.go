@@ -19,6 +19,14 @@ func TestBuildObjectKeySanitizesSegments(t *testing.T) {
 	}
 }
 
+func TestBuildObjectKeyUsesTarForEgoPortalE2(t *testing.T) {
+	hints := map[string]string{"device_id": "robot-1", "capture_id": "capture-1"}
+	got := buildObjectKey("device-uploads", hints, "upload-1", "Ego Portal E2")
+	want := "device-uploads/robot-1/capture-1/upload-1/capture.tar"
+	if got != want {
+		t.Fatalf("buildObjectKey() = %q, want %q", got, want)
+	}
+}
 func TestBuildObjectKeyUsesFallbacks(t *testing.T) {
 	got := buildObjectKey("", nil, "upload-123")
 	want := "ego-portal-lite/unknown-device/unknown-capture/upload-123/capture.mcap"
