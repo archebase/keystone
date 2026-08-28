@@ -272,6 +272,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 			time.Duration(cfg.Derivatives.OrbitTimeoutSec)*time.Second,
 		)
 		e2ConversionManager = e2conversion.NewManager(db, orbitClient, objectReader, e2ConversionConfig(cfg.Derivatives))
+		dataOpsHandler.SetE2ConversionManager(e2ConversionManager)
 	}
 
 	// Create SyncHandler for cloud sync API
