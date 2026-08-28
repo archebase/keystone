@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"archebase.com/keystone-edge/internal/services/depthnorm"
+	"archebase.com/keystone-edge/internal/services/e2conversion"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 )
 
@@ -348,6 +349,151 @@ func TestManagerReconcileOnceEnqueuesApprovedStereoDerivative(t *testing.T) {
 	}
 	if got := cloud.originalEpisodeIDs(); len(got) != 0 {
 		t.Fatalf("original sync episodes = %#v, want none", got)
+	}
+}
+
+func TestManagerReconcileOnceStartsE2ConversionAfterEpisodeQA(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 50, DeviceTypeEgoPortalE2)
+
+	converter := &fakeE2Converter{}
+	cloud := &fakeCloudSyncEnqueuer{}
+	manager := NewManager(db, nil, cloud, 0)
+	manager.SetE2Converter(converter)
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 50); err != nil || !captured {
+		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
+	}
+	if _, err := db.Exec(`UPDATE episodes SET qa_status = 'approved' WHERE id = 50`); err != nil {
+		t.Fatalf("approve episode: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	if !worked {
+		t.Fatal("ReconcileOnce() worked = false, want true")
+	}
+	if converter.episodeID != 50 || converter.actor != "auto-sync" {
+		t.Fatalf("E2 converter = episode %d actor %q, want 50/auto-sync", converter.episodeID, converter.actor)
+	}
+	if got := cloud.e2EpisodeIDs(); len(got) != 0 {
+		t.Fatalf("E2 cloud sync started before conversion output was approved: %#v", got)
+	}
+}
+
+func TestManagerReconcileOnceEnqueuesApprovedE2ConversionDerivative(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 51, DeviceTypeEgoPortalE2)
+
+	cloud := &fakeCloudSyncEnqueuer{}
+	manager := NewManager(db, nil, cloud, 0)
+	manager.SetE2Converter(&fakeE2Converter{})
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 51); err != nil || !captured {
+		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
+	}
+	if _, err := db.Exec(`
+		UPDATE episodes SET qa_status = 'approved' WHERE id = 51;
+		INSERT INTO episode_derivatives (episode_id, kind, processing_status, qa_status)
+		VALUES (51, 'e2_multimodal_conversion', 'succeeded', 'approved');
+	`); err != nil {
+		t.Fatalf("seed approved derivative: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	if !worked {
+		t.Fatal("ReconcileOnce() worked = false, want true")
+	}
+	if got := cloud.e2EpisodeIDs(); len(got) != 1 || got[0] != 51 {
+		t.Fatalf("E2 sync episodes = %#v, want [51]", got)
+	}
+	if got := cloud.originalEpisodeIDs(); len(got) != 0 {
+		t.Fatalf("original sync episodes = %#v, want none", got)
+	}
+}
+
+func TestManagerReconcileOnceEnqueuesE2DerivativeAfterReenable(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 52, DeviceTypeEgoPortalE2)
+
+	cloud := &fakeCloudSyncEnqueuer{}
+	manager := NewManager(db, nil, cloud, 0)
+	manager.SetE2Converter(&fakeE2Converter{})
+	config, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1")
+	if err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 52); err != nil || !captured {
+		t.Fatalf("CaptureEpisode() = %t, %v; want true, nil", captured, err)
+	}
+	if _, err := db.Exec(`
+		UPDATE episodes SET qa_status = 'approved' WHERE id = 52;
+		INSERT INTO episode_derivatives (episode_id, kind, processing_status, qa_status)
+		VALUES (52, 'e2_multimodal_conversion', 'succeeded', 'approved');
+	`); err != nil {
+		t.Fatalf("seed approved derivative: %v", err)
+	}
+	if _, err := manager.UpdateConfig(context.Background(), false, config.ID, "admin-1"); err != nil {
+		t.Fatalf("disable auto sync: %v", err)
+	}
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || worked {
+		t.Fatalf("ReconcileOnce() while disabled = %t, %v; want false, nil", worked, err)
+	}
+	if got := cloud.e2EpisodeIDs(); len(got) != 0 {
+		t.Fatalf("disabled automatic sync enqueued E2 work: %#v", got)
+	}
+	if _, err := manager.UpdateConfig(context.Background(), true, config.ID+1, "admin-1"); err != nil {
+		t.Fatalf("re-enable auto sync: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileOnce() after re-enable error = %v", err)
+	}
+	if !worked {
+		t.Fatal("ReconcileOnce() after re-enable worked = false, want true")
+	}
+	if got := cloud.e2EpisodeIDs(); len(got) != 1 || got[0] != 52 {
+		t.Fatalf("E2 sync episodes after re-enable = %#v, want [52]", got)
+	}
+}
+
+func TestManagerCaptureEpisodeRequiresE2Converter(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 53, DeviceTypeEgoPortalE2)
+
+	manager := NewManager(db, nil, &fakeCloudSyncEnqueuer{}, 0)
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 53)
+	if err != nil {
+		t.Fatalf("CaptureEpisode() error = %v", err)
+	}
+	if captured {
+		t.Fatal("E2 episode captured without converter = true, want false")
+	}
+
+	manager.SetE2Converter(&fakeE2Converter{})
+	captured, err = captureEpisodeAtCurrentConfig(t, manager, db, 53)
+	if err != nil {
+		t.Fatalf("CaptureEpisode() with converter error = %v", err)
+	}
+	if !captured {
+		t.Fatal("E2 episode captured with converter = false, want true")
 	}
 }
 
@@ -805,9 +951,15 @@ type fakeCloudSyncEnqueuer struct {
 	original []int64
 	stereo   []int64
 	depth    []int64
+	e2       []int64
 }
 
 type fakeStereoSplitter struct {
+	episodeID int64
+	actor     string
+}
+
+type fakeE2Converter struct {
 	episodeID int64
 	actor     string
 }
@@ -878,6 +1030,12 @@ func (f *fakeStereoSplitter) Start(_ context.Context, episodeID int64, actor str
 	return stereosplit.Derivative{EpisodeID: episodeID}, true, nil
 }
 
+func (f *fakeE2Converter) Start(_ context.Context, episodeID int64, actor string) (e2conversion.Derivative, bool, error) {
+	f.episodeID = episodeID
+	f.actor = actor
+	return e2conversion.Derivative{EpisodeID: episodeID}, true, nil
+}
+
 func (f *fakeCloudSyncEnqueuer) EnqueueOriginalAutomatic(_ context.Context, episodeID int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -897,6 +1055,19 @@ func (f *fakeCloudSyncEnqueuer) EnqueueStereoSplitManual(_ context.Context, epis
 	defer f.mu.Unlock()
 	f.stereo = append(f.stereo, episodeID)
 	return nil
+}
+
+func (f *fakeCloudSyncEnqueuer) EnqueueE2ConversionManual(_ context.Context, episodeID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.e2 = append(f.e2, episodeID)
+	return nil
+}
+
+func (f *fakeCloudSyncEnqueuer) e2EpisodeIDs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.e2...)
 }
 
 func (f *fakeCloudSyncEnqueuer) depthEpisodeIDs() []int64 {

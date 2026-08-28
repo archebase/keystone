@@ -18,12 +18,15 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"archebase.com/keystone-edge/internal/services/depthnorm"
+	"archebase.com/keystone-edge/internal/services/e2conversion"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 )
 
 const (
 	defaultPollInterval = 5 * time.Second
 
+	// DeviceTypeEgoPortalE2 requires raw tar QA, E2 conversion, derivative QA, then cloud sync.
+	DeviceTypeEgoPortalE2 = "Ego Portal E2"
 	// DeviceTypeEgoPortalStereo requires QA, stereo split, derivative QA, then cloud sync.
 	DeviceTypeEgoPortalStereo = "Ego Portal Stereo"
 	// DeviceTypeEgoPortalLite requires QA followed by original Episode cloud sync.
@@ -53,10 +56,16 @@ type StereoSplitter interface {
 	Start(ctx context.Context, episodeID int64, actor string) (stereosplit.Derivative, bool, error)
 }
 
+// E2Converter admits one E2 Episode into the durable conversion queue.
+type E2Converter interface {
+	Start(ctx context.Context, episodeID int64, actor string) (e2conversion.Derivative, bool, error)
+}
+
 // CloudSyncEnqueuer persists source-specific work in the existing Sync Worker.
 type CloudSyncEnqueuer interface {
 	EnqueueOriginalAutomatic(ctx context.Context, episodeID int64) error
 	EnqueueStereoSplitManual(ctx context.Context, episodeID int64) error
+	EnqueueE2ConversionManual(ctx context.Context, episodeID int64) error
 	EnqueueDepthNormalizationAutomatic(ctx context.Context, episodeID int64) error
 }
 
@@ -74,6 +83,7 @@ type QAEnqueuer interface {
 type Manager struct {
 	db           *sqlx.DB
 	stereo       StereoSplitter
+	e2           E2Converter
 	depthNorm    DepthNormalizer
 	cloud        CloudSyncEnqueuer
 	qa           QAEnqueuer
@@ -114,6 +124,13 @@ func firstDepthNormalizer(values []DepthNormalizer) DepthNormalizer {
 		return nil
 	}
 	return values[0]
+}
+
+// SetE2Converter connects the E2 conversion lifecycle during server initialization.
+func (m *Manager) SetE2Converter(converter E2Converter) {
+	if m != nil {
+		m.e2 = converter
+	}
 }
 
 // CurrentConfig returns the effective automatic-sync setting revision.
@@ -164,7 +181,8 @@ func (m *Manager) CaptureEpisode(ctx context.Context, episodeID int64) (bool, er
 		return false, fmt.Errorf("resolve auto sync upload eligibility for episode %d: %w", episodeID, err)
 	}
 	if !upload.AutoSyncEnabled || !supportedDeviceType(upload.DeviceType) ||
-		(strings.EqualFold(strings.TrimSpace(upload.DeviceType), DeviceTypeZJWA1D) && m.depthNorm == nil) {
+		(strings.EqualFold(strings.TrimSpace(upload.DeviceType), DeviceTypeZJWA1D) && m.depthNorm == nil) ||
+		(strings.EqualFold(strings.TrimSpace(upload.DeviceType), DeviceTypeEgoPortalE2) && m.e2 == nil) {
 		return false, nil
 	}
 
@@ -348,6 +366,10 @@ func (m *Manager) reconcileDownstream(ctx context.Context) (bool, error) {
 		return worked, err
 	}
 
+	if worked, err := m.reconcileE2Conversion(ctx); worked || err != nil {
+		return worked, err
+	}
+
 	err = m.db.GetContext(ctx, &episodeID, `
 		SELECT e.id
 		FROM episodes e
@@ -375,6 +397,75 @@ func (m *Manager) reconcileDownstream(ctx context.Context) (bool, error) {
 	}
 	if _, _, err := m.stereo.Start(ctx, episodeID, "auto-sync"); err != nil && !errors.Is(err, stereosplit.ErrAlreadyDerived) {
 		return false, fmt.Errorf("start automatic stereo split for episode %d: %w", episodeID, err)
+	}
+	m.wakeWorker()
+	return true, nil
+}
+
+func (m *Manager) reconcileE2Conversion(ctx context.Context) (bool, error) {
+	var episodeID int64
+	err := m.db.GetContext(ctx, &episodeID, `
+		SELECT e.id
+		FROM episodes e
+		WHERE e.auto_sync_requested = TRUE
+		  AND e.auto_sync_device_type = ?
+		  AND e.qa_status = 'approved'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
+		  AND EXISTS (
+			SELECT 1
+			FROM episode_derivatives ed
+			WHERE ed.episode_id = e.id
+			  AND ed.kind = ?
+			  AND ed.processing_status = 'succeeded'
+			  AND ed.qa_status = 'approved'
+		  )
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
+		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
+		LIMIT 1
+	`, DeviceTypeEgoPortalE2, e2conversion.CloudSourceE2Conversion, e2conversion.Kind)
+	if err == nil {
+		if m.cloud == nil {
+			return false, fmt.Errorf("automatic cloud sync is not configured")
+		}
+		if err := m.cloud.EnqueueE2ConversionManual(ctx, episodeID); err != nil {
+			return false, fmt.Errorf("enqueue automatic E2 conversion sync for episode %d: %w", episodeID, err)
+		}
+		m.wakeWorker()
+		return true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("select approved automatic E2 conversion derivative: %w", err)
+	}
+
+	err = m.db.GetContext(ctx, &episodeID, `
+		SELECT e.id
+		FROM episodes e
+		LEFT JOIN episode_derivatives ed
+			ON ed.episode_id = e.id AND ed.kind = ?
+		WHERE e.auto_sync_requested = TRUE
+		  AND e.auto_sync_device_type = ?
+		  AND e.qa_status = 'approved'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
+		  AND ed.id IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
+		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
+		LIMIT 1
+	`, e2conversion.Kind, DeviceTypeEgoPortalE2, e2conversion.CloudSourceE2Conversion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("select automatic E2 conversion candidate: %w", err)
+	}
+	if m.e2 == nil {
+		return false, fmt.Errorf("automatic E2 conversion is not configured")
+	}
+	if _, _, err := m.e2.Start(ctx, episodeID, "auto-sync"); err != nil && !errors.Is(err, e2conversion.ErrAlreadyDerived) {
+		return false, fmt.Errorf("start automatic E2 conversion for episode %d: %w", episodeID, err)
 	}
 	m.wakeWorker()
 	return true, nil
@@ -570,7 +661,7 @@ func (m *Manager) wakeWorker() {
 }
 
 func autoSyncDeviceTypeArgs(includeZJWA1D bool) []string {
-	values := []string{DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI}
+	values := []string{DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI, DeviceTypeEgoPortalE2}
 	if includeZJWA1D {
 		values = append(values, DeviceTypeZJWA1D)
 	}
@@ -583,7 +674,7 @@ func autoSyncDeviceTypeSQL(count int) string {
 
 func supportedDeviceType(deviceType string) bool {
 	switch deviceType {
-	case DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI, DeviceTypeZJWA1D:
+	case DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI, DeviceTypeZJWA1D, DeviceTypeEgoPortalE2:
 		return true
 	default:
 		return false

@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <!--
+  SPDX-FileCopyrightText: 2026 ArcheBase
+  SPDX-License-Identifier: MulanPSL-2.0
+  -->
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ego Portal E2 多模态转换设计</title>
+  <style>
+    :root {
+      --purple: #5F2A62;
+      --green: #8BD450;
+      --ink: #1D1A2F;
+      --yellow: #F5C024;
+      --violet: #965FD4;
+      --orange: #F47A16;
+      --paper: #F7F0DD;
+      --black: #08070c;
+      --border: 3px solid var(--black);
+      --shadow: 8px 8px 0 var(--black);
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--ink); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: Georgia, "Songti SC", SimSun, serif;
+      line-height: 1.68;
+      overflow-x: hidden;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .09;
+      background-image: repeating-linear-gradient(0deg, rgba(8,7,12,.5) 0 1px, transparent 1px 4px);
+      mix-blend-mode: multiply;
+      z-index: 20;
+    }
+    .wrap { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+    .hero {
+      position: relative;
+      min-height: 580px;
+      padding: 74px 0 72px;
+      color: var(--paper);
+      background: var(--purple);
+      border-bottom: var(--border);
+      isolation: isolate;
+    }
+    .hero::before {
+      content: "E2 / CONVERSION CHANNEL";
+      position: absolute;
+      top: 26px;
+      right: 5vw;
+      color: var(--yellow);
+      font: 700 13px/1.1 Arial, sans-serif;
+      letter-spacing: .18em;
+      transform: rotate(-7deg);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      right: -8vw;
+      bottom: -150px;
+      width: 63vw;
+      height: 330px;
+      background: var(--green);
+      border: var(--border);
+      transform: skewX(-26deg) rotate(-8deg);
+      box-shadow: var(--shadow);
+    }
+    .hero-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 46px; align-items: end; }
+    .eyebrow { margin: 0 0 20px; color: var(--yellow); font: 700 14px/1.2 Arial, sans-serif; letter-spacing: .12em; }
+    h1 {
+      margin: 0;
+      max-width: 720px;
+      font-size: clamp(48px, 8vw, 104px);
+      line-height: .96;
+      letter-spacing: -.075em;
+      font-weight: 900;
+      text-shadow: 6px 6px 0 var(--black);
+    }
+    .hero-sub { max-width: 610px; margin: 28px 0 0; font-size: clamp(18px, 2.2vw, 25px); color: var(--paper); }
+    .hero-stamp {
+      justify-self: end;
+      width: min(380px, 100%);
+      padding: 24px;
+      color: var(--ink);
+      background: var(--yellow);
+      border: var(--border);
+      box-shadow: var(--shadow);
+      transform: rotate(3deg);
+    }
+    .hero-stamp strong { display: block; font-size: 30px; line-height: 1.05; }
+    .hero-stamp p { margin: 12px 0 0; font: 700 14px/1.5 Arial, sans-serif; }
+    .signal { display: flex; gap: 8px; margin-top: 34px; font: 700 12px Arial, sans-serif; letter-spacing: .08em; }
+    .signal span { display: inline-block; height: 12px; width: 78px; background: var(--green); border: 2px solid var(--black); }
+    .signal span:nth-child(2) { background: var(--yellow); }
+    .signal span:nth-child(3) { background: var(--orange); }
+    main { padding: 112px 0 80px; }
+    .decision {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 28px;
+      align-items: start;
+      margin-bottom: 86px;
+      padding: 30px;
+      background: var(--green);
+      border: var(--border);
+      box-shadow: var(--shadow);
+      transform: rotate(-1deg);
+    }
+    .decision-label { font: 900 18px/1.05 Arial, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+    .decision p { margin: 0; font-size: clamp(22px, 3vw, 35px); line-height: 1.25; font-weight: 900; }
+    section { margin: 0 0 86px; }
+    .section-head { display: flex; gap: 18px; align-items: baseline; margin-bottom: 24px; border-bottom: 5px solid var(--ink); }
+    .num { color: var(--orange); font: 900 52px/1 Arial, sans-serif; letter-spacing: -.08em; }
+    h2 { margin: 0 0 9px; font-size: clamp(29px, 4vw, 48px); line-height: 1.05; letter-spacing: -.045em; }
+    h3 { margin: 28px 0 9px; color: var(--purple); font-size: 25px; line-height: 1.2; }
+    p { max-width: 850px; margin: 10px 0; }
+    ul, ol { max-width: 860px; padding-left: 1.35em; }
+    li { margin: 6px 0; }
+    .cols { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 24px; }
+    .panel { padding: 23px; background: #fffaf0; border: var(--border); box-shadow: 5px 5px 0 var(--purple); }
+    .panel.dark { color: var(--paper); background: var(--ink); box-shadow: 5px 5px 0 var(--orange); }
+    .panel.green { background: var(--green); box-shadow: 5px 5px 0 var(--black); }
+    .panel.yellow { background: var(--yellow); box-shadow: 5px 5px 0 var(--black); }
+    .panel h3:first-child { margin-top: 0; }
+    .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 30px 0; }
+    .flow-step { position: relative; min-height: 130px; padding: 18px 15px; background: var(--violet); border: var(--border); margin-right: -3px; }
+    .flow-step:nth-child(2) { background: var(--yellow); }
+    .flow-step:nth-child(3) { background: var(--green); }
+    .flow-step:nth-child(4) { background: var(--orange); }
+    .flow-step:nth-child(5) { background: var(--purple); color: var(--paper); }
+    .flow-step strong { display: block; font: 900 18px/1.15 Arial, sans-serif; }
+    .flow-step small { display: block; margin-top: 9px; font-size: 14px; line-height: 1.35; }
+    .flow-step:not(:last-child)::after { content: "▶"; position: absolute; right: -14px; top: 48px; z-index: 2; color: var(--black); font: 20px Arial, sans-serif; }
+    table { width: 100%; border-collapse: collapse; margin: 20px 0; background: #fffaf0; border: var(--border); }
+    th, td { padding: 12px 14px; border: 2px solid var(--ink); text-align: left; vertical-align: top; }
+    th { color: var(--paper); background: var(--purple); font-weight: 900; }
+    tr:nth-child(even) td { background: #f0e7cd; }
+    code, pre { font-family: "Courier New", monospace; }
+    code { padding: 2px 5px; color: var(--paper); background: var(--ink); }
+    pre {
+      max-width: 100%;
+      padding: 19px;
+      margin: 18px 0;
+      color: var(--paper);
+      background: var(--ink);
+      border: var(--border);
+      box-shadow: 5px 5px 0 var(--orange);
+      white-space: pre-wrap;
+      overflow-x: auto;
+      line-height: 1.45;
+      font-size: 13px;
+    }
+    .rule { padding: 18px 21px; margin: 22px 0; background: var(--yellow); border-left: 12px solid var(--orange); border-top: var(--border); border-bottom: var(--border); font-weight: 900; }
+    .matrix { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: var(--border); margin: 24px 0; }
+    .matrix > div { padding: 17px; border-right: 2px solid var(--ink); border-bottom: 2px solid var(--ink); }
+    .matrix > div:nth-child(odd) { background: var(--purple); color: var(--paper); font-weight: 900; }
+    .matrix > div:nth-child(even) { background: #fffaf0; }
+    .matrix > div:nth-last-child(-n+2) { border-bottom: 0; }
+    .checklist { list-style: none; padding: 0; }
+    .checklist li { padding: 10px 12px 10px 40px; background: #fffaf0; border-bottom: 2px solid var(--ink); position: relative; }
+    .checklist li::before { content: "□"; position: absolute; left: 12px; color: var(--orange); font: 900 23px Arial, sans-serif; }
+    .footer { padding: 46px 0 72px; color: var(--paper); background: var(--ink); border-top: var(--border); }
+    .footer h2 { color: var(--green); }
+    .meta { font: 13px/1.55 Arial, sans-serif; color: var(--yellow); }
+    @media (max-width: 800px) {
+      .wrap { width: min(100% - 28px, 680px); }
+      .hero { min-height: 650px; padding-top: 65px; }
+      .hero-grid, .cols { grid-template-columns: 1fr; gap: 28px; }
+      .hero-stamp { justify-self: start; }
+      .hero::after { right: -35vw; width: 120vw; }
+      main { padding-top: 90px; }
+      .decision { grid-template-columns: 1fr; gap: 12px; padding: 22px; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-step { min-height: 0; margin: 0 0 -3px; }
+      .flow-step:not(:last-child)::after { content: "▼"; right: 50%; top: auto; bottom: -17px; }
+      .matrix { grid-template-columns: 1fr; }
+      .matrix > div { border-right: 0; }
+      .matrix > div:nth-last-child(-n+2) { border-bottom: 2px solid var(--ink); }
+      .matrix > div:last-child { border-bottom: 0; }
+      table { display: block; overflow-x: auto; white-space: nowrap; }
+      td { white-space: normal; min-width: 180px; }
+      .section-head { gap: 11px; }
+      .num { font-size: 39px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <p class="eyebrow">DEVELOPMENT DESIGN / KEYSTONE + SYNAPSE + ORBIT</p>
+        <h1>Ego Portal E2<br>多模态转换</h1>
+        <p class="hero-sub">把 Data Gateway 上传的原始 tar，变成可验证、可同步的 H.264 MCAP 与独立 calibration.json。</p>
+        <div class="signal" aria-label="pipeline status"><span></span><span></span><span></span></div>
+      </div>
+      <div class="hero-stamp">
+        <strong>核心判断</strong>
+        <p>原始 tar 只做扩展名 QA；转换结果独立质检；自动同步只发送转换后的 MCAP 与 calibration.json。</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="decision">
+      <div class="decision-label">FINAL<br>DECISION</div>
+      <p>E2 是一条独立的 derivative pipeline：<br>tar → H.264 MCAP + calibration.json → 派生 QA → Hilbert 同步。</p>
+    </div>
+
+    <section>
+      <div class="section-head"><span class="num">01</span><h2>背景与问题</h2></div>
+      <p>现有 Keystone 已经有 Ego Portal Stereo 的 Orbit 派生处理、自动同步、派生 QA 与 ParamFile 同步能力。Ego Portal E2 的上传方式相同地经过 Data Gateway，但原始文件不是 MCAP，而是一个 tar 包；tar 解压后包含两路独立视频、IMU CSV 与相机参数。</p>
+      <div class="panel dark">
+        <h3>输入事实</h3>
+        <pre>capture.tar
+├── Camera0/video.mp4              # HEVC / H.265
+├── Camera0/camera_params.json
+├── Camera1/video.mp4              # HEVC / H.265
+├── Camera1/camera_params.json
+└── Sensors/
+    ├── accel.csv
+    ├── gyro.csv
+    └── imu_calibration.json        # 第一版不读取</pre>
+        <p>当前样例为 1600×1200、约 30 FPS；Camera0 与 Camera1 的帧数可能不同，转换只输出前 <code>min(left_count, right_count)</code> 对。</p>
+      </div>
+      <div class="rule">不能把 E2 tar 当成普通 MCAP。原始 Episode QA 只检查 <code>.tar</code> 后缀；转换后的 MCAP 和 calibration.json 由独立的 E2 Manager 验证。</div>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">02</span><h2>目标与非目标</h2></div>
+      <div class="cols">
+        <div class="panel green">
+          <h3>本次目标</h3>
+          <ul>
+            <li>Data Gateway 根据服务端精确设备型号 <code>Ego Portal E2</code> 生成 <code>capture.tar</code>。</li>
+            <li>新增 <code>e2-multimodal-conversion</code> Job 镜像及独立生命周期模块。</li>
+            <li>HEVC 双路流式解码并编码为逐帧 H.264 access unit。</li>
+            <li>生成混合编码 MCAP：Foxglove Protobuf 视频 + ROS 2 Humble CDR IMU。</li>
+            <li>生成独立 <code>calibration.json</code>、标准 rosbag2 YAML metadata 与 manifest。</li>
+            <li>自动同步只上传转换后的 MCAP 与 calibration ParamFile。</li>
+            <li>Synapse 提供单 Episode 操作、下载和处理配置。</li>
+          </ul>
+        </div>
+        <div class="panel yellow">
+          <h3>明确不做</h3>
+          <ul>
+            <li>不把原始 tar 上传到 Hilbert。</li>
+            <li>不读取 <code>Sensors/imu_calibration.json</code> 或 <code>sensor_time_to_utc.csv</code>。</li>
+            <li>不计算、不校验、不要求原始 tar checksum。</li>
+            <li>不覆盖 <code>episodes.mcap_path</code>；它仍指向原始 tar。</li>
+            <li>不做 E2 conversion 批量处理。</li>
+            <li>第一版不接入 <code>mcap_to_mp4.py</code>，不做前端视频预览。</li>
+            <li>不新增 <code>device_type_snapshot</code> 数据库字段。</li>
+            <li>不抽取 Stereo Split 的通用大框架。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">03</span><h2>方案总览</h2></div>
+      <div class="flow">
+        <div class="flow-step"><strong>Data Gateway</strong><small>认证设备与任务绑定；E2 生成 capture.tar；保存 duration 与录制时间。</small></div>
+        <div class="flow-step"><strong>原始 QA</strong><small>进入现有 QA 队列，只运行 tar_extension。</small></div>
+        <div class="flow-step"><strong>Orbit Job</strong><small>解压、HEVC→H.264、写 MCAP、生成 calibration。</small></div>
+        <div class="flow-step"><strong>派生 QA</strong><small>校验四个输出、MCAP 可读性与 calibration JSON。</small></div>
+        <div class="flow-step"><strong>Cloud Sync</strong><small>ParamFile 先行，随后绑定并上传 output_bag.mcap。</small></div>
+      </div>
+      <h3>模块职责</h3>
+      <table>
+        <thead><tr><th>模块</th><th>职责</th><th>不负责</th></tr></thead>
+        <tbody>
+          <tr><td>Data Gateway / dgwcompat</td><td>根据绑定 robot 的 device_type 选择对象后缀；建立 Episode；保存上传时长与时间。</td><td>不解压 tar，不启动 Orbit。</td></tr>
+          <tr><td>EpisodeQAHandler</td><td>对 E2 原始对象执行唯一的 <code>tar_extension</code> 检查。</td><td>不检查 tar 内容，不执行 MCAP QA。</td></tr>
+          <tr><td>e2conversion.Manager</td><td>持久化 derivative，构造 Orbit 请求，轮询、验证输出并运行派生 QA。</td><td>不直接上传 Hilbert。</td></tr>
+          <tr><td>autosync.Manager</td><td>参考 Stereo Split，按状态自动启动 conversion 或 enqueue 转换结果同步。</td><td>不实现视频转换。</td></tr>
+          <tr><td>SyncWorker</td><td>冻结 source snapshot；注册/上传 ParamFile；注册/上传 MCAP RawData。</td><td>不上传 E2 原始 tar。</td></tr>
+          <tr><td>Synapse</td><td>展示 E2 状态、手动处理、配置、日志和成功产物下载。</td><td>不让用户选择任意 QA checks。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">04</span><h2>上传与原始 QA</h2></div>
+      <h3>服务端决定格式</h3>
+      <p>E2 客户端继续复用 Ego Portal Stereo/Lite 的 Data Gateway 上传合同：<code>task_id</code>、<code>capture_id</code>、duration 与录制时间照常携带；客户端不需要新增 <code>product = ego_portal_e2</code>。服务端在创建 upload session 时，依据已认证设备与已绑定任务关联出的 <code>robots.device_type</code> 做精确匹配。</p>
+      <pre>device_type == "Ego Portal E2"
+    → .../&lt;upload_id&gt;/capture.tar
+else
+    → .../&lt;upload_id&gt;/capture.mcap</pre>
+      <p>该 device_type 冻结在 upload session 中，创建会话和完成上传使用同一个判断。E2 不使用 <code>camera_serial</code>，不匹配既有 camera calibration；原始 checksum 完全忽略。</p>
+      <h3>Episode 创建</h3>
+      <p>Data Gateway 完成业务上传时，E2 仍创建普通 Episode，继续复用 <code>episodes.mcap_path</code> 保存 tar 的对象 key。<code>sidecar_path</code> 为空；<code>file_size_bytes</code>、<code>duration_sec</code>、<code>recording_started_at</code>、<code>recording_finished_at</code> 来自上传请求。原始 QA 初始为 <code>pending_qa</code>，然后进入现有 QA 队列。</p>
+      <h3>tar_extension</h3>
+      <p>EpisodeQAHandler 根据精确设备型号分流。E2 只读取数据库中的 <code>episodes.mcap_path</code>，不访问 tar 内容、不检查 Content-Type、不解压、不计算 checksum。</p>
+      <table>
+        <thead><tr><th>路径后缀</th><th>结果</th><th>后续</th></tr></thead>
+        <tbody>
+          <tr><td><code>.tar</code> / <code>.TAR</code></td><td><code>tar_extension passed</code>，Episode <code>qa_status = approved</code></td><td>自动同步可启动 conversion；手动 process 可用。</td></tr>
+          <tr><td><code>.mcap</code>、<code>.tar.gz</code> 或无后缀</td><td><code>tar_extension failed</code>，Episode <code>qa_status = failed</code></td><td>自动和手动 conversion 均禁止。</td></tr>
+        </tbody>
+      </table>
+      <p>conversion 创建后，原始 QA 的重跑规则参考既定方案：没有 derivative 或 derivative 已 failed/canceled 时允许重新执行；queued/submitting/pending/running/verifying/succeeded 时禁止重跑。失败时不提供强制启动入口。</p>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">05</span><h2>Job 输入、转换与输出</h2></div>
+      <h3>Job 镜像与配置</h3>
+      <p>新增独立镜像：</p>
+      <pre>ghcr.io/archebase/e2-multimodal-conversion@sha256:&lt;digest&gt;</pre>
+      <p>镜像配置像 Stereo Split 一样落数据库，初始未配置；管理员必须写入真实 immutable digest 后才能执行。配置独立于 Stereo Split：</p>
+      <ul>
+        <li>image_ref</li>
+        <li>max_concurrent，默认 1</li>
+        <li>resource_limits_enabled，默认 true</li>
+      </ul>
+      <p>固定资源默认值：requests 为 CPU 4、内存 8Gi、临时盘 20Gi；limits 为 CPU 8、内存 16Gi、临时盘 100Gi。</p>
+      <h3>输入目录</h3>
+      <p>Job 支持 tar 内容直接位于根目录，或存在一层顶级包装目录；拒绝更深或不明确的结构。转换实现内部检查：</p>
+      <pre>Camera0/video.mp4
+Camera0/camera_params.json
+Camera1/video.mp4
+Camera1/camera_params.json
+Sensors/accel.csv
+Sensors/gyro.csv</pre>
+      <p>这些是 Job 输入合同，不是原始 Episode QA 合同。tar 解压必须拒绝绝对路径、路径穿越、符号链接逃逸、硬链接逃逸、设备文件、FIFO/socket；普通文件总声明大小上限 60GiB，单文件上限 50GiB，member 数量上限 10,000。</p>
+      <h3>视频管线</h3>
+      <p>参考 Stereo Split 的 H.264 管线，但 E2 独立实现，不依赖 Stereo Split 文件或镜像。两路 HEVC 同时流式解码和编码，不把全量帧放进内存：</p>
+      <pre>Camera0 HEVC ─┐
+              ├─ ffmpeg decode → libx264 encode → H.264 Annex-B access units
+Camera1 HEVC ─┘</pre>
+      <ul>
+        <li>保持输入方向、分辨率，不裁剪、不旋转、不缩放、不交换左右。</li>
+        <li>从两路输入推导共同 nominal FPS；当前样例约 30 FPS，不无条件硬编码。</li>
+        <li>编码固定使用 libx264、medium、high、yuv420p、B-frame 0、GOP 30、AUD 与 repeat headers；目标码率 12M、maxrate 12M、bufsize 24M。</li>
+        <li>每条视频消息对应一个视频帧的 H.264 access unit。</li>
+        <li>左右帧数取最小值，较长一路尾部丢弃并写入统计。</li>
+      </ul>
+      <h3>MCAP 合同</h3>
+      <table>
+        <thead><tr><th>Topic</th><th>Schema / encoding</th><th>frame_id / 内容</th></tr></thead>
+        <tbody>
+          <tr><td><code>/camera/left/image/h264</code></td><td><code>foxglove.CompressedVideo</code> / protobuf</td><td><code>camera_left_optical</code>；format 固定为 <code>h264</code>。</td></tr>
+          <tr><td><code>/camera/right/image/h264</code></td><td><code>foxglove.CompressedVideo</code> / protobuf</td><td><code>camera_right_optical</code>；format 固定为 <code>h264</code>。</td></tr>
+          <tr><td><code>/imu/data</code></td><td><code>sensor_msgs/msg/Imu</code> / ROS 2 Humble CDR</td><td><code>imu</code>；accel 与 gyro 精确时间交集。</td></tr>
+        </tbody>
+      </table>
+      <p>视频 PTS 的 time base 为微秒时乘 1000 写入 MCAP 纳秒时间；IMU CSV 的 <code>ts_ns</code> 直接使用。protobuf timestamp、MCAP <code>log_time</code> 与 <code>publish_time</code> 保持一致。所有视频与 IMU 消息按 timestamp 稳定归并后交错写入。</p>
+      <h3>输出文件</h3>
+      <pre>derived/episodes/&lt;episode-id&gt;/e2-multimodal-conversion/g&lt;generation&gt;-&lt;suffix&gt;/
+├── output_bag.mcap
+├── metadata.yaml
+├── calibration.json
+└── processing_manifest.json</pre>
+      <p>四个文件共用 generation-specific prefix。<code>metadata.yaml</code> 必须是真正的标准 rosbag2 YAML，不复制 Stereo Split 当前“JSON 内容、yaml 文件名”的历史格式。视频 topic 使用真实 <code>foxglove.CompressedVideo</code> 类型；不承诺 <code>ros2 bag play</code> 完整支持自定义 Protobuf 视频。</p>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">06</span><h2>状态机与接口</h2></div>
+      <h3>Derivative 领域值</h3>
+      <div class="matrix">
+        <div>kind / source_type</div><div><code>e2_multimodal_conversion</code></div>
+        <div>原始输入</div><div>Episode.mcap_path 指向 Data Gateway TOS tar；提交前冻结 URI、ETag、size。</div>
+        <div>处理状态</div><div>queued → submitting → pending → running → verifying → succeeded / failed / canceled</div>
+        <div>派生 QA</div><div>not_started → pending → running → approved / failed</div>
+        <div>同步源</div><div>只允许转换成功且派生 QA approved 的 MCAP + calibration。</div>
+      </div>
+      <p>retry 参考 Stereo Split：复用同一条 <code>episode_derivatives</code> 记录，递增 generation，复用第一次成功冻结的 tar 输入快照，生成新的 output prefix。terminal failed/canceled 不自动创建新 generation，必须管理员手动 retry；processing 成功但 QA 失败优先 retry QA。</p>
+      <h3>Data Ops API</h3>
+      <pre>GET  /api/v1/data-ops/episodes/:id/derivatives/e2-multimodal-conversion
+POST /api/v1/data-ops/episodes/:id/derivatives/e2-multimodal-conversion/process
+POST /api/v1/data-ops/episodes/:id/derivatives/e2-multimodal-conversion/retry
+POST /api/v1/data-ops/episodes/:id/derivatives/e2-multimodal-conversion/cancel
+GET  /api/v1/data-ops/episodes/:id/derivatives/e2-multimodal-conversion/logs
+POST /api/v1/data-ops/episodes/:id/derivatives/e2-multimodal-conversion/qa
+GET  /api/v1/data-ops/episodes/:id/derivatives/e2-multimodal-conversion/presign?kind=mcap
+GET  /api/v1/data-ops/episodes/:id/derivatives/e2-multimodal-conversion/presign?kind=calibration</pre>
+      <p>所有 E2 接口严格要求：设备型号精确为 <code>Ego Portal E2</code>、provenance 为 <code>data_gateway</code> + <code>keystone_tos</code>、原始路径为 <code>.tar</code>、Episode 原始 QA 为 approved。失败 QA 不允许强制启动。</p>
+      <h3>同步入口</h3>
+      <p>不新增 E2 专用 sync API。普通 Episode sync 入口后端自动解析 source：</p>
+      <pre>POST /api/v1/episodes/:id/sync
+
+E2 + processing succeeded + derivative QA approved
+    → source_type = e2_multimodal_conversion
+    → 上传 output_bag.mcap + calibration.json
+
+E2 尚未完成转换或 QA 未通过
+    → 拒绝，不回退到 original tar</pre>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">07</span><h2>派生 QA 与 manifest</h2></div>
+      <p>E2 Manager 自己执行派生输出验证，不调用现有 EpisodeQAHandler。输出合同验证失败属于 processing 失败；合同验证成功后，若后续派生 QA 失败，则保持 processing succeeded、qa failed。两套状态不互相覆盖。</p>
+      <div class="cols">
+        <div class="panel">
+          <h3>output_bag.mcap</h3>
+          <ul class="checklist">
+            <li>存在且非空</li>
+            <li>首尾 MCAP magic 正确</li>
+            <li>MCAP reader 可以打开</li>
+            <li>manifest 中 size/SHA-256 与对象一致</li>
+          </ul>
+          <p>第一版不在派生 QA 中强制检查 topic、schema、消息数量或左右帧统计。</p>
+        </div>
+        <div class="panel">
+          <h3>calibration.json</h3>
+          <ul class="checklist">
+            <li>存在且非空</li>
+            <li>manifest 中 size/SHA-256 与对象一致</li>
+            <li>内容可解析为 JSON object</li>
+          </ul>
+          <p>不校验具体 calibration schema；不绑定 camera_serial、session 或 capture。</p>
+        </div>
+      </div>
+      <h3>manifest v1</h3>
+      <p>manifest 固定 <code>schema_version = 1</code>、<code>kind = e2_multimodal_conversion</code>，记录 ROS 2 Humble、topic、编码参数、左右配对统计与三个输出的 size/SHA-256。原始 tar 的 <code>source.sha256</code> 省略；原始输入只记录 URI 与 size（以及 Keystone 冻结的 ETag）。</p>
+      <pre>{
+  "schema_version": 1,
+  "kind": "e2_multimodal_conversion",
+  "output_format": "h264_ros2_mcap",
+  "ros_distribution": "humble",
+  "source": {"uri": "tos://.../capture.tar", "size_bytes": 123456},
+  "outputs": {
+    "mcap": {"name": "output_bag.mcap", "size_bytes": 1, "sha256": "..."},
+    "metadata": {"name": "metadata.yaml", "size_bytes": 1, "sha256": "..."},
+    "calibration": {"name": "calibration.json", "size_bytes": 1, "sha256": "..."}
+  },
+  "stats": {"left_video_frames": 0, "right_video_frames": 0, "imu_messages": 0},
+  "started_at": "...",
+  "finished_at": "..."
+}</pre>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">08</span><h2>自动同步与 ParamFile</h2></div>
+      <h3>自动编排</h3>
+      <p>参考 Stereo Split，autosync.Manager 每轮最多推进一项工作：</p>
+      <ol>
+        <li>auto sync 开启且 E2 原始 QA approved、没有 E2 derivative：调用 <code>e2conversion.Start()</code>。</li>
+        <li>conversion 成功且 derivative QA approved：enqueue 普通 Episode sync。</li>
+        <li>自动同步关闭：不自动创建 conversion，也不自动 enqueue sync；管理员仍可手动完成整个流程。</li>
+        <li>自动同步重新开启：补处理已有 <code>auto_sync_requested = true</code> 且已成功、未同步的 E2 derivative。</li>
+      </ol>
+      <p>无论 conversion 是自动创建还是管理员手动创建，只要同步时自动同步开启且条件满足，就可以自动同步；自动同步关闭不取消已经创建的 conversion。</p>
+      <h3>同步 source snapshot</h3>
+      <p>扩展现有 source 类型白名单，增加 <code>e2_multimodal_conversion</code>。从 derivative 读取：</p>
+      <pre>SourceType                 = e2_multimodal_conversion
+Backend                    = tos
+ObjectKey                  = .../output_bag.mcap
+SizeBytes / SHA256         = MCAP 输出元数据
+DerivativeID / Generation  = 当前 derivative 身份
+CalibrationObjectKey       = .../calibration.json
+CalibrationSizeBytes       = calibration 输出大小
+CalibrationSHA256          = calibration 输出 SHA-256</pre>
+      <p>复用现有字段 <code>calibration_result_uri</code>、<code>calibration_result_etag</code>、<code>calibration_result_size_bytes</code>、<code>calibration_result_sha256</code> 保存 E2 calibration 输出；URI 使用完整 <code>tos://bucket/object</code>。</p>
+      <h3>严格同步顺序</h3>
+      <pre>1. 注册/恢复 Hilbert ParamFile（WorkspaceID + calibration SHA-256 + size）
+2. 上传 calibration.json
+3. FinishParamFileUpload
+4. 注册 Hilbert RawData，并绑定 ParamFileMotionStoreID
+5. 上传 output_bag.mcap
+6. FinishRawDataUpload</pre>
+      <p>E2 calibration 任一步失败，整个同步失败，MCAP 不单独上传。重试复用同一 sync log 和已保存的 ParamFileMotionStoreID；ParamFile 已 READY 时直接继续 MCAP。E2 手动同步不要求 <code>auto_sync_requested</code>。</p>
+      <p>Hilbert 的 bagName 继续使用稳定的 <code>&lt;episode-public-id&gt;.mcap</code>。录制时间优先使用 Data Gateway 携带的 recording start/end；若两者都缺失，沿用现有 created_at + duration 的 fallback。E2 Job 不解析设备单调时间到 UTC。</p>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">09</span><h2>数据库与服务器接入</h2></div>
+      <h3>migration</h3>
+      <p>新增：</p>
+      <pre>keystone/internal/storage/database/migrations/v2/000021_e2_multimodal_conversion.up.sql
+keystone/internal/storage/database/migrations/v2/000021_e2_multimodal_conversion.down.sql</pre>
+      <ul>
+        <li>创建 <code>e2_multimodal_conversion_image_configs</code>，结构与 Stereo Split image config 对等。</li>
+        <li>插入 image_ref 为空、max_concurrent=1、resource_limits_enabled=true 的 bootstrap row。</li>
+        <li>扩展 <code>episodes.cloud_publish_source</code> 约束，加入 <code>e2_multimodal_conversion</code>。</li>
+        <li>复用 <code>episode_derivatives</code> 现有 calibration_result_* 字段，不新增 calibration 字段。</li>
+      </ul>
+      <h3>Server 生命周期</h3>
+      <p>Server 在 Orbit URL 可用时创建独立 E2 Manager，注入 Orbit client 与 TOS object reader，接入 autosync.Manager；启动和停止独立的 reconciler 与 verification workers。Orbit URL 未配置或 E2 image_ref 未配置时，自动流程等待，手动接口返回明确 unavailable/configuration 错误。</p>
+      <h3>来源与锁定</h3>
+      <ul>
+        <li>E2 conversion 只能接受 <code>ingestion_channel = data_gateway</code> 与 <code>storage_backend = keystone_tos</code>。</li>
+        <li>E2 只能同步 <code>e2_multimodal_conversion</code>，永远不能 fallback 到 original tar。</li>
+        <li>同步 claim 仍由现有 Episode 行锁与 source snapshot 机制保证。</li>
+        <li>原始 tar 与所有成功/失败 generation 默认保留；失败 generation 的四个输出未来必须成组清理。</li>
+      </ul>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">10</span><h2>前端范围</h2></div>
+      <p>本次 Synapse 只提供单 Episode 管理，不做批量 E2 conversion，也不做视频预览。</p>
+      <div class="panel dark">
+        <h3>EpisodeDetail.vue</h3>
+        <ul>
+          <li>E2 Episode 隐藏 Stereo Split 面板，只显示 E2 多模态转换面板。</li>
+          <li>显示原始数据为“原始 tar”，允许下载但不提供 MCAP 预览。</li>
+          <li>提供 process、retry、cancel、查看日志、retry QA。</li>
+          <li>processing succeeded 后展示 output_bag.mcap 与 calibration.json 的路径/大小，并提供独立下载。</li>
+          <li>只有 processing succeeded + derivative QA approved 才显示“同步转换结果”。</li>
+          <li>失败或取消 generation 不提供正式产物下载。</li>
+          <li>不暴露任意 QA check 选择器。</li>
+        </ul>
+      </div>
+      <div class="panel yellow">
+        <h3>SystemSettings.vue</h3>
+        <p>增加 E2 独立配置区，复用 ProcessingSettingsSection：</p>
+        <pre>GET/PUT /api/v1/data-ops/processing-settings/e2-multimodal-conversion
+GET     /api/v1/data-ops/processing-settings/e2-multimodal-conversion/history</pre>
+        <p>配置 image digest、max concurrent、resource limits，使用 expected revision 乐观锁。</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">11</span><h2>权衡、风险与缓解</h2></div>
+      <table>
+        <thead><tr><th>取舍 / 风险</th><th>决定</th><th>缓解</th></tr></thead>
+        <tbody>
+          <tr><td>复用 mcap_path 保存 tar，字段名不准确</td><td>第一版小改动复用</td><td>E2 专属模块按 original tar 解释；禁止普通 original sync。</td></tr>
+          <tr><td>两套 Manager 存在生命周期代码重复</td><td>独立实现，不先抽通用框架</td><td>参考 Stereo Split；只共享稳定的低层约定，未来有第二个真实适配器再抽象。</td></tr>
+          <tr><td>底层 mcap.Writer 与 rosbag2 metadata 兼容</td><td>混合 Protobuf + CDR；生成真正 YAML</td><td>manifest 与 MCAP 独立验证；兼容目标是 MCAP/Foxglove，不承诺 ros2 bag play。</td></tr>
+          <tr><td>HEVC 双路转码 CPU/临时盘压力</td><td>独立资源与并发，固定 4/8 CPU、8/16Gi、20/100Gi</td><td>流式管线、tar 解压上限、提交前容量预检、独立 max_concurrent。</td></tr>
+          <tr><td>原始 tar 没有 checksum</td><td>不要求、不计算、不校验</td><td>提交前冻结 URI、ETag、size；最终 MCAP/calibration 强制 SHA-256。</td></tr>
+          <tr><td>calibration 缺失导致半成品同步</td><td>calibration 失败阻止整个同步</td><td>ParamFile 先行、复用 sync log 与 ParamFile ID。</td></tr>
+          <tr><td>原始 QA 过弱</td><td>只按约定检查 .tar 后缀</td><td>conversion Job 对目录、输出文件和 MCAP 可读性做第二层验证。</td></tr>
+          <tr><td>device_type 实时变化影响历史 Episode</td><td>第一版沿用实时关联，不新增 snapshot 字段</td><td>服务端精确匹配；同时要求 .tar、provenance 与 QA 门禁。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-head"><span class="num">12</span><h2>实施与验证</h2></div>
+      <ol>
+        <li><strong>Job：</strong>从本地转换脚本提炼 E2 converter；实现安全解压、双路 HEVC→H.264、MCAP writer、calibration 与 manifest。</li>
+        <li><strong>Job 测试：</strong>使用小型合成 HEVC fixture 覆盖根目录/一层包装目录、帧数不一致、H.264 message、IMU 交错、输出校验和失败路径。</li>
+        <li><strong>Data Gateway：</strong>将已绑定精确 device_type 冻结到 upload session；E2 生成 capture.tar；其他设备行为不变。</li>
+        <li><strong>原始 QA：</strong>增加 tar_extension 分支及重跑门禁；测试大写后缀和非 tar 后缀。</li>
+        <li><strong>e2conversion Manager：</strong>参考 Stereo Split 接入 Start/Get/Retry/Cancel/Logs/QA、Orbit reconcile、验证 worker 与 server lifecycle。</li>
+        <li><strong>自动同步：</strong>增加 E2 的 capture、Start、approved derivative sync 分支；确保不进入 original fallback。</li>
+        <li><strong>Sync Worker：</strong>增加 E2 source snapshot、ParamFile 直接读取 derivative 输出、calibration 失败阻断逻辑与 source claim。</li>
+        <li><strong>API/前端：</strong>增加 E2 Data Ops API、presign、EpisodeDetail 面板和 SystemSettings 配置区。</li>
+        <li><strong>真实验收：</strong>使用 <code>~/Downloads/E2</code> 打包为 tar 做发布前端到端验证；不把完整样例提交到仓库。</li>
+      </ol>
+      <h3>验收清单</h3>
+      <ul class="checklist">
+        <li>E2 Data Gateway session 生成 capture.tar，Stereo/Lite 仍生成 capture.mcap。</li>
+        <li>E2 只进入 tar_extension QA；非 tar 无法启动 conversion。</li>
+        <li>成功 Job 生成 H.264 MCAP、真正 YAML metadata、calibration.json、manifest。</li>
+        <li>MCAP 包含 E2 专用 topic；每个视频消息是一帧 H.264 access unit。</li>
+        <li>左右视频按 min 帧数输出，消息与 IMU 按时间交错。</li>
+        <li>原始 tar 不需要 checksum；MCAP 和 calibration checksum 必须有效。</li>
+        <li>普通 sync 对已通过的 E2 自动选择 e2 derivative；未完成时绝不上传 tar。</li>
+        <li>ParamFile 未 READY 时 MCAP 不上传；失败重试复用 ParamFile。</li>
+        <li>自动同步关闭时手动 process/sync 可用；开启时手动 process 成功后可自动补同步。</li>
+        <li>原始 tar、成功/失败 generation 均不被本功能自动删除。</li>
+      </ul>
+      <div class="rule">回滚原则：镜像配置可恢复到空或上一 digest；已创建的 E2 derivative 停止自动推进但不删除原始 tar；source claim 与已完成同步记录不可回滚覆盖。</div>
+    <section>
+      <div class="section-head"><span class="num">13</span><h2>分阶段实施与 PR 拆分</h2></div>
+      <p>本功能不一次性合并。每个 PR 保持一个可验证的变化面，先建立 Job 合同，再接入上传、QA、生命周期、同步和前端。每个阶段完成测试后独立 commit。</p>
+      <div class="flow">
+        <div class="flow-step"><strong>PR 0</strong><small>提交本设计文档，冻结方案。</small></div>
+        <div class="flow-step"><strong>PR 1</strong><small>独立 Job：tar → H.264 MCAP + calibration。</small></div>
+        <div class="flow-step"><strong>PR 2–3</strong><small>Data Gateway 的 capture.tar 与 tar_extension QA。</small></div>
+        <div class="flow-step"><strong>PR 4–5</strong><small>数据库配置与 e2conversion Manager。</small></div>
+        <div class="flow-step"><strong>PR 6–8</strong><small>自动同步、云端同步、API 与 Synapse。</small></div>
+      </div>
+      <h3>PR 0：设计文档</h3>
+      <p>只提交当前 HTML 文档，不修改业务代码。</p>
+      <pre>docs(keystone): add Ego Portal E2 conversion design</pre>
+      <h3>PR 1：独立 E2 conversion Job</h3>
+      <p>新增 <code>keystone/jobs/e2-multimodal-conversion/</code>，实现安全解压、双路 HEVC 流式转 H.264、混合编码 MCAP、calibration.json、真正的 rosbag2 YAML metadata 与 manifest。Job 独立实现 Foxglove descriptor，不依赖 Stereo Split。</p>
+      <p>使用小型合成 HEVC fixture 做 CI 测试；使用 <code>~/Downloads/E2</code> 打包后的真实样例做本地发布前验收，不提交完整样例。</p>
+      <pre>feat(e2-conversion): add E2 tar to H264 MCAP job</pre>
+      <h3>PR 2：Data Gateway 的 capture.tar</h3>
+      <p>服务端依据已绑定任务的精确 <code>robots.device_type</code>，将 <code>Ego Portal E2</code> 的对象名生成 为 <code>capture.tar</code>，并将 device type 冻结到 upload session；Stereo/Lite 继续生成 <code>capture.mcap</code>。</p>
+      <pre>feat(dgwcompat): store Ego Portal E2 uploads as tar</pre>
+      <h3>PR 3：原始 tar_extension QA</h3>
+      <p>E2 进入现有 QA 队列，但只执行大小写不敏感的 tar 后缀检查。非 tar 不能启动 conversion；原始 QA 与派生 QA 状态保持独立。</p>
+      <pre>feat(qa): add Ego Portal E2 tar extension check</pre>
+      <h3>PR 4：数据库配置与领域值</h3>
+      <p>新增 <code>v2/000021_e2_multimodal_conversion</code> migration，创建独立 image config 表并扩展 cloud source 白名单。复用 <code>episode_derivatives</code> 现有 calibration_result_* 字段，不新增 calibration 字段。</p>
+      <pre>feat(db): add E2 conversion processing configuration</pre>
+      <h3>PR 5：e2conversion.Manager</h3>
+      <p>新增独立的 E2 conversion 模块，参考 Stereo Split 实现 Start/Get/Retry/Cancel/Logs/RetryQA、Orbit reconciler、输出验证、派生 QA 和 Server 生命周期；第一版不做批量 conversion。</p>
+      <pre>feat(e2-conversion): add durable Orbit processing lifecycle</pre>
+      <h3>PR 6A：自动同步编排</h3>
+      <p>扩展 <code>autosync.Manager</code>：原始 QA 通过后自动启动 E2 conversion；处理成功且派生 QA 通过后自动进入普通 Episode sync；关闭自动同步不取消已启动 Job，重新开启后补同步既有合格结果。</p>
+      <pre>feat(autosync): orchestrate Ego Portal E2 conversion</pre>
+      <h3>PR 6B：Sync Worker 与 ParamFile</h3>
+      <p>增加 E2 source snapshot 和 source resolver。普通同步、批量同步和自动同步对已通过的 E2 统一选择 <code>e2_multimodal_conversion</code>，永远不上传原始 tar。ParamFile 必须先完成，失败时阻止 MCAP 上传，并复用 sync log 与 ParamFile ID 重试。</p>
+      <pre>feat(sync): upload Ego Portal E2 conversion outputs</pre>
+      <h3>PR 7：后端 Data Ops API</h3>
+      <p>新增 E2 的查询、process、retry、cancel、logs、retry QA、presign 接口，以及独立 image/concurrency/resource 配置接口。不新增 E2 专用 sync API，普通 Episode sync 由后端自动选择来源。</p>
+      <pre>feat(api): expose Ego Portal E2 conversion operations</pre>
+      <h3>PR 8：Synapse 单 Episode UI</h3>
+      <p>在 EpisodeDetail 增加 E2 面板，在 SystemSettings 增加 E2 配置区。提供手动处理、日志、成功产物下载和同步按钮；失败/取消产物不提供正式下载；不做批量 E2 conversion 和视频预览。</p>
+      <pre>feat(synapse): add Ego Portal E2 conversion controls</pre>
+      <h3>阶段验收原则</h3>
+      <ul class="checklist">
+        <li>PR 1 合并后，Job 可以脱离 Keystone 独立将 E2 tar 转为 H.264 MCAP 与 calibration.json。</li>
+        <li>PR 2–3 合并后，E2 上传对象为 capture.tar，且只有 tar_extension 通过才可继续。</li>
+        <li>PR 4–5 合并后，管理员可以通过后端生命周期接口创建并监控 E2 Orbit Job。</li>
+        <li>PR 6A–6B 合并后，自动和手动同步都只能发送转换产物，且 calibration 失败会阻止 MCAP。</li>
+        <li>PR 7–8 合并后，管理员可通过 API 和 Synapse 完成单 Episode 的处理、验证、下载和同步。</li>
+      </ul>
+      <p class="meta">后端每个 PR 至少执行 gofmt、相关 Go package tests 与必要的全量测试；Job 执行对应 unittest/container smoke；Synapse 执行 npm run build。</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <h2>最终落点：让格式差异停在转换模块</h2>
+      <p>Data Gateway 负责正确保存输入，Episode QA 负责确认它是 tar，E2 Manager 负责把 tar 变成稳定的 H.264 MCAP，Sync Worker 负责把已经验证的两个输出完整送入 Hilbert。每个 seam 都保持明确，失败不会把原始 tar 误当成 MCAP。</p>
+      <p class="meta">设计状态：已敲定方案，待分阶段实现与验证。&nbsp; / &nbsp;范围：Keystone + Synapse + Orbit Job</p>
+    </div>
+  </footer>
+</body>
+</html>

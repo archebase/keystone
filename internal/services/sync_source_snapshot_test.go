@@ -464,4 +464,83 @@ func TestStereoSplitSyncCompletionRejectsChangedDerivativeEligibility(t *testing
 	}
 }
 
+func TestEnqueueE2ConversionManualUsesApprovedDerivative(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 55, "approved", false)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (55, 'Ego Portal E2');
+		INSERT INTO workstations (id, robot_id) VALUES (55, 55);
+		UPDATE episodes SET workstation_id=55 WHERE id=55;
+	`); err != nil {
+		t.Fatalf("seed E2 device: %v", err)
+	}
+	result, err := db.Exec(`
+		INSERT INTO episode_derivatives (
+			episode_id, kind, generation, processing_status, qa_status,
+			mcap_path, checksum, file_size_bytes,
+			calibration_result_uri, calibration_result_size_bytes, calibration_result_sha256
+		) VALUES (55, 'e2_multimodal_conversion', 2, 'succeeded', 'approved',
+		          'e2-output/episode-55/g2/output_bag.mcap', ?, 500,
+		          'tos://e2-bucket/e2-output/episode-55/g2/calibration.json', 120, ?)
+	`, testSyncSHA256, testCalibrationSHA256)
+	if err != nil {
+		t.Fatalf("insert E2 derivative: %v", err)
+	}
+	derivativeID, _ := result.LastInsertId()
+
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+	if err := worker.EnqueueE2ConversionManual(context.Background(), 55); err != nil {
+		t.Fatalf("EnqueueE2ConversionManual() error=%v", err)
+	}
+
+	var rawSnapshot string
+	if err := db.Get(&rawSnapshot, "SELECT source_snapshot FROM sync_logs WHERE episode_id = 55"); err != nil {
+		t.Fatalf("load source snapshot: %v", err)
+	}
+	snapshot, err := decodeSyncSourceSnapshot(rawSnapshot)
+	if err != nil {
+		t.Fatalf("decode source snapshot: %v", err)
+	}
+	if snapshot.SourceType != SyncSourceE2Conversion || snapshot.Backend != SyncBackendTOS ||
+		snapshot.Bucket != "e2-bucket" ||
+		snapshot.ObjectKey != "e2-output/episode-55/g2/output_bag.mcap" ||
+		snapshot.SizeBytes != 500 || snapshot.SHA256 != testSyncSHA256 ||
+		snapshot.DerivativeID != derivativeID || snapshot.Generation != 2 ||
+		snapshot.CalibrationBucket != "e2-bucket" ||
+		snapshot.CalibrationObjectKey != "e2-output/episode-55/g2/calibration.json" ||
+		snapshot.CalibrationSizeBytes != 120 || snapshot.CalibrationSHA256 != testCalibrationSHA256 {
+		t.Fatalf("source snapshot=%+v, want approved E2 conversion output", snapshot)
+	}
+	var claimed string
+	if err := db.Get(&claimed, "SELECT cloud_publish_source FROM episodes WHERE id = 55"); err != nil || claimed != SyncSourceE2Conversion {
+		t.Fatalf("claimed source=%q error=%v", claimed, err)
+	}
+}
+
+func TestEnqueueEpisodeManualRefusesOriginalForE2WithoutDerivative(t *testing.T) {
+	db := newTestSyncWorkerDB(t)
+	insertEpisodeForSyncWorkerTest(t, db, 56, "approved", false)
+	if _, err := db.Exec(`
+		INSERT INTO robots (id, device_type) VALUES (56, 'Ego Portal E2');
+		INSERT INTO workstations (id, robot_id) VALUES (56, 56);
+		UPDATE episodes SET workstation_id=56 WHERE id=56;
+	`); err != nil {
+		t.Fatalf("seed E2 device: %v", err)
+	}
+	worker := NewSyncWorker(db, nil, nil, "test-bucket", SyncWorkerConfig{MaxRetries: 3}, nil)
+	worker.running.Store(true)
+
+	err := worker.EnqueueEpisodeManual(context.Background(), 56)
+	if !errors.Is(err, ErrSyncSourceUnavailable) {
+		t.Fatalf("EnqueueEpisodeManual() error=%v want ErrSyncSourceUnavailable", err)
+	}
+	var logs int
+	if err := db.Get(&logs, "SELECT COUNT(*) FROM sync_logs WHERE episode_id = 56"); err != nil || logs != 0 {
+		t.Fatalf("sync log count=%d error=%v want 0", logs, err)
+	}
+}
+
 const testSyncSHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+const testCalibrationSHA256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

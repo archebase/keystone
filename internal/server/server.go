@@ -313,6 +313,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	if db != nil && syncWorker != nil && stereoSplitManager != nil {
 		autoSyncManager = autosync.NewManager(db, stereoSplitManager, syncWorker, 0, depthNormManager)
 		autoSyncManager.SetQAEnqueuer(qaHandler)
+		autoSyncManager.SetE2Converter(e2ConversionManager)
 		qaHandler.SetAutoSyncCapturer(autoSyncManager)
 		autoSyncSettingsHandler = handlers.NewAutoSyncSettingsHandler(autoSyncManager)
 	}

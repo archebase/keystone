@@ -25,6 +25,9 @@ const (
 	// SyncSourceDepthNormalization selects the approved local depth-normalization
 	// derivative as the canonical cloud upload source.
 	SyncSourceDepthNormalization = "depth_normalization"
+	// SyncSourceE2Conversion selects the approved e2-multimodal-conversion
+	// derivative MCAP and calibration output as the canonical cloud upload source.
+	SyncSourceE2Conversion = "e2_multimodal_conversion"
 	// SyncBackendMinIO reads the frozen source object through Keystone's MinIO client.
 	SyncBackendMinIO = "minio"
 	// SyncBackendTOS reads the frozen source object through Keystone's TOS client.
@@ -63,7 +66,7 @@ type SyncSourceSnapshot struct {
 
 func (s SyncSourceSnapshot) validate() error {
 	if s.SourceType != SyncSourceOriginal && s.SourceType != SyncSourceStereoSplit &&
-		s.SourceType != SyncSourceDepthNormalization {
+		s.SourceType != SyncSourceDepthNormalization && s.SourceType != SyncSourceE2Conversion {
 		return fmt.Errorf("unsupported sync source type %q", s.SourceType)
 	}
 	if s.Backend != SyncBackendMinIO && s.Backend != SyncBackendTOS {
@@ -82,7 +85,8 @@ func (s SyncSourceSnapshot) validate() error {
 	if _, err := hex.DecodeString(checksum); err != nil {
 		return fmt.Errorf("sync source snapshot has invalid SHA-256")
 	}
-	if (s.SourceType == SyncSourceStereoSplit || s.SourceType == SyncSourceDepthNormalization) &&
+	if (s.SourceType == SyncSourceStereoSplit || s.SourceType == SyncSourceDepthNormalization ||
+		s.SourceType == SyncSourceE2Conversion) &&
 		(s.DerivativeID <= 0 || s.Generation <= 0) {
 		return fmt.Errorf("%s sync snapshot is missing generation identity", s.SourceType)
 	}
@@ -252,9 +256,71 @@ func (w *SyncWorker) buildDepthNormalizationSourceSnapshot(ctx context.Context, 
 	return snapshot, nil
 }
 
+func (w *SyncWorker) buildE2ConversionSourceSnapshot(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (SyncSourceSnapshot, error) {
+	var derivative struct {
+		ID                      int64          `db:"id"`
+		Generation              int            `db:"generation"`
+		Status                  string         `db:"processing_status"`
+		QAStatus                string         `db:"qa_status"`
+		McapPath                sql.NullString `db:"mcap_path"`
+		Checksum                sql.NullString `db:"checksum"`
+		SizeBytes               sql.NullInt64  `db:"file_size_bytes"`
+		CalibrationResultURI    sql.NullString `db:"calibration_result_uri"`
+		CalibrationResultSize   sql.NullInt64  `db:"calibration_result_size_bytes"`
+		CalibrationResultSHA256 sql.NullString `db:"calibration_result_sha256"`
+	}
+	if err := tx.GetContext(ctx, &derivative, `
+		SELECT id, generation, processing_status, qa_status, mcap_path, checksum, file_size_bytes,
+		       calibration_result_uri, calibration_result_size_bytes, calibration_result_sha256
+		FROM episode_derivatives
+		WHERE episode_id = ? AND kind = 'e2_multimodal_conversion'
+	`+txLockClause(tx), ep.ID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SyncSourceSnapshot{}, fmt.Errorf("E2 conversion derivative not found for episode %d", ep.ID)
+		}
+		return SyncSourceSnapshot{}, fmt.Errorf("load E2 conversion sync source: %w", err)
+	}
+	if derivative.Status != "succeeded" || derivative.QAStatus != "approved" {
+		return SyncSourceSnapshot{}, fmt.Errorf("E2 conversion derivative must be succeeded and QA approved")
+	}
+	objectKey := strings.TrimLeft(strings.TrimSpace(derivative.McapPath.String), "/")
+	if objectKey == "" {
+		return SyncSourceSnapshot{}, fmt.Errorf("E2 conversion derivative for episode %d has no MCAP output", ep.ID)
+	}
+	bucket, calibrationObjectKey, err := parseTOSObjectURI(derivative.CalibrationResultURI.String)
+	if err != nil {
+		return SyncSourceSnapshot{}, fmt.Errorf("episode %d E2 conversion calibration result: %w", ep.ID, err)
+	}
+	if derivative.CalibrationResultSize.Int64 <= 0 || len(strings.TrimSpace(derivative.CalibrationResultSHA256.String)) != 64 {
+		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid E2 calibration output metadata", ep.ID)
+	}
+	snapshot := SyncSourceSnapshot{
+		SourceType:           SyncSourceE2Conversion,
+		Backend:              SyncBackendTOS,
+		Bucket:               bucket,
+		ObjectKey:            objectKey,
+		SizeBytes:            derivative.SizeBytes.Int64,
+		SHA256:               strings.ToLower(strings.TrimSpace(derivative.Checksum.String)),
+		BagName:              hilbertBagName(ep, objectKey),
+		DerivativeID:         derivative.ID,
+		Generation:           derivative.Generation,
+		CalibrationBucket:    bucket,
+		CalibrationObjectKey: calibrationObjectKey,
+		CalibrationSizeBytes: derivative.CalibrationResultSize.Int64,
+		CalibrationSHA256:    strings.ToLower(strings.TrimSpace(derivative.CalibrationResultSHA256.String)),
+	}
+	if _, err := encodeSyncSourceSnapshot(snapshot); err != nil {
+		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid E2 conversion sync source: %v", ep.ID, err)
+	}
+	return snapshot, nil
+}
+
 func (w *SyncWorker) resolveManualSyncSourceTx(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (string, error) {
 	if strings.EqualFold(strings.TrimSpace(ep.DeviceType), DeviceTypeZJWA1D) {
 		return w.resolveZJWA1DSyncSourceTx(ctx, tx, ep)
+	}
+	if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {
+		return w.resolveE2ConversionSyncSourceTx(ctx, tx, ep)
 	}
 
 	claimedSource := strings.TrimSpace(ep.CloudPublishSource.String)
@@ -294,6 +360,40 @@ func (w *SyncWorker) resolveManualSyncSourceTx(ctx context.Context, tx *sqlx.Tx,
 	}
 	return "", fmt.Errorf(
 		"%w: stereo split processing_status=%q qa_status=%q",
+		ErrSyncSourceUnavailable,
+		derivative.ProcessingStatus,
+		derivative.QAStatus,
+	)
+}
+
+func (w *SyncWorker) resolveE2ConversionSyncSourceTx(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (string, error) {
+	claimedSource := strings.TrimSpace(ep.CloudPublishSource.String)
+	switch claimedSource {
+	case SyncSourceE2Conversion, "":
+	default:
+		return "", fmt.Errorf("%w: unsupported claimed source %q", ErrCloudPublishSourceLocked, claimedSource)
+	}
+
+	var derivative struct {
+		ProcessingStatus string `db:"processing_status"`
+		QAStatus         string `db:"qa_status"`
+	}
+	err := tx.GetContext(ctx, &derivative, `
+		SELECT processing_status, qa_status
+		FROM episode_derivatives
+		WHERE episode_id = ? AND kind = 'e2_multimodal_conversion'
+	`+txLockClause(tx), ep.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: E2 conversion has not completed", ErrSyncSourceUnavailable)
+	}
+	if err != nil {
+		return "", fmt.Errorf("load E2 conversion sync state: %w", err)
+	}
+	if derivative.ProcessingStatus == "succeeded" && derivative.QAStatus == "approved" {
+		return SyncSourceE2Conversion, nil
+	}
+	return "", fmt.Errorf(
+		"%w: E2 conversion processing_status=%q qa_status=%q",
 		ErrSyncSourceUnavailable,
 		derivative.ProcessingStatus,
 		derivative.QAStatus,
@@ -408,6 +508,18 @@ func loadSyncSourceSnapshot(ctx context.Context, db sqlx.QueryerContext, syncLog
 		return SyncSourceSnapshot{}, false, newNonRetryableSyncError("sync_log %d has invalid source snapshot: %v", syncLogID, err)
 	}
 	return snapshot, true, nil
+}
+
+func parseTOSObjectURI(uri string) (string, string, error) {
+	remainder, ok := strings.CutPrefix(strings.TrimSpace(uri), "tos://")
+	if !ok {
+		return "", "", fmt.Errorf("calibration URI is not a TOS URI")
+	}
+	bucket, objectKey, ok := strings.Cut(remainder, "/")
+	if !ok || strings.TrimSpace(bucket) == "" || strings.TrimSpace(objectKey) == "" {
+		return "", "", fmt.Errorf("calibration URI is incomplete")
+	}
+	return bucket, objectKey, nil
 }
 
 func (w *SyncWorker) validateSyncSourceGateTx(ctx context.Context, tx *sqlx.Tx, episodeID int64, episodeQA, claimedSource string, snapshot SyncSourceSnapshot) error {
