@@ -408,6 +408,7 @@ func (m *Manager) VerifyExecution(ctx context.Context, execution ExecutionSnapsh
 	}
 	return VerifiedOutput{
 		OutputBucket:              execution.OutputBucket,
+		MCAPObjectKey:             mcapKey,
 		MCAPSizeBytes:             manifest.Outputs.MCAP.SizeBytes,
 		MCAPChecksumSHA256:        manifest.Outputs.MCAP.SHA256,
 		MCAPETag:                  mcapETag,
