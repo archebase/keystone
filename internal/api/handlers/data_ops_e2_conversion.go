@@ -51,6 +51,7 @@ func e2Actor(c *gin.Context) string {
 	return strings.TrimSpace(claims.Role)
 }
 
+// GetE2Conversion returns the current E2 conversion derivative.
 func (h *DataOpsHandler) GetE2Conversion(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
@@ -68,6 +69,7 @@ func (h *DataOpsHandler) GetE2Conversion(c *gin.Context) {
 	c.JSON(http.StatusOK, value)
 }
 
+// StartE2Conversion starts or resumes E2 conversion for one Episode.
 func (h *DataOpsHandler) StartE2Conversion(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
@@ -89,6 +91,7 @@ func (h *DataOpsHandler) StartE2Conversion(c *gin.Context) {
 	c.JSON(code, gin.H{"derivative": value, "created": created})
 }
 
+// RetryE2Conversion retries a failed or canceled E2 conversion generation.
 func (h *DataOpsHandler) RetryE2Conversion(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
@@ -106,6 +109,7 @@ func (h *DataOpsHandler) RetryE2Conversion(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"derivative": value})
 }
 
+// CancelE2Conversion requests cancellation of the current E2 generation.
 func (h *DataOpsHandler) CancelE2Conversion(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
@@ -123,6 +127,7 @@ func (h *DataOpsHandler) CancelE2Conversion(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"derivative": value})
 }
 
+// GetE2ConversionLogs returns the current E2 Orbit log tail.
 func (h *DataOpsHandler) GetE2ConversionLogs(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
@@ -140,6 +145,7 @@ func (h *DataOpsHandler) GetE2ConversionLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"logs": logs})
 }
 
+// RetryE2ConversionQA retries QA for a successfully processed E2 generation.
 func (h *DataOpsHandler) RetryE2ConversionQA(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
@@ -157,6 +163,7 @@ func (h *DataOpsHandler) RetryE2ConversionQA(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"derivative": value})
 }
 
+// SyncE2Conversion queues an approved E2 derivative for cloud sync.
 func (h *DataOpsHandler) SyncE2Conversion(c *gin.Context) {
 	id, ok := e2EpisodeID(c)
 	if !ok {
@@ -179,6 +186,7 @@ func (h *DataOpsHandler) SyncE2Conversion(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"episode_id": id, "source_type": services.SyncSourceE2Conversion})
 }
 
+// UpdateE2ConversionSettingsRequest contains an audited E2 image configuration update.
 type UpdateE2ConversionSettingsRequest struct {
 	ImageRef              string `json:"image_ref" binding:"required"`
 	MaxConcurrent         int    `json:"max_concurrent" binding:"required"`
@@ -186,6 +194,7 @@ type UpdateE2ConversionSettingsRequest struct {
 	ExpectedRevisionID    int64  `json:"expected_revision_id" binding:"required"`
 }
 
+// GetE2ConversionSettings returns the current E2 processing configuration.
 func (h *DataOpsHandler) GetE2ConversionSettings(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
@@ -198,6 +207,8 @@ func (h *DataOpsHandler) GetE2ConversionSettings(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"config": value, "max_concurrent_limit": e2conversion.MaxConfigurableConcurrent})
 }
+
+// UpdateE2ConversionSettings updates the E2 processing configuration.
 func (h *DataOpsHandler) UpdateE2ConversionSettings(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
@@ -219,6 +230,8 @@ func (h *DataOpsHandler) UpdateE2ConversionSettings(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"config": value, "max_concurrent_limit": e2conversion.MaxConfigurableConcurrent})
 }
+
+// ListE2ConversionSettingsHistory returns the E2 processing configuration history.
 func (h *DataOpsHandler) ListE2ConversionSettingsHistory(c *gin.Context) {
 	if h.e2Conversion == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "E2 conversion is unavailable", "code": "e2_conversion_unavailable"})
