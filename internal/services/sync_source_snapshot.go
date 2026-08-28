@@ -90,6 +90,19 @@ func (s SyncSourceSnapshot) validate() error {
 		(s.DerivativeID <= 0 || s.Generation <= 0) {
 		return fmt.Errorf("%s sync snapshot is missing generation identity", s.SourceType)
 	}
+	if s.SourceType == SyncSourceE2Conversion {
+		calibrationChecksum := strings.ToLower(strings.TrimSpace(s.CalibrationSHA256))
+		if strings.TrimSpace(s.CalibrationBucket) == "" || strings.TrimSpace(s.CalibrationObjectKey) == "" ||
+			s.CalibrationSizeBytes <= 0 || len(calibrationChecksum) != 64 {
+			return fmt.Errorf("E2 conversion sync snapshot has invalid calibration identity")
+		}
+		if _, err := hex.DecodeString(calibrationChecksum); err != nil {
+			return fmt.Errorf("E2 conversion sync snapshot has invalid calibration SHA-256")
+		}
+		if !s.CalibrationUploadCompleted && strings.TrimSpace(s.ParamFileMotionStoreID) != "" {
+			return fmt.Errorf("E2 conversion sync snapshot has incomplete calibration upload state")
+		}
+	}
 	return nil
 }
 

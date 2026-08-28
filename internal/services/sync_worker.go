@@ -1420,6 +1420,12 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	}
 	calibrationID, calibrationErr := w.uploadMatchingCalibration(ctx, uploadContext, ep, ep.SourceSnapshot, syncLogID)
 	if calibrationErr != nil {
+		if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {
+			return nil, fmt.Errorf("E2 calibration upload must complete before MCAP upload: %w", calibrationErr)
+		}
+		if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {
+			return nil, fmt.Errorf("E2 calibration upload must complete before MCAP upload: %w", calibrationErr)
+		}
 		if errors.Is(calibrationErr, ErrCalibrationStateUnsupported) {
 			return nil, calibrationErr
 		}
@@ -1532,6 +1538,65 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	}, nil
 }
 
+func (w *SyncWorker) uploadE2Calibration(ctx context.Context, uploadContext hilbertEpisodeUploadContext, ep syncEpisodeUploadRow, snapshot *SyncSourceSnapshot, syncLogID int64) (string, error) {
+	if snapshot == nil || snapshot.SourceType != SyncSourceE2Conversion {
+		return "", newNonRetryableSyncError("episode %d E2 sync is missing its source snapshot", ep.ID)
+	}
+	if snapshot.CalibrationUploadCompleted && strings.TrimSpace(snapshot.ParamFileMotionStoreID) != "" {
+		return snapshot.ParamFileMotionStoreID, nil
+	}
+	if snapshot.CalibrationBucket == "" || snapshot.CalibrationObjectKey == "" || snapshot.CalibrationSizeBytes <= 0 || len(snapshot.CalibrationSHA256) != 64 {
+		return "", newNonRetryableSyncError("episode %d has invalid E2 calibration snapshot", ep.ID)
+	}
+	reader, err := w.sourceReaderForBackend(SyncBackendTOS)
+	if err != nil {
+		return "", err
+	}
+	size, etag, err := reader.StatObject(ctx, snapshot.CalibrationBucket, snapshot.CalibrationObjectKey)
+	if err != nil || size != snapshot.CalibrationSizeBytes {
+		return "", fmt.Errorf("E2 calibration object identity changed")
+	}
+	registration, err := w.hilbert.RegisterParamFile(ctx, auth.HilbertParamFileRegisterRequest{WorkspaceID: uploadContext.WorkspaceID, ContentSHA256: snapshot.CalibrationSHA256, SizeBytes: size})
+	if err != nil {
+		return "", fmt.Errorf("register E2 calibration ParamFile: %w", err)
+	}
+	paramID := strings.TrimSpace(registration.ParamFileMotionStoreID)
+	if registration.State == auth.CalibrationSnapshotStateUploading {
+		credentials, err := w.hilbert.GetParamFileUploadCredentials(ctx, uploadContext.WorkspaceID, paramID)
+		if err != nil {
+			return "", err
+		}
+		obj, err := w.openSourceObjectRangeStream(ctx, reader, snapshot.CalibrationBucket, snapshot.CalibrationObjectKey, size, etag)
+		if err != nil {
+			return "", err
+		}
+		uploader := w.tosUploader
+		if uploader == nil {
+			uploader = cloud.NewTOSS3Uploader(w.syncOSSTimeout(), config.ModeEdge)
+		}
+		if _, err = uploader.PutObject(ctx, hilbertUploadTarget(credentials), obj, size, snapshot.CalibrationSHA256, nil); err != nil {
+			_ = obj.Close()
+			return "", err
+		}
+		_ = obj.Close()
+		if err := w.hilbert.FinishParamFileUpload(ctx, uploadContext.WorkspaceID, paramID); err != nil {
+			return "", err
+		}
+	} else if registration.State != auth.CalibrationSnapshotStateReady {
+		return "", fmt.Errorf("unsupported E2 calibration ParamFile state %q", registration.State)
+	}
+	snapshot.ParamFileMotionStoreID = paramID
+	snapshot.CalibrationUploadCompleted = true
+	encoded, err := encodeSyncSourceSnapshot(*snapshot)
+	if err != nil {
+		return "", err
+	}
+	if _, err := w.db.ExecContext(ctx, "UPDATE sync_logs SET source_snapshot = ? WHERE id = ?", encoded, syncLogID); err != nil {
+		return "", err
+	}
+	return paramID, nil
+}
+
 type cameraCalibrationUploadRow struct {
 	Bucket    string `db:"bucket"`
 	ObjectKey string `db:"object_key"`
@@ -1549,6 +1614,12 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 	if snapshot != nil && strings.TrimSpace(snapshot.ParamFileMotionStoreID) != "" {
 		logger.Printf("[SYNC-WORKER] Episode %d ignoring incomplete Hilbert calibration registration: param_file_id=%s object_key=%s",
 			ep.ID, snapshot.ParamFileMotionStoreID, snapshot.CalibrationObjectKey)
+	}
+	if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {
+		if snapshot == nil || snapshot.SourceType != SyncSourceE2Conversion {
+			return "", newNonRetryableSyncError("episode %d E2 sync is missing its source snapshot", ep.ID)
+		}
+		return w.uploadE2Calibration(ctx, uploadContext, ep, snapshot, syncLogID)
 	}
 	if !strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal Stereo") || !ep.CameraSerial.Valid || strings.TrimSpace(ep.CameraSerial.String) == "" {
 		return "", nil
@@ -1674,6 +1745,19 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 	return paramFileID, nil
 }
 
+func (w *SyncWorker) sourceReaderForBackend(backend string) (SourceObjectReader, error) {
+	if backend == SyncBackendTOS {
+		if w.tosSource == nil {
+			return nil, fmt.Errorf("TOS source object reader not available")
+		}
+		return w.tosSource, nil
+	}
+	reader := w.sourceReader()
+	if reader == nil {
+		return nil, fmt.Errorf("source object reader not available")
+	}
+	return reader, nil
+}
 func (w *SyncWorker) registerOrRecoverHilbertRawData(
 	ctx context.Context,
 	request auth.HilbertRawDataRegisterRequest,
