@@ -69,6 +69,44 @@ def find_root(extracted: Path) -> Path:
     raise RuntimeError("tar must contain E2 files at its root or under one wrapper directory")
 
 
+def build_manifest(
+    result: dict[str, object],
+    outputs: Path,
+    source_uri: str,
+    source_size: int,
+    generation: int,
+    processor_image: str,
+    started_at: str,
+    finished_at: str,
+) -> dict[str, object]:
+    """Build the converter manifest using only the fixed E2 output contract.
+
+    The generated calibration.json is an output derived from the E2 capture's
+    embedded camera/IMU files. It is intentionally represented under
+    ``outputs`` and not as a top-level ``calibration`` input snapshot, which
+    Keystone reserves for externally supplied calibration results.
+    """
+    return {
+        "schema_version": 1,
+        "kind": "e2_multimodal_conversion",
+        "status": "succeeded",
+        "output_format": "h264_ros2_mcap",
+        "nominal_fps": result["nominal_fps"],
+        "ros_distribution": "humble",
+        "source": {"uri": source_uri, "size_bytes": source_size},
+        "outputs": {
+            "mcap": identity(outputs / "output_bag.mcap"),
+            "metadata": identity(outputs / "metadata.yaml"),
+            "calibration": identity(outputs / "calibration.json"),
+        },
+        "processor_image": processor_image,
+        "generation": generation,
+        **result,
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
@@ -92,30 +130,17 @@ def main() -> int:
         work = args.scratch.resolve()
         extracted = work / "extracted"
         safe_extract(source, extracted)
+        outputs = work / "outputs"
+        started_at = now()
         result = convert(
-            find_root(extracted), work / "outputs", args.source_uri,
+            find_root(extracted), outputs, args.source_uri,
             args.expected_source_size, args.generation, args.processor_image
         )
-
-        outputs = work / "outputs"
-        manifest = {
-            "schema_version": 1, "kind": "e2_multimodal_conversion", "status": "succeeded",
-            "output_format": "h264_ros2_mcap", "nominal_fps": result["nominal_fps"],
-            "ros_distribution": "humble",
-            "source": {"uri": args.source_uri, "size_bytes": args.expected_source_size},
-            "outputs": {"mcap": identity(outputs / "output_bag.mcap"),
-                        "metadata": identity(outputs / "metadata.yaml"),
-                        "calibration": identity(outputs / "calibration.json")},
-            "calibration": {
-                "schema": result["calibration_schema"],
-                "source_files": [
-                    "Camera0/camera_params.json",
-                    "Camera1/camera_params.json",
-                    "Sensors/imu_calibration.json",
-                ],
-            },
-            **result, "started_at": now(), "finished_at": now(),
-        }
+        finished_at = now()
+        manifest = build_manifest(
+            result, outputs, args.source_uri, args.expected_source_size,
+            args.generation, args.processor_image, started_at, finished_at,
+        )
         args.output_binding.mkdir(parents=True, exist_ok=True)
         for name in ("output_bag.mcap", "metadata.yaml", "calibration.json"):
             shutil.copyfile(outputs / name, args.output_binding / name)

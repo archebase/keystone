@@ -85,7 +85,29 @@ class E2JobContractTest(unittest.TestCase):
             self.assertEqual(calibration["extrinsics"]["transforms"][1]["matrix"][0][3], 0.1)
             self.assertEqual([item["offset_seconds"] for item in calibration["temporal_extrinsics"]], [-0.001, -0.002])
 
-    def test_accepts_root_layout(self) -> None:
+    def test_manifest_does_not_advertise_external_calibration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outputs = Path(directory)
+            for name in ("output_bag.mcap", "metadata.yaml", "calibration.json"):
+                (outputs / name).write_bytes(name.encode())
+
+            from run_processing import build_manifest
+
+            manifest = build_manifest(
+                {"nominal_fps": 30, "calibration_schema": "archebase.calibration"},
+                outputs,
+                "tos://bucket/input.tar",
+                123,
+                1,
+                "processor@sha256:digest",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:01Z",
+            )
+
+            self.assertNotIn("calibration", manifest)
+            self.assertEqual(manifest["outputs"]["calibration"]["name"], "calibration.json")
+            self.assertEqual(manifest["calibration_schema"], "archebase.calibration")
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             names = {
