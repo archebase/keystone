@@ -1129,14 +1129,6 @@ class StereoSplitH264Converter:
                 if video_metadata:
                     raise RuntimeError("H.264 encoder did not return every submitted frame")
                 ordered_writer.flush_all()
-                if calibration_attachment is not None:
-                    writer.add_attachment(
-                        create_time=0,
-                        log_time=0,
-                        name="calibration.json",
-                        media_type="application/json",
-                        data=calibration_attachment,
-                    )
                 writer.finish()
             except BaseException:
                 if decoder is not None:
@@ -1282,25 +1274,13 @@ class StereoSplitH264Converter:
                 if seen_calibration:
                     raise RuntimeError("input contains duplicate calibration attachments")
                 seen_calibration = True
-                if calibration_attachment is not None:
-                    continue
-                attachment_name = "calibration.json"
-            else:
-                attachment_name = attachment.name
+                continue
             writer.add_attachment(
                 attachment.create_time,
                 attachment.log_time,
-                attachment_name,
+                attachment.name,
                 attachment.media_type,
                 attachment.data,
-            )
-        if calibration_attachment is not None:
-            writer.add_attachment(
-                create_time=0,
-                log_time=0,
-                name="calibration.json",
-                media_type="application/json",
-                data=calibration_attachment,
             )
         for metadata in reader.iter_metadata():
             writer.add_metadata(metadata.name, metadata.metadata)

@@ -341,7 +341,7 @@ class RunProcessingTest(unittest.TestCase):
             self.assertEqual(manifest["stats"]["left_videos"], 2)
             self.assertEqual(manifest["stats"]["right_videos"], 2)
 
-    def test_preserves_embedded_calibration_in_split_manifest(self) -> None:
+    def test_does_not_preserve_embedded_calibration_in_split_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             joined_source = make_source_mcap(root)
@@ -367,19 +367,10 @@ class RunProcessingTest(unittest.TestCase):
             manifest = json.loads(
                 (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(manifest["schema_version"], 3)
-            self.assertEqual(manifest["calibration"]["attachment_name"], "calibration.json")
-            self.assertEqual(manifest["calibration"]["camera_serial"], "CAMERA-SN-001")
-            self.assertEqual(
-                manifest["calibration"]["session_id"],
-                "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
-            )
-            self.assertEqual(
-                manifest["calibration"]["capture_id"],
-                "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
-            )
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertNotIn("calibration", manifest)
 
-    def test_embeds_frozen_calibration_result_as_json_attachment(self) -> None:
+    def test_does_not_attach_frozen_calibration_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = make_source_mcap(root)
@@ -410,27 +401,15 @@ class RunProcessingTest(unittest.TestCase):
             output_mcap = output_binding / "output_bag.mcap"
             with output_mcap.open("rb") as stream:
                 attachments = list(make_reader(stream).iter_attachments())
-            self.assertEqual(len(attachments), 1)
-            self.assertEqual(attachments[0].name, "calibration.json")
-            self.assertEqual(attachments[0].media_type, "application/json")
-            self.assertEqual(attachments[0].data, calibration_result.read_bytes())
+            self.assertFalse(
+                any(attachment.name == "calibration.json" for attachment in attachments)
+            )
 
             manifest = json.loads(
                 (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(manifest["schema_version"], 3)
-            self.assertEqual(
-                manifest["calibration"],
-                {
-                    "attachment_name": "calibration.json",
-                    "camera_serial": "CAMERA-SN-001",
-                    "capture_id": "92cd6f2f-d131-4bf0-9b4a-d96258d09011",
-                    "media_type": "application/json",
-                    "session_id": "7f9af590-75c2-47ad-b6e0-76ebf05c44f7",
-                    "sha256": hashlib.sha256(calibration_result.read_bytes()).hexdigest(),
-                    "size_bytes": calibration_result.stat().st_size,
-                },
-            )
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertNotIn("calibration", manifest)
 
     def test_accepts_calibration_json_without_provenance_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

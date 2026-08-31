@@ -513,7 +513,7 @@ class ConvertTest(unittest.TestCase):
                     [record[8] for record in topic_records(source, topic)],
                 )
 
-    def test_normalizes_existing_calibration_attachment(self) -> None:
+    def test_drops_existing_calibration_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = root / "source.mcap"
@@ -529,11 +529,17 @@ class ConvertTest(unittest.TestCase):
 
             with output.open("rb") as stream:
                 attachments = list(make_reader(stream).iter_attachments())
-            self.assertEqual(len(attachments), 1)
-            self.assertEqual(attachments[0].name, "calibration.json")
-            self.assertEqual(attachments[0].data, calibration)
+            self.assertFalse(
+                any(
+                    attachment.name in {
+                        "calibration.json",
+                        "archebase/calibration/calibration.json",
+                    }
+                    for attachment in attachments
+                )
+            )
 
-    def test_replaces_existing_calibration_attachment_when_result_is_supplied(self) -> None:
+    def test_drops_supplied_calibration_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = root / "source.mcap"
@@ -544,16 +550,15 @@ class ConvertTest(unittest.TestCase):
                 attachment_data=b'{"status":"old"}',
             )
             replacement = b'{"status":"new"}'
-
             StereoSplitH264Converter().convert(
                 source, output, calibration_attachment=replacement
             )
 
             with output.open("rb") as stream:
                 attachments = list(make_reader(stream).iter_attachments())
-            self.assertEqual(len(attachments), 1)
-            self.assertEqual(attachments[0].name, "calibration.json")
-            self.assertEqual(attachments[0].data, replacement)
+            self.assertFalse(
+                any(attachment.name == "calibration.json" for attachment in attachments)
+            )
 
     def test_preserves_existing_mcap_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
