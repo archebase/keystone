@@ -294,9 +294,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         local_mcap,
         calibration_attachment=calibration[0] if calibration is not None else None,
     )
-    manifest_calibration = (
-        calibration[1] if calibration is not None else load_embedded_calibration(local_mcap)
-    )
+    manifest_calibration = None
     processing_mode = "timestamp_repair" if stats.input_mode == "split_h264" else "convert"
     metadata: dict[str, object] = {
         "schema_version": 1,
@@ -323,7 +321,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     publish_file(local_metadata, output_binding / OUTPUT_METADATA_NAME, metadata_identity)
 
     manifest: dict[str, object] = {
-        "schema_version": 3 if manifest_calibration is not None else 2,
+        "schema_version": 2,
         "status": "succeeded",
         "kind": args.kind,
         "processing_mode": processing_mode,

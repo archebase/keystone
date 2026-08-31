@@ -1290,14 +1290,11 @@ func validateManifestSnapshot(manifest processingManifest, execution ExecutionSn
 }
 
 func validateManifestCalibration(manifest processingManifest, expected *CalibrationSnapshot) error {
-	if expected == nil {
-		if manifest.SchemaVersion == manifestSchemaV3 || manifest.Calibration != nil {
-			return fmt.Errorf("processing manifest has unexpected calibration data")
-		}
+	if manifest.Calibration == nil {
 		return nil
 	}
-	if manifest.SchemaVersion != manifestSchemaV3 || manifest.Calibration == nil {
-		return fmt.Errorf("processing manifest is missing frozen calibration data")
+	if expected == nil {
+		return fmt.Errorf("processing manifest has unexpected calibration data")
 	}
 	actual := manifest.Calibration
 	if actual.AttachmentName != calibrationAttachment || actual.MediaType != calibrationMediaType ||
