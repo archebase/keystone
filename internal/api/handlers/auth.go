@@ -71,7 +71,6 @@ type collectorAuthRow struct {
 
 var (
 	errWorkstationNotAssigned  = errors.New("workstation is not assigned to collector")
-	errRecordingActive         = errors.New("workstation has an active recording")
 	errInvalidDeviceCredential = errors.New("invalid device credential")
 )
 
@@ -353,8 +352,6 @@ func (h *AuthHandler) ActivateWorkstation(c *gin.Context) {
 			c.JSON(http.StatusUnauthorized, gin.H{"code": "invalid_device_credential", "error": err.Error()})
 		case errors.Is(err, errWorkstationNotAssigned):
 			c.JSON(http.StatusForbidden, gin.H{"code": "workstation_not_assigned", "error": err.Error()})
-		case errors.Is(err, errRecordingActive):
-			c.JSON(http.StatusConflict, gin.H{"code": "recording_active", "error": err.Error()})
 		default:
 			logger.Printf("[AUTH] Failed to activate workstation: collector=%d err=%v", claims.CollectorID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to activate workstation"})
@@ -509,26 +506,6 @@ func (h *AuthHandler) activateWorkstation(
 	takesOverCurrentSession := err == nil && (current.ID != workstation.ID || current.CollectorID != collectorID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return authWorkstationRow{}, fmt.Errorf("query current workstation: %w", err)
-	}
-
-	if !workstation.IsCurrent || takesOverCurrentSession {
-		var activeOtherRecording bool
-		if err := tx.GetContext(ctx, &activeOtherRecording, `
-			SELECT EXISTS(
-				SELECT 1
-				FROM tasks t
-				JOIN workstations task_ws ON task_ws.id = t.workstation_id
-				WHERE task_ws.robot_id = ?
-					AND t.status = 'in_progress'
-					AND t.deleted_at IS NULL
-					AND (task_ws.id != ? OR task_ws.data_collector_id != ?)
-			)
-		`, workstation.RobotID, workstation.ID, collectorID); err != nil {
-			return authWorkstationRow{}, fmt.Errorf("query active recording: %w", err)
-		}
-		if activeOtherRecording {
-			return authWorkstationRow{}, errRecordingActive
-		}
 	}
 
 	now := time.Now().UTC()
