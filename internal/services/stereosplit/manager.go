@@ -52,7 +52,6 @@ type Manager struct {
 	runnerCancel context.CancelFunc
 	runnerDone   chan struct{}
 	wake         chan struct{}
-	dispatchMu   sync.RWMutex
 
 	verificationMu     sync.Mutex
 	verificationCancel context.CancelFunc
@@ -63,6 +62,18 @@ type Manager struct {
 	statusSyncCancel context.CancelFunc
 	statusSyncDone   chan struct{}
 	statusSyncClaim  sync.Mutex
+
+	dispatchMu       sync.RWMutex
+	dispatchRunMu    sync.Mutex
+	dispatchCancel   context.CancelFunc
+	dispatchDone     chan struct{}
+	dispatchClaimTTL time.Duration
+	dispatchInFlight int
+
+	cleanupMu     sync.Mutex
+	cleanupCancel context.CancelFunc
+	cleanupDone   chan struct{}
+	cleanupClaim  sync.Mutex
 }
 
 // NewManager constructs the stereo-split module.

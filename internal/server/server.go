@@ -584,6 +584,12 @@ func (s *Server) Start() error {
 		if err := s.stereoSplit.StartStatusSyncWorkers(); err != nil {
 			return fmt.Errorf("start stereo split status sync workers: %w", err)
 		}
+		if err := s.stereoSplit.StartDispatchWorkers(); err != nil {
+			return fmt.Errorf("start stereo split dispatch workers: %w", err)
+		}
+		if err := s.stereoSplit.StartCleanupWorkers(); err != nil {
+			return fmt.Errorf("start stereo split cleanup workers: %w", err)
+		}
 	}
 	if s.e2Conversion != nil {
 		if err := s.e2Conversion.StartReconciler(); err != nil {
@@ -831,6 +837,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if err := s.stereoSplit.StopStatusSyncWorkers(ctx); err != nil {
 			logShutdownError("Stereo split status sync workers", err)
 			shutdownErr = fmt.Errorf("stereo split status sync workers shutdown: %w", err)
+		}
+		if err := s.stereoSplit.StopDispatchWorkers(ctx); err != nil {
+			logShutdownError("Stereo split dispatch workers", err)
+			shutdownErr = fmt.Errorf("stereo split dispatch workers shutdown: %w", err)
+		}
+		if err := s.stereoSplit.StopCleanupWorkers(ctx); err != nil {
+			logShutdownError("Stereo split cleanup workers", err)
+			shutdownErr = fmt.Errorf("stereo split cleanup workers shutdown: %w", err)
 		}
 		if err := s.stereoSplit.StopVerificationWorkers(ctx); err != nil {
 			logShutdownError("Stereo split verification workers", err)

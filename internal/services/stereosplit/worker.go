@@ -18,8 +18,11 @@ import (
 const (
 	stereoSplitVerificationWorkers = 2
 	stereoSplitStatusSyncWorkers   = 8
+	stereoSplitDispatchWorkers     = 4
+	stereoSplitCleanupWorkers      = 2
 	stereoSplitVerificationLease   = time.Hour
 	stereoSplitStatusSyncLease     = 2 * time.Minute
+	stereoSplitDispatchLease       = 2 * time.Minute
 )
 
 // StartVerificationWorkers starts the fixed-size output verification pool.
@@ -142,6 +145,302 @@ func (m *Manager) claimVerification(ctx context.Context, _ string) (int64, bool,
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return 0, false, fmt.Errorf("check verification claim: %w", err)
+	}
+	return id, rows == 1, nil
+}
+
+// StartDispatchWorkers starts the bounded queued-work dispatch pool.
+func (m *Manager) StartDispatchWorkers() error {
+	if m == nil || m.db == nil || m.orbit == nil || m.objects == nil {
+		return fmt.Errorf("start stereo split dispatch workers: dependencies are not configured")
+	}
+	if !m.cfg.Enabled {
+		return nil
+	}
+	m.dispatchRunMu.Lock()
+	defer m.dispatchRunMu.Unlock()
+	if m.dispatchCancel != nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	m.dispatchCancel = cancel
+	m.dispatchDone = done
+	m.dispatchClaimTTL = stereoSplitDispatchLease
+	go m.runDispatchWorkers(ctx, done)
+	return nil
+}
+
+// StopDispatchWorkers stops the queued-work dispatch pool.
+func (m *Manager) StopDispatchWorkers(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.dispatchRunMu.Lock()
+	cancel := m.dispatchCancel
+	done := m.dispatchDone
+	m.dispatchCancel = nil
+	m.dispatchDone = nil
+	m.dispatchRunMu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) runDispatchWorkers(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	var wg sync.WaitGroup
+	for worker := 0; worker < stereoSplitDispatchWorkers; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			m.runDispatchWorker(ctx, workerID)
+		}(worker)
+	}
+	wg.Wait()
+}
+
+func (m *Manager) runDispatchWorker(ctx context.Context, workerID int) {
+	worker := fmt.Sprintf("dispatch-%d", workerID)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		candidate, ok, err := m.claimDispatchCandidate(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Printf("[STEREO_SPLIT] dispatch worker=%s claim failed: %v", worker, err)
+			}
+			m.waitStatusSync(ctx)
+			continue
+		}
+		if !ok {
+			m.waitStatusSync(ctx)
+			continue
+		}
+		started := time.Now()
+		if err := m.freezeQueued(ctx, candidate); err != nil {
+			m.releaseDispatchInFlight()
+			if errors.Is(err, errScratchStorageExceeded) {
+				err = m.failBeforeSubmission(ctx, candidate.ID, err)
+			} else {
+				m.releaseDispatchClaim(ctx, candidate.ID, err)
+			}
+			if err != nil && ctx.Err() == nil {
+				logger.Printf("[STEREO_SPLIT] dispatch worker=%s derivative=%d prepare failed: %v", worker, candidate.ID, err)
+			}
+			continue
+		}
+		if err := m.reconcileSubmitting(ctx, candidate.ID); err != nil {
+			m.releaseDispatchInFlight()
+			if ctx.Err() == nil {
+				logger.Printf("[STEREO_SPLIT] dispatch worker=%s derivative=%d submit failed: %v", worker, candidate.ID, err)
+			}
+			continue
+		}
+		m.releaseDispatchInFlight()
+		logger.Printf("[STEREO_SPLIT] dispatch worker=%s derivative=%d completed elapsed_ms=%d", worker, candidate.ID, time.Since(started).Milliseconds())
+	}
+}
+
+func (m *Manager) claimDispatchCandidate(ctx context.Context) (frozenDerivativeRow, bool, error) {
+	m.dispatchMu.Lock()
+	defer m.dispatchMu.Unlock()
+	now := m.now().UTC()
+	capacity, err := m.loadDispatchCapacity(ctx, false)
+	if err != nil {
+		return frozenDerivativeRow{}, false, err
+	}
+	if capacity.Active+m.dispatchInFlight >= capacity.Limit {
+		return frozenDerivativeRow{}, false, nil
+	}
+	var candidate frozenDerivativeRow
+	err = m.db.GetContext(ctx, &candidate, `
+		SELECT id, episode_id, generation, processing_status,
+		       cancel_requested_at,
+		       orbit_submission_id, orbit_request, orbit_job_id,
+		       submit_attempt_count, orbit_submit_absent_at, orbit_job_missing_since,
+		       orbit_delete_status, qa_status
+		FROM episode_derivatives
+		WHERE kind = ? AND processing_status = ?
+		  AND cancel_requested_at IS NULL
+		  AND (reconcile_after IS NULL OR reconcile_after <= ? OR updated_at <= ?)
+		ORDER BY updated_at ASC, id ASC
+		LIMIT 1
+	`, Kind, ProcessingQueued, now, now.Add(-m.dispatchClaimLease()))
+	if errors.Is(err, sql.ErrNoRows) {
+		return frozenDerivativeRow{}, false, nil
+	}
+	if err != nil {
+		return frozenDerivativeRow{}, false, fmt.Errorf("select dispatch candidate: %w", err)
+	}
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE episode_derivatives
+		SET reconcile_after = ?, updated_at = ?
+		WHERE id = ? AND kind = ? AND processing_status = ?
+		  AND cancel_requested_at IS NULL
+		  AND (reconcile_after IS NULL OR reconcile_after <= ? OR updated_at <= ?)
+	`, now.Add(m.dispatchClaimLease()), now, candidate.ID, Kind, ProcessingQueued,
+		now, now.Add(-m.dispatchClaimLease()))
+	if err != nil {
+		return frozenDerivativeRow{}, false, fmt.Errorf("claim dispatch candidate: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return frozenDerivativeRow{}, false, fmt.Errorf("check dispatch claim: %w", err)
+	}
+	if rows == 1 {
+		m.dispatchInFlight++
+	}
+	return candidate, rows == 1, nil
+}
+
+func (m *Manager) releaseDispatchInFlight() {
+	m.dispatchMu.Lock()
+	if m.dispatchInFlight > 0 {
+		m.dispatchInFlight--
+	}
+	m.dispatchMu.Unlock()
+}
+
+func (m *Manager) releaseDispatchClaim(ctx context.Context, derivativeID int64, cause error) {
+	now := m.now().UTC()
+	if _, err := m.db.ExecContext(ctx, `
+		UPDATE episode_derivatives
+		SET reconcile_after = ?, processing_error = ?, updated_at = ?
+		WHERE id = ? AND kind = ? AND processing_status = ?
+	`, now.Add(m.pollInterval()), cause.Error(), now, derivativeID, Kind, ProcessingQueued); err != nil && ctx.Err() == nil {
+		logger.Printf("[STEREO_SPLIT] release dispatch claim derivative=%d failed: %v", derivativeID, err)
+	}
+}
+
+func (m *Manager) dispatchClaimLease() time.Duration {
+	if m.dispatchClaimTTL > 0 {
+		return m.dispatchClaimTTL
+	}
+	return stereoSplitDispatchLease
+}
+
+// StartCleanupWorkers starts the bounded terminal Orbit cleanup pool.
+func (m *Manager) StartCleanupWorkers() error {
+	if m == nil || m.db == nil || m.orbit == nil {
+		return fmt.Errorf("start stereo split cleanup workers: dependencies are not configured")
+	}
+	if !m.cfg.Enabled {
+		return nil
+	}
+	m.cleanupMu.Lock()
+	defer m.cleanupMu.Unlock()
+	if m.cleanupCancel != nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	m.cleanupCancel = cancel
+	m.cleanupDone = done
+	go m.runCleanupWorkers(ctx, done)
+	return nil
+}
+
+// StopCleanupWorkers stops the terminal Orbit cleanup pool.
+func (m *Manager) StopCleanupWorkers(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.cleanupMu.Lock()
+	cancel := m.cleanupCancel
+	done := m.cleanupDone
+	m.cleanupCancel = nil
+	m.cleanupDone = nil
+	m.cleanupMu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) runCleanupWorkers(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	var wg sync.WaitGroup
+	for worker := 0; worker < stereoSplitCleanupWorkers; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			m.runCleanupWorker(ctx, workerID)
+		}(worker)
+	}
+	wg.Wait()
+}
+
+func (m *Manager) runCleanupWorker(ctx context.Context, workerID int) {
+	worker := fmt.Sprintf("cleanup-%d", workerID)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		id, ok, err := m.claimCleanupCandidate(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Printf("[STEREO_SPLIT] cleanup worker=%s claim failed: %v", worker, err)
+			}
+			m.waitStatusSync(ctx)
+			continue
+		}
+		if !ok {
+			m.waitStatusSync(ctx)
+			continue
+		}
+		if err := m.reconcileDelete(ctx, id); err != nil && ctx.Err() == nil {
+			logger.Printf("[STEREO_SPLIT] cleanup worker=%s derivative=%d failed: %v", worker, id, err)
+		}
+	}
+}
+
+func (m *Manager) claimCleanupCandidate(ctx context.Context) (int64, bool, error) {
+	m.cleanupClaim.Lock()
+	defer m.cleanupClaim.Unlock()
+	var id int64
+	now := m.now().UTC()
+	err := m.db.GetContext(ctx, &id, `
+		SELECT id FROM episode_derivatives
+		WHERE kind = ? AND orbit_delete_status = ?
+		  AND (orbit_delete_next_retry_at IS NULL OR orbit_delete_next_retry_at <= ?)
+		  AND (reconcile_after IS NULL OR reconcile_after <= ?)
+		ORDER BY updated_at ASC, id ASC
+		LIMIT 1
+	`, Kind, DeletePending, now, now)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("select cleanup candidate: %w", err)
+	}
+	leaseUntil := now.Add(stereoSplitStatusSyncLease)
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE episode_derivatives SET reconcile_after = ?, updated_at = ?
+		WHERE id = ? AND kind = ? AND orbit_delete_status = ?
+		  AND (orbit_delete_next_retry_at IS NULL OR orbit_delete_next_retry_at <= ?)
+		  AND (reconcile_after IS NULL OR reconcile_after <= ?)
+	`, leaseUntil, now, id, Kind, DeletePending, now, now)
+	if err != nil {
+		return 0, false, fmt.Errorf("claim cleanup candidate: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, false, fmt.Errorf("check cleanup claim: %w", err)
 	}
 	return id, rows == 1, nil
 }

@@ -140,6 +140,7 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 	}
 	verificationWorkersActive := m.verificationWorkersActive()
 	statusSyncWorkersActive := m.statusSyncWorkersActive()
+	dispatchWorkersActive := m.dispatchWorkersActive()
 	var candidate frozenDerivativeRow
 	err = m.db.GetContext(ctx, &candidate, `
 		SELECT id, episode_id, generation, processing_status,
@@ -151,6 +152,7 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 		WHERE kind = ?
 		  AND (processing_status <> ? OR ? = 0)
 		  AND (reconcile_after IS NULL OR reconcile_after <= ?)
+		  AND NOT (? = 1 AND cancel_requested_at IS NULL AND processing_status IN (?, ?))
 		  AND NOT (? = 1 AND cancel_requested_at IS NULL AND processing_status IN (?, ?))
 		  AND (
 		    processing_status IN (?, ?, ?, ?, ?)
@@ -172,7 +174,7 @@ func (m *Manager) ReconcileOnce(ctx context.Context) (bool, error) {
 		  ELSE 7 END,
 		  updated_at ASC, id ASC
 		LIMIT 1
-	`, Kind, ProcessingVerifying, boolInt(verificationWorkersActive), m.now().UTC(), boolInt(statusSyncWorkersActive), ProcessingPending, ProcessingRunning, ProcessingQueued, ProcessingSubmitting, ProcessingPending, ProcessingRunning, ProcessingVerifying,
+	`, Kind, ProcessingVerifying, boolInt(verificationWorkersActive), m.now().UTC(), boolInt(statusSyncWorkersActive), ProcessingPending, ProcessingRunning, boolInt(dispatchWorkersActive), ProcessingQueued, ProcessingSubmitting, ProcessingQueued, ProcessingSubmitting, ProcessingPending, ProcessingRunning, ProcessingVerifying,
 		ProcessingSucceeded, QAPending, QARunning, DeletePending, boolInt(preferQueued))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -291,6 +293,12 @@ type dispatchCapacity struct {
 	Active    int
 	Limit     int
 	QueuedDue bool
+}
+
+func (m *Manager) dispatchWorkersActive() bool {
+	m.dispatchRunMu.Lock()
+	defer m.dispatchRunMu.Unlock()
+	return m.dispatchCancel != nil
 }
 
 func (m *Manager) statusSyncWorkersActive() bool {
