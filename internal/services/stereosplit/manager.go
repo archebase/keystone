@@ -58,6 +58,11 @@ type Manager struct {
 	verificationCancel context.CancelFunc
 	verificationDone   chan struct{}
 	verificationClaim  sync.Mutex
+
+	statusSyncMu     sync.Mutex
+	statusSyncCancel context.CancelFunc
+	statusSyncDone   chan struct{}
+	statusSyncClaim  sync.Mutex
 }
 
 // NewManager constructs the stereo-split module.

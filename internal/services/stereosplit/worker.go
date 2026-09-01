@@ -17,7 +17,9 @@ import (
 
 const (
 	stereoSplitVerificationWorkers = 2
+	stereoSplitStatusSyncWorkers   = 8
 	stereoSplitVerificationLease   = time.Hour
+	stereoSplitStatusSyncLease     = 2 * time.Minute
 )
 
 // StartVerificationWorkers starts the fixed-size output verification pool.
@@ -144,7 +146,136 @@ func (m *Manager) claimVerification(ctx context.Context, _ string) (int64, bool,
 	return id, rows == 1, nil
 }
 
-// StartReconciler starts the single-replica durable lifecycle loop.
+// StartStatusSyncWorkers starts the bounded Orbit status polling pool. The
+// pool owns non-cancelled pending/running records so terminal Orbit states can
+// release dispatch capacity without waiting behind submission or cleanup work.
+func (m *Manager) StartStatusSyncWorkers() error {
+	if m == nil || m.db == nil || m.orbit == nil {
+		return fmt.Errorf("start stereo split status sync workers: dependencies are not configured")
+	}
+	if !m.cfg.Enabled {
+		return nil
+	}
+	m.statusSyncMu.Lock()
+	defer m.statusSyncMu.Unlock()
+	if m.statusSyncCancel != nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	m.statusSyncCancel = cancel
+	m.statusSyncDone = done
+	go m.runStatusSyncWorkers(ctx, done)
+	return nil
+}
+
+// StopStatusSyncWorkers stops the Orbit status polling pool.
+func (m *Manager) StopStatusSyncWorkers(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.statusSyncMu.Lock()
+	cancel := m.statusSyncCancel
+	done := m.statusSyncDone
+	m.statusSyncCancel = nil
+	m.statusSyncDone = nil
+	m.statusSyncMu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) runStatusSyncWorkers(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	var wg sync.WaitGroup
+	for worker := 0; worker < stereoSplitStatusSyncWorkers; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			m.runStatusSyncWorker(ctx, workerID)
+		}(worker)
+	}
+	wg.Wait()
+}
+
+func (m *Manager) runStatusSyncWorker(ctx context.Context, workerID int) {
+	worker := fmt.Sprintf("status-%d", workerID)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		id, ok, err := m.claimStatusSyncCandidate(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Printf("[STEREO_SPLIT] status sync worker=%s claim failed: %v", worker, err)
+			}
+			m.waitStatusSync(ctx)
+			continue
+		}
+		if !ok {
+			m.waitStatusSync(ctx)
+			continue
+		}
+		if err := m.reconcileOrbitStatus(ctx, id); err != nil && ctx.Err() == nil {
+			logger.Printf("[STEREO_SPLIT] status sync worker=%s derivative=%d failed: %v", worker, id, err)
+		}
+	}
+}
+
+func (m *Manager) waitStatusSync(ctx context.Context) {
+	timer := time.NewTimer(m.pollInterval())
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+func (m *Manager) claimStatusSyncCandidate(ctx context.Context) (int64, bool, error) {
+	m.statusSyncClaim.Lock()
+	defer m.statusSyncClaim.Unlock()
+	var id int64
+	now := m.now().UTC()
+	err := m.db.GetContext(ctx, &id, `
+		SELECT id FROM episode_derivatives
+		WHERE kind = ?
+		  AND cancel_requested_at IS NULL
+		  AND processing_status IN (?, ?)
+		  AND (reconcile_after IS NULL OR reconcile_after <= ? OR updated_at <= ?)
+		ORDER BY updated_at ASC, id ASC
+		LIMIT 1
+	`, Kind, ProcessingPending, ProcessingRunning, now, now.Add(-stereoSplitStatusSyncLease))
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("select status sync candidate: %w", err)
+	}
+	leaseUntil := now.Add(stereoSplitStatusSyncLease)
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE episode_derivatives
+		SET reconcile_after = ?, updated_at = ?
+		WHERE id = ? AND kind = ? AND cancel_requested_at IS NULL
+		  AND processing_status IN (?, ?)
+		  AND (reconcile_after IS NULL OR reconcile_after <= ? OR updated_at <= ?)
+	`, leaseUntil, now, id, Kind, ProcessingPending, ProcessingRunning, now, now.Add(-stereoSplitStatusSyncLease))
+	if err != nil {
+		return 0, false, fmt.Errorf("claim status sync candidate: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, false, fmt.Errorf("check status sync claim: %w", err)
+	}
+	return id, rows == 1, nil
+}
+
 // The loop drains ready work before sleeping so a large database queue does
 // not add one poll interval of latency per Episode.
 func (m *Manager) StartReconciler() error {

@@ -581,6 +581,9 @@ func (s *Server) Start() error {
 		if err := s.stereoSplit.StartVerificationWorkers(); err != nil {
 			return fmt.Errorf("start stereo split verification workers: %w", err)
 		}
+		if err := s.stereoSplit.StartStatusSyncWorkers(); err != nil {
+			return fmt.Errorf("start stereo split status sync workers: %w", err)
+		}
 	}
 	if s.e2Conversion != nil {
 		if err := s.e2Conversion.StartReconciler(); err != nil {
@@ -825,6 +828,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	if s.stereoSplit != nil {
+		if err := s.stereoSplit.StopStatusSyncWorkers(ctx); err != nil {
+			logShutdownError("Stereo split status sync workers", err)
+			shutdownErr = fmt.Errorf("stereo split status sync workers shutdown: %w", err)
+		}
 		if err := s.stereoSplit.StopVerificationWorkers(ctx); err != nil {
 			logShutdownError("Stereo split verification workers", err)
 			shutdownErr = fmt.Errorf("stereo split verification workers shutdown: %w", err)
