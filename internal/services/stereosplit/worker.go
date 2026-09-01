@@ -276,8 +276,9 @@ func (m *Manager) claimStatusSyncCandidate(ctx context.Context) (int64, bool, er
 	return id, rows == 1, nil
 }
 
-// The loop drains ready work before sleeping so a large database queue does
-// not add one poll interval of latency per Episode.
+// StartReconciler starts the single-replica durable lifecycle loop. The loop
+// drains ready work before sleeping so a large database queue does not add one
+// poll interval of latency per Episode.
 func (m *Manager) StartReconciler() error {
 	if m == nil || m.db == nil {
 		return fmt.Errorf("start stereo split reconciler: database is not configured")
