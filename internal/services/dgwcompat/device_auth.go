@@ -89,9 +89,15 @@ type authService struct {
 	identity *deviceIdentityService
 }
 
-func (s *authService) ExchangeCredential(ctx context.Context, req *cloudpb.ExchangeCredentialRequest) (*cloudpb.ExchangeCredentialResponse, error) {
+func (s *authService) ExchangeCredential(ctx context.Context, req *cloudpb.ExchangeCredentialRequest) (_ *cloudpb.ExchangeCredentialResponse, err error) {
+	startedAt := time.Now()
 	deviceID := strings.TrimSpace(req.GetDeviceId())
 	credential := strings.TrimSpace(req.GetCredential())
+	defer func() {
+		if err != nil && status.Code(err) == codes.Unavailable {
+			logger.Printf("[DGW_COMPAT] device authentication unavailable: method=ExchangeCredential device_id=%s elapsed_ms=%d error=%v", deviceID, time.Since(startedAt).Milliseconds(), err)
+		}
+	}()
 	if deviceID == "" || credential == "" {
 		return nil, status.Error(codes.InvalidArgument, "device_id and credential are required")
 	}

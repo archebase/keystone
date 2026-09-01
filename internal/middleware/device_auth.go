@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -43,6 +44,7 @@ func DeviceAuth(authenticator *deviceauth.Authenticator) gin.HandlerFunc {
 			principal deviceauth.Principal
 			err       error
 		)
+		startedAt := time.Now()
 		if persistentHeader != "" {
 			token := parseDeviceAuthorizationHeader(persistentHeader)
 			if token == "" {
@@ -63,7 +65,7 @@ func DeviceAuth(authenticator *deviceauth.Authenticator) gin.HandlerFunc {
 				writeInvalidDeviceCredential(c)
 				return
 			}
-			logger.Printf("[DEVICE] HTTP device authentication failed: %v", err)
+			logger.Printf("[DEVICE] HTTP device authentication unavailable: method=%s path=%s elapsed_ms=%d error=%v", c.Request.Method, c.Request.URL.Path, time.Since(startedAt).Milliseconds(), err)
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
 				"error": "device authentication unavailable",
 			})

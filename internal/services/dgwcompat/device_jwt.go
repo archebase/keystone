@@ -14,15 +14,19 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services/deviceauth"
 )
 
 type devicePrincipal = deviceauth.Principal
 
 func deviceUnaryAuthInterceptor(authenticator *deviceauth.Authenticator) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		principal, err := authenticateDeviceContext(ctx, authenticator)
 		if err != nil {
+			if status.Code(err) == codes.Unavailable {
+				logger.Printf("[DGW_COMPAT] device JWT authentication unavailable: method=%s error=%v", info.FullMethod, err)
+			}
 			return nil, err
 		}
 		return handler(deviceauth.WithPrincipal(ctx, principal), req)
