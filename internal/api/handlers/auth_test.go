@@ -509,7 +509,7 @@ func TestAuthHandlerActivateWorkstationAllowsEgoPortalDeviceTakeover(t *testing.
 	}
 }
 
-func TestAuthHandlerActivateWorkstationRejectsEgoPortalTakeoverDuringActiveRecording(t *testing.T) {
+func TestAuthHandlerActivateWorkstationAllowsEgoPortalTakeoverDuringActiveRecording(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
 	deviceToken := "kda_v1_recording-device-token"
@@ -534,20 +534,20 @@ func TestAuthHandlerActivateWorkstationRejectsEgoPortalTakeoverDuringActiveRecor
 		t.Fatalf("generate identity token: %v", err)
 	}
 	w := performAuthActivation(newTestAuthRouter(db, ""), identityToken, `{}`, deviceToken)
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "recording_active") {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 
 	var currentID int64
 	if err := db.Get(&currentID, `SELECT id FROM workstations WHERE robot_id = 101 AND is_current = TRUE`); err != nil {
 		t.Fatalf("query current workstation: %v", err)
 	}
-	if currentID != 12 {
-		t.Fatalf("current workstation=%d want 12", currentID)
+	if currentID != 11 {
+		t.Fatalf("current workstation=%d want 11", currentID)
 	}
 }
 
-func TestAuthHandlerActivateWorkstationRejectsPreviousActiveRecording(t *testing.T) {
+func TestAuthHandlerActivateWorkstationAllowsPreviousActiveRecordingTakeover(t *testing.T) {
 	db := newTestAuthDB(t)
 	defer db.Close()
 	if _, err := db.Exec(`
@@ -566,8 +566,8 @@ func TestAuthHandlerActivateWorkstationRejectsPreviousActiveRecording(t *testing
 		t.Fatalf("generate identity token: %v", err)
 	}
 	w := performAuthActivation(newTestAuthRouter(db, ""), identityToken, `{"workstation_id":11}`, "")
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "recording_active") {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 }
 
