@@ -39,6 +39,7 @@ type HilbertWorkspaceClient interface {
 	Configured() bool
 	ServiceAuthConfigured() bool
 	ListAvailableWorkspaces(ctx context.Context) ([]auth.HilbertWorkspace, error)
+	GetCurrentAccount(ctx context.Context) (*auth.HilbertAccount, error)
 }
 
 // WorkspaceSyncResult summarizes one Hilbert workspace sync run.
@@ -102,21 +103,46 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 	}
 	logger.Printf("[WORKSPACE] Hilbert workspace list fetched: count=%d", len(workspaces))
 
-	if err := validateHilbertWorkspaces(workspaces); err != nil {
+	account, err := s.hilbertClient.GetCurrentAccount(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: get current account: %v", ErrWorkspaceSyncFailed, err)
+	}
+	accountCode := ""
+	if account != nil {
+		accountCode = strings.TrimSpace(account.Code)
+	}
+	if accountCode == "" {
+		return nil, fmt.Errorf("%w: current account code is empty; cannot scope workspace sync", ErrWorkspaceSyncFailed)
+	}
+
+	// Hilbert returns every workspace for internal-role accounts (system_admin,
+	// normal_user), so scope the projection to workspaces where the service
+	// identity is listed as an administrator before persisting anything.
+	adminWorkspaces := filterAdminWorkspaces(workspaces, accountCode)
+	if len(adminWorkspaces) != len(workspaces) {
+		logger.Printf(
+			"[WORKSPACE] Hilbert workspace admin filter applied: fetched=%d kept=%d account=%s",
+			len(workspaces),
+			len(adminWorkspaces),
+			accountCode,
+		)
+	}
+
+	if err := validateHilbertWorkspaces(adminWorkspaces); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrWorkspaceSyncFailed, err)
 	}
-	if err := s.upsertHilbertWorkspaces(ctx, workspaces, now); err != nil {
+	if err := s.upsertHilbertWorkspaces(ctx, adminWorkspaces, now); err != nil {
 		return nil, fmt.Errorf("%w: upsert hilbert workspaces: %v", ErrWorkspaceSyncFailed, err)
 	}
-	logger.Printf("[WORKSPACE] Hilbert workspace sync upsert committed: synced_count=%d", len(workspaces))
+	logger.Printf("[WORKSPACE] Hilbert workspace sync upsert committed: synced_count=%d", len(adminWorkspaces))
 
 	resourceSummary := &WorkspaceResourceSyncSummary{Enabled: true, WorkspaceResults: []WorkspaceResourceSyncResult{}}
 	if s.resourceSync != nil {
-		resourceSummary = s.resourceSync.SyncWorkspaces(ctx, workspaces, now)
+		resourceSummary = s.resourceSync.SyncWorkspaces(ctx, adminWorkspaces, now)
 	}
 
 	return &WorkspaceSyncResult{
-		SyncedCount:     len(workspaces),
+		SyncedCount:     len(adminWorkspaces),
 		DefaultIncluded: true,
 		LastSyncedAt:    now,
 		ResourceSync:    resourceSummary,
@@ -305,6 +331,21 @@ func upsertHilbertWorkspace(ctx context.Context, tx *sqlx.Tx, workspace auth.Hil
 			deleted_at = NULL
 	`, args...)
 	return err
+}
+
+// filterAdminWorkspaces keeps only workspaces where the service identity account
+// code appears in the Hilbert workspace administrator list.
+func filterAdminWorkspaces(workspaces []auth.HilbertWorkspace, accountCode string) []auth.HilbertWorkspace {
+	filtered := make([]auth.HilbertWorkspace, 0, len(workspaces))
+	for _, workspace := range workspaces {
+		for _, admin := range normalizeWorkspacePeople(workspace.Admins) {
+			if admin == accountCode {
+				filtered = append(filtered, workspace)
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 func normalizeWorkspacePeople(values []string) []string {

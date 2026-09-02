@@ -138,7 +138,8 @@ func TestWorkspaceSyncReturnsResult(t *testing.T) {
 	defer db.Close()
 
 	client := &fakeWorkspaceHilbertClient{
-		workspaces: []auth.HilbertWorkspace{{ID: 123, Name: "Hilbert Workspace"}},
+		workspaces:     []auth.HilbertWorkspace{{ID: 123, Name: "Hilbert Workspace", Admins: []string{"hilbert-ak"}}},
+		currentAccount: &auth.HilbertAccount{Code: "hilbert-ak"},
 	}
 	syncService := services.NewWorkspaceSyncService(db, &config.HilbertConfig{
 		BaseURL:        "http://hilbert",
@@ -165,7 +166,8 @@ func TestWorkspaceSyncReturnsResult(t *testing.T) {
 }
 
 type fakeWorkspaceHilbertClient struct {
-	workspaces []auth.HilbertWorkspace
+	workspaces     []auth.HilbertWorkspace
+	currentAccount *auth.HilbertAccount
 }
 
 func (f *fakeWorkspaceHilbertClient) Configured() bool {
@@ -178,6 +180,10 @@ func (f *fakeWorkspaceHilbertClient) ServiceAuthConfigured() bool {
 
 func (f *fakeWorkspaceHilbertClient) ListAvailableWorkspaces(_ context.Context) ([]auth.HilbertWorkspace, error) {
 	return f.workspaces, nil
+}
+
+func (f *fakeWorkspaceHilbertClient) GetCurrentAccount(_ context.Context) (*auth.HilbertAccount, error) {
+	return f.currentAccount, nil
 }
 
 func assertDefaultWorkspaceResponse(t *testing.T, workspace WorkspaceResponse) {

@@ -37,6 +37,7 @@ func TestWorkspaceSyncServiceSyncUpsertsHilbertWorkspaces(t *testing.T) {
 				UpdatedTime: &updatedAt,
 			},
 		},
+		currentAccount: &auth.HilbertAccount{Code: "admin-a"},
 	}
 	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
 
@@ -142,9 +143,10 @@ func TestWorkspaceSyncServiceInvalidHilbertRecordDoesNotPartiallyUpsert(t *testi
 
 	client := &fakeHilbertWorkspaceClient{
 		workspaces: []auth.HilbertWorkspace{
-			{ID: 123, Name: "Valid Workspace"},
-			{ID: 0, Name: "Invalid Workspace"},
+			{ID: 123, Name: "Valid Workspace", Admins: []string{"keystone"}},
+			{ID: 0, Name: "Invalid Workspace", Admins: []string{"keystone"}},
 		},
+		currentAccount: &auth.HilbertAccount{Code: "keystone"},
 	}
 	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
 
@@ -175,8 +177,9 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 
 	client := &fakeHilbertWorkspaceClient{
 		workspaces: []auth.HilbertWorkspace{
-			{ID: 123, Name: "Resource Workspace", Admins: []string{"collector-a", "customer-a"}, Members: []string{"missing-a"}},
+			{ID: 123, Name: "Resource Workspace", Admins: []string{"keystone-admin", "collector-a", "customer-a"}, Members: []string{"missing-a"}},
 		},
+		currentAccount: &auth.HilbertAccount{Code: "keystone-admin"},
 		accounts: map[string]*auth.HilbertAccount{
 			"collector-a": {
 				ID:               7,
@@ -214,7 +217,7 @@ func TestWorkspaceSyncServiceSyncsWorkspaceResources(t *testing.T) {
 		t.Fatalf("ResourceSync is nil")
 	}
 	if result.ResourceSync.CollectorUpsertedCount != 2 ||
-		result.ResourceSync.CollectorSkippedCount != 1 ||
+		result.ResourceSync.CollectorSkippedCount != 2 ||
 		result.ResourceSync.RobotUpsertedCount != 1 {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
 	}
@@ -332,8 +335,8 @@ func TestWorkspaceSyncServiceSkipsHilbertServiceIdentityAsCollector(t *testing.T
 	if collectorCount != 1 {
 		t.Fatalf("collectorCount=%d want 1", collectorCount)
 	}
-	if client.currentAccountCallCount != 1 {
-		t.Fatalf("GetCurrentAccount calls=%d want 1", client.currentAccountCallCount)
+	if client.currentAccountCallCount != 2 {
+		t.Fatalf("GetCurrentAccount calls=%d want 2 (sync scope + resource exclusions)", client.currentAccountCallCount)
 	}
 }
 
@@ -343,8 +346,9 @@ func TestWorkspaceSyncServiceProjectsWorkspacePeopleAsCollectors(t *testing.T) {
 
 	client := &fakeHilbertWorkspaceClient{
 		workspaces: []auth.HilbertWorkspace{
-			{ID: 123, Name: "Resource Workspace", Admins: []string{"operator-a", "internal-a"}},
+			{ID: 123, Name: "Resource Workspace", Admins: []string{"keystone-admin", "operator-a", "internal-a"}},
 		},
+		currentAccount: &auth.HilbertAccount{Code: "keystone-admin"},
 		accounts: map[string]*auth.HilbertAccount{
 			"operator-a": {
 				ID:               7,
@@ -378,7 +382,7 @@ func TestWorkspaceSyncServiceProjectsWorkspacePeopleAsCollectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sync() error = %v", err)
 	}
-	if result.ResourceSync.CollectorUpsertedCount != 2 || result.ResourceSync.CollectorSkippedCount != 0 {
+	if result.ResourceSync.CollectorUpsertedCount != 2 || result.ResourceSync.CollectorSkippedCount != 1 {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
 	}
 
@@ -400,7 +404,8 @@ func TestWorkspaceSyncServiceResourceConflictDoesNotRollbackWorkspace(t *testing
 	}
 
 	client := &fakeHilbertWorkspaceClient{
-		workspaces: []auth.HilbertWorkspace{{ID: 123, Name: "Resource Workspace"}},
+		workspaces:     []auth.HilbertWorkspace{{ID: 123, Name: "Resource Workspace", Admins: []string{"keystone"}}},
+		currentAccount: &auth.HilbertAccount{Code: "keystone"},
 		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{
 			123: {
 				{ID: 456, WorkspaceID: 123, Name: "Device A", SN: "SN-A", DCDeviceTypeID: 77},
@@ -438,8 +443,9 @@ func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t
 
 	client := &fakeHilbertWorkspaceClient{
 		workspaces: []auth.HilbertWorkspace{
-			{ID: 123, Name: "Resource Workspace", Admins: []string{"collector-a"}},
+			{ID: 123, Name: "Resource Workspace", Admins: []string{"keystone-admin", "collector-a"}},
 		},
+		currentAccount: &auth.HilbertAccount{Code: "keystone-admin"},
 		accounts: map[string]*auth.HilbertAccount{
 			"collector-a": {
 				ID:               7,
@@ -495,9 +501,10 @@ func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 
 	client := &fakeHilbertWorkspaceClient{
 		workspaces: []auth.HilbertWorkspace{
-			{ID: 123, Name: "Shared Name"},
-			{ID: 124, Name: "Shared Name"},
+			{ID: 123, Name: "Shared Name", Admins: []string{"keystone"}},
+			{ID: 124, Name: "Shared Name", Admins: []string{"keystone"}},
 		},
+		currentAccount: &auth.HilbertAccount{Code: "keystone"},
 	}
 	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
 
@@ -507,6 +514,87 @@ func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 	}
 	if result.ResourceSync == nil {
 		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
+	}
+}
+
+func TestWorkspaceSyncServiceFiltersNonAdminWorkspaces(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		workspaces: []auth.HilbertWorkspace{
+			{ID: 111, Name: "Admin Workspace", Admins: []string{"keystone"}, Members: []string{"member-a"}},
+			{ID: 222, Name: "Member Workspace", Admins: []string{"someone-else"}, Members: []string{"keystone"}},
+			{ID: 333, Name: "Unrelated Workspace", Admins: []string{"someone-else"}},
+		},
+		currentAccount: &auth.HilbertAccount{Code: "keystone"},
+		accounts: map[string]*auth.HilbertAccount{
+			"member-a": {
+				ID:               7,
+				Code:             "member-a",
+				DisplayName:      "Member A",
+				Role:             "external_user",
+				ExternalUserType: "data_supplier",
+				Status:           "enabled",
+			},
+		},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.SyncedCount != 1 {
+		t.Fatalf("SyncedCount=%d want 1", result.SyncedCount)
+	}
+
+	rows := []workspaceAccessRow{}
+	if err := db.Select(&rows, `
+		SELECT id, admins, members
+		FROM workspaces
+		WHERE id > ? AND source = ? AND deleted_at IS NULL
+		ORDER BY id
+	`, defaultWorkspaceID, workspaceSourceHilbert); err != nil {
+		t.Fatalf("query synced workspaces: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != 111 {
+		t.Fatalf("synced rows=%#v want only workspace 111", rows)
+	}
+
+	// Workspace 222 is a member-only workspace for the service identity and
+	// must not be synced as a workspace, but its members are still projected
+	// as collectors through workspace 111 resource sync.
+	var collectorCount int
+	if err := db.Get(&collectorCount, "SELECT COUNT(*) FROM data_collectors WHERE operator_id = 'member-a'"); err != nil {
+		t.Fatalf("count member collector: %v", err)
+	}
+	if collectorCount != 1 {
+		t.Fatalf("collectorCount=%d want 1 (workspace 111 member projected)", collectorCount)
+	}
+}
+
+func TestWorkspaceSyncServiceFailsWhenCurrentAccountUnavailable(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		workspaces: []auth.HilbertWorkspace{
+			{ID: 123, Name: "Admin Workspace", Admins: []string{"keystone"}},
+		},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	if _, err := service.Sync(context.Background()); !errors.Is(err, ErrWorkspaceSyncFailed) {
+		t.Fatalf("Sync() error = %v, want ErrWorkspaceSyncFailed", err)
+	}
+
+	var workspaceCount int
+	if err := db.Get(&workspaceCount, "SELECT COUNT(*) FROM workspaces WHERE id = 123"); err != nil {
+		t.Fatalf("count workspace: %v", err)
+	}
+	if workspaceCount != 0 {
+		t.Fatalf("workspaceCount=%d want 0 (no sync without account scope)", workspaceCount)
 	}
 }
 
