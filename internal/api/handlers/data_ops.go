@@ -479,7 +479,8 @@ func buildDataOpsEpisodeWhere(q dataOpsEpisodeQuery) (string, []interface{}) {
 		where += " AND e.created_at <= ?"
 		args = append(args, q.CreatedAtTo)
 	}
-	where, args = appendInt64InFilter(where, args, "COALESCE(t.organization_id, ws.workspace_id)", q.WorkspaceIDs)
+	// organization_id is the legacy column name for the episode's Workspace ID.
+	where, args = appendInt64InFilter(where, args, "e.organization_id", q.WorkspaceIDs)
 
 	where, args = appendStringInFilter(where, args, "e.qa_status", q.QAStatuses)
 	where, args = appendStringInFilter(where, args, "COALESCE(NULLIF(r.device_id, ''), NULLIF(ws.robot_serial, ''), '')", q.RobotDeviceIDs)

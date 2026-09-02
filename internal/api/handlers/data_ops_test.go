@@ -70,8 +70,8 @@ func TestParseDataOpsEpisodeQuery(t *testing.T) {
 
 func TestDataOpsEpisodeWhereIncludesWorkspaceFilter(t *testing.T) {
 	sql, args := buildDataOpsEpisodeWhere(dataOpsEpisodeQuery{WorkspaceIDs: []int64{0, 12}})
-	if !strings.Contains(sql, "COALESCE(t.organization_id, ws.workspace_id) IN (?,?)") {
-		t.Fatalf("workspace filter SQL should use task/workstation fallback: %s", sql)
+	if !strings.Contains(sql, "e.organization_id IN (?,?)") {
+		t.Fatalf("workspace filter SQL should use the episode Workspace ownership column: %s", sql)
 	}
 	if len(args) != 2 || args[0] != int64(0) || args[1] != int64(12) {
 		t.Fatalf("unexpected args: %#v", args)
@@ -1168,8 +1168,8 @@ func TestBulkSyncUsesCancelableBulkRun(t *testing.T) {
 	}
 	for id := int64(1); id <= 2; id++ {
 		if _, err := db.Exec(`
-			INSERT INTO episodes (id, episode_id, task_id, qa_status, cloud_synced, deleted_at, created_at)
-			VALUES (?, ?, 100, 'approved', 0, NULL, ?)
+			INSERT INTO episodes (id, episode_id, task_id, organization_id, qa_status, cloud_synced, deleted_at, created_at)
+			VALUES (?, ?, 100, 12, 'approved', 0, NULL, ?)
 		`, id, fmt.Sprintf("episode-%d", id), fmt.Sprintf("2026-06-%02dT00:00:00Z", id)); err != nil {
 			t.Fatalf("insert episode %d: %v", id, err)
 		}
@@ -1590,6 +1590,7 @@ func setupDataOpsBulkPreviewTestDB(t *testing.T) *sqlx.DB {
 			episode_id TEXT NOT NULL,
 			task_id INTEGER NOT NULL,
 			workstation_id INTEGER,
+			organization_id INTEGER,
 			qa_status TEXT,
 			cloud_synced BOOLEAN NOT NULL DEFAULT 0,
 			local_storage_status TEXT NOT NULL DEFAULT 'available',
