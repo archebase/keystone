@@ -79,7 +79,11 @@ def make_contract_frame() -> np.ndarray:
     return frame
 
 
-def make_source_mcap(root: Path, topic: str = "/decxin/rgb/compressed") -> Path:
+def make_source_mcap(
+    root: Path,
+    topic: str = "/decxin/rgb/compressed",
+    serial: str | None = None,
+) -> Path:
     typestore = get_typestore(Stores.ROS2_JAZZY)
     messages = typestore.types
     bag_dir = root / "source_bag"
@@ -119,6 +123,21 @@ def make_source_mcap(root: Path, topic: str = "/decxin/rgb/compressed") -> Path:
                 timestamp,
                 typestore.serialize_cdr(message, "sensor_msgs/msg/CompressedImage"),
             )
+
+        if serial is not None:
+            serial_connection = writer.add_connection(
+                "/decxin/serial_number",
+                "std_msgs/msg/String",
+                typestore=typestore,
+            )
+            for index in range(2):
+                timestamp = (index + 3) * 1_000_000_000
+                serial_message = messages["std_msgs/msg/String"](data=serial)
+                writer.write(
+                    serial_connection,
+                    timestamp,
+                    typestore.serialize_cdr(serial_message, "std_msgs/msg/String"),
+                )
 
     source = root / "source.mcap"
     source.write_bytes(next(bag_dir.glob("*.mcap")).read_bytes())
@@ -610,6 +629,50 @@ class RunProcessingTest(unittest.TestCase):
 
             self.assertNotEqual(process.returncode, 0)
             self.assertFalse((output_binding / "processing_manifest.json").exists())
+
+    def test_manifest_includes_source_camera_serial(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = make_source_mcap(root, serial="CMD-000148")
+            output_binding = root / "published"
+            scratch = root / "scratch"
+            output_binding.mkdir()
+
+            result = run_job(source, output_binding, scratch)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(
+                (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
+            )
+            metadata = json.loads(
+                (output_binding / "metadata.yaml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["camera_serial"], "CMD-000148")
+            self.assertEqual(metadata["camera_serial"], "CMD-000148")
+            self.assertNotIn("camera_serial", manifest["stats"])
+            self.assertNotIn("camera_serial", metadata["stats"])
+
+    def test_manifest_omits_camera_serial_when_source_has_no_serial_topic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = make_source_mcap(root)
+            output_binding = root / "published"
+            scratch = root / "scratch"
+            output_binding.mkdir()
+
+            result = run_job(source, output_binding, scratch)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(
+                (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
+            )
+            metadata = json.loads(
+                (output_binding / "metadata.yaml").read_text(encoding="utf-8")
+            )
+            self.assertNotIn("camera_serial", manifest)
+            self.assertNotIn("camera_serial", metadata)
+            self.assertNotIn("camera_serial", manifest["stats"])
+            self.assertNotIn("camera_serial", metadata["stats"])
 
 
 if __name__ == "__main__":

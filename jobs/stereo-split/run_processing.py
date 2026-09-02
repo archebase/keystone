@@ -294,6 +294,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         local_mcap,
         calibration_attachment=calibration[0] if calibration is not None else None,
     )
+    stats_payload = asdict(stats)
+    camera_serial = str(stats_payload.pop("camera_serial", "")).strip()
     manifest_calibration = None
     processing_mode = "timestamp_repair" if stats.input_mode == "split_h264" else "convert"
     metadata: dict[str, object] = {
@@ -312,8 +314,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "topics": [config.left_topic, config.right_topic],
         },
         "imu_topic": config.imu_topic,
-        "stats": asdict(stats),
+        "stats": stats_payload,
     }
+    if camera_serial:
+        metadata["camera_serial"] = camera_serial
     write_json(local_metadata, metadata)
     mcap_identity = require_mcap_output(local_mcap)
     metadata_identity = require_output(local_metadata)
@@ -338,10 +342,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "mcap": {"name": OUTPUT_MCAP_NAME, **asdict(mcap_identity)},
             "metadata": {"name": OUTPUT_METADATA_NAME, **asdict(metadata_identity)},
         },
-        "stats": asdict(stats),
+        "stats": stats_payload,
         "started_at": started_at,
         "finished_at": utc_now(),
     }
+    if camera_serial:
+        manifest["camera_serial"] = camera_serial
     if manifest_calibration is not None:
         manifest["calibration"] = manifest_calibration
     write_json(local_manifest, manifest)

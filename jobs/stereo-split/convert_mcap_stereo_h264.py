@@ -135,6 +135,7 @@ class ConverterConfig:
     left_topic: str = "/decxin/left_rgb/h264"
     right_topic: str = "/decxin/right_rgb/h264"
     imu_topic: str = "/decxin/imu"
+    serial_topic: str = "/decxin/serial_number"
     metadata_width: int = 160
     eye_width: int = 1920
     eye_height: int = 1200
@@ -159,6 +160,7 @@ class ConvertStats:
     copied_messages: int = 0
     copied_topics: int = 0
     skipped_messages: int = 0
+    camera_serial: str = ""
     timestamp_repair_applied: bool = False
     timestamp_repair_reason: str = "not_evaluated"
     timestamp_log_repair_applied: bool = False
@@ -1047,6 +1049,8 @@ class StereoSplitH264Converter:
                         copied_topic_ids.add(channel.id)
                         if channel.topic == config.imu_topic:
                             stats.imu_messages += 1
+                        if channel.topic == config.serial_topic and not stats.camera_serial:
+                            self._capture_source_camera_serial(stats, schema, message)
                         continue
 
                     stats.input_messages += 1
@@ -1139,6 +1143,20 @@ class StereoSplitH264Converter:
 
         stats.copied_topics = len(copied_topic_ids)
         return stats
+
+    def _capture_source_camera_serial(
+        self, stats: ConvertStats, schema, message
+    ) -> None:
+        """Capture the first decxin serial_number value, best effort."""
+        if schema is None or schema.name != "std_msgs/msg/String":
+            return
+        try:
+            decoded = self.typestore.deserialize_cdr(message.data, "std_msgs/msg/String")
+        except Exception:
+            return
+        value = str(getattr(decoded, "data", "")).strip()
+        if value:
+            stats.camera_serial = value
 
     @staticmethod
     def _is_split_h264_summary(summary, config: ConverterConfig) -> bool:
