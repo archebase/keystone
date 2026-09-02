@@ -10,7 +10,9 @@ const (
 	// HilbertRequestTimeout bounds one outbound Hilbert HTTP request.
 	HilbertRequestTimeout = 10 * time.Second
 	// HilbertWorkspaceSyncTimeout bounds synchronization for one workspace.
-	HilbertWorkspaceSyncTimeout = 60 * time.Second
+	// Workspace sync also performs local projection and pending-pool maintenance,
+	// which can wait on concurrent task/workstation transactions under load.
+	HilbertWorkspaceSyncTimeout = 5 * time.Minute
 	// HilbertSyncBatchTimeout bounds one complete workspace or dc-plan batch.
 	HilbertSyncBatchTimeout = 10 * time.Minute
 )
