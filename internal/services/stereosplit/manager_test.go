@@ -2495,3 +2495,101 @@ func insertTestEpisode(t *testing.T, db *sqlx.DB, id int64, backend, metadata, c
 		t.Fatalf("insert episode: %v", err)
 	}
 }
+
+func TestManagerBackfillsEpisodeCameraSerialFromVerifiedManifest(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 21, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	if _, err := db.Exec(`
+		INSERT INTO episode_derivatives (id, episode_id, kind, generation)
+		VALUES (?, ?, ?, ?)
+	`, 501, 21, Kind, 1); err != nil {
+		t.Fatalf("insert derivative: %v", err)
+	}
+	manager := NewManager(db, nil, &fakeObjectStore{}, testManagerConfig())
+
+	if err := manager.backfillEpisodeCameraSerial(context.Background(), 501, "CMD-000148"); err != nil {
+		t.Fatalf("backfillEpisodeCameraSerial() error = %v", err)
+	}
+
+	var serial sql.NullString
+	if err := db.Get(&serial, "SELECT camera_serial FROM episodes WHERE id = 21"); err != nil {
+		t.Fatalf("query episode camera_serial: %v", err)
+	}
+	if !serial.Valid || serial.String != "CMD-000148" {
+		t.Fatalf("camera_serial=%v want CMD-000148", serial)
+	}
+}
+
+func TestManagerBackfillEpisodeCameraSerialDoesNotOverwriteClientSerial(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 22, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	if _, err := db.Exec("UPDATE episodes SET camera_serial = 'client-provided' WHERE id = 22"); err != nil {
+		t.Fatalf("seed client camera serial: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO episode_derivatives (id, episode_id, kind, generation)
+		VALUES (?, ?, ?, ?)
+	`, 502, 22, Kind, 1); err != nil {
+		t.Fatalf("insert derivative: %v", err)
+	}
+	manager := NewManager(db, nil, &fakeObjectStore{}, testManagerConfig())
+
+	if err := manager.backfillEpisodeCameraSerial(context.Background(), 502, "CMD-000148"); err != nil {
+		t.Fatalf("backfillEpisodeCameraSerial() error = %v", err)
+	}
+
+	var serial string
+	if err := db.Get(&serial, "SELECT camera_serial FROM episodes WHERE id = 22"); err != nil {
+		t.Fatalf("query episode camera_serial: %v", err)
+	}
+	if serial != "client-provided" {
+		t.Fatalf("camera_serial=%q want client-provided preserved", serial)
+	}
+
+	// An explicitly empty (not NULL) serial is treated as missing and filled.
+	if _, err := db.Exec("UPDATE episodes SET camera_serial = '' WHERE id = 22"); err != nil {
+		t.Fatalf("clear camera serial: %v", err)
+	}
+	if err := manager.backfillEpisodeCameraSerial(context.Background(), 502, "CMD-000148"); err != nil {
+		t.Fatalf("backfillEpisodeCameraSerial() empty-serial error = %v", err)
+	}
+	if err := db.Get(&serial, "SELECT camera_serial FROM episodes WHERE id = 22"); err != nil {
+		t.Fatalf("query episode camera_serial: %v", err)
+	}
+	if serial != "CMD-000148" {
+		t.Fatalf("camera_serial=%q want CMD-000148 after empty backfill", serial)
+	}
+}
+
+func TestProcessingManifestParsesSourceCameraSerial(t *testing.T) {
+	var manifest processingManifest
+	if err := json.Unmarshal([]byte(`{
+		"schema_version": 2,
+		"status": "succeeded",
+		"kind": "stereo_split",
+		"generation": 1,
+		"processor_image": "`+testImageDigest+`",
+		"camera_serial": "CMD-000148",
+		"source": {"uri": "tos://bucket/raw/source.mcap", "size_bytes": 10, "sha256": "`+strings.Repeat("a", 64)+`"},
+		"outputs": {
+			"mcap": {"name": "output_bag.mcap", "size_bytes": 5, "sha256": "`+strings.Repeat("b", 64)+`"},
+			"metadata": {"name": "metadata.yaml", "size_bytes": 5, "sha256": "`+strings.Repeat("c", 64)+`"}
+		},
+		"stats": {"input_messages": 1, "decoded_images": 1, "imu_messages": 1, "skipped_messages": 0},
+		"started_at": "2026-08-02T10:00:00Z",
+		"finished_at": "2026-08-02T10:00:01Z"
+	}`), &manifest); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if manifest.CameraSerial != "CMD-000148" {
+		t.Fatalf("CameraSerial=%q want CMD-000148", manifest.CameraSerial)
+	}
+
+	var absent processingManifest
+	if err := json.Unmarshal([]byte(`{"schema_version":2,"kind":"stereo_split","stats":{},"started_at":"2026-08-02T10:00:00Z","finished_at":"2026-08-02T10:00:01Z"}`), &absent); err != nil {
+		t.Fatalf("unmarshal manifest without camera serial: %v", err)
+	}
+	if absent.CameraSerial != "" {
+		t.Fatalf("CameraSerial=%q want empty", absent.CameraSerial)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"archebase.com/keystone-edge/internal/logger"
 	orbitapi "archebase.com/keystone-edge/internal/orbit"
 	"github.com/foxglove/mcap/go/mcap"
 )
@@ -1082,6 +1083,7 @@ type processingManifest struct {
 	OutputFormat   string `json:"output_format,omitempty"`
 	Generation     int    `json:"generation"`
 	ProcessorImage string `json:"processor_image"`
+	CameraSerial   string `json:"camera_serial,omitempty"`
 	Source         struct {
 		URI       string `json:"uri"`
 		SizeBytes int64  `json:"size_bytes"`
@@ -1211,6 +1213,57 @@ func (m *Manager) verifySucceeded(ctx context.Context, derivativeID int64) error
 	}
 	if rows != 1 {
 		return fmt.Errorf("persist verified stereo split output affected %d rows", rows)
+	}
+
+	// Best-effort propagation of the source camera serial discovered by the
+	// processing job into the Episode, without overwriting a serial the upload
+	// client already provided.
+	var manifest processingManifest
+	if err := json.Unmarshal([]byte(output.ManifestJSON), &manifest); err != nil {
+		return fmt.Errorf("decode verified processing manifest for camera serial backfill: %w", err)
+	}
+	if cameraSerial := strings.TrimSpace(manifest.CameraSerial); cameraSerial != "" {
+		if err := m.backfillEpisodeCameraSerial(ctx, derivativeID, cameraSerial); err != nil {
+			return fmt.Errorf("backfill episode camera serial: %w", err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) backfillEpisodeCameraSerial(
+	ctx context.Context,
+	derivativeID int64,
+	cameraSerial string,
+) error {
+	var episodeID int64
+	if err := m.db.GetContext(ctx, &episodeID, `
+		SELECT episode_id FROM episode_derivatives WHERE id = ? AND kind = ?
+	`, derivativeID, Kind); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("derivative %d not found", derivativeID)
+		}
+		return fmt.Errorf("load episode for camera serial backfill: %w", err)
+	}
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE episodes
+		SET camera_serial = ?, updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+		  AND (camera_serial IS NULL OR camera_serial = '')
+	`, cameraSerial, m.now().UTC(), episodeID)
+	if err != nil {
+		return fmt.Errorf("update episode camera serial: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read episode camera serial backfill result: %w", err)
+	}
+	if affected > 0 {
+		logger.Printf(
+			"[STEREO_SPLIT] backfilled episode camera_serial derivative=%d episode=%d camera_serial=%s",
+			derivativeID,
+			episodeID,
+			cameraSerial,
+		)
 	}
 	return nil
 }
