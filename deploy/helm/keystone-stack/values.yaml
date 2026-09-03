@@ -170,7 +170,7 @@ mysql:
     storageClass: ebs-ssd
     accessModes:
       - ReadWriteOnce
-    size: 30Gi
+    size: 20Gi
   podAnnotations: {}
   podLabels: {}
   resources:
