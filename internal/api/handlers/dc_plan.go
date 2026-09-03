@@ -420,6 +420,7 @@ func (h *DCPlanHandler) RegisterAdminRoutes(apiV1 *gin.RouterGroup) {
 // @Failure      500 {object} map[string]string
 // @Router       /dc-plans [get]
 func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
+	startedAt := time.Now()
 	pagination, err := ParsePagination(c)
 	if err != nil {
 		PaginationErrorResponse(c, err)
@@ -492,32 +493,21 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 	}
 
 	var total int
+	countStartedAt := time.Now()
 	if err := h.db.Get(&total, "SELECT COUNT(*) FROM dc_plan dp "+whereClause, args...); err != nil {
 		logger.Printf("[DC_PLAN] Failed to count dc plans: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list dc plans"})
 		return
 	}
+	countDuration := time.Since(countStartedAt)
 
 	query := `
 		SELECT
 			dp.id, dp.workspace_id, dp.name, dp.description, dp.dc_factory_id, dp.dc_service_provider_id,
 			dp.operator, dp.operator_display_name, dp.dc_project_id, dp.dc_project_name, dp.dc_project_description, dp.dc_task_id, dp.dc_task_name, dp.dc_task_description, dp.dc_device_id, dp.dc_device_name, dp.dc_type, CAST(dp.dc_date AS CHAR) AS dc_date,
-			dp.target_count, dp.cur_count, COALESCE(progress.local_cur_count, 0) AS local_cur_count,
-			dp.target_duration, dp.cur_duration, COALESCE(progress.local_cur_duration, 0) AS local_cur_duration,
+			dp.target_count, dp.cur_count, dp.target_duration, dp.cur_duration,
 			dp.created_by, dp.created_time, dp.updated_by, dp.updated_time, dp.last_synced_at
 		FROM dc_plan dp
-		LEFT JOIN (
-			SELECT
-				dc_plan_id,
-				COUNT(*) AS local_cur_count,
-				COALESCE(SUM(COALESCE(duration_sec, 0)), 0) AS local_cur_duration
-			FROM episodes
-			WHERE deleted_at IS NULL
-				AND dc_plan_id IS NOT NULL
-				AND COALESCE(cloud_synced, FALSE) = FALSE
-				AND COALESCE(qa_status, 'pending_qa') NOT IN ('failed', 'manual_review_failed')
-			GROUP BY dc_plan_id
-		) progress ON progress.dc_plan_id = dp.id
 		` + whereClause + `
 		ORDER BY dp.dc_date DESC, dp.id DESC
 		LIMIT ? OFFSET ?
@@ -525,15 +515,47 @@ func (h *DCPlanHandler) ListDCPlans(c *gin.Context) {
 	args = append(args, pagination.Limit, pagination.Offset)
 
 	var rows []dcPlanRow
+	pageStartedAt := time.Now()
 	if err := h.db.Select(&rows, query, args...); err != nil {
 		logger.Printf("[DC_PLAN] Failed to query dc plans: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list dc plans"})
 		return
 	}
+	pageDuration := time.Since(pageStartedAt)
+
+	progressDuration := time.Duration(0)
+	if len(rows) > 0 {
+		planIDs := make([]int64, 0, len(rows))
+		for _, row := range rows {
+			planIDs = append(planIDs, row.ID)
+		}
+
+		progressStartedAt := time.Now()
+		progressByPlanID, err := h.listDCPlanLocalProgress(c, planIDs)
+		if err != nil {
+			logger.Printf("[DC_PLAN] Failed to query local plan progress: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list dc plans"})
+			return
+		}
+		progressDuration = time.Since(progressStartedAt)
+		for index := range rows {
+			if progress, ok := progressByPlanID[rows[index].ID]; ok {
+				rows[index].LocalCurCount = progress.LocalCurCount
+				rows[index].LocalCurDuration = sql.NullFloat64{Float64: progress.LocalCurDuration, Valid: true}
+			}
+		}
+	}
 
 	items := make([]DCPlanResponse, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, dcPlanResponseFromRow(row))
+	}
+
+	if elapsed := time.Since(startedAt); elapsed >= time.Second {
+		logger.Printf(
+			"[DC_PLAN] Slow list query: workspace_id=%d total=%s count=%s page=%s progress=%s plans=%d",
+			workspaceID, elapsed, countDuration, pageDuration, progressDuration, len(rows),
+		)
 	}
 
 	c.JSON(http.StatusOK, DCPlanListResponse{
@@ -590,6 +612,41 @@ func (h *DCPlanHandler) SyncWorkspaceDCPlans(c *gin.Context) {
 		PageCount:    result.PageCount,
 		LastSyncedAt: result.LastSyncedAt.UTC().Format(time.RFC3339),
 	})
+}
+
+type dcPlanLocalProgressRow struct {
+	DCPlanID         int64   `db:"dc_plan_id"`
+	LocalCurCount    int64   `db:"local_cur_count"`
+	LocalCurDuration float64 `db:"local_cur_duration"`
+}
+
+func (h *DCPlanHandler) listDCPlanLocalProgress(c *gin.Context, planIDs []int64) (map[int64]dcPlanLocalProgressRow, error) {
+	query, args, err := sqlx.In(`
+		SELECT
+			dc_plan_id,
+			COUNT(*) AS local_cur_count,
+			COALESCE(SUM(COALESCE(duration_sec, 0)), 0) AS local_cur_duration
+		FROM episodes
+		WHERE dc_plan_id IN (?)
+			AND deleted_at IS NULL
+			AND COALESCE(cloud_synced, FALSE) = FALSE
+			AND COALESCE(qa_status, 'pending_qa') NOT IN ('failed', 'manual_review_failed')
+		GROUP BY dc_plan_id
+	`, planIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []dcPlanLocalProgressRow
+	if err := h.db.SelectContext(c.Request.Context(), &rows, h.db.Rebind(query), args...); err != nil {
+		return nil, err
+	}
+
+	progressByPlanID := make(map[int64]dcPlanLocalProgressRow, len(rows))
+	for _, row := range rows {
+		progressByPlanID[row.DCPlanID] = row
+	}
+	return progressByPlanID, nil
 }
 
 func parseRequiredPositiveQueryInt64(c *gin.Context, field string) (int64, bool) {
