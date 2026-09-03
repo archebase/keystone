@@ -347,7 +347,7 @@ func loadDerivativeConfig() DerivativeConfig {
 	return DerivativeConfig{
 		Enabled:         orbitBaseURL != "",
 		OrbitBaseURL:    orbitBaseURL,
-		OrbitTimeoutSec: 10,
+		OrbitTimeoutSec: 30,
 		OutputPrefix:    strings.Trim(strings.TrimSpace(getEnv("KEYSTONE_DERIVATIVE_TOS_PREFIX", "derived/episodes")), "/"),
 		Resources: KubernetesResourcesConfig{
 			Requests: map[string]string{"cpu": "2", "memory": "4Gi", "ephemeral-storage": "4Gi"},
@@ -364,7 +364,7 @@ func loadDerivativeConfig() DerivativeConfig {
 func loadCalibrationConfig() CalibrationConfig {
 	return CalibrationConfig{
 		OrbitBaseURL:    strings.TrimRight(strings.TrimSpace(getEnv("KEYSTONE_ORBIT_BASE_URL", "")), "/"),
-		OrbitTimeoutSec: 10,
+		OrbitTimeoutSec: 30,
 		Resources: KubernetesResourcesConfig{
 			Requests: map[string]string{"cpu": "2", "memory": "4Gi", "ephemeral-storage": "8Gi"},
 			Limits:   map[string]string{"cpu": "4", "memory": "8Gi", "ephemeral-storage": "16Gi"},

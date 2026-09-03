@@ -1225,6 +1225,73 @@ func TestReconcileOncePersistsCompleteSnapshotBeforeOrbitSubmit(t *testing.T) {
 	}
 }
 
+func TestReconcileOnceRecoversTimedOutOrbitSubmitBySubmissionID(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 32, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	if _, err := db.Exec("INSERT INTO stereo_split_image_configs (image_ref, created_by) VALUES (?, 'admin')", testImageDigest); err != nil {
+		t.Fatalf("insert image config: %v", err)
+	}
+
+	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
+	fake.submit = func(context.Context, orbitapi.SubmitRequest) (orbitapi.SubmitResponse, error) {
+		return orbitapi.SubmitResponse{}, context.DeadlineExceeded
+	}
+	manager := NewManager(db, fake, &fakeObjectStore{size: 301234567, etag: "source-etag"}, testManagerConfig())
+	if _, _, err := manager.Start(context.Background(), 32, "admin"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	// The first pass freezes the request and reaches the ambiguous submit.
+	if _, err := manager.ReconcileOnce(context.Background()); err == nil {
+		t.Fatal("first ReconcileOnce() error = nil, want submit timeout")
+	}
+
+	// Model a live dispatch worker during recovery: submitting records must
+	// remain visible to the reconciler so the POST can be adopted.
+	manager.dispatchCancel = func() {}
+
+	var submissionID string
+	if err := db.Get(&submissionID, `
+		SELECT orbit_submission_id FROM episode_derivatives WHERE episode_id = 32 AND kind = ?
+	`, Kind); err != nil {
+		t.Fatalf("load submission ID: %v", err)
+	}
+	if submissionID == "" {
+		t.Fatal("submission ID is empty after timed-out submit")
+	}
+
+	fake.getErr = nil
+	fake.job = orbitapi.Job{
+		JobID:        "abs-job-after-timeout",
+		SubmissionID: submissionID,
+		Status:       "PENDING",
+		Image:        testImageDigest,
+	}
+	if _, err := db.Exec(`
+		UPDATE episode_derivatives SET reconcile_after = NULL
+		WHERE episode_id = 32 AND kind = ?
+	`, Kind); err != nil {
+		t.Fatalf("make timed-out submission due: %v", err)
+	}
+
+	worked, err := manager.ReconcileOnce(context.Background())
+	if err != nil {
+		t.Fatalf("recovery ReconcileOnce() error = %v", err)
+	}
+	if !worked {
+		t.Fatal("recovery ReconcileOnce() worked = false")
+	}
+	derivative, err := manager.Get(context.Background(), 32)
+	if err != nil {
+		t.Fatalf("Get() after recovery error = %v", err)
+	}
+	if derivative.ProcessingStatus != ProcessingPending || derivative.OrbitJobID != "abs-job-after-timeout" {
+		t.Fatalf("derivative after timed-out submit recovery = %+v", derivative)
+	}
+	if fake.submitCalls != 1 {
+		t.Fatalf("Orbit submit calls = %d, want 1", fake.submitCalls)
+	}
+}
 func TestReconcileOnceFailsBeforeOrbitSubmissionWhenScratchLimitExceeded(t *testing.T) {
 	db := newTestDB(t)
 	insertTestEpisode(t, db, 31, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
@@ -1234,6 +1301,7 @@ func TestReconcileOnceFailsBeforeOrbitSubmissionWhenScratchLimitExceeded(t *test
 	fake := &fakeOrbit{getErr: orbitapi.ErrNotFound}
 	const sourceSize = int64(34 * 1024 * 1024 * 1024)
 	manager := NewManager(db, fake, &fakeObjectStore{size: sourceSize, etag: "source-etag"}, testManagerConfig())
+	manager.dispatchCancel = nil
 	if _, _, err := manager.Start(context.Background(), 31, "admin"); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
