@@ -168,6 +168,8 @@ func (h *DCPlanHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 // RegisterReadRoutes registers dc_plan routes available to authenticated readers.
 func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/dc-plans", h.ListDCPlans)
+	apiV1.GET("/dc-plans/options/projects", h.ListDCPlanProjectOptions)
+	apiV1.GET("/dc-plans/options/tasks", h.ListDCPlanTaskOptions)
 	apiV1.POST("/operator/plans/refresh", h.RefreshOperatorPlans)
 }
 

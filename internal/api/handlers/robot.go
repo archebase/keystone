@@ -77,6 +77,8 @@ type robotConnectionSnapshot map[string]string
 // RegisterRoutes registers robot related routes.
 func (h *RobotHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/robots", h.ListRobots)
+	apiV1.GET("/robots/options/device-names", h.ListRobotDeviceNameOptions)
+	apiV1.GET("/robots/options/device-types", h.ListRobotDeviceTypeOptions)
 	apiV1.GET("/devices/:device_id/connection", h.GetDeviceConnection)
 	apiV1.GET("/robots/:id", h.GetRobot)
 }
