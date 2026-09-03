@@ -43,6 +43,7 @@ spec:
           args:
             - --character-set-server=utf8mb4
             - --collation-server=utf8mb4_unicode_ci
+            - --binlog-expire-logs-seconds=604800
           ports:
             - name: mysql
               containerPort: {{ .Values.mysql.service.port }}

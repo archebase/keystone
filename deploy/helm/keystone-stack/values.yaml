@@ -170,16 +170,16 @@ mysql:
     storageClass: ebs-ssd
     accessModes:
       - ReadWriteOnce
-    size: 20Gi
+    size: 30Gi
   podAnnotations: {}
   podLabels: {}
   resources:
     requests:
-      cpu: 250m
-      memory: 64Mi
-    limits:
-      cpu: "2"
+      cpu: "1"
       memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
   nodeSelector:
     kubernetes.io/arch: amd64
   tolerations: []
