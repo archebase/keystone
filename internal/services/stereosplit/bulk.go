@@ -356,6 +356,65 @@ func derivativeReadyForBulkSnapshot(derivative Derivative) bool {
 	}
 }
 
+// FreezeBulkResultSnapshotsForRun freezes completed generations for one bulk run
+// so active stereo-split batches can advance processed counts without waiting
+// for the global reconciler to scan unrelated work.
+func (m *Manager) FreezeBulkResultSnapshotsForRun(ctx context.Context, runID string, limit int) (int, error) {
+	if m == nil || m.db == nil {
+		return 0, fmt.Errorf("freeze stereo split bulk snapshots: database is not configured")
+	}
+	if strings.TrimSpace(runID) == "" {
+		return 0, fmt.Errorf("freeze stereo split bulk snapshots: run id is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	tx, err := m.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin stereo split bulk snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var derivativeIDs []int64
+	if err := tx.SelectContext(ctx, &derivativeIDs, `
+		SELECT d.id
+		FROM bulk_run_items i
+		INNER JOIN episode_derivatives d
+		  ON d.id = i.derivative_id AND d.generation = i.derivative_generation
+		WHERE i.bulk_run_id = ?
+		  AND i.admission_status = ?
+		  AND i.result_snapshot IS NULL
+		  AND d.orbit_delete_status IN (?, ?)
+		  AND (
+		    d.processing_status IN (?, ?)
+		    OR (d.processing_status = ? AND d.qa_status IN (?, ?))
+		  )
+		ORDER BY i.id ASC
+		LIMIT ?
+	`, runID, BulkAdmissionAdmitted, DeleteNotRequired, DeleteCompleted,
+		ProcessingFailed, ProcessingCanceled, ProcessingSucceeded, QAApproved, QAFailed, limit); err != nil {
+		return 0, fmt.Errorf("select stereo split bulk snapshots for run: %w", err)
+	}
+
+	for _, derivativeID := range derivativeIDs {
+		derivative, err := getDerivativeByIDTx(ctx, tx, derivativeID)
+		if err != nil {
+			return 0, fmt.Errorf("load stereo split bulk snapshot derivative: %w", err)
+		}
+		if err := freezeTerminalBulkItemsTx(ctx, tx, derivative); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit stereo split bulk snapshot: %w", err)
+	}
+	return len(derivativeIDs), nil
+}
+
 // FreezeBulkResultSnapshotsOnce freezes one completed generation into every
 // bulk item that admitted it. A later retry can then safely overwrite the
 // single current derivative row without changing historical batch results.

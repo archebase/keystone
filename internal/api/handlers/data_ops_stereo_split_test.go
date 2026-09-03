@@ -179,6 +179,7 @@ type fakeDataOpsStereoSplitManager struct {
 	admitCommitted       chan int64
 	admitContinue        chan struct{}
 	deferBulkResult      bool
+	freezeBulkResult     bool
 	mu                   sync.Mutex
 }
 
@@ -237,4 +238,11 @@ func (f *fakeDataOpsStereoSplitManager) UpdateImageConfig(_ context.Context, ima
 
 func (f *fakeDataOpsStereoSplitManager) ListImageConfigHistory(context.Context, int, int) ([]stereosplit.ImageConfig, error) {
 	return []stereosplit.ImageConfig{f.imageConfig}, nil
+}
+
+func (f *fakeDataOpsStereoSplitManager) FreezeBulkResultSnapshotsForRun(context.Context, string, int) (int, error) {
+	if !f.freezeBulkResult {
+		return 0, nil
+	}
+	return 1, nil
 }

@@ -712,6 +712,56 @@ func TestManagerFreezesSucceededBulkResultSnapshot(t *testing.T) {
 	}
 }
 
+func TestManagerFreezesSucceededBulkResultSnapshotForRun(t *testing.T) {
+	db := newTestDB(t)
+	for _, episodeID := range []int64{2601, 2602, 2603} {
+		insertTestEpisode(t, db, episodeID, "keystone_tos", fmt.Sprintf(`{"bucket":"source-bucket","object_key":"raw/%d.mcap"}`, episodeID), "")
+	}
+	if _, err := db.Exec(`INSERT INTO bulk_runs (run_id, action, status) VALUES ('stereo_run_done', 'stereo_split', 'running')`); err != nil {
+		t.Fatalf("insert bulk run: %v", err)
+	}
+	manager := NewManager(db, nil, nil, Config{Enabled: true})
+	var derivativeIDs []int64
+	for _, episodeID := range []int64{2601, 2602, 2603} {
+		admission, err := manager.AdmitBulk(context.Background(), "stereo_run_done", episodeID, "admin")
+		if err != nil {
+			t.Fatalf("AdmitBulk(%d) error = %v", episodeID, err)
+		}
+		derivativeIDs = append(derivativeIDs, admission.DerivativeID)
+	}
+	for _, derivativeID := range derivativeIDs {
+		if _, err := db.Exec(`
+			UPDATE episode_derivatives SET processing_status = ?, qa_status = ?, orbit_delete_status = ?,
+			    mcap_path = 'derived/output.mcap', checksum = ?, file_size_bytes = 4096
+			WHERE id = ?
+		`, ProcessingSucceeded, QAApproved, DeleteCompleted, strings.Repeat("d", 64), derivativeID); err != nil {
+			t.Fatalf("mark derivative succeeded: %v", err)
+		}
+	}
+
+	frozen, err := manager.FreezeBulkResultSnapshotsForRun(context.Background(), "stereo_run_done", 2)
+	if err != nil {
+		t.Fatalf("FreezeBulkResultSnapshotsForRun() error = %v", err)
+	}
+	if frozen != 2 {
+		t.Fatalf("FreezeBulkResultSnapshotsForRun() = %d, want 2", frozen)
+	}
+	var snapshots int
+	if err := db.Get(&snapshots, `SELECT COUNT(*) FROM bulk_run_items WHERE bulk_run_id = 'stereo_run_done' AND result_snapshot IS NOT NULL`); err != nil {
+		t.Fatalf("count snapshots: %v", err)
+	}
+	if snapshots != 2 {
+		t.Fatalf("snapshots = %d, want 2", snapshots)
+	}
+	frozen, err = manager.FreezeBulkResultSnapshotsForRun(context.Background(), "stereo_run_done", 100)
+	if err != nil {
+		t.Fatalf("second FreezeBulkResultSnapshotsForRun() error = %v", err)
+	}
+	if frozen != 1 {
+		t.Fatalf("second FreezeBulkResultSnapshotsForRun() = %d, want 1", frozen)
+	}
+}
+
 func TestManagerCancelQueuedDoesNotCallOrbit(t *testing.T) {
 	db := newTestDB(t)
 	insertTestEpisode(t, db, 6, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")

@@ -29,6 +29,7 @@ type dataOpsStereoSplitManager interface {
 	UpdateImageConfig(ctx context.Context, imageRef string, maxConcurrent int, resourceLimitsEnabled bool, expectedRevisionID int64, actor string) (stereosplit.ImageConfig, error)
 	ListImageConfigHistory(ctx context.Context, limit, offset int) ([]stereosplit.ImageConfig, error)
 	AdmitBulk(ctx context.Context, runID string, episodeID int64, actor string) (stereosplit.BulkAdmission, error)
+	FreezeBulkResultSnapshotsForRun(ctx context.Context, runID string, limit int) (int, error)
 }
 
 func (h *DataOpsHandler) registerStereoSplitRoutes(api *gin.RouterGroup) {

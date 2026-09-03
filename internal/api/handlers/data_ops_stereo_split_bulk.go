@@ -530,6 +530,12 @@ type stereoSplitBulkResultSnapshot struct {
 }
 
 func (h *DataOpsHandler) refreshStereoSplitBulkRun(ctx context.Context, runID string) (DataOpsBulkRunResponse, bool, error) {
+	if h.stereoSplit != nil {
+		if _, err := h.stereoSplit.FreezeBulkResultSnapshotsForRun(ctx, runID, 100); err != nil {
+			return DataOpsBulkRunResponse{}, false, err
+		}
+	}
+
 	stored, err := h.loadStereoSplitStoredRun(ctx, runID)
 	if err != nil {
 		return DataOpsBulkRunResponse{}, false, err
