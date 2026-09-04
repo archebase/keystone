@@ -15,7 +15,7 @@ import (
 // CalibrationBackfillRequest describes one explicit Episode calibration backfill request.
 type CalibrationBackfillRequest struct {
 	EpisodeID    int64  `json:"episode_id" binding:"required"`
-	CameraSerial string `json:"camera_serial" binding:"required,trimmednotblank"`
+	CameraSerial string `json:"camera_serial" binding:"required"`
 }
 
 // BackfillEpisodeCalibration uploads and binds the selected camera calibration without re-uploading MCAP.
