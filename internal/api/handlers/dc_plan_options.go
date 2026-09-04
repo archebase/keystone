@@ -17,8 +17,8 @@ import (
 
 // DCPlanProjectOption represents one distinct Hilbert project option.
 type DCPlanProjectOption struct {
-	DCProjectID   int64  `json:"dc_project_id"`
-	DCProjectName string `json:"dc_project_name"`
+	DCProjectID   int64  `db:"dc_project_id" json:"dc_project_id"`
+	DCProjectName string `db:"dc_project_name" json:"dc_project_name"`
 }
 
 // DCPlanProjectOptionListResponse represents a paginated list of project options.
@@ -33,8 +33,8 @@ type DCPlanProjectOptionListResponse struct {
 
 // DCPlanTaskOption represents one distinct Hilbert task option.
 type DCPlanTaskOption struct {
-	DCTaskID   int64  `json:"dc_task_id"`
-	DCTaskName string `json:"dc_task_name"`
+	DCTaskID   int64  `db:"dc_task_id" json:"dc_task_id"`
+	DCTaskName string `db:"dc_task_name" json:"dc_task_name"`
 }
 
 // DCPlanTaskOptionListResponse represents a paginated list of task options.

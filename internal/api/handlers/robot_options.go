@@ -15,8 +15,8 @@ import (
 
 // RobotDeviceNameOption represents one distinct robot/device name option.
 type RobotDeviceNameOption struct {
-	DeviceID   string `json:"device_id"`
-	DeviceName string `json:"device_name"`
+	DeviceID   string `db:"device_id" json:"device_id"`
+	DeviceName string `db:"device_name" json:"device_name"`
 }
 
 // RobotDeviceNameOptionListResponse represents a paginated list of device name options.
@@ -31,7 +31,7 @@ type RobotDeviceNameOptionListResponse struct {
 
 // RobotDeviceTypeOption represents one distinct robot device type option.
 type RobotDeviceTypeOption struct {
-	DeviceType string `json:"device_type"`
+	DeviceType string `db:"device_type" json:"device_type"`
 }
 
 // RobotDeviceTypeOptionListResponse represents a paginated list of device type options.
