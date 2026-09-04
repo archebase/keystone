@@ -124,7 +124,7 @@ func TestManagerPreparesExecutionWithDynamicScratchStorage(t *testing.T) {
 	}
 	if execution.Request.Resources.Requests["cpu"] != "2" ||
 		execution.Request.Resources.Requests["memory"] != "4Gi" ||
-		execution.Request.Resources.Limits["cpu"] != "4" ||
+		execution.Request.Resources.Limits["cpu"] != "8" ||
 		execution.Request.Resources.Limits["memory"] != "8Gi" {
 		t.Fatalf("non-storage resources changed: %+v", execution.Request.Resources)
 	}
@@ -2336,7 +2336,7 @@ func testManagerConfig() Config {
 		OutputPrefix: "derived/episodes",
 		Resources: Resources{
 			Requests: map[string]string{"cpu": "2", "memory": "4Gi", "ephemeral-storage": "4Gi"},
-			Limits:   map[string]string{"cpu": "4", "memory": "8Gi", "ephemeral-storage": "8Gi"},
+			Limits:   map[string]string{"cpu": "8", "memory": "8Gi", "ephemeral-storage": "8Gi"},
 		},
 		ActiveDeadline:      3600,
 		TTLSecondsAfterDone: 604800,
