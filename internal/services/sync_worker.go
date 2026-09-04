@@ -89,6 +89,8 @@ type hilbertRawDataClient interface {
 	RegisterParamFile(ctx context.Context, request auth.HilbertParamFileRegisterRequest) (*auth.HilbertParamFileRegistration, error)
 	GetParamFileUploadCredentials(ctx context.Context, workspaceID int64, paramFileID string) (*auth.HilbertParamFileUploadCredentials, error)
 	FinishParamFileUpload(ctx context.Context, workspaceID int64, paramFileID string) error
+	GetRawDataByID(ctx context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawData, error)
+	UpdateRawDataParamFile(ctx context.Context, workspaceID, rawDataID int64, paramFileID string) error
 }
 
 type tosObjectUploader interface {
@@ -1745,6 +1747,7 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 	return paramFileID, nil
 }
 
+// sourceReaderForBackend selects the source reader for a persisted backend.
 func (w *SyncWorker) sourceReaderForBackend(backend string) (SourceObjectReader, error) {
 	if backend == SyncBackendTOS {
 		if w.tosSource == nil {

@@ -92,6 +92,7 @@ type dataOpsBulkSyncWorker interface {
 	EnqueueEpisodeManualForBulkRun(ctx context.Context, episodeID int64, bulkRunID string) error
 	EnqueueStereoSplitManual(ctx context.Context, episodeID int64) error
 	EnqueueE2ConversionManual(ctx context.Context, episodeID int64) error
+	BackfillEpisodeCalibration(ctx context.Context, episodeID int64, cameraSerial string) (*services.CalibrationBackfillResult, error)
 	CancelBulkRun(ctx context.Context, bulkRunID string) (int64, error)
 }
 
@@ -139,6 +140,7 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	}
 	apiV1.POST("/episodes/bulk-qa", h.BulkRunEpisodeQA)
 	apiV1.POST("/episodes/bulk-sync", h.BulkSyncEpisodes)
+	apiV1.POST("/episodes/calibration-backfill", h.BackfillEpisodeCalibration)
 	if h.localCleanup != nil {
 		apiV1.POST("/episodes/bulk-local-cleanup", h.BulkLocalCleanup)
 	}

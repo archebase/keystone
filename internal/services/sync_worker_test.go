@@ -618,26 +618,34 @@ func TestDirectCloudUploadRequestContainsPlanMetadata(t *testing.T) {
 }
 
 type fakeHilbertRawDataClient struct {
-	register               auth.HilbertRawDataRegisterRequest
-	registerCount          int
-	registerID             int64
-	registerErr            error
-	lookup                 *auth.HilbertRawData
-	lookupCount            int
-	lookupWorkspaceID      int64
-	lookupBagName          string
-	lookupErr              error
-	credentials            *auth.HilbertRawDataUploadCredentials
-	credentialsWorkspaceID int64
-	credentialsRawDataID   int64
-	credentialsErr         error
-	finishWorkspaceID      int64
-	finishRawDataID        int64
-	finished               bool
-	paramFileID            string
-	paramFileRegister      auth.HilbertParamFileRegisterRequest
-	paramFileCredentials   *auth.HilbertParamFileUploadCredentials
-	paramFileFinished      bool
+	register                auth.HilbertRawDataRegisterRequest
+	registerCount           int
+	registerID              int64
+	registerErr             error
+	lookup                  *auth.HilbertRawData
+	lookupCount             int
+	lookupWorkspaceID       int64
+	lookupBagName           string
+	lookupErr               error
+	credentials             *auth.HilbertRawDataUploadCredentials
+	credentialsWorkspaceID  int64
+	credentialsRawDataID    int64
+	credentialsErr          error
+	finishWorkspaceID       int64
+	finishRawDataID         int64
+	finished                bool
+	paramFileID             string
+	paramFileRegister       auth.HilbertParamFileRegisterRequest
+	paramFileCredentials    *auth.HilbertParamFileUploadCredentials
+	paramFileFinished       bool
+	rawDataByID             *auth.HilbertRawData
+	rawDataByIDWorkspaceID  int64
+	rawDataByIDRawDataID    int64
+	rawDataByIDErr          error
+	updatedRawDataWorkspace int64
+	updatedRawDataID        int64
+	updatedParamFileID      string
+	updateRawDataErr        error
 }
 
 func (c *fakeHilbertRawDataClient) RegisterRawData(_ context.Context, request auth.HilbertRawDataRegisterRequest) (int64, error) {
@@ -693,6 +701,19 @@ func (c *fakeHilbertRawDataClient) GetParamFileUploadCredentials(_ context.Conte
 func (c *fakeHilbertRawDataClient) FinishParamFileUpload(context.Context, int64, string) error {
 	c.paramFileFinished = true
 	return nil
+}
+
+func (c *fakeHilbertRawDataClient) GetRawDataByID(_ context.Context, workspaceID, rawDataID int64) (*auth.HilbertRawData, error) {
+	c.rawDataByIDWorkspaceID = workspaceID
+	c.rawDataByIDRawDataID = rawDataID
+	return c.rawDataByID, c.rawDataByIDErr
+}
+
+func (c *fakeHilbertRawDataClient) UpdateRawDataParamFile(_ context.Context, workspaceID, rawDataID int64, paramFileID string) error {
+	c.updatedRawDataWorkspace = workspaceID
+	c.updatedRawDataID = rawDataID
+	c.updatedParamFileID = paramFileID
+	return c.updateRawDataErr
 }
 
 type fakeSourceObjectReader struct {

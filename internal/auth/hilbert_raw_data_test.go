@@ -55,6 +55,18 @@ func TestHilbertRawDataClientUsesRESTContract(t *testing.T) {
 				t.Fatalf("credentials query = %s", r.URL.RawQuery)
 			}
 			_, _ = w.Write([]byte(`{"code":0,"data":{"provider":"TOS","endpoint":"tos-s3-cn-beijing.ivolces.com","region":"cn-beijing","bucket":"bucket-a","key":"object-a","credentials":{"access_key_id":"ak","secret_access_key":"sk","session_token":"token","expire_time":"2026-07-15T04:30:10Z"}}}`))
+		case hilbertRawDataUpdateParamFilePath:
+			if r.Method != http.MethodPost {
+				t.Fatalf("update param file method = %s, want POST", r.Method)
+			}
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode update param file body: %v", err)
+			}
+			if body["workspaceId"] != float64(2) || body["rawDataId"] != float64(42) || body["paramFileMotionStoreId"] != "workspaces/2/calibrationSnapshots/cs_01" {
+				t.Fatalf("unexpected update param file body: %+v", body)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":true}`))
 		case hilbertRawDataFinishUploadPath:
 			sawFinish = true
 			if r.Method != http.MethodPost {

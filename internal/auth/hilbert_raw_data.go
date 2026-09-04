@@ -19,6 +19,7 @@ const (
 	hilbertRawDataQueryPath                        = "/v1/data-collection/raw-data/query"
 	hilbertRawDataGetUploadCredentialsPath         = "/v1/data-collection/raw-data/get-upload-credentials" // #nosec G101 -- API path, not a credential.
 	hilbertRawDataFinishUploadPath                 = "/v1/data-collection/raw-data/finish-upload"
+	hilbertRawDataUpdateParamFilePath              = "/v1/data-collection/raw-data/update-param-file"
 	hilbertParamFileRegisterPath                   = "/v1/data-collection/raw-data/register-param-file"
 	hilbertParamFileGetUploadCredentialsPath       = "/v1/data-collection/raw-data/get-param-file-upload-credentials" // #nosec G101 -- API path, not a credential.
 	hilbertParamFileFinishUploadPath               = "/v1/data-collection/raw-data/finish-param-file-upload"
@@ -50,14 +51,15 @@ type HilbertParamFileRegisterRequest struct {
 // HilbertRawData contains the immutable registration fields Keystone verifies
 // before adopting a row after an ambiguous register response.
 type HilbertRawData struct {
-	ID           int64     `json:"id"`
-	WorkspaceID  int64     `json:"workspaceId"`
-	DCPlanID     int64     `json:"dcPlanId"`
-	BagName      string    `json:"bagName"`
-	BagStartTime time.Time `json:"bagStartTime"`
-	BagEndTime   time.Time `json:"bagEndTime"`
-	BagSize      int64     `json:"bagSize"`
-	BagDigest    string    `json:"bagDigest"`
+	ID                     int64     `json:"id"`
+	WorkspaceID            int64     `json:"workspaceId"`
+	DCPlanID               int64     `json:"dcPlanId"`
+	BagName                string    `json:"bagName"`
+	BagStartTime           time.Time `json:"bagStartTime"`
+	BagEndTime             time.Time `json:"bagEndTime"`
+	BagSize                int64     `json:"bagSize"`
+	BagDigest              string    `json:"bagDigest"`
+	ParamFileMotionStoreID *string   `json:"paramFileMotionStoreId"`
 }
 
 type hilbertRawDataPage struct {
@@ -237,6 +239,66 @@ func (c *HilbertClient) FindRawDataByBagName(ctx context.Context, workspaceID in
 			return nil, fmt.Errorf("%w: raw-data lookup returned an empty page before total was exhausted", ErrHilbertUnavailable)
 		}
 	}
+}
+
+// GetRawDataByID queries one Hilbert raw-data row by workspace and primary key.
+func (c *HilbertClient) GetRawDataByID(ctx context.Context, workspaceID, rawDataID int64) (*HilbertRawData, error) {
+	if !c.ServiceAuthConfigured() {
+		return nil, ErrHilbertUnavailable
+	}
+	if workspaceID <= 0 || rawDataID <= 0 {
+		return nil, fmt.Errorf("%w: invalid raw-data lookup request", ErrHilbertUnavailable)
+	}
+	query := url.Values{}
+	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))
+	query.Set("id", strconv.FormatInt(rawDataID, 10))
+	query.Set("pageNum", "1")
+	query.Set("pageSize", "1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertRawDataQueryPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create raw-data lookup request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
+	var resp hilbertCommonResponse[hilbertRawDataPage]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: raw-data lookup response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
+	}
+	for index := range resp.Data.Records {
+		if resp.Data.Records[index].ID == rawDataID {
+			record := resp.Data.Records[index]
+			return &record, nil
+		}
+	}
+	return nil, nil
+}
+
+// UpdateRawDataParamFile binds a READY Hilbert CalibrationSnapshot to an uploaded raw-data row.
+func (c *HilbertClient) UpdateRawDataParamFile(ctx context.Context, workspaceID, rawDataID int64, paramFileID string) error {
+	if !c.ServiceAuthConfigured() {
+		return ErrHilbertUnavailable
+	}
+	if workspaceID <= 0 || rawDataID <= 0 || strings.TrimSpace(paramFileID) == "" {
+		return fmt.Errorf("%w: invalid raw-data calibration binding request", ErrHilbertUnavailable)
+	}
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertRawDataUpdateParamFilePath, map[string]interface{}{
+		"workspaceId": workspaceID, "rawDataId": rawDataID, "paramFileMotionStoreId": paramFileID,
+	})
+	if err != nil {
+		return err
+	}
+	var resp hilbertCommonResponse[bool]
+	if err := c.doJSON(req, &resp); err != nil {
+		return err
+	}
+	if resp.Code != 0 || !resp.Data {
+		return fmt.Errorf("%w: raw-data calibration binding response code %d message %q", ErrHilbertUnavailable, resp.Code, resp.errorMessage())
+	}
+	return nil
 }
 
 // GetRawDataUploadCredentials fetches temporary object-storage credentials for
