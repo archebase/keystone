@@ -651,6 +651,20 @@ func (h *DCPlanHandler) listDCPlanLocalProgress(c *gin.Context, planIDs []int64)
 	return progressByPlanID, nil
 }
 
+func parseRequiredNonNegativeQueryInt64(c *gin.Context, field string) (int64, bool) {
+	raw := strings.TrimSpace(c.Query(field))
+	if raw == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": field + " is required"})
+		return 0, false
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": field + " must be a non-negative integer"})
+		return 0, false
+	}
+	return value, true
+}
+
 func parseRequiredPositiveQueryInt64(c *gin.Context, field string) (int64, bool) {
 	raw := strings.TrimSpace(c.Query(field))
 	if raw == "" {

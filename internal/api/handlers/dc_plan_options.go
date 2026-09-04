@@ -56,7 +56,7 @@ func (h *DCPlanHandler) ListDCPlanProjectOptions(c *gin.Context) {
 		return
 	}
 
-	workspaceID, ok := parseRequiredPositiveQueryInt64(c, "workspace_id")
+	workspaceID, ok := parseRequiredNonNegativeQueryInt64(c, "workspace_id")
 	if !ok {
 		return
 	}
@@ -121,7 +121,7 @@ func (h *DCPlanHandler) ListDCPlanTaskOptions(c *gin.Context) {
 		return
 	}
 
-	workspaceID, ok := parseRequiredPositiveQueryInt64(c, "workspace_id")
+	workspaceID, ok := parseRequiredNonNegativeQueryInt64(c, "workspace_id")
 	if !ok {
 		return
 	}
