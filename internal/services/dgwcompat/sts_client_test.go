@@ -32,7 +32,7 @@ func (c *fakeVolcengineSTSClient) AssumeRoleWithContext(
 	return c.output, c.err
 }
 
-func TestTOSUploadPolicyScopesOneExactObject(t *testing.T) {
+func TestTOSUploadPolicyScopesOneExactObjectPlusMultipartList(t *testing.T) {
 	policy, err := tosUploadPolicy(stsScope{Bucket: "bucket-a", ObjectKey: "uploads/device-1/file.mcap"})
 	if err != nil {
 		t.Fatalf("tosUploadPolicy() error = %v", err)
@@ -46,16 +46,73 @@ func TestTOSUploadPolicyScopesOneExactObject(t *testing.T) {
 	if err := json.Unmarshal([]byte(policy), &decoded); err != nil {
 		t.Fatalf("decode policy: %v", err)
 	}
-	if len(decoded.Statement) != 1 || len(decoded.Statement[0].Resource) != 1 {
-		t.Fatalf("unexpected policy shape: %s", policy)
+	const exact = "trn:tos:::bucket-a/uploads/device-1/file.mcap"
+
+	// Plain object + single-object write/head operations stay scoped to the
+	// exact object key (no wildcard, no whole-bucket fallback).
+	write := findStatementWithAction(decoded.Statement, "tos:PutObject")
+	if write == nil {
+		t.Fatalf("missing write statement: %s", policy)
 	}
-	const want = "trn:tos:::bucket-a/uploads/device-1/file.mcap"
-	if decoded.Statement[0].Resource[0] != want {
-		t.Fatalf("resource=%q want=%q", decoded.Statement[0].Resource[0], want)
+	if !equalStrings(write.Resource, []string{exact}) {
+		t.Fatalf("write resource=%v want=[%s]", write.Resource, exact)
 	}
-	if strings.Contains(policy, "bucket-a/*") || strings.Contains(policy, want+"*") {
-		t.Fatalf("policy contains wildcard scope: %s", policy)
+
+	// Resume flow listing uploaded parts must be allowed on the object and its
+	// multipart sub-resource, under both TOS list action names.
+	list := findStatementWithAction(decoded.Statement, "tos:ListParts")
+	if list == nil {
+		t.Fatalf("missing multipart-list statement: %s", policy)
 	}
+	for _, wantAction := range []string{"tos:ListParts", "tos:ListMultipartUploadParts"} {
+		if !containsString(list.Action, wantAction) {
+			t.Fatalf("list statement missing action %s: %s", wantAction, policy)
+		}
+	}
+	if !equalStrings(list.Resource, []string{exact, exact + "/*"}) {
+		t.Fatalf("list resource=%v want=[%s %s]", list.Resource, exact, exact+"/*")
+	}
+	// Never fall back to a whole-bucket scope.
+	if strings.Contains(policy, `trn:tos:::bucket-a"`) {
+		t.Fatalf("policy contains whole-bucket resource: %s", policy)
+	}
+}
+
+func findStatementWithAction(statements []struct {
+	Action   []string `json:"Action"`
+	Resource []string `json:"Resource"`
+}, action string,
+) *struct {
+	Action   []string `json:"Action"`
+	Resource []string `json:"Resource"`
+} {
+	for i := range statements {
+		if containsString(statements[i].Action, action) {
+			return &statements[i]
+		}
+	}
+	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestVolcengineSTSProviderParsesCredentialsAndRequest(t *testing.T) {

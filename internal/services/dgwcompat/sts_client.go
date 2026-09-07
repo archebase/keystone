@@ -160,20 +160,38 @@ func tosUploadPolicy(scope stsScope) (string, error) {
 	if bucket == "" || objectKey == "" {
 		return "", fmt.Errorf("TOS STS scope requires bucket and object key")
 	}
+	objectARN := "trn:tos:::" + bucket + "/" + objectKey
 	policy := map[string]any{
-		"Statement": []map[string]any{{
-			"Effect": "Allow",
-			"Action": []string{
-				"tos:PutObject",
-				"tos:CreateMultipartUpload",
-				"tos:UploadPart",
-				"tos:CompleteMultipartUpload",
-				"tos:AbortMultipartUpload",
-				"tos:ListParts",
-				"tos:HeadObject",
+		"Statement": []map[string]any{
+			{
+				"Effect": "Allow",
+				"Action": []string{
+					"tos:PutObject",
+					"tos:CreateMultipartUpload",
+					"tos:UploadPart",
+					"tos:CompleteMultipartUpload",
+					"tos:AbortMultipartUpload",
+					"tos:HeadObject",
+				},
+				"Resource": []string{objectARN},
 			},
-			"Resource": []string{"trn:tos:::" + bucket + "/" + objectKey},
-		}},
+			{
+				// Resume of an in-progress multipart upload calls ListParts.
+				// TOS authorizes that against the upload's multipart sub-resource,
+				// which an exact object-key ARN does not match, so grant both list
+				// action names on the object and its "/*" sub-resource. Kept scoped
+				// to this single upload object; no whole-bucket scope.
+				"Effect": "Allow",
+				"Action": []string{
+					"tos:ListParts",
+					"tos:ListMultipartUploadParts",
+				},
+				"Resource": []string{
+					objectARN,
+					objectARN + "/*",
+				},
+			},
+		},
 	}
 	encoded, err := json.Marshal(policy)
 	if err != nil {
