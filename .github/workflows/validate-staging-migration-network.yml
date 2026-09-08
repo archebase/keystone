@@ -74,6 +74,7 @@ jobs:
           auth="$(printf '%s:%s' "$VOLCENGINE_CR_USERNAME" "$VOLCENGINE_CR_PASSWORD" | base64 | tr -d '\n')"
           printf '{"auths":{"archebase-cr-cn-beijing.cr.volces.com":{"auth":"%s"}}}\n' "$auth" > "$docker_config/config.json"
           echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+        shell: bash
       - name: Build and push migration image
         id: image
         run: |
@@ -81,6 +82,7 @@ jobs:
           image="archebase-cr-cn-beijing.cr.volces.com/prod/hilbert-migration:${GITHUB_SHA}"
           docker buildx build --platform linux/amd64 --file docker/Dockerfile.hilbert-migration --tag "$image" --push .
           echo "image=$image" >> "$GITHUB_OUTPUT"
+        shell: bash
 
   migrate-batch:
     needs: build-migration-image
