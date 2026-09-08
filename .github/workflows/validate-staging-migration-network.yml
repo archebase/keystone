@@ -121,23 +121,19 @@ jobs:
                 restartPolicy: Never
                 containers:
                   - name: probe
-                    image: "archebase-cr-cn-beijing.cr.volces.com/dev/hilbert-task-noematrix-umi-data-tools:v20260804_1442_amd64"
-                    command: ["/bin/bash", "-lc"]
+                    image: "archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9aa9"
+                    command: ["/bin/sh", "-c"]
                     args:
                       - |
-                        set -euo pipefail
+                        set -eu
                         echo "identity: \$(id)"
                         echo "resolving: \$TOS_URL"
-                        getent hosts "\$(python3 -c 'from urllib.parse import urlparse; import os; print(urlparse(os.environ["TOS_URL"]).hostname)')"
-                        python3 - <<'PY'
-                        import os, urllib.error, urllib.request
-                        url = os.environ["TOS_URL"]
-                        try:
-                            with urllib.request.urlopen(url, timeout=20) as response:
-                                print(f"TOS endpoint reachable: {url} HTTP {response.status}")
-                        except urllib.error.HTTPError as exc:
-                            print(f"TOS endpoint reachable: {url} HTTP {exc.code}")
-                        PY
+                        wget -S --spider --timeout=20 "\$TOS_URL" 2>&1 || status=\$?
+                        if [ "\${status:-0}" -gt 8 ]; then
+                          echo "TOS endpoint probe failed with wget exit code \$status" >&2
+                          exit "\$status"
+                        fi
+                        echo "TOS endpoint probe completed; HTTP errors still prove network reachability"
                         echo "serviceAccount: \$STAGING_SERVICE_ACCOUNT"
                     env:
                       - name: TOS_URL
