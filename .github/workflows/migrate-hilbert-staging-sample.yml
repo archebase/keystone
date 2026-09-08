@@ -1,0 +1,163 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+# SPDX-License-Identifier: MulanPSL-2.0
+
+name: Migrate Hilbert staging sample
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type migrate-hilbert-sample to upload source raw data 16095 into registered staging raw data 197"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  STAGING_NAMESPACE: archebase-system
+  STAGING_SERVICE_ACCOUNT: keystone
+  JOB_NAME: hilbert-sample-migration-${{ github.run_id }}
+  CONFIG_MAP_NAME: hilbert-sample-migration-${{ github.run_id }}
+  IMAGE: archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9aa9
+
+jobs:
+  migrate:
+    name: Migrate one Hilbert MCAP sample
+    if: github.ref == 'refs/heads/chore/validate-staging-migration-network'
+    runs-on: archebase-ci-runner
+    environment: staging
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm sample migration
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: test "$CONFIRM" = "migrate-hilbert-sample"
+        shell: bash
+
+      - name: Configure staging kubeconfig
+        env:
+          STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          path="${RUNNER_TEMP}/staging-kubeconfig"
+          printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$path"
+          chmod 600 "$path"
+          export KUBECONFIG="$path"
+          context="$(kubectl config current-context)"
+          kubectl --context="$context" auth can-i create jobs.batch -n "$STAGING_NAMESPACE"
+          kubectl --context="$context" auth can-i create configmaps -n "$STAGING_NAMESPACE"
+          kubectl --context="$context" -n "$STAGING_NAMESPACE" get serviceaccount "$STAGING_SERVICE_ACCOUNT"
+          echo "KUBECONFIG=$path" >> "$GITHUB_ENV"
+          echo "KUBE_CONTEXT=$context" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Refresh staging registry pull secret
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" create secret docker-registry keystone-staging-registry \
+            --docker-server=archebase-cr-cn-beijing.cr.volces.com \
+            --docker-username="$VOLCENGINE_CR_USERNAME" \
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+        shell: bash
+
+      - name: Create migration script ConfigMap
+        run: |
+          set -euo pipefail
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" create configmap "$CONFIG_MAP_NAME" \
+            --from-file=migrate-hilbert-sample.py=.github/scripts/migrate-hilbert-sample.py \
+            --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+        shell: bash
+
+      - name: Create and wait for sample migration Job
+        env:
+          SOURCE_HILBERT_USERNAME: ${{ secrets.SOURCE_HILBERT_USERNAME }}
+          SOURCE_HILBERT_PASSWORD: ${{ secrets.SOURCE_HILBERT_PASSWORD }}
+          TARGET_HILBERT_USERNAME: ${{ secrets.TARGET_HILBERT_USERNAME }}
+          TARGET_HILBERT_PASSWORD: ${{ secrets.TARGET_HILBERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cat > "${RUNNER_TEMP}/sample-migration.yaml" <<YAML
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "$JOB_NAME"
+            namespace: "$STAGING_NAMESPACE"
+            labels:
+              app.kubernetes.io/name: hilbert-sample-migration
+              app.kubernetes.io/managed-by: keystone-ci
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 1500
+            ttlSecondsAfterFinished: 900
+            template:
+              spec:
+                serviceAccountName: "$STAGING_SERVICE_ACCOUNT"
+                imagePullSecrets:
+                  - name: keystone-staging-registry
+                restartPolicy: Never
+                securityContext:
+                  runAsUser: 0
+                containers:
+                  - name: migrate
+                    image: "$IMAGE"
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        set -eu
+                        apk add --no-cache py3-boto3 py3-requests py3-cryptography
+                        python3 /opt/migration/migrate-hilbert-sample.py
+                    env:
+                      - name: SOURCE_HILBERT_BASE_URL
+                        value: "https://hilbert.archebase.cn/hilbert-be-backend"
+                      - name: TARGET_HILBERT_BASE_URL
+                        value: "http://hilbert-be-backend:8080/hilbert-be-backend"
+                      - name: SOURCE_HILBERT_USERNAME
+                        value: "$SOURCE_HILBERT_USERNAME"
+                      - name: SOURCE_HILBERT_PASSWORD
+                        value: "$SOURCE_HILBERT_PASSWORD"
+                      - name: TARGET_HILBERT_USERNAME
+                        value: "$TARGET_HILBERT_USERNAME"
+                      - name: TARGET_HILBERT_PASSWORD
+                        value: "$TARGET_HILBERT_PASSWORD"
+                    volumeMounts:
+                      - name: script
+                        mountPath: /opt/migration
+                        readOnly: true
+                    resources:
+                      requests:
+                        cpu: 500m
+                        memory: 1Gi
+                      limits:
+                        cpu: "2"
+                        memory: 4Gi
+                volumes:
+                  - name: script
+                    configMap:
+                      name: "$CONFIG_MAP_NAME"
+          YAML
+          kubectl --context="$KUBE_CONTEXT" apply -f "${RUNNER_TEMP}/sample-migration.yaml"
+          if ! kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" wait --for=condition=complete "job/$JOB_NAME" --timeout=26m; then
+            kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" get job "$JOB_NAME" -o yaml || true
+            kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" get pods -l job-name="$JOB_NAME" -o wide || true
+            kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" get events --sort-by=.lastTimestamp || true
+            kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" logs "job/$JOB_NAME" --all-containers=true || true
+            exit 1
+          fi
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" logs "job/$JOB_NAME" --all-containers=true
+        shell: bash
+
+      - name: Cleanup temporary resources
+        if: always()
+        run: |
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" delete configmap "$CONFIG_MAP_NAME" --ignore-not-found=true
+        shell: bash
