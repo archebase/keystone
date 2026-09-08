@@ -38,6 +38,7 @@ jobs:
         env:
           CONFIRM: ${{ inputs.confirm }}
         run: test "$CONFIRM" = "validate-staging-network"
+        shell: bash
 
       - name: Configure staging kubeconfig
         env:
@@ -121,3 +122,4 @@ jobs:
       - name: Cleanup validation Job
         if: always()
         run: kubectl -n "$STAGING_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true
+        shell: bash
