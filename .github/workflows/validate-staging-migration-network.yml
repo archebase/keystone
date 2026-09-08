@@ -40,6 +40,7 @@ permissions:
 env:
   JOB_NAME: staging-network-preflight-${{ github.run_id }}
 
+jobs:
   migrate-sample:
     name: Migrate one Hilbert MCAP sample
     if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'migrate_sample'
@@ -202,6 +203,7 @@ env:
           kubectl --context="$KUBE_CONTEXT" -n archebase-system delete secret "$MIGRATION_SECRET_NAME" --ignore-not-found=true
         shell: bash
 
+  validate:
     name: Create staging network preflight Job
     if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'network_probe'
     runs-on: archebase-ci-runner
