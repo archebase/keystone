@@ -75,6 +75,22 @@ jobs:
           echo "KUBE_CONTEXT=${context}" >> "$GITHUB_ENV"
         shell: bash
 
+      - name: Refresh staging registry pull secret
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$VOLCENGINE_CR_USERNAME"
+          test -n "$VOLCENGINE_CR_PASSWORD"
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" create secret docker-registry keystone-staging-registry \
+            --docker-server=archebase-cr-cn-beijing.cr.volces.com \
+            --docker-username="$VOLCENGINE_CR_USERNAME" \
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \
+            --dry-run=client -o yaml \
+            | kubectl --context="$KUBE_CONTEXT" apply -f -
+        shell: bash
+
       - name: Create and wait for validation Job
         env:
           STAGING_NAMESPACE: ${{ inputs.namespace }}
