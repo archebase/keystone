@@ -1,0 +1,123 @@
+// SPDX-FileCopyrightText: 2026 ArcheBase
+// SPDX-License-Identifier: MulanPSL-2.0
+
+name: Validate staging migration network
+
+on:
+  workflow_dispatch:
+    inputs:
+      tosUrl:
+        description: "TOS endpoint to probe from staging"
+        required: false
+        default: "https://tos-cn-beijing.volces.com"
+        type: string
+      confirm:
+        description: "Type validate-staging-network to create the temporary validation Job"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  STAGING_NAMESPACE: archebase-system
+  STAGING_SERVICE_ACCOUNT: keystone
+  JOB_NAME: staging-network-preflight-${{ github.run_id }}
+
+jobs:
+  validate:
+    name: Create staging network preflight Job
+    if: github.ref == 'refs/heads/chore/validate-staging-migration-network'
+    runs-on: archebase-ci-runner
+    environment: staging
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+    timeout-minutes: 15
+    steps:
+      - name: Validate confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: test "$CONFIRM" = "validate-staging-network"
+
+      - name: Configure staging kubeconfig
+        env:
+          STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$STAGING_KUBECONFIG_B64"
+          path="${RUNNER_TEMP}/staging-kubeconfig"
+          printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$path"
+          chmod 600 "$path"
+          echo "KUBECONFIG=$path" >> "$GITHUB_ENV"
+          kubectl auth whoami
+          kubectl auth can-i create jobs.batch -n "$STAGING_NAMESPACE"
+          kubectl auth can-i delete jobs.batch -n "$STAGING_NAMESPACE"
+          kubectl get namespace "$STAGING_NAMESPACE"
+          kubectl -n "$STAGING_NAMESPACE" get serviceaccount "$STAGING_SERVICE_ACCOUNT"
+
+      - name: Create and wait for validation Job
+        env:
+          TOS_URL: ${{ inputs.tosUrl }}
+        run: |
+          set -euo pipefail
+          cat <<YAML | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "$JOB_NAME"
+            namespace: "$STAGING_NAMESPACE"
+            labels:
+              app.kubernetes.io/name: staging-network-preflight
+              app.kubernetes.io/managed-by: keystone-ci
+              archebase.io/environment: staging
+          spec:
+            ttlSecondsAfterFinished: 900
+            backoffLimit: 0
+            activeDeadlineSeconds: 120
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: staging-network-preflight
+              spec:
+                serviceAccountName: "$STAGING_SERVICE_ACCOUNT"
+                restartPolicy: Never
+                containers:
+                  - name: probe
+                    image: "archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun"
+                    command: ["/bin/bash", "-lc"]
+                    args:
+                      - |
+                        set -euo pipefail
+                        echo "identity: \$(id)"
+                        echo "resolving: \$TOS_URL"
+                        getent hosts "\$(python3 -c 'from urllib.parse import urlparse; import os; print(urlparse(os.environ["TOS_URL"]).hostname)')" || true
+                        python3 - <<'PY'
+                        import os, urllib.error, urllib.request
+                        url = os.environ["TOS_URL"]
+                        try:
+                            with urllib.request.urlopen(url, timeout=20) as response:
+                                print(f"TOS endpoint reachable: {url} HTTP {response.status}")
+                        except urllib.error.HTTPError as exc:
+                            print(f"TOS endpoint reachable: {url} HTTP {exc.code}")
+                        except Exception as exc:
+                            print(f"TOS endpoint probe failed: {type(exc).__name__}: {exc}")
+                            raise
+                        PY
+                        echo "serviceAccount: \$STAGING_SERVICE_ACCOUNT"
+                    env:
+                      - name: TOS_URL
+                        value: "$TOS_URL"
+                    resources:
+                      requests:
+                        cpu: 10m
+                        memory: 32Mi
+                      limits:
+                        cpu: 100m
+                        memory: 128Mi
+          YAML
+          kubectl -n "$STAGING_NAMESPACE" wait --for=condition=complete "job/$JOB_NAME" --timeout=150s
+          kubectl -n "$STAGING_NAMESPACE" logs "job/$JOB_NAME" --all-containers=true
+
+      - name: Cleanup validation Job
+        if: always()
+        run: kubectl -n "$STAGING_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true
