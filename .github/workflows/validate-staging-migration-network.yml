@@ -53,6 +53,7 @@ jobs:
           kubectl auth whoami
           kubectl auth can-i create jobs.batch -n "$STAGING_NAMESPACE"
           kubectl auth can-i delete jobs.batch -n "$STAGING_NAMESPACE"
+          kubectl get namespaces
           kubectl get namespace "$STAGING_NAMESPACE"
           kubectl -n "$STAGING_NAMESPACE" get serviceaccount "$STAGING_SERVICE_ACCOUNT"
         shell: bash
