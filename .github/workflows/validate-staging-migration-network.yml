@@ -61,6 +61,15 @@ jobs:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
     outputs:
       image: ${{ steps.image.outputs.image }}
+    env:
+      BUILDKIT_NAMESPACE: buildkit
+      BUILDKIT_IMAGE: archebase-cr-cn-beijing.cr.volces.com/upstream/buildkit:buildx-stable-1
+      BUILDKIT_PULL_SECRET: keystone-buildkit-registry-secret
+      BUILDKIT_STORAGE: 40Gi
+      BUILDKIT_CPU_REQUEST: "2"
+      BUILDKIT_MEMORY_REQUEST: 4Gi
+      BUILDKIT_CPU_LIMIT: "4"
+      BUILDKIT_MEMORY_LIMIT: 8Gi
     steps:
       - uses: actions/checkout@v4
       - name: Configure registry auth
@@ -79,6 +88,8 @@ jobs:
       - name: Configure remote BuildKit
         env:
           STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
         run: |
           set -euo pipefail
           path="${RUNNER_TEMP}/staging-kubeconfig"
@@ -86,6 +97,11 @@ jobs:
           chmod 600 "$path"
           export KUBECONFIG="$path"
           context="$(kubectl config current-context)"
+          kubectl --context="$context" -n "$BUILDKIT_NAMESPACE" create secret docker-registry "$BUILDKIT_PULL_SECRET" \
+            --docker-server=archebase-cr-cn-beijing.cr.volces.com \
+            --docker-username="$VOLCENGINE_CR_USERNAME" \
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl --context="$context" apply -f -
           builder="hilbert-migration-${GITHUB_RUN_ID}"
           resource="${builder}0"
           cleanup() {
@@ -134,7 +150,7 @@ jobs:
                 containers:
                   - name: buildkitd
                     image: $BUILDKIT_IMAGE
-                    args: ["--addr=tcp://0.0.0.0:1234", "--allow-insecure-entitlement=network.host"]
+                    args: ["--addr=tcp://0.0.0.0:1234", "--allow-insecure-entitlement=network.host", "--allow-insecure-entitlement=security.insecure"]
                     ports:
                       - containerPort: 1234
                     readinessProbe:
