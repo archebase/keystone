@@ -342,6 +342,7 @@ jobs:
         shell: bash
 
 
+  migrate-batch:
     needs: build-migration-image
     name: Migrate one Hilbert plan batch
     if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'migrate_batch'
