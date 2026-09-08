@@ -102,7 +102,7 @@ jobs:
                 restartPolicy: Never
                 containers:
                   - name: probe
-                    image: "archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun"
+                    image: "archebase-cr-cn-beijing.cr.volces.com/dev/hilbert-task-noematrix-umi-data-tools:v20260804_1442_amd64"
                     command: ["/bin/bash", "-lc"]
                     args:
                       - |
