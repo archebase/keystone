@@ -100,6 +100,7 @@ def sign_tos_request(method, endpoint, bucket, key, access_key, secret_key, toke
     signing_key = mac(service_key, "request")
     signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
     headers["Authorization"] = f"TOS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
+    headers["Host"] = headers.pop("host")
     return f"https://{host}{path}", headers
 
 
@@ -121,7 +122,7 @@ def upload_tos_object(local_file, credentials, size, payload_hash):
     headers["Content-Type"] = "application/octet-stream"
     headers["Content-Length"] = str(size)
     local_file.seek(0)
-    response = requests.put(url, headers=headers, data=local_file, timeout=900)
+    response = requests.put(url, headers=headers, data=local_file, timeout=(30, 900))
     if response.status_code != 200:
         raise RuntimeError(f"TOS PUT failed: HTTP {response.status_code} body={response.text[:1000]!r}")
 
