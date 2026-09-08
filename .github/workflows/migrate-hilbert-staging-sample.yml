@@ -19,6 +19,7 @@ env:
   STAGING_SERVICE_ACCOUNT: keystone
   JOB_NAME: hilbert-sample-migration-${{ github.run_id }}
   CONFIG_MAP_NAME: hilbert-sample-migration-${{ github.run_id }}
+  SECRET_NAME: hilbert-sample-migration-credentials-${{ github.run_id }}
   IMAGE: archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9aa9
 
 jobs:
@@ -77,6 +78,22 @@ jobs:
             --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
         shell: bash
 
+      - name: Create migration credentials Secret
+        env:
+          SOURCE_HILBERT_USERNAME: ${{ secrets.SOURCE_HILBERT_USERNAME }}
+          SOURCE_HILBERT_PASSWORD: ${{ secrets.SOURCE_HILBERT_PASSWORD }}
+          TARGET_HILBERT_USERNAME: ${{ secrets.TARGET_HILBERT_USERNAME }}
+          TARGET_HILBERT_PASSWORD: ${{ secrets.TARGET_HILBERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" create secret generic "$SECRET_NAME" \
+            --from-literal=source-username="$SOURCE_HILBERT_USERNAME" \
+            --from-literal=source-password="$SOURCE_HILBERT_PASSWORD" \
+            --from-literal=target-username="$TARGET_HILBERT_USERNAME" \
+            --from-literal=target-password="$TARGET_HILBERT_PASSWORD" \
+            --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+        shell: bash
+
       - name: Create and wait for sample migration Job
         env:
           SOURCE_HILBERT_USERNAME: ${{ secrets.SOURCE_HILBERT_USERNAME }}
@@ -121,13 +138,25 @@ jobs:
                       - name: TARGET_HILBERT_BASE_URL
                         value: "http://hilbert-be-backend:8080/hilbert-be-backend"
                       - name: SOURCE_HILBERT_USERNAME
-                        value: "$SOURCE_HILBERT_USERNAME"
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$SECRET_NAME"
+                            key: source-username
                       - name: SOURCE_HILBERT_PASSWORD
-                        value: "$SOURCE_HILBERT_PASSWORD"
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$SECRET_NAME"
+                            key: source-password
                       - name: TARGET_HILBERT_USERNAME
-                        value: "$TARGET_HILBERT_USERNAME"
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$SECRET_NAME"
+                            key: target-username
                       - name: TARGET_HILBERT_PASSWORD
-                        value: "$TARGET_HILBERT_PASSWORD"
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$SECRET_NAME"
+                            key: target-password
                     volumeMounts:
                       - name: script
                         mountPath: /opt/migration
@@ -160,4 +189,5 @@ jobs:
         run: |
           kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true
           kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" delete configmap "$CONFIG_MAP_NAME" --ignore-not-found=true
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" delete secret "$SECRET_NAME" --ignore-not-found=true
         shell: bash
