@@ -63,8 +63,8 @@ def api(session, base, method, path, **kwargs):
     raise RuntimeError(f"Hilbert API retries exhausted: {method} {path}")
 
 
-def query_raw(session, base, raw_data_id=None, bag_name=None):
-    params = {"workspaceId": TARGET_WORKSPACE, "pageNum": 1, "pageSize": 200}
+def query_raw(session, base, workspace_id, raw_data_id=None, bag_name=None):
+    params = {"workspaceId": workspace_id, "pageNum": 1, "pageSize": 200}
     if raw_data_id is not None:
         params["id"] = raw_data_id
     if bag_name is not None:
@@ -178,9 +178,9 @@ def upload_part(credentials, upload_id, number, data):
 
 def migrate_one(source, target, source_base, target_base, item, dry_run=False):
     source_id = item["source_raw_data_id"]
-    source_record = query_raw(source, source_base, raw_data_id=source_id)[0]
+    source_record = query_raw(source, source_base, SOURCE_WORKSPACE, raw_data_id=source_id)[0]
     target_name = TARGET_BAG_PREFIX + str(source_id) + "-" + source_record["bagName"]
-    existing = query_raw(target, target_base, bag_name=target_name)
+    existing = query_raw(target, target_base, TARGET_WORKSPACE, bag_name=target_name)
     matching = [record for record in existing if record.get("bagName") == target_name]
     if matching and matching[0].get("status") == "uploaded":
         if matching[0].get("bagDigest", "").lower() != source_record["bagDigest"].lower():
