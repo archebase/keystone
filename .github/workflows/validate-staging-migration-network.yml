@@ -55,6 +55,7 @@ jobs:
           kubectl auth can-i delete jobs.batch -n "$STAGING_NAMESPACE"
           kubectl get namespace "$STAGING_NAMESPACE"
           kubectl -n "$STAGING_NAMESPACE" get serviceaccount "$STAGING_SERVICE_ACCOUNT"
+        shell: bash
 
       - name: Create and wait for validation Job
         env:
@@ -118,6 +119,7 @@ jobs:
           YAML
           kubectl -n "$STAGING_NAMESPACE" wait --for=condition=complete "job/$JOB_NAME" --timeout=150s
           kubectl -n "$STAGING_NAMESPACE" logs "job/$JOB_NAME" --all-containers=true
+        shell: bash
 
       - name: Cleanup validation Job
         if: always()
