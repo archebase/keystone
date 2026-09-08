@@ -11,6 +11,16 @@ on:
         required: false
         default: "https://tos-cn-beijing.volces.com"
         type: string
+      namespace:
+        description: "Existing namespace in the CI staging cluster where the temporary Job will run"
+        required: true
+        default: "arc-runner"
+        type: string
+      serviceAccount:
+        description: "ServiceAccount used by the temporary Job"
+        required: true
+        default: "default"
+        type: string
       confirm:
         description: "Type validate-staging-network to create the temporary validation Job"
         required: true
@@ -20,8 +30,6 @@ permissions:
   contents: read
 
 env:
-  STAGING_NAMESPACE: archebase-system
-  STAGING_SERVICE_ACCOUNT: keystone
   JOB_NAME: staging-network-preflight-${{ github.run_id }}
 
 jobs:
@@ -42,6 +50,8 @@ jobs:
 
       - name: Configure staging kubeconfig
         env:
+          STAGING_NAMESPACE: ${{ inputs.namespace }}
+          STAGING_SERVICE_ACCOUNT: ${{ inputs.serviceAccount }}
           STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
         run: |
           set -euo pipefail
@@ -60,6 +70,8 @@ jobs:
 
       - name: Create and wait for validation Job
         env:
+          STAGING_NAMESPACE: ${{ inputs.namespace }}
+          STAGING_SERVICE_ACCOUNT: ${{ inputs.serviceAccount }}
           TOS_URL: ${{ inputs.tosUrl }}
         run: |
           set -euo pipefail
@@ -124,5 +136,7 @@ jobs:
 
       - name: Cleanup validation Job
         if: always()
+        env:
+          STAGING_NAMESPACE: ${{ inputs.namespace }}
         run: kubectl -n "$STAGING_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true
         shell: bash
