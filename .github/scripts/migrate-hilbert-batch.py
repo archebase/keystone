@@ -145,8 +145,9 @@ def upload_object(local_file, credentials, size, digest):
     try:
         part_count = (size + PART_SIZE - 1) // PART_SIZE
         def read_part(number):
-            local_file.seek((number - 1) * PART_SIZE)
-            return number, local_file.read(min(PART_SIZE, size - (number - 1) * PART_SIZE))
+            offset = (number - 1) * PART_SIZE
+            length = min(PART_SIZE, size - offset)
+            return number, os.pread(local_file.fileno(), length, offset)
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             parts = list(executor.map(lambda number: read_part(number), range(1, part_count + 1)))
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
