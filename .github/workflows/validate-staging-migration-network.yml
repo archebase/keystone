@@ -62,9 +62,9 @@ jobs:
     outputs:
       image: ${{ steps.image.outputs.image }}
     env:
-      BUILDKIT_NAMESPACE: buildkit
+      BUILDKIT_NAMESPACE: archebase-system
       BUILDKIT_IMAGE: archebase-cr-cn-beijing.cr.volces.com/upstream/buildkit:buildx-stable-1
-      BUILDKIT_PULL_SECRET: keystone-buildkit-registry-secret
+      BUILDKIT_PULL_SECRET: keystone-staging-registry
       BUILDKIT_STORAGE: 40Gi
       BUILDKIT_CPU_REQUEST: "2"
       BUILDKIT_MEMORY_REQUEST: 4Gi
@@ -97,6 +97,7 @@ jobs:
           chmod 600 "$path"
           export KUBECONFIG="$path"
           context="$(kubectl config current-context)"
+          kubectl --context="$context" -n "$BUILDKIT_NAMESPACE" get serviceaccount default
           kubectl --context="$context" -n "$BUILDKIT_NAMESPACE" create secret docker-registry "$BUILDKIT_PULL_SECRET" \
             --docker-server=archebase-cr-cn-beijing.cr.volces.com \
             --docker-username="$VOLCENGINE_CR_USERNAME" \
@@ -146,7 +147,7 @@ jobs:
               spec:
                 serviceAccountName: default
                 imagePullSecrets:
-                  - name: keystone-staging-registry
+                  - name: $BUILDKIT_PULL_SECRET
                 containers:
                   - name: buildkitd
                     image: $BUILDKIT_IMAGE
@@ -167,8 +168,6 @@ jobs:
           echo "KUBECONFIG=$path" >> "$GITHUB_ENV"
           echo "KUBE_CONTEXT=$context" >> "$GITHUB_ENV"
           echo "BUILDER=$builder" >> "$GITHUB_ENV"
-          trap - EXIT
-          cleanup
         shell: bash
 
       - name: Build and push migration image
@@ -178,6 +177,14 @@ jobs:
           image="archebase-cr-cn-beijing.cr.volces.com/prod/hilbert-migration:${GITHUB_SHA}"
           docker buildx build --builder "$BUILDER" --platform linux/amd64 --file docker/Dockerfile.hilbert-migration --tag "$image" --push .
           echo "image=$image" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Cleanup remote BuildKit
+        if: always()
+        run: |
+          set -euo pipefail
+          docker buildx rm "hilbert-migration-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
+          kubectl --context="$KUBE_CONTEXT" -n "$BUILDKIT_NAMESPACE" delete statefulset,service "hilbert-migration-${GITHUB_RUN_ID}0" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
         shell: bash
 
   migrate-batch:
