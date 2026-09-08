@@ -15,6 +15,7 @@ on:
           - network_probe
           - migrate_sample
           - migrate_batch
+          - prod_download_probe
       tosUrl:
         description: "TOS endpoint to probe from staging"
         required: false
@@ -182,7 +183,165 @@ jobs:
           echo "image=$image" >> "$GITHUB_OUTPUT"
         shell: bash
 
-  migrate-batch:
+  prod-download-probe:
+    name: Probe source download from production cluster
+    if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'prod_download_probe'
+    runs-on: archebase-ci-runner
+    environment: production
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm production download probe
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: test "$CONFIRM" = "probe-production-download"
+        shell: bash
+
+      - name: Configure production kubeconfig
+        env:
+          PROD_KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          path="${RUNNER_TEMP}/prod-kubeconfig"
+          printf '%s' "$PROD_KUBECONFIG_B64" | base64 -d > "$path"
+          chmod 600 "$path"
+          export KUBECONFIG="$path"
+          context="$(kubectl config current-context)"
+          kubectl --context="$context" auth can-i create jobs.batch -n archebase-system
+          kubectl --context="$context" auth can-i create configmaps -n archebase-system
+          kubectl --context="$context" auth can-i create secrets -n archebase-system
+          kubectl --context="$context" -n archebase-system get serviceaccount keystone
+          echo "KUBECONFIG=$path" >> "$GITHUB_ENV"
+          echo "KUBE_CONTEXT=$context" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Refresh production registry pull secret
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret docker-registry keystone-production-registry \\
+            --docker-server=archebase-cr-cn-beijing.cr.volces.com \\
+            --docker-username="$VOLCENGINE_CR_USERNAME" \\
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \\
+            --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+        shell: bash
+
+      - name: Create probe credentials Secret
+        env:
+          SOURCE_HILBERT_USERNAME: liuchao
+          SOURCE_HILBERT_PASSWORD: ${{ secrets.SOURCE_HILBERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          secret="hilbert-prod-download-probe-${GITHUB_RUN_ID}"
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret generic "$secret" \\
+            --from-literal=username="$SOURCE_HILBERT_USERNAME" \\
+            --from-literal=password="$SOURCE_HILBERT_PASSWORD" \\
+            --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+          echo "PROBE_SECRET_NAME=$secret" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Create and run production download probe Job
+        run: |
+          set -euo pipefail
+          job="hilbert-prod-download-probe-${GITHUB_RUN_ID}"
+          cat > "${RUNNER_TEMP}/probe.yaml" <<YAML
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "$job"
+            namespace: archebase-system
+            labels:
+              app.kubernetes.io/name: hilbert-prod-download-probe
+              app.kubernetes.io/managed-by: keystone-ci
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 900
+            template:
+              spec:
+                serviceAccountName: keystone
+                imagePullSecrets:
+                  - name: keystone-production-registry
+                restartPolicy: Never
+                securityContext:
+                  runAsUser: 0
+                containers:
+                  - name: probe
+                    image: archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9aa9
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        set -eu
+                        apk add --no-cache py3-requests py3-cryptography
+                        python3 - <<'PY'
+                        import base64, hashlib, json, os, time
+                        import requests
+                        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                        base = os.environ["HILBERT_BASE"].rstrip("/")
+                        def enc(value, material):
+                            raw = base64.b64decode(material)
+                            return base64.b64encode(AESGCM(raw[:32]).encrypt(raw[32:], value.encode(), None)).decode()
+                        session = requests.Session()
+                        started = time.perf_counter()
+                        nonce = session.get(base + "/v1/console/nonce/generate", timeout=30).json()["data"]
+                        login = session.post(base + "/v1/console/account/login", json={"code": os.environ["HILBERT_USER"], "nonceId": nonce["id"], "cipherDigest": enc(hashlib.sha256(os.environ["HILBERT_PASSWORD"].encode()).hexdigest(), nonce["randomKey"])}, timeout=30).json()
+                        if login.get("code") != 0:
+                            raise RuntimeError("production Hilbert login failed")
+                        session.headers["Authorization"] = "Bearer " + login["data"]["sessionKey"]
+                        record = session.get(base + "/v1/data-collection/raw-data/query", params={"workspaceId": "4", "id": "18398", "pageNum": "1", "pageSize": "1"}, timeout=30).json()["data"]["records"][0]
+                        url = session.get(base + "/v1/data-collection/raw-data/get-presigned-url", params={"workspaceId": "4", "id": "18398"}, timeout=30).json()["data"]["url"]
+                        download_started = time.perf_counter()
+                        digest = hashlib.sha256()
+                        size = 0
+                        with requests.get(url, stream=True, timeout=(30, 600)) as response:
+                            response.raise_for_status()
+                            for chunk in response.iter_content(8 * 1024 * 1024):
+                                if chunk:
+                                    digest.update(chunk)
+                                    size += len(chunk)
+                        seconds = time.perf_counter() - download_started
+                        actual = digest.hexdigest()
+                        if size != record["bagSize"] or actual != record["bagDigest"].lower():
+                            raise RuntimeError("production download identity mismatch")
+                        print(json.dumps({"event":"production_download_probe","source_raw_data_id":18398,"bytes":size,"seconds":round(seconds,3),"mbps":round(size/1024/1024/max(seconds,0.001),2),"sha256":actual,"total_seconds":round(time.perf_counter()-started,3)}, ensure_ascii=False), flush=True)
+                        PY
+                    env:
+                      - name: HILBERT_BASE
+                        value: "https://hilbert.archebase.cn/hilbert-be-backend"
+                      - name: HILBERT_USER
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$PROBE_SECRET_NAME"
+                            key: username
+                      - name: HILBERT_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$PROBE_SECRET_NAME"
+                            key: password
+          YAML
+          kubectl --context="$KUBE_CONTEXT" apply -f "${RUNNER_TEMP}/probe.yaml"
+          while :; do
+            status="$(kubectl --context="$KUBE_CONTEXT" -n archebase-system get job "$job" -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}{.status.conditions[?(@.type=="Failed")].status}')"
+            case "$status" in
+              True) kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true; break ;;
+              *True) kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true || true; exit 1 ;;
+            esac
+            sleep 5
+          done
+        shell: bash
+
+      - name: Cleanup production probe resources
+        if: always()
+        run: |
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete job "hilbert-prod-download-probe-${GITHUB_RUN_ID}" --ignore-not-found=true
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete secret "$PROBE_SECRET_NAME" --ignore-not-found=true
+        shell: bash
+
+
     needs: build-migration-image
     name: Migrate one Hilbert plan batch
     if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'migrate_batch'
