@@ -59,13 +59,20 @@ jobs:
           path="${RUNNER_TEMP}/staging-kubeconfig"
           printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$path"
           chmod 600 "$path"
-          echo "KUBECONFIG=$path" >> "$GITHUB_ENV"
-          kubectl auth whoami
-          kubectl auth can-i create jobs.batch -n "$STAGING_NAMESPACE"
-          kubectl auth can-i delete jobs.batch -n "$STAGING_NAMESPACE"
-          kubectl get namespaces
-          kubectl get namespace "$STAGING_NAMESPACE"
-          kubectl -n "$STAGING_NAMESPACE" get serviceaccount "$STAGING_SERVICE_ACCOUNT"
+          export KUBECONFIG="$path"
+          context="$(kubectl config current-context)"
+          server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+          echo "KUBE_CONTEXT=${context}"
+          echo "KUBE_SERVER=${server}"
+          kubectl --context="$context" auth whoami
+          kubectl --context="$context" auth can-i create jobs.batch -n "$STAGING_NAMESPACE"
+          kubectl --context="$context" auth can-i delete jobs.batch -n "$STAGING_NAMESPACE"
+          kubectl --context="$context" config view --minify -o jsonpath='{.clusters[0].cluster.server}{"\n"}'
+          kubectl --context="$context" get namespaces
+          kubectl --context="$context" get namespace "$STAGING_NAMESPACE" -o name
+          kubectl --context="$context" -n "$STAGING_NAMESPACE" get serviceaccount "$STAGING_SERVICE_ACCOUNT" -o name
+          echo "KUBECONFIG=${KUBECONFIG}" >> "$GITHUB_ENV"
+          echo "KUBE_CONTEXT=${context}" >> "$GITHUB_ENV"
         shell: bash
 
       - name: Create and wait for validation Job
@@ -75,7 +82,7 @@ jobs:
           TOS_URL: ${{ inputs.tosUrl }}
         run: |
           set -euo pipefail
-          cat <<YAML | kubectl apply -f -
+          cat > "${RUNNER_TEMP}/staging-network-preflight.yaml" <<YAML
           apiVersion: batch/v1
           kind: Job
           metadata:
@@ -130,13 +137,14 @@ jobs:
                         cpu: 100m
                         memory: 128Mi
           YAML
-          kubectl -n "$STAGING_NAMESPACE" wait --for=condition=complete "job/$JOB_NAME" --timeout=150s
-          kubectl -n "$STAGING_NAMESPACE" logs "job/$JOB_NAME" --all-containers=true
+          kubectl --context="$KUBE_CONTEXT" apply -f "${RUNNER_TEMP}/staging-network-preflight.yaml"
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" wait --for=condition=complete "job/$JOB_NAME" --timeout=150s
+          kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" logs "job/$JOB_NAME" --all-containers=true
         shell: bash
 
       - name: Cleanup validation Job
         if: always()
         env:
           STAGING_NAMESPACE: ${{ inputs.namespace }}
-        run: kubectl -n "$STAGING_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true
+        run: kubectl --context="$KUBE_CONTEXT" -n "$STAGING_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true
         shell: bash
