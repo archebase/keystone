@@ -5,6 +5,7 @@ import base64
 import hashlib
 import os
 from tempfile import NamedTemporaryFile
+from urllib.parse import urlparse
 
 import boto3
 import requests
