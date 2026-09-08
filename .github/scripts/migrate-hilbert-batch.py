@@ -24,6 +24,14 @@ PART_SIZE = 64 * 1024 * 1024
 MULTIPART_THRESHOLD = 128 * 1024 * 1024
 
 
+def log_event(event, **fields):
+    print(json.dumps({"event": event, **fields}, ensure_ascii=False), flush=True)
+
+
+def elapsed(start):
+    return round(time.perf_counter() - start, 3)
+
+
 def encrypted_digest(password, material):
     raw = base64.b64decode(material)
     value = hashlib.sha256(password.encode()).hexdigest().encode()
@@ -45,6 +53,7 @@ def login(base, username, password):
 
 
 def api(session, base, method, path, **kwargs):
+    started = time.perf_counter()
     for attempt in range(3):
         response = session.request(method, base + path, timeout=120, **kwargs)
         try:
@@ -55,6 +64,7 @@ def api(session, base, method, path, **kwargs):
                 continue
             raise RuntimeError(f"non-JSON response from {method} {path}") from error
         if response.status_code < 300 and payload.get("code") == 0:
+            log_event("hilbert_api", method=method, path=path, seconds=elapsed(started), attempt=attempt + 1, status_code=response.status_code)
             return payload["data"]
         if response.status_code >= 500 and attempt < 2:
             time.sleep(2**attempt)
@@ -163,6 +173,7 @@ def upload_object(local_file, credentials, size, digest):
 
 
 def upload_part(credentials, upload_id, number, data):
+    started = time.perf_counter()
     digest = hashlib.sha256(data).hexdigest()
     for attempt in range(3):
         response = signed_request(credentials, "PUT", data, digest, {"partNumber": str(number), "uploadId": upload_id}, "application/octet-stream")
@@ -170,6 +181,7 @@ def upload_part(credentials, upload_id, number, data):
             etag = response.headers.get("ETag", "").strip()
             if not etag:
                 raise RuntimeError(f"TOS part {number} returned no ETag")
+            log_event("multipart_part", part_number=number, bytes=len(data), seconds=elapsed(started), mbps=round(len(data) / 1024 / 1024 / max(elapsed(started), 0.001), 2), attempt=attempt + 1, status="uploaded")
             return number, etag
         if response.status_code < 500 and response.status_code != 429:
             raise RuntimeError(f"TOS part {number} failed: HTTP {response.status_code} body={response.text[:1000]!r}")
@@ -178,8 +190,10 @@ def upload_part(credentials, upload_id, number, data):
 
 
 def migrate_one(source, target, source_base, target_base, item, dry_run=False):
+    item_started = time.perf_counter()
     source_id = item["source_raw_data_id"]
     source_record = query_raw(source, source_base, SOURCE_WORKSPACE, raw_data_id=source_id)[0]
+    log_event("item_start", source_raw_data_id=source_id, expected_bytes=source_record["bagSize"])
     target_name = TARGET_BAG_PREFIX + str(source_id) + "-" + source_record["bagName"]
     existing = query_raw(target, target_base, TARGET_WORKSPACE, bag_name=target_name)
     matching = [record for record in existing if record.get("bagName") == target_name]
@@ -192,6 +206,7 @@ def migrate_one(source, target, source_base, target_base, item, dry_run=False):
 
     presigned = api(source, source_base, "GET", "/v1/data-collection/raw-data/get-presigned-url", params={"workspaceId": SOURCE_WORKSPACE, "id": source_id})
     with NamedTemporaryFile(suffix=".mcap") as local_file:
+        download_started = time.perf_counter()
         digest = hashlib.sha256()
         size = 0
         with requests.get(presigned["url"], stream=True, timeout=(30, 300)) as response:
@@ -202,16 +217,23 @@ def migrate_one(source, target, source_base, target_base, item, dry_run=False):
                     digest.update(chunk)
                     size += len(chunk)
         actual = digest.hexdigest()
+        log_event("source_download", source_raw_data_id=source_id, bytes=size, seconds=elapsed(download_started), mbps=round(size / 1024 / 1024 / max(elapsed(download_started), 0.001), 2), sha256=actual)
         if size != source_record["bagSize"] or actual != source_record["bagDigest"].lower():
             raise RuntimeError("source file identity mismatch")
         target_id = matching[0]["id"] if matching else api(target, target_base, "POST", "/v1/data-collection/raw-data/register", json={"workspaceId": TARGET_WORKSPACE, "dcPlanId": item["target_plan_id"], "bagName": target_name, "bagStartTime": source_record["bagStartTime"], "bagEndTime": source_record["bagEndTime"], "bagSize": size, "bagDigest": actual})
+        credentials_started = time.perf_counter()
         credentials = api(target, target_base, "GET", "/v1/data-collection/raw-data/get-upload-credentials", params={"workspaceId": TARGET_WORKSPACE, "id": target_id})
+        log_event("target_credentials", source_raw_data_id=source_id, target_raw_data_id=target_id, seconds=elapsed(credentials_started))
+        upload_started = time.perf_counter()
         upload_object(local_file, credentials, size, actual)
+        log_event("target_upload", source_raw_data_id=source_id, target_raw_data_id=target_id, seconds=elapsed(upload_started), bytes=size, mbps=round(size / 1024 / 1024 / max(elapsed(upload_started), 0.001), 2))
+    finish_started = time.perf_counter()
     api(target, target_base, "POST", "/v1/data-collection/raw-data/finish-upload", json={"workspaceId": TARGET_WORKSPACE, "rawDataId": target_id})
+    log_event("finish_upload", source_raw_data_id=source_id, target_raw_data_id=target_id, seconds=elapsed(finish_started))
     verified = query_raw(target, target_base, TARGET_WORKSPACE, raw_data_id=target_id)[0]
     if verified.get("status") != "uploaded" or verified.get("bagDigest", "").lower() != actual or verified.get("bagSize") != size:
         raise RuntimeError("target verification failed")
-    return {"source_raw_data_id": source_id, "target_raw_data_id": target_id, "status": "uploaded", "bytes": size, "sha256": actual}
+    return {"source_raw_data_id": source_id, "target_raw_data_id": target_id, "status": "uploaded", "bytes": size, "sha256": actual, "total_seconds": elapsed(item_started)}
 
 
 def main():
@@ -230,6 +252,7 @@ def main():
         items = items[: args.limit]
     expected = len(items)
     results = []
+    batch_started = time.perf_counter()
     for index, item in enumerate(items, 1):
         try:
             result = migrate_one(source, target, source_base, target_base, item, args.dry_run)
@@ -239,6 +262,10 @@ def main():
         print(json.dumps({"index": index, "expected": expected, **result}, ensure_ascii=False), flush=True)
     assert len(results) == expected
     failed = sum(result["status"] == "failed" for result in results)
+    uploaded = sum(result["status"] == "uploaded" for result in results)
+    skipped = sum(result["status"] == "skipped_existing" for result in results)
+    total_bytes = sum(result.get("bytes", 0) for result in results)
+    log_event("batch_summary", expected=expected, uploaded=uploaded, skipped_existing=skipped, failed=failed, bytes=total_bytes, seconds=elapsed(batch_started), mbps=round(total_bytes / 1024 / 1024 / max(elapsed(batch_started), 0.001), 2))
     print(json.dumps({"summary": {"expected": expected, "completed": expected - failed, "failed": failed}}, ensure_ascii=False), flush=True)
     if failed:
         sys.exit(1)
