@@ -99,6 +99,8 @@ jobs:
             template:
               spec:
                 serviceAccountName: "$STAGING_SERVICE_ACCOUNT"
+                imagePullSecrets:
+                  - name: keystone-staging-registry
                 restartPolicy: Never
                 containers:
                   - name: probe
