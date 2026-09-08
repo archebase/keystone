@@ -14,12 +14,12 @@ on:
       namespace:
         description: "Existing namespace in the CI staging cluster where the temporary Job will run"
         required: true
-        default: "arc-runner"
+        default: "archebase-system"
         type: string
       serviceAccount:
         description: "ServiceAccount used by the temporary Job"
         required: true
-        default: "default"
+        default: "keystone"
         type: string
       confirm:
         description: "Type validate-staging-network to create the temporary validation Job"
