@@ -160,7 +160,7 @@ jobs:
                   runAsUser: 0
                 containers:
                   - name: migrate
-                    image: "archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9"
+                    image: "archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9aa9"
                     command: ["/bin/sh", "-c"]
                     args:
                       - |
@@ -202,9 +202,23 @@ jobs:
                       name: "$MIGRATION_CONFIGMAP_NAME"
           YAML
           kubectl --context="$KUBE_CONTEXT" apply -f "${RUNNER_TEMP}/batch.yaml"
+          deadline=$(( $(date +%s) + 10800 ))
           while :; do
             status="$(kubectl --context="$KUBE_CONTEXT" -n archebase-system get job "$job" -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}{.status.conditions[?(@.type=="Failed")].status}')"
-            case "$status" in True) kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true; break;; *True) kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true || true; exit 1;; esac
+            case "$status" in
+              True) kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true; break ;;
+              *True) kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true || true; exit 1 ;;
+            esac
+            pod_status="$(kubectl --context="$KUBE_CONTEXT" -n archebase-system get pods -l job-name="$job" -o jsonpath='{range .items[*]}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.state.waiting.reason}{.state.terminated.reason}{end}{"\n"}{end}' 2>/dev/null || true)"
+            if printf '%s\n' "$pod_status" | grep -Eq 'ImagePullBackOff|ErrImagePull|CrashLoopBackOff'; then
+              echo "batch pod entered a terminal startup failure: $pod_status" >&2
+              kubectl --context="$KUBE_CONTEXT" -n archebase-system describe pods -l job-name="$job" || true
+              exit 1
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "batch Job exceeded the 3-hour deadline" >&2
+              exit 1
+            fi
             sleep 10
           done
         shell: bash
