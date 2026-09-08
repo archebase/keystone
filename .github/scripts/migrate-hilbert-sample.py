@@ -78,7 +78,7 @@ def sign_tos_request(method, endpoint, bucket, key, access_key, secret_key, toke
     host = f"{bucket}.{endpoint}"
     path = "/" + quote(key.lstrip("/"), safe="/-_.~")
     headers = {
-        "Host": host,
+        "host": host,
         "x-tos-content-sha256": payload_hash,
         "x-tos-date": timestamp,
     }
