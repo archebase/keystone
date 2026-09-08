@@ -52,7 +52,38 @@ env:
   JOB_NAME: staging-network-preflight-${{ github.run_id }}
 
 jobs:
+  build-migration-image:
+    name: Build migration image
+    if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'migrate_batch'
+    runs-on: archebase-ci-runner
+    environment: staging
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure registry auth
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          docker_config="${RUNNER_TEMP}/docker-config"
+          mkdir -p "$docker_config"
+          auth="$(printf '%s:%s' "$VOLCENGINE_CR_USERNAME" "$VOLCENGINE_CR_PASSWORD" | base64 | tr -d '\n')"
+          printf '{"auths":{"archebase-cr-cn-beijing.cr.volces.com":{"auth":"%s"}}}\n' "$auth" > "$docker_config/config.json"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+      - name: Build and push migration image
+        id: image
+        run: |
+          set -euo pipefail
+          image="archebase-cr-cn-beijing.cr.volces.com/prod/hilbert-migration:${GITHUB_SHA}"
+          docker buildx build --platform linux/amd64 --file docker/Dockerfile.hilbert-migration --tag "$image" --push .
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
   migrate-batch:
+    needs: build-migration-image
     name: Migrate one Hilbert plan batch
     if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'migrate_batch'
     runs-on: archebase-ci-runner
@@ -160,12 +191,11 @@ jobs:
                   runAsUser: 0
                 containers:
                   - name: migrate
-                    image: "archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9aa9"
+                    image: "${{ needs.build-migration-image.outputs.image }}"
                     command: ["/bin/sh", "-c"]
                     args:
                       - |
                         set -eu
-                        apk add --no-cache py3-requests py3-cryptography
                         python3 /opt/migration/migrate-hilbert-batch.py --manifest /opt/migration/manifest.json --limit 0
                     env:
                       - name: SOURCE_HILBERT_BASE_URL

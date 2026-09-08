@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+# SPDX-License-Identifier: MulanPSL-2.0
+
+FROM archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9aa9
+
+USER root
+
+RUN apk add --no-cache py3-requests py3-cryptography
+
+COPY .github/scripts/migrate-hilbert-batch.py /opt/migration/migrate-hilbert-batch.py
+RUN chmod 0555 /opt/migration/migrate-hilbert-batch.py
+
+USER keystone
+
+ENTRYPOINT ["/usr/bin/python3", "/opt/migration/migrate-hilbert-batch.py"]
