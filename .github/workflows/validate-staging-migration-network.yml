@@ -14,6 +14,7 @@ on:
         options:
           - network_probe
           - migrate_sample
+          - migrate_batch
       tosUrl:
         description: "TOS endpoint to probe from staging"
         required: false
@@ -29,6 +30,16 @@ on:
         required: true
         default: "keystone"
         type: string
+      sourcePlanId:
+        description: "Source dcPlanId for a bounded batch migration; for example, 156 has two records"
+        required: false
+        default: ""
+        type: string
+      limit:
+        description: "Maximum records from the selected source plan; 0 means all records in that plan"
+        required: false
+        default: "0"
+        type: string
       confirm:
         description: "Type validate-staging-network to create the temporary validation Job"
         required: true
@@ -41,7 +52,172 @@ env:
   JOB_NAME: staging-network-preflight-${{ github.run_id }}
 
 jobs:
-  migrate-sample:
+  migrate-batch:
+    name: Migrate one Hilbert plan batch
+    if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'migrate_batch'
+    runs-on: archebase-ci-runner
+    environment: staging
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm batch migration
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: test "$CONFIRM" = "migrate-hilbert-batch"
+        shell: bash
+
+      - name: Validate selected source plan
+        env:
+          SOURCE_PLAN_ID: ${{ inputs.sourcePlanId }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_PLAN_ID" in 96|156|202|248|257|298|303|344|350|357|368|370|371|372|375|378) ;; *) echo "sourcePlanId must be one of the 16 approved source plans" >&2; exit 1 ;; esac
+          case "$LIMIT" in ''|*[!0-9]*) echo "limit must be a non-negative integer" >&2; exit 1 ;; esac
+        shell: bash
+
+      - name: Configure staging kubeconfig
+        env:
+          STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          path="${RUNNER_TEMP}/staging-kubeconfig"
+          printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$path"
+          chmod 600 "$path"
+          export KUBECONFIG="$path"
+          context="$(kubectl config current-context)"
+          kubectl --context="$context" auth can-i create jobs.batch -n archebase-system
+          kubectl --context="$context" auth can-i create configmaps -n archebase-system
+          kubectl --context="$context" auth can-i create secrets -n archebase-system
+          kubectl --context="$context" -n archebase-system get serviceaccount keystone
+          echo "KUBECONFIG=$path" >> "$GITHUB_ENV"
+          echo "KUBE_CONTEXT=$context" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Refresh staging registry pull secret
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret docker-registry keystone-staging-registry --docker-server=archebase-cr-cn-beijing.cr.volces.com --docker-username="$VOLCENGINE_CR_USERNAME" --docker-password="$VOLCENGINE_CR_PASSWORD" --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+        shell: bash
+
+      - name: Create batch credentials Secret
+        env:
+          SOURCE_HILBERT_USERNAME: ${{ secrets.SOURCE_HILBERT_USERNAME }}
+          SOURCE_HILBERT_PASSWORD: ${{ secrets.SOURCE_HILBERT_PASSWORD }}
+          TARGET_HILBERT_USERNAME: ${{ secrets.TARGET_HILBERT_USERNAME }}
+          TARGET_HILBERT_PASSWORD: ${{ secrets.TARGET_HILBERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          secret="hilbert-batch-migration-credentials-${GITHUB_RUN_ID}"
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret generic "$secret" --from-literal=source-username="$SOURCE_HILBERT_USERNAME" --from-literal=source-password="$SOURCE_HILBERT_PASSWORD" --from-literal=target-username="$TARGET_HILBERT_USERNAME" --from-literal=target-password="$TARGET_HILBERT_PASSWORD" --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+          echo "MIGRATION_SECRET_NAME=$secret" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Create batch manifest ConfigMap
+        env:
+          SOURCE_PLAN_ID: ${{ inputs.sourcePlanId }}
+        run: |
+          set -euo pipefail
+          manifest="hilbert-batch-migration-${GITHUB_RUN_ID}"
+          jq --arg plan "$SOURCE_PLAN_ID" '[.[] | select((.source_plan_id|tostring) == $plan)]' .github/migration/manifest.json > "${RUNNER_TEMP}/batch-manifest.json"
+          if [ "${{ inputs.limit }}" != "0" ]; then jq --argjson limit "${{ inputs.limit }}" '.[0:$limit]' "${RUNNER_TEMP}/batch-manifest.json" > "${RUNNER_TEMP}/limited-manifest.json"; mv "${RUNNER_TEMP}/limited-manifest.json" "${RUNNER_TEMP}/batch-manifest.json"; fi
+          count="$(jq length "${RUNNER_TEMP}/batch-manifest.json")"
+          test "$count" -gt 0
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create configmap "$manifest" --from-file=manifest.json="${RUNNER_TEMP}/batch-manifest.json" --from-file=migrate-hilbert-batch.py=.github/scripts/migrate-hilbert-batch.py --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+          echo "MIGRATION_CONFIGMAP_NAME=$manifest" >> "$GITHUB_ENV"
+          echo "BATCH_COUNT=$count" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Create and wait for batch Job
+        run: |
+          set -euo pipefail
+          job="hilbert-batch-migration-${GITHUB_RUN_ID}"
+          cat > "${RUNNER_TEMP}/batch.yaml" <<YAML
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "$job"
+            namespace: archebase-system
+            labels:
+              app.kubernetes.io/name: hilbert-batch-migration
+              app.kubernetes.io/managed-by: keystone-ci
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 10800
+            template:
+              spec:
+                serviceAccountName: keystone
+                imagePullSecrets:
+                  - name: keystone-staging-registry
+                restartPolicy: Never
+                securityContext:
+                  runAsUser: 0
+                containers:
+                  - name: migrate
+                    image: "archebase-cr-cn-beijing.cr.volces.com/prod/keystone:4f0f0d20b219079b39044bca849b26d2f6aa9"
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        set -eu
+                        apk add --no-cache py3-requests py3-cryptography
+                        python3 /opt/migration/migrate-hilbert-batch.py --manifest /opt/migration/manifest.json --limit 0
+                    env:
+                      - name: SOURCE_HILBERT_BASE_URL
+                        value: "https://hilbert.archebase.cn/hilbert-be-backend"
+                      - name: TARGET_HILBERT_BASE_URL
+                        value: "http://hilbert-be-backend:8080/hilbert-be-backend"
+                      - name: SOURCE_HILBERT_USERNAME
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$MIGRATION_SECRET_NAME"
+                            key: source-username
+                      - name: SOURCE_HILBERT_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$MIGRATION_SECRET_NAME"
+                            key: source-password
+                      - name: TARGET_HILBERT_USERNAME
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$MIGRATION_SECRET_NAME"
+                            key: target-username
+                      - name: TARGET_HILBERT_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: "$MIGRATION_SECRET_NAME"
+                            key: target-password
+                    volumeMounts:
+                      - name: migration
+                        mountPath: /opt/migration
+                        readOnly: true
+                volumes:
+                  - name: migration
+                    configMap:
+                      name: "$MIGRATION_CONFIGMAP_NAME"
+          YAML
+          kubectl --context="$KUBE_CONTEXT" apply -f "${RUNNER_TEMP}/batch.yaml"
+          while :; do
+            status="$(kubectl --context="$KUBE_CONTEXT" -n archebase-system get job "$job" -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}{.status.conditions[?(@.type=="Failed")].status}')"
+            case "$status" in True) kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true; break;; *True) kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true || true; exit 1;; esac
+            sleep 10
+          done
+        shell: bash
+
+      - name: Cleanup batch resources
+        if: always()
+        run: |
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete job "hilbert-batch-migration-${GITHUB_RUN_ID}" --ignore-not-found=true
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete configmap "$MIGRATION_CONFIGMAP_NAME" --ignore-not-found=true
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete secret "$MIGRATION_SECRET_NAME" --ignore-not-found=true
+        shell: bash
+
+
     name: Migrate one Hilbert MCAP sample
     if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'migrate_sample'
     runs-on: archebase-ci-runner
