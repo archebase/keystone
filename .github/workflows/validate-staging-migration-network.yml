@@ -16,6 +16,7 @@ on:
           - migrate_sample
           - migrate_batch
           - prod_download_probe
+          - prod_migrate_batch
       tosUrl:
         description: "TOS endpoint to probe from staging"
         required: false
@@ -40,6 +41,16 @@ on:
         description: "Maximum records from the selected source plan; 0 means all records in that plan"
         required: false
         default: "0"
+        type: string
+      prodSourcePlanId:
+        description: "Source dcPlanId for a bounded production-cluster migration batch"
+        required: false
+        default: ""
+        type: string
+      prodLimit:
+        description: "Maximum records for the production-cluster migration batch"
+        required: false
+        default: "2"
         type: string
       confirm:
         description: "Type validate-staging-network to create the temporary validation Job"
@@ -183,6 +194,151 @@ jobs:
           echo "image=$image" >> "$GITHUB_OUTPUT"
         shell: bash
 
+  prod-migrate-batch:
+    name: Migrate bounded batch from production cluster
+    if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'prod_migrate_batch'
+    runs-on: archebase-ci-runner
+    environment: production
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm production batch migration
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          SOURCE_PLAN_ID: ${{ inputs.prodSourcePlanId }}
+          LIMIT: ${{ inputs.prodLimit }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = "migrate-production-batch"
+          test "$SOURCE_PLAN_ID" = "298"
+          case "$LIMIT" in 1|2) ;; *) echo "prodLimit must be 1 or 2" >&2; exit 1 ;; esac
+        shell: bash
+      - name: Configure production kubeconfig
+        env:
+          PROD_KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          path="${RUNNER_TEMP}/prod-kubeconfig"
+          printf '%s' "$PROD_KUBECONFIG_B64" | base64 -d > "$path"
+          chmod 600 "$path"
+          export KUBECONFIG="$path"
+          context="$(kubectl config current-context)"
+          kubectl --context="$context" auth can-i create jobs.batch -n archebase-system
+          kubectl --context="$context" auth can-i create configmaps -n archebase-system
+          kubectl --context="$context" auth can-i create secrets -n archebase-system
+          echo "KUBECONFIG=$path" >> "$GITHUB_ENV"
+          echo "KUBE_CONTEXT=$context" >> "$GITHUB_ENV"
+        shell: bash
+      - name: Refresh production registry pull secret
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret docker-registry keystone-production-registry \
+            --docker-server=archebase-cr-cn-beijing.cr.volces.com \
+            --docker-username="$VOLCENGINE_CR_USERNAME" \
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+        shell: bash
+      - name: Create production batch credentials
+        env:
+          SOURCE_HILBERT_USERNAME: liuchao
+          SOURCE_HILBERT_PASSWORD: ${{ secrets.SOURCE_HILBERT_PASSWORD }}
+          TARGET_HILBERT_USERNAME: ${{ secrets.TARGET_HILBERT_USERNAME }}
+          TARGET_HILBERT_PASSWORD: ${{ secrets.TARGET_HILBERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          secret="hilbert-prod-batch-credentials-${GITHUB_RUN_ID}"
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret generic "$secret" \
+            --from-literal=source-username="$SOURCE_HILBERT_USERNAME" \
+            --from-literal=source-password="$SOURCE_HILBERT_PASSWORD" \
+            --from-literal=target-username="$TARGET_HILBERT_USERNAME" \
+            --from-literal=target-password="$TARGET_HILBERT_PASSWORD" \
+            --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+          echo "PROD_BATCH_SECRET=$secret" >> "$GITHUB_ENV"
+        shell: bash
+      - name: Create production batch manifest
+        env:
+          LIMIT: ${{ inputs.prodLimit }}
+        run: |
+          set -euo pipefail
+          configmap="hilbert-prod-batch-${GITHUB_RUN_ID}"
+          jq --argjson limit "$LIMIT" '[.[] | select(.source_plan_id == 298 and .source_raw_data_id != 18398)][0:$limit]' .github/migration/manifest.json > "${RUNNER_TEMP}/prod-batch.json"
+          test "$(jq length "${RUNNER_TEMP}/prod-batch.json")" = "$LIMIT"
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create configmap "$configmap" \
+            --from-file=manifest.json="${RUNNER_TEMP}/prod-batch.json" \
+            --from-file=migrate-hilbert-batch.py=.github/scripts/migrate-hilbert-batch.py \
+            --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
+          echo "PROD_BATCH_CONFIGMAP=$configmap" >> "$GITHUB_ENV"
+        shell: bash
+      - name: Run production cluster migration batch
+        run: |
+          set -euo pipefail
+          job="hilbert-prod-batch-${GITHUB_RUN_ID}"
+          cat > "${RUNNER_TEMP}/prod-batch.yaml" <<YAML
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: "$job"
+            namespace: archebase-system
+            labels:
+              app.kubernetes.io/name: hilbert-prod-batch-migration
+              app.kubernetes.io/managed-by: keystone-ci
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 1800
+            template:
+              spec:
+                serviceAccountName: keystone
+                imagePullSecrets:
+                  - name: keystone-production-registry
+                restartPolicy: Never
+                securityContext:
+                  runAsUser: 0
+                containers:
+                  - name: migrate
+                    image: archebase-cr-cn-beijing.cr.volces.com/prod/hilbert-migration:acf0dac613f97da15425e997a119a6f405cc5984
+                    command: ["/usr/bin/python3", "/opt/migration/migrate-hilbert-batch.py"]
+                    args: ["--manifest", "/opt/migration/manifest.json", "--limit", "0"]
+                    env:
+                      - name: SOURCE_HILBERT_BASE_URL
+                        value: "http://hilbert-be-backend:8080/hilbert-be-backend"
+                      - name: TARGET_HILBERT_BASE_URL
+                        value: "https://hilbert-staging.archebase.cn/hilbert-be-backend"
+                      - name: SOURCE_HILBERT_USERNAME
+                        valueFrom: {secretKeyRef: {name: "$PROD_BATCH_SECRET", key: source-username}}
+                      - name: SOURCE_HILBERT_PASSWORD
+                        valueFrom: {secretKeyRef: {name: "$PROD_BATCH_SECRET", key: source-password}}
+                      - name: TARGET_HILBERT_USERNAME
+                        valueFrom: {secretKeyRef: {name: "$PROD_BATCH_SECRET", key: target-username}}
+                      - name: TARGET_HILBERT_PASSWORD
+                        valueFrom: {secretKeyRef: {name: "$PROD_BATCH_SECRET", key: target-password}}
+                    volumeMounts:
+                      - name: migration
+                        mountPath: /opt/migration
+                        readOnly: true
+                volumes:
+                  - name: migration
+                    configMap:
+                      name: "$PROD_BATCH_CONFIGMAP"
+          YAML
+          kubectl --context="$KUBE_CONTEXT" apply -f "${RUNNER_TEMP}/prod-batch.yaml"
+          if ! kubectl --context="$KUBE_CONTEXT" -n archebase-system wait --for=condition=complete "job/$job" --timeout=31m; then
+            kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true || true
+            exit 1
+          fi
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system logs "job/$job" --all-containers=true
+        shell: bash
+      - name: Cleanup production batch resources
+        if: always()
+        run: |
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete job "hilbert-prod-batch-${GITHUB_RUN_ID}" --ignore-not-found=true
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete configmap "${PROD_BATCH_CONFIGMAP:-}" --ignore-not-found=true || true
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete secret "${PROD_BATCH_SECRET:-}" --ignore-not-found=true || true
+        shell: bash
   prod-download-probe:
     name: Probe source download from production cluster
     if: github.ref == 'refs/heads/chore/validate-staging-migration-network' && inputs.operation == 'prod_download_probe'
