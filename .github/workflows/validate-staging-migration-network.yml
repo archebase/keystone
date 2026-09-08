@@ -224,10 +224,10 @@ jobs:
           VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
         run: |
           set -euo pipefail
-          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret docker-registry keystone-production-registry \\
-            --docker-server=archebase-cr-cn-beijing.cr.volces.com \\
-            --docker-username="$VOLCENGINE_CR_USERNAME" \\
-            --docker-password="$VOLCENGINE_CR_PASSWORD" \\
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret docker-registry keystone-production-registry \
+            --docker-server=archebase-cr-cn-beijing.cr.volces.com \
+            --docker-username="$VOLCENGINE_CR_USERNAME" \
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \
             --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
         shell: bash
 
@@ -238,9 +238,9 @@ jobs:
         run: |
           set -euo pipefail
           secret="hilbert-prod-download-probe-${GITHUB_RUN_ID}"
-          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret generic "$secret" \\
-            --from-literal=username="$SOURCE_HILBERT_USERNAME" \\
-            --from-literal=password="$SOURCE_HILBERT_PASSWORD" \\
+          kubectl --context="$KUBE_CONTEXT" -n archebase-system create secret generic "$secret" \
+            --from-literal=username="$SOURCE_HILBERT_USERNAME" \
+            --from-literal=password="$SOURCE_HILBERT_PASSWORD" \
             --dry-run=client -o yaml | kubectl --context="$KUBE_CONTEXT" apply -f -
           echo "PROBE_SECRET_NAME=$secret" >> "$GITHUB_ENV"
         shell: bash
@@ -338,7 +338,7 @@ jobs:
         if: always()
         run: |
           kubectl --context="$KUBE_CONTEXT" -n archebase-system delete job "hilbert-prod-download-probe-${GITHUB_RUN_ID}" --ignore-not-found=true
-          kubectl --context="$KUBE_CONTEXT" -n archebase-system delete secret "$PROBE_SECRET_NAME" --ignore-not-found=true
+          if [ -n "${PROBE_SECRET_NAME:-}" ]; then kubectl --context="$KUBE_CONTEXT" -n archebase-system delete secret "$PROBE_SECRET_NAME" --ignore-not-found=true; fi
         shell: bash
 
 
