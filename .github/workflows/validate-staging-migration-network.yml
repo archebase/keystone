@@ -75,12 +75,92 @@ jobs:
           printf '{"auths":{"archebase-cr-cn-beijing.cr.volces.com":{"auth":"%s"}}}\n' "$auth" > "$docker_config/config.json"
           echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
         shell: bash
+
+      - name: Configure remote BuildKit
+        env:
+          STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          path="${RUNNER_TEMP}/staging-kubeconfig"
+          printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$path"
+          chmod 600 "$path"
+          export KUBECONFIG="$path"
+          context="$(kubectl config current-context)"
+          builder="hilbert-migration-${GITHUB_RUN_ID}"
+          resource="${builder}0"
+          cleanup() {
+            docker buildx rm "$builder" >/dev/null 2>&1 || true
+            kubectl --context="$context" -n "$BUILDKIT_NAMESPACE" delete statefulset,service "$resource" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl --context="$context" -n "$BUILDKIT_NAMESPACE" apply -f - <<YAML
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: $resource
+            labels:
+              app.kubernetes.io/name: buildkit
+              archebase.dev/ci-buildkit-resource: $resource
+          spec:
+            ports:
+              - name: buildkit
+                port: 1234
+                targetPort: 1234
+            selector:
+              archebase.dev/ci-buildkit-resource: $resource
+          ---
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: $resource
+            labels:
+              app.kubernetes.io/name: buildkit
+              archebase.dev/ci-buildkit-resource: $resource
+          spec:
+            serviceName: $resource
+            replicas: 1
+            selector:
+              matchLabels:
+                archebase.dev/ci-buildkit-resource: $resource
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: buildkit
+                  archebase.dev/ci-buildkit-resource: $resource
+              spec:
+                serviceAccountName: default
+                imagePullSecrets:
+                  - name: keystone-staging-registry
+                containers:
+                  - name: buildkitd
+                    image: $BUILDKIT_IMAGE
+                    args: ["--addr=tcp://0.0.0.0:1234", "--allow-insecure-entitlement=network.host"]
+                    ports:
+                      - containerPort: 1234
+                    readinessProbe:
+                      exec:
+                        command: ["buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+                      initialDelaySeconds: 5
+                      periodSeconds: 5
+                    securityContext:
+                      privileged: true
+          YAML
+          kubectl --context="$context" -n "$BUILDKIT_NAMESPACE" rollout status "statefulset/$resource" --timeout=5m
+          docker buildx create --name "$builder" --driver remote "tcp://${resource}.${BUILDKIT_NAMESPACE}.svc.cluster.local:1234" --use
+          docker buildx inspect "$builder" --bootstrap
+          echo "KUBECONFIG=$path" >> "$GITHUB_ENV"
+          echo "KUBE_CONTEXT=$context" >> "$GITHUB_ENV"
+          echo "BUILDER=$builder" >> "$GITHUB_ENV"
+          trap - EXIT
+          cleanup
+        shell: bash
+
       - name: Build and push migration image
         id: image
         run: |
           set -euo pipefail
           image="archebase-cr-cn-beijing.cr.volces.com/prod/hilbert-migration:${GITHUB_SHA}"
-          docker buildx build --platform linux/amd64 --file docker/Dockerfile.hilbert-migration --tag "$image" --push .
+          docker buildx build --builder "$BUILDER" --platform linux/amd64 --file docker/Dockerfile.hilbert-migration --tag "$image" --push .
           echo "image=$image" >> "$GITHUB_OUTPUT"
         shell: bash
 
