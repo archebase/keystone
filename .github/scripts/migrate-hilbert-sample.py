@@ -154,6 +154,10 @@ def main():
         endpoint = credentials["endpoint"]
         if not endpoint.startswith("http"):
             endpoint = "https://" + endpoint
+        endpoint_host = urlparse(endpoint).hostname or ""
+        if endpoint_host.startswith("tos-s3-") and endpoint_host.endswith(".ivolces.com"):
+            region = endpoint_host[len("tos-s3-") : -len(".ivolces.com")]
+            endpoint = f"https://tos-{region}.ivolces.com"
         client = boto3.client(
             "s3",
             endpoint_url=endpoint,
@@ -161,7 +165,7 @@ def main():
             aws_access_key_id=secret["access_key_id"],
             aws_secret_access_key=secret["secret_access_key"],
             aws_session_token=secret.get("session_token"),
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
         )
         local_file.seek(0)
         client.upload_fileobj(
