@@ -246,7 +246,7 @@ func (s *WorkstationPlanBinder) bindOne(ctx context.Context, scope workstationPl
 		return err
 	}
 	if !bound {
-		return fmt.Errorf("Hilbert did not confirm device binding")
+		return fmt.Errorf("hilbert did not confirm device binding")
 	}
 	deviceName, err := ResolveDCPlanDeviceName(ctx, s.db, scope.WorkspaceID, deviceID)
 	if err != nil {

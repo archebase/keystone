@@ -219,6 +219,7 @@ func (h *DCPlanHandler) BindWorkstationPlans(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// RefreshOperatorPlans synchronizes and returns plans available to the authenticated workstation.
 // It includes plans already bound to the current device and plans without a device whose operator matches the logged-in collector; the latter are bound when the device requests a task.
 //
 // @Summary      Refresh operator plans
