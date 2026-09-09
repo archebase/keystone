@@ -45,6 +45,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Confirm calibration upload
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           CONFIRM: ${{ inputs.confirm }}
         run: test "$CONFIRM" = "calibration-upload"
