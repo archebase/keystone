@@ -1,0 +1,141 @@
+{
+  "schema": "archebase.calibration",
+  "schema_version": "1.0",
+  "cameras": [
+    {
+      "id": "cam0",
+      "topic": "/decxin/left_rgb/compressed",
+      "resolution": [
+        1920,
+        1200
+      ],
+      "intrinsics": {
+        "camera_model": "pinhole",
+        "parameters": {
+          "fx": 687.9137968107165,
+          "fy": 687.5529514987076,
+          "cx": 949.8297915653551,
+          "cy": 591.3301700992118
+        },
+        "distortion_model": "equidistant",
+        "distortion_coefficients": [
+          0.046697948859770175,
+          -0.007901689659930733,
+          -0.019001657220596192,
+          0.008678531896759142
+        ]
+      }
+    },
+    {
+      "id": "cam1",
+      "topic": "/decxin/right_rgb/compressed",
+      "resolution": [
+        1920,
+        1200
+      ],
+      "intrinsics": {
+        "camera_model": "pinhole",
+        "parameters": {
+          "fx": 683.6925021068034,
+          "fy": 683.0979911987558,
+          "cx": 944.3152169025742,
+          "cy": 597.8306554812935
+        },
+        "distortion_model": "equidistant",
+        "distortion_coefficients": [
+          0.045518373386766516,
+          -0.013402074602776226,
+          -0.007563208701877415,
+          0.002175981855560341
+        ]
+      }
+    }
+  ],
+  "imus": [
+    {
+      "id": "imu0",
+      "topic": "/decxin/imu",
+      "model": "calibrated",
+      "update_rate_hz": 600.0,
+      "intrinsics": {
+        "accelerometer_noise_density": 0.000757629883160956,
+        "accelerometer_random_walk": 3.3059538178694456e-05,
+        "gyroscope_noise_density": 5.95267613935556e-05,
+        "gyroscope_random_walk": 9.141480828629393e-07
+      }
+    }
+  ],
+  "extrinsics": {
+    "convention": "p_to = R * p_from + t",
+    "transforms": [
+      {
+        "from_frame": "imu0",
+        "to_frame": "cam0",
+        "matrix": [
+          [
+            -0.9998491467377159,
+            0.008939431993369152,
+            -0.014891954992477693,
+            -1.5956085676757726e-05
+          ],
+          [
+            -0.008965228454956693,
+            -0.9999584230587654,
+            0.0016663830826229317,
+            -8.598552693367162e-06
+          ],
+          [
+            -0.014876439312298092,
+            0.001799641481947198,
+            0.9998877201185763,
+            -2.4280767525391975e-05
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      {
+        "from_frame": "cam0",
+        "to_frame": "cam1",
+        "matrix": [
+          [
+            0.9999882407448191,
+            0.0002529863366379913,
+            0.00484297119480584,
+            -0.05987040823917626
+          ],
+          [
+            -0.0002817787525738318,
+            0.9999822860283851,
+            0.005945437761688972,
+            -4.3064211349546635e-06
+          ],
+          [
+            -0.004841381292032527,
+            -0.005946732494151197,
+            0.9999705982676824,
+            8.200977206139598e-05
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      }
+    ]
+  },
+  "temporal_extrinsics": [
+    {
+      "from_clock": "cam0",
+      "to_clock": "imu0",
+      "offset_seconds": 0.03165702015168094,
+      "convention": "t_imu = t_camera + offset_seconds"
+    }
+  ]
+}
