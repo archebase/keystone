@@ -25,6 +25,11 @@ import (
 type DCPlanHandler struct {
 	db          *sqlx.DB
 	syncService dcPlanWorkspaceSyncer
+	planBinder  workstationPlanBinder
+}
+
+type workstationPlanBinder interface {
+	EnqueueUnboundPlans(context.Context, int64, int64, int64, string) error
 }
 
 type dcPlanWorkspaceSyncer interface {
@@ -35,6 +40,11 @@ type dcPlanWorkspaceSyncer interface {
 // NewDCPlanHandler creates a new DCPlanHandler.
 func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer) *DCPlanHandler {
 	return &DCPlanHandler{db: db, syncService: syncService}
+}
+
+// SetWorkstationPlanBinder configures device-triggered plan binding.
+func (h *DCPlanHandler) SetWorkstationPlanBinder(binder workstationPlanBinder) {
+	h.planBinder = binder
 }
 
 // DCPlanResponse represents one Hilbert dc_plan projection.
@@ -173,7 +183,42 @@ func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.POST("/operator/plans/refresh", h.RefreshOperatorPlans)
 }
 
-// RefreshOperatorPlans synchronizes and returns plans available to the authenticated workstation.
+// RegisterWorkstationRoutes registers plan operations for the current workstation.
+func (h *DCPlanHandler) RegisterWorkstationRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/plans/bind", h.BindWorkstationPlans)
+}
+
+// BindWorkstationPlans enqueues a best-effort binding pass for the current workstation.
+//
+// @Summary      Bind workstation plans
+// @Description  Queues locally known unassigned, non-collected plans for binding to the current workstation device.
+// @Tags         dc-plans
+// @Accept       json
+// @Produce      json
+// @Success      204
+// @Failure      401 {object} map[string]any
+// @Failure      403 {object} map[string]any
+// @Failure      500 {object} map[string]any
+// @Router       /workstation/plans/bind [post]
+func (h *DCPlanHandler) BindWorkstationPlans(c *gin.Context) {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkstationID <= 0 || claims.RobotID <= 0 || claims.WorkspaceID <= 0 || strings.TrimSpace(claims.OperatorID) == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "data collector workstation required"})
+		return
+	}
+	if h.planBinder == nil {
+		logger.Printf("[DC_PLAN_BINDING] plan binder is not configured")
+		c.Status(http.StatusNoContent)
+		return
+	}
+	if err := h.planBinder.EnqueueUnboundPlans(c.Request.Context(), claims.WorkstationID, claims.RobotID, claims.WorkspaceID, claims.OperatorID); err != nil {
+		logger.Printf("[DC_PLAN_BINDING] enqueue failed: workstation=%d error=%v", claims.WorkstationID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to bind workstation plans"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // It includes plans already bound to the current device and plans without a device whose operator matches the logged-in collector; the latter are bound when the device requests a task.
 //
 // @Summary      Refresh operator plans
