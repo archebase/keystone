@@ -32,7 +32,6 @@ import (
 
 	"archebase.com/keystone-edge/docs"
 	"archebase.com/keystone-edge/internal/api/handlers"
-	"archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/middleware"
@@ -88,7 +87,6 @@ type Server struct {
 	cameraCalibration   *handlers.CameraCalibrationHandler
 	workspaceSync       *services.WorkspaceSyncService
 	dcPlanSync          *services.DCPlanSyncService
-	planBinder          *services.WorkstationPlanBinder
 	httpServer          *http.Server
 	transferWSServer    *http.Server
 	recorderWSServer    *http.Server
@@ -218,7 +216,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		productionDashboardHandler *handlers.ProductionDashboardHandler
 		workspaceSyncService       *services.WorkspaceSyncService
 		dcPlanSyncService          *services.DCPlanSyncService
-		planBinder                 *services.WorkstationPlanBinder
 	)
 	if db != nil {
 		workspaceSyncService = services.NewWorkspaceSyncService(db, &cfg.Hilbert, nil)
@@ -229,8 +226,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		stationHandler = handlers.NewStationHandler(db)
 		workspaceHandler = handlers.NewWorkspaceHandler(db, workspaceSyncService)
 		dcPlanHandler = handlers.NewDCPlanHandler(db, dcPlanSyncService)
-		planBinder = services.NewWorkstationPlanBinder(db, auth.NewHilbertClient(&cfg.Hilbert))
-		dcPlanHandler.SetWorkstationPlanBinder(planBinder)
 		dataOpsHandler = handlers.NewDataOpsHandler(db)
 		dataOpsHandler.SetBulkActionDeps(qaHandler, syncWorker)
 		if err := dataOpsHandler.InterruptActiveBulkRuns(context.Background(), cfg.Sync.MaxRetries); err != nil {
@@ -359,7 +354,6 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		cameraCalibration:   cameraCalibrationHandler,
 		workspaceSync:       workspaceSyncService,
 		dcPlanSync:          dcPlanSyncService,
-		planBinder:          planBinder,
 		engine:              engine,
 	}
 
@@ -483,8 +477,6 @@ func (s *Server) buildRoutes() http.Handler {
 	if s.dcPlan != nil {
 		readDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireAnyRole("admin", "data_collector"))
 		s.dcPlan.RegisterReadRoutes(readDCPlans)
-		workstationPlans := v1Routes.Group("/workstation", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("data_collector"))
-		s.dcPlan.RegisterWorkstationRoutes(workstationPlans)
 		adminDCPlans := v1Routes.Group("", middleware.JWTAuth(&s.cfg.Auth, s.db), middleware.RequireRole("admin"))
 		s.dcPlan.RegisterAdminRoutes(adminDCPlans)
 	}
@@ -579,11 +571,6 @@ func (s *Server) buildRecorderWSRoutes(recorderHandler *handlers.RecorderHandler
 
 // Start starts the HTTP server
 func (s *Server) Start() error {
-	if s.planBinder != nil {
-		if err := s.planBinder.Start(); err != nil {
-			return fmt.Errorf("start dc plan binding worker: %w", err)
-		}
-	}
 	if s.localCleanupWorker != nil {
 		s.localCleanupWorker.Start()
 	}
@@ -816,12 +803,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	var shutdownErr error
-	if s.planBinder != nil {
-		if err := s.planBinder.Stop(ctx); err != nil {
-			logShutdownError("DC plan binding worker", err)
-			shutdownErr = fmt.Errorf("dc plan binding worker shutdown: %w", err)
-		}
-	}
 	if s.depthNorm != nil {
 		if err := s.depthNorm.StopWorker(ctx); err != nil {
 			logShutdownError("Depth normalization worker", err)
