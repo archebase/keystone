@@ -3,6 +3,17 @@
 name: Calibration staging upload
 
 on:
+  push:
+    branches:
+      - chore/validate-staging-migration-network
+    paths:
+      - ".github/workflows/calibration-staging-upload.yml"
+      - ".github/scripts/calibration-staging-upload.py"
+      - ".github/migration/calibration/CMD-000004-calibration.json"
+      - ".github/migration/calibration/CMD-000011-calibration.json"
+      - ".github/migration/calibration/CMD-000198-calibration.json"
+      - ".github/migration/calibration/CMD-000123-calibration.json"
+      - ".github/migration/calibration/CMD-000143-calibration.json"
   workflow_dispatch:
     inputs:
       confirm:
