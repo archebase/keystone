@@ -19,6 +19,43 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 )
 
+func TestPatchDCPlanTargetCountUsesRESTContract(t *testing.T) {
+	now := time.Unix(1700000000, 123000000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != hilbertDCPlanPatchTargetPath {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body struct {
+			WorkspaceID int64 `json:"workspaceId"`
+			PlanID      int64 `json:"id"`
+			TargetCount int64 `json:"targetCount"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body.WorkspaceID != 10 || body.PlanID != 20 || body.TargetCount != 30 {
+			t.Fatalf("request body = %#v", body)
+		}
+		writeHilbertTestJSON(t, w, map[string]any{"code": 0, "data": true})
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL:        server.URL,
+		TimeoutSeconds: 2,
+		AccessKey:      "hilbert-ak",
+		SecretKey:      "hilbert-sk",
+	})
+	client.now = func() time.Time { return now }
+	updated, err := client.PatchDCPlanTargetCount(context.Background(), 10, 20, 30)
+	if err != nil {
+		t.Fatalf("PatchDCPlanTargetCount() error = %v", err)
+	}
+	if !updated {
+		t.Fatal("PatchDCPlanTargetCount() = false, want true")
+	}
+}
+
 func TestHilbertNonceEncryptionRoundTrip(t *testing.T) {
 	material := base64.StdEncoding.EncodeToString(make([]byte, hilbertNonceLengthBytes))
 	cipherText, err := EncryptHilbertNonceValue("device-api-key", material)

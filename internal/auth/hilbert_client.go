@@ -33,6 +33,7 @@ const (
 	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
 	hilbertDCPlanQueryPath        = "/v1/data-collection/dc-plan/query"
 	hilbertDCPlanPatchDevicePath  = "/v1/data-collection/dc-plan/patch-dc-device-id"
+	hilbertDCPlanPatchTargetPath  = "/v1/data-collection/dc-plan/patch-target-count"
 	hilbertDCDeviceQueryPath      = "/v1/data-collection/dc-device/query"
 	hilbertDCDeviceGetKeyPath     = "/v1/data-collection/dc-device/get-api-key"
 	hilbertDCDeviceGeneratePath   = "/v1/data-collection/dc-device/generate-api-key"
@@ -415,6 +416,33 @@ func (c *HilbertClient) PatchDCPlanDCDeviceID(ctx context.Context, workspaceID, 
 			message = fmt.Sprintf("response code %d", resp.Code)
 		}
 		return false, fmt.Errorf("%w: patch dc plan device: %s", ErrHilbertUnavailable, message)
+	}
+	return resp.Data, nil
+}
+
+// PatchDCPlanTargetCount updates the target count of a Hilbert data collection plan.
+func (c *HilbertClient) PatchDCPlanTargetCount(ctx context.Context, workspaceID, planID, targetCount int64) (bool, error) {
+	if workspaceID <= 0 || planID <= 0 || targetCount < 1 || targetCount > 200 {
+		return false, fmt.Errorf("%w: invalid dc plan target count parameters", ErrHilbertUnavailable)
+	}
+	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCPlanPatchTargetPath, map[string]int64{
+		"workspaceId": workspaceID,
+		"id":          planID,
+		"targetCount": targetCount,
+	})
+	if err != nil {
+		return false, err
+	}
+	var resp hilbertCommonResponse[bool]
+	if err := c.doJSON(req, &resp); err != nil {
+		return false, err
+	}
+	if resp.Code != 0 {
+		message := resp.errorMessage()
+		if message == "" {
+			message = fmt.Sprintf("response code %d", resp.Code)
+		}
+		return false, fmt.Errorf("%w: patch dc plan target count: %s", ErrHilbertUnavailable, message)
 	}
 	return resp.Data, nil
 }

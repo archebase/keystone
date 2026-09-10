@@ -337,6 +337,78 @@ func (s *DCPlanTaskSupplyService) EnsureEgoPortalPendingPool(
 	return result, nil
 }
 
+// TrimPendingTasks 把数采计划的待执行任务收敛到新的目标预算内。
+// 预算是目标数量减去当前数量与本地已预留数量（已产生未同步数据、ready/in_progress/uploading 任务），
+// 因此调低目标数量后多余的 pending 任务会被立即取消，而不是继续留在池中造成超采。
+// ready/in_progress/uploading 任务不在这里处理，允许其自然结束。
+func (s *DCPlanTaskSupplyService) TrimPendingTasks(
+	ctx context.Context,
+	planID int64,
+	now time.Time,
+) (int, error) {
+	if s == nil || s.db == nil || planID <= 0 {
+		return 0, ErrDCPlanTaskSupplyNotFound
+	}
+
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin pending task trim transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	plan, err := loadTaskSupplyPlan(ctx, tx, planID)
+	if err != nil {
+		return 0, err
+	}
+	if strings.EqualFold(strings.TrimSpace(plan.Status), "collected") {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit collected plan pending task trim: %w", err)
+		}
+		return 0, nil
+	}
+
+	counts, err := loadTaskSupplyCounts(ctx, tx, planID)
+	if err != nil {
+		return 0, err
+	}
+	allowed := plan.TargetCount - plan.CurCount - counts.LocalReserved
+	if allowed < 0 {
+		allowed = 0
+	}
+
+	var pendingIDs []int64
+	if err := tx.SelectContext(ctx, &pendingIDs, `
+		SELECT id
+		FROM tasks
+		WHERE dc_plan_id = ? AND status = 'pending' AND deleted_at IS NULL
+		ORDER BY id`+taskSupplyForUpdateClause(tx), planID); err != nil {
+		return 0, fmt.Errorf("query pending plan tasks for trim: %w", err)
+	}
+	if int64(len(pendingIDs)) <= allowed {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit unchanged pending task trim: %w", err)
+		}
+		return 0, nil
+	}
+
+	excess := pendingIDs[int(allowed):]
+	cancelStatement, cancelArgs, err := sqlx.In(`
+		UPDATE tasks
+		SET status = 'cancelled', updated_at = ?
+		WHERE id IN (?) AND status = 'pending' AND deleted_at IS NULL
+	`, now, excess)
+	if err != nil {
+		return 0, fmt.Errorf("build pending task trim statement: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, tx.Rebind(cancelStatement), cancelArgs...); err != nil {
+		return 0, fmt.Errorf("cancel excess pending plan tasks: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit pending task trim: %w", err)
+	}
+	return len(excess), nil
+}
+
 func loadTaskSupplyPlan(
 	ctx context.Context,
 	tx *sqlx.Tx,

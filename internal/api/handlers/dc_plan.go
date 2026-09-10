@@ -23,8 +23,10 @@ import (
 
 // DCPlanHandler handles Hilbert dc_plan projection requests.
 type DCPlanHandler struct {
-	db          *sqlx.DB
-	syncService dcPlanWorkspaceSyncer
+	db                *sqlx.DB
+	syncService       dcPlanWorkspaceSyncer
+	targetCountClient dcPlanTargetCountClient
+	taskSupply        dcPlanTaskSupply
 }
 
 type dcPlanWorkspaceSyncer interface {
@@ -32,9 +34,21 @@ type dcPlanWorkspaceSyncer interface {
 	SyncWorkspace(context.Context, int64) (*services.DCPlanSyncResult, error)
 }
 
+type dcPlanTargetCountClient interface {
+	PatchDCPlanTargetCount(context.Context, int64, int64, int64) (bool, error)
+}
+
+type dcPlanTaskSupply interface {
+	TrimPendingTasks(context.Context, int64, time.Time) (int, error)
+}
+
 // NewDCPlanHandler creates a new DCPlanHandler.
-func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer) *DCPlanHandler {
-	return &DCPlanHandler{db: db, syncService: syncService}
+func NewDCPlanHandler(db *sqlx.DB, syncService dcPlanWorkspaceSyncer, targetCountClient ...dcPlanTargetCountClient) *DCPlanHandler {
+	var client dcPlanTargetCountClient
+	if len(targetCountClient) > 0 {
+		client = targetCountClient[0]
+	}
+	return &DCPlanHandler{db: db, syncService: syncService, targetCountClient: client, taskSupply: services.NewDCPlanTaskSupplyService(db)}
 }
 
 // DCPlanResponse represents one Hilbert dc_plan projection.
@@ -171,6 +185,180 @@ func (h *DCPlanHandler) RegisterReadRoutes(apiV1 *gin.RouterGroup) {
 	apiV1.GET("/dc-plans/options/projects", h.ListDCPlanProjectOptions)
 	apiV1.GET("/dc-plans/options/tasks", h.ListDCPlanTaskOptions)
 	apiV1.POST("/operator/plans/refresh", h.RefreshOperatorPlans)
+}
+
+// RegisterOperatorRoutes registers dc_plan routes available to an authenticated workstation.
+func (h *DCPlanHandler) RegisterOperatorRoutes(apiV1 *gin.RouterGroup) {
+	apiV1.POST("/operator/dc-plans/:plan_id/target-count", h.UpdateTargetCount)
+}
+
+// UpdateTargetCount updates a plan target count through Hilbert after verifying the active workstation owns the plan.
+// The lower bound is the number of non-deleted Keystone episodes already associated with the plan.
+//
+// @Summary      Update operator dc plan target count
+// @Description  Updates a Hilbert dc plan target count using the active workstation session. The new target cannot be below the number of non-deleted Keystone episodes for the plan.
+// @Tags         dc-plans
+// @Accept       json
+// @Produce      json
+// @Param        plan_id path int true "Hilbert dc plan ID"
+// @Param        body body UpdateTargetCountRequest true "Target count update"
+// @Success      200 {object} UpdateTargetCountResponse
+// @Failure      400 {object} map[string]any
+// @Failure      401 {object} map[string]any
+// @Failure      403 {object} map[string]any
+// @Failure      404 {object} map[string]any
+// @Failure      409 {object} map[string]any
+// @Failure      502 {object} map[string]any
+// @Router       /operator/dc-plans/{plan_id}/target-count [post]
+func (h *DCPlanHandler) UpdateTargetCount(c *gin.Context) {
+	claims := middleware.GetClaims(c)
+	if claims == nil || claims.Role != "data_collector" || claims.WorkstationID <= 0 || claims.WorkspaceID <= 0 || strings.TrimSpace(claims.OperatorID) == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "workstation_scope_required", "error": "workstation session is required"})
+		return
+	}
+	if h.targetCountClient == nil {
+		c.JSON(http.StatusBadGateway, gin.H{"code": "hilbert_unavailable", "error": "Hilbert target count client is unavailable"})
+		return
+	}
+
+	planID, err := strconv.ParseInt(strings.TrimSpace(c.Param("plan_id")), 10, 64)
+	if err != nil || planID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_plan_id", "error": "plan_id must be a positive integer"})
+		return
+	}
+	var req UpdateTargetCountRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.TargetCount < 1 || req.TargetCount > 200 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_target_count", "error": "target_count must be between 1 and 200"})
+		return
+	}
+
+	var workstation struct {
+		WorkspaceID int64  `db:"workspace_id"`
+		RobotID     int64  `db:"robot_id"`
+		DeviceID    string `db:"device_id"`
+	}
+	if err := h.db.GetContext(c.Request.Context(), &workstation, `
+		SELECT ws.workspace_id, ws.robot_id, r.device_id
+		FROM workstations ws
+		JOIN robots r ON r.id = ws.robot_id AND r.deleted_at IS NULL
+		WHERE ws.id = ? AND ws.data_collector_id = ? AND ws.is_current = TRUE AND ws.deleted_at IS NULL
+		LIMIT 1
+	`, claims.WorkstationID, claims.CollectorID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusUnauthorized, gin.H{"code": "workstation_session_invalid", "error": "workstation session is no longer active"})
+			return
+		}
+		logger.Printf("[DC_PLAN] Failed to resolve target-count workstation: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate workstation session"})
+		return
+	}
+	if workstation.WorkspaceID != claims.WorkspaceID || workstation.RobotID != claims.RobotID {
+		c.JSON(http.StatusForbidden, gin.H{"code": "workstation_workspace_mismatch", "error": "workstation workspace mismatch"})
+		return
+	}
+	deviceID, err := strconv.ParseInt(strings.TrimSpace(workstation.DeviceID), 10, 64)
+	if err != nil || deviceID <= 0 {
+		c.JSON(http.StatusConflict, gin.H{"code": "robot_not_linked_to_hilbert", "error": "robot is not linked to a Hilbert device"})
+		return
+	}
+
+	var plan struct {
+		WorkspaceID int64         `db:"workspace_id"`
+		Operator    string        `db:"operator"`
+		Status      string        `db:"status"`
+		DCDeviceID  sql.NullInt64 `db:"dc_device_id"`
+	}
+	if err := h.db.GetContext(c.Request.Context(), &plan, `
+		SELECT workspace_id, operator, COALESCE(status, 'pending_collection') AS status, dc_device_id
+		FROM dc_plan
+		WHERE id = ? AND deleted_at IS NULL
+		LIMIT 1
+	`, planID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"code": "dc_plan_not_found", "error": "dc plan not found"})
+			return
+		}
+		logger.Printf("[DC_PLAN] Failed to query target-count plan: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query dc plan"})
+		return
+	}
+	if plan.WorkspaceID != claims.WorkspaceID || plan.Operator != claims.OperatorID {
+		c.JSON(http.StatusForbidden, gin.H{"code": "dc_plan_access_denied", "error": "dc plan access denied"})
+		return
+	}
+	if plan.DCDeviceID.Valid && plan.DCDeviceID.Int64 != deviceID {
+		c.JSON(http.StatusForbidden, gin.H{"code": "dc_plan_device_mismatch", "error": "dc plan is assigned to another device"})
+		return
+	}
+	if plan.Status != "pending_collection" && plan.Status != "collecting" {
+		c.JSON(http.StatusConflict, gin.H{"code": "dc_plan_not_editable", "error": "dc plan cannot be updated in its current state"})
+		return
+	}
+
+	var uploadedCount int64
+	if err := h.db.GetContext(c.Request.Context(), &uploadedCount, `
+		SELECT COUNT(*) FROM episodes WHERE dc_plan_id = ? AND deleted_at IS NULL
+	`, planID); err != nil {
+		logger.Printf("[DC_PLAN] Failed to count target-count episodes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count uploaded episodes"})
+		return
+	}
+	if req.TargetCount < uploadedCount {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":           "target_count_below_uploaded_count",
+			"error":          "target count cannot be less than uploaded count",
+			"plan_id":        planID,
+			"target_count":   req.TargetCount,
+			"uploaded_count": uploadedCount,
+		})
+		return
+	}
+
+	updated, err := h.targetCountClient.PatchDCPlanTargetCount(c.Request.Context(), claims.WorkspaceID, planID, req.TargetCount)
+	if err != nil {
+		logger.Printf("[DC_PLAN] Failed to patch Hilbert target count: workspace_id=%d plan_id=%d target_count=%d err=%v", claims.WorkspaceID, planID, req.TargetCount, err)
+		c.JSON(http.StatusBadGateway, gin.H{"code": "hilbert_unavailable", "error": "failed to update Hilbert dc plan target count"})
+		return
+	}
+	if !updated {
+		c.JSON(http.StatusBadGateway, gin.H{"code": "hilbert_update_not_applied", "error": "Hilbert did not update the dc plan target count"})
+		return
+	}
+	if _, err := h.db.ExecContext(c.Request.Context(), `
+		UPDATE dc_plan SET target_count = ?, local_updated_at = ?
+		WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
+	`, req.TargetCount, time.Now().UTC(), planID, claims.WorkspaceID); err != nil {
+		logger.Printf("[DC_PLAN] Hilbert target count updated but local projection failed: workspace_id=%d plan_id=%d err=%v", claims.WorkspaceID, planID, err)
+		c.JSON(http.StatusOK, UpdateTargetCountResponse{PlanID: planID, TargetCount: req.TargetCount, UploadedCount: uploadedCount, Changed: true, ProjectionStale: true})
+		return
+	}
+
+	// 目标数量变更成功后收敛任务池，取消超出新预算的待执行任务。
+	tasksCancelled := 0
+	if h.taskSupply != nil {
+		cancelled, trimErr := h.taskSupply.TrimPendingTasks(c.Request.Context(), planID, time.Now().UTC())
+		if trimErr != nil {
+			logger.Printf("[DC_PLAN] Target count updated but pending task trim failed: workspace_id=%d plan_id=%d err=%v", claims.WorkspaceID, planID, trimErr)
+		} else {
+			tasksCancelled = cancelled
+		}
+	}
+	c.JSON(http.StatusOK, UpdateTargetCountResponse{PlanID: planID, TargetCount: req.TargetCount, UploadedCount: uploadedCount, Changed: true, TasksCancelled: tasksCancelled})
+}
+
+// UpdateTargetCountRequest contains the new Hilbert dc plan target count.
+type UpdateTargetCountRequest struct {
+	TargetCount int64 `json:"target_count" binding:"required,gte=1,lte=200"`
+}
+
+// UpdateTargetCountResponse reports the applied target, Keystone episode count and cancelled pending tasks.
+type UpdateTargetCountResponse struct {
+	PlanID          int64 `json:"plan_id"`
+	TargetCount     int64 `json:"target_count"`
+	UploadedCount   int64 `json:"uploaded_count"`
+	TasksCancelled  int   `json:"tasks_cancelled"`
+	Changed         bool  `json:"changed"`
+	ProjectionStale bool  `json:"projection_stale"`
 }
 
 // RefreshOperatorPlans synchronizes and returns plans available to the authenticated workstation.
