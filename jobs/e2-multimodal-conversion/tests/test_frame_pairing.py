@@ -52,18 +52,50 @@ def capture_with_startup_gaps() -> tuple[list[int], list[int]]:
 class E2CaptureAlignmentTest(unittest.TestCase):
     def setUp(self) -> None:
         from e2_converter import (  # noqa: PLC0415 - heavy module, imported lazily
+            _au_is_keyframe,
             _csv_rows,
+            _dropped_frame_filter,
             _imu_rows,
             _pair_tolerance_ns,
             _plan_video_pairs,
             _recorded_exposure_timestamps,
         )
 
+        self.au_is_keyframe = _au_is_keyframe
+        self.dropped_frame_filter = _dropped_frame_filter
         self.csv_rows = _csv_rows
         self.imu_rows = _imu_rows
         self.pair_tolerance_ns = _pair_tolerance_ns
         self.plan_video_pairs = _plan_video_pairs
         self.recorded_exposure_timestamps = _recorded_exposure_timestamps
+
+    def test_au_is_keyframe_detects_idr_slice(self) -> None:
+        # Annex-B access units start with an AUD (type 9); an IDR slice is 5.
+        aud = b"\x00\x00\x00\x01\x09\xf0"
+        idr = b"\x00\x00\x00\x01\x65\x88"
+        p_frame = b"\x00\x00\x00\x01\x41\x9a"
+        self.assertTrue(self.au_is_keyframe(aud + b"\x00\x00\x00\x01\x67\x00" + idr))
+        self.assertFalse(self.au_is_keyframe(aud + b"\x00\x00\x01\x41\x9a"))
+        self.assertFalse(self.au_is_keyframe(p_frame))
+        self.assertFalse(self.au_is_keyframe(b""))
+
+    def test_dropped_frame_filter_is_none_when_nothing_is_dropped(self) -> None:
+        self.assertIsNone(self.dropped_frame_filter([0, 1, 2], 3))
+
+    def test_dropped_frame_filter_drops_head_gaps_and_tail(self) -> None:
+        # Keep frames 2 and 5 out of 7; the head, the interior gap and the tail
+        # must all be dropped, with the commas ffmpeg needs escaped.
+        expression = self.dropped_frame_filter([2, 5], 7)
+        self.assertEqual(
+            expression,
+            "not(between(n\\,0\\,1)+between(n\\,3\\,4)+between(n\\,6\\,6))",
+        )
+
+    def test_dropped_frame_filter_handles_a_single_kept_run(self) -> None:
+        self.assertEqual(
+            self.dropped_frame_filter([1, 2], 5),
+            "not(between(n\\,0\\,0)+between(n\\,3\\,4))",
+        )
 
     def test_pairing_tolerance_is_half_a_frame_period(self) -> None:
         from fractions import Fraction

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from fractions import Fraction
 import json
@@ -15,6 +15,7 @@ from itertools import chain, islice
 from pathlib import Path
 import re
 import subprocess
+import threading
 from typing import Iterator, Sequence
 
 import numpy as np
@@ -83,6 +84,26 @@ class ConversionStats:
     max_pair_offset_ns: int = 0
     left_timestamp_source: str = ""
     right_timestamp_source: str = ""
+    # Encoding diagnostics. A channel whose first encoded access unit is not a
+    # keyframe cannot be decoded from its first message, and a source bitstream
+    # that already lacks reference frames decodes to frozen pictures.
+    left_first_frame_keyframe: bool = True
+    right_first_frame_keyframe: bool = True
+    left_decode_warnings: int = 0
+    right_decode_warnings: int = 0
+    first_decode_warning: str = ""
+
+
+@dataclass
+class EncodingReport:
+    """Diagnostics gathered while encoding one capture's two channels."""
+
+    decode_warnings: dict[str, list[str]] = field(
+        default_factory=lambda: {"left": [], "right": []}
+    )
+    first_frame_keyframe: dict[str, bool] = field(
+        default_factory=lambda: {"left": True, "right": True}
+    )
 
 
 def _access_units(stream: Iterator[bytes]) -> Iterator[bytes]:
@@ -112,29 +133,51 @@ def _access_units(stream: Iterator[bytes]) -> Iterator[bytes]:
         yield bytes(buffer)
 
 
-def _ffmpeg_video(path: Path) -> Iterator[bytes]:
-    """Re-encode one camera to H.264 with one access unit per source frame.
+def _ffmpeg_video(
+    path: Path, kept: Sequence[int], total_frames: int, warnings: list[str]
+) -> Iterator[bytes]:
+    """Re-encode the kept frames of one camera to H.264, one access unit each.
 
-    Frame pacing is deliberately passed through rather than forced to the
-    container's nominal frame rate. The cameras drop frames and start unevenly,
-    so an output frame rate would duplicate frames to fill those gaps, breaking
-    the one-to-one correspondence between encoded access units and the
-    per-frame exposure timestamps the device recorded.
+    Frame pacing is passed through rather than forced to the container's
+    nominal frame rate: an output frame rate would duplicate frames to fill
+    capture gaps, breaking the one-to-one correspondence between encoded
+    access units and the per-frame exposure timestamps the device recorded.
     """
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(path),
-        "-map", "0:v:0", "-c:v", "libx264", "-preset", "medium", "-profile:v", "high",
+        "-map", "0:v:0",
+    ]
+    select = _dropped_frame_filter(kept, total_frames)
+    if select is not None:
+        command += ["-vf", f"select={select}"]
+    command += [
+        "-c:v", "libx264", "-preset", "medium", "-profile:v", "high",
         "-pix_fmt", "yuv420p", "-fps_mode", "passthrough", "-bf", "0", "-g", "30", "-keyint_min", "30",
         "-sc_threshold", "0", "-b:v", "12M", "-maxrate", "12M", "-bufsize", "24M",
         "-x264-params", "aud=1:repeat-headers=1", "-an", "-f", "h264", "pipe:1",
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert process.stdout is not None
+    assert process.stderr is not None
+
+    def drain_stderr() -> None:
+        # Keep reading while the encoder runs: a source whose bitstream lacks
+        # reference frames emits far more diagnostics than a pipe buffer holds,
+        # and leaving them unread would block ffmpeg mid-encode.
+        assert process.stderr is not None
+        for raw in process.stderr:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if line and len(warnings) < 200:
+                warnings.append(line)
+
+    drainer = threading.Thread(target=drain_stderr, daemon=True)
+    drainer.start()
     try:
         yield from iter(lambda: process.stdout.read(256 * 1024), b"")
         if process.wait() != 0:
-            error = process.stderr.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"ffmpeg failed for {path.name}: {error.strip()}")
+            detail = "; ".join(warnings[:3]) if warnings else "no diagnostics"
+            raise RuntimeError(f"ffmpeg failed for {path.name}: {detail}")
+        drainer.join(timeout=5)
     finally:
         if process.poll() is None:
             process.kill()
@@ -232,14 +275,69 @@ def _camera_timestamps(video: Path) -> tuple[list[int], str]:
     return container, "container"
 
 
-def _video_frames(path: Path, timestamps: Sequence[int]) -> Iterator[VideoFrame]:
-    for sequence, data in enumerate(_access_units(_ffmpeg_video(path))):
-        if sequence >= len(timestamps):
+def _video_frames(
+    path: Path, kept: Sequence[int], timestamps: Sequence[int], warnings: list[str]
+) -> Iterator[VideoFrame]:
+    count = 0
+    for sequence, data in enumerate(
+        _access_units(_ffmpeg_video(path, kept, len(timestamps), warnings))
+    ):
+        if sequence >= len(kept):
             raise RuntimeError(
-                f"encoded frame count exceeds timestamp count for {path.name}: "
-                f"encoded={sequence + 1} timestamps={len(timestamps)}"
+                f"encoded frame count exceeds the selected frame count for {path.name}: "
+                f"encoded={sequence + 1} selected={len(kept)}"
             )
-        yield VideoFrame(timestamps[sequence], data, sequence)
+        count = sequence + 1
+        yield VideoFrame(timestamps[kept[sequence]], data, sequence)
+    if count != len(kept):
+        raise RuntimeError(
+            f"encoded frame count does not match the selected frame count for {path.name}: "
+            f"encoded={count} selected={len(kept)}"
+        )
+
+
+# H.264 NAL unit type of an IDR (keyframe) slice, used to tell whether an
+# encoded access unit is independently decodable.
+_ANNEX_B_START = re.compile(b"\x00\x00\x00\x01|\x00\x00\x01")
+_NAL_IDR_SLICE = 5
+
+
+def _au_is_keyframe(data: bytes) -> bool:
+    """True when the access unit carries an IDR slice."""
+    for match in _ANNEX_B_START.finditer(data):
+        offset = match.end()
+        if offset < len(data) and (data[offset] & 0x1F) == _NAL_IDR_SLICE:
+            return True
+    return False
+
+
+def _dropped_frame_filter(kept: Sequence[int], total_frames: int) -> str | None:
+    """ffmpeg `select` expression that drops every frame outside `kept`.
+
+    Frames are dropped *before* encoding rather than removed from the encoded
+    stream: dropping a frame inside a Group of Pictures would leave the
+    following frames referencing a picture the decoder never saw, so the
+    channel would decode to frozen or garbled pictures until the next IDR.
+    Encoding only the kept frames also gives each channel a fresh first
+    keyframe, which carries its own SPS/PPS.
+    """
+    if not kept:
+        return None
+    keep = set(kept)
+    dropped: list[tuple[int, int]] = []
+    for index in range(total_frames):
+        if index in keep:
+            continue
+        if dropped and index == dropped[-1][1] + 1:
+            dropped[-1] = (dropped[-1][0], index)
+        else:
+            dropped.append((index, index))
+    if not dropped:
+        return None
+    # Commas inside a filter argument must be escaped: ffmpeg's filtergraph
+    # parser otherwise treats them as filter separators.
+    condition = "+".join(f"between(n\\,{start}\\,{end})" for start, end in dropped)
+    return f"not({condition})"
 
 
 def _pair_tolerance_ns(fps: Fraction) -> int:
@@ -290,23 +388,28 @@ def _iter_video_pairs(
     left_timestamps: Sequence[int],
     right_timestamps: Sequence[int],
     pairs: Sequence[tuple[int, int]],
+    report: EncodingReport,
 ) -> Iterator[tuple[int, VideoFrame, VideoFrame]]:
-    left_frames = iter(_video_frames(left, left_timestamps))
-    right_frames = iter(_video_frames(right, right_timestamps))
-    left_index = -1
-    right_index = -1
-    left_frame: VideoFrame | None = None
-    right_frame: VideoFrame | None = None
-    for target_left, target_right in pairs:
-        while left_index < target_left:
-            left_frame = next(left_frames, None)
-            left_index += 1
-        while right_index < target_right:
-            right_frame = next(right_frames, None)
-            right_index += 1
+    """Emit one pair per planned match, verifying the encoding kept the plan."""
+    left_kept = [source for source, _ in pairs]
+    right_kept = [target for _, target in pairs]
+    left_frames = iter(
+        _video_frames(left, left_kept, left_timestamps, report.decode_warnings["left"])
+    )
+    right_frames = iter(
+        _video_frames(right, right_kept, right_timestamps, report.decode_warnings["right"])
+    )
+    for index in range(len(pairs)):
+        left_frame = next(left_frames, None)
+        right_frame = next(right_frames, None)
         if left_frame is None or right_frame is None:
             raise RuntimeError("video stream ended before the planned stereo pair")
+        if index == 0:
+            report.first_frame_keyframe["left"] = _au_is_keyframe(left_frame.data)
+            report.first_frame_keyframe["right"] = _au_is_keyframe(right_frame.data)
         yield max(left_frame.timestamp_ns, right_frame.timestamp_ns), left_frame, right_frame
+    if next(left_frames, None) is not None or next(right_frames, None) is not None:
+        raise RuntimeError("selected frame filter did not match the planned stereo pairs")
 
 
 def _csv_rows(path: Path) -> Iterator[tuple[int, tuple[float, float, float]]]:
@@ -576,7 +679,10 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         stats.left_timestamp_source = left_source
         stats.right_timestamp_source = right_source
 
-        video_pairs = iter(_iter_video_pairs(left, right, left_timestamps, right_timestamps, pairs))
+        report = EncodingReport()
+        video_pairs = iter(
+            _iter_video_pairs(left, right, left_timestamps, right_timestamps, pairs, report)
+        )
         video_pair = next(video_pairs, None)
         imu = _imu_rows(root)
         imu_sample = next(imu, None)
@@ -640,6 +746,15 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
             timestamps.append(ts)
             sequence += 1
 
+        # Encoding diagnostics are only complete once both channels finished.
+        stats.left_first_frame_keyframe = report.first_frame_keyframe["left"]
+        stats.right_first_frame_keyframe = report.first_frame_keyframe["right"]
+        stats.left_decode_warnings = len(report.decode_warnings["left"])
+        stats.right_decode_warnings = len(report.decode_warnings["right"])
+        for channel in ("left", "right"):
+            if report.decode_warnings[channel]:
+                stats.first_decode_warning = report.decode_warnings[channel][0][:180]
+                break
         if stats.imu_messages == 0:
             raise RuntimeError(
                 "no IMU sample paired between accel and gyro: "
