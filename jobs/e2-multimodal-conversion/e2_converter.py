@@ -11,10 +11,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 import json
+from itertools import chain, islice
 from pathlib import Path
 import re
 import subprocess
-from typing import Iterator
+from typing import Iterator, Sequence
 
 import numpy as np
 
@@ -69,11 +70,19 @@ class VideoFrame:
 
 @dataclass
 class ConversionStats:
+    # Emitted stereo pairs, incremented together so the two counters stay equal.
     left_video_frames: int = 0
     right_video_frames: int = 0
     imu_messages: int = 0
+    # Source frames that had no partner within the pairing tolerance.
     dropped_left_video_frames: int = 0
     dropped_right_video_frames: int = 0
+    left_source_video_frames: int = 0
+    right_source_video_frames: int = 0
+    pair_tolerance_ns: int = 0
+    max_pair_offset_ns: int = 0
+    left_timestamp_source: str = ""
+    right_timestamp_source: str = ""
 
 
 def _access_units(stream: Iterator[bytes]) -> Iterator[bytes]:
@@ -103,11 +112,19 @@ def _access_units(stream: Iterator[bytes]) -> Iterator[bytes]:
         yield bytes(buffer)
 
 
-def _ffmpeg_video(path: Path, fps: Fraction) -> Iterator[bytes]:
+def _ffmpeg_video(path: Path) -> Iterator[bytes]:
+    """Re-encode one camera to H.264 with one access unit per source frame.
+
+    Frame pacing is deliberately passed through rather than forced to the
+    container's nominal frame rate. The cameras drop frames and start unevenly,
+    so an output frame rate would duplicate frames to fill those gaps, breaking
+    the one-to-one correspondence between encoded access units and the
+    per-frame exposure timestamps the device recorded.
+    """
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(path),
         "-map", "0:v:0", "-c:v", "libx264", "-preset", "medium", "-profile:v", "high",
-        "-pix_fmt", "yuv420p", "-r", str(float(fps)), "-bf", "0", "-g", "30", "-keyint_min", "30",
+        "-pix_fmt", "yuv420p", "-fps_mode", "passthrough", "-bf", "0", "-g", "30", "-keyint_min", "30",
         "-sc_threshold", "0", "-b:v", "12M", "-maxrate", "12M", "-bufsize", "24M",
         "-x264-params", "aud=1:repeat-headers=1", "-an", "-f", "h264", "pipe:1",
     ]
@@ -160,7 +177,7 @@ def _fps_manifest_value(fps: Fraction) -> int | float:
     return fps.numerator if fps.denominator == 1 else float(fps)
 
 
-def _video_timestamps(path: Path) -> list[int]:
+def _container_frame_timestamps(path: Path) -> list[int]:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames",
          "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(path)],
@@ -177,39 +194,186 @@ def _video_timestamps(path: Path) -> list[int]:
     return timestamps
 
 
-def _video_frames(path: Path, fps: Fraction) -> Iterator[VideoFrame]:
-    timestamps = _video_timestamps(path)
-    for sequence, data in enumerate(_access_units(_ffmpeg_video(path, fps))):
+def _recorded_exposure_timestamps(video: Path) -> list[int] | None:
+    """Exposure start of every frame, as recorded next to the video."""
+    metainfo = video.parent / "metainfo.csv"
+    if not metainfo.is_file():
+        return None
+    with metainfo.open(newline="", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        fields = reader.fieldnames or []
+        stamp = next(
+            (name for name in ("exposure_start_utc_ns", "exposure_start_ns") if name in fields),
+            None,
+        )
+        if stamp is None:
+            return None
+        recorded = [int(row[stamp]) for row in reader if row.get(stamp)]
+    return recorded or None
+
+
+def _camera_timestamps(video: Path) -> tuple[list[int], str]:
+    """Per-frame capture time in nanoseconds, in absolute time where available.
+
+    The recorder writes the exposure start of every frame next to the video.
+    Prefer it over the container timestamps: captures written after the UTC
+    alignment change store absolute UTC there while the mp4 starts at zero,
+    which would otherwise put the video on a different time base than the IMU
+    samples of the same capture, which are absolute UTC.
+
+    Older firmware does not always record one row per encoded frame, so the
+    recorded series is only used when its length matches the frames actually
+    present in the container.
+    """
+    container = _container_frame_timestamps(video)
+    recorded = _recorded_exposure_timestamps(video)
+    if recorded is not None and len(recorded) == len(container):
+        return recorded, "metainfo"
+    return container, "container"
+
+
+def _video_frames(path: Path, timestamps: Sequence[int]) -> Iterator[VideoFrame]:
+    for sequence, data in enumerate(_access_units(_ffmpeg_video(path))):
         if sequence >= len(timestamps):
-            raise RuntimeError(f"encoded frame count exceeds timestamp count: {path.name}")
+            raise RuntimeError(
+                f"encoded frame count exceeds timestamp count for {path.name}: "
+                f"encoded={sequence + 1} timestamps={len(timestamps)}"
+            )
         yield VideoFrame(timestamps[sequence], data, sequence)
+
+
+def _pair_tolerance_ns(fps: Fraction) -> int:
+    """Half a nominal frame period, floored at 5 ms."""
+    if fps <= 0:
+        return 5_000_000
+    return max(int(500_000_000 / float(fps)), 5_000_000)
+
+
+def _plan_video_pairs(
+    left_timestamps: Sequence[int], right_timestamps: Sequence[int], tolerance_ns: int
+) -> tuple[list[tuple[int, int]], int, int, int]:
+    """Match left/right frames by exposure time instead of by index.
+
+    Both cameras timestamp frames from the same clock, but either pipeline can
+    lose frames while it spins up, so frame N of one camera is not necessarily
+    simultaneous with frame N of the other. Index pairing would offset every
+    later pair by that gap; matching on the recorded exposure timestamps
+    recovers the real correspondence and only discards frames that have no
+    partner within tolerance_ns.
+
+    Returns (pairs, unpaired_left, unpaired_right, max_offset_ns).
+    """
+    pairs: list[tuple[int, int]] = []
+    max_offset_ns = 0
+    right = 0
+    for left, timestamp in enumerate(left_timestamps):
+        if right >= len(right_timestamps):
+            break
+        # Advance while the following right frame is at least as close in time.
+        while (
+            right + 1 < len(right_timestamps)
+            and abs(right_timestamps[right + 1] - timestamp)
+            <= abs(right_timestamps[right] - timestamp)
+        ):
+            right += 1
+        offset_ns = abs(right_timestamps[right] - timestamp)
+        if offset_ns <= tolerance_ns:
+            pairs.append((left, right))
+            max_offset_ns = max(max_offset_ns, offset_ns)
+            right += 1
+    return pairs, len(left_timestamps) - len(pairs), len(right_timestamps) - len(pairs), max_offset_ns
+
+
+def _iter_video_pairs(
+    left: Path,
+    right: Path,
+    left_timestamps: Sequence[int],
+    right_timestamps: Sequence[int],
+    pairs: Sequence[tuple[int, int]],
+) -> Iterator[tuple[int, VideoFrame, VideoFrame]]:
+    left_frames = iter(_video_frames(left, left_timestamps))
+    right_frames = iter(_video_frames(right, right_timestamps))
+    left_index = -1
+    right_index = -1
+    left_frame: VideoFrame | None = None
+    right_frame: VideoFrame | None = None
+    for target_left, target_right in pairs:
+        while left_index < target_left:
+            left_frame = next(left_frames, None)
+            left_index += 1
+        while right_index < target_right:
+            right_frame = next(right_frames, None)
+            right_index += 1
+        if left_frame is None or right_frame is None:
+            raise RuntimeError("video stream ended before the planned stereo pair")
+        yield max(left_frame.timestamp_ns, right_frame.timestamp_ns), left_frame, right_frame
 
 
 def _csv_rows(path: Path) -> Iterator[tuple[int, tuple[float, float, float]]]:
     with path.open(newline="", encoding="utf-8") as stream:
         reader = csv.DictReader(stream)
+        fields = reader.fieldnames or []
+        # Firmware wrote the device clock as `ts_ns` before the UTC alignment
+        # change and writes `ts_utc_ns` afterwards; both are nanoseconds. Accept
+        # either so captures from both firmware generations convert.
+        stamp = next((name for name in ("ts_utc_ns", "ts_ns") if name in fields), None)
+        if stamp is None:
+            raise RuntimeError(f"{path.name} has no timestamp column: {fields}")
+        values = [name for name in fields if name != stamp][:3]
         for row in reader:
-            if not row.get("ts_ns") or any(not row.get(name) for name in reader.fieldnames[1:]):
+            if not row.get(stamp) or any(not row.get(name) for name in values):
                 continue
-            yield int(row["ts_ns"]), (float(row[reader.fieldnames[1]]),
-                                       float(row[reader.fieldnames[2]]),
-                                       float(row[reader.fieldnames[3]]))
+            yield int(row[stamp]), (float(row[values[0]]),
+                                    float(row[values[1]]),
+                                    float(row[values[2]]))
+
+
+def _imu_tolerance_ns(*prefixes: Sequence[tuple[int, tuple[float, float, float]]]) -> int:
+    """Half the median sample interval, so the nearest sample is unambiguous."""
+    intervals = sorted(
+        right[0] - left[0]
+        for prefix in prefixes
+        for left, right in zip(prefix, prefix[1:])
+        if right[0] > left[0]
+    )
+    if not intervals:
+        return 1_000_000
+    return max(intervals[len(intervals) // 2] // 2, 1_000)
+
+
+def _head_and_rest(rows: Iterator[object], count: int):
+    head = list(islice(rows, count))
+    return head, chain(head, rows)
 
 
 def _imu_rows(root: Path) -> Iterator[tuple[int, tuple[float, ...]]]:
-    accelerometer = _csv_rows(root / "Sensors/accel.csv")
-    gyroscope = _csv_rows(root / "Sensors/gyro.csv")
+    """Merge accel and gyro by nearest timestamp.
+
+    The two sensors are sampled independently on the same clock, so a capture
+    written after the UTC alignment change offsets their timestamps by a few
+    hundred microseconds. Requiring exactly equal timestamps (the previous
+    behaviour) silently discarded almost every sample; matching the nearest
+    sample within half a period keeps them, and the one-sample lookahead below
+    keeps memory flat on long captures.
+    """
+    accel_head, accelerometer = _head_and_rest(iter(_csv_rows(root / "Sensors/accel.csv")), 64)
+    gyro_head, gyroscope = _head_and_rest(iter(_csv_rows(root / "Sensors/gyro.csv")), 64)
+    tolerance_ns = _imu_tolerance_ns(accel_head, gyro_head)
     acceleration = next(accelerometer, None)
     rotation = next(gyroscope, None)
+    rotation_next = next(gyroscope, None)
     while acceleration is not None and rotation is not None:
-        if acceleration[0] == rotation[0]:
-            yield acceleration[0], (*acceleration[1], *rotation[1])
-            acceleration = next(accelerometer, None)
-            rotation = next(gyroscope, None)
-        elif acceleration[0] < rotation[0]:
-            acceleration = next(accelerometer, None)
-        else:
-            rotation = next(gyroscope, None)
+        while rotation_next is not None and (
+            abs(rotation_next[0] - acceleration[0])
+            <= abs(rotation[0] - acceleration[0])
+        ):
+            rotation = rotation_next
+            rotation_next = next(gyroscope, None)
+        if abs(rotation[0] - acceleration[0]) <= tolerance_ns:
+            yield max(acceleration[0], rotation[0]), (*acceleration[1], *rotation[1])
+            rotation = rotation_next
+            rotation_next = next(gyroscope, None)
+        acceleration = next(accelerometer, None)
 
 
 def _timestamp(ts_ns: int):
@@ -392,26 +556,32 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         imu_schema = writer.register_schema("sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode())
         imu_channel = writer.register_channel(IMU_TOPIC, "cdr", imu_schema)
         stats = ConversionStats()
-        left_frames = iter(_video_frames(left, common_fps))
-        right_frames = iter(_video_frames(right, common_fps))
+        left_timestamps, left_source = _camera_timestamps(left)
+        right_timestamps, right_source = _camera_timestamps(right)
+        tolerance_ns = _pair_tolerance_ns(common_fps)
+        pairs, unpaired_left, unpaired_right, max_offset_ns = _plan_video_pairs(
+            left_timestamps, right_timestamps, tolerance_ns
+        )
+        if not pairs:
+            raise RuntimeError(
+                "no stereo frame pair within "
+                f"{tolerance_ns} ns: left={len(left_timestamps)} right={len(right_timestamps)}"
+            )
+        stats.left_source_video_frames = len(left_timestamps)
+        stats.right_source_video_frames = len(right_timestamps)
+        stats.dropped_left_video_frames = unpaired_left
+        stats.dropped_right_video_frames = unpaired_right
+        stats.pair_tolerance_ns = tolerance_ns
+        stats.max_pair_offset_ns = max_offset_ns
+        stats.left_timestamp_source = left_source
+        stats.right_timestamp_source = right_source
 
-        left_frame = next(left_frames, None)
-        right_frame = next(right_frames, None)
+        video_pairs = iter(_iter_video_pairs(left, right, left_timestamps, right_timestamps, pairs))
+        video_pair = next(video_pairs, None)
         imu = _imu_rows(root)
         imu_sample = next(imu, None)
         sequence = 0
         timestamps: list[int] = []
-
-        def next_video_pair() -> tuple[int, VideoFrame, VideoFrame] | None:
-            nonlocal left_frame, right_frame
-            if left_frame is None or right_frame is None:
-                return None
-            pair = (max(left_frame.timestamp_ns, right_frame.timestamp_ns), left_frame, right_frame)
-            left_frame = next(left_frames, None)
-            right_frame = next(right_frames, None)
-            return pair
-
-        video_pair = next_video_pair()
         while video_pair is not None or imu_sample is not None:
             if video_pair is not None and (
                 imu_sample is None or video_pair[0] <= imu_sample[0]
@@ -430,7 +600,7 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
                     writer.add_message(channel, ts, video.SerializeToString(), ts, sequence)
                 stats.left_video_frames += 1
                 stats.right_video_frames += 1
-                video_pair = next_video_pair()
+                video_pair = next(video_pairs, None)
             else:
                 if imu_sample is None:
                     raise AssertionError("IMU merge state is inconsistent")
@@ -470,12 +640,11 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
             timestamps.append(ts)
             sequence += 1
 
-        while left_frame is not None:
-            stats.dropped_left_video_frames += 1
-            left_frame = next(left_frames, None)
-        while right_frame is not None:
-            stats.dropped_right_video_frames += 1
-            right_frame = next(right_frames, None)
+        if stats.imu_messages == 0:
+            raise RuntimeError(
+                "no IMU sample paired between accel and gyro: "
+                "check that both sensor streams use the same clock"
+            )
         writer.finish()
     # The MCAP summary is the source of truth for the metadata counts.
     with (output / "output_bag.mcap").open("rb") as stream:
