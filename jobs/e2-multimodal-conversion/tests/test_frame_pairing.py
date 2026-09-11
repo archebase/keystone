@@ -102,38 +102,48 @@ class E2CaptureAlignmentTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.camera_timestamps(video)
 
+    def calibration_fixture(self, root: Path) -> None:
+        """Write device calibration files shaped like a real capture."""
+        camera = {
+            "width": 1600, "height": 1200,
+            "intrinsics": {
+                "focalX": 485.0, "focalY": 485.0, "centerX": 800.0, "centerY": 600.0,
+                # k1, k2, p1, p2 plus four slots the device leaves at zero.
+                "radialDistortion": [0.0136, 0.0125, -0.0086, 0.0013, 0.0, 0.0, 0.0, 0.0],
+            },
+            "extrinsics": {"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        }
+        for eye in ("Camera0", "Camera1"):
+            (root / eye).mkdir(parents=True)
+            (root / eye / "camera_params.json").write_text(
+                json.dumps({"group": "tracking", "cameras": [camera]})
+            )
+        (root / "Sensors").mkdir()
+        (root / "Sensors" / "imu_calibration.json").write_text(json.dumps({
+            "imu": {
+                "imu_id": 0,
+                "bias": {
+                    "accelerometer_mps2": [0.0, 0.0, 0.122],
+                    "gyroscope_rads": [0.0, 0.0, 0.0],
+                },
+                "time_alignment_s": {
+                    "imu_to_pose": 0.00168016471,
+                    "accel": 0.0,
+                    "cameras": {"rgb-left": 0.00168016471, "rgb-right": 0.00162890565},
+                },
+            },
+            "noise": {
+                "accel_noise_std_mps2": [0.02] * 3,
+                "gyro_noise_std_rads": [0.0016] * 3,
+                "accel_bias_std_mps2": [0.05] * 3,
+                "gyro_bias_std_rads": [0.005] * 3,
+            },
+        }))
+
     def test_calibration_carries_the_camera_to_imu_time_offsets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            camera = {
-                "width": 1600, "height": 1200,
-                "intrinsics": {
-                    "focalX": 485.0, "focalY": 485.0, "centerX": 800.0, "centerY": 600.0,
-                    "radialDistortion": [0.0, 0.0, 0.0, 0.0],
-                },
-                "extrinsics": {"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
-            }
-            for eye in ("Camera0", "Camera1"):
-                (root / eye).mkdir(parents=True)
-                (root / eye / "camera_params.json").write_text(
-                    json.dumps({"cameras": [camera]})
-                )
-            (root / "Sensors").mkdir()
-            (root / "Sensors" / "imu_calibration.json").write_text(json.dumps({
-                "imu": {
-                    "time_alignment_s": {
-                        "imu_to_pose": 0.00168016471,
-                        "accel": 0.0,
-                        "cameras": {"rgb-left": 0.00168016471, "rgb-right": 0.00162890565},
-                    },
-                },
-                "noise": {
-                    "accel_noise_std_mps2": [0.02] * 3,
-                    "gyro_noise_std_rads": [0.0016] * 3,
-                    "accel_bias_std_mps2": [0.003] * 3,
-                    "gyro_bias_std_rads": [0.0003] * 3,
-                },
-            }))
+            self.calibration_fixture(root)
             calibration = self.build_calibration(root)
             offsets = {
                 entry["from_clock"]: entry
@@ -143,6 +153,52 @@ class E2CaptureAlignmentTest(unittest.TestCase):
             self.assertEqual(offsets["cam0"]["convention"], "t_imu = t_camera + offset_seconds")
             self.assertAlmostEqual(offsets["cam0"]["offset_seconds"], 0.00168016471)
             self.assertAlmostEqual(offsets["cam1"]["offset_seconds"], 0.00162890565)
+
+    def test_calibration_names_the_distortion_model_it_uses(self) -> None:
+        """The capture's coefficients are plumb_bob, not equidistant."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.calibration_fixture(root)
+            calibration = self.build_calibration(root)
+            for camera in calibration["cameras"]:
+                intrinsics = camera["intrinsics"]
+                self.assertEqual(intrinsics["camera_model"], "pinhole")
+                self.assertEqual(intrinsics["distortion_model"], "plumb_bob")
+                # k1, k2, p1, p2, k3 - padded when the capture omits k3.
+                self.assertEqual(len(intrinsics["distortion_coefficients"]), 5)
+
+    def test_calibration_uses_the_frame_name_the_device_declares(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.calibration_fixture(root)
+            calibration = self.build_calibration(root)
+            self.assertEqual(
+                calibration["extrinsics"]["transforms"][0]["from_frame"], "tracking"
+            )
+
+    def test_calibration_carries_the_raw_device_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.calibration_fixture(root)
+            calibration = self.build_calibration(root, imu_rate_hz=799.43)
+            raw = calibration["device_calibration"]
+            # The eight distortion slots and the bias set survive verbatim even
+            # though the interpreted block keeps only what it can name.
+            self.assertEqual(
+                len(raw["cameras"]["Camera0"]["cameras"][0]["intrinsics"]["radialDistortion"]),
+                8,
+            )
+            self.assertAlmostEqual(raw["imu"]["imu"]["bias"]["accelerometer_mps2"][2], 0.122)
+            # Per-sample standard deviations, named as such, next to the rate a
+            # consumer needs to turn them into continuous-time densities.
+            self.assertEqual(
+                sorted(calibration["imus"][0]["intrinsics"]),
+                [
+                    "accelerometer_bias_std_mps2", "accelerometer_noise_std_mps2",
+                    "gyroscope_bias_std_rads", "gyroscope_noise_std_rads",
+                ],
+            )
+            self.assertAlmostEqual(calibration["imus"][0]["update_rate_hz"], 799.43)
 
     def test_au_is_keyframe_detects_idr_slice(self) -> None:
         # Annex-B access units start with an AUD (type 9); an IDR slice is 5.

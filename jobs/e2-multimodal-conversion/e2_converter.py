@@ -566,6 +566,14 @@ def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str,
     distortion = intrinsics.get("radialDistortion")
     if not isinstance(distortion, list) or len(distortion) < 4:
         raise RuntimeError("camera radialDistortion must contain at least four values")
+    # The device stores eight slots, and the first five are the plumb_bob set
+    # (k1, k2, p1, p2, k3) a consumer actually applies to a pinhole camera; the
+    # remaining slots are carried verbatim under device_calibration. Plumb_bob is
+    # the pinhole-family convention the coefficients' magnitudes and ordering
+    # match - not the equidistant (fisheye) model this used to claim.
+    coefficients = [float(value) for value in distortion[:5]]
+    while len(coefficients) < 5:
+        coefficients.append(0.0)
     return {
         "id": camera_id,
         "name": camera_id,
@@ -580,8 +588,8 @@ def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str,
                 "cx": float(intrinsics["centerX"]),
                 "cy": float(intrinsics["centerY"]),
             },
-            "distortion_model": "equidistant",
-            "distortion_coefficients": [float(value) for value in distortion[:4]],
+            "distortion_model": "plumb_bob",
+            "distortion_coefficients": coefficients,
         },
     }
 
@@ -594,9 +602,11 @@ def _scalar_calibration_value(values: object, name: str) -> float:
     return float(values[0])
 
 
-def _build_calibration(root: Path) -> dict[str, object]:
-    left = json.loads((root / "Camera0/camera_params.json").read_text())["cameras"][0]
-    right = json.loads((root / "Camera1/camera_params.json").read_text())["cameras"][0]
+def _build_calibration(root: Path, imu_rate_hz: float | None = None) -> dict[str, object]:
+    left_document = json.loads((root / "Camera0/camera_params.json").read_text())
+    right_document = json.loads((root / "Camera1/camera_params.json").read_text())
+    left = left_document["cameras"][0]
+    right = right_document["cameras"][0]
     imu_document = json.loads((root / "Sensors/imu_calibration.json").read_text())
     imu = imu_document.get("imu")
     noise = imu_document.get("noise")
@@ -617,6 +627,13 @@ def _build_calibration(root: Path) -> dict[str, object]:
     left_transform = _camera_transform(left)
     right_transform = _camera_transform(right)
     camera_to_camera = right_transform @ np.linalg.inv(left_transform)
+    # The camera extrinsics live in whichever frame the device names in its own
+    # document ("group", observed as "tracking"). Claim only that: whether this
+    # frame shares the IMU's origin is not something the capture states, so
+    # calling it "imu0" - as this used to - asserted more than we know.
+    source_frame = left_document.get("group")
+    if not isinstance(source_frame, str) or not source_frame:
+        source_frame = "device"
     return {
         "schema": "archebase.calibration",
         "schema_version": "1.0",
@@ -627,19 +644,29 @@ def _build_calibration(root: Path) -> dict[str, object]:
         "imus": [{
             "id": "imu0",
             "topic": IMU_TOPIC,
+            # "calibrated" because the HAL's own contract says so: sxr_hal.h
+            # documents the sensor callback's values as "calibrated body-frame
+            # value", and nothing in this repository applies bias/scale/
+            # non-orthogonality to a sample (calib_json.cpp only writes them
+            # out). So the bag already carries the corrected values, and a
+            # consumer must not apply device_calibration's terms a second time.
             "model": "calibrated",
-            "update_rate_hz": 800.0,
+            # The device reports per-sample standard deviations, not the
+            # continuous-time densities a Kalibr-style config expects. The names
+            # say which is which, and update_rate_hz is what a consumer needs to
+            # convert (density = std * sqrt(1/rate)).
+            "update_rate_hz": round(float(imu_rate_hz), 3) if imu_rate_hz else 800.0,
             "intrinsics": {
-                "accelerometer_noise_density": _scalar_calibration_value(
+                "accelerometer_noise_std_mps2": _scalar_calibration_value(
                     noise["accel_noise_std_mps2"], "accel_noise_std_mps2"
                 ),
-                "accelerometer_random_walk": _scalar_calibration_value(
+                "accelerometer_bias_std_mps2": _scalar_calibration_value(
                     noise["accel_bias_std_mps2"], "accel_bias_std_mps2"
                 ),
-                "gyroscope_noise_density": _scalar_calibration_value(
+                "gyroscope_noise_std_rads": _scalar_calibration_value(
                     noise["gyro_noise_std_rads"], "gyro_noise_std_rads"
                 ),
-                "gyroscope_random_walk": _scalar_calibration_value(
+                "gyroscope_bias_std_rads": _scalar_calibration_value(
                     noise["gyro_bias_std_rads"], "gyro_bias_std_rads"
                 ),
             },
@@ -647,7 +674,8 @@ def _build_calibration(root: Path) -> dict[str, object]:
         "extrinsics": {
             "convention": "p_to = R * p_from + t",
             "transforms": [
-                {"from_frame": "imu0", "to_frame": "cam0", "matrix": left_transform.tolist()},
+                {"from_frame": source_frame, "to_frame": "cam0",
+                 "matrix": left_transform.tolist()},
                 {"from_frame": "cam0", "to_frame": "cam1", "matrix": camera_to_camera.tolist()},
             ],
         },
@@ -663,6 +691,15 @@ def _build_calibration(root: Path) -> dict[str, object]:
                 "convention": "t_imu = t_camera + offset_seconds",
             },
         ],
+        # The capture's own calibration documents, copied verbatim: the device
+        # writes coefficients and frame names under conventions of its own, and
+        # an 8-slot distortion array or a bias/scale set has no faithful place in
+        # the interpreted block above. Keeping them here means our reading can be
+        # incomplete - or wrong - without the capture's numbers being lost.
+        "device_calibration": {
+            "cameras": {"Camera0": left_document, "Camera1": right_document},
+            "imu": imu_document,
+        },
     }
 
 
@@ -837,7 +874,9 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         for channel in summary.channels.values()
     }
     total_message_count = sum(message_counts.values())
-    calibration = _build_calibration(root)
+    imu_span_ns = imu_samples[-1][0] - imu_samples[0][0]
+    imu_rate_hz = (len(imu_samples) - 1) * 1e9 / imu_span_ns if imu_span_ns > 0 else None
+    calibration = _build_calibration(root, imu_rate_hz)
     (output / "calibration.json").write_text(json.dumps(calibration, indent=2, sort_keys=True) + "\n")
     start_ns, end_ns = (min(timestamps), max(timestamps)) if timestamps else (0, 0)
     topics = [(LEFT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[LEFT_TOPIC]),

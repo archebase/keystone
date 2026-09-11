@@ -77,13 +77,25 @@ class E2JobContractTest(unittest.TestCase):
             self.assertEqual([camera["topic"] for camera in calibration["cameras"]], [
                 "/camera/left/image/h264", "/camera/right/image/h264",
             ])
-            self.assertEqual(calibration["cameras"][0]["intrinsics"]["distortion_coefficients"], [1.0, 2.0, 3.0, 4.0])
-            self.assertEqual(calibration["imus"][0]["intrinsics"]["accelerometer_noise_density"], 0.02)
+            self.assertEqual(
+                calibration["cameras"][0]["intrinsics"]["distortion_coefficients"],
+                [1.0, 2.0, 3.0, 4.0, 5.0],
+            )
+            self.assertEqual(
+                calibration["cameras"][0]["intrinsics"]["distortion_model"], "plumb_bob"
+            )
+            self.assertEqual(
+                calibration["imus"][0]["intrinsics"]["accelerometer_noise_std_mps2"], 0.02
+            )
             self.assertEqual([(item["from_frame"], item["to_frame"]) for item in calibration["extrinsics"]["transforms"]], [
-                ("imu0", "cam0"), ("cam0", "cam1"),
+                ("tracking", "cam0"), ("cam0", "cam1"),
             ])
             self.assertEqual(calibration["extrinsics"]["transforms"][1]["matrix"][0][3], 0.1)
             self.assertEqual([item["offset_seconds"] for item in calibration["temporal_extrinsics"]], [-0.001, -0.002])
+            # The device's own documents travel with the interpretation.
+            self.assertEqual(
+                calibration["device_calibration"]["cameras"]["Camera0"]["group"], "tracking"
+            )
 
     def test_manifest_does_not_advertise_external_calibration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

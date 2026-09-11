@@ -8,8 +8,11 @@ The entrypoint converts an extracted Ego Portal E2 capture into:
   parameter files and `Sensors/imu_calibration.json`;
 - `processing_manifest.json`, containing output identities, calibration metadata, and conversion statistics.
 
-The calibration document includes camera intrinsics, IMU noise terms, the `imu0 -> cam0` and
-`cam0 -> cam1` spatial transforms, and camera-to-IMU time offsets supplied by the E2 capture.
+The calibration document includes camera intrinsics and distortion, IMU noise terms, the
+spatial transforms between the cameras and the frame the capture names in its own
+`camera_params.json` (`group`), the camera-to-IMU time offsets, and the capture's own
+calibration documents copied verbatim under `device_calibration` so no number the device
+reported is lost when our reading of it is incomplete.
 
 The Orbit contract is exposed by `run_processing.py`. It validates the source size/checksum,
 extracts tar files with traversal/link/device protections, accepts either root-level content or one
