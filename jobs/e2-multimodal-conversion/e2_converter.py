@@ -227,25 +227,27 @@ def _fps_manifest_value(fps: Fraction) -> int | float:
 def _container_frame_count(path: Path) -> int:
     """Frames in the container, without decoding the video.
 
-    `nb_frames` is read straight from the mp4 sample table (fragmented files
-    included), so checking the metainfo row count against the video does not
-    cost a full decode; counting decoded frames is only the fallback for files
-    that do not carry the count.
+    Packets are counted rather than decoded: 0.05 s against 12.5 s for a 65 MB
+    capture, since counting only reads the mp4 sample tables. The stream's own
+    ``nb_frames`` field is deliberately not trusted - for some fragmented files
+    the platform stores it reports a single frame, which must not be allowed to
+    fail a capture whose metainfo lists thousands. Decoding is the last resort
+    for a file whose packets cannot be counted at all.
     """
-    report = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=nb_frames", "-of", "csv=p=0", str(path)],
+    counted = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets",
+         "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", str(path)],
         check=True, capture_output=True, text=True,
     )
-    fields = report.stdout.strip().splitlines()
+    fields = counted.stdout.strip().splitlines()
     if fields and fields[0].isdigit():
         return int(fields[0])
-    counted = subprocess.run(
+    decoded = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
          "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path)],
         check=True, capture_output=True, text=True,
     )
-    fields = counted.stdout.strip().splitlines()
+    fields = decoded.stdout.strip().splitlines()
     if not fields or not fields[0].isdigit():
         raise RuntimeError(f"cannot count the frames of {path.name}")
     return int(fields[0])
