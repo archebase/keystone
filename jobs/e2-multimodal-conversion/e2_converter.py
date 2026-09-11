@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, field
-from decimal import Decimal
+import datetime
 from fractions import Fraction
 import json
 from itertools import chain, islice
@@ -84,6 +84,10 @@ class ConversionStats:
     max_pair_offset_ns: int = 0
     left_timestamp_source: str = ""
     right_timestamp_source: str = ""
+    # Signed distance from the IMU's first/last sample to the video's, so QA can
+    # see whether the IMU brackets the recording (negative start, positive end).
+    imu_start_offset_ns: int = 0
+    imu_end_offset_ns: int = 0
     # Encoding diagnostics. A channel whose first encoded access unit is not a
     # keyframe cannot be decoded from its first message, and a source bitstream
     # that already lacks reference frames decodes to frozen pictures.
@@ -220,21 +224,31 @@ def _fps_manifest_value(fps: Fraction) -> int | float:
     return fps.numerator if fps.denominator == 1 else float(fps)
 
 
-def _container_frame_timestamps(path: Path) -> list[int]:
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames",
-         "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(path)],
+def _container_frame_count(path: Path) -> int:
+    """Frames in the container, without decoding the video.
+
+    `nb_frames` is read straight from the mp4 sample table (fragmented files
+    included), so checking the metainfo row count against the video does not
+    cost a full decode; counting decoded frames is only the fallback for files
+    that do not carry the count.
+    """
+    report = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_frames", "-of", "csv=p=0", str(path)],
         check=True, capture_output=True, text=True,
     )
-    frames = json.loads(result.stdout).get("frames", [])
-    timestamps = []
-    for frame in frames:
-        value = frame.get("best_effort_timestamp_time")
-        if value is not None:
-            timestamps.append(int(Decimal(str(value)) * Decimal(1_000_000_000)))
-    if not timestamps:
-        raise RuntimeError(f"video has no timestamps: {path.name}")
-    return timestamps
+    fields = report.stdout.strip().splitlines()
+    if fields and fields[0].isdigit():
+        return int(fields[0])
+    counted = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    fields = counted.stdout.strip().splitlines()
+    if not fields or not fields[0].isdigit():
+        raise RuntimeError(f"cannot count the frames of {path.name}")
+    return int(fields[0])
 
 
 def _recorded_exposure_timestamps(video: Path) -> list[int] | None:
@@ -256,23 +270,60 @@ def _recorded_exposure_timestamps(video: Path) -> list[int] | None:
 
 
 def _camera_timestamps(video: Path) -> tuple[list[int], str]:
-    """Per-frame capture time in nanoseconds, in absolute time where available.
+    """Per-frame capture time in nanoseconds, read from the metainfo.
 
-    The recorder writes the exposure start of every frame next to the video.
-    Prefer it over the container timestamps: captures written after the UTC
-    alignment change store absolute UTC there while the mp4 starts at zero,
-    which would otherwise put the video on a different time base than the IMU
-    samples of the same capture, which are absolute UTC.
-
-    Older firmware does not always record one row per encoded frame, so the
-    recorded series is only used when its length matches the frames actually
-    present in the container.
+    The recorder writes one metainfo row per encoded sample, so a row count that
+    disagrees with the container means the capture is damaged. There is
+    deliberately no fallback to the container's own timestamps: those start at
+    zero, which would put the video on a relative time base while the IMU
+    samples stay on absolute UTC, producing a bag whose streams sit years apart
+    without anything failing.
     """
-    container = _container_frame_timestamps(video)
     recorded = _recorded_exposure_timestamps(video)
-    if recorded is not None and len(recorded) == len(container):
-        return recorded, "metainfo"
-    return container, "container"
+    if recorded is None:
+        raise RuntimeError(
+            f"{video.parent.name}/metainfo.csv is missing or carries no exposure timestamps"
+        )
+    frames = _container_frame_count(video)
+    if len(recorded) != frames:
+        raise RuntimeError(
+            f"{video.parent.name}: metainfo.csv holds {len(recorded)} rows but "
+            f"{video.name} holds {frames} frames"
+        )
+    return recorded, "metainfo"
+
+
+# ROS stores a Time's seconds in an int32, so the CDR writer cannot represent an
+# absolute timestamp past 2038-01-19 and fails with a bare struct.error. Refuse
+# anything beyond 2040 with a message that names the real problem.
+_TIMESTAMP_CEILING_NS = int(
+    datetime.datetime(2040, 1, 1, tzinfo=datetime.timezone.utc).timestamp()
+) * 1_000_000_000
+
+
+def _validate_timestamp_ceiling(**series: list[int]) -> None:
+    for name, values in series.items():
+        if values and max(values) > _TIMESTAMP_CEILING_NS:
+            raise RuntimeError(
+                f"{name} timestamp {max(values)} ns is beyond 2040: the device clock is wrong"
+            )
+
+
+def _validate_time_bases(
+    video_first_ns: int, video_last_ns: int, imu_first_ns: int, imu_last_ns: int
+) -> None:
+    """The camera and the IMU must share one time base.
+
+    Both are converted from the same device clock, so a capture whose two ranges
+    do not overlap at all is damaged. Merging it would leave the video and the
+    IMU years apart in the bag while every counter still looked healthy.
+    """
+    if imu_last_ns < video_first_ns or imu_first_ns > video_last_ns:
+        raise RuntimeError(
+            "camera and IMU timestamps do not overlap: "
+            f"video {video_first_ns}..{video_last_ns} ns, "
+            f"imu {imu_first_ns}..{imu_last_ns} ns"
+        )
 
 
 def _video_frames(
@@ -646,6 +697,23 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         raise RuntimeError(f"missing E2 input files: {', '.join(missing)}")
 
     common_fps = _common_nominal_fps(left, right)
+    # Read and check every time series before opening the output: a capture whose
+    # clock is wrong, or whose camera and IMU cover different time bases, must
+    # fail here rather than produce a bag nobody can line up.
+    left_timestamps, left_source = _camera_timestamps(left)
+    right_timestamps, right_source = _camera_timestamps(right)
+    imu_samples = list(_imu_rows(root))
+    if not imu_samples:
+        raise RuntimeError("the capture holds no IMU samples")
+    _validate_timestamp_ceiling(
+        camera_left=left_timestamps,
+        camera_right=right_timestamps,
+        imu=[stamp for stamp, _ in imu_samples],
+    )
+    video_first_ns = min(left_timestamps[0], right_timestamps[0])
+    video_last_ns = max(left_timestamps[-1], right_timestamps[-1])
+    _validate_time_bases(video_first_ns, video_last_ns,
+                         imu_samples[0][0], imu_samples[-1][0])
     typestore = get_typestore(Stores.ROS2_HUMBLE)
     imu_type = typestore.types["sensor_msgs/msg/Imu"]
     msg = typestore.types
@@ -659,8 +727,6 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         imu_schema = writer.register_schema("sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode())
         imu_channel = writer.register_channel(IMU_TOPIC, "cdr", imu_schema)
         stats = ConversionStats()
-        left_timestamps, left_source = _camera_timestamps(left)
-        right_timestamps, right_source = _camera_timestamps(right)
         tolerance_ns = _pair_tolerance_ns(common_fps)
         pairs, unpaired_left, unpaired_right, max_offset_ns = _plan_video_pairs(
             left_timestamps, right_timestamps, tolerance_ns
@@ -678,13 +744,15 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         stats.max_pair_offset_ns = max_offset_ns
         stats.left_timestamp_source = left_source
         stats.right_timestamp_source = right_source
+        stats.imu_start_offset_ns = imu_samples[0][0] - video_first_ns
+        stats.imu_end_offset_ns = imu_samples[-1][0] - video_last_ns
 
         report = EncodingReport()
         video_pairs = iter(
             _iter_video_pairs(left, right, left_timestamps, right_timestamps, pairs, report)
         )
         video_pair = next(video_pairs, None)
-        imu = _imu_rows(root)
+        imu = iter(imu_samples)
         imu_sample = next(imu, None)
         sequence = 0
         timestamps: list[int] = []
