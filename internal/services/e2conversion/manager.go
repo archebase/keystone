@@ -465,6 +465,7 @@ const derivativeSelect = `
 	       COALESCE(mcap_path, '') AS mcap_path,
 	       COALESCE(metadata_path, '') AS metadata_path,
 	       COALESCE(manifest_path, '') AS manifest_path,
+	       COALESCE(calibration_result_uri, '') AS calibration_result_uri,
 	       COALESCE(checksum, '') AS checksum, file_size_bytes, duration_sec,
 	       processing_duration_sec,
 	       COALESCE(processing_error, '') AS processing_error,

@@ -134,6 +134,7 @@ type Derivative struct {
 	McapPath                  string     `db:"mcap_path" json:"mcap_path,omitempty"`
 	MetadataPath              string     `db:"metadata_path" json:"metadata_path,omitempty"`
 	ManifestPath              string     `db:"manifest_path" json:"manifest_path,omitempty"`
+	CalibrationResultURI      string     `db:"calibration_result_uri" json:"calibration_result_uri,omitempty"`
 	Checksum                  string     `db:"checksum" json:"checksum,omitempty"`
 	FileSizeBytes             *int64     `db:"file_size_bytes" json:"file_size_bytes,omitempty"`
 	DurationSec               *float64   `db:"duration_sec" json:"duration_sec,omitempty"`
