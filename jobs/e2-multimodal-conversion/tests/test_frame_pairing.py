@@ -13,6 +13,7 @@ tests pin the timestamp-based behaviour that replaces it.
 
 import csv
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -52,18 +53,180 @@ def capture_with_startup_gaps() -> tuple[list[int], list[int]]:
 class E2CaptureAlignmentTest(unittest.TestCase):
     def setUp(self) -> None:
         from e2_converter import (  # noqa: PLC0415 - heavy module, imported lazily
+            _au_is_keyframe,
+            _build_calibration,
+            _camera_timestamps,
             _csv_rows,
+            _dropped_frame_filter,
             _imu_rows,
             _pair_tolerance_ns,
             _plan_video_pairs,
             _recorded_exposure_timestamps,
+            _validate_time_bases,
+            _validate_timestamp_ceiling,
         )
 
+        self.au_is_keyframe = _au_is_keyframe
+        self.build_calibration = _build_calibration
+        self.camera_timestamps = _camera_timestamps
+        self.dropped_frame_filter = _dropped_frame_filter
         self.csv_rows = _csv_rows
         self.imu_rows = _imu_rows
         self.pair_tolerance_ns = _pair_tolerance_ns
         self.plan_video_pairs = _plan_video_pairs
         self.recorded_exposure_timestamps = _recorded_exposure_timestamps
+        self.validate_time_bases = _validate_time_bases
+        self.validate_timestamp_ceiling = _validate_timestamp_ceiling
+
+    def test_time_bases_must_overlap(self) -> None:
+        # One clock: the IMU starts just before the video and ends just after.
+        self.validate_time_bases(1_000, 2_000, 900, 2_100)
+        # Two clocks: the camera is in 2026, the IMU in a 1970-era session.
+        with self.assertRaises(RuntimeError):
+            self.validate_time_bases(
+                1_789_000_000_000_000_000, 1_789_000_060_000_000_000,
+                10_600_000_000_000, 10_612_000_000_000,
+            )
+
+    def test_timestamp_ceiling_rejects_a_clock_beyond_2040(self) -> None:
+        self.validate_timestamp_ceiling(camera=[1_789_000_000_000_000_000])
+        # ROS stores Time.sec in an int32, so the CDR writer cannot represent this.
+        with self.assertRaises(RuntimeError):
+            self.validate_timestamp_ceiling(camera=[3_578_000_000_000_000_000])
+
+    def test_camera_frame_times_require_a_metainfo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "Camera0" / "video.mp4"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"")
+            with self.assertRaises(RuntimeError):
+                self.camera_timestamps(video)
+
+    def calibration_fixture(self, root: Path) -> None:
+        """Write device calibration files shaped like a real capture."""
+        camera = {
+            "width": 1600, "height": 1200,
+            "intrinsics": {
+                "focalX": 485.0, "focalY": 485.0, "centerX": 800.0, "centerY": 600.0,
+                # k1, k2, p1, p2 plus four slots the device leaves at zero.
+                "radialDistortion": [0.0136, 0.0125, -0.0086, 0.0013, 0.0, 0.0, 0.0, 0.0],
+            },
+            "extrinsics": {"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]},
+        }
+        for eye in ("Camera0", "Camera1"):
+            (root / eye).mkdir(parents=True)
+            (root / eye / "camera_params.json").write_text(
+                json.dumps({"group": "tracking", "cameras": [camera]})
+            )
+        (root / "Sensors").mkdir()
+        (root / "Sensors" / "imu_calibration.json").write_text(json.dumps({
+            "imu": {
+                "imu_id": 0,
+                "bias": {
+                    "accelerometer_mps2": [0.0, 0.0, 0.122],
+                    "gyroscope_rads": [0.0, 0.0, 0.0],
+                },
+                "time_alignment_s": {
+                    "imu_to_pose": 0.00168016471,
+                    "accel": 0.0,
+                    "cameras": {"rgb-left": 0.00168016471, "rgb-right": 0.00162890565},
+                },
+            },
+            "noise": {
+                "accel_noise_std_mps2": [0.02] * 3,
+                "gyro_noise_std_rads": [0.0016] * 3,
+                "accel_bias_std_mps2": [0.05] * 3,
+                "gyro_bias_std_rads": [0.005] * 3,
+            },
+        }))
+
+    def test_calibration_carries_the_camera_to_imu_time_offsets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.calibration_fixture(root)
+            calibration = self.build_calibration(root)
+            offsets = {
+                entry["from_clock"]: entry
+                for entry in calibration["temporal_extrinsics"]
+            }
+            self.assertEqual(offsets["cam0"]["to_clock"], "imu0")
+            self.assertEqual(offsets["cam0"]["convention"], "t_imu = t_camera + offset_seconds")
+            self.assertAlmostEqual(offsets["cam0"]["offset_seconds"], 0.00168016471)
+            self.assertAlmostEqual(offsets["cam1"]["offset_seconds"], 0.00162890565)
+
+    def test_calibration_names_the_distortion_model_it_uses(self) -> None:
+        """The capture's coefficients are plumb_bob, not equidistant."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.calibration_fixture(root)
+            calibration = self.build_calibration(root)
+            for camera in calibration["cameras"]:
+                intrinsics = camera["intrinsics"]
+                self.assertEqual(intrinsics["camera_model"], "pinhole")
+                self.assertEqual(intrinsics["distortion_model"], "plumb_bob")
+                # k1, k2, p1, p2, k3 - padded when the capture omits k3.
+                self.assertEqual(len(intrinsics["distortion_coefficients"]), 5)
+
+    def test_calibration_uses_the_frame_name_the_device_declares(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.calibration_fixture(root)
+            calibration = self.build_calibration(root)
+            self.assertEqual(
+                calibration["extrinsics"]["transforms"][0]["from_frame"], "tracking"
+            )
+
+    def test_calibration_carries_the_raw_device_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.calibration_fixture(root)
+            calibration = self.build_calibration(root, imu_rate_hz=799.43)
+            raw = calibration["device_calibration"]
+            # The eight distortion slots and the bias set survive verbatim even
+            # though the interpreted block keeps only what it can name.
+            self.assertEqual(
+                len(raw["cameras"]["Camera0"]["cameras"][0]["intrinsics"]["radialDistortion"]),
+                8,
+            )
+            self.assertAlmostEqual(raw["imu"]["imu"]["bias"]["accelerometer_mps2"][2], 0.122)
+            # Per-sample standard deviations, named as such, next to the rate a
+            # consumer needs to turn them into continuous-time densities.
+            self.assertEqual(
+                sorted(calibration["imus"][0]["intrinsics"]),
+                [
+                    "accelerometer_bias_std_mps2", "accelerometer_noise_std_mps2",
+                    "gyroscope_bias_std_rads", "gyroscope_noise_std_rads",
+                ],
+            )
+            self.assertAlmostEqual(calibration["imus"][0]["update_rate_hz"], 799.43)
+
+    def test_au_is_keyframe_detects_idr_slice(self) -> None:
+        # Annex-B access units start with an AUD (type 9); an IDR slice is 5.
+        aud = b"\x00\x00\x00\x01\x09\xf0"
+        idr = b"\x00\x00\x00\x01\x65\x88"
+        p_frame = b"\x00\x00\x00\x01\x41\x9a"
+        self.assertTrue(self.au_is_keyframe(aud + b"\x00\x00\x00\x01\x67\x00" + idr))
+        self.assertFalse(self.au_is_keyframe(aud + b"\x00\x00\x01\x41\x9a"))
+        self.assertFalse(self.au_is_keyframe(p_frame))
+        self.assertFalse(self.au_is_keyframe(b""))
+
+    def test_dropped_frame_filter_is_none_when_nothing_is_dropped(self) -> None:
+        self.assertIsNone(self.dropped_frame_filter([0, 1, 2], 3))
+
+    def test_dropped_frame_filter_drops_head_gaps_and_tail(self) -> None:
+        # Keep frames 2 and 5 out of 7; the head, the interior gap and the tail
+        # must all be dropped, with the commas ffmpeg needs escaped.
+        expression = self.dropped_frame_filter([2, 5], 7)
+        self.assertEqual(
+            expression,
+            "not(between(n\\,0\\,1)+between(n\\,3\\,4)+between(n\\,6\\,6))",
+        )
+
+    def test_dropped_frame_filter_handles_a_single_kept_run(self) -> None:
+        self.assertEqual(
+            self.dropped_frame_filter([1, 2], 5),
+            "not(between(n\\,0\\,0)+between(n\\,3\\,4))",
+        )
 
     def test_pairing_tolerance_is_half_a_frame_period(self) -> None:
         from fractions import Fraction

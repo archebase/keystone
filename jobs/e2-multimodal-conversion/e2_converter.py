@@ -7,14 +7,15 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
-from decimal import Decimal
+from dataclasses import dataclass, field
+import datetime
 from fractions import Fraction
 import json
 from itertools import chain, islice
 from pathlib import Path
 import re
 import subprocess
+import threading
 from typing import Iterator, Sequence
 
 import numpy as np
@@ -83,6 +84,30 @@ class ConversionStats:
     max_pair_offset_ns: int = 0
     left_timestamp_source: str = ""
     right_timestamp_source: str = ""
+    # Signed distance from the IMU's first/last sample to the video's, so QA can
+    # see whether the IMU brackets the recording (negative start, positive end).
+    imu_start_offset_ns: int = 0
+    imu_end_offset_ns: int = 0
+    # Encoding diagnostics. A channel whose first encoded access unit is not a
+    # keyframe cannot be decoded from its first message, and a source bitstream
+    # that already lacks reference frames decodes to frozen pictures.
+    left_first_frame_keyframe: bool = True
+    right_first_frame_keyframe: bool = True
+    left_decode_warnings: int = 0
+    right_decode_warnings: int = 0
+    first_decode_warning: str = ""
+
+
+@dataclass
+class EncodingReport:
+    """Diagnostics gathered while encoding one capture's two channels."""
+
+    decode_warnings: dict[str, list[str]] = field(
+        default_factory=lambda: {"left": [], "right": []}
+    )
+    first_frame_keyframe: dict[str, bool] = field(
+        default_factory=lambda: {"left": True, "right": True}
+    )
 
 
 def _access_units(stream: Iterator[bytes]) -> Iterator[bytes]:
@@ -112,29 +137,51 @@ def _access_units(stream: Iterator[bytes]) -> Iterator[bytes]:
         yield bytes(buffer)
 
 
-def _ffmpeg_video(path: Path) -> Iterator[bytes]:
-    """Re-encode one camera to H.264 with one access unit per source frame.
+def _ffmpeg_video(
+    path: Path, kept: Sequence[int], total_frames: int, warnings: list[str]
+) -> Iterator[bytes]:
+    """Re-encode the kept frames of one camera to H.264, one access unit each.
 
-    Frame pacing is deliberately passed through rather than forced to the
-    container's nominal frame rate. The cameras drop frames and start unevenly,
-    so an output frame rate would duplicate frames to fill those gaps, breaking
-    the one-to-one correspondence between encoded access units and the
-    per-frame exposure timestamps the device recorded.
+    Frame pacing is passed through rather than forced to the container's
+    nominal frame rate: an output frame rate would duplicate frames to fill
+    capture gaps, breaking the one-to-one correspondence between encoded
+    access units and the per-frame exposure timestamps the device recorded.
     """
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", str(path),
-        "-map", "0:v:0", "-c:v", "libx264", "-preset", "medium", "-profile:v", "high",
+        "-map", "0:v:0",
+    ]
+    select = _dropped_frame_filter(kept, total_frames)
+    if select is not None:
+        command += ["-vf", f"select={select}"]
+    command += [
+        "-c:v", "libx264", "-preset", "medium", "-profile:v", "high",
         "-pix_fmt", "yuv420p", "-fps_mode", "passthrough", "-bf", "0", "-g", "30", "-keyint_min", "30",
         "-sc_threshold", "0", "-b:v", "12M", "-maxrate", "12M", "-bufsize", "24M",
         "-x264-params", "aud=1:repeat-headers=1", "-an", "-f", "h264", "pipe:1",
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert process.stdout is not None
+    assert process.stderr is not None
+
+    def drain_stderr() -> None:
+        # Keep reading while the encoder runs: a source whose bitstream lacks
+        # reference frames emits far more diagnostics than a pipe buffer holds,
+        # and leaving them unread would block ffmpeg mid-encode.
+        assert process.stderr is not None
+        for raw in process.stderr:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if line and len(warnings) < 200:
+                warnings.append(line)
+
+    drainer = threading.Thread(target=drain_stderr, daemon=True)
+    drainer.start()
     try:
         yield from iter(lambda: process.stdout.read(256 * 1024), b"")
         if process.wait() != 0:
-            error = process.stderr.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"ffmpeg failed for {path.name}: {error.strip()}")
+            detail = "; ".join(warnings[:3]) if warnings else "no diagnostics"
+            raise RuntimeError(f"ffmpeg failed for {path.name}: {detail}")
+        drainer.join(timeout=5)
     finally:
         if process.poll() is None:
             process.kill()
@@ -177,21 +224,31 @@ def _fps_manifest_value(fps: Fraction) -> int | float:
     return fps.numerator if fps.denominator == 1 else float(fps)
 
 
-def _container_frame_timestamps(path: Path) -> list[int]:
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames",
-         "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(path)],
+def _container_frame_count(path: Path) -> int:
+    """Frames in the container, without decoding the video.
+
+    `nb_frames` is read straight from the mp4 sample table (fragmented files
+    included), so checking the metainfo row count against the video does not
+    cost a full decode; counting decoded frames is only the fallback for files
+    that do not carry the count.
+    """
+    report = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_frames", "-of", "csv=p=0", str(path)],
         check=True, capture_output=True, text=True,
     )
-    frames = json.loads(result.stdout).get("frames", [])
-    timestamps = []
-    for frame in frames:
-        value = frame.get("best_effort_timestamp_time")
-        if value is not None:
-            timestamps.append(int(Decimal(str(value)) * Decimal(1_000_000_000)))
-    if not timestamps:
-        raise RuntimeError(f"video has no timestamps: {path.name}")
-    return timestamps
+    fields = report.stdout.strip().splitlines()
+    if fields and fields[0].isdigit():
+        return int(fields[0])
+    counted = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    fields = counted.stdout.strip().splitlines()
+    if not fields or not fields[0].isdigit():
+        raise RuntimeError(f"cannot count the frames of {path.name}")
+    return int(fields[0])
 
 
 def _recorded_exposure_timestamps(video: Path) -> list[int] | None:
@@ -213,33 +270,125 @@ def _recorded_exposure_timestamps(video: Path) -> list[int] | None:
 
 
 def _camera_timestamps(video: Path) -> tuple[list[int], str]:
-    """Per-frame capture time in nanoseconds, in absolute time where available.
+    """Per-frame capture time in nanoseconds, read from the metainfo.
 
-    The recorder writes the exposure start of every frame next to the video.
-    Prefer it over the container timestamps: captures written after the UTC
-    alignment change store absolute UTC there while the mp4 starts at zero,
-    which would otherwise put the video on a different time base than the IMU
-    samples of the same capture, which are absolute UTC.
-
-    Older firmware does not always record one row per encoded frame, so the
-    recorded series is only used when its length matches the frames actually
-    present in the container.
+    The recorder writes one metainfo row per encoded sample, so a row count that
+    disagrees with the container means the capture is damaged. There is
+    deliberately no fallback to the container's own timestamps: those start at
+    zero, which would put the video on a relative time base while the IMU
+    samples stay on absolute UTC, producing a bag whose streams sit years apart
+    without anything failing.
     """
-    container = _container_frame_timestamps(video)
     recorded = _recorded_exposure_timestamps(video)
-    if recorded is not None and len(recorded) == len(container):
-        return recorded, "metainfo"
-    return container, "container"
+    if recorded is None:
+        raise RuntimeError(
+            f"{video.parent.name}/metainfo.csv is missing or carries no exposure timestamps"
+        )
+    frames = _container_frame_count(video)
+    if len(recorded) != frames:
+        raise RuntimeError(
+            f"{video.parent.name}: metainfo.csv holds {len(recorded)} rows but "
+            f"{video.name} holds {frames} frames"
+        )
+    return recorded, "metainfo"
 
 
-def _video_frames(path: Path, timestamps: Sequence[int]) -> Iterator[VideoFrame]:
-    for sequence, data in enumerate(_access_units(_ffmpeg_video(path))):
-        if sequence >= len(timestamps):
+# ROS stores a Time's seconds in an int32, so the CDR writer cannot represent an
+# absolute timestamp past 2038-01-19 and fails with a bare struct.error. Refuse
+# anything beyond 2040 with a message that names the real problem.
+_TIMESTAMP_CEILING_NS = int(
+    datetime.datetime(2040, 1, 1, tzinfo=datetime.timezone.utc).timestamp()
+) * 1_000_000_000
+
+
+def _validate_timestamp_ceiling(**series: list[int]) -> None:
+    for name, values in series.items():
+        if values and max(values) > _TIMESTAMP_CEILING_NS:
             raise RuntimeError(
-                f"encoded frame count exceeds timestamp count for {path.name}: "
-                f"encoded={sequence + 1} timestamps={len(timestamps)}"
+                f"{name} timestamp {max(values)} ns is beyond 2040: the device clock is wrong"
             )
-        yield VideoFrame(timestamps[sequence], data, sequence)
+
+
+def _validate_time_bases(
+    video_first_ns: int, video_last_ns: int, imu_first_ns: int, imu_last_ns: int
+) -> None:
+    """The camera and the IMU must share one time base.
+
+    Both are converted from the same device clock, so a capture whose two ranges
+    do not overlap at all is damaged. Merging it would leave the video and the
+    IMU years apart in the bag while every counter still looked healthy.
+    """
+    if imu_last_ns < video_first_ns or imu_first_ns > video_last_ns:
+        raise RuntimeError(
+            "camera and IMU timestamps do not overlap: "
+            f"video {video_first_ns}..{video_last_ns} ns, "
+            f"imu {imu_first_ns}..{imu_last_ns} ns"
+        )
+
+
+def _video_frames(
+    path: Path, kept: Sequence[int], timestamps: Sequence[int], warnings: list[str]
+) -> Iterator[VideoFrame]:
+    count = 0
+    for sequence, data in enumerate(
+        _access_units(_ffmpeg_video(path, kept, len(timestamps), warnings))
+    ):
+        if sequence >= len(kept):
+            raise RuntimeError(
+                f"encoded frame count exceeds the selected frame count for {path.name}: "
+                f"encoded={sequence + 1} selected={len(kept)}"
+            )
+        count = sequence + 1
+        yield VideoFrame(timestamps[kept[sequence]], data, sequence)
+    if count != len(kept):
+        raise RuntimeError(
+            f"encoded frame count does not match the selected frame count for {path.name}: "
+            f"encoded={count} selected={len(kept)}"
+        )
+
+
+# H.264 NAL unit type of an IDR (keyframe) slice, used to tell whether an
+# encoded access unit is independently decodable.
+_ANNEX_B_START = re.compile(b"\x00\x00\x00\x01|\x00\x00\x01")
+_NAL_IDR_SLICE = 5
+
+
+def _au_is_keyframe(data: bytes) -> bool:
+    """True when the access unit carries an IDR slice."""
+    for match in _ANNEX_B_START.finditer(data):
+        offset = match.end()
+        if offset < len(data) and (data[offset] & 0x1F) == _NAL_IDR_SLICE:
+            return True
+    return False
+
+
+def _dropped_frame_filter(kept: Sequence[int], total_frames: int) -> str | None:
+    """ffmpeg `select` expression that drops every frame outside `kept`.
+
+    Frames are dropped *before* encoding rather than removed from the encoded
+    stream: dropping a frame inside a Group of Pictures would leave the
+    following frames referencing a picture the decoder never saw, so the
+    channel would decode to frozen or garbled pictures until the next IDR.
+    Encoding only the kept frames also gives each channel a fresh first
+    keyframe, which carries its own SPS/PPS.
+    """
+    if not kept:
+        return None
+    keep = set(kept)
+    dropped: list[tuple[int, int]] = []
+    for index in range(total_frames):
+        if index in keep:
+            continue
+        if dropped and index == dropped[-1][1] + 1:
+            dropped[-1] = (dropped[-1][0], index)
+        else:
+            dropped.append((index, index))
+    if not dropped:
+        return None
+    # Commas inside a filter argument must be escaped: ffmpeg's filtergraph
+    # parser otherwise treats them as filter separators.
+    condition = "+".join(f"between(n\\,{start}\\,{end})" for start, end in dropped)
+    return f"not({condition})"
 
 
 def _pair_tolerance_ns(fps: Fraction) -> int:
@@ -290,23 +439,28 @@ def _iter_video_pairs(
     left_timestamps: Sequence[int],
     right_timestamps: Sequence[int],
     pairs: Sequence[tuple[int, int]],
+    report: EncodingReport,
 ) -> Iterator[tuple[int, VideoFrame, VideoFrame]]:
-    left_frames = iter(_video_frames(left, left_timestamps))
-    right_frames = iter(_video_frames(right, right_timestamps))
-    left_index = -1
-    right_index = -1
-    left_frame: VideoFrame | None = None
-    right_frame: VideoFrame | None = None
-    for target_left, target_right in pairs:
-        while left_index < target_left:
-            left_frame = next(left_frames, None)
-            left_index += 1
-        while right_index < target_right:
-            right_frame = next(right_frames, None)
-            right_index += 1
+    """Emit one pair per planned match, verifying the encoding kept the plan."""
+    left_kept = [source for source, _ in pairs]
+    right_kept = [target for _, target in pairs]
+    left_frames = iter(
+        _video_frames(left, left_kept, left_timestamps, report.decode_warnings["left"])
+    )
+    right_frames = iter(
+        _video_frames(right, right_kept, right_timestamps, report.decode_warnings["right"])
+    )
+    for index in range(len(pairs)):
+        left_frame = next(left_frames, None)
+        right_frame = next(right_frames, None)
         if left_frame is None or right_frame is None:
             raise RuntimeError("video stream ended before the planned stereo pair")
+        if index == 0:
+            report.first_frame_keyframe["left"] = _au_is_keyframe(left_frame.data)
+            report.first_frame_keyframe["right"] = _au_is_keyframe(right_frame.data)
         yield max(left_frame.timestamp_ns, right_frame.timestamp_ns), left_frame, right_frame
+    if next(left_frames, None) is not None or next(right_frames, None) is not None:
+        raise RuntimeError("selected frame filter did not match the planned stereo pairs")
 
 
 def _csv_rows(path: Path) -> Iterator[tuple[int, tuple[float, float, float]]]:
@@ -412,6 +566,14 @@ def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str,
     distortion = intrinsics.get("radialDistortion")
     if not isinstance(distortion, list) or len(distortion) < 4:
         raise RuntimeError("camera radialDistortion must contain at least four values")
+    # The device stores eight slots, and the first five are the plumb_bob set
+    # (k1, k2, p1, p2, k3) a consumer actually applies to a pinhole camera; the
+    # remaining slots are carried verbatim under device_calibration. Plumb_bob is
+    # the pinhole-family convention the coefficients' magnitudes and ordering
+    # match - not the equidistant (fisheye) model this used to claim.
+    coefficients = [float(value) for value in distortion[:5]]
+    while len(coefficients) < 5:
+        coefficients.append(0.0)
     return {
         "id": camera_id,
         "name": camera_id,
@@ -426,8 +588,8 @@ def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str,
                 "cx": float(intrinsics["centerX"]),
                 "cy": float(intrinsics["centerY"]),
             },
-            "distortion_model": "equidistant",
-            "distortion_coefficients": [float(value) for value in distortion[:4]],
+            "distortion_model": "plumb_bob",
+            "distortion_coefficients": coefficients,
         },
     }
 
@@ -440,9 +602,11 @@ def _scalar_calibration_value(values: object, name: str) -> float:
     return float(values[0])
 
 
-def _build_calibration(root: Path) -> dict[str, object]:
-    left = json.loads((root / "Camera0/camera_params.json").read_text())["cameras"][0]
-    right = json.loads((root / "Camera1/camera_params.json").read_text())["cameras"][0]
+def _build_calibration(root: Path, imu_rate_hz: float | None = None) -> dict[str, object]:
+    left_document = json.loads((root / "Camera0/camera_params.json").read_text())
+    right_document = json.loads((root / "Camera1/camera_params.json").read_text())
+    left = left_document["cameras"][0]
+    right = right_document["cameras"][0]
     imu_document = json.loads((root / "Sensors/imu_calibration.json").read_text())
     imu = imu_document.get("imu")
     noise = imu_document.get("noise")
@@ -463,6 +627,13 @@ def _build_calibration(root: Path) -> dict[str, object]:
     left_transform = _camera_transform(left)
     right_transform = _camera_transform(right)
     camera_to_camera = right_transform @ np.linalg.inv(left_transform)
+    # The camera extrinsics live in whichever frame the device names in its own
+    # document ("group", observed as "tracking"). Claim only that: whether this
+    # frame shares the IMU's origin is not something the capture states, so
+    # calling it "imu0" - as this used to - asserted more than we know.
+    source_frame = left_document.get("group")
+    if not isinstance(source_frame, str) or not source_frame:
+        source_frame = "device"
     return {
         "schema": "archebase.calibration",
         "schema_version": "1.0",
@@ -473,19 +644,29 @@ def _build_calibration(root: Path) -> dict[str, object]:
         "imus": [{
             "id": "imu0",
             "topic": IMU_TOPIC,
+            # "calibrated" because the HAL's own contract says so: sxr_hal.h
+            # documents the sensor callback's values as "calibrated body-frame
+            # value", and nothing in this repository applies bias/scale/
+            # non-orthogonality to a sample (calib_json.cpp only writes them
+            # out). So the bag already carries the corrected values, and a
+            # consumer must not apply device_calibration's terms a second time.
             "model": "calibrated",
-            "update_rate_hz": 800.0,
+            # The device reports per-sample standard deviations, not the
+            # continuous-time densities a Kalibr-style config expects. The names
+            # say which is which, and update_rate_hz is what a consumer needs to
+            # convert (density = std * sqrt(1/rate)).
+            "update_rate_hz": round(float(imu_rate_hz), 3) if imu_rate_hz else 800.0,
             "intrinsics": {
-                "accelerometer_noise_density": _scalar_calibration_value(
+                "accelerometer_noise_std_mps2": _scalar_calibration_value(
                     noise["accel_noise_std_mps2"], "accel_noise_std_mps2"
                 ),
-                "accelerometer_random_walk": _scalar_calibration_value(
+                "accelerometer_bias_std_mps2": _scalar_calibration_value(
                     noise["accel_bias_std_mps2"], "accel_bias_std_mps2"
                 ),
-                "gyroscope_noise_density": _scalar_calibration_value(
+                "gyroscope_noise_std_rads": _scalar_calibration_value(
                     noise["gyro_noise_std_rads"], "gyro_noise_std_rads"
                 ),
-                "gyroscope_random_walk": _scalar_calibration_value(
+                "gyroscope_bias_std_rads": _scalar_calibration_value(
                     noise["gyro_bias_std_rads"], "gyro_bias_std_rads"
                 ),
             },
@@ -493,7 +674,8 @@ def _build_calibration(root: Path) -> dict[str, object]:
         "extrinsics": {
             "convention": "p_to = R * p_from + t",
             "transforms": [
-                {"from_frame": "imu0", "to_frame": "cam0", "matrix": left_transform.tolist()},
+                {"from_frame": source_frame, "to_frame": "cam0",
+                 "matrix": left_transform.tolist()},
                 {"from_frame": "cam0", "to_frame": "cam1", "matrix": camera_to_camera.tolist()},
             ],
         },
@@ -509,6 +691,15 @@ def _build_calibration(root: Path) -> dict[str, object]:
                 "convention": "t_imu = t_camera + offset_seconds",
             },
         ],
+        # The capture's own calibration documents, copied verbatim: the device
+        # writes coefficients and frame names under conventions of its own, and
+        # an 8-slot distortion array or a bias/scale set has no faithful place in
+        # the interpreted block above. Keeping them here means our reading can be
+        # incomplete - or wrong - without the capture's numbers being lost.
+        "device_calibration": {
+            "cameras": {"Camera0": left_document, "Camera1": right_document},
+            "imu": imu_document,
+        },
     }
 
 
@@ -543,6 +734,23 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         raise RuntimeError(f"missing E2 input files: {', '.join(missing)}")
 
     common_fps = _common_nominal_fps(left, right)
+    # Read and check every time series before opening the output: a capture whose
+    # clock is wrong, or whose camera and IMU cover different time bases, must
+    # fail here rather than produce a bag nobody can line up.
+    left_timestamps, left_source = _camera_timestamps(left)
+    right_timestamps, right_source = _camera_timestamps(right)
+    imu_samples = list(_imu_rows(root))
+    if not imu_samples:
+        raise RuntimeError("the capture holds no IMU samples")
+    _validate_timestamp_ceiling(
+        camera_left=left_timestamps,
+        camera_right=right_timestamps,
+        imu=[stamp for stamp, _ in imu_samples],
+    )
+    video_first_ns = min(left_timestamps[0], right_timestamps[0])
+    video_last_ns = max(left_timestamps[-1], right_timestamps[-1])
+    _validate_time_bases(video_first_ns, video_last_ns,
+                         imu_samples[0][0], imu_samples[-1][0])
     typestore = get_typestore(Stores.ROS2_HUMBLE)
     imu_type = typestore.types["sensor_msgs/msg/Imu"]
     msg = typestore.types
@@ -556,8 +764,6 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         imu_schema = writer.register_schema("sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode())
         imu_channel = writer.register_channel(IMU_TOPIC, "cdr", imu_schema)
         stats = ConversionStats()
-        left_timestamps, left_source = _camera_timestamps(left)
-        right_timestamps, right_source = _camera_timestamps(right)
         tolerance_ns = _pair_tolerance_ns(common_fps)
         pairs, unpaired_left, unpaired_right, max_offset_ns = _plan_video_pairs(
             left_timestamps, right_timestamps, tolerance_ns
@@ -575,10 +781,15 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         stats.max_pair_offset_ns = max_offset_ns
         stats.left_timestamp_source = left_source
         stats.right_timestamp_source = right_source
+        stats.imu_start_offset_ns = imu_samples[0][0] - video_first_ns
+        stats.imu_end_offset_ns = imu_samples[-1][0] - video_last_ns
 
-        video_pairs = iter(_iter_video_pairs(left, right, left_timestamps, right_timestamps, pairs))
+        report = EncodingReport()
+        video_pairs = iter(
+            _iter_video_pairs(left, right, left_timestamps, right_timestamps, pairs, report)
+        )
         video_pair = next(video_pairs, None)
-        imu = _imu_rows(root)
+        imu = iter(imu_samples)
         imu_sample = next(imu, None)
         sequence = 0
         timestamps: list[int] = []
@@ -640,6 +851,15 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
             timestamps.append(ts)
             sequence += 1
 
+        # Encoding diagnostics are only complete once both channels finished.
+        stats.left_first_frame_keyframe = report.first_frame_keyframe["left"]
+        stats.right_first_frame_keyframe = report.first_frame_keyframe["right"]
+        stats.left_decode_warnings = len(report.decode_warnings["left"])
+        stats.right_decode_warnings = len(report.decode_warnings["right"])
+        for channel in ("left", "right"):
+            if report.decode_warnings[channel]:
+                stats.first_decode_warning = report.decode_warnings[channel][0][:180]
+                break
         if stats.imu_messages == 0:
             raise RuntimeError(
                 "no IMU sample paired between accel and gyro: "
@@ -654,7 +874,9 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         for channel in summary.channels.values()
     }
     total_message_count = sum(message_counts.values())
-    calibration = _build_calibration(root)
+    imu_span_ns = imu_samples[-1][0] - imu_samples[0][0]
+    imu_rate_hz = (len(imu_samples) - 1) * 1e9 / imu_span_ns if imu_span_ns > 0 else None
+    calibration = _build_calibration(root, imu_rate_hz)
     (output / "calibration.json").write_text(json.dumps(calibration, indent=2, sort_keys=True) + "\n")
     start_ns, end_ns = (min(timestamps), max(timestamps)) if timestamps else (0, 0)
     topics = [(LEFT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[LEFT_TOPIC]),
