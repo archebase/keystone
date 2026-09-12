@@ -1043,19 +1043,15 @@ func validateIdempotentComplete(
 ) error {
 	expectedCameraSerial := strings.TrimSpace(session.ClientHints["camera_serial"])
 	storedCameraSerial := strings.TrimSpace(episode.CameraSerial.String)
-	if expectedCameraSerial == "" {
-		if episode.CameraSerial.Valid && storedCameraSerial != "" {
-			return status.Error(codes.FailedPrecondition, "camera_serial differs from completed upload")
-		}
-	} else if !episode.CameraSerial.Valid || storedCameraSerial != expectedCameraSerial {
+	if expectedCameraSerial != "" &&
+		(!episode.CameraSerial.Valid || storedCameraSerial != expectedCameraSerial) {
 		return status.Error(codes.FailedPrecondition, "camera_serial differs from completed upload")
 	}
 	storedCaptureID := strings.TrimSpace(episode.CalibrationCaptureID.String)
 	storedResultSHA256 := strings.ToLower(strings.TrimSpace(episode.CalibrationResultSHA256.String))
 	if (episode.CalibrationCaptureID.Valid && storedCaptureID == "") ||
 		(episode.CalibrationResultSHA256.Valid && !isSHA256Hex(storedResultSHA256)) ||
-		(episode.CalibrationCaptureID.Valid != episode.CalibrationResultSHA256.Valid) ||
-		(episode.CalibrationCaptureID.Valid && expectedCameraSerial == "") {
+		episode.CalibrationCaptureID.Valid != episode.CalibrationResultSHA256.Valid {
 		return status.Error(codes.FailedPrecondition, "completed upload calibration selection is inconsistent")
 	}
 	if episode.MCAPPath != session.ObjectKey {

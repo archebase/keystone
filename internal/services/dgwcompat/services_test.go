@@ -618,6 +618,41 @@ func TestGatewayCompleteUploadRequiresCameraSerialToMatchCreate(t *testing.T) {
 	}
 }
 
+func TestGatewayCompleteUploadAllowsBackfilledCameraSerialOnIdempotentRetry(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	service := newGatewayService(
+		testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()},
+		newSessionStore(), db, nil,
+	)
+	ctx := deviceauth.WithPrincipal(context.Background(), devicePrincipal{
+		RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1,
+	})
+	hints := map[string]string{
+		"capture_id": "capture-1", "dc_plan_id": "1001", "source": "ego-portal",
+		"task_id": "task-1", "workspace_id": "10",
+	}
+	rawTags := map[string]string{
+		"capture_id": "capture-1", "dc_plan_id": "1001", "task_id": "task-1", "workspace_id": "10",
+	}
+	created, err := service.CreateLogicalUpload(ctx, &cloudpb.CreateLogicalUploadRequest{ClientHints: hints})
+	if err != nil {
+		t.Fatalf("CreateLogicalUpload() error = %v", err)
+	}
+	complete := &cloudpb.CompleteUploadRequest{
+		UploadId: created.GetUploadId(), FileSize: 1024, CompletedPartCount: 1,
+		ObjectEtag: "etag-1", RawTags: rawTags,
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("first CompleteUpload() error = %v", err)
+	}
+	if _, err := db.Exec(`UPDATE episodes SET camera_serial = 'CMD-000195' WHERE task_id = 1`); err != nil {
+		t.Fatalf("backfill camera serial: %v", err)
+	}
+	if _, err := service.CompleteUpload(ctx, complete); err != nil {
+		t.Fatalf("idempotent CompleteUpload() after camera serial backfill error = %v", err)
+	}
+}
+
 func TestGatewayCompleteUploadSelectsLatestSuccessfulCalibrationByExactCameraSerial(t *testing.T) {
 	db := newGatewayServiceTestDB(t)
 	for _, statement := range []string{
