@@ -20,6 +20,9 @@ service DataGatewayService {
   rpc AbortUpload(AbortUploadRequest) returns (AbortUploadResponse);
   rpc CompleteUpload(CompleteUploadRequest)
       returns (CompleteUploadResponse);
+  // Returns the current X25519 public key configuration for device-side encryption.
+  rpc GetEncryptionKeyConfig(GetEncryptionKeyConfigRequest)
+      returns (GetEncryptionKeyConfigResponse);
 }
 
 // SDK-facing object discovery and download authorization service exposed on
@@ -151,6 +154,7 @@ message CreateLogicalUploadRequest {
   // continue to provide task_id through client_hints.
   bool auto_assign_task = 3;
   int64 dc_plan_id = 4;
+  ObjectEncryption encryption = 5;
 }
 
 message CreateLogicalUploadResponse {
@@ -214,9 +218,38 @@ message CompleteUploadRequest {
   // New SDKs echo it back so completion validation remains stable if
   // gateway config changes between credential issuance and completion.
   int64 part_size_bytes = 6;
+  ObjectEncryption encryption = 7;
 }
 
 message CompleteUploadResponse {}
+
+message ObjectEncryption {
+  // Encryption scheme identifier, for example "egoportal-hevc-nal".
+  string scheme = 1;
+  // Version of the receiver key used by the device.
+  string key_version = 2;
+  // SHA-256 hex digest of the canonical encryption metadata.
+  string metadata_digest = 3;
+  // Version of the device-side encryption protocol.
+  string encryption_version = 4;
+}
+
+message GetEncryptionKeyConfigRequest {}
+
+message EncryptionKey {
+  string key_version = 1;
+  string algorithm = 2;
+  string public_key = 3;
+  string fingerprint = 4;
+  string not_before_utc = 5;
+  string not_after_utc = 6;
+}
+
+message GetEncryptionKeyConfigResponse {
+  int64 policy_version = 1;
+  EncryptionKey active_key = 2;
+}
+
 
 // User-visible lifecycle state for a logical data object.
 enum DataObjectStatus {

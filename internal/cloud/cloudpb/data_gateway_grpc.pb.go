@@ -27,6 +27,7 @@ const (
 	DataGatewayService_ReissueUploadCredentials_FullMethodName = "/archebase.data_gateway.v1.DataGatewayService/ReissueUploadCredentials"
 	DataGatewayService_AbortUpload_FullMethodName              = "/archebase.data_gateway.v1.DataGatewayService/AbortUpload"
 	DataGatewayService_CompleteUpload_FullMethodName           = "/archebase.data_gateway.v1.DataGatewayService/CompleteUpload"
+	DataGatewayService_GetEncryptionKeyConfig_FullMethodName   = "/archebase.data_gateway.v1.DataGatewayService/GetEncryptionKeyConfig"
 )
 
 // DataGatewayServiceClient is the client API for DataGatewayService service.
@@ -41,6 +42,8 @@ type DataGatewayServiceClient interface {
 	ReissueUploadCredentials(ctx context.Context, in *ReissueUploadCredentialsRequest, opts ...grpc.CallOption) (*ReissueUploadCredentialsResponse, error)
 	AbortUpload(ctx context.Context, in *AbortUploadRequest, opts ...grpc.CallOption) (*AbortUploadResponse, error)
 	CompleteUpload(ctx context.Context, in *CompleteUploadRequest, opts ...grpc.CallOption) (*CompleteUploadResponse, error)
+	// Returns the current X25519 public key configuration for device-side encryption.
+	GetEncryptionKeyConfig(ctx context.Context, in *GetEncryptionKeyConfigRequest, opts ...grpc.CallOption) (*GetEncryptionKeyConfigResponse, error)
 }
 
 type dataGatewayServiceClient struct {
@@ -101,6 +104,16 @@ func (c *dataGatewayServiceClient) CompleteUpload(ctx context.Context, in *Compl
 	return out, nil
 }
 
+func (c *dataGatewayServiceClient) GetEncryptionKeyConfig(ctx context.Context, in *GetEncryptionKeyConfigRequest, opts ...grpc.CallOption) (*GetEncryptionKeyConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetEncryptionKeyConfigResponse)
+	err := c.cc.Invoke(ctx, DataGatewayService_GetEncryptionKeyConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DataGatewayServiceServer is the server API for DataGatewayService service.
 // All implementations must embed UnimplementedDataGatewayServiceServer
 // for forward compatibility.
@@ -113,6 +126,8 @@ type DataGatewayServiceServer interface {
 	ReissueUploadCredentials(context.Context, *ReissueUploadCredentialsRequest) (*ReissueUploadCredentialsResponse, error)
 	AbortUpload(context.Context, *AbortUploadRequest) (*AbortUploadResponse, error)
 	CompleteUpload(context.Context, *CompleteUploadRequest) (*CompleteUploadResponse, error)
+	// Returns the current X25519 public key configuration for device-side encryption.
+	GetEncryptionKeyConfig(context.Context, *GetEncryptionKeyConfigRequest) (*GetEncryptionKeyConfigResponse, error)
 	mustEmbedUnimplementedDataGatewayServiceServer()
 }
 
@@ -137,6 +152,9 @@ func (UnimplementedDataGatewayServiceServer) AbortUpload(context.Context, *Abort
 }
 func (UnimplementedDataGatewayServiceServer) CompleteUpload(context.Context, *CompleteUploadRequest) (*CompleteUploadResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CompleteUpload not implemented")
+}
+func (UnimplementedDataGatewayServiceServer) GetEncryptionKeyConfig(context.Context, *GetEncryptionKeyConfigRequest) (*GetEncryptionKeyConfigResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetEncryptionKeyConfig not implemented")
 }
 func (UnimplementedDataGatewayServiceServer) mustEmbedUnimplementedDataGatewayServiceServer() {}
 func (UnimplementedDataGatewayServiceServer) testEmbeddedByValue()                            {}
@@ -249,6 +267,24 @@ func _DataGatewayService_CompleteUpload_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DataGatewayService_GetEncryptionKeyConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetEncryptionKeyConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DataGatewayServiceServer).GetEncryptionKeyConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DataGatewayService_GetEncryptionKeyConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DataGatewayServiceServer).GetEncryptionKeyConfig(ctx, req.(*GetEncryptionKeyConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DataGatewayService_ServiceDesc is the grpc.ServiceDesc for DataGatewayService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -275,6 +311,10 @@ var DataGatewayService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CompleteUpload",
 			Handler:    _DataGatewayService_CompleteUpload_Handler,
+		},
+		{
+			MethodName: "GetEncryptionKeyConfig",
+			Handler:    _DataGatewayService_GetEncryptionKeyConfig_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -17,7 +17,9 @@ import (
 	"sync"
 	"time"
 
+	keystoneauth "archebase.com/keystone-edge/internal/auth"
 	"archebase.com/keystone-edge/internal/cloud/cloudpb"
+	"archebase.com/keystone-edge/internal/config"
 	"archebase.com/keystone-edge/internal/logger"
 	keystoneServices "archebase.com/keystone-edge/internal/services"
 	"github.com/google/uuid"
@@ -31,6 +33,10 @@ const (
 	dataGatewayEpisodeStorageBackend   = "keystone_tos"
 	egoPortalE2DeviceType              = "Ego Portal E2"
 )
+
+type hilbertDeviceKeyClient interface {
+	GetLatestDCDeviceKey(ctx context.Context) (*keystoneauth.HilbertDCDeviceKey, error)
+}
 
 type uploadSession struct {
 	Kind                   uploadKind
@@ -60,6 +66,7 @@ type uploadSession struct {
 	CredentialRefreshCount int32
 	LastSTSExpireAt        time.Time
 	AutoAssignedTask       bool
+	Encryption             *cloudpb.ObjectEncryption
 }
 
 type sessionStore struct {
@@ -115,6 +122,7 @@ type gatewayService struct {
 	sessions *sessionStore
 	qa       episodeQAEnqueuer
 	now      func() time.Time
+	hilbert  hilbertDeviceKeyClient
 }
 
 func newGatewayService(cfg Config, sts stsProvider, sessions *sessionStore, db *sqlx.DB, qa episodeQAEnqueuer) *gatewayService {
@@ -126,6 +134,12 @@ func newGatewayService(cfg Config, sts stsProvider, sessions *sessionStore, db *
 		sessions: sessions,
 		qa:       qa,
 		now:      func() time.Time { return time.Now().UTC() },
+		hilbert: keystoneauth.NewHilbertClient(&config.HilbertConfig{
+			BaseURL:        cfg.HilbertBaseURL,
+			TimeoutSeconds: 5,
+			AccessKey:      cfg.HilbertAccessKey,
+			SecretKey:      cfg.HilbertSecretKey,
+		}),
 	}
 }
 
@@ -136,6 +150,9 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	}
 	logicalUploadID := uuid.NewString()
 	uploadID := uuid.NewString()
+	if err := validateObjectEncryption(req.GetEncryption()); err != nil {
+		return nil, err
+	}
 	hints := cloneMap(req.GetClientHints())
 	autoAssignTask := req.GetAutoAssignTask()
 	if autoAssignTask {
@@ -216,6 +233,7 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 		ClientHints:      hints,
 		CreatedAt:        s.now(),
 		AutoAssignedTask: autoAssignTask,
+		Encryption:       cloneObjectEncryption(req.GetEncryption()),
 	}
 	if intent.Kind == uploadKindCalibrationCapture {
 		if err := s.persistCalibrationUploadStart(ctx, principal, intent, session); err != nil {
@@ -272,6 +290,26 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	return response, nil
 }
 
+func (s *gatewayService) GetEncryptionKeyConfig(ctx context.Context, _ *cloudpb.GetEncryptionKeyConfigRequest) (*cloudpb.GetEncryptionKeyConfigResponse, error) {
+	if s.hilbert == nil {
+		return nil, status.Error(codes.Unavailable, "encryption key configuration unavailable")
+	}
+	key, err := s.hilbert.GetLatestDCDeviceKey(ctx)
+	if err != nil || key == nil {
+		return nil, status.Error(codes.Unavailable, "encryption key configuration unavailable")
+	}
+	if !strings.EqualFold(strings.TrimSpace(key.Algorithm), "X25519") || strings.TrimSpace(key.Version) == "" || strings.TrimSpace(key.PublicKey) == "" {
+		return nil, status.Error(codes.Unavailable, "Hilbert returned invalid encryption key configuration")
+	}
+	return &cloudpb.GetEncryptionKeyConfigResponse{
+		ActiveKey: &cloudpb.EncryptionKey{
+			KeyVersion:  key.Version,
+			Algorithm:   key.Algorithm,
+			PublicKey:   key.PublicKey,
+			Fingerprint: key.Fingerprint,
+		},
+	}, nil
+}
 func (s *gatewayService) GetUploadRecovery(ctx context.Context, req *cloudpb.GetUploadRecoveryRequest) (*cloudpb.GetUploadRecoveryResponse, error) {
 	session, ok := s.sessions.getByLogical(req.GetLogicalUploadId())
 	if !ok {
@@ -405,6 +443,12 @@ func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.Comple
 			session.UploadID, session.LogicalUploadID, session.DeviceID, session.WorkspaceID, err)
 		return nil, err
 	}
+	if err := validateObjectEncryption(req.GetEncryption()); err != nil {
+		return nil, err
+	}
+	if !sameObjectEncryption(session.Encryption, req.GetEncryption()) {
+		return nil, status.Error(codes.FailedPrecondition, "upload encryption metadata does not match upload session")
+	}
 	var episodeID string
 	var episodePK int64
 	var episodeCreated bool
@@ -450,7 +494,7 @@ func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.Comple
 		logger.Printf("[DGW_COMPAT] CompleteUpload persisted episode_id=%s episode_pk=%d logical_upload_id=%s task_id=%s",
 			episodeID, episodePK, updated.LogicalUploadID, updated.ClientHints["task_id"])
 	}
-	if episodeCreated && episodePK > 0 && s.qa != nil {
+	if episodeCreated && episodePK > 0 && s.qa != nil && updated.Encryption == nil {
 		s.qa.EnqueueEpisode(episodePK)
 	}
 	return &cloudpb.CompleteUploadResponse{}, nil
@@ -984,6 +1028,49 @@ func parseInt64(value string) (int64, error) {
 	return parsed, err
 }
 
+func validateObjectEncryption(encryption *cloudpb.ObjectEncryption) error {
+	if encryption == nil {
+		return nil
+	}
+	if strings.TrimSpace(encryption.GetScheme()) != "egoportal-hevc-nal" {
+		return status.Error(codes.InvalidArgument, "unsupported encryption scheme")
+	}
+	if strings.TrimSpace(encryption.GetKeyVersion()) == "" {
+		return status.Error(codes.InvalidArgument, "encryption key_version is required")
+	}
+	if strings.TrimSpace(encryption.GetEncryptionVersion()) != "1" {
+		return status.Error(codes.InvalidArgument, "unsupported encryption version")
+	}
+	if !isSHA256Hex(strings.ToLower(strings.TrimSpace(encryption.GetMetadataDigest()))) {
+		return status.Error(codes.InvalidArgument, "encryption metadata_digest must be a 64-character hexadecimal SHA-256 digest")
+	}
+	return nil
+}
+
+func cloneObjectEncryption(encryption *cloudpb.ObjectEncryption) *cloudpb.ObjectEncryption {
+	if encryption == nil {
+		return nil
+	}
+	copy := *encryption
+	copy.Scheme = strings.TrimSpace(copy.Scheme)
+	copy.KeyVersion = strings.TrimSpace(copy.KeyVersion)
+	copy.MetadataDigest = strings.ToLower(strings.TrimSpace(copy.MetadataDigest))
+	copy.EncryptionVersion = strings.TrimSpace(copy.EncryptionVersion)
+	return &copy
+}
+
+func sameObjectEncryption(left, right *cloudpb.ObjectEncryption) bool {
+	left = cloneObjectEncryption(left)
+	right = cloneObjectEncryption(right)
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.GetScheme() == right.GetScheme() &&
+		left.GetKeyVersion() == right.GetKeyVersion() &&
+		left.GetMetadataDigest() == right.GetMetadataDigest() &&
+		left.GetEncryptionVersion() == right.GetEncryptionVersion()
+}
+
 func requireMatchingRawTag(tags map[string]string, key, expected string) error {
 	actual := strings.TrimSpace(tags[key])
 	expected = strings.TrimSpace(expected)
@@ -1183,6 +1270,9 @@ func uploadEpisodeMetadata(session *uploadSession, req *cloudpb.CompleteUploadRe
 		"capture_id":           session.ClientHints["capture_id"],
 		"client_hints":         session.ClientHints,
 		"raw_tags":             req.GetRawTags(),
+	}
+	if session.Encryption != nil {
+		payload["encryption"] = session.Encryption
 	}
 	if session.ClientHints["product"] == "ego_portal_lite" {
 		payload["product"] = "ego_portal_lite"

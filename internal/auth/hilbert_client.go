@@ -41,6 +41,7 @@ const (
 	hilbertDCDeviceValidatePath   = "/v1/data-collection/dc-device/validate"
 	hilbertDCDeviceTypeQueryPath  = "/v1/data-collection/dc-device-type/query"
 	hilbertNonceConsumePath       = "/v1/console/nonce/consume"
+	hilbertDCDeviceKeyLatestPath  = "/v1/data-collection/dc-device-key/query-latest"
 
 	hilbertNonceKeyLengthBytes = 32
 	hilbertNonceIVLengthBytes  = 12
@@ -214,6 +215,15 @@ type HilbertAccountPage struct {
 	Total    int64            `json:"total"`
 	PageNum  int64            `json:"pageNum"`
 	PageSize int64            `json:"pageSize"`
+}
+
+// HilbertDCDeviceKey stores the public portion of the unified X25519 receiver key.
+type HilbertDCDeviceKey struct {
+	Version     string    `json:"version"`
+	Algorithm   string    `json:"algorithm"`
+	PublicKey   string    `json:"publicKey"`
+	Fingerprint string    `json:"fingerprint"`
+	CreatedTime time.Time `json:"createdTime"`
 }
 
 // HilbertDCDevice stores one Hilbert data collection device projection.
@@ -575,7 +585,25 @@ func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, id int64) (*H
 	return &resp.Data.Records[0], nil
 }
 
-// GetDCDeviceAPIKey fetches and decrypts the existing Hilbert device API key.
+// GetLatestDCDeviceKey fetches the current X25519 receiver public key from Hilbert.
+func (c *HilbertClient) GetLatestDCDeviceKey(ctx context.Context) (*HilbertDCDeviceKey, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertDCDeviceKeyLatestPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create device key request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
+	var resp hilbertCommonResponse[*HilbertDCDeviceKey]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: device key query response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	return resp.Data, nil
+}
+
 func (c *HilbertClient) GetDCDeviceAPIKey(ctx context.Context, workspaceID, deviceID int64) (string, error) {
 	query := url.Values{}
 	query.Set("workspaceId", strconv.FormatInt(workspaceID, 10))

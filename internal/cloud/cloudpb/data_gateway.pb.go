@@ -780,8 +780,9 @@ type CreateLogicalUploadRequest struct {
 	// When true, Keystone resolves and reserves a pending task for dc_plan_id
 	// using the authenticated device. Existing clients leave this false and
 	// continue to provide task_id through client_hints.
-	AutoAssignTask bool  `protobuf:"varint,3,opt,name=auto_assign_task,json=autoAssignTask,proto3" json:"auto_assign_task,omitempty"`
-	DcPlanId       int64 `protobuf:"varint,4,opt,name=dc_plan_id,json=dcPlanId,proto3" json:"dc_plan_id,omitempty"`
+	AutoAssignTask bool              `protobuf:"varint,3,opt,name=auto_assign_task,json=autoAssignTask,proto3" json:"auto_assign_task,omitempty"`
+	DcPlanId       int64             `protobuf:"varint,4,opt,name=dc_plan_id,json=dcPlanId,proto3" json:"dc_plan_id,omitempty"`
+	Encryption     *ObjectEncryption `protobuf:"bytes,5,opt,name=encryption,proto3" json:"encryption,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -842,6 +843,13 @@ func (x *CreateLogicalUploadRequest) GetDcPlanId() int64 {
 		return x.DcPlanId
 	}
 	return 0
+}
+
+func (x *CreateLogicalUploadRequest) GetEncryption() *ObjectEncryption {
+	if x != nil {
+		return x.Encryption
+	}
+	return nil
 }
 
 type CreateLogicalUploadResponse struct {
@@ -1339,7 +1347,8 @@ type CompleteUploadRequest struct {
 	// Upload part size issued by data-gateway for this upload session.
 	// New SDKs echo it back so completion validation remains stable if
 	// gateway config changes between credential issuance and completion.
-	PartSizeBytes int64 `protobuf:"varint,6,opt,name=part_size_bytes,json=partSizeBytes,proto3" json:"part_size_bytes,omitempty"`
+	PartSizeBytes int64             `protobuf:"varint,6,opt,name=part_size_bytes,json=partSizeBytes,proto3" json:"part_size_bytes,omitempty"`
+	Encryption    *ObjectEncryption `protobuf:"bytes,7,opt,name=encryption,proto3" json:"encryption,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1416,6 +1425,13 @@ func (x *CompleteUploadRequest) GetPartSizeBytes() int64 {
 	return 0
 }
 
+func (x *CompleteUploadRequest) GetEncryption() *ObjectEncryption {
+	if x != nil {
+		return x.Encryption
+	}
+	return nil
+}
+
 type CompleteUploadResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1452,6 +1468,250 @@ func (*CompleteUploadResponse) Descriptor() ([]byte, []int) {
 	return file_data_gateway_proto_rawDescGZIP(), []int{13}
 }
 
+type ObjectEncryption struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Encryption scheme identifier, for example "egoportal-hevc-nal".
+	Scheme string `protobuf:"bytes,1,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	// Version of the receiver key used by the device.
+	KeyVersion string `protobuf:"bytes,2,opt,name=key_version,json=keyVersion,proto3" json:"key_version,omitempty"`
+	// SHA-256 hex digest of the canonical encryption metadata.
+	MetadataDigest string `protobuf:"bytes,3,opt,name=metadata_digest,json=metadataDigest,proto3" json:"metadata_digest,omitempty"`
+	// Version of the device-side encryption protocol.
+	EncryptionVersion string `protobuf:"bytes,4,opt,name=encryption_version,json=encryptionVersion,proto3" json:"encryption_version,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ObjectEncryption) Reset() {
+	*x = ObjectEncryption{}
+	mi := &file_data_gateway_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ObjectEncryption) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ObjectEncryption) ProtoMessage() {}
+
+func (x *ObjectEncryption) ProtoReflect() protoreflect.Message {
+	mi := &file_data_gateway_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ObjectEncryption.ProtoReflect.Descriptor instead.
+func (*ObjectEncryption) Descriptor() ([]byte, []int) {
+	return file_data_gateway_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ObjectEncryption) GetScheme() string {
+	if x != nil {
+		return x.Scheme
+	}
+	return ""
+}
+
+func (x *ObjectEncryption) GetKeyVersion() string {
+	if x != nil {
+		return x.KeyVersion
+	}
+	return ""
+}
+
+func (x *ObjectEncryption) GetMetadataDigest() string {
+	if x != nil {
+		return x.MetadataDigest
+	}
+	return ""
+}
+
+func (x *ObjectEncryption) GetEncryptionVersion() string {
+	if x != nil {
+		return x.EncryptionVersion
+	}
+	return ""
+}
+
+type GetEncryptionKeyConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetEncryptionKeyConfigRequest) Reset() {
+	*x = GetEncryptionKeyConfigRequest{}
+	mi := &file_data_gateway_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetEncryptionKeyConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetEncryptionKeyConfigRequest) ProtoMessage() {}
+
+func (x *GetEncryptionKeyConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_data_gateway_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetEncryptionKeyConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetEncryptionKeyConfigRequest) Descriptor() ([]byte, []int) {
+	return file_data_gateway_proto_rawDescGZIP(), []int{15}
+}
+
+type EncryptionKey struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	KeyVersion    string                 `protobuf:"bytes,1,opt,name=key_version,json=keyVersion,proto3" json:"key_version,omitempty"`
+	Algorithm     string                 `protobuf:"bytes,2,opt,name=algorithm,proto3" json:"algorithm,omitempty"`
+	PublicKey     string                 `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	Fingerprint   string                 `protobuf:"bytes,4,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
+	NotBeforeUtc  string                 `protobuf:"bytes,5,opt,name=not_before_utc,json=notBeforeUtc,proto3" json:"not_before_utc,omitempty"`
+	NotAfterUtc   string                 `protobuf:"bytes,6,opt,name=not_after_utc,json=notAfterUtc,proto3" json:"not_after_utc,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EncryptionKey) Reset() {
+	*x = EncryptionKey{}
+	mi := &file_data_gateway_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EncryptionKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EncryptionKey) ProtoMessage() {}
+
+func (x *EncryptionKey) ProtoReflect() protoreflect.Message {
+	mi := &file_data_gateway_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EncryptionKey.ProtoReflect.Descriptor instead.
+func (*EncryptionKey) Descriptor() ([]byte, []int) {
+	return file_data_gateway_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *EncryptionKey) GetKeyVersion() string {
+	if x != nil {
+		return x.KeyVersion
+	}
+	return ""
+}
+
+func (x *EncryptionKey) GetAlgorithm() string {
+	if x != nil {
+		return x.Algorithm
+	}
+	return ""
+}
+
+func (x *EncryptionKey) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *EncryptionKey) GetFingerprint() string {
+	if x != nil {
+		return x.Fingerprint
+	}
+	return ""
+}
+
+func (x *EncryptionKey) GetNotBeforeUtc() string {
+	if x != nil {
+		return x.NotBeforeUtc
+	}
+	return ""
+}
+
+func (x *EncryptionKey) GetNotAfterUtc() string {
+	if x != nil {
+		return x.NotAfterUtc
+	}
+	return ""
+}
+
+type GetEncryptionKeyConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PolicyVersion int64                  `protobuf:"varint,1,opt,name=policy_version,json=policyVersion,proto3" json:"policy_version,omitempty"`
+	ActiveKey     *EncryptionKey         `protobuf:"bytes,2,opt,name=active_key,json=activeKey,proto3" json:"active_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetEncryptionKeyConfigResponse) Reset() {
+	*x = GetEncryptionKeyConfigResponse{}
+	mi := &file_data_gateway_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetEncryptionKeyConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetEncryptionKeyConfigResponse) ProtoMessage() {}
+
+func (x *GetEncryptionKeyConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_data_gateway_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetEncryptionKeyConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetEncryptionKeyConfigResponse) Descriptor() ([]byte, []int) {
+	return file_data_gateway_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *GetEncryptionKeyConfigResponse) GetPolicyVersion() int64 {
+	if x != nil {
+		return x.PolicyVersion
+	}
+	return 0
+}
+
+func (x *GetEncryptionKeyConfigResponse) GetActiveKey() *EncryptionKey {
+	if x != nil {
+		return x.ActiveKey
+	}
+	return nil
+}
+
 // Requests one page of verified logical objects visible to the authenticated user.
 type ListObjectsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1468,7 +1728,7 @@ type ListObjectsRequest struct {
 
 func (x *ListObjectsRequest) Reset() {
 	*x = ListObjectsRequest{}
-	mi := &file_data_gateway_proto_msgTypes[14]
+	mi := &file_data_gateway_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1480,7 +1740,7 @@ func (x *ListObjectsRequest) String() string {
 func (*ListObjectsRequest) ProtoMessage() {}
 
 func (x *ListObjectsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[14]
+	mi := &file_data_gateway_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1493,7 +1753,7 @@ func (x *ListObjectsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListObjectsRequest.ProtoReflect.Descriptor instead.
 func (*ListObjectsRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{14}
+	return file_data_gateway_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListObjectsRequest) GetPageSize() int32 {
@@ -1542,7 +1802,7 @@ type DataObject struct {
 
 func (x *DataObject) Reset() {
 	*x = DataObject{}
-	mi := &file_data_gateway_proto_msgTypes[15]
+	mi := &file_data_gateway_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1554,7 +1814,7 @@ func (x *DataObject) String() string {
 func (*DataObject) ProtoMessage() {}
 
 func (x *DataObject) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[15]
+	mi := &file_data_gateway_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1567,7 +1827,7 @@ func (x *DataObject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DataObject.ProtoReflect.Descriptor instead.
 func (*DataObject) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{15}
+	return file_data_gateway_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *DataObject) GetObjectId() string {
@@ -1639,7 +1899,7 @@ type ListObjectsResponse struct {
 
 func (x *ListObjectsResponse) Reset() {
 	*x = ListObjectsResponse{}
-	mi := &file_data_gateway_proto_msgTypes[16]
+	mi := &file_data_gateway_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1651,7 +1911,7 @@ func (x *ListObjectsResponse) String() string {
 func (*ListObjectsResponse) ProtoMessage() {}
 
 func (x *ListObjectsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[16]
+	mi := &file_data_gateway_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1664,7 +1924,7 @@ func (x *ListObjectsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListObjectsResponse.ProtoReflect.Descriptor instead.
 func (*ListObjectsResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{16}
+	return file_data_gateway_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ListObjectsResponse) GetObjects() []*DataObject {
@@ -1692,7 +1952,7 @@ type RequestDownloadRequest struct {
 
 func (x *RequestDownloadRequest) Reset() {
 	*x = RequestDownloadRequest{}
-	mi := &file_data_gateway_proto_msgTypes[17]
+	mi := &file_data_gateway_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1704,7 +1964,7 @@ func (x *RequestDownloadRequest) String() string {
 func (*RequestDownloadRequest) ProtoMessage() {}
 
 func (x *RequestDownloadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[17]
+	mi := &file_data_gateway_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1717,7 +1977,7 @@ func (x *RequestDownloadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestDownloadRequest.ProtoReflect.Descriptor instead.
 func (*RequestDownloadRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{17}
+	return file_data_gateway_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *RequestDownloadRequest) GetFileIds() []string {
@@ -1740,7 +2000,7 @@ type DownloadObjectLocation struct {
 
 func (x *DownloadObjectLocation) Reset() {
 	*x = DownloadObjectLocation{}
-	mi := &file_data_gateway_proto_msgTypes[18]
+	mi := &file_data_gateway_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1752,7 +2012,7 @@ func (x *DownloadObjectLocation) String() string {
 func (*DownloadObjectLocation) ProtoMessage() {}
 
 func (x *DownloadObjectLocation) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[18]
+	mi := &file_data_gateway_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1765,7 +2025,7 @@ func (x *DownloadObjectLocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DownloadObjectLocation.ProtoReflect.Descriptor instead.
 func (*DownloadObjectLocation) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{18}
+	return file_data_gateway_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DownloadObjectLocation) GetFileId() string {
@@ -1799,7 +2059,7 @@ type RequestDownloadResponse struct {
 
 func (x *RequestDownloadResponse) Reset() {
 	*x = RequestDownloadResponse{}
-	mi := &file_data_gateway_proto_msgTypes[19]
+	mi := &file_data_gateway_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1811,7 +2071,7 @@ func (x *RequestDownloadResponse) String() string {
 func (*RequestDownloadResponse) ProtoMessage() {}
 
 func (x *RequestDownloadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[19]
+	mi := &file_data_gateway_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1824,7 +2084,7 @@ func (x *RequestDownloadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestDownloadResponse.ProtoReflect.Descriptor instead.
 func (*RequestDownloadResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{19}
+	return file_data_gateway_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *RequestDownloadResponse) GetFiles() []*DownloadObjectLocation {
@@ -1870,7 +2130,7 @@ type CreateCopyJobRequest struct {
 
 func (x *CreateCopyJobRequest) Reset() {
 	*x = CreateCopyJobRequest{}
-	mi := &file_data_gateway_proto_msgTypes[20]
+	mi := &file_data_gateway_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1882,7 +2142,7 @@ func (x *CreateCopyJobRequest) String() string {
 func (*CreateCopyJobRequest) ProtoMessage() {}
 
 func (x *CreateCopyJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[20]
+	mi := &file_data_gateway_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1895,7 +2155,7 @@ func (x *CreateCopyJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCopyJobRequest.ProtoReflect.Descriptor instead.
 func (*CreateCopyJobRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{20}
+	return file_data_gateway_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CreateCopyJobRequest) GetFileIds() []string {
@@ -1964,7 +2224,7 @@ type CopyDestination struct {
 
 func (x *CopyDestination) Reset() {
 	*x = CopyDestination{}
-	mi := &file_data_gateway_proto_msgTypes[21]
+	mi := &file_data_gateway_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1976,7 +2236,7 @@ func (x *CopyDestination) String() string {
 func (*CopyDestination) ProtoMessage() {}
 
 func (x *CopyDestination) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[21]
+	mi := &file_data_gateway_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1989,7 +2249,7 @@ func (x *CopyDestination) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CopyDestination.ProtoReflect.Descriptor instead.
 func (*CopyDestination) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{21}
+	return file_data_gateway_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CopyDestination) GetBucket() string {
@@ -2051,7 +2311,7 @@ type CreateCopyJobResponse struct {
 
 func (x *CreateCopyJobResponse) Reset() {
 	*x = CreateCopyJobResponse{}
-	mi := &file_data_gateway_proto_msgTypes[22]
+	mi := &file_data_gateway_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2063,7 +2323,7 @@ func (x *CreateCopyJobResponse) String() string {
 func (*CreateCopyJobResponse) ProtoMessage() {}
 
 func (x *CreateCopyJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[22]
+	mi := &file_data_gateway_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2076,7 +2336,7 @@ func (x *CreateCopyJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCopyJobResponse.ProtoReflect.Descriptor instead.
 func (*CreateCopyJobResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{22}
+	return file_data_gateway_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateCopyJobResponse) GetCopyJobId() string {
@@ -2118,7 +2378,7 @@ type GetCopyJobRequest struct {
 
 func (x *GetCopyJobRequest) Reset() {
 	*x = GetCopyJobRequest{}
-	mi := &file_data_gateway_proto_msgTypes[23]
+	mi := &file_data_gateway_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2130,7 +2390,7 @@ func (x *GetCopyJobRequest) String() string {
 func (*GetCopyJobRequest) ProtoMessage() {}
 
 func (x *GetCopyJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[23]
+	mi := &file_data_gateway_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2143,7 +2403,7 @@ func (x *GetCopyJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCopyJobRequest.ProtoReflect.Descriptor instead.
 func (*GetCopyJobRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{23}
+	return file_data_gateway_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetCopyJobRequest) GetCopyJobId() string {
@@ -2164,7 +2424,7 @@ type GetCopyJobResponse struct {
 
 func (x *GetCopyJobResponse) Reset() {
 	*x = GetCopyJobResponse{}
-	mi := &file_data_gateway_proto_msgTypes[24]
+	mi := &file_data_gateway_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2176,7 +2436,7 @@ func (x *GetCopyJobResponse) String() string {
 func (*GetCopyJobResponse) ProtoMessage() {}
 
 func (x *GetCopyJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[24]
+	mi := &file_data_gateway_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2189,7 +2449,7 @@ func (x *GetCopyJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCopyJobResponse.ProtoReflect.Descriptor instead.
 func (*GetCopyJobResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{24}
+	return file_data_gateway_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetCopyJobResponse) GetJob() *CopyJobView {
@@ -2234,7 +2494,7 @@ type CopyJobView struct {
 
 func (x *CopyJobView) Reset() {
 	*x = CopyJobView{}
-	mi := &file_data_gateway_proto_msgTypes[25]
+	mi := &file_data_gateway_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2246,7 +2506,7 @@ func (x *CopyJobView) String() string {
 func (*CopyJobView) ProtoMessage() {}
 
 func (x *CopyJobView) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[25]
+	mi := &file_data_gateway_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2259,7 +2519,7 @@ func (x *CopyJobView) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CopyJobView.ProtoReflect.Descriptor instead.
 func (*CopyJobView) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{25}
+	return file_data_gateway_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *CopyJobView) GetCopyJobId() string {
@@ -2370,7 +2630,7 @@ type ListCopyJobItemsRequest struct {
 
 func (x *ListCopyJobItemsRequest) Reset() {
 	*x = ListCopyJobItemsRequest{}
-	mi := &file_data_gateway_proto_msgTypes[26]
+	mi := &file_data_gateway_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2382,7 +2642,7 @@ func (x *ListCopyJobItemsRequest) String() string {
 func (*ListCopyJobItemsRequest) ProtoMessage() {}
 
 func (x *ListCopyJobItemsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[26]
+	mi := &file_data_gateway_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2395,7 +2655,7 @@ func (x *ListCopyJobItemsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCopyJobItemsRequest.ProtoReflect.Descriptor instead.
 func (*ListCopyJobItemsRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{26}
+	return file_data_gateway_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListCopyJobItemsRequest) GetCopyJobId() string {
@@ -2449,7 +2709,7 @@ type CopyJobItemView struct {
 
 func (x *CopyJobItemView) Reset() {
 	*x = CopyJobItemView{}
-	mi := &file_data_gateway_proto_msgTypes[27]
+	mi := &file_data_gateway_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2461,7 +2721,7 @@ func (x *CopyJobItemView) String() string {
 func (*CopyJobItemView) ProtoMessage() {}
 
 func (x *CopyJobItemView) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[27]
+	mi := &file_data_gateway_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2474,7 +2734,7 @@ func (x *CopyJobItemView) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CopyJobItemView.ProtoReflect.Descriptor instead.
 func (*CopyJobItemView) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{27}
+	return file_data_gateway_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *CopyJobItemView) GetFileId() string {
@@ -2541,7 +2801,7 @@ type ListCopyJobItemsResponse struct {
 
 func (x *ListCopyJobItemsResponse) Reset() {
 	*x = ListCopyJobItemsResponse{}
-	mi := &file_data_gateway_proto_msgTypes[28]
+	mi := &file_data_gateway_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2553,7 +2813,7 @@ func (x *ListCopyJobItemsResponse) String() string {
 func (*ListCopyJobItemsResponse) ProtoMessage() {}
 
 func (x *ListCopyJobItemsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[28]
+	mi := &file_data_gateway_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2566,7 +2826,7 @@ func (x *ListCopyJobItemsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCopyJobItemsResponse.ProtoReflect.Descriptor instead.
 func (*ListCopyJobItemsResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{28}
+	return file_data_gateway_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListCopyJobItemsResponse) GetItems() []*CopyJobItemView {
@@ -2603,7 +2863,7 @@ type CancelCopyJobRequest struct {
 
 func (x *CancelCopyJobRequest) Reset() {
 	*x = CancelCopyJobRequest{}
-	mi := &file_data_gateway_proto_msgTypes[29]
+	mi := &file_data_gateway_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2615,7 +2875,7 @@ func (x *CancelCopyJobRequest) String() string {
 func (*CancelCopyJobRequest) ProtoMessage() {}
 
 func (x *CancelCopyJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[29]
+	mi := &file_data_gateway_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2628,7 +2888,7 @@ func (x *CancelCopyJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelCopyJobRequest.ProtoReflect.Descriptor instead.
 func (*CancelCopyJobRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{29}
+	return file_data_gateway_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *CancelCopyJobRequest) GetCopyJobId() string {
@@ -2658,7 +2918,7 @@ type CancelCopyJobResponse struct {
 
 func (x *CancelCopyJobResponse) Reset() {
 	*x = CancelCopyJobResponse{}
-	mi := &file_data_gateway_proto_msgTypes[30]
+	mi := &file_data_gateway_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2670,7 +2930,7 @@ func (x *CancelCopyJobResponse) String() string {
 func (*CancelCopyJobResponse) ProtoMessage() {}
 
 func (x *CancelCopyJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[30]
+	mi := &file_data_gateway_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2683,7 +2943,7 @@ func (x *CancelCopyJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelCopyJobResponse.ProtoReflect.Descriptor instead.
 func (*CancelCopyJobResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{30}
+	return file_data_gateway_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *CancelCopyJobResponse) GetCopyJobId() string {
@@ -2713,7 +2973,7 @@ type StorageObject struct {
 
 func (x *StorageObject) Reset() {
 	*x = StorageObject{}
-	mi := &file_data_gateway_proto_msgTypes[31]
+	mi := &file_data_gateway_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2725,7 +2985,7 @@ func (x *StorageObject) String() string {
 func (*StorageObject) ProtoMessage() {}
 
 func (x *StorageObject) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[31]
+	mi := &file_data_gateway_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2738,7 +2998,7 @@ func (x *StorageObject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageObject.ProtoReflect.Descriptor instead.
 func (*StorageObject) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{31}
+	return file_data_gateway_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *StorageObject) GetBucket() string {
@@ -2770,7 +3030,7 @@ type PresignedOperation struct {
 
 func (x *PresignedOperation) Reset() {
 	*x = PresignedOperation{}
-	mi := &file_data_gateway_proto_msgTypes[32]
+	mi := &file_data_gateway_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2782,7 +3042,7 @@ func (x *PresignedOperation) String() string {
 func (*PresignedOperation) ProtoMessage() {}
 
 func (x *PresignedOperation) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[32]
+	mi := &file_data_gateway_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2795,7 +3055,7 @@ func (x *PresignedOperation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresignedOperation.ProtoReflect.Descriptor instead.
 func (*PresignedOperation) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{32}
+	return file_data_gateway_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *PresignedOperation) GetMethod() string {
@@ -2834,7 +3094,7 @@ type PresignObjectRequest struct {
 
 func (x *PresignObjectRequest) Reset() {
 	*x = PresignObjectRequest{}
-	mi := &file_data_gateway_proto_msgTypes[33]
+	mi := &file_data_gateway_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2846,7 +3106,7 @@ func (x *PresignObjectRequest) String() string {
 func (*PresignObjectRequest) ProtoMessage() {}
 
 func (x *PresignObjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[33]
+	mi := &file_data_gateway_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2859,7 +3119,7 @@ func (x *PresignObjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresignObjectRequest.ProtoReflect.Descriptor instead.
 func (*PresignObjectRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{33}
+	return file_data_gateway_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *PresignObjectRequest) GetObject() *StorageObject {
@@ -2900,7 +3160,7 @@ type PresignObjectResponse struct {
 
 func (x *PresignObjectResponse) Reset() {
 	*x = PresignObjectResponse{}
-	mi := &file_data_gateway_proto_msgTypes[34]
+	mi := &file_data_gateway_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2912,7 +3172,7 @@ func (x *PresignObjectResponse) String() string {
 func (*PresignObjectResponse) ProtoMessage() {}
 
 func (x *PresignObjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[34]
+	mi := &file_data_gateway_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2925,7 +3185,7 @@ func (x *PresignObjectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PresignObjectResponse.ProtoReflect.Descriptor instead.
 func (*PresignObjectResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{34}
+	return file_data_gateway_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PresignObjectResponse) GetObject() *StorageObject {
@@ -2971,7 +3231,7 @@ type ReadObjectRequest struct {
 
 func (x *ReadObjectRequest) Reset() {
 	*x = ReadObjectRequest{}
-	mi := &file_data_gateway_proto_msgTypes[35]
+	mi := &file_data_gateway_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2983,7 +3243,7 @@ func (x *ReadObjectRequest) String() string {
 func (*ReadObjectRequest) ProtoMessage() {}
 
 func (x *ReadObjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[35]
+	mi := &file_data_gateway_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2996,7 +3256,7 @@ func (x *ReadObjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadObjectRequest.ProtoReflect.Descriptor instead.
 func (*ReadObjectRequest) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{35}
+	return file_data_gateway_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ReadObjectRequest) GetObject() *StorageObject {
@@ -3037,7 +3297,7 @@ type ReadObjectResponse struct {
 
 func (x *ReadObjectResponse) Reset() {
 	*x = ReadObjectResponse{}
-	mi := &file_data_gateway_proto_msgTypes[36]
+	mi := &file_data_gateway_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3049,7 +3309,7 @@ func (x *ReadObjectResponse) String() string {
 func (*ReadObjectResponse) ProtoMessage() {}
 
 func (x *ReadObjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_data_gateway_proto_msgTypes[36]
+	mi := &file_data_gateway_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3062,7 +3322,7 @@ func (x *ReadObjectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadObjectResponse.ProtoReflect.Descriptor instead.
 func (*ReadObjectResponse) Descriptor() ([]byte, []int) {
-	return file_data_gateway_proto_rawDescGZIP(), []int{36}
+	return file_data_gateway_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ReadObjectResponse) GetObject() *StorageObject {
@@ -3130,13 +3390,16 @@ const file_data_gateway_proto_rawDesc = "" +
 	"\x0fpart_size_bytes\x18\b \x01(\x03R\rpartSizeBytes\x120\n" +
 	"\x14object_store_backend\x18\t \x01(\tR\x12objectStoreBackend\x12.\n" +
 	"\x13object_store_region\x18\n" +
-	" \x01(\tR\x11objectStoreRegion\"\xc4\x02\n" +
+	" \x01(\tR\x11objectStoreRegion\"\x91\x03\n" +
 	"\x1aCreateLogicalUploadRequest\x12i\n" +
 	"\fclient_hints\x18\x01 \x03(\v2F.archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntryR\vclientHints\x123\n" +
 	"\x16restart_from_upload_id\x18\x02 \x01(\tR\x13restartFromUploadId\x12(\n" +
 	"\x10auto_assign_task\x18\x03 \x01(\bR\x0eautoAssignTask\x12\x1c\n" +
 	"\n" +
-	"dc_plan_id\x18\x04 \x01(\x03R\bdcPlanId\x1a>\n" +
+	"dc_plan_id\x18\x04 \x01(\x03R\bdcPlanId\x12K\n" +
+	"\n" +
+	"encryption\x18\x05 \x01(\v2+.archebase.data_gateway.v1.ObjectEncryptionR\n" +
+	"encryption\x1a>\n" +
 	"\x10ClientHintsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc3\x02\n" +
@@ -3179,7 +3442,7 @@ const file_data_gateway_proto_rawDesc = "" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"^\n" +
 	"\x13AbortUploadResponse\x12*\n" +
 	"\x11logical_upload_id\x18\x01 \x01(\tR\x0flogicalUploadId\x12\x1b\n" +
-	"\tupload_id\x18\x02 \x01(\tR\buploadId\"\xe2\x02\n" +
+	"\tupload_id\x18\x02 \x01(\tR\buploadId\"\xaf\x03\n" +
 	"\x15CompleteUploadRequest\x12\x1b\n" +
 	"\tupload_id\x18\x01 \x01(\tR\buploadId\x12\x1b\n" +
 	"\tfile_size\x18\x02 \x01(\x03R\bfileSize\x12X\n" +
@@ -3187,11 +3450,34 @@ const file_data_gateway_proto_rawDesc = "" +
 	"\x14completed_part_count\x18\x04 \x01(\x05R\x12completedPartCount\x12\x1f\n" +
 	"\vobject_etag\x18\x05 \x01(\tR\n" +
 	"objectEtag\x12&\n" +
-	"\x0fpart_size_bytes\x18\x06 \x01(\x03R\rpartSizeBytes\x1a:\n" +
+	"\x0fpart_size_bytes\x18\x06 \x01(\x03R\rpartSizeBytes\x12K\n" +
+	"\n" +
+	"encryption\x18\a \x01(\v2+.archebase.data_gateway.v1.ObjectEncryptionR\n" +
+	"encryption\x1a:\n" +
 	"\fRawTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x18\n" +
-	"\x16CompleteUploadResponse\"h\n" +
+	"\x16CompleteUploadResponse\"\xa3\x01\n" +
+	"\x10ObjectEncryption\x12\x16\n" +
+	"\x06scheme\x18\x01 \x01(\tR\x06scheme\x12\x1f\n" +
+	"\vkey_version\x18\x02 \x01(\tR\n" +
+	"keyVersion\x12'\n" +
+	"\x0fmetadata_digest\x18\x03 \x01(\tR\x0emetadataDigest\x12-\n" +
+	"\x12encryption_version\x18\x04 \x01(\tR\x11encryptionVersion\"\x1f\n" +
+	"\x1dGetEncryptionKeyConfigRequest\"\xd9\x01\n" +
+	"\rEncryptionKey\x12\x1f\n" +
+	"\vkey_version\x18\x01 \x01(\tR\n" +
+	"keyVersion\x12\x1c\n" +
+	"\talgorithm\x18\x02 \x01(\tR\talgorithm\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x03 \x01(\tR\tpublicKey\x12 \n" +
+	"\vfingerprint\x18\x04 \x01(\tR\vfingerprint\x12$\n" +
+	"\x0enot_before_utc\x18\x05 \x01(\tR\fnotBeforeUtc\x12\"\n" +
+	"\rnot_after_utc\x18\x06 \x01(\tR\vnotAfterUtc\"\x90\x01\n" +
+	"\x1eGetEncryptionKeyConfigResponse\x12%\n" +
+	"\x0epolicy_version\x18\x01 \x01(\x03R\rpolicyVersion\x12G\n" +
+	"\n" +
+	"active_key\x18\x02 \x01(\v2(.archebase.data_gateway.v1.EncryptionKeyR\tactiveKey\"h\n" +
 	"\x12ListObjectsRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
@@ -3369,13 +3655,14 @@ const file_data_gateway_proto_rawDesc = "" +
 	"(DATA_GATEWAY_ERROR_CODE_INVALID_ARGUMENT\x10\x05\x12/\n" +
 	"+DATA_GATEWAY_ERROR_CODE_FAILED_PRECONDITION\x10\x06\x12+\n" +
 	"'DATA_GATEWAY_ERROR_CODE_STS_UNAVAILABLE\x10\a\x12*\n" +
-	"&DATA_GATEWAY_ERROR_CODE_INTERNAL_ERROR\x10\b2\x96\x05\n" +
+	"&DATA_GATEWAY_ERROR_CODE_INTERNAL_ERROR\x10\b2\xa6\x06\n" +
 	"\x12DataGatewayService\x12\x84\x01\n" +
 	"\x13CreateLogicalUpload\x125.archebase.data_gateway.v1.CreateLogicalUploadRequest\x1a6.archebase.data_gateway.v1.CreateLogicalUploadResponse\x12~\n" +
 	"\x11GetUploadRecovery\x123.archebase.data_gateway.v1.GetUploadRecoveryRequest\x1a4.archebase.data_gateway.v1.GetUploadRecoveryResponse\x12\x93\x01\n" +
 	"\x18ReissueUploadCredentials\x12:.archebase.data_gateway.v1.ReissueUploadCredentialsRequest\x1a;.archebase.data_gateway.v1.ReissueUploadCredentialsResponse\x12l\n" +
 	"\vAbortUpload\x12-.archebase.data_gateway.v1.AbortUploadRequest\x1a..archebase.data_gateway.v1.AbortUploadResponse\x12u\n" +
-	"\x0eCompleteUpload\x120.archebase.data_gateway.v1.CompleteUploadRequest\x1a1.archebase.data_gateway.v1.CompleteUploadResponse2\x82\x02\n" +
+	"\x0eCompleteUpload\x120.archebase.data_gateway.v1.CompleteUploadRequest\x1a1.archebase.data_gateway.v1.CompleteUploadResponse\x12\x8d\x01\n" +
+	"\x16GetEncryptionKeyConfig\x128.archebase.data_gateway.v1.GetEncryptionKeyConfigRequest\x1a9.archebase.data_gateway.v1.GetEncryptionKeyConfigResponse2\x82\x02\n" +
 	"\x18DataGatewayObjectService\x12l\n" +
 	"\vListObjects\x12-.archebase.data_gateway.v1.ListObjectsRequest\x1a..archebase.data_gateway.v1.ListObjectsResponse\x12x\n" +
 	"\x0fRequestDownload\x121.archebase.data_gateway.v1.RequestDownloadRequest\x1a2.archebase.data_gateway.v1.RequestDownloadResponse2\xe8\x03\n" +
@@ -3407,7 +3694,7 @@ func file_data_gateway_proto_rawDescGZIP() []byte {
 }
 
 var file_data_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_data_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_data_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
 var file_data_gateway_proto_goTypes = []any{
 	(UploadRecoveryAction)(0),                // 0: archebase.data_gateway.v1.UploadRecoveryAction
 	(LogicalUploadStatus)(0),                 // 1: archebase.data_gateway.v1.LogicalUploadStatus
@@ -3430,98 +3717,107 @@ var file_data_gateway_proto_goTypes = []any{
 	(*AbortUploadResponse)(nil),              // 18: archebase.data_gateway.v1.AbortUploadResponse
 	(*CompleteUploadRequest)(nil),            // 19: archebase.data_gateway.v1.CompleteUploadRequest
 	(*CompleteUploadResponse)(nil),           // 20: archebase.data_gateway.v1.CompleteUploadResponse
-	(*ListObjectsRequest)(nil),               // 21: archebase.data_gateway.v1.ListObjectsRequest
-	(*DataObject)(nil),                       // 22: archebase.data_gateway.v1.DataObject
-	(*ListObjectsResponse)(nil),              // 23: archebase.data_gateway.v1.ListObjectsResponse
-	(*RequestDownloadRequest)(nil),           // 24: archebase.data_gateway.v1.RequestDownloadRequest
-	(*DownloadObjectLocation)(nil),           // 25: archebase.data_gateway.v1.DownloadObjectLocation
-	(*RequestDownloadResponse)(nil),          // 26: archebase.data_gateway.v1.RequestDownloadResponse
-	(*CreateCopyJobRequest)(nil),             // 27: archebase.data_gateway.v1.CreateCopyJobRequest
-	(*CopyDestination)(nil),                  // 28: archebase.data_gateway.v1.CopyDestination
-	(*CreateCopyJobResponse)(nil),            // 29: archebase.data_gateway.v1.CreateCopyJobResponse
-	(*GetCopyJobRequest)(nil),                // 30: archebase.data_gateway.v1.GetCopyJobRequest
-	(*GetCopyJobResponse)(nil),               // 31: archebase.data_gateway.v1.GetCopyJobResponse
-	(*CopyJobView)(nil),                      // 32: archebase.data_gateway.v1.CopyJobView
-	(*ListCopyJobItemsRequest)(nil),          // 33: archebase.data_gateway.v1.ListCopyJobItemsRequest
-	(*CopyJobItemView)(nil),                  // 34: archebase.data_gateway.v1.CopyJobItemView
-	(*ListCopyJobItemsResponse)(nil),         // 35: archebase.data_gateway.v1.ListCopyJobItemsResponse
-	(*CancelCopyJobRequest)(nil),             // 36: archebase.data_gateway.v1.CancelCopyJobRequest
-	(*CancelCopyJobResponse)(nil),            // 37: archebase.data_gateway.v1.CancelCopyJobResponse
-	(*StorageObject)(nil),                    // 38: archebase.data_gateway.v1.StorageObject
-	(*PresignedOperation)(nil),               // 39: archebase.data_gateway.v1.PresignedOperation
-	(*PresignObjectRequest)(nil),             // 40: archebase.data_gateway.v1.PresignObjectRequest
-	(*PresignObjectResponse)(nil),            // 41: archebase.data_gateway.v1.PresignObjectResponse
-	(*ReadObjectRequest)(nil),                // 42: archebase.data_gateway.v1.ReadObjectRequest
-	(*ReadObjectResponse)(nil),               // 43: archebase.data_gateway.v1.ReadObjectResponse
-	nil,                                      // 44: archebase.data_gateway.v1.InitDeviceResponse.TagsEntry
-	nil,                                      // 45: archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntry
-	nil,                                      // 46: archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntry
-	nil,                                      // 47: archebase.data_gateway.v1.PresignedOperation.HeadersEntry
+	(*ObjectEncryption)(nil),                 // 21: archebase.data_gateway.v1.ObjectEncryption
+	(*GetEncryptionKeyConfigRequest)(nil),    // 22: archebase.data_gateway.v1.GetEncryptionKeyConfigRequest
+	(*EncryptionKey)(nil),                    // 23: archebase.data_gateway.v1.EncryptionKey
+	(*GetEncryptionKeyConfigResponse)(nil),   // 24: archebase.data_gateway.v1.GetEncryptionKeyConfigResponse
+	(*ListObjectsRequest)(nil),               // 25: archebase.data_gateway.v1.ListObjectsRequest
+	(*DataObject)(nil),                       // 26: archebase.data_gateway.v1.DataObject
+	(*ListObjectsResponse)(nil),              // 27: archebase.data_gateway.v1.ListObjectsResponse
+	(*RequestDownloadRequest)(nil),           // 28: archebase.data_gateway.v1.RequestDownloadRequest
+	(*DownloadObjectLocation)(nil),           // 29: archebase.data_gateway.v1.DownloadObjectLocation
+	(*RequestDownloadResponse)(nil),          // 30: archebase.data_gateway.v1.RequestDownloadResponse
+	(*CreateCopyJobRequest)(nil),             // 31: archebase.data_gateway.v1.CreateCopyJobRequest
+	(*CopyDestination)(nil),                  // 32: archebase.data_gateway.v1.CopyDestination
+	(*CreateCopyJobResponse)(nil),            // 33: archebase.data_gateway.v1.CreateCopyJobResponse
+	(*GetCopyJobRequest)(nil),                // 34: archebase.data_gateway.v1.GetCopyJobRequest
+	(*GetCopyJobResponse)(nil),               // 35: archebase.data_gateway.v1.GetCopyJobResponse
+	(*CopyJobView)(nil),                      // 36: archebase.data_gateway.v1.CopyJobView
+	(*ListCopyJobItemsRequest)(nil),          // 37: archebase.data_gateway.v1.ListCopyJobItemsRequest
+	(*CopyJobItemView)(nil),                  // 38: archebase.data_gateway.v1.CopyJobItemView
+	(*ListCopyJobItemsResponse)(nil),         // 39: archebase.data_gateway.v1.ListCopyJobItemsResponse
+	(*CancelCopyJobRequest)(nil),             // 40: archebase.data_gateway.v1.CancelCopyJobRequest
+	(*CancelCopyJobResponse)(nil),            // 41: archebase.data_gateway.v1.CancelCopyJobResponse
+	(*StorageObject)(nil),                    // 42: archebase.data_gateway.v1.StorageObject
+	(*PresignedOperation)(nil),               // 43: archebase.data_gateway.v1.PresignedOperation
+	(*PresignObjectRequest)(nil),             // 44: archebase.data_gateway.v1.PresignObjectRequest
+	(*PresignObjectResponse)(nil),            // 45: archebase.data_gateway.v1.PresignObjectResponse
+	(*ReadObjectRequest)(nil),                // 46: archebase.data_gateway.v1.ReadObjectRequest
+	(*ReadObjectResponse)(nil),               // 47: archebase.data_gateway.v1.ReadObjectResponse
+	nil,                                      // 48: archebase.data_gateway.v1.InitDeviceResponse.TagsEntry
+	nil,                                      // 49: archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntry
+	nil,                                      // 50: archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntry
+	nil,                                      // 51: archebase.data_gateway.v1.PresignedOperation.HeadersEntry
 }
 var file_data_gateway_proto_depIdxs = []int32{
-	44, // 0: archebase.data_gateway.v1.InitDeviceResponse.tags:type_name -> archebase.data_gateway.v1.InitDeviceResponse.TagsEntry
-	45, // 1: archebase.data_gateway.v1.CreateLogicalUploadRequest.client_hints:type_name -> archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntry
-	10, // 2: archebase.data_gateway.v1.CreateLogicalUploadResponse.credentials:type_name -> archebase.data_gateway.v1.UploadCredentials
-	1,  // 3: archebase.data_gateway.v1.GetUploadRecoveryResponse.logical_upload_status:type_name -> archebase.data_gateway.v1.LogicalUploadStatus
-	0,  // 4: archebase.data_gateway.v1.GetUploadRecoveryResponse.next_action:type_name -> archebase.data_gateway.v1.UploadRecoveryAction
-	10, // 5: archebase.data_gateway.v1.ReissueUploadCredentialsResponse.credentials:type_name -> archebase.data_gateway.v1.UploadCredentials
-	46, // 6: archebase.data_gateway.v1.CompleteUploadRequest.raw_tags:type_name -> archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntry
-	2,  // 7: archebase.data_gateway.v1.DataObject.status:type_name -> archebase.data_gateway.v1.DataObjectStatus
-	22, // 8: archebase.data_gateway.v1.ListObjectsResponse.objects:type_name -> archebase.data_gateway.v1.DataObject
-	39, // 9: archebase.data_gateway.v1.DownloadObjectLocation.read:type_name -> archebase.data_gateway.v1.PresignedOperation
-	25, // 10: archebase.data_gateway.v1.RequestDownloadResponse.files:type_name -> archebase.data_gateway.v1.DownloadObjectLocation
-	28, // 11: archebase.data_gateway.v1.CreateCopyJobRequest.destination:type_name -> archebase.data_gateway.v1.CopyDestination
-	3,  // 12: archebase.data_gateway.v1.CreateCopyJobResponse.status:type_name -> archebase.data_gateway.v1.CopyJobStatus
-	32, // 13: archebase.data_gateway.v1.GetCopyJobResponse.job:type_name -> archebase.data_gateway.v1.CopyJobView
-	3,  // 14: archebase.data_gateway.v1.CopyJobView.status:type_name -> archebase.data_gateway.v1.CopyJobStatus
-	28, // 15: archebase.data_gateway.v1.CopyJobView.destination:type_name -> archebase.data_gateway.v1.CopyDestination
-	4,  // 16: archebase.data_gateway.v1.ListCopyJobItemsRequest.statuses:type_name -> archebase.data_gateway.v1.CopyItemStatus
-	4,  // 17: archebase.data_gateway.v1.CopyJobItemView.status:type_name -> archebase.data_gateway.v1.CopyItemStatus
-	34, // 18: archebase.data_gateway.v1.ListCopyJobItemsResponse.items:type_name -> archebase.data_gateway.v1.CopyJobItemView
-	3,  // 19: archebase.data_gateway.v1.CancelCopyJobResponse.status:type_name -> archebase.data_gateway.v1.CopyJobStatus
-	47, // 20: archebase.data_gateway.v1.PresignedOperation.headers:type_name -> archebase.data_gateway.v1.PresignedOperation.HeadersEntry
-	38, // 21: archebase.data_gateway.v1.PresignObjectRequest.object:type_name -> archebase.data_gateway.v1.StorageObject
-	5,  // 22: archebase.data_gateway.v1.PresignObjectRequest.access_mode:type_name -> archebase.data_gateway.v1.PresignAccessMode
-	38, // 23: archebase.data_gateway.v1.PresignObjectResponse.object:type_name -> archebase.data_gateway.v1.StorageObject
-	39, // 24: archebase.data_gateway.v1.PresignObjectResponse.read:type_name -> archebase.data_gateway.v1.PresignedOperation
-	39, // 25: archebase.data_gateway.v1.PresignObjectResponse.write:type_name -> archebase.data_gateway.v1.PresignedOperation
-	38, // 26: archebase.data_gateway.v1.ReadObjectRequest.object:type_name -> archebase.data_gateway.v1.StorageObject
-	38, // 27: archebase.data_gateway.v1.ReadObjectResponse.object:type_name -> archebase.data_gateway.v1.StorageObject
-	11, // 28: archebase.data_gateway.v1.DataGatewayService.CreateLogicalUpload:input_type -> archebase.data_gateway.v1.CreateLogicalUploadRequest
-	13, // 29: archebase.data_gateway.v1.DataGatewayService.GetUploadRecovery:input_type -> archebase.data_gateway.v1.GetUploadRecoveryRequest
-	15, // 30: archebase.data_gateway.v1.DataGatewayService.ReissueUploadCredentials:input_type -> archebase.data_gateway.v1.ReissueUploadCredentialsRequest
-	17, // 31: archebase.data_gateway.v1.DataGatewayService.AbortUpload:input_type -> archebase.data_gateway.v1.AbortUploadRequest
-	19, // 32: archebase.data_gateway.v1.DataGatewayService.CompleteUpload:input_type -> archebase.data_gateway.v1.CompleteUploadRequest
-	21, // 33: archebase.data_gateway.v1.DataGatewayObjectService.ListObjects:input_type -> archebase.data_gateway.v1.ListObjectsRequest
-	24, // 34: archebase.data_gateway.v1.DataGatewayObjectService.RequestDownload:input_type -> archebase.data_gateway.v1.RequestDownloadRequest
-	27, // 35: archebase.data_gateway.v1.DataGatewayCopyService.CreateCopyJob:input_type -> archebase.data_gateway.v1.CreateCopyJobRequest
-	30, // 36: archebase.data_gateway.v1.DataGatewayCopyService.GetCopyJob:input_type -> archebase.data_gateway.v1.GetCopyJobRequest
-	33, // 37: archebase.data_gateway.v1.DataGatewayCopyService.ListCopyJobItems:input_type -> archebase.data_gateway.v1.ListCopyJobItemsRequest
-	36, // 38: archebase.data_gateway.v1.DataGatewayCopyService.CancelCopyJob:input_type -> archebase.data_gateway.v1.CancelCopyJobRequest
-	7,  // 39: archebase.data_gateway.v1.DeviceInitService.InitDevice:input_type -> archebase.data_gateway.v1.InitDeviceRequest
-	8,  // 40: archebase.data_gateway.v1.DeviceInitService.ReinitDevice:input_type -> archebase.data_gateway.v1.ReinitDeviceRequest
-	40, // 41: archebase.data_gateway.v1.InternalStorageService.PresignObject:input_type -> archebase.data_gateway.v1.PresignObjectRequest
-	42, // 42: archebase.data_gateway.v1.InternalStorageService.ReadObject:input_type -> archebase.data_gateway.v1.ReadObjectRequest
-	12, // 43: archebase.data_gateway.v1.DataGatewayService.CreateLogicalUpload:output_type -> archebase.data_gateway.v1.CreateLogicalUploadResponse
-	14, // 44: archebase.data_gateway.v1.DataGatewayService.GetUploadRecovery:output_type -> archebase.data_gateway.v1.GetUploadRecoveryResponse
-	16, // 45: archebase.data_gateway.v1.DataGatewayService.ReissueUploadCredentials:output_type -> archebase.data_gateway.v1.ReissueUploadCredentialsResponse
-	18, // 46: archebase.data_gateway.v1.DataGatewayService.AbortUpload:output_type -> archebase.data_gateway.v1.AbortUploadResponse
-	20, // 47: archebase.data_gateway.v1.DataGatewayService.CompleteUpload:output_type -> archebase.data_gateway.v1.CompleteUploadResponse
-	23, // 48: archebase.data_gateway.v1.DataGatewayObjectService.ListObjects:output_type -> archebase.data_gateway.v1.ListObjectsResponse
-	26, // 49: archebase.data_gateway.v1.DataGatewayObjectService.RequestDownload:output_type -> archebase.data_gateway.v1.RequestDownloadResponse
-	29, // 50: archebase.data_gateway.v1.DataGatewayCopyService.CreateCopyJob:output_type -> archebase.data_gateway.v1.CreateCopyJobResponse
-	31, // 51: archebase.data_gateway.v1.DataGatewayCopyService.GetCopyJob:output_type -> archebase.data_gateway.v1.GetCopyJobResponse
-	35, // 52: archebase.data_gateway.v1.DataGatewayCopyService.ListCopyJobItems:output_type -> archebase.data_gateway.v1.ListCopyJobItemsResponse
-	37, // 53: archebase.data_gateway.v1.DataGatewayCopyService.CancelCopyJob:output_type -> archebase.data_gateway.v1.CancelCopyJobResponse
-	9,  // 54: archebase.data_gateway.v1.DeviceInitService.InitDevice:output_type -> archebase.data_gateway.v1.InitDeviceResponse
-	9,  // 55: archebase.data_gateway.v1.DeviceInitService.ReinitDevice:output_type -> archebase.data_gateway.v1.InitDeviceResponse
-	41, // 56: archebase.data_gateway.v1.InternalStorageService.PresignObject:output_type -> archebase.data_gateway.v1.PresignObjectResponse
-	43, // 57: archebase.data_gateway.v1.InternalStorageService.ReadObject:output_type -> archebase.data_gateway.v1.ReadObjectResponse
-	43, // [43:58] is the sub-list for method output_type
-	28, // [28:43] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	48, // 0: archebase.data_gateway.v1.InitDeviceResponse.tags:type_name -> archebase.data_gateway.v1.InitDeviceResponse.TagsEntry
+	49, // 1: archebase.data_gateway.v1.CreateLogicalUploadRequest.client_hints:type_name -> archebase.data_gateway.v1.CreateLogicalUploadRequest.ClientHintsEntry
+	21, // 2: archebase.data_gateway.v1.CreateLogicalUploadRequest.encryption:type_name -> archebase.data_gateway.v1.ObjectEncryption
+	10, // 3: archebase.data_gateway.v1.CreateLogicalUploadResponse.credentials:type_name -> archebase.data_gateway.v1.UploadCredentials
+	1,  // 4: archebase.data_gateway.v1.GetUploadRecoveryResponse.logical_upload_status:type_name -> archebase.data_gateway.v1.LogicalUploadStatus
+	0,  // 5: archebase.data_gateway.v1.GetUploadRecoveryResponse.next_action:type_name -> archebase.data_gateway.v1.UploadRecoveryAction
+	10, // 6: archebase.data_gateway.v1.ReissueUploadCredentialsResponse.credentials:type_name -> archebase.data_gateway.v1.UploadCredentials
+	50, // 7: archebase.data_gateway.v1.CompleteUploadRequest.raw_tags:type_name -> archebase.data_gateway.v1.CompleteUploadRequest.RawTagsEntry
+	21, // 8: archebase.data_gateway.v1.CompleteUploadRequest.encryption:type_name -> archebase.data_gateway.v1.ObjectEncryption
+	23, // 9: archebase.data_gateway.v1.GetEncryptionKeyConfigResponse.active_key:type_name -> archebase.data_gateway.v1.EncryptionKey
+	2,  // 10: archebase.data_gateway.v1.DataObject.status:type_name -> archebase.data_gateway.v1.DataObjectStatus
+	26, // 11: archebase.data_gateway.v1.ListObjectsResponse.objects:type_name -> archebase.data_gateway.v1.DataObject
+	43, // 12: archebase.data_gateway.v1.DownloadObjectLocation.read:type_name -> archebase.data_gateway.v1.PresignedOperation
+	29, // 13: archebase.data_gateway.v1.RequestDownloadResponse.files:type_name -> archebase.data_gateway.v1.DownloadObjectLocation
+	32, // 14: archebase.data_gateway.v1.CreateCopyJobRequest.destination:type_name -> archebase.data_gateway.v1.CopyDestination
+	3,  // 15: archebase.data_gateway.v1.CreateCopyJobResponse.status:type_name -> archebase.data_gateway.v1.CopyJobStatus
+	36, // 16: archebase.data_gateway.v1.GetCopyJobResponse.job:type_name -> archebase.data_gateway.v1.CopyJobView
+	3,  // 17: archebase.data_gateway.v1.CopyJobView.status:type_name -> archebase.data_gateway.v1.CopyJobStatus
+	32, // 18: archebase.data_gateway.v1.CopyJobView.destination:type_name -> archebase.data_gateway.v1.CopyDestination
+	4,  // 19: archebase.data_gateway.v1.ListCopyJobItemsRequest.statuses:type_name -> archebase.data_gateway.v1.CopyItemStatus
+	4,  // 20: archebase.data_gateway.v1.CopyJobItemView.status:type_name -> archebase.data_gateway.v1.CopyItemStatus
+	38, // 21: archebase.data_gateway.v1.ListCopyJobItemsResponse.items:type_name -> archebase.data_gateway.v1.CopyJobItemView
+	3,  // 22: archebase.data_gateway.v1.CancelCopyJobResponse.status:type_name -> archebase.data_gateway.v1.CopyJobStatus
+	51, // 23: archebase.data_gateway.v1.PresignedOperation.headers:type_name -> archebase.data_gateway.v1.PresignedOperation.HeadersEntry
+	42, // 24: archebase.data_gateway.v1.PresignObjectRequest.object:type_name -> archebase.data_gateway.v1.StorageObject
+	5,  // 25: archebase.data_gateway.v1.PresignObjectRequest.access_mode:type_name -> archebase.data_gateway.v1.PresignAccessMode
+	42, // 26: archebase.data_gateway.v1.PresignObjectResponse.object:type_name -> archebase.data_gateway.v1.StorageObject
+	43, // 27: archebase.data_gateway.v1.PresignObjectResponse.read:type_name -> archebase.data_gateway.v1.PresignedOperation
+	43, // 28: archebase.data_gateway.v1.PresignObjectResponse.write:type_name -> archebase.data_gateway.v1.PresignedOperation
+	42, // 29: archebase.data_gateway.v1.ReadObjectRequest.object:type_name -> archebase.data_gateway.v1.StorageObject
+	42, // 30: archebase.data_gateway.v1.ReadObjectResponse.object:type_name -> archebase.data_gateway.v1.StorageObject
+	11, // 31: archebase.data_gateway.v1.DataGatewayService.CreateLogicalUpload:input_type -> archebase.data_gateway.v1.CreateLogicalUploadRequest
+	13, // 32: archebase.data_gateway.v1.DataGatewayService.GetUploadRecovery:input_type -> archebase.data_gateway.v1.GetUploadRecoveryRequest
+	15, // 33: archebase.data_gateway.v1.DataGatewayService.ReissueUploadCredentials:input_type -> archebase.data_gateway.v1.ReissueUploadCredentialsRequest
+	17, // 34: archebase.data_gateway.v1.DataGatewayService.AbortUpload:input_type -> archebase.data_gateway.v1.AbortUploadRequest
+	19, // 35: archebase.data_gateway.v1.DataGatewayService.CompleteUpload:input_type -> archebase.data_gateway.v1.CompleteUploadRequest
+	22, // 36: archebase.data_gateway.v1.DataGatewayService.GetEncryptionKeyConfig:input_type -> archebase.data_gateway.v1.GetEncryptionKeyConfigRequest
+	25, // 37: archebase.data_gateway.v1.DataGatewayObjectService.ListObjects:input_type -> archebase.data_gateway.v1.ListObjectsRequest
+	28, // 38: archebase.data_gateway.v1.DataGatewayObjectService.RequestDownload:input_type -> archebase.data_gateway.v1.RequestDownloadRequest
+	31, // 39: archebase.data_gateway.v1.DataGatewayCopyService.CreateCopyJob:input_type -> archebase.data_gateway.v1.CreateCopyJobRequest
+	34, // 40: archebase.data_gateway.v1.DataGatewayCopyService.GetCopyJob:input_type -> archebase.data_gateway.v1.GetCopyJobRequest
+	37, // 41: archebase.data_gateway.v1.DataGatewayCopyService.ListCopyJobItems:input_type -> archebase.data_gateway.v1.ListCopyJobItemsRequest
+	40, // 42: archebase.data_gateway.v1.DataGatewayCopyService.CancelCopyJob:input_type -> archebase.data_gateway.v1.CancelCopyJobRequest
+	7,  // 43: archebase.data_gateway.v1.DeviceInitService.InitDevice:input_type -> archebase.data_gateway.v1.InitDeviceRequest
+	8,  // 44: archebase.data_gateway.v1.DeviceInitService.ReinitDevice:input_type -> archebase.data_gateway.v1.ReinitDeviceRequest
+	44, // 45: archebase.data_gateway.v1.InternalStorageService.PresignObject:input_type -> archebase.data_gateway.v1.PresignObjectRequest
+	46, // 46: archebase.data_gateway.v1.InternalStorageService.ReadObject:input_type -> archebase.data_gateway.v1.ReadObjectRequest
+	12, // 47: archebase.data_gateway.v1.DataGatewayService.CreateLogicalUpload:output_type -> archebase.data_gateway.v1.CreateLogicalUploadResponse
+	14, // 48: archebase.data_gateway.v1.DataGatewayService.GetUploadRecovery:output_type -> archebase.data_gateway.v1.GetUploadRecoveryResponse
+	16, // 49: archebase.data_gateway.v1.DataGatewayService.ReissueUploadCredentials:output_type -> archebase.data_gateway.v1.ReissueUploadCredentialsResponse
+	18, // 50: archebase.data_gateway.v1.DataGatewayService.AbortUpload:output_type -> archebase.data_gateway.v1.AbortUploadResponse
+	20, // 51: archebase.data_gateway.v1.DataGatewayService.CompleteUpload:output_type -> archebase.data_gateway.v1.CompleteUploadResponse
+	24, // 52: archebase.data_gateway.v1.DataGatewayService.GetEncryptionKeyConfig:output_type -> archebase.data_gateway.v1.GetEncryptionKeyConfigResponse
+	27, // 53: archebase.data_gateway.v1.DataGatewayObjectService.ListObjects:output_type -> archebase.data_gateway.v1.ListObjectsResponse
+	30, // 54: archebase.data_gateway.v1.DataGatewayObjectService.RequestDownload:output_type -> archebase.data_gateway.v1.RequestDownloadResponse
+	33, // 55: archebase.data_gateway.v1.DataGatewayCopyService.CreateCopyJob:output_type -> archebase.data_gateway.v1.CreateCopyJobResponse
+	35, // 56: archebase.data_gateway.v1.DataGatewayCopyService.GetCopyJob:output_type -> archebase.data_gateway.v1.GetCopyJobResponse
+	39, // 57: archebase.data_gateway.v1.DataGatewayCopyService.ListCopyJobItems:output_type -> archebase.data_gateway.v1.ListCopyJobItemsResponse
+	41, // 58: archebase.data_gateway.v1.DataGatewayCopyService.CancelCopyJob:output_type -> archebase.data_gateway.v1.CancelCopyJobResponse
+	9,  // 59: archebase.data_gateway.v1.DeviceInitService.InitDevice:output_type -> archebase.data_gateway.v1.InitDeviceResponse
+	9,  // 60: archebase.data_gateway.v1.DeviceInitService.ReinitDevice:output_type -> archebase.data_gateway.v1.InitDeviceResponse
+	45, // 61: archebase.data_gateway.v1.InternalStorageService.PresignObject:output_type -> archebase.data_gateway.v1.PresignObjectResponse
+	47, // 62: archebase.data_gateway.v1.InternalStorageService.ReadObject:output_type -> archebase.data_gateway.v1.ReadObjectResponse
+	47, // [47:63] is the sub-list for method output_type
+	31, // [31:47] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_data_gateway_proto_init() }
@@ -3535,7 +3831,7 @@ func file_data_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_data_gateway_proto_rawDesc), len(file_data_gateway_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   41,
+			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   5,
 		},
