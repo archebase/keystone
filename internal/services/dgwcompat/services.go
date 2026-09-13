@@ -1032,9 +1032,6 @@ func validateObjectEncryption(encryption *cloudpb.ObjectEncryption) error {
 	if encryption == nil {
 		return nil
 	}
-	if strings.TrimSpace(encryption.GetScheme()) != "egoportal-hevc-nal" {
-		return status.Error(codes.InvalidArgument, "unsupported encryption scheme")
-	}
 	if strings.TrimSpace(encryption.GetKeyVersion()) == "" {
 		return status.Error(codes.InvalidArgument, "encryption key_version is required")
 	}
@@ -1052,7 +1049,6 @@ func cloneObjectEncryption(encryption *cloudpb.ObjectEncryption) *cloudpb.Object
 		return nil
 	}
 	copy := *encryption
-	copy.Scheme = strings.TrimSpace(copy.Scheme)
 	copy.KeyVersion = strings.TrimSpace(copy.KeyVersion)
 	copy.MetadataDigest = strings.ToLower(strings.TrimSpace(copy.MetadataDigest))
 	copy.EncryptionVersion = strings.TrimSpace(copy.EncryptionVersion)
@@ -1065,8 +1061,7 @@ func sameObjectEncryption(left, right *cloudpb.ObjectEncryption) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
-	return left.GetScheme() == right.GetScheme() &&
-		left.GetKeyVersion() == right.GetKeyVersion() &&
+	return left.GetKeyVersion() == right.GetKeyVersion() &&
 		left.GetMetadataDigest() == right.GetMetadataDigest() &&
 		left.GetEncryptionVersion() == right.GetEncryptionVersion()
 }

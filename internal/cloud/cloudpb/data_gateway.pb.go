@@ -1470,14 +1470,12 @@ func (*CompleteUploadResponse) Descriptor() ([]byte, []int) {
 
 type ObjectEncryption struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Encryption scheme identifier, for example "egoportal-hevc-nal".
-	Scheme string `protobuf:"bytes,1,opt,name=scheme,proto3" json:"scheme,omitempty"`
 	// Version of the receiver key used by the device.
-	KeyVersion string `protobuf:"bytes,2,opt,name=key_version,json=keyVersion,proto3" json:"key_version,omitempty"`
+	KeyVersion string `protobuf:"bytes,1,opt,name=key_version,json=keyVersion,proto3" json:"key_version,omitempty"`
 	// SHA-256 hex digest of the canonical encryption metadata.
-	MetadataDigest string `protobuf:"bytes,3,opt,name=metadata_digest,json=metadataDigest,proto3" json:"metadata_digest,omitempty"`
+	MetadataDigest string `protobuf:"bytes,2,opt,name=metadata_digest,json=metadataDigest,proto3" json:"metadata_digest,omitempty"`
 	// Version of the device-side encryption protocol.
-	EncryptionVersion string `protobuf:"bytes,4,opt,name=encryption_version,json=encryptionVersion,proto3" json:"encryption_version,omitempty"`
+	EncryptionVersion string `protobuf:"bytes,3,opt,name=encryption_version,json=encryptionVersion,proto3" json:"encryption_version,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1510,13 +1508,6 @@ func (x *ObjectEncryption) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ObjectEncryption.ProtoReflect.Descriptor instead.
 func (*ObjectEncryption) Descriptor() ([]byte, []int) {
 	return file_data_gateway_proto_rawDescGZIP(), []int{14}
-}
-
-func (x *ObjectEncryption) GetScheme() string {
-	if x != nil {
-		return x.Scheme
-	}
-	return ""
 }
 
 func (x *ObjectEncryption) GetKeyVersion() string {
@@ -3457,13 +3448,12 @@ const file_data_gateway_proto_rawDesc = "" +
 	"\fRawTagsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x18\n" +
-	"\x16CompleteUploadResponse\"\xa3\x01\n" +
-	"\x10ObjectEncryption\x12\x16\n" +
-	"\x06scheme\x18\x01 \x01(\tR\x06scheme\x12\x1f\n" +
-	"\vkey_version\x18\x02 \x01(\tR\n" +
+	"\x16CompleteUploadResponse\"\x8b\x01\n" +
+	"\x10ObjectEncryption\x12\x1f\n" +
+	"\vkey_version\x18\x01 \x01(\tR\n" +
 	"keyVersion\x12'\n" +
-	"\x0fmetadata_digest\x18\x03 \x01(\tR\x0emetadataDigest\x12-\n" +
-	"\x12encryption_version\x18\x04 \x01(\tR\x11encryptionVersion\"\x1f\n" +
+	"\x0fmetadata_digest\x18\x02 \x01(\tR\x0emetadataDigest\x12-\n" +
+	"\x12encryption_version\x18\x03 \x01(\tR\x11encryptionVersion\"\x1f\n" +
 	"\x1dGetEncryptionKeyConfigRequest\"\xd9\x01\n" +
 	"\rEncryptionKey\x12\x1f\n" +
 	"\vkey_version\x18\x01 \x01(\tR\n" +

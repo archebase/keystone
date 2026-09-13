@@ -224,14 +224,12 @@ message CompleteUploadRequest {
 message CompleteUploadResponse {}
 
 message ObjectEncryption {
-  // Encryption scheme identifier, for example "egoportal-hevc-nal".
-  string scheme = 1;
   // Version of the receiver key used by the device.
-  string key_version = 2;
+  string key_version = 1;
   // SHA-256 hex digest of the canonical encryption metadata.
-  string metadata_digest = 3;
+  string metadata_digest = 2;
   // Version of the device-side encryption protocol.
-  string encryption_version = 4;
+  string encryption_version = 3;
 }
 
 message GetEncryptionKeyConfigRequest {}
