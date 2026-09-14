@@ -27,6 +27,14 @@ func TestBuildObjectKeyUsesTarForEgoPortalE2(t *testing.T) {
 		t.Fatalf("buildObjectKey() = %q, want %q", got, want)
 	}
 }
+func TestBuildObjectKeyUsesTarForEncryptedEgoPortalStereo(t *testing.T) {
+	hints := map[string]string{"device_id": "robot-1", "capture_id": "capture-1"}
+	got := buildObjectKeyWithEncryption("device-uploads", hints, "upload-1", "Ego Portal Stereo", true)
+	want := "device-uploads/robot-1/capture-1/upload-1/capture.tar"
+	if got != want {
+		t.Fatalf("buildObjectKeyWithEncryption() = %q, want %q", got, want)
+	}
+}
 func TestBuildObjectKeyUsesFallbacks(t *testing.T) {
 	got := buildObjectKey("", nil, "upload-123")
 	want := "ego-portal-lite/unknown-device/unknown-capture/upload-123/capture.mcap"

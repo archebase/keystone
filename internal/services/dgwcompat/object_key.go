@@ -7,6 +7,10 @@ package dgwcompat
 import "strings"
 
 func buildObjectKey(prefix string, hints map[string]string, uploadID string, deviceType ...string) string {
+	return buildObjectKeyWithEncryption(prefix, hints, uploadID, firstDeviceType(deviceType), false)
+}
+
+func buildObjectKeyWithEncryption(prefix string, hints map[string]string, uploadID, deviceType string, encrypted bool) string {
 	cleanPrefix := strings.Trim(sanitizePathSegment(prefix), "/")
 	if cleanPrefix == "" {
 		cleanPrefix = "ego-portal-lite"
@@ -26,10 +30,17 @@ func buildObjectKey(prefix string, hints map[string]string, uploadID string, dev
 		captureID = "unknown-capture"
 	}
 	name := "capture.mcap"
-	if len(deviceType) > 0 && strings.TrimSpace(deviceType[0]) == "Ego Portal E2" {
+	if encrypted || strings.TrimSpace(deviceType) == "Ego Portal E2" {
 		name = "capture.tar"
 	}
 	return cleanPrefix + "/" + deviceID + "/" + captureID + "/" + sanitizePathSegment(uploadID) + "/" + name
+}
+
+func firstDeviceType(deviceType []string) string {
+	if len(deviceType) == 0 {
+		return ""
+	}
+	return deviceType[0]
 }
 
 func sanitizePathSegment(value string) string {

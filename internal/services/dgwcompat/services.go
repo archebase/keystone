@@ -150,9 +150,6 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	}
 	logicalUploadID := uuid.NewString()
 	uploadID := uuid.NewString()
-	if err := validateObjectEncryption(req.GetEncryption()); err != nil {
-		return nil, err
-	}
 	hints := cloneMap(req.GetClientHints())
 	autoAssignTask := req.GetAutoAssignTask()
 	if autoAssignTask {
@@ -211,7 +208,10 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 			return nil, err
 		}
 	}
-	objectKey := buildObjectKey(s.cfg.TOSKeyPrefix, hints, uploadID, taskBinding.DeviceType)
+	if err := validateObjectEncryption(req.GetEncryption(), taskBinding.DeviceType); err != nil {
+		return nil, err
+	}
+	objectKey := buildObjectKeyWithEncryption(s.cfg.TOSKeyPrefix, hints, uploadID, taskBinding.DeviceType, req.GetEncryption() != nil)
 	session := &uploadSession{
 		Kind:             intent.Kind,
 		LogicalUploadID:  logicalUploadID,
@@ -443,7 +443,7 @@ func (s *gatewayService) CompleteUpload(ctx context.Context, req *cloudpb.Comple
 			session.UploadID, session.LogicalUploadID, session.DeviceID, session.WorkspaceID, err)
 		return nil, err
 	}
-	if err := validateObjectEncryption(req.GetEncryption()); err != nil {
+	if err := validateObjectEncryption(req.GetEncryption(), session.DeviceType); err != nil {
 		return nil, err
 	}
 	if !sameObjectEncryption(session.Encryption, req.GetEncryption()) {
@@ -1028,9 +1028,13 @@ func parseInt64(value string) (int64, error) {
 	return parsed, err
 }
 
-func validateObjectEncryption(encryption *cloudpb.ObjectEncryption) error {
+func validateObjectEncryption(encryption *cloudpb.ObjectEncryption, deviceType string) error {
 	if encryption == nil {
 		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(deviceType), egoPortalE2DeviceType) &&
+		!strings.EqualFold(strings.TrimSpace(deviceType), "Ego Portal Stereo") {
+		return status.Error(codes.InvalidArgument, "encryption is unsupported for this device type")
 	}
 	if strings.TrimSpace(encryption.GetKeyVersion()) == "" {
 		return status.Error(codes.InvalidArgument, "encryption key_version is required")
