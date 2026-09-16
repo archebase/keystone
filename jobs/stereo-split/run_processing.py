@@ -166,6 +166,34 @@ def color_consistency_summary(
     return summary
 
 
+def imu_retiming_summary(report: dict[str, object] | None) -> dict[str, object] | None:
+    """Project the IMU retiming report onto the manifest's lean summary.
+
+    The full report stays in the output metadata; the manifest only carries what
+    a validator needs to describe and bound the re-timing.
+    """
+    if not report:
+        return None
+    keys = (
+        "algorithm_version",
+        "decision",
+        "reason",
+        "barcodes_decoded",
+        "frames_without_barcode",
+        "grid_spacing_us",
+        "frame_period_us",
+        "frames_per_second",
+        "messages_total",
+        "messages_retimed",
+        "duplicates_dropped",
+        "packets_extrapolated",
+        "clock_scale_ns_per_us",
+        "clock_residual_p95_ms",
+        "clock_inliers",
+    )
+    return {key: report[key] for key in keys if report.get(key) is not None}
+
+
 def require_scratch_capacity(scratch: Path, source_size_bytes: int) -> None:
     scratch.mkdir(parents=True, exist_ok=True)
     required = source_size_bytes * SCRATCH_SPACE_MULTIPLIER
@@ -340,8 +368,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     color_consistency = color_consistency_summary(
         stats_payload.get("color_report"), stats_payload["color_corrected_frames"]
     )
+    imu_retiming = imu_retiming_summary(stats_payload.get("imu_report"))
     manifest_stats = {
-        key: value for key, value in stats_payload.items() if key != "color_report"
+        key: value for key, value in stats_payload.items()
+        if key not in ("color_report", "imu_report")
     }
     manifest_calibration = None
     processing_mode = "timestamp_repair" if stats.input_mode == "split_h264" else "convert"
@@ -367,6 +397,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         metadata["camera_serial"] = camera_serial
     if color_consistency is not None:
         metadata["color_consistency"] = color_consistency
+    if imu_retiming is not None:
+        metadata["imu_retiming"] = imu_retiming
     write_json(local_metadata, metadata)
     mcap_identity = require_mcap_output(local_mcap)
     metadata_identity = require_output(local_metadata)
@@ -399,6 +431,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         manifest["camera_serial"] = camera_serial
     if color_consistency is not None:
         manifest["color_consistency"] = color_consistency
+    if imu_retiming is not None:
+        manifest["imu_retiming"] = imu_retiming
     if manifest_calibration is not None:
         manifest["calibration"] = manifest_calibration
     write_json(local_manifest, manifest)

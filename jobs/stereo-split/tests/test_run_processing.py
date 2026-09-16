@@ -716,5 +716,39 @@ class ColorConsistencySummaryTest(unittest.TestCase):
         self.assertIsNone(processing_runner.color_consistency_summary({}, 0))
 
 
+class ImuRetimingSummaryTest(unittest.TestCase):
+    def test_projects_the_retiming_report_onto_manifest_fields(self) -> None:
+        report = {
+            "algorithm_version": "decxin-imu-grid-v1",
+            "decision": "applied",
+            "reason": "grid_validated",
+            "barcodes_decoded": 1106,
+            "frames_without_barcode": 21,
+            "grid_spacing_us": 1664.0,
+            "frame_period_us": 33280.0,
+            "frames_per_second": 30.048,
+            "messages_total": 24794,
+            "messages_retimed": 22541,
+            "packets_extrapolated": 21,
+            "duplicates_dropped": 2253,
+            "clock_scale_ns_per_us": 999.964617,
+            "clock_residual_p95_ms": 5.237,
+            "clock_inliers": 1104,
+        }
+
+        summary = processing_runner.imu_retiming_summary(report)
+
+        self.assertEqual(summary["decision"], "applied")
+        self.assertEqual(summary["messages_retimed"], 22541)
+        self.assertEqual(summary["duplicates_dropped"], 2253)
+        self.assertEqual(summary["grid_spacing_us"], 1664.0)
+        self.assertEqual(summary["clock_inliers"], 1104)
+        self.assertNotIn("messages", summary)
+
+    def test_returns_none_without_a_report(self) -> None:
+        self.assertIsNone(processing_runner.imu_retiming_summary(None))
+        self.assertIsNone(processing_runner.imu_retiming_summary({}))
+
+
 if __name__ == "__main__":
     unittest.main()
