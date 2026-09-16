@@ -1420,6 +1420,24 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	if err != nil {
 		return nil, err
 	}
+	// Ego Portal Stereo 的相机序列号由 stereo-split 处理成功时回填到 episodes，而本次
+	// 同步在 processEpisode 开头就读取了 episode 行，可能早于回填提交，导致标定匹配被跳过。
+	// 这里在做标定匹配前重读一次，消除该时序竞态。
+	if ep.ID > 0 && strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal Stereo") &&
+		(!ep.CameraSerial.Valid || strings.TrimSpace(ep.CameraSerial.String) == "") {
+		var cameraSerial string
+		if err := w.db.GetContext(ctx, &cameraSerial, `
+			SELECT COALESCE(camera_serial, '') FROM episodes WHERE id = ? AND deleted_at IS NULL
+		`, ep.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("reload episode %d camera serial: %w", ep.ID, err)
+		}
+		if cameraSerial = strings.TrimSpace(cameraSerial); cameraSerial != "" {
+			ep.CameraSerial = sql.NullString{String: cameraSerial, Valid: true}
+			logger.Printf("[SYNC-WORKER] Episode %d picked up camera serial backfilled during sync: %s", ep.ID, cameraSerial)
+		} else {
+			logger.Printf("[SYNC-WORKER] Episode %d Ego Portal Stereo has no camera serial; syncing without calibration", ep.ID)
+		}
+	}
 	calibrationID, calibrationErr := w.uploadMatchingCalibration(ctx, uploadContext, ep, ep.SourceSnapshot, syncLogID)
 	if calibrationErr != nil {
 		if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {

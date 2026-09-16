@@ -238,6 +238,106 @@ func TestUploadEpisodeDirectUsesHilbertRawDataPath(t *testing.T) {
 	}
 }
 
+func TestUploadEpisodeDirectReloadsCameraSerialBackfilledDuringSync(t *testing.T) {
+	const cameraSerial = "CMD-000101"
+
+	newWorker := func(t *testing.T) (*SyncWorker, *bytes.Buffer) {
+		t.Helper()
+		db := newTestSyncWorkerDB(t)
+		insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
+		source := &fakeSourceObjectReader{data: []byte("mcap bytes")}
+		credentials := &auth.HilbertRawDataUploadCredentials{
+			Provider: "TOS",
+			Endpoint: "tos-s3-cn-beijing.ivolces.com",
+			Region:   "cn-beijing",
+			Bucket:   "hilbert-bucket",
+			Key:      "raw-data/123/capture.mcap",
+		}
+		credentials.Credentials.AccessKeyID = "temp-ak"
+		credentials.Credentials.SecretAccessKey = "temp-sk"
+		w := &SyncWorker{
+			db:          db,
+			minioBucket: "source-bucket",
+			hilbert:     &fakeHilbertRawDataClient{credentials: credentials},
+			source:      source,
+			tosUploader: &fakeTOSObjectUploader{},
+		}
+		var logs bytes.Buffer
+		previousLogger := logger.Get()
+		logger.Set(log.New(&logs, "", 0))
+		t.Cleanup(func() { logger.Set(previousLogger) })
+		return w, &logs
+	}
+
+	episodeRow := func(cameraSerial sql.NullString) syncEpisodeUploadRow {
+		return syncEpisodeUploadRow{
+			ID:                4181,
+			EpisodeUUID:       "episode-uuid",
+			DCPlanID:          sql.NullInt64{Int64: 1001, Valid: true},
+			ProjectedDCPlanID: sql.NullInt64{Int64: 1001, Valid: true},
+			WorkspaceID:       sql.NullInt64{Int64: 123, Valid: true},
+			McapPath:          "test-bucket/source.mcap",
+			Checksum:          sql.NullString{String: strings.Repeat("a", 64), Valid: true},
+			DeviceType:        "Ego Portal Stereo",
+			CameraSerial:      cameraSerial,
+			CreatedAt:         time.Date(2026, 7, 15, 1, 2, 3, 0, time.UTC),
+		}
+	}
+
+	t.Run("backfilled after the episode row was read", func(t *testing.T) {
+		w, logs := newWorker(t)
+		// 同步已经读走了 camera_serial 为空的 episode 行，stereo-split 随后才回填。
+		if _, err := w.db.Exec(`UPDATE episodes SET camera_serial = ? WHERE id = 4181`, cameraSerial); err != nil {
+			t.Fatalf("backfill camera serial: %v", err)
+		}
+
+		if _, err := w.uploadEpisodeDirect(context.Background(), 0, episodeRow(sql.NullString{})); err != nil {
+			t.Fatalf("uploadEpisodeDirect() error = %v", err)
+		}
+
+		if !strings.Contains(logs.String(), "picked up camera serial backfilled during sync: "+cameraSerial) {
+			t.Fatalf("camera serial was not reloaded from the database: %s", logs.String())
+		}
+		// 标定查询报错里带上了序列号，说明重读到的序列号确实越过了空序列号守卫。
+		if !strings.Contains(logs.String(), "query calibration.json for camera_serial "+cameraSerial) {
+			t.Fatalf("reloaded camera serial never reached calibration matching: %s", logs.String())
+		}
+	})
+
+	t.Run("already carried by the episode row", func(t *testing.T) {
+		w, logs := newWorker(t)
+		if _, err := w.db.Exec(`UPDATE episodes SET camera_serial = ? WHERE id = 4181`, cameraSerial); err != nil {
+			t.Fatalf("backfill camera serial: %v", err)
+		}
+
+		if _, err := w.uploadEpisodeDirect(context.Background(), 0, episodeRow(sql.NullString{String: cameraSerial, Valid: true})); err != nil {
+			t.Fatalf("uploadEpisodeDirect() error = %v", err)
+		}
+
+		if strings.Contains(logs.String(), "picked up camera serial backfilled during sync") {
+			t.Fatalf("unexpected reload when the episode row already carried a serial: %s", logs.String())
+		}
+		if !strings.Contains(logs.String(), "query calibration.json for camera_serial "+cameraSerial) {
+			t.Fatalf("calibration matching did not use the episode row serial: %s", logs.String())
+		}
+	})
+
+	t.Run("serial still missing", func(t *testing.T) {
+		w, logs := newWorker(t)
+
+		if _, err := w.uploadEpisodeDirect(context.Background(), 0, episodeRow(sql.NullString{})); err != nil {
+			t.Fatalf("uploadEpisodeDirect() error = %v", err)
+		}
+
+		if !strings.Contains(logs.String(), "has no camera serial; syncing without calibration") {
+			t.Fatalf("missing camera serial was not reported: %s", logs.String())
+		}
+		if strings.Contains(logs.String(), "query calibration.json for camera_serial") {
+			t.Fatalf("calibration lookup attempted without a camera serial: %s", logs.String())
+		}
+	})
+}
+
 func TestUploadEpisodeDirectRecoversHilbertRawDataByCanonicalBagName(t *testing.T) {
 	db := newTestSyncWorkerDB(t)
 	insertEpisodeForSyncWorkerTest(t, db, 4181, "approved", false)
