@@ -79,10 +79,10 @@ class E2JobContractTest(unittest.TestCase):
             ])
             self.assertEqual(
                 calibration["cameras"][0]["intrinsics"]["distortion_coefficients"],
-                [1.0, 2.0, 3.0, 4.0, 5.0],
+                [1.0, 2.0, 3.0, 4.0],
             )
             self.assertEqual(
-                calibration["cameras"][0]["intrinsics"]["distortion_model"], "plumb_bob"
+                calibration["cameras"][0]["intrinsics"]["distortion_model"], "equidistant"
             )
             self.assertEqual(
                 calibration["imus"][0]["intrinsics"]["accelerometer_noise_std_mps2"], 0.02

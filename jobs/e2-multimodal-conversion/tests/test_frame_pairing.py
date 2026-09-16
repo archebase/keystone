@@ -155,7 +155,7 @@ class E2CaptureAlignmentTest(unittest.TestCase):
             self.assertAlmostEqual(offsets["cam1"]["offset_seconds"], 0.00162890565)
 
     def test_calibration_names_the_distortion_model_it_uses(self) -> None:
-        """The capture's coefficients are plumb_bob, not equidistant."""
+        """The capture's coefficients are published as the device's equidistant model."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.calibration_fixture(root)
@@ -163,9 +163,9 @@ class E2CaptureAlignmentTest(unittest.TestCase):
             for camera in calibration["cameras"]:
                 intrinsics = camera["intrinsics"]
                 self.assertEqual(intrinsics["camera_model"], "pinhole")
-                self.assertEqual(intrinsics["distortion_model"], "plumb_bob")
-                # k1, k2, p1, p2, k3 - padded when the capture omits k3.
-                self.assertEqual(len(intrinsics["distortion_coefficients"]), 5)
+                self.assertEqual(intrinsics["distortion_model"], "equidistant")
+                # k1..k4, the set the equidistant model takes.
+                self.assertEqual(len(intrinsics["distortion_coefficients"]), 4)
 
     def test_calibration_uses_the_frame_name_the_device_declares(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -570,11 +570,11 @@ def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str,
         raise RuntimeError("camera radialDistortion must contain at least four values")
     # The device stores eight slots, and the first five are the plumb_bob set
     # (k1, k2, p1, p2, k3) a consumer actually applies to a pinhole camera; the
-    # remaining slots are carried verbatim under device_calibration. Plumb_bob is
-    # the pinhole-family convention the coefficients' magnitudes and ordering
-    # match - not the equidistant (fisheye) model this used to claim.
-    coefficients = [float(value) for value in distortion[:5]]
-    while len(coefficients) < 5:
+    # 设备按 equidistant（鱼眼）口径给出畸变，取前 4 个系数（k1..k4）；
+    # 设备实际写了 8 个槽位，完整原始值仍然逐字保留在 device_calibration 里，
+    # 所以以后无论厂商口径怎么定，都不用担心丢数据。
+    coefficients = [float(value) for value in distortion[:4]]
+    while len(coefficients) < 4:
         coefficients.append(0.0)
     return {
         "id": camera_id,
@@ -590,7 +590,7 @@ def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str,
                 "cx": float(intrinsics["centerX"]),
                 "cy": float(intrinsics["centerY"]),
             },
-            "distortion_model": "plumb_bob",
+            "distortion_model": "equidistant",
             "distortion_coefficients": coefficients,
         },
     }
