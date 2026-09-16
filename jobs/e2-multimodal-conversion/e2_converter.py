@@ -629,13 +629,10 @@ def _build_calibration(root: Path, imu_rate_hz: float | None = None) -> dict[str
     left_transform = _camera_transform(left)
     right_transform = _camera_transform(right)
     camera_to_camera = right_transform @ np.linalg.inv(left_transform)
-    # The camera extrinsics live in whichever frame the device names in its own
-    # document ("group", observed as "tracking"). Claim only that: whether this
-    # frame shares the IMU's origin is not something the capture states, so
-    # calling it "imu0" - as this used to - asserted more than we know.
-    source_frame = left_document.get("group")
-    if not isinstance(source_frame, str) or not source_frame:
-        source_frame = "device"
+    # 相机外参是在 IMU 坐标系下给出的，下游靠 imu0 -> cam0 -> cam1 这条链融合。
+    # 设备文件里还有一个看起来像坐标系的字段 camera_params.json 的 "group"
+    # （值为 "tracking"）：它是固件写死的“标定分组名”，不是父坐标系，不能拿来当
+    # from_frame（之前误用过，已改回）。
     return {
         "schema": "archebase.calibration",
         "schema_version": "1.0",
@@ -676,7 +673,7 @@ def _build_calibration(root: Path, imu_rate_hz: float | None = None) -> dict[str
         "extrinsics": {
             "convention": "p_to = R * p_from + t",
             "transforms": [
-                {"from_frame": source_frame, "to_frame": "cam0",
+                {"from_frame": "imu0", "to_frame": "cam0",
                  "matrix": left_transform.tolist()},
                 {"from_frame": "cam0", "to_frame": "cam1", "matrix": camera_to_camera.tolist()},
             ],

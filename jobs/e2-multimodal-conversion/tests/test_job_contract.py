@@ -88,7 +88,7 @@ class E2JobContractTest(unittest.TestCase):
                 calibration["imus"][0]["intrinsics"]["accelerometer_noise_std_mps2"], 0.02
             )
             self.assertEqual([(item["from_frame"], item["to_frame"]) for item in calibration["extrinsics"]["transforms"]], [
-                ("tracking", "cam0"), ("cam0", "cam1"),
+                ("imu0", "cam0"), ("cam0", "cam1"),
             ])
             self.assertEqual(calibration["extrinsics"]["transforms"][1]["matrix"][0][3], 0.1)
             self.assertEqual([item["offset_seconds"] for item in calibration["temporal_extrinsics"]], [-0.001, -0.002])

@@ -167,13 +167,14 @@ class E2CaptureAlignmentTest(unittest.TestCase):
                 # k1..k4, the set the equidistant model takes.
                 self.assertEqual(len(intrinsics["distortion_coefficients"]), 4)
 
-    def test_calibration_uses_the_frame_name_the_device_declares(self) -> None:
+    def test_calibration_uses_the_imu_frame_as_the_camera_parent(self) -> None:
+        """Camera extrinsics chain from imu0; the capture's "group" is just a label."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.calibration_fixture(root)
             calibration = self.build_calibration(root)
             self.assertEqual(
-                calibration["extrinsics"]["transforms"][0]["from_frame"], "tracking"
+                calibration["extrinsics"]["transforms"][0]["from_frame"], "imu0"
             )
 
     def test_calibration_carries_the_raw_device_numbers(self) -> None:
