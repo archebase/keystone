@@ -29,6 +29,7 @@ COPY jobs/stereo-split/requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url "${PYPI_INDEX_URL}" --timeout 120 --retries 5 -r /tmp/requirements.txt
 
+COPY jobs/stereo-split/color_consistency.py /app/color_consistency.py
 COPY jobs/stereo-split/convert_mcap_stereo_h264.py /app/convert_mcap_stereo_h264.py
 COPY jobs/stereo-split/imu_decoder.py /app/imu_decoder.py
 COPY jobs/stereo-split/run_processing.py /app/run_processing.py

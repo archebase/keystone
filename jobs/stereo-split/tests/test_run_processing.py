@@ -675,5 +675,46 @@ class RunProcessingTest(unittest.TestCase):
             self.assertNotIn("camera_serial", metadata["stats"])
 
 
+class ColorConsistencySummaryTest(unittest.TestCase):
+    def test_projects_the_fitted_report_onto_manifest_fields(self) -> None:
+        report = {
+            "algorithm_version": "stereo-color-v1",
+            "reference_eye": "left",
+            "decision": "applied",
+            "reason": "validation_improved",
+            "sampled_frames": 56,
+            "matches_before_filter": 18784,
+            "matches_after_filter": 15867,
+            "train_samples": 8119,
+            "validation_samples": 7748,
+            "baseline_ciede2000_median": 13.31,
+            "corrected_ciede2000_median": 4.01,
+            "model": {
+                "gain_bins": 8,
+                "spatial_grid": 10,
+                "strength": 1.0,
+                "highlight_protect": 245,
+                "anchors": [[0.0], [0.0], [0.0]],
+                "gains": [[1.0], [1.0], [1.0]],
+                "spatial_gain": [[[1.0, 1.0, 1.0]]],
+                "sha256": "ab" * 32,
+            },
+        }
+
+        summary = processing_runner.color_consistency_summary(report, 1106)
+
+        self.assertEqual(summary["corrected_frames"], 1106)
+        self.assertEqual(summary["decision"], "applied")
+        self.assertEqual(summary["model_sha256"], "ab" * 32)
+        self.assertEqual(summary["spatial_grid"], 10)
+        self.assertEqual(summary["baseline_ciede2000_median"], 13.31)
+        self.assertNotIn("model", summary)
+        self.assertNotIn("anchors", summary)
+
+    def test_returns_none_without_a_report(self) -> None:
+        self.assertIsNone(processing_runner.color_consistency_summary(None, 0))
+        self.assertIsNone(processing_runner.color_consistency_summary({}, 0))
+
+
 if __name__ == "__main__":
     unittest.main()
