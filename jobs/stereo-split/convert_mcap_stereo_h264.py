@@ -26,6 +26,11 @@ from mcap.writer import CompressionType, Writer
 import numpy as np
 from rosbags.typesys import Stores, get_typestore
 
+from color_consistency import (
+    ColorConsistencyCalibrator,
+    ColorConsistencyConfig,
+    ColorCorrectionPlan,
+)
 from imu_decoder import ImuSample, decode_imu_from_bgr
 
 
@@ -147,6 +152,9 @@ class ConverterConfig:
     max_bitrate: str = "16M"
     buffer_size: str = "24M"
     gop: int = 20
+    #: Fit and apply the right-to-left colour-consistency correction. Only the
+    #: joined H.264 path supports it; split inputs keep their payloads untouched.
+    apply_color_consistency: bool = True
 
 
 @dataclass
@@ -166,6 +174,12 @@ class ConvertStats:
     timestamp_log_repair_applied: bool = False
     timestamp_publish_repair_applied: bool = False
     timestamp_repaired_messages: int = 0
+    color_decision: str = ""
+    color_sampled_frames: int = 0
+    color_matches_before_filter: int = 0
+    color_matches_after_filter: int = 0
+    color_corrected_frames: int = 0
+    color_report: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -863,8 +877,13 @@ class DualH264Encoder:
 
 
 class StereoSplitH264Converter:
-    def __init__(self, config: ConverterConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ConverterConfig | None = None,
+        color_config: ColorConsistencyConfig | None = None,
+    ) -> None:
         self.config = config or ConverterConfig()
+        self.color_config = color_config or ColorConsistencyConfig()
         self.typestore = get_typestore(Stores.ROS2_JAZZY)
         self.msg = self.typestore.types
 
@@ -951,6 +970,10 @@ class StereoSplitH264Converter:
                     f"H.264 input requires source IMU topic: {config.imu_topic}"
                 )
             generate_imu = input_codec == "jpeg" and source_imu_messages == 0
+            color_plan: ColorCorrectionPlan | None = None
+            if input_codec == "h264" and config.apply_color_consistency:
+                source.seek(0)
+                color_plan = self._calibrate_color(source, config, stats)
             source.seek(0)
             reader = make_reader(source)
 
@@ -993,6 +1016,9 @@ class StereoSplitH264Converter:
                         f"frame {frame.shape[1]}x{frame.shape[0]} is smaller than "
                         f"required {required_width}x{config.eye_height}"
                     )
+                if color_plan is not None and color_plan.applied:
+                    frame = self._correct_right_eye(frame, config, color_plan)
+                    stats.color_corrected_frames += 1
                 if encoder is None:
                     # JPEG captures are upside down; H.264 captures already have final orientation.
                     encoder = DualH264Encoder(
@@ -1132,6 +1158,11 @@ class StereoSplitH264Converter:
                     )
                 if video_metadata:
                     raise RuntimeError("H.264 encoder did not return every submitted frame")
+                if color_plan is not None and color_plan.applied \
+                        and stats.color_corrected_frames != stats.right_videos:
+                    raise RuntimeError(
+                        "color correction did not cover every right-eye frame: "
+                        f"{stats.color_corrected_frames}/{stats.right_videos}")
                 ordered_writer.flush_all()
                 writer.finish()
             except BaseException:
@@ -1143,6 +1174,94 @@ class StereoSplitH264Converter:
 
         stats.copied_topics = len(copied_topic_ids)
         return stats
+
+    def _calibrate_color(
+        self,
+        source: BinaryIO,
+        config: ConverterConfig,
+        stats: ConvertStats,
+    ) -> ColorCorrectionPlan:
+        """Decode the joined H.264 stream once and fit one fixed colour correction.
+
+        H.264 is inter-frame coded, so the sampled frames come from a full
+        sequential decode; only feature matching on the sampled frames is
+        expensive. The fitted model is frozen for the whole recording, so the
+        correction cannot flicker over time.
+        """
+        calibrator = ColorConsistencyCalibrator(self.color_config)
+        frame_width = config.metadata_width + config.eye_width * 2
+        decoder: H264FrameDecoder | None = None
+        aborted = False
+        index = 0
+
+        def observe(frame: np.ndarray) -> None:
+            nonlocal index
+            start = config.metadata_width + config.eye_width
+            calibrator.observe(
+                index,
+                frame[0:config.eye_height, config.metadata_width:start],
+                frame[0:config.eye_height, start:frame_width],
+            )
+            index += 1
+
+        for schema, _, message in make_reader(source).iter_messages(
+            topics=[config.input_topic], log_time_order=False
+        ):
+            # The main pass owns input validation. Anything this advisory pass
+            # cannot sample stops the calibration and lets the main pass report
+            # the canonical error, including mixed JPEG and H.264 frames.
+            if schema is None or schema.name != "sensor_msgs/msg/CompressedImage":
+                aborted = True
+                break
+            compressed = self.typestore.deserialize_cdr(
+                message.data, "sensor_msgs/msg/CompressedImage"
+            )
+            if _compressed_image_codec(compressed.format) != "h264":
+                aborted = True
+                break
+            access_unit = bytes(compressed.data)
+            if decoder is None:
+                if 5 not in _h264_nal_types(access_unit):
+                    # Frames before the first IDR cannot be decoded. The main
+                    # pass skips the same messages, so skipping them here keeps
+                    # both passes counting the same decoded frames.
+                    continue
+                decoder = H264FrameDecoder(frame_width, config.eye_height)
+            for frame in decoder.submit(access_unit):
+                observe(frame)
+        if decoder is not None:
+            if aborted:
+                decoder.abort()
+            else:
+                for frame in decoder.finish():
+                    observe(frame)
+
+        plan = calibrator.fit()
+        report = plan.report
+        stats.color_decision = plan.decision
+        stats.color_sampled_frames = report.sampled_frames
+        stats.color_matches_before_filter = report.matches_before_filter
+        stats.color_matches_after_filter = report.matches_after_filter
+        stats.color_report = report.as_dict()
+        return plan
+
+    @staticmethod
+    def _correct_right_eye(
+        frame: np.ndarray,
+        config: ConverterConfig,
+        plan: ColorCorrectionPlan,
+    ) -> np.ndarray:
+        """Return a writable frame whose right-eye crop carries the correction.
+
+        The crop offsets match the encoder filter graph exactly: joined H.264
+        input is never rotated, so this crop and the FFmpeg crop are the same.
+        """
+        start = config.metadata_width + config.eye_width
+        corrected = np.ascontiguousarray(frame).copy()
+        corrected[0:config.eye_height, start:start + config.eye_width] = plan.apply(
+            frame[0:config.eye_height, start:start + config.eye_width]
+        )
+        return corrected
 
     def _capture_source_camera_serial(
         self, stats: ConvertStats, schema, message

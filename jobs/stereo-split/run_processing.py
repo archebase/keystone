@@ -125,6 +125,47 @@ def write_json(path: Path, value: dict[str, object]) -> None:
         os.fsync(stream.fileno())
 
 
+def color_consistency_summary(
+    report: dict[str, object] | None, corrected_frames: int
+) -> dict[str, object] | None:
+    """Project the fitted colour report onto the manifest's lean summary.
+
+    The full report, including the fitted gain curves and spatial field, stays
+    in the output metadata; the manifest only carries what a validator needs to
+    describe and bound the correction.
+    """
+    if not report:
+        return None
+    summary: dict[str, object] = {"corrected_frames": corrected_frames}
+    for key in (
+        "algorithm_version",
+        "reference_eye",
+        "decision",
+        "reason",
+        "sampled_frames",
+        "matches_before_filter",
+        "matches_after_filter",
+        "train_samples",
+        "validation_samples",
+        "baseline_ciede2000_median",
+        "corrected_ciede2000_median",
+    ):
+        if report.get(key) is not None:
+            summary[key] = report[key]
+    model = report.get("model")
+    if isinstance(model, dict):
+        for source, target in (
+            ("sha256", "model_sha256"),
+            ("gain_bins", "gain_bins"),
+            ("spatial_grid", "spatial_grid"),
+            ("strength", "strength"),
+            ("highlight_protect", "highlight_protect"),
+        ):
+            if model.get(source) is not None:
+                summary[target] = model[source]
+    return summary
+
+
 def require_scratch_capacity(scratch: Path, source_size_bytes: int) -> None:
     scratch.mkdir(parents=True, exist_ok=True)
     required = source_size_bytes * SCRATCH_SPACE_MULTIPLIER
@@ -296,6 +337,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     )
     stats_payload = asdict(stats)
     camera_serial = str(stats_payload.pop("camera_serial", "")).strip()
+    color_consistency = color_consistency_summary(
+        stats_payload.get("color_report"), stats_payload["color_corrected_frames"]
+    )
+    manifest_stats = {
+        key: value for key, value in stats_payload.items() if key != "color_report"
+    }
     manifest_calibration = None
     processing_mode = "timestamp_repair" if stats.input_mode == "split_h264" else "convert"
     metadata: dict[str, object] = {
@@ -318,6 +365,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     }
     if camera_serial:
         metadata["camera_serial"] = camera_serial
+    if color_consistency is not None:
+        metadata["color_consistency"] = color_consistency
     write_json(local_metadata, metadata)
     mcap_identity = require_mcap_output(local_mcap)
     metadata_identity = require_output(local_metadata)
@@ -342,12 +391,14 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "mcap": {"name": OUTPUT_MCAP_NAME, **asdict(mcap_identity)},
             "metadata": {"name": OUTPUT_METADATA_NAME, **asdict(metadata_identity)},
         },
-        "stats": stats_payload,
+        "stats": manifest_stats,
         "started_at": started_at,
         "finished_at": utc_now(),
     }
     if camera_serial:
         manifest["camera_serial"] = camera_serial
+    if color_consistency is not None:
+        manifest["color_consistency"] = color_consistency
     if manifest_calibration is not None:
         manifest["calibration"] = manifest_calibration
     write_json(local_manifest, manifest)
