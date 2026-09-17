@@ -350,7 +350,7 @@ func loadDerivativeConfig() DerivativeConfig {
 		OrbitTimeoutSec: 30,
 		OutputPrefix:    strings.Trim(strings.TrimSpace(getEnv("KEYSTONE_DERIVATIVE_TOS_PREFIX", "derived/episodes")), "/"),
 		Resources: KubernetesResourcesConfig{
-			Requests: map[string]string{"cpu": "2", "memory": "4Gi", "ephemeral-storage": "4Gi"},
+			Requests: map[string]string{"cpu": "3", "memory": "4Gi", "ephemeral-storage": "4Gi"},
 			Limits:   map[string]string{"cpu": "8", "memory": "8Gi", "ephemeral-storage": "100Gi"},
 		},
 		ActiveDeadlineSec:   3600,

@@ -219,7 +219,7 @@ func TestLoadStereoSplitConfig(t *testing.T) {
 	}
 	if cfg.Derivatives.OrbitTimeoutSec != 30 ||
 		cfg.Derivatives.PollIntervalSec != 17 ||
-		cfg.Derivatives.Resources.Requests["cpu"] != "2" ||
+		cfg.Derivatives.Resources.Requests["cpu"] != "3" ||
 		cfg.Derivatives.Resources.Limits["cpu"] != "8" ||
 		cfg.Derivatives.Resources.Limits["memory"] != "8Gi" ||
 		cfg.Derivatives.Resources.Limits["ephemeral-storage"] != "100Gi" {
