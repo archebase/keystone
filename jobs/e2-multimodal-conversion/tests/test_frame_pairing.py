@@ -177,26 +177,22 @@ class E2CaptureAlignmentTest(unittest.TestCase):
                 calibration["extrinsics"]["transforms"][0]["from_frame"], "imu0"
             )
 
-    def test_calibration_carries_the_raw_device_numbers(self) -> None:
+    def test_calibration_omits_the_raw_device_documents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.calibration_fixture(root)
             calibration = self.build_calibration(root, imu_rate_hz=799.43)
-            raw = calibration["device_calibration"]
-            # The eight distortion slots and the bias set survive verbatim even
-            # though the interpreted block keeps only what it can name.
-            self.assertEqual(
-                len(raw["cameras"]["Camera0"]["cameras"][0]["intrinsics"]["radialDistortion"]),
-                8,
-            )
-            self.assertAlmostEqual(raw["imu"]["imu"]["bias"]["accelerometer_mps2"][2], 0.122)
-            # Per-sample standard deviations, named as such, next to the rate a
-            # consumer needs to turn them into continuous-time densities.
+            # Consumers asked for the interpreted schema only; the raw device
+            # documents stay in the capture tar (Camera0/camera_params.json,
+            # Sensors/imu_calibration.json), not in the output.
+            self.assertNotIn("device_calibration", calibration)
+            # Per-sample standard deviations from the device, published under
+            # the schema's Kalibr-style names verbatim, next to the rate.
             self.assertEqual(
                 sorted(calibration["imus"][0]["intrinsics"]),
                 [
-                    "accelerometer_bias_std_mps2", "accelerometer_noise_std_mps2",
-                    "gyroscope_bias_std_rads", "gyroscope_noise_std_rads",
+                    "accelerometer_noise_density", "accelerometer_random_walk",
+                    "gyroscope_noise_density", "gyroscope_random_walk",
                 ],
             )
             self.assertAlmostEqual(calibration["imus"][0]["update_rate_hz"], 799.43)

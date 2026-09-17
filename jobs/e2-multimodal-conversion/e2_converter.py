@@ -560,27 +560,23 @@ def _camera_transform(camera: dict[str, object]) -> np.ndarray:
     return transform
 
 
-def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str,
-                        frame_id: str) -> dict[str, object]:
+def _camera_calibration(camera: dict[str, object], camera_id: str, topic: str) -> dict[str, object]:
     intrinsics = camera.get("intrinsics")
     if not isinstance(intrinsics, dict):
         raise RuntimeError("camera calibration is missing intrinsics")
     distortion = intrinsics.get("radialDistortion")
     if not isinstance(distortion, list) or len(distortion) < 4:
         raise RuntimeError("camera radialDistortion must contain at least four values")
-    # The device stores eight slots, and the first five are the plumb_bob set
-    # (k1, k2, p1, p2, k3) a consumer actually applies to a pinhole camera; the
     # 设备按 equidistant（鱼眼）口径给出畸变，取前 4 个系数（k1..k4）；
-    # 设备实际写了 8 个槽位，完整原始值仍然逐字保留在 device_calibration 里，
-    # 所以以后无论厂商口径怎么定，都不用担心丢数据。
+    # 设备实际写了 8 个槽位，原始文档完整保留在采集的 tar 包里
+    # （Camera0/camera_params.json、Sensors/imu_calibration.json），
+    # 所以无论厂商口径怎么定，源数据都不会丢。
     coefficients = [float(value) for value in distortion[:4]]
     while len(coefficients) < 4:
         coefficients.append(0.0)
     return {
         "id": camera_id,
-        "name": camera_id,
         "topic": topic,
-        "frame_id": frame_id,
         "resolution": [int(camera["width"]), int(camera["height"])],
         "intrinsics": {
             "camera_model": "pinhole",
@@ -637,8 +633,8 @@ def _build_calibration(root: Path, imu_rate_hz: float | None = None) -> dict[str
         "schema": "archebase.calibration",
         "schema_version": "1.0",
         "cameras": [
-            _camera_calibration(left, "cam0", LEFT_TOPIC, "camera_left_optical"),
-            _camera_calibration(right, "cam1", RIGHT_TOPIC, "camera_right_optical"),
+            _camera_calibration(left, "cam0", LEFT_TOPIC),
+            _camera_calibration(right, "cam1", RIGHT_TOPIC),
         ],
         "imus": [{
             "id": "imu0",
@@ -648,24 +644,26 @@ def _build_calibration(root: Path, imu_rate_hz: float | None = None) -> dict[str
             # value", and nothing in this repository applies bias/scale/
             # non-orthogonality to a sample (calib_json.cpp only writes them
             # out). So the bag already carries the corrected values, and a
-            # consumer must not apply device_calibration's terms a second time.
+            # consumer must not apply the device document's terms a second time.
             "model": "calibrated",
-            # The device reports per-sample standard deviations, not the
-            # continuous-time densities a Kalibr-style config expects. The names
-            # say which is which, and update_rate_hz is what a consumer needs to
-            # convert (density = std * sqrt(1/rate)).
+            # The device reports per-sample standard deviations while the
+            # schema names are Kalibr-style densities/random walks. The consumer
+            # side accepts the device values verbatim under the schema names
+            # (see convert_stereo_capture_to_mcap.py), so no sqrt-rate
+            # conversion is applied here; update_rate_hz is published alongside
+            # for anyone who needs to convert later.
             "update_rate_hz": round(float(imu_rate_hz), 3) if imu_rate_hz else 800.0,
             "intrinsics": {
-                "accelerometer_noise_std_mps2": _scalar_calibration_value(
+                "accelerometer_noise_density": _scalar_calibration_value(
                     noise["accel_noise_std_mps2"], "accel_noise_std_mps2"
                 ),
-                "accelerometer_bias_std_mps2": _scalar_calibration_value(
+                "accelerometer_random_walk": _scalar_calibration_value(
                     noise["accel_bias_std_mps2"], "accel_bias_std_mps2"
                 ),
-                "gyroscope_noise_std_rads": _scalar_calibration_value(
+                "gyroscope_noise_density": _scalar_calibration_value(
                     noise["gyro_noise_std_rads"], "gyro_noise_std_rads"
                 ),
-                "gyroscope_bias_std_rads": _scalar_calibration_value(
+                "gyroscope_random_walk": _scalar_calibration_value(
                     noise["gyro_bias_std_rads"], "gyro_bias_std_rads"
                 ),
             },
@@ -690,15 +688,6 @@ def _build_calibration(root: Path, imu_rate_hz: float | None = None) -> dict[str
                 "convention": "t_imu = t_camera + offset_seconds",
             },
         ],
-        # The capture's own calibration documents, copied verbatim: the device
-        # writes coefficients and frame names under conventions of its own, and
-        # an 8-slot distortion array or a bias/scale set has no faithful place in
-        # the interpreted block above. Keeping them here means our reading can be
-        # incomplete - or wrong - without the capture's numbers being lost.
-        "device_calibration": {
-            "cameras": {"Camera0": left_document, "Camera1": right_document},
-            "imu": imu_document,
-        },
     }
 
 
@@ -876,7 +865,11 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
     imu_span_ns = imu_samples[-1][0] - imu_samples[0][0]
     imu_rate_hz = (len(imu_samples) - 1) * 1e9 / imu_span_ns if imu_span_ns > 0 else None
     calibration = _build_calibration(root, imu_rate_hz)
-    (output / "calibration.json").write_text(json.dumps(calibration, indent=2, sort_keys=True) + "\n")
+    # Do not sort keys: consumers expect the schema's declaration order, with
+    # camera_model -> parameters -> distortion_model -> distortion_coefficients
+    # inside each camera's intrinsics (sorting puts distortion_coefficients
+    # before distortion_model).
+    (output / "calibration.json").write_text(json.dumps(calibration, indent=2) + "\n")
     start_ns, end_ns = (min(timestamps), max(timestamps)) if timestamps else (0, 0)
     topics = [(LEFT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[LEFT_TOPIC]),
               (RIGHT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[RIGHT_TOPIC]),

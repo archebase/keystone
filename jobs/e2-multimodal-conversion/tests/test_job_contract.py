@@ -84,18 +84,35 @@ class E2JobContractTest(unittest.TestCase):
             self.assertEqual(
                 calibration["cameras"][0]["intrinsics"]["distortion_model"], "equidistant"
             )
+            # Consumers read the intrinsics in the schema's declaration order;
+            # the written JSON must not sort keys (sorting would place
+            # distortion_coefficients before distortion_model).
             self.assertEqual(
-                calibration["imus"][0]["intrinsics"]["accelerometer_noise_std_mps2"], 0.02
+                list(calibration["cameras"][0]["intrinsics"].keys()),
+                ["camera_model", "parameters", "distortion_model", "distortion_coefficients"],
+            )
+            serialized = json.dumps(calibration["cameras"][0]["intrinsics"])
+            self.assertLess(
+                serialized.index("\"camera_model\""), serialized.index("\"parameters\"")
+            )
+            self.assertLess(
+                serialized.index("\"parameters\""), serialized.index("\"distortion_model\"")
+            )
+            self.assertLess(
+                serialized.index("\"distortion_model\""), serialized.index("\"distortion_coefficients\"")
+            )
+            self.assertEqual(
+                calibration["imus"][0]["intrinsics"]["accelerometer_noise_density"], 0.02
             )
             self.assertEqual([(item["from_frame"], item["to_frame"]) for item in calibration["extrinsics"]["transforms"]], [
                 ("imu0", "cam0"), ("cam0", "cam1"),
             ])
             self.assertEqual(calibration["extrinsics"]["transforms"][1]["matrix"][0][3], 0.1)
             self.assertEqual([item["offset_seconds"] for item in calibration["temporal_extrinsics"]], [-0.001, -0.002])
-            # The device's own documents travel with the interpretation.
-            self.assertEqual(
-                calibration["device_calibration"]["cameras"]["Camera0"]["group"], "tracking"
-            )
+            # The device's raw documents are not embedded: consumers asked for
+            # the interpreted schema only, and the capture tar keeps the
+            # originals under Camera0/ and Sensors/.
+            self.assertNotIn("device_calibration", calibration)
 
     def test_manifest_does_not_advertise_external_calibration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
