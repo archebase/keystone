@@ -7,9 +7,9 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,7 +22,8 @@ import (
 )
 
 type fakeOperatorPlanSyncer struct {
-	err error
+	err   error
+	calls int32
 }
 
 func (s *fakeOperatorPlanSyncer) Configured() bool {
@@ -33,10 +34,15 @@ func (s *fakeOperatorPlanSyncer) SyncWorkspace(
 	context.Context,
 	int64,
 ) (*services.DCPlanSyncResult, error) {
+	atomic.AddInt32(&s.calls, 1)
 	if s.err != nil {
 		return nil, s.err
 	}
 	return &services.DCPlanSyncResult{LastSyncedAt: time.Now().UTC()}, nil
+}
+
+func (s *fakeOperatorPlanSyncer) callCount() int {
+	return int(atomic.LoadInt32(&s.calls))
 }
 
 func TestRefreshOperatorPlansFiltersAssignmentAndReportsProgress(t *testing.T) {
@@ -94,25 +100,37 @@ func TestRefreshOperatorPlansExcludesCollectedPlans(t *testing.T) {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 }
-func TestRefreshOperatorPlansFallsBackToStaleProjection(t *testing.T) {
+
+// Regression: RefreshOperatorPlans used to run a full SyncWorkspace inline. A single
+// SyncWorkspace costs O(plan count) transactions because the workstation projector
+// and the pending pool each begin one transaction per plan, so N devices polling the
+// endpoint amplified into thousands of concurrent transactions, exhausted the
+// connection pool and deadlocked. The projection is converged by the periodic
+// hilbert sync (server.startPeriodicDCPlanSync) instead.
+func TestRefreshOperatorPlansDoesNotSyncInline(t *testing.T) {
 	db := newTestOperatorPlanDB(t)
 	defer db.Close()
 	seedOperatorPlanFixture(t, db)
 
-	router := newTestOperatorPlanRouter(db, &fakeOperatorPlanSyncer{err: errors.New("hilbert down")})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/plans/refresh", nil)
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d want=%d body=%s", w.Code, http.StatusOK, w.Body.String())
+	syncer := &fakeOperatorPlanSyncer{}
+	router := newTestOperatorPlanRouter(db, syncer)
+	for i := 0; i < 5; i++ {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/operator/plans/refresh", nil)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status=%d want=%d body=%s", i, w.Code, http.StatusOK, w.Body.String())
+		}
+		var response OperatorPlanRefreshResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("request %d unmarshal response: %v", i, err)
+		}
+		if len(response.Items) != 1 {
+			t.Fatalf("request %d expected the cached projection, got %#v", i, response)
+		}
 	}
-
-	var response OperatorPlanRefreshResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if !response.Stale || len(response.Items) != 1 || response.LastSyncedAt == "" {
-		t.Fatalf("unexpected stale response: %#v", response)
+	if calls := syncer.callCount(); calls != 0 {
+		t.Fatalf("refresh must not sync, but SyncWorkspace was called %d time(s)", calls)
 	}
 }
 

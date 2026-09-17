@@ -458,7 +458,12 @@ func loadTaskSupplyWorkstation(
 	} else {
 		query += " ORDER BY ws.is_current DESC, ws.id DESC"
 	}
-	query += " LIMIT 1" + taskSupplyForUpdateClause(tx)
+	// Read-only lookup: this transaction goes on to write tasks only, so the
+	// workstations, data_collectors and robots rows read here are left unlocked.
+	// With FOR UPDATE this three-table join locked every row it scanned and, since
+	// this path reaches workstations before data_collectors while the projector
+	// reaches data_collectors first, the two paths could deadlock.
+	query += " LIMIT 1"
 
 	var workstation taskSupplyWorkstationRow
 	if err := tx.GetContext(ctx, &workstation, query, args...); err != nil {
