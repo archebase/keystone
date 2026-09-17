@@ -621,10 +621,6 @@ func (s *Server) Start() error {
 	s.isRunning = true
 	s.shutdownMu.Unlock()
 
-	s.syncWorkspacesOnStartup()
-	s.syncDCPlansOnStartup()
-	s.startPeriodicDCPlanSync()
-
 	logger.Printf("[SERVER] Starting HTTP server on %s", s.cfg.Server.BindAddr)
 	logger.Printf("[SERVER] Swagger UI: http://localhost%s/swagger/index.html", s.cfg.Server.BindAddr)
 
@@ -633,6 +629,12 @@ func (s *Server) Start() error {
 			logger.Printf("[SERVER] HTTP server error: %v", err)
 		}
 	}()
+
+	// Hilbert plan/workstation/pending-pool convergence runs in the background only.
+	// It must be started after the listener: a slow Hilbert round used to block
+	// readiness, so the startup probe killed the container mid-sync, the transaction
+	// rolled back and the whole sync repeated forever on the next attempt.
+	s.startPeriodicDCPlanSync()
 
 	// Start WebSocket server on separate port
 	logger.Printf("[SERVER] Transfer WebSocket server listening on %d", s.cfg.AxonTransfer.WSPort)
@@ -671,12 +673,12 @@ func (s *Server) EpisodeQAEnqueuer() interface {
 	return s.qa
 }
 
-func (s *Server) syncWorkspacesOnStartup() {
+func (s *Server) syncWorkspacesOnStartup(ctx context.Context) {
 	if s.workspaceSync == nil || !s.workspaceSync.Configured() {
 		logger.Printf("[WORKSPACE] Startup Hilbert workspace sync skipped: service identity config incomplete")
 		return
 	}
-	result, err := s.workspaceSync.Sync(context.Background())
+	result, err := s.workspaceSync.Sync(ctx)
 	if err != nil {
 		logger.Printf("[WORKSPACE] Startup Hilbert workspace sync failed: %v", err)
 		return
@@ -684,13 +686,11 @@ func (s *Server) syncWorkspacesOnStartup() {
 	logger.Printf("[WORKSPACE] Startup Hilbert workspace sync completed: synced_count=%d", result.SyncedCount)
 }
 
-func (s *Server) syncDCPlansOnStartup() {
-	s.syncDCPlansOnce(context.Background(), "Startup")
-}
-
 func (s *Server) startPeriodicDCPlanSync() {
 	if s.dcPlanSync == nil || !s.dcPlanSync.Configured() {
 		logger.Printf("[DC_PLAN] Periodic Hilbert dc plan sync skipped: service identity config incomplete")
+		// Workspace resource sync does not depend on the dc plan service identity.
+		go s.syncWorkspacesOnStartup(context.Background())
 		return
 	}
 
@@ -704,6 +704,13 @@ func (s *Server) startPeriodicDCPlanSync() {
 
 	go func() {
 		defer close(done)
+
+		// Converge once immediately instead of waiting a full ticker period, so a
+		// restart does not leave workstations and pending pools stale for minutes.
+		// Both calls run in this goroutine and no longer block the listener.
+		s.syncWorkspacesOnStartup(ctx)
+		s.syncDCPlansOnce(ctx, "Startup")
+
 		ticker := time.NewTicker(dcPlanAutoSyncInterval)
 		defer ticker.Stop()
 		for {
