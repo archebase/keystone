@@ -32,6 +32,9 @@ class ImuFrame:
     device_type: list[int]
     device_group_count: list[int]
     samples: list[ImuSample]
+    #: V4L2 frame timestamps carried by the barcode header, in device microseconds.
+    exposure_start_us: int = 0
+    exposure_end_us: int = 0
 
 
 def decode_imu_from_bgr(bgr: np.ndarray) -> ImuFrame | None:
@@ -110,7 +113,13 @@ def _decode_line(bgr: np.ndarray, row: int) -> bytes:
 
 def _decode_header(data: bytes | bytearray) -> ImuFrame:
     if data[:8] == data[8:16]:
-        return ImuFrame([DEVICE_ICM42688, 0, 0, 0, 0], [11, 0, 0, 0, 0], [])
+        return ImuFrame(
+            [DEVICE_ICM42688, 0, 0, 0, 0],
+            [11, 0, 0, 0, 0],
+            [],
+            exposure_start_us=int.from_bytes(data[0:4], "big"),
+            exposure_end_us=int.from_bytes(data[4:8], "big"),
+        )
     return ImuFrame(
         [
             ((data[0] & 0x0F) << 4) | ((data[1] & 0xF0) >> 4),
@@ -121,6 +130,8 @@ def _decode_header(data: bytes | bytearray) -> ImuFrame:
         ],
         [data[1] & 0x0F, data[3] >> 4, data[4] & 0x0F, data[6] >> 4, data[7] & 0x0F],
         [],
+        exposure_start_us=int.from_bytes(data[8:12], "big"),
+        exposure_end_us=int.from_bytes(data[12:16], "big"),
     )
 
 

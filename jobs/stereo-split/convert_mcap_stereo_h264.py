@@ -32,6 +32,12 @@ from color_consistency import (
     ColorCorrectionPlan,
 )
 from imu_decoder import ImuSample, decode_imu_from_bgr
+from imu_retiming import (
+    ImuRetimingCalibrator,
+    ImuRetimingConfig,
+    ImuRetimingPlan,
+    barcode_from_frame,
+)
 
 
 FOXGLOVE_SCHEMA_NAME = "foxglove.CompressedVideo"
@@ -155,6 +161,9 @@ class ConverterConfig:
     #: Fit and apply the right-to-left colour-consistency correction. Only the
     #: joined H.264 path supports it; split inputs keep their payloads untouched.
     apply_color_consistency: bool = True
+    #: Re-time IMU samples onto the device grid read from the image barcode.
+    #: Only the joined H.264 path carries that barcode.
+    apply_imu_retiming: bool = True
 
 
 @dataclass
@@ -180,6 +189,10 @@ class ConvertStats:
     color_matches_after_filter: int = 0
     color_corrected_frames: int = 0
     color_report: dict | None = None
+    imu_retiming_decision: str = ""
+    imu_retimed_messages: int = 0
+    imu_dropped_duplicates: int = 0
+    imu_report: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -881,9 +894,11 @@ class StereoSplitH264Converter:
         self,
         config: ConverterConfig | None = None,
         color_config: ColorConsistencyConfig | None = None,
+        imu_config: ImuRetimingConfig | None = None,
     ) -> None:
         self.config = config or ConverterConfig()
         self.color_config = color_config or ColorConsistencyConfig()
+        self.imu_config = imu_config or ImuRetimingConfig()
         self.typestore = get_typestore(Stores.ROS2_JAZZY)
         self.msg = self.typestore.types
 
@@ -971,9 +986,16 @@ class StereoSplitH264Converter:
                 )
             generate_imu = input_codec == "jpeg" and source_imu_messages == 0
             color_plan: ColorCorrectionPlan | None = None
-            if input_codec == "h264" and config.apply_color_consistency:
+            imu_plan: ImuRetimingPlan | None = None
+            if input_codec == "h264" and (
+                config.apply_color_consistency or config.apply_imu_retiming
+            ):
                 source.seek(0)
-                color_plan = self._calibrate_color(source, config, stats)
+                color_plan, imu_plan = self._analyse_joined_stream(
+                    source, config, stats,
+                    log_time_order=not timestamp_repair.requires_physical_order,
+                )
+            imu_index = 0
             source.seek(0)
             reader = make_reader(source)
 
@@ -1059,6 +1081,12 @@ class StereoSplitH264Converter:
                         if channel.topic in video_output_topics:
                             raise RuntimeError(f"input already contains output topic: {channel.topic}")
                         copied_channel = self._copy_channel(writer, schema, channel, schema_ids, channel_ids)
+                        copied_topic_ids.add(channel.id)
+                        if (channel.topic == config.imu_topic
+                                and imu_plan is not None and imu_plan.applied):
+                            imu_index = self._write_retimed_imu(
+                                ordered_writer, copied_channel, imu_plan, imu_index, message, stats)
+                            continue
                         log_time, publish_time = timestamp_cursor.message_times(
                             message.log_time, message.publish_time
                         )
@@ -1072,7 +1100,6 @@ class StereoSplitH264Converter:
                         stats.copied_messages += 1
                         if timestamp_repair.applied:
                             stats.timestamp_repaired_messages += 1
-                        copied_topic_ids.add(channel.id)
                         if channel.topic == config.imu_topic:
                             stats.imu_messages += 1
                         if channel.topic == config.serial_topic and not stats.camera_serial:
@@ -1163,6 +1190,11 @@ class StereoSplitH264Converter:
                     raise RuntimeError(
                         "color correction did not cover every right-eye frame: "
                         f"{stats.color_corrected_frames}/{stats.right_videos}")
+                if imu_plan is not None and imu_plan.applied \
+                        and imu_index != len(imu_plan.timestamps_ns):
+                    raise RuntimeError(
+                        "IMU retiming plan did not cover every source message: "
+                        f"{imu_index}/{len(imu_plan.timestamps_ns)}")
                 ordered_writer.flush_all()
                 writer.finish()
             except BaseException:
@@ -1175,41 +1207,57 @@ class StereoSplitH264Converter:
         stats.copied_topics = len(copied_topic_ids)
         return stats
 
-    def _calibrate_color(
+    def _analyse_joined_stream(
         self,
         source: BinaryIO,
         config: ConverterConfig,
         stats: ConvertStats,
-    ) -> ColorCorrectionPlan:
-        """Decode the joined H.264 stream once and fit one fixed colour correction.
+        log_time_order: bool,
+    ) -> tuple[ColorCorrectionPlan | None, ImuRetimingPlan | None]:
+        """Decode the joined stream once, for colour fitting and IMU barcodes.
 
-        H.264 is inter-frame coded, so the sampled frames come from a full
-        sequential decode; only feature matching on the sampled frames is
-        expensive. The fitted model is frozen for the whole recording, so the
-        correction cannot flicker over time.
+        H.264 is inter-frame coded, so every frame has to be decoded in order
+        even though only a few are sampled for colour matching; the metadata
+        barcode of each decoded frame is cheap to read in the same pass and is
+        what anchors the IMU device grid.
         """
-        calibrator = ColorConsistencyCalibrator(self.color_config)
+        color_calibrator = (
+            ColorConsistencyCalibrator(self.color_config)
+            if config.apply_color_consistency else None
+        )
+        imu_calibrator = (
+            ImuRetimingCalibrator(self.imu_config)
+            if config.apply_imu_retiming else None
+        )
         frame_width = config.metadata_width + config.eye_width * 2
         decoder: H264FrameDecoder | None = None
         aborted = False
-        index = 0
+        decoded_index = 0
+        video_index = 0
+        pending: deque[tuple[int, int]] = deque()
 
-        def observe(frame: np.ndarray) -> None:
-            nonlocal index
-            start = config.metadata_width + config.eye_width
-            calibrator.observe(
-                index,
-                frame[0:config.eye_height, config.metadata_width:start],
-                frame[0:config.eye_height, start:frame_width],
-            )
-            index += 1
+        def observe(frame: np.ndarray, source_index: int, log_time: int) -> None:
+            nonlocal decoded_index
+            if color_calibrator is not None:
+                start = config.metadata_width + config.eye_width
+                color_calibrator.observe(
+                    decoded_index,
+                    frame[0:config.eye_height, config.metadata_width:start],
+                    frame[0:config.eye_height, start:frame_width],
+                )
+            if imu_calibrator is not None:
+                imu_calibrator.observe_frame(
+                    source_index,
+                    barcode_from_frame(source_index, log_time, decode_imu_from_bgr(frame)),
+                )
+            decoded_index += 1
 
         for schema, _, message in make_reader(source).iter_messages(
             topics=[config.input_topic], log_time_order=False
         ):
             # The main pass owns input validation. Anything this advisory pass
-            # cannot sample stops the calibration and lets the main pass report
-            # the canonical error, including mixed JPEG and H.264 frames.
+            # cannot sample stops the analysis and lets the main pass report the
+            # canonical error, including mixed JPEG and H.264 frames.
             if schema is None or schema.name != "sensor_msgs/msg/CompressedImage":
                 aborted = True
                 break
@@ -1222,28 +1270,93 @@ class StereoSplitH264Converter:
             access_unit = bytes(compressed.data)
             if decoder is None:
                 if 5 not in _h264_nal_types(access_unit):
-                    # Frames before the first IDR cannot be decoded. The main
-                    # pass skips the same messages, so skipping them here keeps
-                    # both passes counting the same decoded frames.
+                    # Frames before the first IDR cannot be decoded, but their
+                    # IMU packets are still in the stream and still on the grid.
+                    if imu_calibrator is not None:
+                        imu_calibrator.observe_frame(video_index, None)
+                    video_index += 1
                     continue
                 decoder = H264FrameDecoder(frame_width, config.eye_height)
+            pending.append((video_index, message.log_time))
+            video_index += 1
             for frame in decoder.submit(access_unit):
-                observe(frame)
+                source_index, log_time = pending.popleft() if pending else (video_index - 1, 0)
+                observe(frame, source_index, log_time)
         if decoder is not None:
             if aborted:
                 decoder.abort()
             else:
                 for frame in decoder.finish():
-                    observe(frame)
+                    source_index, log_time = pending.popleft() if pending else (video_index - 1, 0)
+                    observe(frame, source_index, log_time)
 
-        plan = calibrator.fit()
-        report = plan.report
-        stats.color_decision = plan.decision
-        stats.color_sampled_frames = report.sampled_frames
-        stats.color_matches_before_filter = report.matches_before_filter
-        stats.color_matches_after_filter = report.matches_after_filter
-        stats.color_report = report.as_dict()
-        return plan
+        color_plan = None
+        if color_calibrator is not None:
+            color_plan = color_calibrator.fit()
+            report = color_plan.report
+            stats.color_decision = color_plan.decision
+            stats.color_sampled_frames = report.sampled_frames
+            stats.color_matches_before_filter = report.matches_before_filter
+            stats.color_matches_after_filter = report.matches_after_filter
+            stats.color_report = report.as_dict()
+
+        imu_plan = None
+        if imu_calibrator is not None and not aborted:
+            # The source IMU stream is read in the order the conversion pass
+            # emits it, so a plan position always names the same message.
+            source.seek(0)
+            for _, _, message in make_reader(source).iter_messages(
+                topics=[config.imu_topic], log_time_order=log_time_order
+            ):
+                imu = self.typestore.deserialize_cdr(message.data, "sensor_msgs/msg/Imu")
+                acceleration = imu.linear_acceleration
+                imu_calibrator.observe_message((
+                    acceleration.x * 1000.0 / 9.80665,
+                    acceleration.y * 1000.0 / 9.80665,
+                    acceleration.z * 1000.0 / 9.80665,
+                ))
+            imu_plan = imu_calibrator.resolve()
+            report = imu_plan.report
+            stats.imu_retiming_decision = report.decision
+            stats.imu_retimed_messages = report.messages_retimed
+            stats.imu_dropped_duplicates = report.duplicates_dropped
+            stats.imu_report = report.as_dict()
+        return color_plan, imu_plan
+
+    def _write_retimed_imu(
+        self,
+        writer,
+        channel_id: int,
+        plan: ImuRetimingPlan,
+        index: int,
+        message,
+        stats: ConvertStats,
+    ) -> int:
+        """Write one IMU message with its exact device-grid timestamp.
+
+        The payload's own header stamp is rewritten as well, so the message's
+        internal clock and its MCAP log time can never disagree.
+        """
+        if index >= len(plan.timestamps_ns):
+            raise RuntimeError(
+                "IMU retiming plan has fewer entries than the source IMU stream")
+        timestamp_ns = plan.timestamps_ns[index]
+        if timestamp_ns is None:
+            return index + 1
+        imu = self.typestore.deserialize_cdr(message.data, "sensor_msgs/msg/Imu")
+        seconds, nanos = divmod(timestamp_ns, 1_000_000_000)
+        imu.header.stamp.sec = int(seconds)
+        imu.header.stamp.nanosec = int(nanos)
+        writer.add_message(
+            channel_id,
+            timestamp_ns,
+            bytes(self.typestore.serialize_cdr(imu, "sensor_msgs/msg/Imu")),
+            timestamp_ns,
+            message.sequence,
+        )
+        stats.copied_messages += 1
+        stats.imu_messages += 1
+        return index + 1
 
     @staticmethod
     def _correct_right_eye(
