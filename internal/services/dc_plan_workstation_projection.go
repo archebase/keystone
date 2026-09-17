@@ -146,11 +146,15 @@ func resolveProjectionCollector(
 	plan auth.HilbertDCPlan,
 ) (planProjectionCollector, error) {
 	var collector planProjectionCollector
+	// Read-only lookup: this transaction writes workstations, never data_collectors,
+	// so no row lock is taken here. Locking it made the projector hold
+	// data_collectors while waiting for workstations, which is the opposite of the
+	// order the pending pool path uses, and the two paths deadlocked.
 	if err := tx.GetContext(ctx, &collector, `
 		SELECT id, name, operator_id
 		FROM data_collectors
 		WHERE operator_id = ? AND deleted_at IS NULL
-		LIMIT 1`+projectionForUpdateClause(tx), strings.TrimSpace(plan.Operator)); err != nil {
+		LIMIT 1`, strings.TrimSpace(plan.Operator)); err != nil {
 		if err == sql.ErrNoRows {
 			return collector, fmt.Errorf("collector missing")
 		}
@@ -179,11 +183,12 @@ func resolveProjectionRobot(
 	plan auth.HilbertDCPlan,
 ) (planProjectionRobot, error) {
 	var robot planProjectionRobot
+	// Read-only lookup, for the same reason as resolveProjectionCollector.
 	if err := tx.GetContext(ctx, &robot, `
 		SELECT id, device_id, COALESCE(device_name, '') AS device_name, workspace_id
 		FROM robots
 		WHERE device_id = ? AND deleted_at IS NULL
-		LIMIT 1`+projectionForUpdateClause(tx), strconv.FormatInt(*plan.DCDeviceID, 10)); err != nil {
+		LIMIT 1`, strconv.FormatInt(*plan.DCDeviceID, 10)); err != nil {
 		if err == sql.ErrNoRows {
 			return robot, fmt.Errorf("robot missing")
 		}
@@ -204,6 +209,10 @@ func ensureProjectedWorkstation(
 	now time.Time,
 ) (bool, error) {
 	var workstation planProjectionWorkstation
+	// The lock stays here: this call either reactivates the row below or inserts a
+	// new workstation, and the partial unique indexes only cover is_current rows,
+	// so the gap lock on a missing row is what keeps two concurrent projectors
+	// from inserting duplicate workstations.
 	err := tx.GetContext(ctx, &workstation, `
 		SELECT id, superseded_at
 		FROM workstations
