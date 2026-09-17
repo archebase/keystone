@@ -114,6 +114,39 @@ class ImuRetimingGridTest(unittest.TestCase):
             if value is None:
                 self.assertEqual(messages[index], messages[index - 1])
 
+    def test_a_repeat_that_rounds_one_microsecond_late_is_still_dropped(self) -> None:
+        """Device timestamps round to whole microseconds, so repeats can drift."""
+        calibrator, _ = build_stream(12)
+        barcodes = calibrator.barcodes
+        broken = barcodes[4]
+        calibrator._barcodes[4] = FrameBarcode(
+            video_index=broken.video_index,
+            log_time_ns=broken.log_time_ns,
+            exposure_start_us=broken.exposure_start_us,
+            exposure_end_us=broken.exposure_end_us,
+            sample_timestamps_us=tuple(value + 1 for value in broken.sample_timestamps_us),
+            sample_accel_mg=broken.sample_accel_mg,
+        )
+
+        plan = calibrator.resolve()
+
+        self.assertEqual(plan.report.decision, DECISION_APPLIED)
+        self.assertEqual(plan.report.duplicates_dropped, 12 * 2 - 1)
+
+    def test_trailing_messages_are_placed_on_the_grid(self) -> None:
+        """A capture may not contain a whole number of packets."""
+        calibrator, _ = build_stream(12)
+        tail = [sample_values(500 + index) for index in range(5)]
+        for value in tail:
+            calibrator.observe_message(value)
+
+        plan = calibrator.resolve()
+
+        self.assertEqual(plan.report.decision, DECISION_APPLIED)
+        self.assertEqual(len(plan.timestamps_ns), 12 * 22 + 5)
+        timestamps = [value for value in plan.timestamps_ns if value is not None]
+        self.assertTrue(all(step == SPACING_US * 1000 for step in np.diff(timestamps)))
+
     def test_frames_without_a_barcode_are_placed_on_the_grid(self) -> None:
         calibrator = ImuRetimingCalibrator(ImuRetimingConfig())
         for video_index in range(10):

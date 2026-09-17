@@ -50,6 +50,9 @@ class ImuRetimingConfig:
     #: How far a single frame's measurement may sit from the file's median.
     spacing_tolerance_us: float = 2.0
     anchor_tolerance_us: int = 200
+    #: Device timestamps are microseconds with rounding jitter, so the grid is
+    #: checked against a tolerance rather than for exact equality.
+    timestamp_tolerance_us: int = 2
     #: How close a source sample must be to a barcode sample to count as a match.
     sample_tolerance_mg: float = 1.0
     #: Packets searched around the expected position for the first frame.
@@ -242,21 +245,23 @@ class ImuRetimingCalibrator:
             return self._plan
 
         timestamps: list[int | None] = []
-        previous_ns: int | None = None
+        previous_us: int | None = None
         duplicates = 0
+        # Every packet opens with a repeat of the previous packet's last sample.
+        # The device timestamps carry microsecond rounding, so a repeat can land
+        # one microsecond off its predecessor; anything closer than half a grid
+        # step is a repeat, because the real grid never gets that close.
+        repeat_limit_us = grid.spacing_us / 2
         for device_us in grid_timestamps:
             if device_us is None:
                 timestamps.append(None)
                 continue
-            host_ns = clock.to_host_ns(device_us)
-            if previous_ns is not None and host_ns <= previous_ns:
-                # Every packet opens with a repeat of the previous packet's last
-                # sample; those repeats share one grid point and one timestamp.
+            if previous_us is not None and (device_us - previous_us) < repeat_limit_us:
                 duplicates += 1
                 timestamps.append(None)
                 continue
-            previous_ns = host_ns
-            timestamps.append(host_ns)
+            previous_us = device_us
+            timestamps.append(clock.to_host_ns(device_us))
 
         self._plan = ImuRetimingPlan(
             report=ImuRetimingReport(
@@ -329,12 +334,13 @@ class ImuRetimingCalibrator:
 
         frame_period = spacing * config.packets_per_frame * (config.packet_size - 1)
         ordered = sorted(usable, key=lambda barcode: barcode.video_index)
+        stride_tolerance = max(4.0, spacing * 0.05)
         for previous, current in zip(ordered, ordered[1:]):
             frame_gap = current.video_index - previous.video_index
             if frame_gap <= 0:
                 continue
             measured = (current.first_timestamp_us - previous.first_timestamp_us) / frame_gap
-            if abs(measured - frame_period) > frame_period * 0.05:
+            if abs(measured - frame_period) > stride_tolerance:
                 return _GridFit(reason="frame_stride_mismatch")
         return _GridFit(spacing_us=spacing, anchor_offset_us=anchor,
                         frame_period_us=frame_period, valid=True)
@@ -348,7 +354,7 @@ class ImuRetimingCalibrator:
         packet_size = config.packet_size
         packet_count = len(messages) // packet_size
         messages_per_frame = packet_size * config.packets_per_frame
-        grid_timestamps: list[int | None] = [None] * (packet_count * packet_size)
+        grid_timestamps: list[int | None] = [None] * len(messages)
 
         barcodes = sorted(self._barcodes, key=lambda barcode: barcode.video_index)
         anchor_barcode: FrameBarcode | None = None
@@ -376,31 +382,40 @@ class ImuRetimingCalibrator:
         if anchor_barcode is None or anchor_packets is None:
             return grid_timestamps, 0, "no_usable_barcode"
 
-        # Every frame is placed on the rigid grid relative to the anchor frame,
-        # and every barcode that decoded is checked against that placement.
-        def frame_start_us(video_index: int) -> float:
-            return (anchor_barcode.first_timestamp_us
-                    + grid.frame_period_us * (video_index - anchor_barcode.video_index))
-
-        verified = 0
+        # Every decoded barcode is checked against its own anchor: the packet
+        # values must match the source stream and the sample timestamps must sit
+        # on the grid that the anchor implies.
+        verified_anchors: dict[int, int] = {}
         for barcode in barcodes:
             expected_packet = barcode.video_index * config.packets_per_frame + anchor_packets
             if not 0 <= expected_packet < packet_count:
                 continue
             if not self._packet_matches(self._packet(messages, expected_packet), barcode):
                 return grid_timestamps, 0, "packet_alignment_drifted"
-            expected_timestamps = [
-                int(round(frame_start_us(barcode.video_index)
-                          + (position - position // config.packet_size) * grid.spacing_us))
+            expected_timestamps = np.asarray([
+                barcode.first_timestamp_us
+                + (position - position // config.packet_size) * grid.spacing_us
                 for position in range(packet_size)
-            ]
-            if list(barcode.sample_timestamps_us) != expected_timestamps:
+            ], dtype=np.int64)
+            measured = np.asarray(barcode.sample_timestamps_us, dtype=np.int64)
+            if int(np.max(np.abs(measured - expected_timestamps))) > config.timestamp_tolerance_us:
                 return grid_timestamps, 0, "barcode_grid_mismatch"
-            verified += 1
-        if verified < config.min_sampled_frames:
+            verified_anchors[barcode.video_index] = barcode.first_timestamp_us
+        if len(verified_anchors) < config.min_sampled_frames:
             return grid_timestamps, 0, "insufficient_verified_frames"
 
-        verified_frames = {barcode.video_index for barcode in barcodes}
+        # Frames whose barcode decoded anchor themselves; the rest are placed on
+        # the same rigid grid relative to the nearest verified frame.
+        reference_video = min(verified_anchors)
+        reference_us = verified_anchors[reference_video]
+
+        def frame_start_us(video_index: int) -> float:
+            anchor = verified_anchors.get(video_index)
+            if anchor is not None:
+                return float(anchor)
+            return reference_us + grid.frame_period_us * (video_index - reference_video)
+
+        verified_frames = set(verified_anchors)
         last_packet = packet_count - 1
         extrapolated = 0
         # The grid is rigid, so frames whose barcode could not be decoded - and
@@ -423,7 +438,33 @@ class ImuRetimingCalibrator:
                 index = packet * packet_size + in_packet
                 offset = position - packet_offset
                 grid_timestamps[index] = int(round(start_us + offset * grid.spacing_us))
+        self._fill_grid_gaps(grid_timestamps, grid.spacing_us)
         return grid_timestamps, extrapolated, None
+
+    @staticmethod
+    def _fill_grid_gaps(timestamps: list[int | None], spacing_us: float) -> None:
+        """Continue the grid over any message a whole packet could not cover.
+
+        A recording does not always contain a whole number of packets, and the
+        tail still sits on the same rigid grid, so it is filled forwards (or
+        backwards when the stream opens mid-packet) rather than dropped.
+        """
+        step = int(round(spacing_us))
+        last: int | None = None
+        for index, value in enumerate(timestamps):
+            if value is not None:
+                last = value
+            elif last is not None:
+                last = last + step
+                timestamps[index] = last
+        following: int | None = None
+        for index in range(len(timestamps) - 1, -1, -1):
+            value = timestamps[index]
+            if value is not None:
+                following = value
+            elif following is not None:
+                following = following - step
+                timestamps[index] = following
 
     def _packet(self, messages: list[tuple[float, float, float]], packet: int) -> np.ndarray:
         size = self.config.packet_size
