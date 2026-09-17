@@ -402,18 +402,13 @@ func (h *DCPlanHandler) RefreshOperatorPlans(c *gin.Context) {
 		return
 	}
 
-	stale := false
-	if h.syncService == nil {
-		stale = true
-	} else if _, err := h.syncService.SyncWorkspace(c.Request.Context(), claims.WorkspaceID); err != nil {
-		stale = true
-		logger.Printf(
-			"[DC_PLAN] Operator plan refresh using stale projection: workspace_id=%d operator=%s error=%v",
-			claims.WorkspaceID,
-			claims.OperatorID,
-			err,
-		)
-	}
+	// The projection is converged by the periodic hilbert sync only (see
+	// server.startPeriodicDCPlanSync). This endpoint deliberately does not sync:
+	// one SyncWorkspace costs O(plan count) transactions (the workstation
+	// projector and the pending pool each begin a transaction per plan), so
+	// N devices polling used to amplify into thousands of concurrent
+	// transactions, exhaust the connection pool and deadlock.
+	stale := h.syncService == nil
 
 	rows := []struct {
 		ID                    int64        `db:"id"`
