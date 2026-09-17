@@ -26,21 +26,22 @@ import (
 )
 
 const (
-	hilbertNoncePath              = "/v1/console/nonce/generate"
-	hilbertLoginPath              = "/v1/console/account/login"
-	hilbertAccountQueryPath       = "/v1/console/account/query"
-	hilbertAccountGetCurPath      = "/v1/console/account/get-cur"
-	hilbertWorkspaceAvailablePath = "/v1/console/workspace/list-available"
-	hilbertDCPlanQueryPath        = "/v1/data-collection/dc-plan/query"
-	hilbertDCPlanPatchDevicePath  = "/v1/data-collection/dc-plan/patch-dc-device-id"
-	hilbertDCPlanPatchTargetPath  = "/v1/data-collection/dc-plan/patch-target-count"
-	hilbertDCDeviceQueryPath      = "/v1/data-collection/dc-device/query"
-	hilbertDCDeviceGetKeyPath     = "/v1/data-collection/dc-device/get-api-key"
-	hilbertDCDeviceGeneratePath   = "/v1/data-collection/dc-device/generate-api-key"
-	hilbertDCDeviceDeletePath     = "/v1/data-collection/dc-device/delete-api-key"
-	hilbertDCDeviceValidatePath   = "/v1/data-collection/dc-device/validate"
-	hilbertDCDeviceTypeQueryPath  = "/v1/data-collection/dc-device-type/query"
-	hilbertNonceConsumePath       = "/v1/console/nonce/consume"
+	hilbertNoncePath                  = "/v1/console/nonce/generate"
+	hilbertLoginPath                  = "/v1/console/account/login"
+	hilbertAccountQueryPath           = "/v1/console/account/query"
+	hilbertAccountGetCurPath          = "/v1/console/account/get-cur"
+	hilbertWorkspaceAvailablePath     = "/v1/console/workspace/list-available"
+	hilbertDCPlanQueryPath            = "/v1/data-collection/dc-plan/query"
+	hilbertDCPlanPatchDevicePath      = "/v1/data-collection/dc-plan/patch-dc-device-id"
+	hilbertDCPlanPatchTargetPath      = "/v1/data-collection/dc-plan/patch-target-count"
+	hilbertDCDeviceQueryPath          = "/v1/data-collection/dc-device/query"
+	hilbertDCDeviceGetKeyPath         = "/v1/data-collection/dc-device/get-api-key"
+	hilbertDCDeviceGeneratePath       = "/v1/data-collection/dc-device/generate-api-key"
+	hilbertDCDeviceDeletePath         = "/v1/data-collection/dc-device/delete-api-key"
+	hilbertDCDeviceValidatePath       = "/v1/data-collection/dc-device/validate"
+	hilbertDCDeviceTypeQueryPath      = "/v1/data-collection/dc-device-type/query"
+	hilbertDCServiceProviderQueryPath = "/v1/data-collection/dc-service-provider/query"
+	hilbertNonceConsumePath           = "/v1/console/nonce/consume"
 
 	hilbertNonceKeyLengthBytes = 32
 	hilbertNonceIVLengthBytes  = 12
@@ -100,13 +101,23 @@ func (r *HilbertLoginResult) SessionKey() string {
 
 // HilbertWorkspace stores the Hilbert workspace projection Keystone caches locally.
 type HilbertWorkspace struct {
-	ID          int64      `json:"id"`
-	Name        string     `json:"name"`
-	Description *string    `json:"description"`
-	Admins      []string   `json:"admins"`
-	Members     []string   `json:"members"`
-	CreatedTime time.Time  `json:"createdTime"`
-	UpdatedTime *time.Time `json:"updatedTime"`
+	ID               int64                             `json:"id"`
+	Name             string                            `json:"name"`
+	Description      *string                           `json:"description"`
+	Admins           []string                          `json:"admins"`
+	Members          []string                          `json:"members"`
+	ServiceProviders []HilbertWorkspaceServiceProvider `json:"serviceProviders"`
+	CreatedTime      time.Time                         `json:"createdTime"`
+	UpdatedTime      *time.Time                        `json:"updatedTime"`
+}
+
+// HilbertWorkspaceServiceProvider is one dc service provider bound to a Hilbert
+// workspace as returned by the workspace list response. The bound member account
+// codes are not part of this projection; Keystone resolves them separately via
+// QueryDCServiceProvider.
+type HilbertWorkspaceServiceProvider struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 // HilbertDCPlan stores one Hilbert data collection plan projection.
@@ -255,6 +266,23 @@ type HilbertDCDeviceTypePage struct {
 	Total    int64                 `json:"total"`
 	PageNum  int64                 `json:"pageNum"`
 	PageSize int64                 `json:"pageSize"`
+}
+
+// HilbertDCServiceProvider stores one Hilbert data collection service provider
+// projection, including the provider's admin and member account codes.
+type HilbertDCServiceProvider struct {
+	ID      int64    `json:"id"`
+	Name    string   `json:"name"`
+	Admins  []string `json:"admins"`
+	Members []string `json:"members"`
+}
+
+// HilbertDCServiceProviderPage stores Hilbert's page wrapper for dc-service-provider query.
+type HilbertDCServiceProviderPage struct {
+	Records  []HilbertDCServiceProvider `json:"records"`
+	Total    int64                      `json:"total"`
+	PageNum  int64                      `json:"pageNum"`
+	PageSize int64                      `json:"pageSize"`
 }
 
 type hilbertDCDeviceAPIKey struct {
@@ -568,6 +596,41 @@ func (c *HilbertClient) QueryDCDeviceTypeByID(ctx context.Context, id int64) (*H
 	}
 	if resp.Code != 0 {
 		return nil, fmt.Errorf("%w: dc device type query response code %d", ErrHilbertUnavailable, resp.Code)
+	}
+	if len(resp.Data.Records) == 0 {
+		return nil, nil
+	}
+	return &resp.Data.Records[0], nil
+}
+
+// QueryDCServiceProvider fetches one Hilbert dc service provider by exact ID,
+// including its admin and member account codes.
+func (c *HilbertClient) QueryDCServiceProvider(ctx context.Context, id int64) (*HilbertDCServiceProvider, error) {
+	if !c.ServiceAuthConfigured() {
+		return nil, ErrHilbertUnavailable
+	}
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: invalid dc service provider id", ErrHilbertUnavailable)
+	}
+
+	query := url.Values{}
+	query.Set("id", strconv.FormatInt(id, 10))
+	query.Set("pageNum", "1")
+	query.Set("pageSize", "1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+hilbertDCServiceProviderQueryPath+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create dc service provider query request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeServiceRequest(req); err != nil {
+		return nil, err
+	}
+
+	var resp hilbertCommonResponse[HilbertDCServiceProviderPage]
+	if err := c.doJSON(req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("%w: dc service provider query response code %d", ErrHilbertUnavailable, resp.Code)
 	}
 	if len(resp.Data.Records) == 0 {
 		return nil, nil

@@ -495,6 +495,144 @@ func TestWorkspaceSyncServiceResourceQueryFailureDoesNotReportRolledBackWrites(t
 	}
 }
 
+func TestWorkspaceSyncServiceProjectsServiceProviderMembersAsCollectors(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	newAccount := func(code string, display string) *auth.HilbertAccount {
+		return &auth.HilbertAccount{
+			ID:               1,
+			Code:             code,
+			DisplayName:      display,
+			Role:             "external_user",
+			ExternalUserType: "data_supplier",
+			Status:           "enabled",
+		}
+	}
+	client := &fakeHilbertWorkspaceClient{
+		workspaces: []auth.HilbertWorkspace{
+			{
+				ID:      123,
+				Name:    "Supplier Workspace",
+				Admins:  []string{"keystone"},
+				Members: []string{"direct-member", "dup-member"},
+				ServiceProviders: []auth.HilbertWorkspaceServiceProvider{
+					{ID: 9, Name: "support1"},
+				},
+			},
+			{
+				ID:               124,
+				Name:             "Second Workspace",
+				Admins:           []string{"keystone"},
+				ServiceProviders: []auth.HilbertWorkspaceServiceProvider{{ID: 9, Name: "support1"}},
+			},
+		},
+		currentAccount: &auth.HilbertAccount{Code: "keystone"},
+		accounts: map[string]*auth.HilbertAccount{
+			"direct-member": newAccount("direct-member", "Direct Member"),
+			"dup-member":    newAccount("dup-member", "Dup Member"),
+			"sp-admin":      newAccount("sp-admin", "Supplier Admin"),
+			"sp-member":     newAccount("sp-member", "Supplier Member"),
+		},
+		serviceProviders: map[int64]*auth.HilbertDCServiceProvider{
+			9: {ID: 9, Name: "support1", Admins: []string{"sp-admin"}, Members: []string{"sp-member", "dup-member", " "}},
+		},
+		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.SyncedCount != 2 {
+		t.Fatalf("SyncedCount=%d want 2", result.SyncedCount)
+	}
+	if result.ResourceSync == nil || result.ResourceSync.CollectorUpsertedCount != 7 || result.ResourceSync.CollectorSkippedCount != 2 {
+		t.Fatalf("unexpected resource summary: %#v", result.ResourceSync)
+	}
+	if client.serviceProviderCalls != 1 {
+		t.Fatalf("QueryDCServiceProvider calls=%d want 1 (shared provider resolved once)", client.serviceProviderCalls)
+	}
+
+	var collectorCount int
+	if err := db.Get(&collectorCount, `
+		SELECT COUNT(*) FROM data_collectors
+		WHERE operator_id IN ('direct-member', 'dup-member', 'sp-admin', 'sp-member')
+	`); err != nil {
+		t.Fatalf("count collectors: %v", err)
+	}
+	if collectorCount != 4 {
+		t.Fatalf("collectorCount=%d want 4 (direct members plus supplier staff)", collectorCount)
+	}
+
+	var members string
+	if err := db.Get(&members, `SELECT members FROM workspaces WHERE id = 123`); err != nil {
+		t.Fatalf("query workspace members: %v", err)
+	}
+	if members != `["direct-member","dup-member","sp-admin","sp-member"]` {
+		t.Fatalf("members=%s want merged projection", members)
+	}
+
+	allowed, err := OperatorHasWorkspaceAccess(context.Background(), db, "sp-member", 123)
+	if err != nil {
+		t.Fatalf("check supplier member access: %v", err)
+	}
+	if !allowed {
+		t.Fatal("supplier member should access the workspace through the merged members projection")
+	}
+	allowed, err = OperatorHasWorkspaceAccess(context.Background(), db, "sp-member", 124)
+	if err != nil {
+		t.Fatalf("check supplier member access on second workspace: %v", err)
+	}
+	if !allowed {
+		t.Fatal("supplier member should access every workspace bound to its provider")
+	}
+}
+
+func TestWorkspaceSyncServiceServiceProviderQueryFailureAbortsSync(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		workspaces: []auth.HilbertWorkspace{
+			{
+				ID:               123,
+				Name:             "Supplier Workspace",
+				Admins:           []string{"keystone"},
+				Members:          []string{"direct-member"},
+				ServiceProviders: []auth.HilbertWorkspaceServiceProvider{{ID: 9, Name: "support1"}},
+			},
+		},
+		currentAccount:     &auth.HilbertAccount{Code: "keystone"},
+		serviceProviderErr: errors.New("hilbert unavailable"),
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err == nil || !errors.Is(err, ErrWorkspaceSyncFailed) {
+		t.Fatalf("Sync() error=%v want ErrWorkspaceSyncFailed", err)
+	}
+	if result != nil {
+		t.Fatalf("result=%#v want nil", result)
+	}
+
+	var workspaceCount int
+	if err := db.Get(&workspaceCount, `SELECT COUNT(*) FROM workspaces WHERE id = 123`); err != nil {
+		t.Fatalf("count workspaces: %v", err)
+	}
+	if workspaceCount != 0 {
+		t.Fatalf("workspaceCount=%d want 0 (sync must abort before persisting)", workspaceCount)
+	}
+	var collectorCount int
+	if err := db.Get(&collectorCount, `SELECT COUNT(*) FROM data_collectors`); err != nil {
+		t.Fatalf("count collectors: %v", err)
+	}
+	if collectorCount != 0 {
+		t.Fatalf("collectorCount=%d want 0", collectorCount)
+	}
+}
+
 func TestWorkspaceSyncServiceDoesNotCreateCompatFactories(t *testing.T) {
 	db := newTestWorkspaceSyncDB(t)
 	defer db.Close()
@@ -606,6 +744,9 @@ type fakeHilbertWorkspaceClient struct {
 	devicesByWorkspace      map[int64][]auth.HilbertDCDevice
 	deviceErrByWorkspace    map[int64]error
 	deviceTypes             map[int64]*auth.HilbertDCDeviceType
+	serviceProviders        map[int64]*auth.HilbertDCServiceProvider
+	serviceProviderErr      error
+	serviceProviderCalls    int
 	currentAccount          *auth.HilbertAccount
 	currentAccountErr       error
 	currentAccountCallCount int
@@ -643,6 +784,18 @@ func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, code 
 		return nil, nil
 	}
 	return account, nil
+}
+
+func (f *fakeHilbertWorkspaceClient) QueryDCServiceProvider(_ context.Context, id int64) (*auth.HilbertDCServiceProvider, error) {
+	f.serviceProviderCalls++
+	if f.serviceProviderErr != nil {
+		return nil, f.serviceProviderErr
+	}
+	provider := f.serviceProviders[id]
+	if provider == nil {
+		return nil, nil
+	}
+	return provider, nil
 }
 
 func (f *fakeHilbertWorkspaceClient) QueryDCDevices(_ context.Context, workspaceID int64) (*auth.HilbertDCDevicePage, error) {

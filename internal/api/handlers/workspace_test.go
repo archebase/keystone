@@ -186,6 +186,10 @@ func (f *fakeWorkspaceHilbertClient) GetCurrentAccount(_ context.Context) (*auth
 	return f.currentAccount, nil
 }
 
+func (f *fakeWorkspaceHilbertClient) QueryDCServiceProvider(_ context.Context, _ int64) (*auth.HilbertDCServiceProvider, error) {
+	return nil, nil
+}
+
 func assertDefaultWorkspaceResponse(t *testing.T, workspace WorkspaceResponse) {
 	t.Helper()
 	if workspace.ID != "0" {

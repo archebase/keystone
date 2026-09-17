@@ -40,6 +40,7 @@ type HilbertWorkspaceClient interface {
 	ServiceAuthConfigured() bool
 	ListAvailableWorkspaces(ctx context.Context) ([]auth.HilbertWorkspace, error)
 	GetCurrentAccount(ctx context.Context) (*auth.HilbertAccount, error)
+	QueryDCServiceProvider(ctx context.Context, id int64) (*auth.HilbertDCServiceProvider, error)
 }
 
 // WorkspaceSyncResult summarizes one Hilbert workspace sync run.
@@ -131,6 +132,9 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 	if err := validateHilbertWorkspaces(adminWorkspaces); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrWorkspaceSyncFailed, err)
 	}
+	if err := mergeWorkspaceServiceProviderMembers(ctx, s.hilbertClient, adminWorkspaces); err != nil {
+		return nil, err
+	}
 	if err := s.upsertHilbertWorkspaces(ctx, adminWorkspaces, now); err != nil {
 		return nil, fmt.Errorf("%w: upsert hilbert workspaces: %v", ErrWorkspaceSyncFailed, err)
 	}
@@ -147,6 +151,63 @@ func (s *WorkspaceSyncService) Sync(ctx context.Context) (*WorkspaceSyncResult, 
 		LastSyncedAt:    now,
 		ResourceSync:    resourceSummary,
 	}, nil
+}
+
+// mergeWorkspaceServiceProviderMembers resolves the account codes of every dc
+// service provider bound to the given workspaces and merges them into the
+// workspace Members projection. Provider staff therefore flow through the
+// existing members path: they are projected as data collectors and gain
+// workspace access, exactly like directly added workspace members.
+// A provider lookup failure aborts the sync before anything is persisted, so a
+// partial member merge can never silently shrink collector access.
+func mergeWorkspaceServiceProviderMembers(ctx context.Context, client HilbertWorkspaceClient, workspaces []auth.HilbertWorkspace) error {
+	if len(workspaces) == 0 {
+		return nil
+	}
+	resolved := make(map[int64]*auth.HilbertDCServiceProvider)
+	totalAdded := 0
+	for i := range workspaces {
+		if len(workspaces[i].ServiceProviders) == 0 {
+			continue
+		}
+		direct := normalizeWorkspacePeople(workspaces[i].Members)
+		merged := direct
+		for _, providerRef := range workspaces[i].ServiceProviders {
+			if providerRef.ID <= 0 {
+				continue
+			}
+			provider, ok := resolved[providerRef.ID]
+			if !ok {
+				detail, err := client.QueryDCServiceProvider(ctx, providerRef.ID)
+				if err != nil {
+					return fmt.Errorf("%w: query dc service provider %d: %v", ErrWorkspaceSyncFailed, providerRef.ID, err)
+				}
+				if detail == nil {
+					logger.Printf("[WORKSPACE] Hilbert dc service provider %d referenced by workspace %d was not returned", providerRef.ID, workspaces[i].ID)
+				}
+				resolved[providerRef.ID] = detail
+				provider = detail
+			}
+			if provider == nil {
+				continue
+			}
+			merged = append(merged, provider.Admins...)
+			merged = append(merged, provider.Members...)
+		}
+		merged = normalizeWorkspacePeople(merged)
+		if added := len(merged) - len(direct); added > 0 {
+			logger.Printf(
+				"[WORKSPACE] Hilbert service provider members merged into workspace %d: direct=%d merged=%d",
+				workspaces[i].ID, len(direct), len(merged),
+			)
+			totalAdded += added
+		}
+		workspaces[i].Members = merged
+	}
+	if totalAdded > 0 {
+		logger.Printf("[WORKSPACE] Hilbert service provider member merge completed: added_members=%d", totalAdded)
+	}
+	return nil
 }
 
 func ensureDefaultWorkspace(ctx context.Context, db *sqlx.DB, now time.Time) error {

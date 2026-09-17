@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -268,6 +269,81 @@ func TestQueryDCDevicesUsesPositivePaginationAndCollectsEveryPage(t *testing.T) 
 		if page.Records[index].ID != wantID {
 			t.Fatalf("records[%d].ID=%d want %d", index, page.Records[index].ID, wantID)
 		}
+	}
+}
+
+func TestQueryDCServiceProviderUsesRESTContract(t *testing.T) {
+	var seenQuery url.Values
+	var seenAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != hilbertDCServiceProviderQueryPath {
+			http.NotFound(w, r)
+			return
+		}
+		seenQuery = r.URL.Query()
+		seenAuth = r.Header.Get("Authorization")
+		writeHilbertTestJSON(t, w, map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"records": []map[string]any{
+					{
+						"id":      9,
+						"name":    "support1",
+						"admins":  []string{"sp-admin"},
+						"members": []string{"sp-member-a", "sp-member-b"},
+					},
+				},
+				"total":    1,
+				"pageNum":  1,
+				"pageSize": 1,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	provider, err := client.QueryDCServiceProvider(context.Background(), 9)
+	if err != nil {
+		t.Fatalf("QueryDCServiceProvider() error = %v", err)
+	}
+	if seenQuery.Get("id") != "9" || seenQuery.Get("pageNum") != "1" || seenQuery.Get("pageSize") != "1" {
+		t.Fatalf("query params = %v want id=9 pageNum=1 pageSize=1", seenQuery)
+	}
+	if seenAuth == "" {
+		t.Fatal("missing Authorization digest header")
+	}
+	if provider == nil || provider.ID != 9 || provider.Name != "support1" ||
+		len(provider.Admins) != 1 || provider.Admins[0] != "sp-admin" ||
+		len(provider.Members) != 2 || provider.Members[1] != "sp-member-b" {
+		t.Fatalf("provider=%#v want admins and members decoded", provider)
+	}
+
+	if _, err := client.QueryDCServiceProvider(context.Background(), 0); err == nil {
+		t.Fatal("QueryDCServiceProvider(0) should fail")
+	}
+}
+
+func TestQueryDCServiceProviderReturnsNilForMissingRecord(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeHilbertTestJSON(t, w, map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"records":  []map[string]any{},
+				"total":    0,
+				"pageNum":  1,
+				"pageSize": 1,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	provider, err := client.QueryDCServiceProvider(context.Background(), 404)
+	if err != nil {
+		t.Fatalf("QueryDCServiceProvider() error = %v", err)
+	}
+	if provider != nil {
+		t.Fatalf("provider=%#v want nil for empty page", provider)
 	}
 }
 
