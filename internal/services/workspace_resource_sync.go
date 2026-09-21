@@ -300,7 +300,16 @@ func upsertHilbertRobot(ctx context.Context, tx *sqlx.Tx, device auth.HilbertDCD
 		return false, fmt.Errorf("active robot with device_id %s is not a Hilbert projection", deviceID)
 	}
 	if err == nil {
-		if err := ensureRobotWorkspaceBindingCompatible(ctx, tx, deviceID, device.WorkspaceID); err != nil {
+		var robotID int64
+		if err := tx.GetContext(ctx, &robotID, `
+			SELECT id
+			FROM robots
+			WHERE device_id = ? AND deleted_at IS NULL
+			LIMIT 1
+		`, deviceID); err != nil {
+			return false, fmt.Errorf("query robot for workspace move: %w", err)
+		}
+		if err := retireMovedRobotWorkstations(ctx, tx, robotID, device.WorkspaceID, syncedAt); err != nil {
 			return false, err
 		}
 	}
@@ -366,25 +375,23 @@ func nullableString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: true}
 }
 
-func ensureRobotWorkspaceBindingCompatible(ctx context.Context, tx *sqlx.Tx, deviceID string, workspaceID int64) error {
-	var mismatch bool
-	if err := tx.GetContext(ctx, &mismatch, `
-		SELECT EXISTS(
-			SELECT 1
-			FROM robots r
-			INNER JOIN workstations ws
-				ON ws.robot_id = r.id
-				AND ws.is_current = TRUE
-				AND ws.deleted_at IS NULL
-			WHERE r.device_id = ?
-				AND r.deleted_at IS NULL
-				AND ws.workspace_id <> ?
-		)
-	`, deviceID, workspaceID); err != nil {
-		return fmt.Errorf("check robot workspace binding: %w", err)
-	}
-	if mismatch {
-		return fmt.Errorf("current workstation binding belongs to another workspace")
+// retireMovedRobotWorkstations preserves historical workstation ownership while
+// removing stale current bindings after Hilbert moves a device to another workspace.
+func retireMovedRobotWorkstations(ctx context.Context, tx *sqlx.Tx, robotID, workspaceID int64, movedAt time.Time) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE workstations
+		SET
+			status = 'offline',
+			is_current = FALSE,
+			superseded_at = ?,
+			superseded_by = NULL,
+			updated_at = ?
+		WHERE robot_id = ?
+			AND is_current = TRUE
+			AND deleted_at IS NULL
+			AND workspace_id <> ?
+	`, movedAt, movedAt, robotID, workspaceID); err != nil {
+		return fmt.Errorf("retire workstation after robot workspace move: %w", err)
 	}
 	return nil
 }

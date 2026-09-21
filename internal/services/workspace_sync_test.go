@@ -8,7 +8,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -850,7 +849,7 @@ func TestWorkspaceResourceSyncAllowsCollectorAcrossWorkspaceBindings(t *testing.
 	}
 }
 
-func TestWorkspaceResourceSyncRejectsRobotWorkspaceChangeAcrossCurrentBinding(t *testing.T) {
+func TestWorkspaceResourceSyncRetiresRobotWorkstationOnWorkspaceChange(t *testing.T) {
 	db := newTestWorkspaceSyncDB(t)
 	defer db.Close()
 	for _, stmt := range []string{
@@ -866,15 +865,40 @@ func TestWorkspaceResourceSyncRejectsRobotWorkspaceChangeAcrossCurrentBinding(t 
 	if err != nil {
 		t.Fatalf("begin transaction: %v", err)
 	}
-	defer tx.Rollback()
-
-	_, err = upsertHilbertRobot(context.Background(), tx, auth.HilbertDCDevice{
+	movedAt := time.Now().UTC()
+	if _, err = upsertHilbertRobot(context.Background(), tx, auth.HilbertDCDevice{
 		ID:             456,
 		WorkspaceID:    61,
 		DCDeviceTypeID: 77,
-	}, &auth.HilbertDCDeviceType{ID: 77, Name: "Type 77"}, time.Now().UTC())
-	if err == nil || !strings.Contains(err.Error(), "another workspace") {
-		t.Fatalf("error=%v want workspace binding conflict", err)
+	}, &auth.HilbertDCDeviceType{ID: 77, Name: "Type 77"}, movedAt); err != nil {
+		t.Fatalf("upsert moved robot: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit moved robot: %v", err)
+	}
+
+	var robotWorkspace int64
+	if err := db.Get(&robotWorkspace, "SELECT workspace_id FROM robots WHERE device_id = '456'"); err != nil {
+		t.Fatalf("query robot workspace: %v", err)
+	}
+	if robotWorkspace != 61 {
+		t.Fatalf("robot workspace=%d want 61", robotWorkspace)
+	}
+	var workstation struct {
+		WorkspaceID  int64     `db:"workspace_id"`
+		IsCurrent    bool      `db:"is_current"`
+		Status       string    `db:"status"`
+		SupersededAt time.Time `db:"superseded_at"`
+	}
+	if err := db.Get(&workstation, `
+		SELECT workspace_id, is_current, status, superseded_at
+		FROM workstations
+		WHERE id = 1
+	`); err != nil {
+		t.Fatalf("query retired workstation: %v", err)
+	}
+	if workstation.WorkspaceID != 60 || workstation.IsCurrent || workstation.Status != "offline" || workstation.SupersededAt.IsZero() {
+		t.Fatalf("retired workstation=%#v", workstation)
 	}
 }
 
@@ -948,6 +972,8 @@ func newTestWorkspaceSyncDB(t *testing.T) *sqlx.DB {
 			created_at TIMESTAMP,
 			updated_at TIMESTAMP,
 			is_current BOOLEAN NOT NULL DEFAULT TRUE,
+			superseded_at TIMESTAMP,
+			superseded_by INTEGER,
 			deleted_at TIMESTAMP
 		)`,
 	} {
