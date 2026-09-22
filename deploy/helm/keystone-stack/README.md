@@ -291,6 +291,11 @@ cluster.
 
 - MySQL credentials initialize a fresh data directory only. Changing them after
   the PVC contains data does not alter existing MySQL accounts.
+- MySQL binlog retention is pinned to 24h in the StatefulSet args because the
+  default 20Gi data volume cannot hold MySQL's 7-day default at the current
+  write throughput. A full volume stalls every write transaction, which
+  silently freezes background workers. Raise the retention only together with
+  `mysql.persistence.size`.
 - The default MySQL memory request is intentionally small for the current
   resource-constrained Volcengine prod node pool; raise
   `mysql.resources.requests.memory` for larger dedicated deployments.
