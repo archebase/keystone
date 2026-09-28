@@ -26,8 +26,11 @@ func buildObjectKey(prefix string, hints map[string]string, uploadID string, dev
 		captureID = "unknown-capture"
 	}
 	name := "capture.mcap"
-	if len(deviceType) > 0 && strings.TrimSpace(deviceType[0]) == "Ego Portal E2" {
-		name = "capture.tar"
+	if len(deviceType) > 0 {
+		switch strings.TrimSpace(deviceType[0]) {
+		case "Ego Portal E2", "Ego Portal E6":
+			name = "capture.tar"
+		}
 	}
 	return cleanPrefix + "/" + deviceID + "/" + captureID + "/" + sanitizePathSegment(uploadID) + "/" + name
 }
