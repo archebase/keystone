@@ -31,6 +31,7 @@ const (
 	egoPortalStereoDeviceType = "Ego Portal Stereo"
 	egoPortalLiteDeviceType   = "Ego Portal Lite"
 	egoPortalE2DeviceType     = "Ego Portal E2"
+	egoPortalE6DeviceType     = "Ego Portal E6"
 )
 
 // DCPlanSuppliedTask is the task returned by on-demand plan task supply.
@@ -524,7 +525,8 @@ func loadTaskSupplyCounts(
 func usesEgoPortalPendingPool(deviceType string) bool {
 	return deviceType == egoPortalStereoDeviceType ||
 		deviceType == egoPortalLiteDeviceType ||
-		deviceType == egoPortalE2DeviceType
+		deviceType == egoPortalE2DeviceType ||
+		deviceType == egoPortalE6DeviceType
 }
 
 func insertPendingPlanTask(
