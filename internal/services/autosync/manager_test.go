@@ -643,6 +643,100 @@ func TestManagerCaptureEpisodeRequiresE6Converter(t *testing.T) {
 	}
 }
 
+func TestManagerReconcileOnceTier2IsFIFOAcrossFamilies(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 70, DeviceTypeEgoPortalE6)
+	seedAutoSyncEpisode(t, db, 71, DeviceTypeEgoPortalE2)
+
+	e2Converter := &fakeE2Converter{}
+	e6Converter := &fakeE6Converter{}
+	cloud := &fakeCloudSyncEnqueuer{}
+	manager := NewManager(db, nil, cloud, 0)
+	manager.SetE2Converter(e2Converter)
+	manager.SetE6Converter(e6Converter)
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 70); err != nil || !captured {
+		t.Fatalf("CaptureEpisode(70) = %t, %v; want true, nil", captured, err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 71); err != nil || !captured {
+		t.Fatalf("CaptureEpisode(71) = %t, %v; want true, nil", captured, err)
+	}
+	// E6 was requested earlier than E2; the shared tier must serve it first.
+	if _, err := db.Exec(`
+		UPDATE episodes SET qa_status = 'approved', auto_sync_requested_at = '2026-01-01 00:00:01' WHERE id = 70;
+		UPDATE episodes SET qa_status = 'approved', auto_sync_requested_at = '2026-01-01 00:00:02' WHERE id = 71;
+	`); err != nil {
+		t.Fatalf("approve and order episodes: %v", err)
+	}
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("ReconcileOnce() = %t, %v; want true, nil", worked, err)
+	}
+	if e6Converter.episodeID != 70 {
+		t.Fatalf("E6 converter episode = %d, want 70 (FIFO across families)", e6Converter.episodeID)
+	}
+	if e2Converter.episodeID != 0 {
+		t.Fatalf("E2 converter ran before the earlier E6 episode: episode=%d", e2Converter.episodeID)
+	}
+
+	// Manager.Start creates the derivative row; simulate that so episode 70 leaves the tier.
+	if _, err := db.Exec(`
+		INSERT INTO episode_derivatives (episode_id, kind, processing_status, qa_status)
+		VALUES (70, 'e6_multimodal_conversion', 'queued', 'not_started');
+	`); err != nil {
+		t.Fatalf("seed E6 derivative: %v", err)
+	}
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("second ReconcileOnce() = %t, %v; want true, nil", worked, err)
+	}
+	if e2Converter.episodeID != 71 {
+		t.Fatalf("E2 converter episode = %d, want 71 on the next pass", e2Converter.episodeID)
+	}
+}
+
+func TestManagerReconcileOnceTier2PrecedesZJWA1D(t *testing.T) {
+	db := newAutoSyncTestDB(t)
+	defer db.Close()
+	seedAutoSyncEpisode(t, db, 72, DeviceTypeZJWA1D)
+	seedAutoSyncEpisode(t, db, 73, DeviceTypeEgoPortalE2)
+
+	depthNormalizer := &fakeDepthNormalizer{}
+	e2Converter := &fakeE2Converter{}
+	cloud := &fakeCloudSyncEnqueuer{}
+	manager := NewManager(db, nil, cloud, 0, depthNormalizer)
+	manager.SetE2Converter(e2Converter)
+	if _, err := manager.UpdateConfig(context.Background(), true, 1, "admin-1"); err != nil {
+		t.Fatalf("enable auto sync: %v", err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 72); err != nil || !captured {
+		t.Fatalf("CaptureEpisode(72) = %t, %v; want true, nil", captured, err)
+	}
+	if captured, err := captureEpisodeAtCurrentConfig(t, manager, db, 73); err != nil || !captured {
+		t.Fatalf("CaptureEpisode(73) = %t, %v; want true, nil", captured, err)
+	}
+	// ZJ-WA1-D was requested earlier, but Tier 2 must still be served first.
+	if _, err := db.Exec(`
+		UPDATE episodes SET qa_status = 'approved', auto_sync_requested_at = '2026-01-01 00:00:01' WHERE id = 72;
+		UPDATE episodes SET qa_status = 'approved', auto_sync_requested_at = '2026-01-01 00:00:02' WHERE id = 73;
+	`); err != nil {
+		t.Fatalf("approve and order episodes: %v", err)
+	}
+
+	if worked, err := manager.ReconcileOnce(context.Background()); err != nil || !worked {
+		t.Fatalf("ReconcileOnce() = %t, %v; want true, nil", worked, err)
+	}
+	if e2Converter.episodeID != 73 {
+		t.Fatalf("E2 converter episode = %d, want 73 before ZJ-WA1-D", e2Converter.episodeID)
+	}
+	if depthNormalizer.episodeID != 0 {
+		t.Fatalf("depth normalization started before Tier 2: episode=%d", depthNormalizer.episodeID)
+	}
+}
+
 func TestManagerReconcileOnceEnqueuesApprovedLiteOriginal(t *testing.T) {
 	db := newAutoSyncTestDB(t)
 	defer db.Close()

@@ -316,7 +316,183 @@ func (m *Manager) recoverMissedCapture(ctx context.Context) (bool, error) {
 	return affected > 0, nil
 }
 
+// tier2Candidate is one episode admitted into the shared conversion/split tier.
+type tier2Candidate struct {
+	EpisodeID int64  `db:"id"`
+	Action    string `db:"action"`
+}
+
+// tier2CandidateQuery selects the oldest eligible episode across every
+// conversion and split family, so E2, E6 and stereo share one FIFO priority
+// tier instead of a fixed per-family order.
+const tier2CandidateQuery = `
+	SELECT id, action FROM (
+		SELECT e.id AS id, 'stereo_sync' AS action, e.auto_sync_requested_at AS requested_at
+		FROM episodes e
+		WHERE e.auto_sync_requested = TRUE
+		  AND e.auto_sync_device_type = ?
+		  AND e.qa_status = 'approved'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = 'stereo_split')
+		  AND EXISTS (
+			SELECT 1
+			FROM episode_derivatives ed
+			WHERE ed.episode_id = e.id
+			  AND ed.kind = 'stereo_split'
+			  AND ed.processing_status = 'succeeded'
+			  AND ed.qa_status = 'approved'
+		  )
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
+		UNION ALL
+		SELECT e.id, 'stereo_start', e.auto_sync_requested_at
+		FROM episodes e
+		LEFT JOIN episode_derivatives ed
+			ON ed.episode_id = e.id AND ed.kind = 'stereo_split'
+		WHERE e.auto_sync_requested = TRUE
+		  AND e.auto_sync_device_type = ?
+		  AND e.qa_status = 'approved'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = 'stereo_split')
+		  AND ed.id IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
+		UNION ALL
+		SELECT e.id, 'e2_sync', e.auto_sync_requested_at
+		FROM episodes e
+		WHERE e.auto_sync_requested = TRUE
+		  AND e.auto_sync_device_type = ?
+		  AND e.qa_status = 'approved'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
+		  AND EXISTS (
+			SELECT 1
+			FROM episode_derivatives ed
+			WHERE ed.episode_id = e.id
+			  AND ed.kind = ?
+			  AND ed.processing_status = 'succeeded'
+			  AND ed.qa_status = 'approved'
+		  )
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
+		UNION ALL
+		SELECT e.id, 'e2_start', e.auto_sync_requested_at
+		FROM episodes e
+		LEFT JOIN episode_derivatives ed
+			ON ed.episode_id = e.id AND ed.kind = ?
+		WHERE e.auto_sync_requested = TRUE
+		  AND e.auto_sync_device_type = ?
+		  AND e.qa_status = 'approved'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
+		  AND ed.id IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
+		UNION ALL
+		SELECT e.id, 'e6_sync', e.auto_sync_requested_at
+		FROM episodes e
+		WHERE e.auto_sync_requested = TRUE
+		  AND e.auto_sync_device_type = ?
+		  AND e.qa_status = 'approved'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
+		  AND EXISTS (
+			SELECT 1
+			FROM episode_derivatives ed
+			WHERE ed.episode_id = e.id
+			  AND ed.kind = ?
+			  AND ed.processing_status = 'succeeded'
+			  AND ed.qa_status = 'approved'
+		  )
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
+		UNION ALL
+		SELECT e.id, 'e6_start', e.auto_sync_requested_at
+		FROM episodes e
+		LEFT JOIN episode_derivatives ed
+			ON ed.episode_id = e.id AND ed.kind = ?
+		WHERE e.auto_sync_requested = TRUE
+		  AND e.auto_sync_device_type = ?
+		  AND e.qa_status = 'approved'
+		  AND e.cloud_synced = FALSE
+		  AND e.deleted_at IS NULL
+		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
+		  AND ed.id IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
+	) t
+	ORDER BY t.requested_at ASC, t.id ASC
+	LIMIT 1
+`
+
+func (m *Manager) reconcileTier2(ctx context.Context) (bool, error) {
+	var candidate tier2Candidate
+	err := m.db.GetContext(ctx, &candidate, tier2CandidateQuery,
+		DeviceTypeEgoPortalStereo,
+		DeviceTypeEgoPortalStereo,
+		DeviceTypeEgoPortalE2, e2conversion.CloudSourceE2Conversion, e2conversion.Kind,
+		e2conversion.Kind, DeviceTypeEgoPortalE2, e2conversion.CloudSourceE2Conversion,
+		DeviceTypeEgoPortalE6, e6conversion.CloudSourceE6Conversion, e6conversion.Kind,
+		e6conversion.Kind, DeviceTypeEgoPortalE6, e6conversion.CloudSourceE6Conversion,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("select tier2 auto sync candidate: %w", err)
+	}
+
+	switch candidate.Action {
+	case "stereo_sync":
+		if m.cloud == nil {
+			return false, fmt.Errorf("automatic cloud sync is not configured")
+		}
+		if err := m.cloud.EnqueueStereoSplitManual(ctx, candidate.EpisodeID); err != nil {
+			return false, fmt.Errorf("enqueue automatic stereo split sync for episode %d: %w", candidate.EpisodeID, err)
+		}
+	case "stereo_start":
+		if m.stereo == nil {
+			return false, fmt.Errorf("automatic stereo split is not configured")
+		}
+		if _, _, err := m.stereo.Start(ctx, candidate.EpisodeID, "auto-sync"); err != nil && !errors.Is(err, stereosplit.ErrAlreadyDerived) {
+			return false, fmt.Errorf("start automatic stereo split for episode %d: %w", candidate.EpisodeID, err)
+		}
+	case "e2_sync":
+		if m.cloud == nil {
+			return false, fmt.Errorf("automatic cloud sync is not configured")
+		}
+		if err := m.cloud.EnqueueE2ConversionManual(ctx, candidate.EpisodeID); err != nil {
+			return false, fmt.Errorf("enqueue automatic E2 conversion sync for episode %d: %w", candidate.EpisodeID, err)
+		}
+	case "e2_start":
+		if m.e2 == nil {
+			return false, fmt.Errorf("automatic E2 conversion is not configured")
+		}
+		if _, _, err := m.e2.Start(ctx, candidate.EpisodeID, "auto-sync"); err != nil && !errors.Is(err, e2conversion.ErrAlreadyDerived) {
+			return false, fmt.Errorf("start automatic E2 conversion for episode %d: %w", candidate.EpisodeID, err)
+		}
+	case "e6_sync":
+		if m.cloud == nil {
+			return false, fmt.Errorf("automatic cloud sync is not configured")
+		}
+		if err := m.cloud.EnqueueE6ConversionManual(ctx, candidate.EpisodeID); err != nil {
+			return false, fmt.Errorf("enqueue automatic E6 conversion sync for episode %d: %w", candidate.EpisodeID, err)
+		}
+	case "e6_start":
+		if m.e6 == nil {
+			return false, fmt.Errorf("automatic E6 conversion is not configured")
+		}
+		if _, _, err := m.e6.Start(ctx, candidate.EpisodeID, "auto-sync"); err != nil && !errors.Is(err, e6conversion.ErrAlreadyDerived) {
+			return false, fmt.Errorf("start automatic E6 conversion for episode %d: %w", candidate.EpisodeID, err)
+		}
+	default:
+		return false, fmt.Errorf("unknown tier2 auto sync action %q", candidate.Action)
+	}
+	m.wakeWorker()
+	return true, nil
+}
+
 func (m *Manager) reconcileDownstream(ctx context.Context) (bool, error) {
+	// Tier 1: device families whose original object is the canonical upload source.
 	var episodeID int64
 	err := m.db.GetContext(ctx, &episodeID, `
 		SELECT e.id
@@ -345,221 +521,13 @@ func (m *Manager) reconcileDownstream(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("select auto sync candidate: %w", err)
 	}
 
-	err = m.db.GetContext(ctx, &episodeID, `
-		SELECT e.id
-		FROM episodes e
-		WHERE e.auto_sync_requested = TRUE
-		  AND e.auto_sync_device_type = ?
-		  AND e.qa_status = 'approved'
-		  AND e.cloud_synced = FALSE
-		  AND e.deleted_at IS NULL
-		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = 'stereo_split')
-		  AND EXISTS (
-			SELECT 1
-			FROM episode_derivatives ed
-			WHERE ed.episode_id = e.id
-			  AND ed.kind = 'stereo_split'
-			  AND ed.processing_status = 'succeeded'
-			  AND ed.qa_status = 'approved'
-		  )
-		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
-		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
-		LIMIT 1
-	`, DeviceTypeEgoPortalStereo)
-	if err == nil {
-		if m.cloud == nil {
-			return false, fmt.Errorf("automatic cloud sync is not configured")
-		}
-		if err := m.cloud.EnqueueStereoSplitManual(ctx, episodeID); err != nil {
-			return false, fmt.Errorf("enqueue automatic stereo split sync for episode %d: %w", episodeID, err)
-		}
-		m.wakeWorker()
-		return true, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("select approved automatic stereo derivative: %w", err)
-	}
-
-	if worked, err := m.reconcileZJWA1D(ctx); worked || err != nil {
+	// Tier 2: conversion and split families share one FIFO priority tier.
+	if worked, err := m.reconcileTier2(ctx); worked || err != nil {
 		return worked, err
 	}
 
-	if worked, err := m.reconcileE2Conversion(ctx); worked || err != nil {
-		return worked, err
-	}
-
-	if worked, err := m.reconcileE6Conversion(ctx); worked || err != nil {
-		return worked, err
-	}
-
-	err = m.db.GetContext(ctx, &episodeID, `
-		SELECT e.id
-		FROM episodes e
-		LEFT JOIN episode_derivatives ed
-			ON ed.episode_id = e.id AND ed.kind = 'stereo_split'
-		WHERE e.auto_sync_requested = TRUE
-		  AND e.auto_sync_device_type = ?
-		  AND e.qa_status = 'approved'
-		  AND e.cloud_synced = FALSE
-		  AND e.deleted_at IS NULL
-		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = 'stereo_split')
-		  AND ed.id IS NULL
-		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
-		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
-		LIMIT 1
-	`, DeviceTypeEgoPortalStereo)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("select automatic stereo split candidate: %w", err)
-	}
-	if m.stereo == nil {
-		return false, fmt.Errorf("automatic stereo split is not configured")
-	}
-	if _, _, err := m.stereo.Start(ctx, episodeID, "auto-sync"); err != nil && !errors.Is(err, stereosplit.ErrAlreadyDerived) {
-		return false, fmt.Errorf("start automatic stereo split for episode %d: %w", episodeID, err)
-	}
-	m.wakeWorker()
-	return true, nil
-}
-
-func (m *Manager) reconcileE2Conversion(ctx context.Context) (bool, error) {
-	var episodeID int64
-	err := m.db.GetContext(ctx, &episodeID, `
-		SELECT e.id
-		FROM episodes e
-		WHERE e.auto_sync_requested = TRUE
-		  AND e.auto_sync_device_type = ?
-		  AND e.qa_status = 'approved'
-		  AND e.cloud_synced = FALSE
-		  AND e.deleted_at IS NULL
-		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
-		  AND EXISTS (
-			SELECT 1
-			FROM episode_derivatives ed
-			WHERE ed.episode_id = e.id
-			  AND ed.kind = ?
-			  AND ed.processing_status = 'succeeded'
-			  AND ed.qa_status = 'approved'
-		  )
-		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
-		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
-		LIMIT 1
-	`, DeviceTypeEgoPortalE2, e2conversion.CloudSourceE2Conversion, e2conversion.Kind)
-	if err == nil {
-		if m.cloud == nil {
-			return false, fmt.Errorf("automatic cloud sync is not configured")
-		}
-		if err := m.cloud.EnqueueE2ConversionManual(ctx, episodeID); err != nil {
-			return false, fmt.Errorf("enqueue automatic E2 conversion sync for episode %d: %w", episodeID, err)
-		}
-		m.wakeWorker()
-		return true, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("select approved automatic E2 conversion derivative: %w", err)
-	}
-
-	err = m.db.GetContext(ctx, &episodeID, `
-		SELECT e.id
-		FROM episodes e
-		LEFT JOIN episode_derivatives ed
-			ON ed.episode_id = e.id AND ed.kind = ?
-		WHERE e.auto_sync_requested = TRUE
-		  AND e.auto_sync_device_type = ?
-		  AND e.qa_status = 'approved'
-		  AND e.cloud_synced = FALSE
-		  AND e.deleted_at IS NULL
-		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
-		  AND ed.id IS NULL
-		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
-		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
-		LIMIT 1
-	`, e2conversion.Kind, DeviceTypeEgoPortalE2, e2conversion.CloudSourceE2Conversion)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("select automatic E2 conversion candidate: %w", err)
-	}
-	if m.e2 == nil {
-		return false, fmt.Errorf("automatic E2 conversion is not configured")
-	}
-	if _, _, err := m.e2.Start(ctx, episodeID, "auto-sync"); err != nil && !errors.Is(err, e2conversion.ErrAlreadyDerived) {
-		return false, fmt.Errorf("start automatic E2 conversion for episode %d: %w", episodeID, err)
-	}
-	m.wakeWorker()
-	return true, nil
-}
-
-func (m *Manager) reconcileE6Conversion(ctx context.Context) (bool, error) {
-	var episodeID int64
-	err := m.db.GetContext(ctx, &episodeID, `
-		SELECT e.id
-		FROM episodes e
-		WHERE e.auto_sync_requested = TRUE
-		  AND e.auto_sync_device_type = ?
-		  AND e.qa_status = 'approved'
-		  AND e.cloud_synced = FALSE
-		  AND e.deleted_at IS NULL
-		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
-		  AND EXISTS (
-			SELECT 1
-			FROM episode_derivatives ed
-			WHERE ed.episode_id = e.id
-			  AND ed.kind = ?
-			  AND ed.processing_status = 'succeeded'
-			  AND ed.qa_status = 'approved'
-		  )
-		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
-		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
-		LIMIT 1
-	`, DeviceTypeEgoPortalE6, e6conversion.CloudSourceE6Conversion, e6conversion.Kind)
-	if err == nil {
-		if m.cloud == nil {
-			return false, fmt.Errorf("automatic cloud sync is not configured")
-		}
-		if err := m.cloud.EnqueueE6ConversionManual(ctx, episodeID); err != nil {
-			return false, fmt.Errorf("enqueue automatic E6 conversion sync for episode %d: %w", episodeID, err)
-		}
-		m.wakeWorker()
-		return true, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("select approved automatic E6 conversion derivative: %w", err)
-	}
-
-	err = m.db.GetContext(ctx, &episodeID, `
-		SELECT e.id
-		FROM episodes e
-		LEFT JOIN episode_derivatives ed
-			ON ed.episode_id = e.id AND ed.kind = ?
-		WHERE e.auto_sync_requested = TRUE
-		  AND e.auto_sync_device_type = ?
-		  AND e.qa_status = 'approved'
-		  AND e.cloud_synced = FALSE
-		  AND e.deleted_at IS NULL
-		  AND (e.cloud_publish_source IS NULL OR e.cloud_publish_source = ?)
-		  AND ed.id IS NULL
-		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
-		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
-		LIMIT 1
-	`, e6conversion.Kind, DeviceTypeEgoPortalE6, e6conversion.CloudSourceE6Conversion)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("select automatic E6 conversion candidate: %w", err)
-	}
-	if m.e6 == nil {
-		return false, fmt.Errorf("automatic E6 conversion is not configured")
-	}
-	if _, _, err := m.e6.Start(ctx, episodeID, "auto-sync"); err != nil && !errors.Is(err, e6conversion.ErrAlreadyDerived) {
-		return false, fmt.Errorf("start automatic E6 conversion for episode %d: %w", episodeID, err)
-	}
-	m.wakeWorker()
-	return true, nil
+	// Tier 3: ZJ-WA1-D depth normalization.
+	return m.reconcileZJWA1D(ctx)
 }
 
 func zjwa1dMetadataNotRequired(raw sql.NullString) bool {
