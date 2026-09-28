@@ -19,6 +19,7 @@ import (
 	"archebase.com/keystone-edge/internal/logger"
 	"archebase.com/keystone-edge/internal/services"
 	"archebase.com/keystone-edge/internal/services/e2conversion"
+	"archebase.com/keystone-edge/internal/services/e6conversion"
 )
 
 const syncStatusNotStarted = "not_started"
@@ -48,6 +49,7 @@ type DataOpsHandler struct {
 	bulkRunExecutions map[string]*dataOpsBulkRunExecution
 	bulkMP4Converter  func(context.Context, dataOpsBulkMP4EpisodeRow, string, string) (string, func(), error)
 	e2Conversion      dataOpsE2ConversionManager
+	e6Conversion      dataOpsE6ConversionManager
 	stereoSplit       dataOpsStereoSplitManager
 	depthNorm         dataOpsDepthNormalizer
 	stereoBulkMu      sync.Mutex
@@ -66,6 +68,18 @@ type dataOpsE2ConversionManager interface {
 	ListImageConfigHistory(ctx context.Context, limit, offset int) ([]e2conversion.ImageConfig, error)
 }
 
+type dataOpsE6ConversionManager interface {
+	Start(ctx context.Context, episodeID int64, actor string) (e6conversion.Derivative, bool, error)
+	Get(ctx context.Context, episodeID int64) (e6conversion.Derivative, error)
+	Retry(ctx context.Context, episodeID int64, actor string) (e6conversion.Derivative, error)
+	Cancel(ctx context.Context, episodeID int64, actor string) (e6conversion.Derivative, error)
+	RetryQA(ctx context.Context, episodeID int64, actor string) (e6conversion.Derivative, error)
+	Logs(ctx context.Context, episodeID int64) (string, error)
+	CurrentImageConfig(ctx context.Context) (e6conversion.ImageConfig, error)
+	UpdateImageConfig(ctx context.Context, imageRef string, maxConcurrent int, resourceLimitsEnabled bool, expectedRevisionID int64, actor string) (e6conversion.ImageConfig, error)
+	ListImageConfigHistory(ctx context.Context, limit, offset int) ([]e6conversion.ImageConfig, error)
+}
+
 // SetStereoSplitManager wires the durable stereo-split module.
 func (h *DataOpsHandler) SetStereoSplitManager(manager dataOpsStereoSplitManager) {
 	if h != nil {
@@ -77,6 +91,13 @@ func (h *DataOpsHandler) SetStereoSplitManager(manager dataOpsStereoSplitManager
 func (h *DataOpsHandler) SetE2ConversionManager(manager dataOpsE2ConversionManager) {
 	if h != nil {
 		h.e2Conversion = manager
+	}
+}
+
+// SetE6ConversionManager wires the durable E6 conversion module.
+func (h *DataOpsHandler) SetE6ConversionManager(manager dataOpsE6ConversionManager) {
+	if h != nil {
+		h.e6Conversion = manager
 	}
 }
 
@@ -92,6 +113,7 @@ type dataOpsBulkSyncWorker interface {
 	EnqueueEpisodeManualForBulkRun(ctx context.Context, episodeID int64, bulkRunID string) error
 	EnqueueStereoSplitManual(ctx context.Context, episodeID int64) error
 	EnqueueE2ConversionManual(ctx context.Context, episodeID int64) error
+	EnqueueE6ConversionManual(ctx context.Context, episodeID int64) error
 	BackfillEpisodeCalibration(ctx context.Context, episodeID int64, cameraSerial string) (*services.CalibrationBackfillResult, error)
 	CancelBulkRun(ctx context.Context, bulkRunID string) (int64, error)
 }
@@ -165,6 +187,9 @@ func (h *DataOpsHandler) RegisterRoutes(apiV1 *gin.RouterGroup) {
 	}
 	if h.e2Conversion != nil {
 		h.registerE2ConversionRoutes(apiV1)
+	}
+	if h.e6Conversion != nil {
+		h.registerE6ConversionRoutes(apiV1)
 	}
 }
 

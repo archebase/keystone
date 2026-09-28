@@ -1735,6 +1735,10 @@ func (w *fakeDataOpsBulkSyncWorker) EnqueueE2ConversionManual(context.Context, i
 	return nil
 }
 
+func (w *fakeDataOpsBulkSyncWorker) EnqueueE6ConversionManual(context.Context, int64) error {
+	return nil
+}
+
 func (w *fakeDataOpsBulkSyncWorker) BackfillEpisodeCalibration(_ context.Context, _ int64, _ string) (*services.CalibrationBackfillResult, error) {
 	return nil, nil
 }

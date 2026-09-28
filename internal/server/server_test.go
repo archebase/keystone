@@ -110,3 +110,29 @@ func TestWebSocketHealthRoutes(t *testing.T) {
 		})
 	}
 }
+
+func TestE6ConversionConfigDerivesOutputPrefix(t *testing.T) {
+	cfg := e6ConversionConfig(config.DerivativeConfig{
+		Enabled:             true,
+		OutputBucket:        "bucket",
+		OutputPrefix:        "ego/",
+		ActiveDeadlineSec:   900,
+		TTLSecondsAfterDone: 600,
+		PollIntervalSec:     10,
+		MaxSourceBytes:      123,
+		OrbitLogTailBytes:   4096,
+	})
+	if !cfg.Enabled || cfg.OutputBucket != "bucket" {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+	if cfg.OutputPrefix != "ego/e6-multimodal-conversion" {
+		t.Fatalf("OutputPrefix=%q want ego/e6-multimodal-conversion", cfg.OutputPrefix)
+	}
+	if cfg.ActiveDeadline != 900 || cfg.TTLSecondsAfterDone != 600 ||
+		cfg.MaxSourceBytes != 123 || cfg.LogTailBytes != 4096 {
+		t.Fatalf("unexpected deadlines/limits: %+v", cfg)
+	}
+	if cfg.PollInterval != 10*time.Second {
+		t.Fatalf("PollInterval=%v want 10s", cfg.PollInterval)
+	}
+}

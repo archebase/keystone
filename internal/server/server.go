@@ -43,6 +43,7 @@ import (
 	"archebase.com/keystone-edge/internal/services/depthnorm"
 	"archebase.com/keystone-edge/internal/services/deviceauth"
 	"archebase.com/keystone-edge/internal/services/e2conversion"
+	"archebase.com/keystone-edge/internal/services/e6conversion"
 	"archebase.com/keystone-edge/internal/services/stereosplit"
 	"archebase.com/keystone-edge/internal/storage/s3"
 	tosstorage "archebase.com/keystone-edge/internal/storage/tos"
@@ -82,6 +83,7 @@ type Server struct {
 	autoSyncSettings    *handlers.AutoSyncSettingsHandler
 	stereoSplit         *stereosplit.Manager
 	e2Conversion        *e2conversion.Manager
+	e6Conversion        *e6conversion.Manager
 	depthNorm           *depthnorm.Manager
 	calibration         *calibration.Manager
 	calibrationHandler  *handlers.CalibrationHandler
@@ -260,13 +262,14 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 	}
 
 	var e2ConversionManager *e2conversion.Manager
+	var e6ConversionManager *e6conversion.Manager
 	if db != nil && cfg.Derivatives.Enabled {
 		orbitClient, err := orbitapi.NewClient(
 			cfg.Derivatives.OrbitBaseURL,
 			time.Duration(cfg.Derivatives.OrbitTimeoutSec)*time.Second,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("initialize E2 conversion Orbit client: %w", err)
+			return nil, fmt.Errorf("initialize conversion Orbit client: %w", err)
 		}
 		objectReader := tosstorage.NewClient(
 			cfg.TOSStorage,
@@ -274,6 +277,8 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		)
 		e2ConversionManager = e2conversion.NewManager(db, orbitClient, objectReader, e2ConversionConfig(cfg.Derivatives))
 		dataOpsHandler.SetE2ConversionManager(e2ConversionManager)
+		e6ConversionManager = e6conversion.NewManager(db, orbitClient, objectReader, e6ConversionConfig(cfg.Derivatives))
+		dataOpsHandler.SetE6ConversionManager(e6ConversionManager)
 	}
 
 	// Create SyncHandler for cloud sync API
@@ -349,6 +354,7 @@ func New(cfg *config.Config, db *sqlx.DB, s3Client *s3.Client, syncWorker *servi
 		autoSyncSettings:    autoSyncSettingsHandler,
 		stereoSplit:         stereoSplitManager,
 		e2Conversion:        e2ConversionManager,
+		e6Conversion:        e6ConversionManager,
 		depthNorm:           depthNormManager,
 		calibration:         calibrationManager,
 		calibrationHandler:  calibrationHandler,
@@ -602,6 +608,14 @@ func (s *Server) Start() error {
 			return fmt.Errorf("start E2 conversion verification workers: %w", err)
 		}
 	}
+	if s.e6Conversion != nil {
+		if err := s.e6Conversion.StartReconciler(); err != nil {
+			return fmt.Errorf("start E6 conversion reconciler: %w", err)
+		}
+		if err := s.e6Conversion.StartVerificationWorkers(); err != nil {
+			return fmt.Errorf("start E6 conversion verification workers: %w", err)
+		}
+	}
 	if s.calibration != nil {
 		if err := s.calibration.StartReconciler(); err != nil {
 			return fmt.Errorf("start calibration reconciler: %w", err)
@@ -842,6 +856,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			shutdownErr = fmt.Errorf("E2 conversion reconciler shutdown: %w", err)
 		}
 	}
+	if s.e6Conversion != nil {
+		if err := s.e6Conversion.StopVerificationWorkers(ctx); err != nil {
+			logShutdownError("E6 conversion verification workers", err)
+			shutdownErr = fmt.Errorf("E6 conversion verification workers shutdown: %w", err)
+		}
+		if err := s.e6Conversion.StopReconciler(ctx); err != nil {
+			logShutdownError("E6 conversion reconciler", err)
+			shutdownErr = fmt.Errorf("E6 conversion reconciler shutdown: %w", err)
+		}
+	}
 
 	if s.stereoSplit != nil {
 		if err := s.stereoSplit.StopStatusSyncWorkers(ctx); err != nil {
@@ -916,6 +940,27 @@ func e2ConversionConfig(cfg config.DerivativeConfig) e2conversion.Config {
 		OutputBucket: cfg.OutputBucket,
 		OutputPrefix: strings.Trim(cfg.OutputPrefix, "/") + "/e2-multimodal-conversion",
 		Resources: e2conversion.Resources{
+			Requests: map[string]string{
+				"cpu": "4", "memory": "8Gi", "ephemeral-storage": "20Gi",
+			},
+			Limits: map[string]string{
+				"cpu": "8", "memory": "16Gi", "ephemeral-storage": "100Gi",
+			},
+		},
+		ActiveDeadline:      cfg.ActiveDeadlineSec,
+		TTLSecondsAfterDone: cfg.TTLSecondsAfterDone,
+		PollInterval:        time.Duration(cfg.PollIntervalSec) * time.Second,
+		MaxSourceBytes:      cfg.MaxSourceBytes,
+		LogTailBytes:        cfg.OrbitLogTailBytes,
+	}
+}
+
+func e6ConversionConfig(cfg config.DerivativeConfig) e6conversion.Config {
+	return e6conversion.Config{
+		Enabled:      cfg.Enabled,
+		OutputBucket: cfg.OutputBucket,
+		OutputPrefix: strings.Trim(cfg.OutputPrefix, "/") + "/e6-multimodal-conversion",
+		Resources: e6conversion.Resources{
 			Requests: map[string]string{
 				"cpu": "4", "memory": "8Gi", "ephemeral-storage": "20Gi",
 			},
