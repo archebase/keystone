@@ -34,6 +34,7 @@ const (
 	episodeQACheckTarExtension      = "tar_extension"
 	episodeQACheckRecordingNotEmpty = "recording_not_empty"
 	egoPortalE2DeviceType           = "Ego Portal E2"
+	egoPortalE6DeviceType           = "Ego Portal E6"
 
 	qaRunModeAuto   QARunMode = "auto"
 	qaRunModeManual QARunMode = "manual"
@@ -891,7 +892,11 @@ func (h *EpisodeQAHandler) CancelEpisodeManualReviewFailed(ctx context.Context, 
 }
 
 func defaultEpisodeQASuite(row episodeQACheckRow) []string {
-	if row.DeviceType == egoPortalE2DeviceType {
+	/* Ego Portal devices upload a tar archive, not an MCAP, so the upload-time
+	 * suite checks the container; the MCAP magic only exists after the platform
+	 * converts the archive. E6 mirrors E2 here. */
+	switch row.DeviceType {
+	case egoPortalE2DeviceType, egoPortalE6DeviceType:
 		return []string{episodeQACheckTarExtension}
 	}
 	checks := []string{episodeQACheckMcapMagic}

@@ -217,6 +217,17 @@ func TestDefaultEpisodeQASuiteUsesTarExtensionForEgoPortalE2(t *testing.T) {
 	}
 }
 
+func TestDefaultEpisodeQASuiteUsesTarExtensionForEgoPortalE6(t *testing.T) {
+	got := defaultEpisodeQASuite(episodeQACheckRow{
+		DeviceType: egoPortalE6DeviceType,
+		McapPath:   "device-uploads/132/capture.tar",
+	})
+	want := []string{episodeQACheckTarExtension}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("suite = %v, want %v", got, want)
+	}
+}
+
 func TestEvaluateTarExtensionCheck(t *testing.T) {
 	for _, test := range []struct {
 		path string
