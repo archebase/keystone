@@ -28,11 +28,40 @@ const (
 	// SyncSourceE2Conversion selects the approved e2-multimodal-conversion
 	// derivative MCAP and calibration output as the canonical cloud upload source.
 	SyncSourceE2Conversion = "e2_multimodal_conversion"
+	// SyncSourceE6Conversion selects the approved e6-multimodal-conversion
+	// derivative MCAP and calibration output as the canonical cloud upload source.
+	SyncSourceE6Conversion = "e6_multimodal_conversion"
 	// SyncBackendMinIO reads the frozen source object through Keystone's MinIO client.
 	SyncBackendMinIO = "minio"
 	// SyncBackendTOS reads the frozen source object through Keystone's TOS client.
 	SyncBackendTOS = "tos"
 )
+
+// conversionSyncSourceForDeviceType maps an Ego Portal device type to the tar-to-mcap
+// conversion derivative that is its canonical cloud upload source.
+func conversionSyncSourceForDeviceType(deviceType string) (string, bool) {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(deviceType), "Ego Portal E2"):
+		return SyncSourceE2Conversion, true
+	case strings.EqualFold(strings.TrimSpace(deviceType), "Ego Portal E6"):
+		return SyncSourceE6Conversion, true
+	default:
+		return "", false
+	}
+}
+
+// isConversionSyncSource reports whether the source type comes from a tar-to-mcap conversion derivative.
+func isConversionSyncSource(sourceType string) bool {
+	return sourceType == SyncSourceE2Conversion || sourceType == SyncSourceE6Conversion
+}
+
+// conversionSourceLabel returns the short human label used in sync errors.
+func conversionSourceLabel(sourceType string) string {
+	if sourceType == SyncSourceE6Conversion {
+		return "E6"
+	}
+	return "E2"
+}
 
 // ErrCloudPublishSourceLocked indicates that an Episode already claimed another canonical upload source.
 var ErrCloudPublishSourceLocked = errors.New("episode cloud publish source is locked")
@@ -66,7 +95,7 @@ type SyncSourceSnapshot struct {
 
 func (s SyncSourceSnapshot) validate() error {
 	if s.SourceType != SyncSourceOriginal && s.SourceType != SyncSourceStereoSplit &&
-		s.SourceType != SyncSourceDepthNormalization && s.SourceType != SyncSourceE2Conversion {
+		s.SourceType != SyncSourceDepthNormalization && !isConversionSyncSource(s.SourceType) {
 		return fmt.Errorf("unsupported sync source type %q", s.SourceType)
 	}
 	if s.Backend != SyncBackendMinIO && s.Backend != SyncBackendTOS {
@@ -86,21 +115,22 @@ func (s SyncSourceSnapshot) validate() error {
 		return fmt.Errorf("sync source snapshot has invalid SHA-256")
 	}
 	if (s.SourceType == SyncSourceStereoSplit || s.SourceType == SyncSourceDepthNormalization ||
-		s.SourceType == SyncSourceE2Conversion) &&
+		isConversionSyncSource(s.SourceType)) &&
 		(s.DerivativeID <= 0 || s.Generation <= 0) {
 		return fmt.Errorf("%s sync snapshot is missing generation identity", s.SourceType)
 	}
-	if s.SourceType == SyncSourceE2Conversion {
+	if isConversionSyncSource(s.SourceType) {
+		label := conversionSourceLabel(s.SourceType)
 		calibrationChecksum := strings.ToLower(strings.TrimSpace(s.CalibrationSHA256))
 		if strings.TrimSpace(s.CalibrationBucket) == "" || strings.TrimSpace(s.CalibrationObjectKey) == "" ||
 			s.CalibrationSizeBytes <= 0 || len(calibrationChecksum) != 64 {
-			return fmt.Errorf("E2 conversion sync snapshot has invalid calibration identity")
+			return fmt.Errorf("%s conversion sync snapshot has invalid calibration identity", label)
 		}
 		if _, err := hex.DecodeString(calibrationChecksum); err != nil {
-			return fmt.Errorf("E2 conversion sync snapshot has invalid calibration SHA-256")
+			return fmt.Errorf("%s conversion sync snapshot has invalid calibration SHA-256", label)
 		}
 		if !s.CalibrationUploadCompleted && strings.TrimSpace(s.ParamFileMotionStoreID) != "" {
-			return fmt.Errorf("E2 conversion sync snapshot has incomplete calibration upload state")
+			return fmt.Errorf("%s conversion sync snapshot has incomplete calibration upload state", label)
 		}
 	}
 	return nil
@@ -269,7 +299,8 @@ func (w *SyncWorker) buildDepthNormalizationSourceSnapshot(ctx context.Context, 
 	return snapshot, nil
 }
 
-func (w *SyncWorker) buildE2ConversionSourceSnapshot(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (SyncSourceSnapshot, error) {
+func (w *SyncWorker) buildConversionSourceSnapshot(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow, sourceType string) (SyncSourceSnapshot, error) {
+	label := conversionSourceLabel(sourceType)
 	var derivative struct {
 		ID                      int64          `db:"id"`
 		Generation              int            `db:"generation"`
@@ -286,29 +317,29 @@ func (w *SyncWorker) buildE2ConversionSourceSnapshot(ctx context.Context, tx *sq
 		SELECT id, generation, processing_status, qa_status, mcap_path, checksum, file_size_bytes,
 		       calibration_result_uri, calibration_result_size_bytes, calibration_result_sha256
 		FROM episode_derivatives
-		WHERE episode_id = ? AND kind = 'e2_multimodal_conversion'
-	`+txLockClause(tx), ep.ID); err != nil {
+		WHERE episode_id = ? AND kind = ?
+	`+txLockClause(tx), ep.ID, sourceType); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return SyncSourceSnapshot{}, fmt.Errorf("E2 conversion derivative not found for episode %d", ep.ID)
+			return SyncSourceSnapshot{}, fmt.Errorf("%s conversion derivative not found for episode %d", label, ep.ID)
 		}
-		return SyncSourceSnapshot{}, fmt.Errorf("load E2 conversion sync source: %w", err)
+		return SyncSourceSnapshot{}, fmt.Errorf("load %s conversion sync source: %w", label, err)
 	}
 	if derivative.Status != "succeeded" || derivative.QAStatus != "approved" {
-		return SyncSourceSnapshot{}, fmt.Errorf("E2 conversion derivative must be succeeded and QA approved")
+		return SyncSourceSnapshot{}, fmt.Errorf("%s conversion derivative must be succeeded and QA approved", label)
 	}
 	objectKey := strings.TrimLeft(strings.TrimSpace(derivative.McapPath.String), "/")
 	if objectKey == "" {
-		return SyncSourceSnapshot{}, fmt.Errorf("E2 conversion derivative for episode %d has no MCAP output", ep.ID)
+		return SyncSourceSnapshot{}, fmt.Errorf("%s conversion derivative for episode %d has no MCAP output", label, ep.ID)
 	}
 	bucket, calibrationObjectKey, err := parseTOSObjectURI(derivative.CalibrationResultURI.String)
 	if err != nil {
-		return SyncSourceSnapshot{}, fmt.Errorf("episode %d E2 conversion calibration result: %w", ep.ID, err)
+		return SyncSourceSnapshot{}, fmt.Errorf("episode %d %s conversion calibration result: %w", ep.ID, label, err)
 	}
 	if derivative.CalibrationResultSize.Int64 <= 0 || len(strings.TrimSpace(derivative.CalibrationResultSHA256.String)) != 64 {
-		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid E2 calibration output metadata", ep.ID)
+		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid %s calibration output metadata", ep.ID, label)
 	}
 	snapshot := SyncSourceSnapshot{
-		SourceType:           SyncSourceE2Conversion,
+		SourceType:           sourceType,
 		Backend:              SyncBackendTOS,
 		Bucket:               bucket,
 		ObjectKey:            objectKey,
@@ -323,7 +354,7 @@ func (w *SyncWorker) buildE2ConversionSourceSnapshot(ctx context.Context, tx *sq
 		CalibrationSHA256:    strings.ToLower(strings.TrimSpace(derivative.CalibrationResultSHA256.String)),
 	}
 	if _, err := encodeSyncSourceSnapshot(snapshot); err != nil {
-		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid E2 conversion sync source: %v", ep.ID, err)
+		return SyncSourceSnapshot{}, newNonRetryableSyncError("episode %d has invalid %s conversion sync source: %v", ep.ID, label, err)
 	}
 	return snapshot, nil
 }
@@ -332,8 +363,8 @@ func (w *SyncWorker) resolveManualSyncSourceTx(ctx context.Context, tx *sqlx.Tx,
 	if strings.EqualFold(strings.TrimSpace(ep.DeviceType), DeviceTypeZJWA1D) {
 		return w.resolveZJWA1DSyncSourceTx(ctx, tx, ep)
 	}
-	if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {
-		return w.resolveE2ConversionSyncSourceTx(ctx, tx, ep)
+	if sourceType, ok := conversionSyncSourceForDeviceType(ep.DeviceType); ok {
+		return w.resolveConversionSyncSourceTx(ctx, tx, ep, sourceType)
 	}
 
 	claimedSource := strings.TrimSpace(ep.CloudPublishSource.String)
@@ -379,10 +410,11 @@ func (w *SyncWorker) resolveManualSyncSourceTx(ctx context.Context, tx *sqlx.Tx,
 	)
 }
 
-func (w *SyncWorker) resolveE2ConversionSyncSourceTx(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow) (string, error) {
+func (w *SyncWorker) resolveConversionSyncSourceTx(ctx context.Context, tx *sqlx.Tx, ep syncEpisodeUploadRow, sourceType string) (string, error) {
+	label := conversionSourceLabel(sourceType)
 	claimedSource := strings.TrimSpace(ep.CloudPublishSource.String)
 	switch claimedSource {
-	case SyncSourceE2Conversion, "":
+	case sourceType, "":
 	default:
 		return "", fmt.Errorf("%w: unsupported claimed source %q", ErrCloudPublishSourceLocked, claimedSource)
 	}
@@ -394,20 +426,21 @@ func (w *SyncWorker) resolveE2ConversionSyncSourceTx(ctx context.Context, tx *sq
 	err := tx.GetContext(ctx, &derivative, `
 		SELECT processing_status, qa_status
 		FROM episode_derivatives
-		WHERE episode_id = ? AND kind = 'e2_multimodal_conversion'
-	`+txLockClause(tx), ep.ID)
+		WHERE episode_id = ? AND kind = ?
+	`+txLockClause(tx), ep.ID, sourceType)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("%w: E2 conversion has not completed", ErrSyncSourceUnavailable)
+		return "", fmt.Errorf("%w: %s conversion has not completed", ErrSyncSourceUnavailable, label)
 	}
 	if err != nil {
-		return "", fmt.Errorf("load E2 conversion sync state: %w", err)
+		return "", fmt.Errorf("load %s conversion sync state: %w", label, err)
 	}
 	if derivative.ProcessingStatus == "succeeded" && derivative.QAStatus == "approved" {
-		return SyncSourceE2Conversion, nil
+		return sourceType, nil
 	}
 	return "", fmt.Errorf(
-		"%w: E2 conversion processing_status=%q qa_status=%q",
+		"%w: %s conversion processing_status=%q qa_status=%q",
 		ErrSyncSourceUnavailable,
+		label,
 		derivative.ProcessingStatus,
 		derivative.QAStatus,
 	)

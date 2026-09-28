@@ -589,6 +589,12 @@ func (w *SyncWorker) EnqueueE2ConversionManual(ctx context.Context, episodeID in
 	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceE2Conversion)
 }
 
+// EnqueueE6ConversionManual claims the approved e6-multimodal-conversion
+// generation as the Episode's canonical Hilbert upload source.
+func (w *SyncWorker) EnqueueE6ConversionManual(ctx context.Context, episodeID int64) error {
+	return w.enqueueEpisodeManual(ctx, episodeID, "", SyncSourceE6Conversion)
+}
+
 // EnqueueDepthNormalizationAutomatic claims the approved local depth-normalized
 // MCAP generation as the Episode's canonical Hilbert upload source.
 func (w *SyncWorker) EnqueueDepthNormalizationAutomatic(ctx context.Context, episodeID int64) error {
@@ -695,7 +701,8 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 		return nil
 	}
 	if sourceType != syncSourceAuto && sourceType != SyncSourceOriginal && sourceType != SyncSourceStereoSplit &&
-		sourceType != SyncSourceDepthNormalization && sourceType != SyncSourceE2Conversion {
+		sourceType != SyncSourceDepthNormalization && sourceType != SyncSourceE2Conversion &&
+		sourceType != SyncSourceE6Conversion {
 		return fmt.Errorf("unsupported sync source type %q", sourceType)
 	}
 	automaticSource := sourceType == syncSourceAuto
@@ -778,8 +785,8 @@ func (w *SyncWorker) persistPendingSyncLogForSource(ctx context.Context, episode
 			snapshot, err = w.buildOriginalSourceSnapshot(episode)
 		case SyncSourceDepthNormalization:
 			snapshot, err = w.buildDepthNormalizationSourceSnapshot(ctx, tx, episode)
-		case SyncSourceE2Conversion:
-			snapshot, err = w.buildE2ConversionSourceSnapshot(ctx, tx, episode)
+		case SyncSourceE2Conversion, SyncSourceE6Conversion:
+			snapshot, err = w.buildConversionSourceSnapshot(ctx, tx, episode, sourceType)
 		default:
 			snapshot, err = w.buildStereoSplitSourceSnapshot(ctx, tx, episode)
 		}
@@ -1440,11 +1447,8 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	}
 	calibrationID, calibrationErr := w.uploadMatchingCalibration(ctx, uploadContext, ep, ep.SourceSnapshot, syncLogID)
 	if calibrationErr != nil {
-		if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {
-			return nil, fmt.Errorf("E2 calibration upload must complete before MCAP upload: %w", calibrationErr)
-		}
-		if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {
-			return nil, fmt.Errorf("E2 calibration upload must complete before MCAP upload: %w", calibrationErr)
+		if sourceType, ok := conversionSyncSourceForDeviceType(ep.DeviceType); ok {
+			return nil, fmt.Errorf("%s calibration upload must complete before MCAP upload: %w", conversionSourceLabel(sourceType), calibrationErr)
 		}
 		if errors.Is(calibrationErr, ErrCalibrationStateUnsupported) {
 			return nil, calibrationErr
@@ -1558,15 +1562,15 @@ func (w *SyncWorker) uploadEpisodeDirect(ctx context.Context, syncLogID int64, e
 	}, nil
 }
 
-func (w *SyncWorker) uploadE2Calibration(ctx context.Context, uploadContext hilbertEpisodeUploadContext, ep syncEpisodeUploadRow, snapshot *SyncSourceSnapshot, syncLogID int64) (string, error) {
-	if snapshot == nil || snapshot.SourceType != SyncSourceE2Conversion {
-		return "", newNonRetryableSyncError("episode %d E2 sync is missing its source snapshot", ep.ID)
+func (w *SyncWorker) uploadConversionCalibration(ctx context.Context, uploadContext hilbertEpisodeUploadContext, ep syncEpisodeUploadRow, snapshot *SyncSourceSnapshot, syncLogID int64, label string) (string, error) {
+	if snapshot == nil || !isConversionSyncSource(snapshot.SourceType) {
+		return "", newNonRetryableSyncError("episode %d %s sync is missing its source snapshot", ep.ID, label)
 	}
 	if snapshot.CalibrationUploadCompleted && strings.TrimSpace(snapshot.ParamFileMotionStoreID) != "" {
 		return snapshot.ParamFileMotionStoreID, nil
 	}
 	if snapshot.CalibrationBucket == "" || snapshot.CalibrationObjectKey == "" || snapshot.CalibrationSizeBytes <= 0 || len(snapshot.CalibrationSHA256) != 64 {
-		return "", newNonRetryableSyncError("episode %d has invalid E2 calibration snapshot", ep.ID)
+		return "", newNonRetryableSyncError("episode %d has invalid %s calibration snapshot", ep.ID, label)
 	}
 	reader, err := w.sourceReaderForBackend(SyncBackendTOS)
 	if err != nil {
@@ -1574,11 +1578,11 @@ func (w *SyncWorker) uploadE2Calibration(ctx context.Context, uploadContext hilb
 	}
 	size, etag, err := reader.StatObject(ctx, snapshot.CalibrationBucket, snapshot.CalibrationObjectKey)
 	if err != nil || size != snapshot.CalibrationSizeBytes {
-		return "", fmt.Errorf("E2 calibration object identity changed")
+		return "", fmt.Errorf("%s calibration object identity changed", label)
 	}
 	registration, err := w.hilbert.RegisterParamFile(ctx, auth.HilbertParamFileRegisterRequest{WorkspaceID: uploadContext.WorkspaceID, ContentSHA256: snapshot.CalibrationSHA256, SizeBytes: size})
 	if err != nil {
-		return "", fmt.Errorf("register E2 calibration ParamFile: %w", err)
+		return "", fmt.Errorf("register %s calibration ParamFile: %w", label, err)
 	}
 	paramID := strings.TrimSpace(registration.ParamFileMotionStoreID)
 	if registration.State == auth.CalibrationSnapshotStateUploading {
@@ -1603,7 +1607,7 @@ func (w *SyncWorker) uploadE2Calibration(ctx context.Context, uploadContext hilb
 			return "", err
 		}
 	} else if registration.State != auth.CalibrationSnapshotStateReady {
-		return "", fmt.Errorf("unsupported E2 calibration ParamFile state %q", registration.State)
+		return "", fmt.Errorf("unsupported %s calibration ParamFile state %q", label, registration.State)
 	}
 	snapshot.ParamFileMotionStoreID = paramID
 	snapshot.CalibrationUploadCompleted = true
@@ -1635,11 +1639,12 @@ func (w *SyncWorker) uploadMatchingCalibration(ctx context.Context, uploadContex
 		logger.Printf("[SYNC-WORKER] Episode %d ignoring incomplete Hilbert calibration registration: param_file_id=%s object_key=%s",
 			ep.ID, snapshot.ParamFileMotionStoreID, snapshot.CalibrationObjectKey)
 	}
-	if strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal E2") {
-		if snapshot == nil || snapshot.SourceType != SyncSourceE2Conversion {
-			return "", newNonRetryableSyncError("episode %d E2 sync is missing its source snapshot", ep.ID)
+	if sourceType, ok := conversionSyncSourceForDeviceType(ep.DeviceType); ok {
+		label := conversionSourceLabel(sourceType)
+		if snapshot == nil || snapshot.SourceType != sourceType {
+			return "", newNonRetryableSyncError("episode %d %s sync is missing its source snapshot", ep.ID, label)
 		}
-		return w.uploadE2Calibration(ctx, uploadContext, ep, snapshot, syncLogID)
+		return w.uploadConversionCalibration(ctx, uploadContext, ep, snapshot, syncLogID, label)
 	}
 	if !strings.EqualFold(strings.TrimSpace(ep.DeviceType), "Ego Portal Stereo") || !ep.CameraSerial.Valid || strings.TrimSpace(ep.CameraSerial.String) == "" {
 		return "", nil
