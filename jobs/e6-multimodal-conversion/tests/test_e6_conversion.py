@@ -201,6 +201,14 @@ class EndToEndConversionTest(unittest.TestCase):
                                  "foxglove.CompressedVideo")
                 self.assertEqual(schemas[channels["/imu/data"].schema_id].encoding, "ros2msg")
                 self.assertEqual(channels["/imu/data"].message_encoding, "cdr")
+                # ROS 2 consumers resolve the message definition themselves, so
+                # the IMU schema must use builtin_interfaces/Time rather than the
+                # ROS 1 "time stamp" spelling rosbags emits (mcap_ros2 and the
+                # archebase_stereo_calib rectifier both raise on it otherwise).
+                imu_msgdef = schemas[channels["/imu/data"].schema_id].data
+                self.assertIn(b"builtin_interfaces/Time stamp", imu_msgdef)
+                self.assertIn(b"MSG: builtin_interfaces/Time", imu_msgdef)
+                self.assertNotIn(b"time stamp", imu_msgdef)
                 counts = {
                     topic: summary.statistics.channel_message_counts.get(channel.id, 0)
                     for topic, channel in channels.items()

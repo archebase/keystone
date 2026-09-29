@@ -687,6 +687,29 @@ def _yaml_metadata(message_count: int, start_ns: int, end_ns: int,
     return "\n".join(lines) + "\n"
 
 
+def canonical_ros2_msgdef(definition: str) -> bytes:
+    """Return the ROS 2 spelling of a msgdef produced by rosbags.
+
+    ``rosbags`` renders ``std_msgs/Header`` with the ROS 1 field type
+    ``time stamp``. ROS 2 never had that alias: every ROS 2 tool that resolves
+    the message definition (``mcap_ros2``, the archebase_stereo_calib
+    rectifier, Foxglove Studio) raises instead, e.g.
+    ``NotImplementedError: Parsing for type time is not implemented``, and the
+    whole consumer fails on our IMU channel even though the video topics are
+    fine. Rewrite the field type and make the dependency explicit so the schema
+    is self-contained.
+    """
+    text = definition.replace("time stamp", "builtin_interfaces/Time stamp")
+    if "MSG: builtin_interfaces/Time" not in text:
+        text += (
+            "\n" + "=" * 80 + "\n"
+            "MSG: builtin_interfaces/Time\n"
+            "int32 sec\n"
+            "uint32 nanosec\n"
+        )
+    return text.encode()
+
+
 def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0,
             generation: int = 1, processor_image: str = "") -> dict[str, object]:
     root = root.resolve()
@@ -724,7 +747,7 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         left_channel = writer.register_channel(LEFT_TOPIC, "protobuf", video_schema)
         right_channel = writer.register_channel(RIGHT_TOPIC, "protobuf", video_schema)
         imu_definition, _ = typestore.generate_msgdef("sensor_msgs/msg/Imu")
-        imu_schema = writer.register_schema("sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode())
+        imu_schema = writer.register_schema("sensor_msgs/msg/Imu", "ros2msg", canonical_ros2_msgdef(imu_definition))
         imu_channel = writer.register_channel(IMU_TOPIC, "cdr", imu_schema)
         stats = ConversionStats()
         # A side-by-side capture has no pairing to plan: every recorded frame is
