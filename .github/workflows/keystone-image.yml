@@ -18,6 +18,7 @@ on:
           - keystone
           - stereo-split
           - e2-multimodal-conversion
+          - e6-multimodal-conversion
           - calibration
           - all
 
