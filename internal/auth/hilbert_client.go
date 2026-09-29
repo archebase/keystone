@@ -48,6 +48,10 @@ const (
 	hilbertNonceLengthBytes    = hilbertNonceKeyLengthBytes + hilbertNonceIVLengthBytes
 
 	hilbertDCDeviceQueryPageSize int64 = 200
+
+	// hilbertMaxDCPlanTargetCount mirrors Hilbert's patch-target-count contract
+	// (dc_plan_controller.go: gte=1,lte=500).
+	hilbertMaxDCPlanTargetCount int64 = 500
 )
 
 var (
@@ -450,7 +454,7 @@ func (c *HilbertClient) PatchDCPlanDCDeviceID(ctx context.Context, workspaceID, 
 
 // PatchDCPlanTargetCount updates the target count of a Hilbert data collection plan.
 func (c *HilbertClient) PatchDCPlanTargetCount(ctx context.Context, workspaceID, planID, targetCount int64) (bool, error) {
-	if workspaceID <= 0 || planID <= 0 || targetCount < 1 || targetCount > 200 {
+	if workspaceID <= 0 || planID <= 0 || targetCount < 1 || targetCount > hilbertMaxDCPlanTargetCount {
 		return false, fmt.Errorf("%w: invalid dc plan target count parameters", ErrHilbertUnavailable)
 	}
 	req, err := c.hilbertServiceJSONRequest(ctx, http.MethodPost, hilbertDCPlanPatchTargetPath, map[string]int64{

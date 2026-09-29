@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -54,6 +55,33 @@ func TestPatchDCPlanTargetCountUsesRESTContract(t *testing.T) {
 	}
 	if !updated {
 		t.Fatal("PatchDCPlanTargetCount() = false, want true")
+	}
+}
+
+func TestPatchDCPlanTargetCountEnforcesHilbertBounds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeHilbertTestJSON(t, w, map[string]any{"code": 0, "data": true})
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL:        server.URL,
+		TimeoutSeconds: 2,
+		AccessKey:      "hilbert-ak",
+		SecretKey:      "hilbert-sk",
+	})
+
+	updated, err := client.PatchDCPlanTargetCount(context.Background(), 10, 20, hilbertMaxDCPlanTargetCount)
+	if err != nil || !updated {
+		t.Fatalf("at max: updated=%v err=%v", updated, err)
+	}
+
+	updated, err = client.PatchDCPlanTargetCount(context.Background(), 10, 20, hilbertMaxDCPlanTargetCount+1)
+	if !errors.Is(err, ErrHilbertUnavailable) {
+		t.Fatalf("above max: err=%v want ErrHilbertUnavailable", err)
+	}
+	if updated {
+		t.Fatal("above max returned updated=true")
 	}
 }
 

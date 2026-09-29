@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,6 +144,48 @@ func TestUpdateTargetCountCancelsPendingTasksAboveNewTarget(t *testing.T) {
 	}
 	if pendingCount != 1 || cancelledCount != 2 {
 		t.Fatalf("pending=%d cancelled=%d want=1/2", pendingCount, cancelledCount)
+	}
+}
+
+func TestUpdateTargetCountBoundaries(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     int
+		wantStatus int
+	}{
+		{name: "accepts Hilbert maximum", target: 500, wantStatus: http.StatusOK},
+		{name: "rejects above Hilbert maximum", target: 501, wantStatus: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newTargetCountTestDB(t)
+			defer db.Close()
+			seedTargetCountTestData(t, db)
+			client := &targetCountTestClient{}
+			router := newTargetCountTestRouter(db, client)
+
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/operator/dc-plans/1001/target-count",
+				strings.NewReader(fmt.Sprintf(`{"target_count":%d}`, tc.target)),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, tc.wantStatus, response.Body.String())
+			}
+			if tc.wantStatus == http.StatusOK {
+				if !client.called || client.targetCount != int64(tc.target) {
+					t.Fatalf("Hilbert call = called:%v target:%d want:%d", client.called, client.targetCount, tc.target)
+				}
+				return
+			}
+			if client.called {
+				t.Fatal("Hilbert client was called for an out-of-range target")
+			}
+		})
 	}
 }
 

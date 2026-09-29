@@ -227,8 +227,8 @@ func (h *DCPlanHandler) UpdateTargetCount(c *gin.Context) {
 		return
 	}
 	var req UpdateTargetCountRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.TargetCount < 1 || req.TargetCount > 200 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_target_count", "error": "target_count must be between 1 and 200"})
+	if err := c.ShouldBindJSON(&req); err != nil || req.TargetCount < 1 || req.TargetCount > maxDCPlanTargetCount {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_target_count", "error": "target_count must be between 1 and 500"})
 		return
 	}
 
@@ -346,9 +346,14 @@ func (h *DCPlanHandler) UpdateTargetCount(c *gin.Context) {
 	c.JSON(http.StatusOK, UpdateTargetCountResponse{PlanID: planID, TargetCount: req.TargetCount, UploadedCount: uploadedCount, Changed: true, TasksCancelled: tasksCancelled})
 }
 
+// maxDCPlanTargetCount is the largest target Hilbert's patch-target-count
+// endpoint accepts (dc_plan_controller.go: gte=1,lte=500).
+const maxDCPlanTargetCount = 500
+
 // UpdateTargetCountRequest contains the new Hilbert dc plan target count.
 type UpdateTargetCountRequest struct {
-	TargetCount int64 `json:"target_count" binding:"required,gte=1,lte=200"`
+	// The binding upper bound must stay in sync with maxDCPlanTargetCount.
+	TargetCount int64 `json:"target_count" binding:"required,gte=1,lte=500"`
 }
 
 // UpdateTargetCountResponse reports the applied target, Keystone episode count and cancelled pending tasks.
