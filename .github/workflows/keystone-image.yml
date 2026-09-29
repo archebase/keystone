@@ -33,6 +33,7 @@ env:
   IMAGE_REPOSITORY: prod/keystone
   STEREO_SPLIT_IMAGE_REPOSITORY: prod/stereo-split
   E2_MULTIMODAL_CONVERSION_IMAGE_REPOSITORY: prod/e2-multimodal-conversion
+  E6_MULTIMODAL_CONVERSION_IMAGE_REPOSITORY: prod/e6-multimodal-conversion
   CALIBRATION_IMAGE_REPOSITORY: prod/stereo-calibration
   ARCHEBASE_CALIB_REPOSITORY: git@gitlab.archebase.cn:robotics-and-ai/archebase_calib.git
   ARCHEBASE_CALIB_REF: refs/heads/main
@@ -174,6 +175,7 @@ jobs:
           echo "IMAGE=${VOLCENGINE_CR_ENDPOINT}/${IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "STEREO_SPLIT_IMAGE=${VOLCENGINE_CR_ENDPOINT}/${STEREO_SPLIT_IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "E2_MULTIMODAL_CONVERSION_IMAGE=${VOLCENGINE_CR_ENDPOINT}/${E2_MULTIMODAL_CONVERSION_IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "E6_MULTIMODAL_CONVERSION_IMAGE=${VOLCENGINE_CR_ENDPOINT}/${E6_MULTIMODAL_CONVERSION_IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
 
       - name: Create Kubernetes BuildKit builder
@@ -395,6 +397,41 @@ jobs:
       - name: Inspect pushed E2 multimodal conversion image
         if: steps.images.outputs.e2_multimodal_conversion == 'true'
         run: docker buildx imagetools inspect "$E2_MULTIMODAL_CONVERSION_IMAGE"
+
+      - name: Build and push E6 multimodal conversion image
+        id: e6_multimodal_conversion_image
+        if: steps.images.outputs.e6_multimodal_conversion == 'true'
+        run: |
+          set -euo pipefail
+          metadata_file="${RUNNER_TEMP}/e6-multimodal-conversion-image-metadata.json"
+          docker buildx build \
+            --builder "${{ steps.buildkit.outputs.builder }}" \
+            --platform linux/amd64 \
+            --file jobs/e6-multimodal-conversion/Dockerfile \
+            --build-arg DEBIAN_MIRROR=http://mirrors.ustc.edu.cn/debian \
+            --build-arg DEBIAN_SECURITY_MIRROR=http://mirrors.ustc.edu.cn/debian-security \
+            --build-arg PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+            --tag "$E6_MULTIMODAL_CONVERSION_IMAGE" \
+            --metadata-file "$metadata_file" \
+            --push \
+            .
+          digest="$(jq -r '."containerimage.digest" // empty' "$metadata_file")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "E6 image build did not return a valid digest" >&2
+            exit 1
+          fi
+          image_ref="${VOLCENGINE_CR_ENDPOINT}/${E6_MULTIMODAL_CONVERSION_IMAGE_REPOSITORY}@${digest}"
+          echo "E6_MULTIMODAL_CONVERSION_IMAGE_REF=$image_ref" >> "$GITHUB_ENV"
+          {
+            echo "### E6 multimodal conversion image"
+            echo
+            echo "- Image: \`$E6_MULTIMODAL_CONVERSION_IMAGE\`"
+            echo "- Immutable ref: \`$image_ref\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect pushed E6 multimodal conversion image
+        if: steps.images.outputs.e6_multimodal_conversion == 'true'
+        run: docker buildx imagetools inspect "$E6_MULTIMODAL_CONVERSION_IMAGE"
 
       - name: Build and push calibration image
         id: calibration_image
