@@ -31,7 +31,12 @@ func validManifest() processingManifest {
 	manifest.Outputs.Calibration.SHA256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 	manifest.Stats.LeftVideos = 10
 	manifest.Stats.RightVideos = 10
+	manifest.Stats.TrackingLeftVideos = 20
+	manifest.Stats.TrackingRightVideos = 20
+	manifest.Stats.CtrlLeftVideos = 20
+	manifest.Stats.CtrlRightVideos = 20
 	manifest.Stats.IMUMessages = 100
+	manifest.Stats.HeadPoseMessages = 30
 	manifest.StartedAt = fixedManifestTime
 	manifest.FinishedAt = fixedManifestTime.Add(1)
 	return manifest
@@ -44,7 +49,12 @@ func TestValidateE6ManifestStats(t *testing.T) {
 		t.Fatalf("validateManifestStats() error = %v", err)
 	}
 	if contract.LeftTopic != leftVideoTopic || contract.RightTopic != rightVideoTopic ||
-		contract.ExpectedLeft != 10 || contract.ExpectedRight != 10 || contract.ExpectedIMU != 100 {
+		contract.TrackingLeftTopic != trackingLeftVideoTopic || contract.TrackingRightTopic != trackingRightVideoTopic ||
+		contract.CtrlLeftTopic != ctrlLeftVideoTopic || contract.CtrlRightTopic != ctrlRightVideoTopic ||
+		contract.HeadPoseTopic != headPoseTopic ||
+		contract.ExpectedLeft != 10 || contract.ExpectedRight != 10 || contract.ExpectedIMU != 100 ||
+		contract.ExpectedTrackingLeft != 20 || contract.ExpectedTrackingRight != 20 ||
+		contract.ExpectedCtrlLeft != 20 || contract.ExpectedCtrlRight != 20 || contract.ExpectedHeadPose != 30 {
 		t.Fatalf("contract = %+v", contract)
 	}
 }

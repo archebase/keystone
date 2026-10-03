@@ -61,7 +61,8 @@ with tarfile.open(archive, 'r:*') as tar:
 
 
 def find_root(extracted: Path) -> Path:
-    required = ("rgb.mp4", "rgb_metainfo.csv", "accel.csv", "gyro.csv",
+    required = ("rgb.mp4", "rgb_metainfo.csv", "tracking.mp4", "tracking_metainfo.csv",
+                "ctrl.mp4", "ctrl_metainfo.csv", "head_pose.csv", "accel.csv", "gyro.csv",
                 "camera_params_rgb.json", "imu_calibration.json")
     candidates = [extracted, *[path for path in extracted.iterdir() if path.is_dir()]]
     for candidate in candidates:

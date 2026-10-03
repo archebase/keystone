@@ -25,6 +25,11 @@ def has_module(name: str) -> bool:
 FLAT_CAPTURE = {
     "rgb.mp4": b"video",
     "rgb_metainfo.csv": b"frame_index,mid_exposure_utc_ns\n0,1000\n",
+    "tracking.mp4": b"video",
+    "tracking_metainfo.csv": b"frame_index,mid_exposure_utc_ns\n0,1000\n",
+    "ctrl.mp4": b"video",
+    "ctrl_metainfo.csv": b"frame_index,mid_exposure_utc_ns\n0,1000\n",
+    "head_pose.csv": b"timestamp_ns,pos_x,pos_y,pos_z,quat_x,quat_y,quat_z,quat_w\n",
     "accel.csv": b"timestamp_ns,x,y,z\n",
     "gyro.csv": b"timestamp_ns,x,y,z\n",
     "camera_params_rgb.json": b"{}",
@@ -151,7 +156,7 @@ class E6JobContractTest(unittest.TestCase):
             calibration = _build_calibration(root)
             self.assertEqual(calibration["schema"], "archebase.calibration")
             self.assertEqual([camera["topic"] for camera in calibration["cameras"]], [
-                "/camera/left/image/h264", "/camera/right/image/h264",
+                "/archebase/camera/left/image/h264", "/archebase/camera/right/image/h264",
             ])
             self.assertEqual(calibration["cameras"][0]["resolution"], [1920, 1200])
             self.assertEqual(

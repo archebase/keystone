@@ -10,6 +10,7 @@ import csv
 from dataclasses import dataclass, field
 import datetime
 from fractions import Fraction
+import heapq
 import json
 from itertools import chain, islice
 from pathlib import Path
@@ -26,10 +27,35 @@ from mcap.writer import Writer
 from rosbags.typesys import Stores, get_typestore
 
 
-LEFT_TOPIC = "/camera/left/image/h264"
-RIGHT_TOPIC = "/camera/right/image/h264"
-IMU_TOPIC = "/imu/data"
+LEFT_TOPIC = "/archebase/camera/left/image/h264"
+RIGHT_TOPIC = "/archebase/camera/right/image/h264"
+TRACKING_LEFT_TOPIC = "/archebase/camera/tracking/left/image/h264"
+TRACKING_RIGHT_TOPIC = "/archebase/camera/tracking/right/image/h264"
+CTRL_LEFT_TOPIC = "/archebase/camera/ctrl/left/image/h264"
+CTRL_RIGHT_TOPIC = "/archebase/camera/ctrl/right/image/h264"
+IMU_TOPIC = "/archebase/imu/data"
+HEAD_POSE_TOPIC = "/archebase/head_pose"
+HEAD_POSE_FRAME_ID = "head"
 FOXGLOVE_SCHEMA = "foxglove.CompressedVideo"
+HEAD_POSE_SCHEMA = "geometry_msgs/msg/PoseStamped"
+# Per-source frame ids for the foxglove.CompressedVideo messages.
+STEREO_FRAME_IDS = {
+    "rgb": ("camera_left_optical", "camera_right_optical"),
+    "tracking": ("camera_tracking_left_optical", "camera_tracking_right_optical"),
+    "ctrl": ("camera_ctrl_left_optical", "camera_ctrl_right_optical"),
+}
+# Per-source x264 rate control. The RGB pair is a full-colour 1920x1200 stream
+# and keeps the original 12 Mbit/s budget. The tracking/ctrl pairs are 640x480
+# grayscale, where that budget produced ~10x oversized output; they use capped
+# CRF so a static capture shrinks by an order of magnitude while a busy one
+# stays bounded at 4 Mbit/s.
+RGB_VIDEO_RATE_ARGS = ("-b:v", "12M", "-maxrate", "12M", "-bufsize", "24M")
+GRAYSCALE_VIDEO_RATE_ARGS = ("-crf", "20", "-maxrate", "4M", "-bufsize", "8M")
+STEREO_VIDEO_RATE_ARGS = {
+    "rgb": RGB_VIDEO_RATE_ARGS,
+    "tracking": GRAYSCALE_VIDEO_RATE_ARGS,
+    "ctrl": GRAYSCALE_VIDEO_RATE_ARGS,
+}
 # Ego Portal E6 packs a stereo pair side by side in one HEVC stream: the left
 # eye is the left half of the picture and the right eye the right half.
 LEFT_CROP = "crop=iw/2:ih:0:0"
@@ -92,6 +118,15 @@ class ConversionStats:
     # see whether the IMU brackets the recording (negative start, positive end).
     imu_start_offset_ns: int = 0
     imu_end_offset_ns: int = 0
+    # Non-RGB camera channels: the four grayscale eyes (tracking/ctrl stereo
+    # pairs) and the head pose stream, all preserved from the same capture.
+    tracking_left_video_frames: int = 0
+    tracking_right_video_frames: int = 0
+    ctrl_left_video_frames: int = 0
+    ctrl_right_video_frames: int = 0
+    head_pose_messages: int = 0
+    tracking_timestamp_source: str = ""
+    ctrl_timestamp_source: str = ""
     # Encoding diagnostics. A channel whose first encoded access unit is not a
     # keyframe cannot be decoded from its first message, and a source bitstream
     # that already lacks reference frames decodes to frozen pictures.
@@ -143,7 +178,7 @@ def _access_units(stream: Iterator[bytes]) -> Iterator[bytes]:
 
 def _ffmpeg_video(
     path: Path, kept: Sequence[int], total_frames: int, warnings: list[str],
-    crop: str | None = None,
+    crop: str | None = None, rate_args: Sequence[str] = RGB_VIDEO_RATE_ARGS,
 ) -> Iterator[bytes]:
     """Re-encode the kept frames of one eye to H.264, one access unit each.
 
@@ -169,7 +204,7 @@ def _ffmpeg_video(
     command += [
         "-c:v", "libx264", "-preset", "medium", "-profile:v", "high",
         "-pix_fmt", "yuv420p", "-fps_mode", "passthrough", "-bf", "0", "-g", "30", "-keyint_min", "30",
-        "-sc_threshold", "0", "-b:v", "12M", "-maxrate", "12M", "-bufsize", "24M",
+        "-sc_threshold", "0", *rate_args,
         "-x264-params", "aud=1:repeat-headers=1", "-an", "-f", "h264", "pipe:1",
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -331,11 +366,11 @@ def _validate_time_bases(
 
 def _video_frames(
     path: Path, kept: Sequence[int], timestamps: Sequence[int], warnings: list[str],
-    crop: str | None = None,
+    crop: str | None = None, rate_args: Sequence[str] = RGB_VIDEO_RATE_ARGS,
 ) -> Iterator[VideoFrame]:
     count = 0
     for sequence, data in enumerate(
-        _access_units(_ffmpeg_video(path, kept, len(timestamps), warnings, crop))
+        _access_units(_ffmpeg_video(path, kept, len(timestamps), warnings, crop, rate_args))
     ):
         if sequence >= len(kept):
             raise RuntimeError(
@@ -406,6 +441,7 @@ def _stereo_pair_frames(
     video: Path,
     timestamps: Sequence[int],
     report: EncodingReport,
+    rate_args: Sequence[str] = RGB_VIDEO_RATE_ARGS,
 ) -> Iterator[tuple[int, VideoFrame, VideoFrame]]:
     """Emit both eyes of every frame of one side-by-side stereo capture.
 
@@ -417,10 +453,10 @@ def _stereo_pair_frames(
     """
     kept = list(range(len(timestamps)))
     left_frames = iter(
-        _video_frames(video, kept, timestamps, report.decode_warnings["left"], LEFT_CROP)
+        _video_frames(video, kept, timestamps, report.decode_warnings["left"], LEFT_CROP, rate_args)
     )
     right_frames = iter(
-        _video_frames(video, kept, timestamps, report.decode_warnings["right"], RIGHT_CROP)
+        _video_frames(video, kept, timestamps, report.decode_warnings["right"], RIGHT_CROP, rate_args)
     )
     for index in range(len(kept)):
         left_frame = next(left_frames, None)
@@ -499,6 +535,30 @@ def _imu_rows(root: Path) -> Iterator[tuple[int, tuple[float, ...]]]:
             rotation = rotation_next
             rotation_next = next(gyroscope, None)
         acceleration = next(accelerometer, None)
+
+
+def _head_pose_rows(root: Path) -> Iterator[tuple[int, tuple[float, ...]]]:
+    """Per-sample head pose in nanoseconds, read from head_pose.csv.
+
+    E6 records the pose of the head-mounted rig exactly like the other streams:
+    an absolute nanosecond timestamp plus a position and an XYZW quaternion. The
+    values are published verbatim; this converter does not change the frame the
+    device reported them in.
+    """
+    path = root / "head_pose.csv"
+    if not path.is_file():
+        raise RuntimeError("head_pose.csv is missing from the capture")
+    columns = ("pos_x", "pos_y", "pos_z", "quat_x", "quat_y", "quat_z", "quat_w")
+    with path.open(newline="", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        fields = reader.fieldnames or []
+        missing = [name for name in ("timestamp_ns", *columns) if name not in fields]
+        if missing:
+            raise RuntimeError(f"head_pose.csv is missing columns: {', '.join(missing)}")
+        for row in reader:
+            if not row.get("timestamp_ns"):
+                continue
+            yield int(row["timestamp_ns"]), tuple(float(row[name]) for name in columns)
 
 
 def _timestamp(ts_ns: int):
@@ -710,134 +770,225 @@ def canonical_ros2_msgdef(definition: str) -> bytes:
     return text.encode()
 
 
+def _tagged(index: int, stream: Iterator[tuple[int, object]]):
+    """Annotate each stream event with its index so merge ties are deterministic."""
+    for ts, payload in stream:
+        yield ts, index, payload
+
+
+def _compressed_video_message(ts: int, frame_id: str, data: bytes) -> bytes:
+    video = CompressedVideo()
+    video.timestamp.seconds = ts // 1_000_000_000
+    video.timestamp.nanos = ts % 1_000_000_000
+    video.frame_id = frame_id
+    video.data = data
+    video.format = "h264"
+    return video.SerializeToString()
+
+
+def _stereo_message_stream(
+    name: str,
+    video: Path,
+    timestamps: Sequence[int],
+    report: EncodingReport,
+    channels: tuple[int, int],
+) -> Iterator[tuple[int, list[tuple[int, bytes]]]]:
+    """Emit both eyes of one side-by-side source as two encoded video messages."""
+    left_frame_id, right_frame_id = STEREO_FRAME_IDS[name]
+    for ts, left_frame, right_frame in _stereo_pair_frames(
+        video, timestamps, report, STEREO_VIDEO_RATE_ARGS[name]
+    ):
+        yield ts, [
+            (channels[0], _compressed_video_message(ts, left_frame_id, left_frame.data)),
+            (channels[1], _compressed_video_message(ts, right_frame_id, right_frame.data)),
+        ]
+
+
+def _imu_message_stream(
+    imu_samples: Sequence[tuple[int, tuple[float, ...]]],
+    imu_type,
+    typestore,
+    msg,
+    channel: int,
+) -> Iterator[tuple[int, list[tuple[int, bytes]]]]:
+    for ts, values in imu_samples:
+        stamp = _timestamp(ts)
+        imu_message = imu_type(
+            header=msg["std_msgs/msg/Header"](
+                stamp=msg["builtin_interfaces/msg/Time"](
+                    sec=stamp.seconds, nanosec=stamp.nanos
+                ),
+                frame_id="imu",
+            ),
+            orientation=msg["geometry_msgs/msg/Quaternion"](
+                x=0.0, y=0.0, z=0.0, w=1.0
+            ),
+            orientation_covariance=np.array([-1.0] + [0.0] * 8, dtype=np.float64),
+            angular_velocity=msg["geometry_msgs/msg/Vector3"](
+                x=values[3], y=values[4], z=values[5]
+            ),
+            angular_velocity_covariance=np.zeros(9, dtype=np.float64),
+            linear_acceleration=msg["geometry_msgs/msg/Vector3"](
+                x=values[0], y=values[1], z=values[2]
+            ),
+            linear_acceleration_covariance=np.zeros(9, dtype=np.float64),
+        )
+        yield ts, [(
+            channel,
+            bytes(typestore.serialize_cdr(imu_message, "sensor_msgs/msg/Imu")),
+        )]
+
+
+def _head_pose_message_stream(
+    head_pose_samples: Sequence[tuple[int, tuple[float, ...]]],
+    pose_type,
+    typestore,
+    msg,
+    channel: int,
+) -> Iterator[tuple[int, list[tuple[int, bytes]]]]:
+    for ts, values in head_pose_samples:
+        pos_x, pos_y, pos_z, quat_x, quat_y, quat_z, quat_w = values
+        stamp = _timestamp(ts)
+        pose_message = pose_type(
+            header=msg["std_msgs/msg/Header"](
+                stamp=msg["builtin_interfaces/msg/Time"](
+                    sec=stamp.seconds, nanosec=stamp.nanos
+                ),
+                frame_id=HEAD_POSE_FRAME_ID,
+            ),
+            pose=msg["geometry_msgs/msg/Pose"](
+                position=msg["geometry_msgs/msg/Point"](
+                    x=pos_x, y=pos_y, z=pos_z
+                ),
+                orientation=msg["geometry_msgs/msg/Quaternion"](
+                    x=quat_x, y=quat_y, z=quat_z, w=quat_w
+                ),
+            ),
+        )
+        yield ts, [(
+            channel,
+            bytes(typestore.serialize_cdr(pose_message, "geometry_msgs/msg/PoseStamped")),
+        )]
+
+
 def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0,
             generation: int = 1, processor_image: str = "") -> dict[str, object]:
     root = root.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    stereo = root / "rgb.mp4"
-    required = [stereo, root / "rgb_metainfo.csv", root / "accel.csv", root / "gyro.csv",
-                root / "camera_params_rgb.json", root / "imu_calibration.json"]
+    stereo_sources = (
+        ("rgb", "rgb.mp4"),
+        ("tracking", "tracking.mp4"),
+        ("ctrl", "ctrl.mp4"),
+    )
+    required = [root / video_name for _, video_name in stereo_sources]
+    required += [root / f"{name}_metainfo.csv" for name, _ in stereo_sources]
+    required += [root / "head_pose.csv", root / "accel.csv", root / "gyro.csv",
+                 root / "camera_params_rgb.json", root / "imu_calibration.json"]
     missing = [str(path.relative_to(root)) for path in required if not path.is_file()]
     if missing:
         raise RuntimeError(f"missing E6 input files: {', '.join(missing)}")
 
-    nominal_fps = _nominal_fps(stereo)
+    nominal_fps = _nominal_fps(root / "rgb.mp4")
     # Read and check every time series before opening the output: a capture whose
-    # clock is wrong, or whose camera and IMU cover different time bases, must
+    # clock is wrong, or whose cameras and IMU cover different time bases, must
     # fail here rather than produce a bag nobody can line up.
-    timestamps, timestamp_source = _frame_timestamps(root, "rgb", stereo)
+    sources = []
+    for name, video_name in stereo_sources:
+        video = root / video_name
+        timestamps, timestamp_source = _frame_timestamps(root, name, video)
+        sources.append((name, video, timestamps, timestamp_source))
     imu_samples = list(_imu_rows(root))
     if not imu_samples:
         raise RuntimeError("the capture holds no IMU samples")
+    head_pose_samples = sorted(_head_pose_rows(root), key=lambda sample: sample[0])
+    if not head_pose_samples:
+        raise RuntimeError("the capture holds no head pose samples")
     _validate_timestamp_ceiling(
-        camera=timestamps,
         imu=[stamp for stamp, _ in imu_samples],
+        head_pose=[stamp for stamp, _ in head_pose_samples],
+        **{f"{name}_camera": timestamps for name, _, timestamps, _ in sources},
     )
-    video_first_ns = timestamps[0]
-    video_last_ns = timestamps[-1]
-    _validate_time_bases(video_first_ns, video_last_ns,
+    video_first_ns = sources[0][2][0]
+    video_last_ns = sources[0][2][-1]
+    for name, _, timestamps, _ in sources:
+        _validate_time_bases(timestamps[0], timestamps[-1],
+                             imu_samples[0][0], imu_samples[-1][0])
+    _validate_time_bases(head_pose_samples[0][0], head_pose_samples[-1][0],
                          imu_samples[0][0], imu_samples[-1][0])
     typestore = get_typestore(Stores.ROS2_HUMBLE)
-    imu_type = typestore.types["sensor_msgs/msg/Imu"]
     msg = typestore.types
+    imu_type = msg["sensor_msgs/msg/Imu"]
+    pose_type = msg["geometry_msgs/msg/PoseStamped"]
     with (output / "output_bag.mcap").open("wb") as stream:
         writer = Writer(stream)
         writer.start(profile="", library="archebase e6 multimodal conversion")
         video_schema = writer.register_schema(FOXGLOVE_SCHEMA, "protobuf", FOXGLOVE_DESCRIPTOR)
-        left_channel = writer.register_channel(LEFT_TOPIC, "protobuf", video_schema)
-        right_channel = writer.register_channel(RIGHT_TOPIC, "protobuf", video_schema)
+        video_channels = {
+            name: (
+                writer.register_channel(topic_pair[0], "protobuf", video_schema),
+                writer.register_channel(topic_pair[1], "protobuf", video_schema),
+            )
+            for name, topic_pair in (
+                ("rgb", (LEFT_TOPIC, RIGHT_TOPIC)),
+                ("tracking", (TRACKING_LEFT_TOPIC, TRACKING_RIGHT_TOPIC)),
+                ("ctrl", (CTRL_LEFT_TOPIC, CTRL_RIGHT_TOPIC)),
+            )
+        }
         imu_definition, _ = typestore.generate_msgdef("sensor_msgs/msg/Imu")
         imu_schema = writer.register_schema("sensor_msgs/msg/Imu", "ros2msg", canonical_ros2_msgdef(imu_definition))
         imu_channel = writer.register_channel(IMU_TOPIC, "cdr", imu_schema)
+        pose_definition, _ = typestore.generate_msgdef("geometry_msgs/msg/PoseStamped")
+        pose_schema = writer.register_schema(HEAD_POSE_SCHEMA, "ros2msg", canonical_ros2_msgdef(pose_definition))
+        pose_channel = writer.register_channel(HEAD_POSE_TOPIC, "cdr", pose_schema)
         stats = ConversionStats()
         # A side-by-side capture has no pairing to plan: every recorded frame is
         # one stereo pair, so the source and the emitted counts are identical.
-        stats.left_source_video_frames = len(timestamps)
-        stats.right_source_video_frames = len(timestamps)
-        stats.left_timestamp_source = timestamp_source
-        stats.right_timestamp_source = timestamp_source
+        rgb_timestamps = sources[0][2]
+        stats.left_source_video_frames = len(rgb_timestamps)
+        stats.right_source_video_frames = len(rgb_timestamps)
+        stats.left_timestamp_source = sources[0][3]
+        stats.right_timestamp_source = sources[0][3]
+        stats.tracking_timestamp_source = sources[1][3]
+        stats.ctrl_timestamp_source = sources[2][3]
         stats.imu_start_offset_ns = imu_samples[0][0] - video_first_ns
         stats.imu_end_offset_ns = imu_samples[-1][0] - video_last_ns
 
-        report = EncodingReport()
-        video_pairs = iter(_stereo_pair_frames(stereo, timestamps, report))
-        video_pair = next(video_pairs, None)
-        imu = iter(imu_samples)
-        imu_sample = next(imu, None)
+        # Every stream is merged in one timestamp-ordered pass; the stream index
+        # is part of the merge key so ties resolve deterministically.
+        reports = {name: EncodingReport() for name, _, _, _ in sources}
+        streams = []
+        for name, video, timestamps, _ in sources:
+            streams.append(_tagged(
+                len(streams),
+                _stereo_message_stream(name, video, timestamps, reports[name], video_channels[name]),
+            ))
+        streams.append(_tagged(len(streams), _imu_message_stream(
+            imu_samples, imu_type, typestore, msg, imu_channel)))
+        streams.append(_tagged(len(streams), _head_pose_message_stream(
+            head_pose_samples, pose_type, typestore, msg, pose_channel)))
+
         sequence = 0
         ordered: list[int] = []
-        while video_pair is not None or imu_sample is not None:
-            if video_pair is not None and (
-                imu_sample is None or video_pair[0] <= imu_sample[0]
-            ):
-                ts, left_payload, right_payload = video_pair
-                for channel, frame_id, data in (
-                    (left_channel, "camera_left_optical", left_payload.data),
-                    (right_channel, "camera_right_optical", right_payload.data),
-                ):
-                    video = CompressedVideo()
-                    video.timestamp.seconds = ts // 1_000_000_000
-                    video.timestamp.nanos = ts % 1_000_000_000
-                    video.frame_id = frame_id
-                    video.data = data
-                    video.format = "h264"
-                    writer.add_message(channel, ts, video.SerializeToString(), ts, sequence)
-                stats.left_video_frames += 1
-                stats.right_video_frames += 1
-                video_pair = next(video_pairs, None)
-            else:
-                if imu_sample is None:
-                    raise AssertionError("IMU merge state is inconsistent")
-                ts, values = imu_sample
-                stamp = _timestamp(ts)
-                imu_message = imu_type(
-                    header=msg["std_msgs/msg/Header"](
-                        stamp=msg["builtin_interfaces/msg/Time"](
-                            sec=stamp.seconds, nanosec=stamp.nanos
-                        ),
-                        frame_id="imu",
-                    ),
-                    orientation=msg["geometry_msgs/msg/Quaternion"](
-                        x=0.0, y=0.0, z=0.0, w=1.0
-                    ),
-                    orientation_covariance=np.array(
-                        [-1.0] + [0.0] * 8, dtype=np.float64
-                    ),
-                    angular_velocity=msg["geometry_msgs/msg/Vector3"](
-                        x=values[3], y=values[4], z=values[5]
-                    ),
-                    angular_velocity_covariance=np.zeros(9, dtype=np.float64),
-                    linear_acceleration=msg["geometry_msgs/msg/Vector3"](
-                        x=values[0], y=values[1], z=values[2]
-                    ),
-                    linear_acceleration_covariance=np.zeros(9, dtype=np.float64),
-                )
-                writer.add_message(
-                    imu_channel,
-                    ts,
-                    bytes(typestore.serialize_cdr(imu_message, "sensor_msgs/msg/Imu")),
-                    ts,
-                    sequence,
-                )
-                stats.imu_messages += 1
-                imu_sample = next(imu, None)
+        for ts, _stream_index, messages in heapq.merge(
+            *streams, key=lambda item: (item[0], item[1])
+        ):
+            for channel, data in messages:
+                writer.add_message(channel, ts, data, ts, sequence)
+                sequence += 1
             ordered.append(ts)
-            sequence += 1
 
-        # Encoding diagnostics are only complete once both channels finished.
-        stats.left_first_frame_keyframe = report.first_frame_keyframe["left"]
-        stats.right_first_frame_keyframe = report.first_frame_keyframe["right"]
-        stats.left_decode_warnings = len(report.decode_warnings["left"])
-        stats.right_decode_warnings = len(report.decode_warnings["right"])
-        for channel in ("left", "right"):
-            if report.decode_warnings[channel]:
-                stats.first_decode_warning = report.decode_warnings[channel][0][:180]
-                break
-        if stats.imu_messages == 0:
-            raise RuntimeError(
-                "no IMU sample paired between accel and gyro: "
-                "check that both sensor streams use the same clock"
-            )
+        # Encoding diagnostics are only complete once every channel finished.
+        rgb_report = reports["rgb"]
+        stats.left_first_frame_keyframe = rgb_report.first_frame_keyframe["left"]
+        stats.right_first_frame_keyframe = rgb_report.first_frame_keyframe["right"]
+        stats.left_decode_warnings = len(rgb_report.decode_warnings["left"])
+        stats.right_decode_warnings = len(rgb_report.decode_warnings["right"])
+        for name in ("rgb", "tracking", "ctrl"):
+            for side in ("left", "right"):
+                warnings = reports[name].decode_warnings[side]
+                if warnings:
+                    stats.first_decode_warning = warnings[0][:180]
+                    break
         writer.finish()
     # The MCAP summary is the source of truth for the metadata counts.
     with (output / "output_bag.mcap").open("rb") as stream:
@@ -846,6 +997,19 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
         channel.topic: summary.statistics.channel_message_counts.get(channel.id, 0)
         for channel in summary.channels.values()
     }
+    stats.left_video_frames = message_counts[LEFT_TOPIC]
+    stats.right_video_frames = message_counts[RIGHT_TOPIC]
+    stats.tracking_left_video_frames = message_counts[TRACKING_LEFT_TOPIC]
+    stats.tracking_right_video_frames = message_counts[TRACKING_RIGHT_TOPIC]
+    stats.ctrl_left_video_frames = message_counts[CTRL_LEFT_TOPIC]
+    stats.ctrl_right_video_frames = message_counts[CTRL_RIGHT_TOPIC]
+    stats.imu_messages = message_counts[IMU_TOPIC]
+    stats.head_pose_messages = message_counts[HEAD_POSE_TOPIC]
+    if stats.imu_messages == 0:
+        raise RuntimeError(
+            "no IMU sample paired between accel and gyro: "
+            "check that both sensor streams use the same clock"
+        )
     total_message_count = sum(message_counts.values())
     imu_span_ns = imu_samples[-1][0] - imu_samples[0][0]
     imu_rate_hz = (len(imu_samples) - 1) * 1e9 / imu_span_ns if imu_span_ns > 0 else None
@@ -856,9 +1020,16 @@ def convert(root: Path, output: Path, source_uri: str = "", source_size: int = 0
     # before distortion_model).
     (output / "calibration.json").write_text(json.dumps(calibration, indent=2) + "\n")
     start_ns, end_ns = (min(ordered), max(ordered)) if ordered else (0, 0)
-    topics = [(LEFT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[LEFT_TOPIC]),
-              (RIGHT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[RIGHT_TOPIC]),
-              (IMU_TOPIC, "sensor_msgs/msg/Imu", "cdr", message_counts[IMU_TOPIC])]
+    topics = [
+        (LEFT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[LEFT_TOPIC]),
+        (RIGHT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[RIGHT_TOPIC]),
+        (TRACKING_LEFT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[TRACKING_LEFT_TOPIC]),
+        (TRACKING_RIGHT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[TRACKING_RIGHT_TOPIC]),
+        (CTRL_LEFT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[CTRL_LEFT_TOPIC]),
+        (CTRL_RIGHT_TOPIC, FOXGLOVE_SCHEMA, "protobuf", message_counts[CTRL_RIGHT_TOPIC]),
+        (IMU_TOPIC, "sensor_msgs/msg/Imu", "cdr", message_counts[IMU_TOPIC]),
+        (HEAD_POSE_TOPIC, HEAD_POSE_SCHEMA, "cdr", message_counts[HEAD_POSE_TOPIC]),
+    ]
     (output / "metadata.yaml").write_text(_yaml_metadata(total_message_count, start_ns, end_ns, topics))
     return {"stats": stats.__dict__, "nominal_fps": _fps_manifest_value(nominal_fps),
             "calibration_schema": calibration["schema"],

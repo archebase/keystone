@@ -31,11 +31,17 @@ const (
 	maxVerificationAttempts = 5
 	manifestSchemaV1        = 1
 	e6OutputFormat          = "h264_ros2_mcap"
-	leftVideoTopic          = "/camera/left/image/h264"
-	rightVideoTopic         = "/camera/right/image/h264"
-	imuTopic                = "/imu/data"
+	leftVideoTopic          = "/archebase/camera/left/image/h264"
+	rightVideoTopic         = "/archebase/camera/right/image/h264"
+	trackingLeftVideoTopic  = "/archebase/camera/tracking/left/image/h264"
+	trackingRightVideoTopic = "/archebase/camera/tracking/right/image/h264"
+	ctrlLeftVideoTopic      = "/archebase/camera/ctrl/left/image/h264"
+	ctrlRightVideoTopic     = "/archebase/camera/ctrl/right/image/h264"
+	imuTopic                = "/archebase/imu/data"
+	headPoseTopic           = "/archebase/head_pose"
 	compressedVideoSchema   = "foxglove.CompressedVideo"
 	imuSchema               = "sensor_msgs/msg/Imu"
+	poseSchema              = "geometry_msgs/msg/PoseStamped"
 	outputCalibrationName   = "calibration.json"
 )
 
@@ -990,7 +996,12 @@ type manifestStats struct {
 	RightImages               int64  `json:"right_images,omitempty"`
 	LeftVideos                int64  `json:"left_video_frames"`
 	RightVideos               int64  `json:"right_video_frames"`
+	TrackingLeftVideos        int64  `json:"tracking_left_video_frames"`
+	TrackingRightVideos       int64  `json:"tracking_right_video_frames"`
+	CtrlLeftVideos            int64  `json:"ctrl_left_video_frames"`
+	CtrlRightVideos           int64  `json:"ctrl_right_video_frames"`
 	IMUMessages               int64  `json:"imu_messages"`
+	HeadPoseMessages          int64  `json:"head_pose_messages"`
 	CopiedMessages            int64  `json:"copied_messages,omitempty"`
 	CopiedTopics              int64  `json:"copied_topics,omitempty"`
 	SkippedMessages           int64  `json:"skipped_messages"`
@@ -1274,7 +1285,12 @@ type mcapQAObservation struct {
 	RightImages            int64   `json:"right_images,omitempty"`
 	LeftVideos             int64   `json:"left_videos,omitempty"`
 	RightVideos            int64   `json:"right_videos,omitempty"`
+	TrackingLeftImages     int64   `json:"tracking_left_images,omitempty"`
+	TrackingRightImages    int64   `json:"tracking_right_images,omitempty"`
+	CtrlLeftImages         int64   `json:"ctrl_left_images,omitempty"`
+	CtrlRightImages        int64   `json:"ctrl_right_images,omitempty"`
 	IMUMessages            int64   `json:"imu_messages"`
+	HeadPoseMessages       int64   `json:"head_pose_messages,omitempty"`
 	CalibrationAttachments int64   `json:"calibration_attachments,omitempty"`
 	FirstLogTime           uint64  `json:"first_log_time"`
 	LastLogTime            uint64  `json:"last_log_time"`
@@ -1289,19 +1305,29 @@ type topicQAState struct {
 }
 
 type mcapOutputContract struct {
-	SchemaVersion        int
-	LeftTopic            string
-	RightTopic           string
-	LeftSchema           string
-	RightSchema          string
-	LeftSchemaEncoding   string
-	RightSchemaEncoding  string
-	LeftMessageEncoding  string
-	RightMessageEncoding string
-	ExpectedLeft         int64
-	ExpectedRight        int64
-	ExpectedIMU          int64
-	Calibration          *manifestCalibration
+	SchemaVersion         int
+	LeftTopic             string
+	RightTopic            string
+	LeftSchema            string
+	RightSchema           string
+	LeftSchemaEncoding    string
+	RightSchemaEncoding   string
+	LeftMessageEncoding   string
+	RightMessageEncoding  string
+	ExpectedLeft          int64
+	ExpectedRight         int64
+	TrackingLeftTopic     string
+	TrackingRightTopic    string
+	CtrlLeftTopic         string
+	CtrlRightTopic        string
+	HeadPoseTopic         string
+	ExpectedTrackingLeft  int64
+	ExpectedTrackingRight int64
+	ExpectedCtrlLeft      int64
+	ExpectedCtrlRight     int64
+	ExpectedIMU           int64
+	ExpectedHeadPose      int64
+	Calibration           *manifestCalibration
 }
 
 func validateManifestStats(manifest processingManifest) (mcapOutputContract, error) {
@@ -1319,14 +1345,24 @@ func validateManifestStats(manifest processingManifest) (mcapOutputContract, err
 		stats.LeftVideos != stats.RightVideos {
 		return mcapOutputContract{}, fmt.Errorf("E6 conversion manifest contains invalid statistics")
 	}
+	if stats.TrackingLeftVideos <= 0 || stats.TrackingLeftVideos != stats.TrackingRightVideos ||
+		stats.CtrlLeftVideos <= 0 || stats.CtrlLeftVideos != stats.CtrlRightVideos ||
+		stats.HeadPoseMessages <= 0 {
+		return mcapOutputContract{}, fmt.Errorf("E6 conversion manifest contains invalid grayscale or head pose statistics")
+	}
 	return mcapOutputContract{
 		SchemaVersion: manifest.SchemaVersion,
 		LeftTopic:     leftVideoTopic, RightTopic: rightVideoTopic,
-		LeftSchema: compressedVideoSchema, RightSchema: compressedVideoSchema,
+		TrackingLeftTopic: trackingLeftVideoTopic, TrackingRightTopic: trackingRightVideoTopic,
+		CtrlLeftTopic: ctrlLeftVideoTopic, CtrlRightTopic: ctrlRightVideoTopic,
+		HeadPoseTopic: headPoseTopic,
+		LeftSchema:    compressedVideoSchema, RightSchema: compressedVideoSchema,
 		LeftSchemaEncoding: "protobuf", RightSchemaEncoding: "protobuf",
 		LeftMessageEncoding: "protobuf", RightMessageEncoding: "protobuf",
 		ExpectedLeft: stats.LeftVideos, ExpectedRight: stats.RightVideos,
-		ExpectedIMU: stats.IMUMessages,
+		ExpectedTrackingLeft: stats.TrackingLeftVideos, ExpectedTrackingRight: stats.TrackingRightVideos,
+		ExpectedCtrlLeft: stats.CtrlLeftVideos, ExpectedCtrlRight: stats.CtrlRightVideos,
+		ExpectedIMU: stats.IMUMessages, ExpectedHeadPose: stats.HeadPoseMessages,
 	}, nil
 }
 
@@ -1355,24 +1391,44 @@ func (m *Manager) inspectOutputMCAP(
 		return mcapQAObservation{}, fmt.Errorf("open output MCAP lexer: %w", err)
 	}
 	states := map[string]*topicQAState{
-		contract.LeftTopic:  {},
-		contract.RightTopic: {},
-		imuTopic:            {},
+		contract.LeftTopic:          {},
+		contract.RightTopic:         {},
+		contract.TrackingLeftTopic:  {},
+		contract.TrackingRightTopic: {},
+		contract.CtrlLeftTopic:      {},
+		contract.CtrlRightTopic:     {},
+		imuTopic:                    {},
+		contract.HeadPoseTopic:      {},
 	}
 	expectedSchemas := map[string]string{
-		contract.LeftTopic:  contract.LeftSchema,
-		contract.RightTopic: contract.RightSchema,
-		imuTopic:            imuSchema,
+		contract.LeftTopic:          contract.LeftSchema,
+		contract.RightTopic:         contract.RightSchema,
+		contract.TrackingLeftTopic:  compressedVideoSchema,
+		contract.TrackingRightTopic: compressedVideoSchema,
+		contract.CtrlLeftTopic:      compressedVideoSchema,
+		contract.CtrlRightTopic:     compressedVideoSchema,
+		imuTopic:                    imuSchema,
+		contract.HeadPoseTopic:      poseSchema,
 	}
 	expectedSchemaEncodings := map[string]string{
-		contract.LeftTopic:  contract.LeftSchemaEncoding,
-		contract.RightTopic: contract.RightSchemaEncoding,
-		imuTopic:            "ros2msg",
+		contract.LeftTopic:          contract.LeftSchemaEncoding,
+		contract.RightTopic:         contract.RightSchemaEncoding,
+		contract.TrackingLeftTopic:  "protobuf",
+		contract.TrackingRightTopic: "protobuf",
+		contract.CtrlLeftTopic:      "protobuf",
+		contract.CtrlRightTopic:     "protobuf",
+		imuTopic:                    "ros2msg",
+		contract.HeadPoseTopic:      "ros2msg",
 	}
 	expectedEncodings := map[string]string{
-		contract.LeftTopic:  contract.LeftMessageEncoding,
-		contract.RightTopic: contract.RightMessageEncoding,
-		imuTopic:            "cdr",
+		contract.LeftTopic:          contract.LeftMessageEncoding,
+		contract.RightTopic:         contract.RightMessageEncoding,
+		contract.TrackingLeftTopic:  "protobuf",
+		contract.TrackingRightTopic: "protobuf",
+		contract.CtrlLeftTopic:      "protobuf",
+		contract.CtrlRightTopic:     "protobuf",
+		imuTopic:                    "cdr",
+		contract.HeadPoseTopic:      "cdr",
 	}
 	var firstLogTime uint64
 	var lastLogTime uint64
@@ -1463,18 +1519,37 @@ func (m *Manager) inspectOutputMCAP(
 	}
 	leftCount := states[contract.LeftTopic].Count
 	rightCount := states[contract.RightTopic].Count
+	trackingLeftCount := states[contract.TrackingLeftTopic].Count
+	trackingRightCount := states[contract.TrackingRightTopic].Count
+	ctrlLeftCount := states[contract.CtrlLeftTopic].Count
+	ctrlRightCount := states[contract.CtrlRightTopic].Count
+	headPoseCount := states[contract.HeadPoseTopic].Count
 	imuCount := states[imuTopic].Count
 	if leftCount <= 0 || leftCount != rightCount || imuCount <= 0 {
 		return mcapQAObservation{}, fmt.Errorf("output MCAP required topic counts are invalid")
 	}
+	if trackingLeftCount <= 0 || trackingLeftCount != trackingRightCount ||
+		ctrlLeftCount <= 0 || ctrlLeftCount != ctrlRightCount || headPoseCount <= 0 {
+		return mcapQAObservation{}, fmt.Errorf("output MCAP grayscale or head pose topic counts are invalid")
+	}
 	if leftCount != contract.ExpectedLeft || rightCount != contract.ExpectedRight || imuCount != contract.ExpectedIMU {
 		return mcapQAObservation{}, fmt.Errorf("output MCAP topic counts do not match processing manifest")
+	}
+	if trackingLeftCount != contract.ExpectedTrackingLeft || trackingRightCount != contract.ExpectedTrackingRight ||
+		ctrlLeftCount != contract.ExpectedCtrlLeft || ctrlRightCount != contract.ExpectedCtrlRight ||
+		headPoseCount != contract.ExpectedHeadPose {
+		return mcapQAObservation{}, fmt.Errorf("output MCAP grayscale or head pose counts do not match processing manifest")
 	}
 	if !hasLogTime || lastLogTime <= firstLogTime {
 		return mcapQAObservation{}, fmt.Errorf("output MCAP timestamp span must be positive")
 	}
 	observed := mcapQAObservation{
 		SchemaVersion:          contract.SchemaVersion,
+		TrackingLeftImages:     trackingLeftCount,
+		TrackingRightImages:    trackingRightCount,
+		CtrlLeftImages:         ctrlLeftCount,
+		CtrlRightImages:        ctrlRightCount,
+		HeadPoseMessages:       headPoseCount,
 		IMUMessages:            imuCount,
 		CalibrationAttachments: 0,
 		FirstLogTime:           firstLogTime,

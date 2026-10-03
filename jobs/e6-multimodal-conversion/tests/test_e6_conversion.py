@@ -97,7 +97,7 @@ class StereoIteratorTest(unittest.TestCase):
         timestamps = [BASE_NS, BASE_NS + 33_333_333]
         report = EncodingReport()
 
-        def fake_video_frames(path, kept, stamps, warnings, crop=None):
+        def fake_video_frames(path, kept, stamps, warnings, crop=None, rate_args=None):
             for index in kept:
                 # 0x65 is an IDR slice, so the first frame must be reported as a keyframe.
                 yield VideoFrame(stamps[index], b"\x00\x00\x00\x01\x65" + crop.encode(), index)
@@ -121,25 +121,48 @@ class StereoIteratorTest(unittest.TestCase):
         self.assertEqual(e6_converter.LEFT_CROP, "crop=iw/2:ih:0:0")
         self.assertEqual(e6_converter.RIGHT_CROP, "crop=iw/2:ih:iw/2:0")
 
+    def test_grayscale_sources_use_a_capped_crf_profile(self) -> None:
+        # The 640x480 grayscale pairs must not reuse the RGB 12 Mbit/s budget,
+        # which produced ~10x oversized output. They use capped CRF instead.
+        self.assertIn("-b:v", e6_converter.STEREO_VIDEO_RATE_ARGS["rgb"])
+        for name in ("tracking", "ctrl"):
+            profile = e6_converter.STEREO_VIDEO_RATE_ARGS[name]
+            self.assertIn("-crf", profile)
+            self.assertNotIn("-b:v", profile)
+            self.assertIn("-maxrate", profile)
+        self.assertEqual(
+            e6_converter.STEREO_VIDEO_RATE_ARGS["tracking"],
+            e6_converter.STEREO_VIDEO_RATE_ARGS["ctrl"],
+        )
+
 
 @unittest.skipUnless(HAS_FFMPEG, "ffmpeg is required for the end-to-end conversion test")
 class EndToEndConversionTest(unittest.TestCase):
     def build_capture(self, root: Path, frames: int = 5, width: int = 320, height: int = 120) -> None:
-        # A side-by-side HEVC capture, exactly how the device writes rgb.mp4.
-        subprocess.run([
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"testsrc=size={width}x{height}:rate=10",
-            "-frames:v", str(frames), "-c:v", "libx265", "-pix_fmt", "yuv420p",
-            "-tag:v", "hvc1", "-x265-params", "log-level=error",
-            str(root / "rgb.mp4"),
-        ], check=True)
-        with (root / "rgb_metainfo.csv").open("w", newline="") as stream:
+        # Side-by-side HEVC captures, exactly how the device writes each source:
+        # the RGB pair plus the two grayscale pairs (tracking, ctrl).
+        for name in ("rgb", "tracking", "ctrl"):
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", f"testsrc=size={width}x{height}:rate=10",
+                "-frames:v", str(frames), "-c:v", "libx265", "-pix_fmt", "yuv420p",
+                "-tag:v", "hvc1", "-x265-params", "log-level=error",
+                str(root / f"{name}.mp4"),
+            ], check=True)
+            with (root / f"{name}_metainfo.csv").open("w", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(["frame_index", "frame_id", "pts_us", "exposure_start_utc_ns",
+                                 "exposure_duration_ns", "gain", "mid_exposure_utc_ns"])
+                for index in range(frames):
+                    start = BASE_NS + index * 100_000_000
+                    writer.writerow([index, index, index * 100_000, start, 4_000, 50, start + 2_000])
+        with (root / "head_pose.csv").open("w", newline="") as stream:
             writer = csv.writer(stream)
-            writer.writerow(["frame_index", "frame_id", "pts_us", "exposure_start_utc_ns",
-                             "exposure_duration_ns", "gain", "mid_exposure_utc_ns"])
+            writer.writerow(["timestamp_ns", "pos_x", "pos_y", "pos_z",
+                             "quat_x", "quat_y", "quat_z", "quat_w"])
             for index in range(frames):
-                start = BASE_NS + index * 100_000_000
-                writer.writerow([index, index, index * 100_000, start, 4_000, 50, start + 2_000])
+                stamp = BASE_NS + index * 100_000_000 + 1_000
+                writer.writerow([stamp, "0.1", "0.2", "0.3", "0.0", "0.0", "0.0", "1.0"])
         for name, column in (("accel.csv", "x"), ("gyro.csv", "x")):
             with (root / name).open("w", newline="") as stream:
                 writer = csv.writer(stream)
@@ -185,6 +208,11 @@ class EndToEndConversionTest(unittest.TestCase):
             stats = result["stats"]
             self.assertEqual(stats["left_video_frames"], 5)
             self.assertEqual(stats["right_video_frames"], 5)
+            self.assertEqual(stats["tracking_left_video_frames"], 5)
+            self.assertEqual(stats["tracking_right_video_frames"], 5)
+            self.assertEqual(stats["ctrl_left_video_frames"], 5)
+            self.assertEqual(stats["ctrl_right_video_frames"], 5)
+            self.assertEqual(stats["head_pose_messages"], 5)
             self.assertGreater(stats["imu_messages"], 0)
             self.assertTrue(stats["left_first_frame_keyframe"])
             self.assertTrue(stats["right_first_frame_keyframe"])
@@ -195,26 +223,40 @@ class EndToEndConversionTest(unittest.TestCase):
                 schemas = {schema.id: schema for schema in summary.schemas.values()}
                 channels = {channel.topic: channel for channel in summary.channels.values()}
                 self.assertEqual(set(channels), {
-                    "/camera/left/image/h264", "/camera/right/image/h264", "/imu/data",
+                    "/archebase/camera/left/image/h264", "/archebase/camera/right/image/h264",
+                    "/archebase/camera/tracking/left/image/h264", "/archebase/camera/tracking/right/image/h264",
+                    "/archebase/camera/ctrl/left/image/h264", "/archebase/camera/ctrl/right/image/h264",
+                    "/archebase/imu/data", "/archebase/head_pose",
                 })
-                self.assertEqual(schemas[channels["/camera/left/image/h264"].schema_id].name,
+                self.assertEqual(schemas[channels["/archebase/camera/left/image/h264"].schema_id].name,
                                  "foxglove.CompressedVideo")
-                self.assertEqual(schemas[channels["/imu/data"].schema_id].encoding, "ros2msg")
-                self.assertEqual(channels["/imu/data"].message_encoding, "cdr")
+                self.assertEqual(schemas[channels["/archebase/imu/data"].schema_id].encoding, "ros2msg")
+                self.assertEqual(channels["/archebase/imu/data"].message_encoding, "cdr")
                 # ROS 2 consumers resolve the message definition themselves, so
                 # the IMU schema must use builtin_interfaces/Time rather than the
                 # ROS 1 "time stamp" spelling rosbags emits (mcap_ros2 and the
                 # archebase_stereo_calib rectifier both raise on it otherwise).
-                imu_msgdef = schemas[channels["/imu/data"].schema_id].data
+                imu_msgdef = schemas[channels["/archebase/imu/data"].schema_id].data
                 self.assertIn(b"builtin_interfaces/Time stamp", imu_msgdef)
                 self.assertIn(b"MSG: builtin_interfaces/Time", imu_msgdef)
                 self.assertNotIn(b"time stamp", imu_msgdef)
+                pose_schema = schemas[channels["/archebase/head_pose"].schema_id]
+                self.assertEqual(pose_schema.name, "geometry_msgs/msg/PoseStamped")
+                self.assertEqual(pose_schema.encoding, "ros2msg")
+                self.assertEqual(channels["/archebase/head_pose"].message_encoding, "cdr")
+                self.assertIn(b"builtin_interfaces/Time stamp", pose_schema.data)
+                self.assertNotIn(b"time stamp", pose_schema.data)
                 counts = {
                     topic: summary.statistics.channel_message_counts.get(channel.id, 0)
                     for topic, channel in channels.items()
                 }
-            self.assertEqual(counts["/camera/left/image/h264"], 5)
-            self.assertEqual(counts["/camera/right/image/h264"], 5)
+            self.assertEqual(counts["/archebase/camera/left/image/h264"], 5)
+            self.assertEqual(counts["/archebase/camera/right/image/h264"], 5)
+            self.assertEqual(counts["/archebase/camera/tracking/left/image/h264"], 5)
+            self.assertEqual(counts["/archebase/camera/tracking/right/image/h264"], 5)
+            self.assertEqual(counts["/archebase/camera/ctrl/left/image/h264"], 5)
+            self.assertEqual(counts["/archebase/camera/ctrl/right/image/h264"], 5)
+            self.assertEqual(counts["/archebase/head_pose"], 5)
 
             # Both eyes decode as H.264 at half the side-by-side width.
             self.assertEqual(self.eye_width(out / "output_bag.mcap"), 160)
@@ -245,7 +287,7 @@ class EndToEndConversionTest(unittest.TestCase):
 
         with mcap.open("rb") as stream:
             for _schema, _channel, message in make_reader(stream).iter_messages(
-                topics=["/camera/left/image/h264"]
+                topics=["/archebase/camera/left/image/h264"]
             ):
                 video = compressed_video()
                 video.ParseFromString(message.data)
