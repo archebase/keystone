@@ -389,6 +389,27 @@ type sidecarRecording struct {
 	MessageCount    int64    `json:"message_count"`
 	TopicsRecorded  []string `json:"topics_recorded"`
 	RecorderVersion string   `json:"recorder_version"`
+	// RecordingStartedAt/RecordingFinishedAt are the on-device recording
+	// timestamps written by axon_recorder. They are empty on sidecars produced
+	// by older recorders or when sidecar generation is disabled.
+	RecordingStartedAt  string `json:"recording_started_at"`
+	RecordingFinishedAt string `json:"recording_finished_at"`
+}
+
+// parseSidecarTime parses an axon sidecar ISO8601 timestamp (for example
+// "2026-01-01T12:00:00.000Z") into a UTC sql.NullTime. Empty or malformed
+// values yield an invalid NullTime so the column stays NULL.
+func parseSidecarTime(raw string) sql.NullTime {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return sql.NullTime{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return sql.NullTime{Time: parsed.UTC(), Valid: true}
+		}
+	}
+	return sql.NullTime{}
 }
 
 type sidecarTopicSummary struct {
@@ -796,6 +817,7 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 			var durationSec sql.NullFloat64
 			var fileSizeBytes sql.NullInt64
 			var checksum sql.NullString
+			var recordingStartedAt, recordingFinishedAt sql.NullTime
 			if sc != nil {
 				if sc.Recording.DurationSec > 0 {
 					durationSec = sql.NullFloat64{Float64: sc.Recording.DurationSec, Valid: true}
@@ -806,6 +828,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				if sc.Recording.ChecksumSHA256 != "" {
 					checksum = sql.NullString{String: sc.Recording.ChecksumSHA256, Valid: true}
 				}
+				recordingStartedAt = parseSidecarTime(sc.Recording.RecordingStartedAt)
+				recordingFinishedAt = parseSidecarTime(sc.Recording.RecordingFinishedAt)
 			}
 			episodeMetadata := assetIDSnapshotMetadata(ctx, tx, taskRow.WorkstationID)
 			writerHealth, _ := sidecarWriterHealthMetadata(sc)
@@ -828,8 +852,10 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 					file_size_bytes,
 					checksum,
 					qa_status,
-					metadata
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					metadata,
+					recording_started_at,
+					recording_finished_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				episodeID,
 				taskRow.ID,
 				taskRow.WorkstationID,
@@ -845,6 +871,8 @@ func (h *TransferHandler) onUploadComplete(ctx context.Context, dc *services.Tra
 				checksum,
 				qaStatusPendingQA,
 				episodeMetadata,
+				recordingStartedAt,
+				recordingFinishedAt,
 			)
 			if dbErr != nil {
 				// #nosec G706 -- Set aside for now

@@ -89,6 +89,43 @@ func TestUploadCompleteCopiesTaskPlanFieldsToEpisode(t *testing.T) {
 	}
 }
 
+func TestUploadCompleteStoresSidecarRecordingTimeRange(t *testing.T) {
+	db := openTransferDCPlanTestDB(t)
+	seedTransferDCPlanTask(t, db)
+
+	hub := services.NewTransferHub(1)
+	serverConn, _ := newRecorderHandlerTestWebSocketPair(t)
+	dc := hub.NewTransferConn(serverConn, "robot-001", "127.0.0.1")
+	handler := NewTransferHandler(hub, &config.TransferConfig{WriteTimeout: 1}, db, newTransferDCPlanTestS3(t, nil), "bucket", "", nil, 0)
+
+	handler.onUploadComplete(context.Background(), dc, map[string]interface{}{
+		"data": map[string]interface{}{
+			"task_id": "task-plan-1",
+			"s3_key":  "robot-001/task-plan-1.mcap",
+		},
+	})
+
+	var got struct {
+		StartedAt  sql.NullTime `db:"recording_started_at"`
+		FinishedAt sql.NullTime `db:"recording_finished_at"`
+	}
+	if err := db.Get(&got, `
+		SELECT recording_started_at, recording_finished_at
+		FROM episodes
+		WHERE task_id = 10
+	`); err != nil {
+		t.Fatalf("query created episode: %v", err)
+	}
+	wantStarted := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if !got.StartedAt.Valid || !got.StartedAt.Time.UTC().Equal(wantStarted) {
+		t.Fatalf("recording_started_at=%#v want %s", got.StartedAt, wantStarted)
+	}
+	wantFinished := time.Date(2026, 1, 2, 3, 6, 7, 500000000, time.UTC)
+	if !got.FinishedAt.Valid || !got.FinishedAt.Time.UTC().Equal(wantFinished) {
+		t.Fatalf("recording_finished_at=%#v want %s", got.FinishedAt, wantFinished)
+	}
+}
+
 func TestUploadCompleteRejectsExistingEpisodeWithDifferentProvenance(t *testing.T) {
 	db := openTransferDCPlanTestDB(t)
 	seedTransferDCPlanTask(t, db)
@@ -439,7 +476,7 @@ func newTransferDCPlanTestS3(t *testing.T, onMCAPHead func()) *s3.Client {
 		}
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, ".json") {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"recording":{"duration_sec":1,"file_size_bytes":2,"checksum_sha256":"abc"}}`))
+			_, _ = w.Write([]byte(`{"recording":{"duration_sec":1,"file_size_bytes":2,"checksum_sha256":"abc","recording_started_at":"2026-01-02T03:04:05.000Z","recording_finished_at":"2026-01-02T03:06:07.500Z"}}`))
 			return
 		}
 		if strings.Count(strings.Trim(r.URL.Path, "/"), "/") > 0 {

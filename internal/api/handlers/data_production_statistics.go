@@ -959,7 +959,7 @@ func productionRecordsSQL() string {
 		SELECT
 			CONCAT('episode:', e.id) AS id,
 			COALESCE(e.episode_id, '') AS episode_id,
-			COALESCE(t.completed_at, e.created_at) AS event_time,
+			COALESCE(e.recording_started_at, t.completed_at, e.created_at) AS event_time,
 			COALESCE(t.organization_id, ws.workspace_id) AS workspace_id,
 			COALESCE(r.device_id, ws.robot_serial, CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR), '') AS source_id,
 			COALESCE(r.device_id, ws.robot_name, ws.name, CONCAT('workstation:', CAST(COALESCE(e.workstation_id, t.workstation_id) AS CHAR)), 'unknown') AS source_name,

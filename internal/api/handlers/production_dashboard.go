@@ -611,7 +611,7 @@ func (h *ProductionDashboardHandler) dashboardTodayProductionTotals(db dashboard
 	startUTC := startLocal.UTC()
 	endUTC := endLocal.UTC()
 
-	eventTimeExpr := "COALESCE(t.completed_at, e.created_at)"
+	eventTimeExpr := "COALESCE(e.recording_started_at, t.completed_at, e.created_at)"
 	conditions := []string{"e.deleted_at IS NULL", eventTimeExpr + " >= ?", eventTimeExpr + " < ?"}
 	args := []interface{}{startUTC, endUTC}
 	conditions, args = appendDashboardEpisodeScope(conditions, args, scope)
@@ -644,7 +644,7 @@ func (h *ProductionDashboardHandler) dashboardDataProductionTrend(db dashboardDB
 	startUTC := startLocal.UTC()
 	endUTC := endLocal.UTC()
 
-	eventTimeExpr := "COALESCE(t.completed_at, e.created_at)"
+	eventTimeExpr := "COALESCE(e.recording_started_at, t.completed_at, e.created_at)"
 	localEventExpr := "COALESCE(CONVERT_TZ(" + eventTimeExpr + ", @@session.time_zone, ?), " + eventTimeExpr + ")"
 	conditions := []string{"e.deleted_at IS NULL", eventTimeExpr + " >= ?", eventTimeExpr + " < ?"}
 	args := []interface{}{q.TimezoneOffset, startUTC, endUTC}

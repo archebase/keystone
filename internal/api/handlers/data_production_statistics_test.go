@@ -62,7 +62,7 @@ func TestProductionRecordsSQLUsesEpisodesOnly(t *testing.T) {
 	if strings.Contains(sql, "t.status IN ('failed', 'cancelled')") || strings.Contains(sql, "t.status IN ('ready', 'in_progress')") {
 		t.Fatalf("production records SQL should not include task status fallback records: %s", sql)
 	}
-	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced", "robot_device_name", "COALESCE(r.device_type, '') AS device_type", "dp.dc_project_id AS dc_project_id", "dp.dc_task_id AS dc_task_id"} {
+	for _, want := range []string{"COALESCE(e.qa_status, '') AS qa_status", "e.cloud_synced AS cloud_synced", "robot_device_name", "COALESCE(r.device_type, '') AS device_type", "dp.dc_project_id AS dc_project_id", "dp.dc_task_id AS dc_task_id", "COALESCE(e.recording_started_at, t.completed_at, e.created_at) AS event_time"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("production records SQL should include %q: %s", want, sql)
 		}
