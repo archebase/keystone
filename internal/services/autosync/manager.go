@@ -36,6 +36,10 @@ const (
 	DeviceTypeEgoPortalLite = "Ego Portal Lite"
 	// DeviceTypeRoboPocketUMI uses the original Episode object for cloud sync.
 	DeviceTypeRoboPocketUMI = "RoboPocket UMI"
+	// DeviceTypeDMRobot uses the original Episode object for cloud sync.
+	DeviceTypeDMRobot = "DM-Robot"
+	// DeviceTypeAlphaBot2 uses the original Episode object for cloud sync.
+	DeviceTypeAlphaBot2 = "ALPHABOT 2"
 	// DeviceTypeZJWA1D requires local depth normalization before cloud sync.
 	DeviceTypeZJWA1D = depthnorm.DeviceTypeZJWA1D
 )
@@ -498,7 +502,7 @@ func (m *Manager) reconcileDownstream(ctx context.Context) (bool, error) {
 		SELECT e.id
 		FROM episodes e
 		WHERE e.auto_sync_requested = TRUE
-		  AND e.auto_sync_device_type IN (?, ?)
+		  AND e.auto_sync_device_type IN (?, ?, ?, ?)
 		  AND e.qa_status = 'approved'
 		  AND e.cloud_synced = FALSE
 		  AND e.deleted_at IS NULL
@@ -506,7 +510,7 @@ func (m *Manager) reconcileDownstream(ctx context.Context) (bool, error) {
 		  AND NOT EXISTS (SELECT 1 FROM sync_logs sl WHERE sl.episode_id = e.id)
 		ORDER BY e.auto_sync_requested_at ASC, e.id ASC
 		LIMIT 1
-	`, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI)
+	`, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI, DeviceTypeDMRobot, DeviceTypeAlphaBot2)
 	if err == nil {
 		if m.cloud == nil {
 			return false, fmt.Errorf("automatic cloud sync is not configured")
@@ -720,7 +724,7 @@ func (m *Manager) wakeWorker() {
 }
 
 func autoSyncDeviceTypeArgs(includeZJWA1D bool) []string {
-	values := []string{DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI, DeviceTypeEgoPortalE2, DeviceTypeEgoPortalE6}
+	values := []string{DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI, DeviceTypeEgoPortalE2, DeviceTypeEgoPortalE6, DeviceTypeDMRobot, DeviceTypeAlphaBot2}
 	if includeZJWA1D {
 		values = append(values, DeviceTypeZJWA1D)
 	}
@@ -733,7 +737,7 @@ func autoSyncDeviceTypeSQL(count int) string {
 
 func supportedDeviceType(deviceType string) bool {
 	switch deviceType {
-	case DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI, DeviceTypeZJWA1D, DeviceTypeEgoPortalE2, DeviceTypeEgoPortalE6:
+	case DeviceTypeEgoPortalStereo, DeviceTypeEgoPortalLite, DeviceTypeRoboPocketUMI, DeviceTypeZJWA1D, DeviceTypeEgoPortalE2, DeviceTypeEgoPortalE6, DeviceTypeDMRobot, DeviceTypeAlphaBot2:
 		return true
 	default:
 		return false
