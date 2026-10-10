@@ -86,6 +86,60 @@ func newWorkspaceResourceSyncServiceWithExclusions(
 	}
 }
 
+// resourceLookupCache memoizes Hilbert account and device-type lookups for the
+// duration of a single SyncWorkspaces run.
+//
+// Accounts (by code) and device types (by id) are global to Hilbert rather than
+// workspace-scoped, so a value fetched while syncing one workspace can be reused
+// for every other workspace in the same run. This keeps the number of Hilbert
+// requests proportional to the number of distinct accounts and device types
+// instead of the number of workspace memberships, which otherwise repeats the
+// same lookup many times and can trip Hilbert's per-key request rate limit.
+type resourceLookupCache struct {
+	accounts    map[string]cachedAccountLookup
+	deviceTypes map[int64]cachedDeviceTypeLookup
+}
+
+type cachedAccountLookup struct {
+	account *auth.HilbertAccount
+	err     error
+}
+
+type cachedDeviceTypeLookup struct {
+	deviceType *auth.HilbertDCDeviceType
+	err        error
+}
+
+func newResourceLookupCache() *resourceLookupCache {
+	return &resourceLookupCache{
+		accounts:    make(map[string]cachedAccountLookup),
+		deviceTypes: make(map[int64]cachedDeviceTypeLookup),
+	}
+}
+
+// account returns a memoized account lookup. Failures are cached as well, so a
+// Hilbert outage does not cause the same code to be re-queried once per
+// workspace during a single run.
+func (c *resourceLookupCache) account(ctx context.Context, client HilbertWorkspaceResourceClient, code string) (*auth.HilbertAccount, error) {
+	if cached, ok := c.accounts[code]; ok {
+		return cached.account, cached.err
+	}
+	account, err := client.QueryAccountByCode(ctx, code)
+	c.accounts[code] = cachedAccountLookup{account: account, err: err}
+	return account, err
+}
+
+// deviceType returns a memoized device-type lookup with the same caching rules
+// as account.
+func (c *resourceLookupCache) deviceType(ctx context.Context, client HilbertWorkspaceResourceClient, id int64) (*auth.HilbertDCDeviceType, error) {
+	if cached, ok := c.deviceTypes[id]; ok {
+		return cached.deviceType, cached.err
+	}
+	deviceType, err := client.QueryDCDeviceTypeByID(ctx, id)
+	c.deviceTypes[id] = cachedDeviceTypeLookup{deviceType: deviceType, err: err}
+	return deviceType, err
+}
+
 // SyncWorkspaces syncs resources for every Hilbert workspace and isolates failures per workspace.
 func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, workspaces []auth.HilbertWorkspace, syncedAt time.Time) *WorkspaceResourceSyncSummary {
 	summary := &WorkspaceResourceSyncSummary{
@@ -97,12 +151,13 @@ func (s *WorkspaceResourceSyncService) SyncWorkspaces(ctx context.Context, works
 	}
 
 	excludedOperatorIDs := s.resolveExcludedOperatorIDs(ctx)
+	cache := newResourceLookupCache()
 	for _, workspace := range workspaces {
 		if workspace.ID <= defaultWorkspaceID {
 			continue
 		}
 		workspaceCtx, cancel := context.WithTimeout(ctx, config.HilbertWorkspaceSyncTimeout)
-		result := s.syncWorkspace(workspaceCtx, workspace, syncedAt, excludedOperatorIDs)
+		result := s.syncWorkspace(workspaceCtx, workspace, syncedAt, excludedOperatorIDs, cache)
 		cancel()
 		summary.CollectorUpsertedCount += result.CollectorUpsertedCount
 		summary.CollectorSkippedCount += result.CollectorSkippedCount
@@ -146,6 +201,7 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(
 	workspace auth.HilbertWorkspace,
 	syncedAt time.Time,
 	excludedOperatorIDs map[string]struct{},
+	cache *resourceLookupCache,
 ) WorkspaceResourceSyncResult {
 	result := WorkspaceResourceSyncResult{WorkspaceID: workspace.ID, Errors: []WorkspaceResourceSyncError{}}
 
@@ -156,7 +212,7 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	s.syncCollectors(ctx, tx, workspace, syncedAt, &result, excludedOperatorIDs)
+	s.syncCollectors(ctx, tx, workspace, syncedAt, &result, excludedOperatorIDs, cache)
 
 	devicesPage, err := s.hilbertClient.QueryDCDevices(ctx, workspace.ID)
 	if err != nil {
@@ -165,7 +221,7 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(
 		return result
 	}
 	for _, device := range devicesPage.Records {
-		deviceType, typeErr := s.resolveDeviceType(ctx, device.DCDeviceTypeID)
+		deviceType, typeErr := s.resolveDeviceType(ctx, device.DCDeviceTypeID, cache)
 		if typeErr != nil {
 			result.addError("robot", strconv.FormatInt(device.ID, 10), "dc_device_type_query_failed", typeErr.Error())
 			continue
@@ -187,11 +243,11 @@ func (s *WorkspaceResourceSyncService) syncWorkspace(
 	return result
 }
 
-func (s *WorkspaceResourceSyncService) resolveDeviceType(ctx context.Context, deviceTypeID int64) (*auth.HilbertDCDeviceType, error) {
+func (s *WorkspaceResourceSyncService) resolveDeviceType(ctx context.Context, deviceTypeID int64, cache *resourceLookupCache) (*auth.HilbertDCDeviceType, error) {
 	if deviceTypeID <= 0 {
 		return nil, nil
 	}
-	return s.hilbertClient.QueryDCDeviceTypeByID(ctx, deviceTypeID)
+	return cache.deviceType(ctx, s.hilbertClient, deviceTypeID)
 }
 
 func (s *WorkspaceResourceSyncService) syncCollectors(
@@ -201,13 +257,14 @@ func (s *WorkspaceResourceSyncService) syncCollectors(
 	syncedAt time.Time,
 	result *WorkspaceResourceSyncResult,
 	excludedOperatorIDs map[string]struct{},
+	cache *resourceLookupCache,
 ) {
 	for _, code := range normalizeWorkspacePeople(append(workspace.Admins, workspace.Members...)) {
 		if _, excluded := excludedOperatorIDs[code]; excluded {
 			result.CollectorSkippedCount++
 			continue
 		}
-		account, err := s.hilbertClient.QueryAccountByCode(ctx, code)
+		account, err := cache.account(ctx, s.hilbertClient, code)
 		if err != nil {
 			result.CollectorSkippedCount++
 			result.addError("collector", code, "account_query_failed", err.Error())

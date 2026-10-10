@@ -735,6 +735,70 @@ func TestWorkspaceSyncServiceFailsWhenCurrentAccountUnavailable(t *testing.T) {
 	}
 }
 
+func TestWorkspaceResourceSyncDeduplicatesGlobalHilbertLookups(t *testing.T) {
+	db := newTestWorkspaceSyncDB(t)
+	defer db.Close()
+
+	client := &fakeHilbertWorkspaceClient{
+		workspaces: []auth.HilbertWorkspace{
+			{
+				ID:      201,
+				Name:    "Resource Workspace A",
+				Admins:  []string{"service-account"},
+				Members: []string{"shared-member", "member-a"},
+			},
+			{
+				ID:      202,
+				Name:    "Resource Workspace B",
+				Admins:  []string{"service-account"},
+				Members: []string{"shared-member", "member-b"},
+			},
+		},
+		accounts: map[string]*auth.HilbertAccount{
+			"shared-member": {ID: 1, Code: "shared-member", DisplayName: "Shared Member", Role: "external_user", Status: "enabled"},
+			"member-a":      {ID: 2, Code: "member-a", DisplayName: "Member A", Role: "external_user", Status: "enabled"},
+			"member-b":      {ID: 3, Code: "member-b", DisplayName: "Member B", Role: "external_user", Status: "enabled"},
+		},
+		deviceTypes: map[int64]*auth.HilbertDCDeviceType{
+			7: {ID: 7, Name: "Device Type Seven"},
+		},
+		devicesByWorkspace: map[int64][]auth.HilbertDCDevice{
+			201: {
+				{ID: 11, Name: "Robot 11", WorkspaceID: 201, DCDeviceTypeID: 7},
+				{ID: 12, Name: "Robot 12", WorkspaceID: 201, DCDeviceTypeID: 7},
+			},
+			202: {
+				{ID: 13, Name: "Robot 13", WorkspaceID: 202, DCDeviceTypeID: 7},
+			},
+		},
+		currentAccount: &auth.HilbertAccount{ID: 99, Code: "service-account", DisplayName: "Service", Role: "admin", Status: "enabled"},
+	}
+	service := NewWorkspaceSyncService(db, testWorkspaceSyncHilbertConfig(), client)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if result.ResourceSync == nil {
+		t.Fatalf("expected resource sync summary")
+	}
+
+	// Four memberships across two workspaces resolve to three distinct codes; the
+	// shared member must be fetched from Hilbert only once for the whole run.
+	if client.accountCallCount != 3 {
+		t.Fatalf("accountCallCount=%d want 3 (one per distinct code)", client.accountCallCount)
+	}
+	// Three devices across two workspaces share one device type.
+	if client.deviceTypeCallCount != 1 {
+		t.Fatalf("deviceTypeCallCount=%d want 1 (one per distinct device type)", client.deviceTypeCallCount)
+	}
+	// Deduplication must not change the per-workspace projection: every
+	// membership still upserts its collector.
+	if result.ResourceSync.CollectorUpsertedCount != 4 {
+		t.Fatalf("CollectorUpsertedCount=%d want 4", result.ResourceSync.CollectorUpsertedCount)
+	}
+}
+
 type fakeHilbertWorkspaceClient struct {
 	configured              bool
 	workspaces              []auth.HilbertWorkspace
@@ -749,6 +813,8 @@ type fakeHilbertWorkspaceClient struct {
 	currentAccount          *auth.HilbertAccount
 	currentAccountErr       error
 	currentAccountCallCount int
+	accountCallCount        int
+	deviceTypeCallCount     int
 }
 
 func (f *fakeHilbertWorkspaceClient) Configured() bool {
@@ -778,6 +844,7 @@ func (f *fakeHilbertWorkspaceClient) GetCurrentAccount(_ context.Context) (*auth
 }
 
 func (f *fakeHilbertWorkspaceClient) QueryAccountByCode(_ context.Context, code string) (*auth.HilbertAccount, error) {
+	f.accountCallCount++
 	account := f.accounts[code]
 	if account == nil {
 		return nil, nil
@@ -805,6 +872,7 @@ func (f *fakeHilbertWorkspaceClient) QueryDCDevices(_ context.Context, workspace
 }
 
 func (f *fakeHilbertWorkspaceClient) QueryDCDeviceTypeByID(_ context.Context, id int64) (*auth.HilbertDCDeviceType, error) {
+	f.deviceTypeCallCount++
 	deviceType := f.deviceTypes[id]
 	if deviceType == nil {
 		return nil, nil
