@@ -32,6 +32,7 @@ SCRATCH_SPACE_MULTIPLIER = 3
 MCAP_MAGIC = b"\x89MCAP0\r\n"
 CALIBRATION_ATTACHMENT_NAME = "calibration.json"
 CALIBRATION_MEDIA_TYPE = "application/json"
+ARCHEBASE_TOPIC_PREFIX = "/archebase"
 
 
 @dataclass(frozen=True)
@@ -329,6 +330,44 @@ def load_embedded_calibration(path: Path) -> dict[str, object] | None:
     }
 
 
+def detect_topic_prefix(path: Path) -> str:
+    with path.open("rb") as stream:
+        reader = make_reader(stream)
+        summary = reader.get_summary()
+        if summary is not None:
+            topics = {channel.topic for channel in summary.channels.values()}
+        else:
+            stream.seek(0)
+            topics = {
+                channel.topic
+                for _, channel, _ in make_reader(stream).iter_messages(log_time_order=False)
+            }
+
+    def matches(prefix: str) -> bool:
+        joined = prefix + "/decxin/rgb/compressed"
+        left = prefix + "/decxin/left_rgb/h264"
+        right = prefix + "/decxin/right_rgb/h264"
+        return joined in topics or {left, right}.issubset(topics)
+
+    canonical = matches("")
+    archebase = matches(ARCHEBASE_TOPIC_PREFIX)
+    if canonical and archebase:
+        raise RuntimeError("input contains ambiguous stereo topic prefixes")
+    if archebase:
+        return ARCHEBASE_TOPIC_PREFIX
+    return ""
+
+
+def converter_config_for_prefix(prefix: str) -> ConverterConfig:
+    return ConverterConfig(
+        input_topic=prefix + "/decxin/rgb/compressed",
+        left_topic=prefix + "/decxin/left_rgb/h264",
+        right_topic=prefix + "/decxin/right_rgb/h264",
+        imu_topic=prefix + "/decxin/imu",
+        serial_topic=prefix + "/decxin/serial_number",
+    )
+
+
 def run(args: argparse.Namespace) -> dict[str, object]:
     source = args.input.resolve()
     output_binding = args.output_binding.resolve()
@@ -357,7 +396,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         if source_identity.sha256 != expected:
             raise RuntimeError(f"source checksum mismatch: expected {expected}, got {source_identity.sha256}")
 
-    config = ConverterConfig()
+    topic_prefix = detect_topic_prefix(local_input)
+    config = converter_config_for_prefix(topic_prefix)
     stats = StereoSplitH264Converter(config).convert(
         local_input,
         local_mcap,
@@ -393,6 +433,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "imu_topic": config.imu_topic,
         "stats": stats_payload,
     }
+    if topic_prefix:
+        metadata["topic_prefix"] = topic_prefix
     if camera_serial:
         metadata["camera_serial"] = camera_serial
     if color_consistency is not None:
@@ -427,6 +469,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "started_at": started_at,
         "finished_at": utc_now(),
     }
+    if topic_prefix:
+        manifest["topic_prefix"] = topic_prefix
     if camera_serial:
         manifest["camera_serial"] = camera_serial
     if color_consistency is not None:

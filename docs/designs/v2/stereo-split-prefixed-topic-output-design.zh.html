@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <!--
+  SPDX-FileCopyrightText: 2026 ArcheBase
+  SPDX-License-Identifier: MulanPSL-2.0
+  -->
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stereo Split / archebase Topic 前缀兼容方案</title>
+  <style>
+    :root {
+      --orange: #F47A16;
+      --blue: #1E4E9A;
+      --yellow: #FFD23F;
+      --ink: #15110D;
+      --paper: #FFF2D4;
+      --red: #D93A24;
+      --brown: #7A3E16;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: Georgia, "Songti SC", STSong, SimSun, serif;
+      line-height: 1.65;
+      overflow-x: hidden;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .09;
+      background-image: radial-gradient(var(--ink) .7px, transparent .7px);
+      background-size: 7px 7px;
+      z-index: 20;
+    }
+    code, pre { font-family: Consolas, "Liberation Mono", monospace; }
+    code {
+      padding: .05em .25em;
+      background: var(--yellow);
+      border: 1px solid var(--ink);
+    }
+    pre {
+      margin: 1rem 0;
+      padding: 1rem;
+      color: var(--paper);
+      background: var(--ink);
+      border: 3px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--brown);
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.5;
+    }
+    .hero {
+      position: relative;
+      min-height: 560px;
+      padding: 4rem max(6vw, 1.5rem);
+      color: var(--paper);
+      background: var(--blue);
+      border-bottom: 8px solid var(--ink);
+      overflow: hidden;
+      isolation: isolate;
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: -35%;
+      z-index: -1;
+      background: repeating-linear-gradient(166deg, transparent 0 32px, rgba(255,210,63,.55) 33px 37px, transparent 38px 78px);
+      transform: rotate(-8deg);
+    }
+    .hero-inner { width: min(1160px, 100%); margin: 0 auto; position: relative; }
+    .label {
+      display: inline-block;
+      padding: .3rem .7rem;
+      color: var(--ink);
+      background: var(--yellow);
+      border: 3px solid var(--ink);
+      box-shadow: 5px 5px 0 var(--ink);
+      font-family: Impact, "Arial Black", sans-serif;
+      letter-spacing: .08em;
+    }
+    h1, h2, h3 { margin: 0; font-weight: 900; }
+    h1 {
+      max-width: 920px;
+      margin-top: 2rem;
+      color: var(--yellow);
+      font-family: Impact, "Arial Black", "Noto Sans CJK SC", sans-serif;
+      font-size: clamp(3.3rem, 9vw, 8rem);
+      line-height: .92;
+      letter-spacing: -.04em;
+      text-shadow: 7px 7px 0 var(--ink);
+      transform: skew(-5deg);
+    }
+    .subtitle {
+      max-width: 780px;
+      margin-top: 2rem;
+      padding: 1rem 1.2rem;
+      color: var(--ink);
+      background: var(--paper);
+      border: 3px solid var(--ink);
+      box-shadow: 8px 8px 0 var(--ink);
+      font-weight: 700;
+      font-size: 1.15rem;
+    }
+    .burst {
+      position: absolute;
+      right: 2rem;
+      bottom: 1.5rem;
+      width: 230px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      background: var(--orange);
+      border: 7px solid var(--ink);
+      clip-path: polygon(50% 0,61% 24%,88% 12%,76% 40%,100% 50%,76% 61%,88% 88%,61% 76%,50% 100%,39% 76%,12% 88%,24% 61%,0 50%,24% 40%,12% 12%,39% 24%);
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 2rem;
+      line-height: .95;
+      text-align: center;
+      transform: rotate(7deg);
+    }
+    .wrap { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; }
+    .decision {
+      margin: -2.5rem auto 4rem;
+      padding: 1.5rem 1.8rem;
+      background: var(--yellow);
+      border: 5px solid var(--ink);
+      box-shadow: 10px 10px 0 var(--ink);
+      position: relative;
+    }
+    .decision strong {
+      display: block;
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: clamp(1.7rem, 4vw, 3.3rem);
+      line-height: 1;
+    }
+    section { margin: 4.5rem 0; }
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      gap: 1rem;
+      margin-bottom: 1.3rem;
+      border-bottom: 5px solid var(--ink);
+    }
+    .no {
+      color: var(--red);
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 3rem;
+    }
+    h2 {
+      font-family: Impact, "Arial Black", "Noto Sans CJK SC", sans-serif;
+      font-size: clamp(2rem, 5vw, 4rem);
+      line-height: 1;
+    }
+    h3 {
+      margin: 1.7rem 0 .7rem;
+      padding-left: .7rem;
+      border-left: 9px solid var(--orange);
+      font-family: "Arial Black", Impact, sans-serif;
+      font-size: 1.4rem;
+      line-height: 1.15;
+    }
+    p { max-width: 860px; }
+    li { margin: .35rem 0; }
+    .two {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1.3rem;
+    }
+    .panel {
+      padding: 1.25rem;
+      background: var(--paper);
+      border: 3px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+    .panel.orange { background: var(--orange); }
+    .panel.yellow { background: var(--yellow); }
+    .panel.blue { color: var(--paper); background: var(--blue); }
+    .panel.red { color: var(--paper); background: var(--red); }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin: 1.8rem 0;
+    }
+    .step {
+      min-height: 145px;
+      padding: 1rem;
+      color: var(--paper);
+      background: var(--blue);
+      border: 3px solid var(--ink);
+      border-right: 0;
+      position: relative;
+    }
+    .step:nth-child(even) { color: var(--ink); background: var(--yellow); }
+    .step:last-child { border-right: 3px solid var(--ink); }
+    .step:not(:last-child)::after {
+      content: "▶";
+      position: absolute;
+      right: -.85rem;
+      top: 50%;
+      color: var(--ink);
+      z-index: 2;
+      transform: translateY(-50%);
+    }
+    .step b {
+      display: block;
+      margin-bottom: .5rem;
+      font-family: Impact, "Arial Black", sans-serif;
+      font-size: 1.25rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      background: var(--paper);
+      border: 3px solid var(--ink);
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+    th, td {
+      padding: .7rem .8rem;
+      border: 2px solid var(--ink);
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--paper); background: var(--blue); font-family: "Arial Black", Impact, sans-serif; }
+    tr:nth-child(even) td { background: #FFE6A0; }
+    .callout {
+      margin: 1.5rem 0;
+      padding: 1.2rem 1.4rem;
+      background: var(--orange);
+      border: 4px solid var(--ink);
+      box-shadow: 7px 7px 0 var(--ink);
+      font-weight: 700;
+    }
+    .check { padding: 0; list-style: none; }
+    .check li { position: relative; padding-left: 1.8rem; border-bottom: 2px dashed var(--brown); }
+    .check li::before { content: "✓"; position: absolute; left: 0; color: var(--red); font-weight: 900; }
+    footer {
+      padding: 3rem max(6vw, 1.5rem);
+      color: var(--paper);
+      background: var(--ink);
+      border-top: 8px solid var(--red);
+    }
+    footer div { width: min(1120px, 100%); margin: 0 auto; }
+    footer h2 { color: var(--yellow); }
+    @media (max-width: 860px) {
+      .two, .flow { grid-template-columns: 1fr; gap: .6rem; }
+      .step, .step:last-child { min-height: 0; border: 3px solid var(--ink); }
+      .step:not(:last-child)::after { content: "▼"; right: 50%; top: auto; bottom: -.9rem; transform: translateX(50%); }
+      .burst { width: 160px; font-size: 1.4rem; }
+    }
+    @media (max-width: 580px) {
+      .hero { min-height: 600px; padding: 2rem 1rem; }
+      .burst { right: 1rem; bottom: 1rem; }
+      .decision { padding: 1rem; }
+      .section-title { flex-direction: column; gap: 0; align-items: flex-start; }
+      table { display: block; overflow-x: auto; }
+      th, td { min-width: 150px; }
+      pre { font-size: .78rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <span class="label">STEREO SPLIT / MINIMAL COMPATIBILITY DESIGN</span>
+      <h1>两种 Topic<br>两种输出</h1>
+      <p class="subtitle">
+        支持 <code>/decxin/...</code> 与 <code>/archebase/decxin/...</code> 两种固定布局；输入是哪一种，输出就保持哪一种，Keystone QA 同时接受两种。
+      </p>
+      <div class="burst">只做<br>两种！</div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="decision">
+      <strong>不做通用 namespace 系统。</strong>
+      只新增对 <code>/archebase</code> 前缀的明确兼容；不带前缀的现有 MCAP 行为完全保持不变；不考虑 v1。
+    </div>
+
+    <section>
+      <div class="section-title"><span class="no">01</span><h2>需求定义</h2></div>
+      <div class="two">
+        <div class="panel yellow">
+          <h3>现有模式</h3>
+          <pre>/decxin/rgb/compressed
+/decxin/imu
+/decxin/serial_number
+
+→ 输出
+/decxin/left_rgb/h264
+/decxin/right_rgb/h264
+/decxin/imu
+/decxin/serial_number</pre>
+        </div>
+        <div class="panel orange">
+          <h3>新增模式</h3>
+          <pre>/archebase/decxin/rgb/compressed
+/archebase/decxin/imu
+/archebase/decxin/serial_number
+
+→ 输出
+/archebase/decxin/left_rgb/h264
+/archebase/decxin/right_rgb/h264
+/archebase/decxin/imu
+/archebase/decxin/serial_number</pre>
+        </div>
+      </div>
+      <div class="callout">
+        只有两种合法前缀：空字符串与 <code>/archebase</code>。不支持任意 <code>/foo</code>、多级 namespace 或不同 topic 使用不同前缀。
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><span class="no">02</span><h2>最小方案</h2></div>
+      <div class="flow">
+        <div class="step"><b>① 镜像探测</b>先找无前缀 input；找不到再找 <code>/archebase</code> input。</div>
+        <div class="step"><b>② 同前缀处理</b>input、IMU、serial、left、right 使用同一个 prefix。</div>
+        <div class="step"><b>③ Manifest 标记</b>输出 <code>topic_prefix</code>，值只能为空或 <code>/archebase</code>。</div>
+        <div class="step"><b>④ Keystone QA</b>按 manifest prefix 拼出待验证的 left/right/imu topic。</div>
+      </div>
+      <p>
+        不需要数据库迁移，不需要新增管理配置，不需要 Keystone 预读源 MCAP，也不需要把完整 topic 列表设计成通用动态契约。
+      </p>
+    </section>
+
+    <section>
+      <div class="section-title"><span class="no">03</span><h2>镜像改造</h2></div>
+      <p>改动集中在当前构建使用的 <code>orbit/jobs/stereo-split/</code> 中。</p>
+
+      <h3>3.1 固定前缀探测</h3>
+      <pre>SUPPORTED_TOPIC_PREFIXES = ("", "/archebase")
+
+def detect_topic_prefix(topics):
+    canonical = "/decxin/rgb/compressed"
+    prefixed = "/archebase/decxin/rgb/compressed"
+
+    if canonical in topics and prefixed in topics:
+        raise RuntimeError("ambiguous stereo input topics")
+    if canonical in topics:
+        return ""
+    if prefixed in topics:
+        return "/archebase"
+    raise RuntimeError("no supported CompressedImage topic found")</pre>
+
+      <h3>3.2 根据 prefix 构造有效配置</h3>
+      <pre>def topic(prefix, canonical):
+    return prefix + canonical
+
+config = ConverterConfig(
+    input_topic=topic(prefix, "/decxin/rgb/compressed"),
+    left_topic=topic(prefix, "/decxin/left_rgb/h264"),
+    right_topic=topic(prefix, "/decxin/right_rgb/h264"),
+    imu_topic=topic(prefix, "/decxin/imu"),
+    serial_topic=topic(prefix, "/decxin/serial_number"),
+)</pre>
+      <p>
+        这样现有转换主流程基本不需要理解 namespace：它仍然使用 <code>config.input_topic</code>、
+        <code>config.imu_topic</code>、<code>config.left_topic</code> 等字段，只是 config 由输入自动决定。
+      </p>
+
+      <h3>3.3 Manifest 增加一个简单字段</h3>
+      <pre>{
+  "schema_version": 2,
+  "output_format": "stereo_h264",
+  "topic_prefix": "/archebase",
+  "stats": {
+    "input_messages": 1238,
+    "left_videos": 1214,
+    "right_videos": 1214,
+    "imu_messages": 27236
+  }
+}</pre>
+      <ul>
+        <li>无前缀任务写 <code>"topic_prefix": ""</code>，或者省略该字段。</li>
+        <li>旧镜像生成的 manifest 没有此字段，Keystone 读取零值 <code>""</code>，继续按无前缀处理。</li>
+        <li>只接受 <code>""</code> 和 <code>"/archebase"</code>。</li>
+      </ul>
+
+      <h3>3.4 已拆分输入</h3>
+      <p>
+        为保持行为一致，split H.264 timestamp-repair 分支也使用同一套 prefix 探测。带前缀的 left/right/imu 输入仍带前缀写出；无前缀行为不变。
+      </p>
+    </section>
+
+    <section>
+      <div class="section-title"><span class="no">04</span><h2>Keystone 改造</h2></div>
+      <p>Keystone 只需要知道本次结果属于哪一种固定布局，不需要解析源文件，也不需要支持任意 namespace。</p>
+
+      <h3>4.1 Manifest 结构增加字段</h3>
+      <pre>type processingManifest struct {
+    // existing fields...
+    TopicPrefix string `json:"topic_prefix,omitempty"`
+}</pre>
+
+      <h3>4.2 QA contract 增加 IMU topic</h3>
+      <pre>type mcapOutputContract struct {
+    // existing fields...
+    LeftTopic  string
+    RightTopic string
+    IMUTopic   string
+}</pre>
+
+      <h3>4.3 v2/v3 contract 构造</h3>
+      <pre>prefix := strings.TrimSpace(manifest.TopicPrefix)
+if prefix != "" && prefix != "/archebase" {
+    return mcapOutputContract{}, fmt.Errorf(
+        "unsupported stereo split topic prefix %q", prefix,
+    )
+}
+
+contract.LeftTopic = prefix + leftVideoTopic
+contract.RightTopic = prefix + rightVideoTopic
+contract.IMUTopic = prefix + imuTopic</pre>
+      <p>
+        其中现有常量保持为 canonical suffix：<code>/decxin/left_rgb/h264</code>、
+        <code>/decxin/right_rgb/h264</code>、<code>/decxin/imu</code>。
+      </p>
+
+      <h3>4.4 inspectOutputMCAP 使用 contract.IMUTopic</h3>
+      <pre>states := map[string]*topicQAState{
+    contract.LeftTopic:  {},
+    contract.RightTopic: {},
+    contract.IMUTopic:   {},
+}
+
+expectedSchemas := map[string]string{
+    contract.LeftTopic:  compressedVideoSchema,
+    contract.RightTopic: compressedVideoSchema,
+    contract.IMUTopic:   imuSchema,
+}
+
+imuCount := states[contract.IMUTopic].Count</pre>
+      <p>
+        左右视频 schema、protobuf encoding、IMU schema、cdr encoding、消息数量和时间戳检查逻辑都保持不变，只是 topic key 根据固定 prefix 切换。
+      </p>
+
+      <div class="panel blue">
+        <h3>不需要做的 Keystone 改动</h3>
+        <ul class="check">
+          <li>不需要新增数据库字段或 migration。</li>
+          <li>不需要修改 Episode、Derivative 或 Bulk API。</li>
+          <li>不需要修改 Synapse 页面。</li>
+          <li>不需要 Keystone 读取源 MCAP summary。</li>
+          <li>不需要新增系统设置或管理员选择项。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><span class="no">05</span><h2>兼容性行为</h2></div>
+      <table>
+        <thead><tr><th>输入</th><th>镜像输出</th><th>Manifest</th><th>Keystone QA</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>/decxin/...</code></td>
+            <td><code>/decxin/...</code></td>
+            <td><code>topic_prefix=""</code> 或缺省</td>
+            <td>使用现有 topic；行为不变</td>
+          </tr>
+          <tr>
+            <td><code>/archebase/decxin/...</code></td>
+            <td><code>/archebase/decxin/...</code></td>
+            <td><code>topic_prefix="/archebase"</code></td>
+            <td>使用带前缀 topic；验证通过</td>
+          </tr>
+          <tr>
+            <td>两种 input 同时存在</td>
+            <td>不生成</td>
+            <td>无</td>
+            <td>作业失败，避免猜测</td>
+          </tr>
+          <tr>
+            <td>其它前缀</td>
+            <td>不生成</td>
+            <td>无</td>
+            <td>明确报 unsupported</td>
+          </tr>
+          <tr>
+            <td>旧镜像的无 prefix manifest</td>
+            <td>历史产物</td>
+            <td>没有 <code>topic_prefix</code></td>
+            <td>Go 零值为空，继续通过</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-title"><span class="no">06</span><h2>测试清单</h2></div>
+      <div class="two">
+        <div class="panel orange">
+          <h3>镜像测试</h3>
+          <ul class="check">
+            <li>无前缀 joined H.264 回归测试。</li>
+            <li><code>/archebase</code> joined H.264 输出带前缀。</li>
+            <li><code>/archebase</code> IMU 与 serial 被正确识别和保留。</li>
+            <li><code>/archebase</code> split H.264 timestamp-repair。</li>
+            <li>两种 input 同时存在时失败。</li>
+            <li>manifest 的 <code>topic_prefix</code> 与输出一致。</li>
+          </ul>
+        </div>
+        <div class="panel yellow">
+          <h3>Keystone 测试</h3>
+          <ul class="check">
+            <li>缺省 prefix 构造现有 QA contract。</li>
+            <li><code>/archebase</code> 构造带前缀 QA contract。</li>
+            <li>其它 prefix 被拒绝。</li>
+            <li>带前缀 MCAP 的 left/right/imu 计数通过。</li>
+            <li>带前缀 MCAP 缺失 IMU 时失败。</li>
+            <li>现有无前缀测试全部保持通过。</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>真实文件验收</h3>
+      <p>
+        使用 <code>~/Downloads/session_004(1).mcap</code> 作为集成样本。作业应识别
+        <code>topic_prefix=/archebase</code>，输出 left/right/imu/serial 全部保留前缀，并由 Keystone 完成产物验证与自动 QA。
+      </p>
+    </section>
+
+    <section>
+      <div class="section-title"><span class="no">07</span><h2>实施顺序</h2></div>
+      <ol>
+        <li>先在镜像 converter 中增加两种固定 prefix 的探测与有效 config 构造。</li>
+        <li>让 <code>run_processing.py</code> 把 <code>topic_prefix</code> 写入 metadata 与 manifest。</li>
+        <li>修改 Keystone manifest struct 和动态 QA contract。</li>
+        <li>补镜像与 Keystone 单测。</li>
+        <li>用 <code>session_004(1).mcap</code> 跑一次真实 Orbit Job。</li>
+        <li>Keystone 升级后再切换新的 immutable image digest。</li>
+      </ol>
+      <div class="callout">
+        发布顺序必须是 Keystone 先支持 <code>/archebase</code> QA，再启用会输出该前缀的新镜像；否则新镜像的带前缀产物会被旧 Keystone 判定失败。
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><span class="no">08</span><h2>结论</h2></div>
+      <div class="panel red">
+        <h3>这是一个小范围兼容改造</h3>
+        <p>
+          镜像增加两种固定 topic 布局的选择；manifest 增加一个 <code>topic_prefix</code> 字段；Keystone QA 根据该字段在两套固定 topic 之间切换。
+        </p>
+        <p>
+          不引入通用 namespace、不增加数据库、不改变 API、不影响现有无前缀 MCAP，也不考虑 v1。
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div>
+      <h2>输入保留什么，输出就保留什么。</h2>
+      <p>只认空前缀和 <code>/archebase</code>，让改动小、行为明确、现有数据不受影响。</p>
+    </div>
+  </footer>
+</body>
+</html>

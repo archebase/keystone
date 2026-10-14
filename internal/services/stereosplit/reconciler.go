@@ -1084,6 +1084,7 @@ type processingManifest struct {
 	Generation     int    `json:"generation"`
 	ProcessorImage string `json:"processor_image"`
 	CameraSerial   string `json:"camera_serial,omitempty"`
+	TopicPrefix    string `json:"topic_prefix,omitempty"`
 	Source         struct {
 		URI       string `json:"uri"`
 		SizeBytes int64  `json:"size_bytes"`
@@ -1524,6 +1525,7 @@ type mcapOutputContract struct {
 	SchemaVersion        int
 	LeftTopic            string
 	RightTopic           string
+	IMUTopic             string
 	LeftSchema           string
 	RightSchema          string
 	LeftSchemaEncoding   string
@@ -1548,6 +1550,7 @@ func validateManifestStats(manifest processingManifest) (mcapOutputContract, err
 	contract := mcapOutputContract{
 		SchemaVersion: manifest.SchemaVersion,
 		ExpectedIMU:   stats.IMUMessages,
+		IMUTopic:      imuTopic,
 	}
 	switch manifest.SchemaVersion {
 	case manifestSchemaV1:
@@ -1574,8 +1577,13 @@ func validateManifestStats(manifest processingManifest) (mcapOutputContract, err
 		if stats.CopiedMessages < 0 || stats.CopiedTopics < 0 {
 			return mcapOutputContract{}, fmt.Errorf("processing manifest contains negative copied-topic statistics")
 		}
-		contract.LeftTopic = leftVideoTopic
-		contract.RightTopic = rightVideoTopic
+		topicPrefix := strings.TrimSpace(manifest.TopicPrefix)
+		if topicPrefix != "" && topicPrefix != "/archebase" {
+			return mcapOutputContract{}, fmt.Errorf("processing manifest has unsupported topic prefix %q", topicPrefix)
+		}
+		contract.LeftTopic = topicPrefix + leftVideoTopic
+		contract.RightTopic = topicPrefix + rightVideoTopic
+		contract.IMUTopic = topicPrefix + imuTopic
 		contract.LeftSchema = compressedVideoSchema
 		contract.RightSchema = compressedVideoSchema
 		contract.LeftSchemaEncoding = "protobuf"
@@ -1657,22 +1665,22 @@ func (m *Manager) inspectOutputMCAP(
 	states := map[string]*topicQAState{
 		contract.LeftTopic:  {},
 		contract.RightTopic: {},
-		imuTopic:            {},
+		contract.IMUTopic:   {},
 	}
 	expectedSchemas := map[string]string{
 		contract.LeftTopic:  contract.LeftSchema,
 		contract.RightTopic: contract.RightSchema,
-		imuTopic:            imuSchema,
+		contract.IMUTopic:   imuSchema,
 	}
 	expectedSchemaEncodings := map[string]string{
 		contract.LeftTopic:  contract.LeftSchemaEncoding,
 		contract.RightTopic: contract.RightSchemaEncoding,
-		imuTopic:            "ros2msg",
+		contract.IMUTopic:   "ros2msg",
 	}
 	expectedEncodings := map[string]string{
 		contract.LeftTopic:  contract.LeftMessageEncoding,
 		contract.RightTopic: contract.RightMessageEncoding,
-		imuTopic:            "cdr",
+		contract.IMUTopic:   "cdr",
 	}
 	var firstLogTime uint64
 	var lastLogTime uint64
@@ -1767,7 +1775,7 @@ func (m *Manager) inspectOutputMCAP(
 	}
 	leftCount := states[contract.LeftTopic].Count
 	rightCount := states[contract.RightTopic].Count
-	imuCount := states[imuTopic].Count
+	imuCount := states[contract.IMUTopic].Count
 	if leftCount <= 0 || leftCount != rightCount || imuCount <= 0 {
 		return mcapQAObservation{}, fmt.Errorf("output MCAP required topic counts are invalid")
 	}

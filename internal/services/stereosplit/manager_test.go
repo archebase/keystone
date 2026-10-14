@@ -1820,6 +1820,52 @@ func TestReconcileQAApprovesStereoH264ManifestV2(t *testing.T) {
 	}
 }
 
+func TestReconcileQAApprovesArchebasePrefixedStereoH264ManifestV2(t *testing.T) {
+	db := newTestDB(t)
+	insertTestEpisode(t, db, 38, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
+	outputMCAP, outputChecksum := makeStereoSplitH264QAOutputWithPrefix(t, "/archebase", 10, 10, 100)
+	outputKey := "derived/qa-h264-archebase/output_bag.mcap"
+	objects := &fakeObjectStore{objects: map[string]fakeStoredObject{
+		outputKey: {size: int64(len(outputMCAP)), etag: "mcap-etag", body: string(outputMCAP)},
+	}}
+	manager := NewManager(db, nil, objects, testManagerConfig())
+	derivative, _, err := manager.Start(context.Background(), 38, "admin")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	processingResult := `{
+		"schema_version":2,
+		"output_format":"stereo_h264",
+		"topic_prefix":"/archebase",
+		"stats":{
+			"input_messages":10,
+			"decoded_images":10,
+			"left_videos":10,
+			"right_videos":10,
+			"imu_messages":100,
+			"skipped_messages":0
+		}
+	}`
+	if _, err := db.Exec(`
+		UPDATE episode_derivatives SET processing_status = ?, qa_status = ?, mcap_path = ?,
+		    checksum = ?, processing_result = ?, orbit_delete_status = ?
+		WHERE id = ?
+	`, ProcessingSucceeded, QAPending, outputKey, outputChecksum, processingResult, DeletePending, derivative.ID); err != nil {
+		t.Fatalf("prepare prefixed H.264 QA derivative: %v", err)
+	}
+
+	if _, err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	derivative, err = manager.Get(context.Background(), 38)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if derivative.QAStatus != QAApproved || derivative.QAError != "" {
+		t.Fatalf("prefixed H.264 QA derivative = %+v", derivative)
+	}
+}
+
 func TestReconcileQAApprovesMatchingCalibrationAttachment(t *testing.T) {
 	db := newTestDB(t)
 	insertTestEpisode(t, db, 35, "keystone_tos", `{"bucket":"source-bucket","object_key":"raw/source.mcap"}`, "")
@@ -2138,6 +2184,36 @@ func TestValidateManifestSnapshotSupportsStereoSplitV1AndV2(t *testing.T) {
 	}
 }
 
+func TestValidateManifestStatsUsesSupportedTopicPrefix(t *testing.T) {
+	manifest := processingManifest{
+		SchemaVersion: manifestSchemaV2,
+		OutputFormat:  stereoH264OutputFormat,
+		TopicPrefix:   "/archebase",
+		Stats: manifestStats{
+			InputMessages: 10,
+			DecodedImages: 10,
+			LeftVideos:    10,
+			RightVideos:   10,
+			IMUMessages:   100,
+		},
+	}
+
+	contract, err := validateManifestStats(manifest)
+	if err != nil {
+		t.Fatalf("validateManifestStats() error = %v", err)
+	}
+	if contract.LeftTopic != "/archebase/decxin/left_rgb/h264" ||
+		contract.RightTopic != "/archebase/decxin/right_rgb/h264" ||
+		contract.IMUTopic != "/archebase/decxin/imu" {
+		t.Fatalf("prefixed contract = %+v", contract)
+	}
+
+	manifest.TopicPrefix = "/unsupported"
+	if _, err := validateManifestStats(manifest); err == nil || !strings.Contains(err.Error(), "unsupported topic prefix") {
+		t.Fatalf("validateManifestStats() unsupported prefix error = %v", err)
+	}
+}
+
 func TestValidateManifestStatsAcceptsTimestampRepairMode(t *testing.T) {
 	manifest := processingManifest{
 		SchemaVersion:  manifestSchemaV2,
@@ -2223,6 +2299,7 @@ func makeStereoSplitQAOutput(t *testing.T, leftCount, rightCount, imuCount int) 
 		"ros2msg",
 		leftImageTopic,
 		rightImageTopic,
+		imuTopic,
 		"cdr",
 		leftCount,
 		rightCount,
@@ -2231,12 +2308,21 @@ func makeStereoSplitQAOutput(t *testing.T, leftCount, rightCount, imuCount int) 
 }
 
 func makeStereoSplitH264QAOutput(t *testing.T, leftCount, rightCount, imuCount int) ([]byte, string) {
+	return makeStereoSplitH264QAOutputWithPrefix(t, "", leftCount, rightCount, imuCount)
+}
+
+func makeStereoSplitH264QAOutputWithPrefix(
+	t *testing.T,
+	prefix string,
+	leftCount, rightCount, imuCount int,
+) ([]byte, string) {
 	return makeStereoSplitQAOutputForContract(
 		t,
 		compressedVideoSchema,
 		"protobuf",
-		leftVideoTopic,
-		rightVideoTopic,
+		prefix+leftVideoTopic,
+		prefix+rightVideoTopic,
+		prefix+imuTopic,
 		"protobuf",
 		leftCount,
 		rightCount,
@@ -2255,6 +2341,7 @@ func makeStereoSplitH264QAOutputWithAttachments(
 		"protobuf",
 		leftVideoTopic,
 		rightVideoTopic,
+		imuTopic,
 		"protobuf",
 		leftCount,
 		rightCount,
@@ -2269,6 +2356,7 @@ func makeStereoSplitQAOutputForContract(
 	stereoSchemaEncoding string,
 	leftTopic string,
 	rightTopic string,
+	imuTopicName string,
 	stereoMessageEncoding string,
 	leftCount int,
 	rightCount int,
@@ -2295,7 +2383,7 @@ func makeStereoSplitQAOutputForContract(
 	for _, channel := range []*mcap.Channel{
 		{ID: 1, SchemaID: 1, Topic: leftTopic, MessageEncoding: stereoMessageEncoding},
 		{ID: 2, SchemaID: 1, Topic: rightTopic, MessageEncoding: stereoMessageEncoding},
-		{ID: 3, SchemaID: 2, Topic: imuTopic, MessageEncoding: "cdr"},
+		{ID: 3, SchemaID: 2, Topic: imuTopicName, MessageEncoding: "cdr"},
 	} {
 		if err := writer.WriteChannel(channel); err != nil {
 			t.Fatalf("write MCAP channel: %v", err)
