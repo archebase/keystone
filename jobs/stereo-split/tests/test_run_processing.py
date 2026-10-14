@@ -125,8 +125,13 @@ def make_source_mcap(
             )
 
         if serial is not None:
+            serial_topic = (
+                "/archebase/decxin/serial_number"
+                if topic.startswith("/archebase/")
+                else "/decxin/serial_number"
+            )
             serial_connection = writer.add_connection(
-                "/decxin/serial_number",
+                serial_topic,
                 "std_msgs/msg/String",
                 typestore=typestore,
             )
@@ -339,6 +344,52 @@ class RunProcessingTest(unittest.TestCase):
             self.assertAlmostEqual(first_imu.angular_velocity.y, -5000 * gyro_scale)
             self.assertAlmostEqual(first_imu.angular_velocity.z, 6000 * gyro_scale)
 
+    def test_preserves_archebase_topic_prefix_in_outputs_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = make_source_mcap(
+                root,
+                topic="/archebase/decxin/rgb/compressed",
+                serial="CMD-000148",
+            )
+            output_binding = root / "published"
+            output_binding.mkdir()
+
+            result = run_job(source, output_binding, root / "scratch")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(
+                (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
+            )
+            metadata = json.loads(
+                (output_binding / "metadata.yaml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["topic_prefix"], "/archebase")
+            self.assertEqual(metadata["topic_prefix"], "/archebase")
+            self.assertEqual(
+                metadata["video"]["topics"],
+                [
+                    "/archebase/decxin/left_rgb/h264",
+                    "/archebase/decxin/right_rgb/h264",
+                ],
+            )
+            self.assertEqual(metadata["imu_topic"], "/archebase/decxin/imu")
+
+            output_topics = set()
+            with (output_binding / "output_bag.mcap").open("rb") as stream:
+                summary = make_reader(stream).get_summary()
+                self.assertIsNotNone(summary)
+                output_topics = {channel.topic for channel in summary.channels.values()}
+            self.assertEqual(
+                output_topics,
+                {
+                    "/archebase/decxin/left_rgb/h264",
+                    "/archebase/decxin/right_rgb/h264",
+                    "/archebase/decxin/imu",
+                    "/archebase/decxin/serial_number",
+                },
+            )
+
     def test_processes_already_split_input_and_records_repair_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -359,6 +410,42 @@ class RunProcessingTest(unittest.TestCase):
             self.assertEqual(manifest["stats"]["decoded_images"], 0)
             self.assertEqual(manifest["stats"]["left_videos"], 2)
             self.assertEqual(manifest["stats"]["right_videos"], 2)
+
+    def test_preserves_archebase_prefix_for_already_split_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            prefix = "/archebase"
+            joined_source = make_source_mcap(
+                root,
+                topic=prefix + "/decxin/rgb/compressed",
+            )
+            split_source = root / "split-source.mcap"
+            StereoSplitH264Converter(
+                processing_runner.converter_config_for_prefix(prefix)
+            ).convert(joined_source, split_source)
+            output_binding = root / "published"
+            output_binding.mkdir()
+
+            result = run_job(split_source, output_binding, root / "scratch")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads(
+                (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["topic_prefix"], prefix)
+            self.assertEqual(manifest["processing_mode"], "timestamp_repair")
+            with (output_binding / "output_bag.mcap").open("rb") as stream:
+                summary = make_reader(stream).get_summary()
+                self.assertIsNotNone(summary)
+                topics = {channel.topic for channel in summary.channels.values()}
+            self.assertEqual(
+                topics,
+                {
+                    prefix + "/decxin/left_rgb/h264",
+                    prefix + "/decxin/right_rgb/h264",
+                    prefix + "/decxin/imu",
+                },
+            )
 
     def test_does_not_preserve_embedded_calibration_in_split_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
