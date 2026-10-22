@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"archebase.com/keystone-edge/internal/config"
@@ -30,6 +31,7 @@ const (
 	hilbertLoginPath                  = "/v1/console/account/login"
 	hilbertAccountQueryPath           = "/v1/console/account/query"
 	hilbertAccountGetCurPath          = "/v1/console/account/get-cur"
+	hilbertTenantSelectPath           = "/v1/console/tenant/select"
 	hilbertWorkspaceAvailablePath     = "/v1/console/workspace/list-available"
 	hilbertDCPlanQueryPath            = "/v1/data-collection/dc-plan/query"
 	hilbertDCPlanPatchDevicePath      = "/v1/data-collection/dc-plan/patch-dc-device-id"
@@ -48,6 +50,7 @@ const (
 	hilbertNonceLengthBytes    = hilbertNonceKeyLengthBytes + hilbertNonceIVLengthBytes
 
 	hilbertDCDeviceQueryPageSize int64 = 200
+	hilbertServiceTenantID       int64 = 1
 
 	// hilbertMaxDCPlanTargetCount mirrors Hilbert's patch-target-count contract
 	// (dc_plan_controller.go: gte=1,lte=500).
@@ -301,6 +304,9 @@ type HilbertClient struct {
 	secretKey  string
 	httpClient *http.Client
 	now        func() time.Time
+
+	principalMu sync.Mutex
+	principal   string
 }
 
 // NewHilbertClient creates a Hilbert API client from Keystone Hilbert configuration.
@@ -769,6 +775,19 @@ func (c *HilbertClient) hilbertServiceJSONRequest(ctx context.Context, method, p
 }
 
 func (c *HilbertClient) authorizeServiceRequest(req *http.Request) error {
+	if err := c.authorizeDigestRequest(req); err != nil {
+		return err
+	}
+	principal, err := c.tenantPrincipal(req.Context())
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Tenant-Principal", principal)
+	req.Header.Set("X-Tenant-ID", strconv.FormatInt(hilbertServiceTenantID, 10))
+	return nil
+}
+
+func (c *HilbertClient) authorizeDigestRequest(req *http.Request) error {
 	now := time.Now
 	if c != nil && c.now != nil {
 		now = c.now
@@ -781,6 +800,37 @@ func (c *HilbertClient) authorizeServiceRequest(req *http.Request) error {
 	return nil
 }
 
+func (c *HilbertClient) tenantPrincipal(ctx context.Context) (string, error) {
+	c.principalMu.Lock()
+	defer c.principalMu.Unlock()
+	if c.principal != "" {
+		return c.principal, nil
+	}
+
+	body, err := json.Marshal(map[string]int64{"tenantId": hilbertServiceTenantID})
+	if err != nil {
+		return "", fmt.Errorf("%w: encode tenant selection request", ErrHilbertUnavailable)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+hilbertTenantSelectPath, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("%w: create tenant selection request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeDigestRequest(req); err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	var resp hilbertCommonResponse[hilbertTenantSelection]
+	if err := c.doJSON(req, &resp); err != nil {
+		return "", fmt.Errorf("%w: select Hilbert tenant %d: %v", ErrHilbertUnavailable, hilbertServiceTenantID, err)
+	}
+	if resp.Code != 0 || resp.Data.TenantID != hilbertServiceTenantID || strings.TrimSpace(resp.Data.Principal) == "" {
+		return "", fmt.Errorf("%w: select Hilbert tenant %d returned code %d", ErrHilbertUnavailable, hilbertServiceTenantID, resp.Code)
+	}
+	c.principal = strings.TrimSpace(resp.Data.Principal)
+	return c.principal, nil
+}
+
 func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error) {
 	ak := strings.TrimSpace(c.accessKey)
 	sk := strings.TrimSpace(c.secretKey)
@@ -790,6 +840,11 @@ func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error
 	millis := strconv.FormatInt(now.UnixMilli(), 10)
 	digest := sha256.Sum256([]byte(sk + "," + millis))
 	return "Digest " + ak + ";" + millis + ";" + hex.EncodeToString(digest[:]), nil
+}
+
+type hilbertTenantSelection struct {
+	TenantID  int64  `json:"tenantId"`
+	Principal string `json:"principal"`
 }
 
 type hilbertCommonResponse[T any] struct {

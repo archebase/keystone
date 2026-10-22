@@ -21,6 +21,83 @@ import (
 	"archebase.com/keystone-edge/internal/config"
 )
 
+func TestHilbertServiceRequestSelectsTenantAndCachesPrincipal(t *testing.T) {
+	var tenantSelections atomic.Int64
+	var workspaceRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case hilbertTenantSelectPath:
+			tenantSelections.Add(1)
+			if r.Header.Get("Authorization") == "" {
+				t.Fatal("tenant selection is missing Digest authorization")
+			}
+			if r.Header.Get("X-Tenant-Principal") != "" {
+				t.Fatal("tenant selection must not send a Tenant principal")
+			}
+			var body struct {
+				TenantID int64 `json:"tenantId"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode tenant selection: %v", err)
+			}
+			if body.TenantID != 1 {
+				t.Fatalf("tenantId=%d want 1", body.TenantID)
+			}
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{"tenantId": 1, "principal": "tenant-principal"},
+			})
+		case hilbertWorkspaceAvailablePath:
+			workspaceRequests.Add(1)
+			if got := r.Header.Get("X-Tenant-Principal"); got != "tenant-principal" {
+				t.Fatalf("X-Tenant-Principal=%q want tenant-principal", got)
+			}
+			if got := r.Header.Get("X-Tenant-ID"); got != "1" {
+				t.Fatalf("X-Tenant-ID=%q want 1", got)
+			}
+			writeHilbertTestJSON(t, w, map[string]any{"code": 0, "data": []map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL: server.URL, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk",
+	})
+	for range 2 {
+		if _, err := client.ListAvailableWorkspaces(context.Background()); err != nil {
+			t.Fatalf("ListAvailableWorkspaces() error = %v", err)
+		}
+	}
+	if tenantSelections.Load() != 1 {
+		t.Fatalf("tenant selections=%d want 1", tenantSelections.Load())
+	}
+	if workspaceRequests.Load() != 2 {
+		t.Fatalf("workspace requests=%d want 2", workspaceRequests.Load())
+	}
+}
+
+func TestHilbertServiceRequestRejectsFailedTenantSelection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != hilbertTenantSelectPath {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusForbidden)
+		writeHilbertTestJSON(t, w, map[string]any{
+			"code": 403, "businessCode": "tenant_authorization_unavailable", "data": nil,
+		})
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL: server.URL, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk",
+	})
+	if _, err := client.ListAvailableWorkspaces(context.Background()); !errors.Is(err, ErrHilbertUnavailable) {
+		t.Fatalf("ListAvailableWorkspaces() error = %v, want ErrHilbertUnavailable", err)
+	}
+}
+
 func TestPatchDCPlanTargetCountUsesRESTContract(t *testing.T) {
 	now := time.Unix(1700000000, 123000000)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +125,7 @@ func TestPatchDCPlanTargetCountUsesRESTContract(t *testing.T) {
 		AccessKey:      "hilbert-ak",
 		SecretKey:      "hilbert-sk",
 	})
+	client.principal = "test-tenant-principal"
 	client.now = func() time.Time { return now }
 	updated, err := client.PatchDCPlanTargetCount(context.Background(), 10, 20, 30)
 	if err != nil {
@@ -70,6 +148,7 @@ func TestPatchDCPlanTargetCountEnforcesHilbertBounds(t *testing.T) {
 		AccessKey:      "hilbert-ak",
 		SecretKey:      "hilbert-sk",
 	})
+	client.principal = "test-tenant-principal"
 
 	updated, err := client.PatchDCPlanTargetCount(context.Background(), 10, 20, hilbertMaxDCPlanTargetCount)
 	if err != nil || !updated {
@@ -184,6 +263,7 @@ func TestValidateDCDeviceAPIKeyUsesNonceContract(t *testing.T) {
 	defer server.Close()
 
 	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	client.principal = "test-tenant-principal"
 	client.now = func() time.Time { return now }
 	valid, err := client.ValidateDCDeviceAPIKey(context.Background(), 10, 101, "device-api-key")
 	if err != nil {
@@ -221,6 +301,7 @@ func TestGetCurrentAccountUsesDigestAuth(t *testing.T) {
 	defer server.Close()
 
 	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	client.principal = "test-tenant-principal"
 	client.now = func() time.Time { return now }
 	account, err := client.GetCurrentAccount(context.Background())
 	if err != nil {
@@ -282,6 +363,7 @@ func TestQueryDCDevicesUsesPositivePaginationAndCollectsEveryPage(t *testing.T) 
 	defer server.Close()
 
 	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	client.principal = "test-tenant-principal"
 	client.now = func() time.Time { return now }
 	page, err := client.QueryDCDevices(context.Background(), 42)
 	if err != nil {
@@ -330,6 +412,7 @@ func TestQueryDCServiceProviderUsesRESTContract(t *testing.T) {
 	defer server.Close()
 
 	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	client.principal = "test-tenant-principal"
 	provider, err := client.QueryDCServiceProvider(context.Background(), 9)
 	if err != nil {
 		t.Fatalf("QueryDCServiceProvider() error = %v", err)
@@ -366,6 +449,7 @@ func TestQueryDCServiceProviderReturnsNilForMissingRecord(t *testing.T) {
 	defer server.Close()
 
 	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, TimeoutSeconds: 2, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk"})
+	client.principal = "test-tenant-principal"
 	provider, err := client.QueryDCServiceProvider(context.Background(), 404)
 	if err != nil {
 		t.Fatalf("QueryDCServiceProvider() error = %v", err)
