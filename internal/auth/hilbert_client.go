@@ -52,6 +52,12 @@ const (
 	hilbertDCDeviceQueryPageSize int64 = 200
 	hilbertServiceTenantID       int64 = 1
 
+	// hilbertPrincipalRefreshCooldown bounds how often one client may replace a
+	// rejected Tenant principal. A successful reselect followed by another
+	// rejection would otherwise write one principal binding per request, so the
+	// cooldown keeps the worst case to one reselect per window.
+	hilbertPrincipalRefreshCooldown = 5 * time.Minute
+
 	// hilbertMaxDCPlanTargetCount mirrors Hilbert's patch-target-count contract
 	// (dc_plan_controller.go: gte=1,lte=500).
 	hilbertMaxDCPlanTargetCount int64 = 500
@@ -307,6 +313,8 @@ type HilbertClient struct {
 
 	principalMu sync.Mutex
 	principal   string
+	// principalRefreshedAt is the last reselect attempt, including failures.
+	principalRefreshedAt time.Time
 }
 
 // NewHilbertClient creates a Hilbert API client from Keystone Hilbert configuration.
@@ -803,6 +811,20 @@ func (c *HilbertClient) authorizeDigestRequest(req *http.Request) error {
 // invalidatePrincipalIfCurrent drops the cached Tenant principal when it is the one
 // Hilbert rejected. Concurrent callers that already refreshed the cache keep the
 // newer principal, so a burst of rejected requests triggers at most one reselect.
+// reservePrincipalRefresh reports whether a rejected principal may be replaced
+// now, and records the attempt so concurrent or repeated rejections inside the
+// cooldown window fail fast instead of reselecting again.
+func (c *HilbertClient) reservePrincipalRefresh() bool {
+	c.principalMu.Lock()
+	defer c.principalMu.Unlock()
+	now := time.Now()
+	if !c.principalRefreshedAt.IsZero() && now.Sub(c.principalRefreshedAt) < hilbertPrincipalRefreshCooldown {
+		return false
+	}
+	c.principalRefreshedAt = now
+	return true
+}
+
 func (c *HilbertClient) invalidatePrincipalIfCurrent(principal string) {
 	c.principalMu.Lock()
 	defer c.principalMu.Unlock()
@@ -968,6 +990,9 @@ func (c *HilbertClient) doJSON(req *http.Request, out any) error {
 	usedPrincipal := strings.TrimSpace(req.Header.Get("X-Tenant-Principal"))
 	if usedPrincipal == "" {
 		// Bootstrap calls (login, nonce, tenant select) carry no principal and must not loop.
+		return err
+	}
+	if !c.reservePrincipalRefresh() {
 		return err
 	}
 

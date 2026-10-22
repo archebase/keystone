@@ -274,6 +274,47 @@ func TestHilbertServiceRequestKeepsPrincipalWhenRejectionIsNotTenantRelated(t *t
 	}
 }
 
+func TestHilbertServiceRequestCooldownBoundsPrincipalReselection(t *testing.T) {
+	var tenantSelections atomic.Int64
+	var workspaceRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case hilbertTenantSelectPath:
+			selection := tenantSelections.Add(1)
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{"tenantId": 1, "principal": fmt.Sprintf("principal-%d", selection)},
+			})
+		case hilbertWorkspaceAvailablePath:
+			workspaceRequests.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			writeHilbertTestJSON(t, w, map[string]any{"code": 403, "businessCode": "tenant_authorization_unavailable"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL: server.URL, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk",
+	})
+
+	// First call: initial select, rejected request, one allowed refresh, rejected replay.
+	if _, err := client.ListAvailableWorkspaces(context.Background()); !errors.Is(err, ErrHilbertInvalidCredentials) {
+		t.Fatalf("first call error = %v, want ErrHilbertInvalidCredentials", err)
+	}
+	// Second call inside the cooldown must fail fast without reselecting.
+	if _, err := client.ListAvailableWorkspaces(context.Background()); !errors.Is(err, ErrHilbertInvalidCredentials) {
+		t.Fatalf("second call error = %v, want ErrHilbertInvalidCredentials", err)
+	}
+	if tenantSelections.Load() != 2 {
+		t.Fatalf("tenant selections=%d want 2 (initial + one refresh inside cooldown)", tenantSelections.Load())
+	}
+	if workspaceRequests.Load() != 3 {
+		t.Fatalf("workspace requests=%d want 3", workspaceRequests.Load())
+	}
+}
+
 func TestPatchDCPlanTargetCountUsesRESTContract(t *testing.T) {
 	now := time.Unix(1700000000, 123000000)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
