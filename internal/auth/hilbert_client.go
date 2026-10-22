@@ -800,6 +800,17 @@ func (c *HilbertClient) authorizeDigestRequest(req *http.Request) error {
 	return nil
 }
 
+// invalidatePrincipalIfCurrent drops the cached Tenant principal when it is the one
+// Hilbert rejected. Concurrent callers that already refreshed the cache keep the
+// newer principal, so a burst of rejected requests triggers at most one reselect.
+func (c *HilbertClient) invalidatePrincipalIfCurrent(principal string) {
+	c.principalMu.Lock()
+	defer c.principalMu.Unlock()
+	if c.principal == principal {
+		c.principal = ""
+	}
+}
+
 func (c *HilbertClient) tenantPrincipal(ctx context.Context) (string, error) {
 	c.principalMu.Lock()
 	defer c.principalMu.Unlock()
@@ -944,7 +955,78 @@ func (c *HilbertClient) loginWithCipherDigest(ctx context.Context, code string, 
 	return NewHilbertLoginResult(resp.Data.Account, resp.Data.SessionKey), nil
 }
 
-func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
+// doJSON executes one Hilbert request. A rejected Tenant principal is a normal
+// outcome after Hilbert re-provisions or revokes authorization: the cached
+// principal stays valid only until the next authoritative version change. Drop
+// it, reselect the Tenant once, and replay the request so a redeploy on the
+// Hilbert side does not require restarting Keystone.
+func (c *HilbertClient) doJSON(req *http.Request, out any) error {
+	err := c.doJSONOnce(req, out)
+	if !hilbertTenantPrincipalRejected(err) || c == nil {
+		return err
+	}
+	usedPrincipal := strings.TrimSpace(req.Header.Get("X-Tenant-Principal"))
+	if usedPrincipal == "" {
+		// Bootstrap calls (login, nonce, tenant select) carry no principal and must not loop.
+		return err
+	}
+
+	c.invalidatePrincipalIfCurrent(usedPrincipal)
+	if digestErr := c.authorizeDigestRequest(req); digestErr != nil {
+		return err
+	}
+	principal, selectErr := c.tenantPrincipal(req.Context())
+	if selectErr != nil {
+		return err
+	}
+	req.Header.Set("X-Tenant-Principal", principal)
+	req.Header.Set("X-Tenant-ID", strconv.FormatInt(hilbertServiceTenantID, 10))
+	if req.GetBody != nil {
+		body, bodyErr := req.GetBody()
+		if bodyErr != nil {
+			return err
+		}
+		req.Body = body
+	}
+	return c.doJSONOnce(req, out)
+}
+
+// hilbertAuthError keeps the rejected response body next to the sentinel so
+// callers can distinguish a stale Tenant principal from other 401/403 causes
+// such as a device-credential rejection that a reselect cannot fix.
+type hilbertAuthError struct {
+	message string
+	body    string
+}
+
+func (e *hilbertAuthError) Error() string { return e.message }
+
+func (e *hilbertAuthError) Unwrap() error { return ErrHilbertInvalidCredentials }
+
+// hilbertTenantPrincipalBusinessCodes lists the only rejections that a Tenant
+// reselect can resolve. Any other 401/403 must surface without touching the
+// cached principal, otherwise every rejected device-scoped call would reselect
+// the Tenant and persist a useless principal binding.
+var hilbertTenantPrincipalBusinessCodes = []string{
+	"tenant_principal_required",
+	"tenant_authorization_unavailable",
+	"tenant_selector_conflict",
+}
+
+func hilbertTenantPrincipalRejected(err error) bool {
+	var authErr *hilbertAuthError
+	if !errors.As(err, &authErr) {
+		return false
+	}
+	for _, code := range hilbertTenantPrincipalBusinessCodes {
+		if strings.Contains(authErr.body, code) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *HilbertClient) doJSONOnce(req *http.Request, out any) (err error) {
 	resp, err := c.httpClient.Do(req) //nolint:gosec // Hilbert base URL is operator-configured backend infrastructure, not user-controlled request input.
 	if err != nil {
 		return fmt.Errorf("%w: request failed: %v", ErrHilbertUnavailable, err)
@@ -956,7 +1038,11 @@ func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("%w: status %d body %q", ErrHilbertInvalidCredentials, resp.StatusCode, limitedResponseBody(resp))
+		body := limitedResponseBody(resp)
+		return &hilbertAuthError{
+			message: fmt.Errorf("%w: status %d body %q", ErrHilbertInvalidCredentials, resp.StatusCode, body).Error(),
+			body:    body,
+		}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("%w: status %d body %q", ErrHilbertUnavailable, resp.StatusCode, limitedResponseBody(resp))

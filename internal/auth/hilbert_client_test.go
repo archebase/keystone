@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -95,6 +96,181 @@ func TestHilbertServiceRequestRejectsFailedTenantSelection(t *testing.T) {
 	})
 	if _, err := client.ListAvailableWorkspaces(context.Background()); !errors.Is(err, ErrHilbertUnavailable) {
 		t.Fatalf("ListAvailableWorkspaces() error = %v, want ErrHilbertUnavailable", err)
+	}
+}
+
+func TestHilbertServiceRequestRefreshesRejectedPrincipal(t *testing.T) {
+	var tenantSelections atomic.Int64
+	var workspaceRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case hilbertTenantSelectPath:
+			selection := tenantSelections.Add(1)
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{"tenantId": 1, "principal": fmt.Sprintf("principal-%d", selection)},
+			})
+		case hilbertWorkspaceAvailablePath:
+			workspaceRequests.Add(1)
+			switch got := r.Header.Get("X-Tenant-Principal"); got {
+			case "principal-1":
+				// Hilbert re-provisioned authorization, so the cached principal is stale.
+				w.WriteHeader(http.StatusForbidden)
+				writeHilbertTestJSON(t, w, map[string]any{"code": 403, "businessCode": "tenant_principal_required"})
+			case "principal-2":
+				writeHilbertTestJSON(t, w, map[string]any{"code": 0, "data": []map[string]any{}})
+			default:
+				t.Fatalf("unexpected X-Tenant-Principal %q", got)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL: server.URL, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk",
+	})
+	if _, err := client.ListAvailableWorkspaces(context.Background()); err != nil {
+		t.Fatalf("ListAvailableWorkspaces() error = %v", err)
+	}
+	if tenantSelections.Load() != 2 {
+		t.Fatalf("tenant selections=%d want 2 (initial + refresh)", tenantSelections.Load())
+	}
+	if workspaceRequests.Load() != 2 {
+		t.Fatalf("workspace requests=%d want 2 (rejected + replay)", workspaceRequests.Load())
+	}
+	if got := client.principal; got != "principal-2" {
+		t.Fatalf("cached principal=%q want refreshed principal-2", got)
+	}
+}
+
+func TestHilbertServiceRequestReplaysPostBodyAfterRefresh(t *testing.T) {
+	var attempts atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case hilbertTenantSelectPath:
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{"tenantId": 1, "principal": "fresh-principal"},
+			})
+		case hilbertDCPlanPatchTargetPath:
+			attempt := attempts.Add(1)
+			var body struct {
+				WorkspaceID int64 `json:"workspaceId"`
+				PlanID      int64 `json:"id"`
+				TargetCount int64 `json:"targetCount"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode replay body: %v", err)
+			}
+			if body.WorkspaceID != 10 || body.PlanID != 20 || body.TargetCount != 30 {
+				t.Fatalf("replayed body = %#v", body)
+			}
+			if attempt == 1 {
+				w.WriteHeader(http.StatusForbidden)
+				writeHilbertTestJSON(t, w, map[string]any{"code": 403, "businessCode": "tenant_authorization_unavailable"})
+				return
+			}
+			writeHilbertTestJSON(t, w, map[string]any{"code": 0, "data": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL: server.URL, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk",
+	})
+	client.principal = "stale-principal"
+
+	updated, err := client.PatchDCPlanTargetCount(context.Background(), 10, 20, 30)
+	if err != nil {
+		t.Fatalf("PatchDCPlanTargetCount() error = %v", err)
+	}
+	if !updated {
+		t.Fatal("PatchDCPlanTargetCount() = false, want true")
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts=%d want 2", attempts.Load())
+	}
+}
+
+func TestHilbertServiceRequestRetriesRejectedPrincipalOnlyOnce(t *testing.T) {
+	var tenantSelections atomic.Int64
+	var workspaceRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case hilbertTenantSelectPath:
+			selection := tenantSelections.Add(1)
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{"tenantId": 1, "principal": fmt.Sprintf("principal-%d", selection)},
+			})
+		case hilbertWorkspaceAvailablePath:
+			workspaceRequests.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			writeHilbertTestJSON(t, w, map[string]any{"code": 403, "businessCode": "tenant_authorization_unavailable"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL: server.URL, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk",
+	})
+	if _, err := client.ListAvailableWorkspaces(context.Background()); !errors.Is(err, ErrHilbertInvalidCredentials) {
+		t.Fatalf("ListAvailableWorkspaces() error = %v, want ErrHilbertInvalidCredentials", err)
+	}
+	if tenantSelections.Load() != 2 {
+		t.Fatalf("tenant selections=%d want exactly 2", tenantSelections.Load())
+	}
+	if workspaceRequests.Load() != 2 {
+		t.Fatalf("workspace requests=%d want exactly 2", workspaceRequests.Load())
+	}
+}
+
+func TestHilbertServiceRequestKeepsPrincipalWhenRejectionIsNotTenantRelated(t *testing.T) {
+	var tenantSelections atomic.Int64
+	var workspaceRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case hilbertTenantSelectPath:
+			tenantSelections.Add(1)
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code": 0,
+				"data": map[string]any{"tenantId": 1, "principal": "fresh-principal"},
+			})
+		case hilbertWorkspaceAvailablePath:
+			workspaceRequests.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+			writeHilbertTestJSON(t, w, map[string]any{
+				"code":    401,
+				"message": map[string]string{"en_US": "device request requires device credentials", "zh_CN": "设备请求缺少设备凭据"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHilbertClient(&config.HilbertConfig{
+		BaseURL: server.URL, AccessKey: "hilbert-ak", SecretKey: "hilbert-sk",
+	})
+	client.principal = "cached-principal"
+
+	if _, err := client.ListAvailableWorkspaces(context.Background()); !errors.Is(err, ErrHilbertInvalidCredentials) {
+		t.Fatalf("ListAvailableWorkspaces() error = %v, want ErrHilbertInvalidCredentials", err)
+	}
+	if tenantSelections.Load() != 0 {
+		t.Fatalf("tenant selections=%d want 0 for a non-Tenant rejection", tenantSelections.Load())
+	}
+	if workspaceRequests.Load() != 1 {
+		t.Fatalf("workspace requests=%d want 1 without replay", workspaceRequests.Load())
+	}
+	if got := client.principal; got != "cached-principal" {
+		t.Fatalf("cached principal=%q want unchanged cached-principal", got)
 	}
 }
 
