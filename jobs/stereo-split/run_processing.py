@@ -33,6 +33,11 @@ MCAP_MAGIC = b"\x89MCAP0\r\n"
 CALIBRATION_ATTACHMENT_NAME = "calibration.json"
 CALIBRATION_MEDIA_TYPE = "application/json"
 ARCHEBASE_TOPIC_PREFIX = "/archebase"
+TOPIC_LAYOUT = "archebase_v1"
+OUTPUT_LEFT_TOPIC = "/archebase/cam_0/image_raw/h264"
+OUTPUT_RIGHT_TOPIC = "/archebase/cam_1/image_raw/h264"
+OUTPUT_IMU_TOPIC = "/archebase/imu_0/imu"
+OUTPUT_SERIAL_TOPIC = "/archebase/device/serial_number"
 
 
 @dataclass(frozen=True)
@@ -365,6 +370,10 @@ def converter_config_for_prefix(prefix: str) -> ConverterConfig:
         right_topic=prefix + "/decxin/right_rgb/h264",
         imu_topic=prefix + "/decxin/imu",
         serial_topic=prefix + "/decxin/serial_number",
+        output_left_topic=OUTPUT_LEFT_TOPIC,
+        output_right_topic=OUTPUT_RIGHT_TOPIC,
+        output_imu_topic=OUTPUT_IMU_TOPIC,
+        output_serial_topic=OUTPUT_SERIAL_TOPIC,
     )
 
 
@@ -428,9 +437,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "target_bitrate": config.target_bitrate,
             "max_bitrate": config.max_bitrate,
             "gop": config.gop,
-            "topics": [config.left_topic, config.right_topic],
+            "topics": [config.output_left_topic, config.output_right_topic],
         },
-        "imu_topic": config.imu_topic,
+        "imu_topic": config.output_imu_topic,
         "stats": stats_payload,
     }
     if topic_prefix:
@@ -453,6 +462,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "kind": args.kind,
         "processing_mode": processing_mode,
         "output_format": "stereo_h264",
+        "topic_layout": TOPIC_LAYOUT,
         "generation": args.generation,
         "processor_image": args.processor_image,
         "source": {

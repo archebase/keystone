@@ -147,6 +147,12 @@ class ConverterConfig:
     right_topic: str = "/decxin/right_rgb/h264"
     imu_topic: str = "/decxin/imu"
     serial_topic: str = "/decxin/serial_number"
+    #: Output topics are separate from input topics so the same converter can
+    #: read legacy DECXIN names and write the Archebase Ego topic layout.
+    output_left_topic: str = "/decxin/left_rgb/h264"
+    output_right_topic: str = "/decxin/right_rgb/h264"
+    output_imu_topic: str = "/decxin/imu"
+    output_serial_topic: str = "/decxin/serial_number"
     metadata_width: int = 160
     eye_width: int = 1920
     eye_height: int = 1200
@@ -910,7 +916,8 @@ class StereoSplitH264Converter:
     ) -> ConvertStats:
         config = self.config
         stats = ConvertStats()
-        video_output_topics = {config.left_topic, config.right_topic}
+        video_output_topics = {config.output_left_topic, config.output_right_topic}
+        output_claims: dict[str, str] = {}
         copied_topic_ids: set[int] = set()
         schema_ids: dict[int, int] = {}
         channel_ids: dict[int, int] = {}
@@ -1004,8 +1011,12 @@ class StereoSplitH264Converter:
             video_schema_id = writer.register_schema(
                 FOXGLOVE_SCHEMA_NAME, "protobuf", FOXGLOVE_DESCRIPTOR_SET
             )
-            left_channel_id = writer.register_channel(config.left_topic, "protobuf", video_schema_id)
-            right_channel_id = writer.register_channel(config.right_topic, "protobuf", video_schema_id)
+            left_channel_id = writer.register_channel(
+                config.output_left_topic, "protobuf", video_schema_id
+            )
+            right_channel_id = writer.register_channel(
+                config.output_right_topic, "protobuf", video_schema_id
+            )
             imu_channel_id: int | None = None
             if generate_imu:
                 imu_definition, _ = self.typestore.generate_msgdef(
@@ -1014,7 +1025,9 @@ class StereoSplitH264Converter:
                 imu_schema_id = writer.register_schema(
                     "sensor_msgs/msg/Imu", "ros2msg", imu_definition.encode("utf-8")
                 )
-                imu_channel_id = writer.register_channel(config.imu_topic, "cdr", imu_schema_id)
+                imu_channel_id = writer.register_channel(
+                    config.output_imu_topic, "cdr", imu_schema_id
+                )
             ordered_writer = OrderedMessageWriter(writer)
 
             if summary:
@@ -1024,7 +1037,15 @@ class StereoSplitH264Converter:
                     if channel.topic == config.input_topic:
                         continue
                     schema = summary.schemas.get(channel.schema_id) if channel.schema_id else None
-                    self._copy_channel(writer, schema, channel, schema_ids, channel_ids)
+                    output_topic = self._output_topic(channel.topic)
+                    if output_topic in video_output_topics:
+                        raise RuntimeError(
+                            f"input topic {channel.topic} collides with generated output topic {output_topic}"
+                        )
+                    self._claim_output_topic(output_claims, channel.topic, output_topic)
+                    self._copy_channel(
+                        writer, schema, channel, schema_ids, channel_ids, output_topic
+                    )
                     copied_topic_ids.add(channel.id)
 
             previous_image_timestamp: int | None = None
@@ -1080,7 +1101,15 @@ class StereoSplitH264Converter:
                     if channel.topic != config.input_topic:
                         if channel.topic in video_output_topics:
                             raise RuntimeError(f"input already contains output topic: {channel.topic}")
-                        copied_channel = self._copy_channel(writer, schema, channel, schema_ids, channel_ids)
+                        output_topic = self._output_topic(channel.topic)
+                        if output_topic in video_output_topics:
+                            raise RuntimeError(
+                                f"input topic {channel.topic} collides with generated output topic {output_topic}"
+                            )
+                        self._claim_output_topic(output_claims, channel.topic, output_topic)
+                        copied_channel = self._copy_channel(
+                            writer, schema, channel, schema_ids, channel_ids, output_topic
+                        )
                         copied_topic_ids.add(channel.id)
                         if (channel.topic == config.imu_topic
                                 and imu_plan is not None and imu_plan.applied):
@@ -1476,11 +1505,14 @@ class StereoSplitH264Converter:
         timestamp_cursor = timestamp_repair.new_cursor()
         video_indexes = {config.left_topic: 0, config.right_topic: 0}
         copied_topics: set[str] = set()
+        output_claims: dict[str, str] = {}
         source.seek(0)
         reader = make_reader(source)
         for schema, channel, message in reader.iter_messages(log_time_order=False):
+            output_topic = self._output_topic(channel.topic)
+            self._claim_output_topic(output_claims, channel.topic, output_topic)
             output_channel = self._copy_channel(
-                writer, schema, channel, schema_ids, channel_ids
+                writer, schema, channel, schema_ids, channel_ids, output_topic
             )
             topic = channel.topic
             if topic in video_samples:
@@ -1569,8 +1601,28 @@ class StereoSplitH264Converter:
             )
         return _build_timestamp_repair_plan(samples)
 
+    def _output_topic(self, topic: str) -> str:
+        config = self.config
+        return {
+            config.left_topic: config.output_left_topic,
+            config.right_topic: config.output_right_topic,
+            config.imu_topic: config.output_imu_topic,
+            config.serial_topic: config.output_serial_topic,
+        }.get(topic, topic)
+
     @staticmethod
-    def _copy_channel(writer, schema, channel, schema_ids, channel_ids) -> int:
+    def _claim_output_topic(claims: dict[str, str], source: str, output: str) -> None:
+        existing = claims.get(output)
+        if existing is not None and existing != source:
+            raise RuntimeError(
+                f"topic rename collision: {existing} and {source} both map to {output}"
+            )
+        claims[output] = source
+
+    @staticmethod
+    def _copy_channel(
+        writer, schema, channel, schema_ids, channel_ids, output_topic: str | None = None
+    ) -> int:
         if channel.id in channel_ids:
             return channel_ids[channel.id]
         output_schema_id = 0
@@ -1579,7 +1631,10 @@ class StereoSplitH264Converter:
                 schema_ids[schema.id] = writer.register_schema(schema.name, schema.encoding, schema.data)
             output_schema_id = schema_ids[schema.id]
         channel_ids[channel.id] = writer.register_channel(
-            channel.topic, channel.message_encoding, output_schema_id, dict(channel.metadata)
+            output_topic or channel.topic,
+            channel.message_encoding,
+            output_schema_id,
+            dict(channel.metadata),
         )
         return channel_ids[channel.id]
 

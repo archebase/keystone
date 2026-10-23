@@ -30,6 +30,7 @@ sys.path.insert(0, str(JOB_ROOT))
 import run_processing as processing_runner  # noqa: E402
 from convert_mcap_stereo_h264 import (  # noqa: E402
     CompressedVideo,
+    ConverterConfig,
     FOXGLOVE_SCHEMA_NAME,
     StereoSplitH264Converter,
 )
@@ -280,6 +281,7 @@ class RunProcessingTest(unittest.TestCase):
             self.assertEqual(manifest["status"], "succeeded")
             self.assertEqual(manifest["kind"], "stereo_split")
             self.assertEqual(manifest["output_format"], "stereo_h264")
+            self.assertEqual(manifest["topic_layout"], "archebase_v1")
             self.assertEqual(manifest["generation"], 1)
             self.assertEqual(manifest["source"]["sha256"], source_checksum)
             self.assertEqual(sha256(source), source_checksum)
@@ -307,14 +309,14 @@ class RunProcessingTest(unittest.TestCase):
             self.assertEqual(
                 set(records_by_topic),
                 {
-                    "/decxin/left_rgb/h264",
-                    "/decxin/right_rgb/h264",
-                    "/decxin/imu",
+                    "/archebase/cam_0/image_raw/h264",
+                    "/archebase/cam_1/image_raw/h264",
+                    "/archebase/imu_0/imu",
                 },
             )
-            left_records = records_by_topic["/decxin/left_rgb/h264"]
-            right_records = records_by_topic["/decxin/right_rgb/h264"]
-            imu_records = records_by_topic["/decxin/imu"]
+            left_records = records_by_topic["/archebase/cam_0/image_raw/h264"]
+            right_records = records_by_topic["/archebase/cam_1/image_raw/h264"]
+            imu_records = records_by_topic["/archebase/imu_0/imu"]
             expected_video_times = [1_000_000_000, 2_000_000_000]
             self.assertEqual([item[2].log_time for item in left_records], expected_video_times)
             self.assertEqual([item[2].log_time for item in right_records], expected_video_times)
@@ -344,7 +346,7 @@ class RunProcessingTest(unittest.TestCase):
             self.assertAlmostEqual(first_imu.angular_velocity.y, -5000 * gyro_scale)
             self.assertAlmostEqual(first_imu.angular_velocity.z, 6000 * gyro_scale)
 
-    def test_preserves_archebase_topic_prefix_in_outputs_and_manifest(self) -> None:
+    def test_writes_archebase_topic_layout_for_prefixed_input(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = make_source_mcap(
@@ -365,15 +367,16 @@ class RunProcessingTest(unittest.TestCase):
                 (output_binding / "metadata.yaml").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["topic_prefix"], "/archebase")
+            self.assertEqual(manifest["topic_layout"], "archebase_v1")
             self.assertEqual(metadata["topic_prefix"], "/archebase")
             self.assertEqual(
                 metadata["video"]["topics"],
                 [
-                    "/archebase/decxin/left_rgb/h264",
-                    "/archebase/decxin/right_rgb/h264",
+                    "/archebase/cam_0/image_raw/h264",
+                    "/archebase/cam_1/image_raw/h264",
                 ],
             )
-            self.assertEqual(metadata["imu_topic"], "/archebase/decxin/imu")
+            self.assertEqual(metadata["imu_topic"], "/archebase/imu_0/imu")
 
             output_topics = set()
             with (output_binding / "output_bag.mcap").open("rb") as stream:
@@ -383,10 +386,10 @@ class RunProcessingTest(unittest.TestCase):
             self.assertEqual(
                 output_topics,
                 {
-                    "/archebase/decxin/left_rgb/h264",
-                    "/archebase/decxin/right_rgb/h264",
-                    "/archebase/decxin/imu",
-                    "/archebase/decxin/serial_number",
+                    "/archebase/cam_0/image_raw/h264",
+                    "/archebase/cam_1/image_raw/h264",
+                    "/archebase/imu_0/imu",
+                    "/archebase/device/serial_number",
                 },
             )
 
@@ -406,12 +409,13 @@ class RunProcessingTest(unittest.TestCase):
                 (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["processing_mode"], "timestamp_repair")
+            self.assertEqual(manifest["topic_layout"], "archebase_v1")
             self.assertEqual(manifest["stats"]["input_mode"], "split_h264")
             self.assertEqual(manifest["stats"]["decoded_images"], 0)
             self.assertEqual(manifest["stats"]["left_videos"], 2)
             self.assertEqual(manifest["stats"]["right_videos"], 2)
 
-    def test_preserves_archebase_prefix_for_already_split_input(self) -> None:
+    def test_writes_archebase_topic_layout_for_already_split_input(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             prefix = "/archebase"
@@ -420,9 +424,18 @@ class RunProcessingTest(unittest.TestCase):
                 topic=prefix + "/decxin/rgb/compressed",
             )
             split_source = root / "split-source.mcap"
-            StereoSplitH264Converter(
-                processing_runner.converter_config_for_prefix(prefix)
-            ).convert(joined_source, split_source)
+            split_config = ConverterConfig(
+                input_topic=prefix + "/decxin/rgb/compressed",
+                left_topic=prefix + "/decxin/left_rgb/h264",
+                right_topic=prefix + "/decxin/right_rgb/h264",
+                imu_topic=prefix + "/decxin/imu",
+                serial_topic=prefix + "/decxin/serial_number",
+                output_left_topic=prefix + "/decxin/left_rgb/h264",
+                output_right_topic=prefix + "/decxin/right_rgb/h264",
+                output_imu_topic=prefix + "/decxin/imu",
+                output_serial_topic=prefix + "/decxin/serial_number",
+            )
+            StereoSplitH264Converter(split_config).convert(joined_source, split_source)
             output_binding = root / "published"
             output_binding.mkdir()
 
@@ -433,6 +446,7 @@ class RunProcessingTest(unittest.TestCase):
                 (output_binding / "processing_manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["topic_prefix"], prefix)
+            self.assertEqual(manifest["topic_layout"], "archebase_v1")
             self.assertEqual(manifest["processing_mode"], "timestamp_repair")
             with (output_binding / "output_bag.mcap").open("rb") as stream:
                 summary = make_reader(stream).get_summary()
@@ -441,9 +455,9 @@ class RunProcessingTest(unittest.TestCase):
             self.assertEqual(
                 topics,
                 {
-                    prefix + "/decxin/left_rgb/h264",
-                    prefix + "/decxin/right_rgb/h264",
-                    prefix + "/decxin/imu",
+                    "/archebase/cam_0/image_raw/h264",
+                    "/archebase/cam_1/image_raw/h264",
+                    "/archebase/imu_0/imu",
                 },
             )
 
