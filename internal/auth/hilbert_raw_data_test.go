@@ -91,7 +91,6 @@ func TestHilbertRawDataClientUsesRESTContract(t *testing.T) {
 		AccessKey: "ak",
 		SecretKey: "sk",
 	})
-	client.principal = "test-tenant-principal"
 	rawID, err := client.RegisterRawData(
 		t.Context(),
 		HilbertRawDataRegisterRequest{
@@ -154,7 +153,6 @@ func TestHilbertRawDataClientFindsExactBagNameOnLaterPage(t *testing.T) {
 		AccessKey: "ak",
 		SecretKey: "sk",
 	})
-	client.principal = "test-tenant-principal"
 	found, err := client.FindRawDataByBagName(t.Context(), 2, "capture.mcap")
 	if err != nil {
 		t.Fatalf("FindRawDataByBagName() error = %v", err)
@@ -182,7 +180,6 @@ func TestHilbertRawDataClientHandlesLocalizedErrorMessage(t *testing.T) {
 		AccessKey: "ak",
 		SecretKey: "sk",
 	})
-	client.principal = "test-tenant-principal"
 	_, err := client.RegisterRawData(t.Context(), HilbertRawDataRegisterRequest{
 		WorkspaceID:  2,
 		DCPlanID:     8,

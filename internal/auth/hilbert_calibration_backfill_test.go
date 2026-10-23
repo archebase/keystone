@@ -40,7 +40,6 @@ func TestHilbertRawDataClientQueriesAndBindsCalibration(t *testing.T) {
 	defer server.Close()
 
 	client := NewHilbertClient(&config.HilbertConfig{BaseURL: server.URL, AccessKey: "ak", SecretKey: "sk"})
-	client.principal = "test-tenant-principal"
 	rawData, err := client.GetRawDataByID(t.Context(), 2, 42)
 	if err != nil {
 		t.Fatalf("GetRawDataByID() error = %v", err)
