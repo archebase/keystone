@@ -1339,11 +1339,14 @@ class StereoSplitH264Converter:
             ):
                 imu = self.typestore.deserialize_cdr(message.data, "sensor_msgs/msg/Imu")
                 acceleration = imu.linear_acceleration
-                imu_calibrator.observe_message((
-                    acceleration.x * 1000.0 / 9.80665,
-                    acceleration.y * 1000.0 / 9.80665,
-                    acceleration.z * 1000.0 / 9.80665,
-                ))
+                imu_calibrator.observe_message(
+                    (
+                        acceleration.x * 1000.0 / 9.80665,
+                        acceleration.y * 1000.0 / 9.80665,
+                        acceleration.z * 1000.0 / 9.80665,
+                    ),
+                    self._imu_payload_signature(imu),
+                )
             imu_plan = imu_calibrator.resolve()
             report = imu_plan.report
             stats.imu_retiming_decision = report.decision
@@ -1351,6 +1354,25 @@ class StereoSplitH264Converter:
             stats.imu_dropped_duplicates = report.duplicates_dropped
             stats.imu_report = report.as_dict()
         return color_plan, imu_plan
+
+    @staticmethod
+    def _imu_payload_signature(imu) -> tuple[object, ...]:
+        """Identify an IMU payload, deliberately ignoring its header."""
+        return (
+            float(imu.orientation.x),
+            float(imu.orientation.y),
+            float(imu.orientation.z),
+            float(imu.orientation.w),
+            tuple(float(value) for value in imu.orientation_covariance),
+            float(imu.angular_velocity.x),
+            float(imu.angular_velocity.y),
+            float(imu.angular_velocity.z),
+            tuple(float(value) for value in imu.angular_velocity_covariance),
+            float(imu.linear_acceleration.x),
+            float(imu.linear_acceleration.y),
+            float(imu.linear_acceleration.z),
+            tuple(float(value) for value in imu.linear_acceleration_covariance),
+        )
 
     def _write_retimed_imu(
         self,
