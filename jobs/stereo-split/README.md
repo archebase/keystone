@@ -25,12 +25,14 @@ are copied; legacy `archebase/calibration/calibration.json` attachments are norm
 | Manifest | Stereo topics | Schema | Statistics |
 | --- | --- | --- | --- |
 | v1 (legacy image) | `/decxin/left_rgb/compressed`, `/decxin/right_rgb/compressed` | `sensor_msgs/msg/CompressedImage` over CDR, JPEG payload | `left_images`, `right_images` |
-| v2 (current image) | `/decxin/left_rgb/h264`, `/decxin/right_rgb/h264` | `foxglove.CompressedVideo` over Protobuf, H.264 Annex-B payload | `left_videos`, `right_videos` |
+| v2 with `topic_layout: archebase_v1` (current image) | `/archebase/cam_0/image_raw/h264`, `/archebase/cam_1/image_raw/h264` | `foxglove.CompressedVideo` over Protobuf, H.264 Annex-B payload | `left_videos`, `right_videos` |
+| v2 without `topic_layout` (earlier image) | `/decxin/left_rgb/h264`, `/decxin/right_rgb/h264` | `foxglove.CompressedVideo` over Protobuf, H.264 Annex-B payload | `left_videos`, `right_videos` |
 
-Both versions publish decoded IMU samples on `/decxin/imu`. The v2 converter removes the joined
-`/decxin/rgb/compressed` source topic, replaces any existing `/decxin/imu` topic with samples
-decoded from the joined image, and preserves all other unrelated input topics. Its manifest sets
-`schema_version` to `2` and `output_format` to `stereo_h264`.
+Both versions publish decoded IMU samples; the current image writes them to `/archebase/imu_0/imu`
+and the device serial to `/archebase/device/serial_number`. The v2 converter removes the joined
+`/decxin/rgb/compressed` source topic, replaces any existing IMU topic with samples decoded from the
+joined image, and preserves all other unrelated input topics. Its manifest sets `schema_version` to
+`2`, `output_format` to `stereo_h264`, and `topic_layout` to `archebase_v1`.
 
 Keystone must be upgraded to a version that validates both manifest versions before selecting the
 v2 image digest. In-flight executions keep their frozen image digest, and the configured image can

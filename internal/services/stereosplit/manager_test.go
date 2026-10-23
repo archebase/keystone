@@ -2214,6 +2214,60 @@ func TestValidateManifestStatsUsesSupportedTopicPrefix(t *testing.T) {
 	}
 }
 
+func TestValidateManifestStatsUsesArchebaseTopicLayout(t *testing.T) {
+	manifest := processingManifest{
+		SchemaVersion: manifestSchemaV2,
+		OutputFormat:  stereoH264OutputFormat,
+		TopicLayout:   archebaseTopicLayout,
+		TopicPrefix:   "/archebase",
+		Stats: manifestStats{
+			InputMessages: 10,
+			DecodedImages: 10,
+			LeftVideos:    10,
+			RightVideos:   10,
+			IMUMessages:   100,
+		},
+	}
+
+	contract, err := validateManifestStats(manifest)
+	if err != nil {
+		t.Fatalf("validateManifestStats() error = %v", err)
+	}
+	if contract.LeftTopic != "/archebase/cam_0/image_raw/h264" ||
+		contract.RightTopic != "/archebase/cam_1/image_raw/h264" ||
+		contract.IMUTopic != "/archebase/imu_0/imu" {
+		t.Fatalf("archebase contract = %+v", contract)
+	}
+
+	manifest.TopicLayout = "unsupported"
+	if _, err := validateManifestStats(manifest); err == nil || !strings.Contains(err.Error(), "unsupported topic layout") {
+		t.Fatalf("validateManifestStats() unsupported layout error = %v", err)
+	}
+}
+
+func TestValidateManifestStatsAcceptsExplicitLegacyTopicLayout(t *testing.T) {
+	manifest := processingManifest{
+		SchemaVersion: manifestSchemaV2,
+		OutputFormat:  stereoH264OutputFormat,
+		TopicLayout:   "legacy",
+		Stats: manifestStats{
+			InputMessages: 10,
+			DecodedImages: 10,
+			LeftVideos:    10,
+			RightVideos:   10,
+			IMUMessages:   100,
+		},
+	}
+
+	contract, err := validateManifestStats(manifest)
+	if err != nil {
+		t.Fatalf("validateManifestStats() error = %v", err)
+	}
+	if contract.LeftTopic != leftVideoTopic || contract.RightTopic != rightVideoTopic || contract.IMUTopic != imuTopic {
+		t.Fatalf("legacy contract = %+v", contract)
+	}
+}
+
 func TestValidateManifestStatsAcceptsTimestampRepairMode(t *testing.T) {
 	manifest := processingManifest{
 		SchemaVersion:  manifestSchemaV2,

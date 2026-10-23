@@ -133,6 +133,33 @@ class ImuRetimingGridTest(unittest.TestCase):
         self.assertEqual(plan.report.decision, DECISION_APPLIED)
         self.assertEqual(plan.report.duplicates_dropped, 12 * 2 - 1)
 
+    def test_adjacent_payload_repeat_on_the_next_grid_slot_is_dropped(self) -> None:
+        """A recorder repeat can land one grid slot after its predecessor."""
+        calibrator, messages = build_stream(12)
+        repeated = messages[-1]
+        following = sample_values(9000)
+        calibrator.observe_message(repeated, signature=repeated)
+        calibrator.observe_message(following, signature=following)
+
+        plan = calibrator.resolve()
+
+        self.assertEqual(plan.report.decision, DECISION_APPLIED)
+        self.assertEqual(plan.report.duplicates_dropped, 12 * 2 - 1 + 1)
+        self.assertIsNone(plan.timestamps_ns[-2])
+        self.assertIsNotNone(plan.timestamps_ns[-1])
+        timestamps = [value for value in plan.timestamps_ns if value is not None]
+        self.assertTrue(all(step == SPACING_US * 1000 for step in np.diff(timestamps)))
+
+    def test_equal_acceleration_with_a_different_payload_is_kept(self) -> None:
+        calibrator, messages = build_stream(8)
+        calibrator.observe_message(messages[-1], signature=("other-fields-differ",))
+
+        plan = calibrator.resolve()
+
+        self.assertEqual(plan.report.decision, DECISION_APPLIED)
+        self.assertEqual(plan.report.duplicates_dropped, 8 * 2 - 1)
+        self.assertIsNotNone(plan.timestamps_ns[-1])
+
     def test_trailing_messages_are_placed_on_the_grid(self) -> None:
         """A capture may not contain a whole number of packets."""
         calibrator, _ = build_stream(12)

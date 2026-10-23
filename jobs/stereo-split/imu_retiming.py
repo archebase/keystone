@@ -198,6 +198,9 @@ class ImuRetimingCalibrator:
         self.config = config or ImuRetimingConfig()
         self._barcodes: list[FrameBarcode] = []
         self._messages: list[tuple[float, float, float]] = []
+        #: Payload identity used to catch repeats that land on distinct grid
+        #: slots. Header fields are deliberately excluded by the caller.
+        self._signatures: list[object] = []
         self._frames_observed = 0
         self._plan: ImuRetimingPlan | None = None
 
@@ -219,9 +222,19 @@ class ImuRetimingCalibrator:
         if barcode is not None:
             self._barcodes.append(barcode)
 
-    def observe_message(self, accel_mg: tuple[float, float, float]) -> None:
-        """Record one source IMU message's acceleration, in emission order."""
+    def observe_message(
+        self,
+        accel_mg: tuple[float, float, float],
+        signature: object | None = None,
+    ) -> None:
+        """Record one source IMU message's acceleration, in emission order.
+
+        ``signature`` identifies the message payload excluding its header. When
+        omitted, the acceleration triple is used, which is enough for callers
+        that only model the samples.
+        """
         self._messages.append(accel_mg)
+        self._signatures.append(accel_mg if signature is None else signature)
 
     def resolve(self) -> ImuRetimingPlan:
         """Return the retiming plan, or a skip decision that keeps source times."""
@@ -244,24 +257,7 @@ class ImuRetimingCalibrator:
             self._plan = self._skip(reason, grid, total)
             return self._plan
 
-        timestamps: list[int | None] = []
-        previous_us: int | None = None
-        duplicates = 0
-        # Every packet opens with a repeat of the previous packet's last sample.
-        # The device timestamps carry microsecond rounding, so a repeat can land
-        # one microsecond off its predecessor; anything closer than half a grid
-        # step is a repeat, because the real grid never gets that close.
-        repeat_limit_us = grid.spacing_us / 2
-        for device_us in grid_timestamps:
-            if device_us is None:
-                timestamps.append(None)
-                continue
-            if previous_us is not None and (device_us - previous_us) < repeat_limit_us:
-                duplicates += 1
-                timestamps.append(None)
-                continue
-            previous_us = device_us
-            timestamps.append(clock.to_host_ns(device_us))
+        timestamps, duplicates = self._retime_messages(grid, grid_timestamps, clock)
 
         self._plan = ImuRetimingPlan(
             report=ImuRetimingReport(
@@ -286,6 +282,47 @@ class ImuRetimingCalibrator:
             timestamps_ns=tuple(timestamps),
         )
         return self._plan
+
+    def _retime_messages(
+        self,
+        grid: _GridFit,
+        grid_timestamps: list[int | None],
+        clock: _ClockFit,
+    ) -> tuple[list[int | None], int]:
+        """Drop repeated samples and place the survivors on the device grid."""
+        timestamps: list[int | None] = []
+        previous_us: int | None = None
+        previous_signature: object | None = None
+        duplicates = 0
+        dropped_slots = 0
+        # Every packet opens with a repeat of the previous packet's last sample.
+        # The device timestamps carry microsecond rounding, so a repeat can land
+        # one microsecond off its predecessor; anything closer than half a grid
+        # step is a repeat, because the real grid never gets that close.
+        repeat_limit_us = grid.spacing_us / 2
+        for index, device_us in enumerate(grid_timestamps):
+            if device_us is None:
+                timestamps.append(None)
+                continue
+            if previous_us is not None and (device_us - previous_us) < repeat_limit_us:
+                duplicates += 1
+                timestamps.append(None)
+                continue
+            signature = self._signatures[index]
+            if previous_signature is not None and signature == previous_signature:
+                # A frame boundary can place the repeated sample one grid slot
+                # after its predecessor instead of on the same slot. The payload
+                # is still a recorder repeat, so drop it and pull the following
+                # grid back by the slot it occupied.
+                duplicates += 1
+                dropped_slots += 1
+                timestamps.append(None)
+                continue
+            previous_us = device_us
+            previous_signature = signature
+            shifted_us = device_us - int(round(dropped_slots * grid.spacing_us))
+            timestamps.append(clock.to_host_ns(shifted_us))
+        return timestamps, duplicates
 
     def _skip(self, reason: str, grid: _GridFit, total: int) -> ImuRetimingPlan:
         return ImuRetimingPlan(

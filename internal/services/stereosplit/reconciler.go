@@ -43,6 +43,11 @@ const (
 	rightVideoTopic = "/decxin/right_rgb/h264"
 	imuTopic        = "/decxin/imu"
 
+	archebaseTopicLayout     = "archebase_v1"
+	archebaseLeftVideoTopic  = "/archebase/cam_0/image_raw/h264"
+	archebaseRightVideoTopic = "/archebase/cam_1/image_raw/h264"
+	archebaseIMUTopic        = "/archebase/imu_0/imu"
+
 	compressedImageSchema = "sensor_msgs/msg/CompressedImage"
 	compressedVideoSchema = "foxglove.CompressedVideo"
 	imuSchema             = "sensor_msgs/msg/Imu"
@@ -1085,6 +1090,7 @@ type processingManifest struct {
 	ProcessorImage string `json:"processor_image"`
 	CameraSerial   string `json:"camera_serial,omitempty"`
 	TopicPrefix    string `json:"topic_prefix,omitempty"`
+	TopicLayout    string `json:"topic_layout,omitempty"`
 	Source         struct {
 		URI       string `json:"uri"`
 		SizeBytes int64  `json:"size_bytes"`
@@ -1581,9 +1587,18 @@ func validateManifestStats(manifest processingManifest) (mcapOutputContract, err
 		if topicPrefix != "" && topicPrefix != "/archebase" {
 			return mcapOutputContract{}, fmt.Errorf("processing manifest has unsupported topic prefix %q", topicPrefix)
 		}
-		contract.LeftTopic = topicPrefix + leftVideoTopic
-		contract.RightTopic = topicPrefix + rightVideoTopic
-		contract.IMUTopic = topicPrefix + imuTopic
+		switch strings.TrimSpace(manifest.TopicLayout) {
+		case "", "legacy":
+			contract.LeftTopic = topicPrefix + leftVideoTopic
+			contract.RightTopic = topicPrefix + rightVideoTopic
+			contract.IMUTopic = topicPrefix + imuTopic
+		case archebaseTopicLayout:
+			contract.LeftTopic = archebaseLeftVideoTopic
+			contract.RightTopic = archebaseRightVideoTopic
+			contract.IMUTopic = archebaseIMUTopic
+		default:
+			return mcapOutputContract{}, fmt.Errorf("processing manifest has unsupported topic layout %q", manifest.TopicLayout)
+		}
 		contract.LeftSchema = compressedVideoSchema
 		contract.RightSchema = compressedVideoSchema
 		contract.LeftSchemaEncoding = "protobuf"
