@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"archebase.com/keystone-edge/internal/config"
@@ -30,6 +31,7 @@ const (
 	hilbertLoginPath                  = "/v1/console/account/login"
 	hilbertAccountQueryPath           = "/v1/console/account/query"
 	hilbertAccountGetCurPath          = "/v1/console/account/get-cur"
+	hilbertTenantSelectPath           = "/v1/console/tenant/select"
 	hilbertWorkspaceAvailablePath     = "/v1/console/workspace/list-available"
 	hilbertDCPlanQueryPath            = "/v1/data-collection/dc-plan/query"
 	hilbertDCPlanPatchDevicePath      = "/v1/data-collection/dc-plan/patch-dc-device-id"
@@ -48,6 +50,13 @@ const (
 	hilbertNonceLengthBytes    = hilbertNonceKeyLengthBytes + hilbertNonceIVLengthBytes
 
 	hilbertDCDeviceQueryPageSize int64 = 200
+	hilbertServiceTenantID       int64 = 1
+
+	// hilbertPrincipalRefreshCooldown bounds how often one client may replace a
+	// rejected Tenant principal. A successful reselect followed by another
+	// rejection would otherwise write one principal binding per request, so the
+	// cooldown keeps the worst case to one reselect per window.
+	hilbertPrincipalRefreshCooldown = 5 * time.Minute
 
 	// hilbertMaxDCPlanTargetCount mirrors Hilbert's patch-target-count contract
 	// (dc_plan_controller.go: gte=1,lte=500).
@@ -301,6 +310,11 @@ type HilbertClient struct {
 	secretKey  string
 	httpClient *http.Client
 	now        func() time.Time
+
+	principalMu sync.Mutex
+	principal   string
+	// principalRefreshedAt is the last reselect attempt, including failures.
+	principalRefreshedAt time.Time
 }
 
 // NewHilbertClient creates a Hilbert API client from Keystone Hilbert configuration.
@@ -769,6 +783,19 @@ func (c *HilbertClient) hilbertServiceJSONRequest(ctx context.Context, method, p
 }
 
 func (c *HilbertClient) authorizeServiceRequest(req *http.Request) error {
+	if err := c.authorizeDigestRequest(req); err != nil {
+		return err
+	}
+	principal, err := c.tenantPrincipal(req.Context())
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Tenant-Principal", principal)
+	req.Header.Set("X-Tenant-ID", strconv.FormatInt(hilbertServiceTenantID, 10))
+	return nil
+}
+
+func (c *HilbertClient) authorizeDigestRequest(req *http.Request) error {
 	now := time.Now
 	if c != nil && c.now != nil {
 		now = c.now
@@ -781,6 +808,62 @@ func (c *HilbertClient) authorizeServiceRequest(req *http.Request) error {
 	return nil
 }
 
+// invalidatePrincipalIfCurrent drops the cached Tenant principal when it is the one
+// Hilbert rejected. Concurrent callers that already refreshed the cache keep the
+// newer principal, so a burst of rejected requests triggers at most one reselect.
+// reservePrincipalRefresh reports whether a rejected principal may be replaced
+// now, and records the attempt so concurrent or repeated rejections inside the
+// cooldown window fail fast instead of reselecting again.
+func (c *HilbertClient) reservePrincipalRefresh() bool {
+	c.principalMu.Lock()
+	defer c.principalMu.Unlock()
+	now := time.Now()
+	if !c.principalRefreshedAt.IsZero() && now.Sub(c.principalRefreshedAt) < hilbertPrincipalRefreshCooldown {
+		return false
+	}
+	c.principalRefreshedAt = now
+	return true
+}
+
+func (c *HilbertClient) invalidatePrincipalIfCurrent(principal string) {
+	c.principalMu.Lock()
+	defer c.principalMu.Unlock()
+	if c.principal == principal {
+		c.principal = ""
+	}
+}
+
+func (c *HilbertClient) tenantPrincipal(ctx context.Context) (string, error) {
+	c.principalMu.Lock()
+	defer c.principalMu.Unlock()
+	if c.principal != "" {
+		return c.principal, nil
+	}
+
+	body, err := json.Marshal(map[string]int64{"tenantId": hilbertServiceTenantID})
+	if err != nil {
+		return "", fmt.Errorf("%w: encode tenant selection request", ErrHilbertUnavailable)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+hilbertTenantSelectPath, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("%w: create tenant selection request", ErrHilbertUnavailable)
+	}
+	if err := c.authorizeDigestRequest(req); err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	var resp hilbertCommonResponse[hilbertTenantSelection]
+	if err := c.doJSON(req, &resp); err != nil {
+		return "", fmt.Errorf("%w: select Hilbert tenant %d: %v", ErrHilbertUnavailable, hilbertServiceTenantID, err)
+	}
+	if resp.Code != 0 || resp.Data.TenantID != hilbertServiceTenantID || strings.TrimSpace(resp.Data.Principal) == "" {
+		return "", fmt.Errorf("%w: select Hilbert tenant %d returned code %d", ErrHilbertUnavailable, hilbertServiceTenantID, resp.Code)
+	}
+	c.principal = strings.TrimSpace(resp.Data.Principal)
+	return c.principal, nil
+}
+
 func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error) {
 	ak := strings.TrimSpace(c.accessKey)
 	sk := strings.TrimSpace(c.secretKey)
@@ -790,6 +873,11 @@ func (c *HilbertClient) serviceAuthorizationHeader(now time.Time) (string, error
 	millis := strconv.FormatInt(now.UnixMilli(), 10)
 	digest := sha256.Sum256([]byte(sk + "," + millis))
 	return "Digest " + ak + ";" + millis + ";" + hex.EncodeToString(digest[:]), nil
+}
+
+type hilbertTenantSelection struct {
+	TenantID  int64  `json:"tenantId"`
+	Principal string `json:"principal"`
 }
 
 type hilbertCommonResponse[T any] struct {
@@ -889,7 +977,81 @@ func (c *HilbertClient) loginWithCipherDigest(ctx context.Context, code string, 
 	return NewHilbertLoginResult(resp.Data.Account, resp.Data.SessionKey), nil
 }
 
-func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
+// doJSON executes one Hilbert request. A rejected Tenant principal is a normal
+// outcome after Hilbert re-provisions or revokes authorization: the cached
+// principal stays valid only until the next authoritative version change. Drop
+// it, reselect the Tenant once, and replay the request so a redeploy on the
+// Hilbert side does not require restarting Keystone.
+func (c *HilbertClient) doJSON(req *http.Request, out any) error {
+	err := c.doJSONOnce(req, out)
+	if !hilbertTenantPrincipalRejected(err) || c == nil {
+		return err
+	}
+	usedPrincipal := strings.TrimSpace(req.Header.Get("X-Tenant-Principal"))
+	if usedPrincipal == "" {
+		// Bootstrap calls (login, nonce, tenant select) carry no principal and must not loop.
+		return err
+	}
+	if !c.reservePrincipalRefresh() {
+		return err
+	}
+
+	c.invalidatePrincipalIfCurrent(usedPrincipal)
+	if digestErr := c.authorizeDigestRequest(req); digestErr != nil {
+		return err
+	}
+	principal, selectErr := c.tenantPrincipal(req.Context())
+	if selectErr != nil {
+		return err
+	}
+	req.Header.Set("X-Tenant-Principal", principal)
+	req.Header.Set("X-Tenant-ID", strconv.FormatInt(hilbertServiceTenantID, 10))
+	if req.GetBody != nil {
+		body, bodyErr := req.GetBody()
+		if bodyErr != nil {
+			return err
+		}
+		req.Body = body
+	}
+	return c.doJSONOnce(req, out)
+}
+
+// hilbertAuthError keeps the rejected response body next to the sentinel so
+// callers can distinguish a stale Tenant principal from other 401/403 causes
+// such as a device-credential rejection that a reselect cannot fix.
+type hilbertAuthError struct {
+	message string
+	body    string
+}
+
+func (e *hilbertAuthError) Error() string { return e.message }
+
+func (e *hilbertAuthError) Unwrap() error { return ErrHilbertInvalidCredentials }
+
+// hilbertTenantPrincipalBusinessCodes lists the only rejections that a Tenant
+// reselect can resolve. Any other 401/403 must surface without touching the
+// cached principal, otherwise every rejected device-scoped call would reselect
+// the Tenant and persist a useless principal binding.
+var hilbertTenantPrincipalBusinessCodes = []string{
+	"tenant_principal_required",
+	"tenant_authorization_unavailable",
+	"tenant_selector_conflict",
+}
+
+func hilbertTenantPrincipalRejected(err error) bool {
+	var authErr *hilbertAuthError
+	if !errors.As(err, &authErr) {
+		return false
+	}
+	for _, code := range hilbertTenantPrincipalBusinessCodes {
+		if strings.Contains(authErr.body, code) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *HilbertClient) doJSONOnce(req *http.Request, out any) (err error) {
 	resp, err := c.httpClient.Do(req) //nolint:gosec // Hilbert base URL is operator-configured backend infrastructure, not user-controlled request input.
 	if err != nil {
 		return fmt.Errorf("%w: request failed: %v", ErrHilbertUnavailable, err)
@@ -901,7 +1063,11 @@ func (c *HilbertClient) doJSON(req *http.Request, out any) (err error) {
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("%w: status %d body %q", ErrHilbertInvalidCredentials, resp.StatusCode, limitedResponseBody(resp))
+		body := limitedResponseBody(resp)
+		return &hilbertAuthError{
+			message: fmt.Errorf("%w: status %d body %q", ErrHilbertInvalidCredentials, resp.StatusCode, body).Error(),
+			body:    body,
+		}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("%w: status %d body %q", ErrHilbertUnavailable, resp.StatusCode, limitedResponseBody(resp))
