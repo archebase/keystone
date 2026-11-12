@@ -1828,3 +1828,139 @@ type fakeEpisodeQAEnqueuer struct {
 func (e *fakeEpisodeQAEnqueuer) EnqueueEpisode(episodeID int64) {
 	e.episodes = append(e.episodes, episodeID)
 }
+
+func TestGatewayAssignTaskReclaimsStaleAutoAssignedUpload(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	now := time.Now().UTC()
+	metadata := `{"source":"hilbert_dc_plan","auto_assigned_upload":true}`
+	if _, err := db.Exec(`UPDATE dc_plan SET target_count = 2 WHERE id = 1001`); err != nil {
+		t.Fatalf("update plan target: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE tasks SET status = 'uploading', metadata = ?, updated_at = ? WHERE id = 1
+	`, metadata, now.Add(-3*time.Hour)); err != nil {
+		t.Fatalf("seed stale task 1: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO tasks (id, task_id, workstation_id, organization_id, dc_plan_id, status, metadata, updated_at)
+		VALUES (2, 'task-2', 40, 10, 1001, 'uploading', ?, ?)
+	`, metadata, now.Add(-3*time.Hour)); err != nil {
+		t.Fatalf("seed stale task 2: %v", err)
+	}
+
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	principal := devicePrincipal{RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1}
+	assigned, err := service.assignTaskForDevice(context.Background(), principal, 1001, "capture-retry")
+	if err != nil {
+		t.Fatalf("assignTaskForDevice() error = %v", err)
+	}
+	if assigned.TaskID == "task-1" || assigned.TaskID == "task-2" || assigned.Status != "uploading" {
+		t.Fatalf("assigned task = %#v", assigned)
+	}
+	var assignedMetadata string
+	if err := db.Get(&assignedMetadata, `SELECT metadata FROM tasks WHERE id = ?`, assigned.ID); err != nil {
+		t.Fatalf("query assigned task metadata: %v", err)
+	}
+	if !isAutoAssignedUploadMetadata(assignedMetadata) || !strings.Contains(assignedMetadata, `"capture_id":"capture-retry"`) {
+		t.Fatalf("assigned task metadata = %s", assignedMetadata)
+	}
+	for _, taskID := range []string{"task-1", "task-2"} {
+		var taskStatus, reason string
+		if err := db.QueryRowx(`SELECT status, error_message FROM tasks WHERE task_id = ?`, taskID).Scan(&taskStatus, &reason); err != nil {
+			t.Fatalf("query reclaimed task %s: %v", taskID, err)
+		}
+		if taskStatus != "failed" || reason != autoAssignedUploadOrphanReason {
+			t.Fatalf("reclaimed task %s = status %q reason %q", taskID, taskStatus, reason)
+		}
+	}
+}
+
+func TestGatewayAssignTaskKeepsRecentAutoAssignedUpload(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	now := time.Now().UTC()
+	metadata := `{"source":"hilbert_dc_plan","auto_assigned_upload":true}`
+	if _, err := db.Exec(`UPDATE dc_plan SET target_count = 1 WHERE id = 1001`); err != nil {
+		t.Fatalf("update plan target: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE tasks SET status = 'uploading', metadata = ?, updated_at = ? WHERE id = 1
+	`, metadata, now.Add(-time.Hour)); err != nil {
+		t.Fatalf("seed recent task: %v", err)
+	}
+
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	principal := devicePrincipal{RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1}
+	_, err := service.assignTaskForDevice(context.Background(), principal, 1001, "capture-retry")
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("assignTaskForDevice() error = %v, want Aborted", err)
+	}
+	var statusValue string
+	if err := db.Get(&statusValue, `SELECT status FROM tasks WHERE id = 1`); err != nil {
+		t.Fatalf("query recent task: %v", err)
+	}
+	if statusValue != "uploading" {
+		t.Fatalf("recent task status = %q, want uploading", statusValue)
+	}
+}
+
+func TestGatewayAssignTaskReportsPermanentTargetReachedWithoutUploadingTasks(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	if _, err := db.Exec(`UPDATE dc_plan SET target_count = 1, cur_count = 1 WHERE id = 1001`); err != nil {
+		t.Fatalf("update plan target: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET status = 'completed' WHERE id = 1`); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, newSessionStore(), db, nil)
+	principal := devicePrincipal{RobotID: 1, DeviceID: "101", WorkspaceID: 10, AuthEpoch: 1}
+	_, err := service.assignTaskForDevice(context.Background(), principal, 1001, "capture-retry")
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("assignTaskForDevice() error = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestGatewayReclaimSkipsLiveUploadSession(t *testing.T) {
+	db := newGatewayServiceTestDB(t)
+	now := time.Now().UTC()
+	metadata := `{"source":"hilbert_dc_plan","auto_assigned_upload":true}`
+	if _, err := db.Exec(`
+		UPDATE tasks SET status = 'uploading', metadata = ?, updated_at = ? WHERE id = 1
+	`, metadata, now.Add(-3*time.Hour)); err != nil {
+		t.Fatalf("seed stale task: %v", err)
+	}
+	sessions := newSessionStore()
+	sessions.put(&uploadSession{
+		UploadID:        "upload-1",
+		LogicalUploadID: "logical-1",
+		TaskPK:          1,
+		LastSTSExpireAt: now.Add(30 * time.Minute),
+	})
+	service := newGatewayService(testGatewayConfig(), fixedSTSProvider{expiration: time.Unix(2200, 0).UTC()}, sessions, db, nil)
+
+	reclaimed, err := service.reclaimStaleAutoAssignedTasks(context.Background(), 1001, now)
+	if err != nil {
+		t.Fatalf("reclaim stale task with live session: %v", err)
+	}
+	if reclaimed != 0 {
+		t.Fatalf("reclaimed = %d, want 0 while session is live", reclaimed)
+	}
+	var statusValue string
+	if err := db.Get(&statusValue, `SELECT status FROM tasks WHERE id = 1`); err != nil {
+		t.Fatalf("query task status: %v", err)
+	}
+	if statusValue != "uploading" {
+		t.Fatalf("task status = %q, want uploading", statusValue)
+	}
+
+	sessions.update("upload-1", func(session *uploadSession) {
+		session.LastSTSExpireAt = now.Add(-30 * time.Minute)
+	})
+	reclaimed, err = service.reclaimStaleAutoAssignedTasks(context.Background(), 1001, now)
+	if err != nil {
+		t.Fatalf("reclaim stale task with expired session: %v", err)
+	}
+	if reclaimed != 1 {
+		t.Fatalf("reclaimed = %d, want 1 after session expiry", reclaimed)
+	}
+}

@@ -30,6 +30,20 @@ const (
 	dataGatewayEpisodeIngestionChannel = "data_gateway"
 	dataGatewayEpisodeStorageBackend   = "keystone_tos"
 	egoPortalE2DeviceType              = "Ego Portal E2"
+
+	// autoAssignedUploadOrphanGrace is how long an auto-assigned task may stay
+	// in uploading without producing an episode before it is treated as an
+	// abandoned upload and released. This is deliberately a lease on the task
+	// slot, not a transport timeout; it must be longer than any normal upload.
+	autoAssignedUploadOrphanGrace  = 2 * time.Hour
+	autoAssignedUploadOrphanReason = "auto-assigned upload expired after 2h without completion"
+	autoAssignedUploadMetadataKey  = "auto_assigned_upload"
+
+	// autoAssignedUploadSessionExpiryGrace keeps an upload with recently
+	// expired STS credentials from being reclaimed between a credential
+	// expiry and the client's reissue call. An STS that has been expired
+	// longer than this cannot still be moving data, so the task is stale.
+	autoAssignedUploadSessionExpiryGrace = 10 * time.Minute
 )
 
 type uploadSession struct {
@@ -107,6 +121,26 @@ func (s *sessionStore) update(uploadID string, update func(*uploadSession)) (*up
 	return session, true
 }
 
+// liveTaskPKs returns the tasks owned by an unfinished logical upload whose
+// STS credentials are still fresh enough that data could be moving.
+func (s *sessionStore) liveTaskPKs(now time.Time, expiryGrace time.Duration) map[int64]struct{} {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	live := make(map[int64]struct{})
+	for _, session := range s.byUpload {
+		if session.TaskPK <= 0 || session.Aborted || !session.CompletedAt.IsZero() {
+			continue
+		}
+		if session.LastSTSExpireAt.Add(expiryGrace).After(now) {
+			live[session.TaskPK] = struct{}{}
+		}
+	}
+	return live
+}
+
 type gatewayService struct {
 	cloudpb.UnimplementedDataGatewayServiceServer
 	cfg      Config
@@ -180,7 +214,7 @@ func (s *gatewayService) CreateLogicalUpload(ctx context.Context, req *cloudpb.C
 	var taskBinding uploadTaskBinding
 	if intent.Kind == uploadKindTaskEpisode {
 		if autoAssignTask {
-			assigned, assignErr := s.assignTaskForDevice(ctx, principal, req.GetDcPlanId())
+			assigned, assignErr := s.assignTaskForDevice(ctx, principal, req.GetDcPlanId(), strings.TrimSpace(hints["capture_id"]))
 			if assignErr != nil {
 				return nil, assignErr
 			}
@@ -482,6 +516,7 @@ func (s *gatewayService) assignTaskForDevice(
 	ctx context.Context,
 	principal devicePrincipal,
 	planID int64,
+	captureID string,
 ) (keystoneServices.DCPlanSuppliedTask, error) {
 	if s == nil || s.db == nil || planID <= 0 {
 		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "task assignment unavailable")
@@ -535,6 +570,12 @@ func (s *gatewayService) assignTaskForDevice(
 		return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "workstation lookup unavailable")
 	}
 
+	if reclaimed, reclaimErr := s.reclaimStaleAutoAssignedTasks(ctx, planID, s.now()); reclaimErr != nil {
+		logger.Printf("[DGW_COMPAT] reclaim stale auto-assigned tasks failed plan_id=%d error=%v", planID, reclaimErr)
+	} else if reclaimed > 0 {
+		logger.Printf("[DGW_COMPAT] reclaimed stale auto-assigned tasks plan_id=%d count=%d", planID, reclaimed)
+	}
+
 	supply := keystoneServices.NewDCPlanTaskSupplyService(s.db)
 	for attempt := 0; attempt < 5; attempt++ {
 		result, err := supply.EnsureNextTask(ctx, planID, workstationID, s.now())
@@ -545,6 +586,28 @@ func (s *gatewayService) assignTaskForDevice(
 			case errors.Is(err, keystoneServices.ErrDCPlanTaskSupplyWorkstationMismatch):
 				return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.PermissionDenied, "dc plan workstation mismatch")
 			case errors.Is(err, keystoneServices.ErrDCPlanTaskSupplyTargetReached):
+				reclaimed, reclaimErr := s.reclaimStaleAutoAssignedTasks(ctx, planID, s.now())
+				if reclaimErr != nil {
+					logger.Printf("[DGW_COMPAT] reclaim stale auto-assigned tasks at target failed plan_id=%d error=%v", planID, reclaimErr)
+				}
+				if reclaimed > 0 {
+					logger.Printf("[DGW_COMPAT] reclaimed stale auto-assigned tasks at target plan_id=%d count=%d", planID, reclaimed)
+					continue
+				}
+				// An uploading task without an episode still counts against the plan
+				// budget. Returning FailedPrecondition would make ego-portal mark the
+				// job terminal and never retry, so a task that only becomes stale after
+				// the grace period would never be reclaimed. Report a retryable status
+				// while such uploads exist; once they complete or are reclaimed, a
+				// later attempt sees the real target state.
+				hasUploading, stateErr := s.hasUploadingPlanTasks(ctx, planID)
+				if stateErr != nil {
+					logger.Printf("[DGW_COMPAT] query uploading plan tasks failed plan_id=%d error=%v", planID, stateErr)
+					return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "dc plan task state unavailable")
+				}
+				if hasUploading {
+					return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Aborted, "dc plan target is temporarily reserved by unfinished uploads")
+				}
 				return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.FailedPrecondition, "dc plan target has been reached")
 			case errors.Is(err, keystoneServices.ErrDCPlanTaskSupplyActiveTask):
 				return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Aborted, "dc plan has an active task")
@@ -555,11 +618,15 @@ func (s *gatewayService) assignTaskForDevice(
 		if result == nil || result.Task.ID <= 0 || strings.TrimSpace(result.Task.TaskID) == "" {
 			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "task assignment returned an incomplete task")
 		}
+		metadata, err := s.autoAssignedTaskMetadata(ctx, result.Task.ID, captureID)
+		if err != nil {
+			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "task metadata unavailable")
+		}
 		updated, err := s.db.ExecContext(ctx, `
 			UPDATE tasks
-			SET status = 'uploading', error_message = NULL, updated_at = ?
+			SET status = 'uploading', error_message = NULL, metadata = ?, updated_at = ?
 			WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
-		`, s.now(), result.Task.ID)
+		`, metadata, s.now(), result.Task.ID)
 		if err != nil {
 			return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Unavailable, "reserve task unavailable")
 		}
@@ -573,6 +640,118 @@ func (s *gatewayService) assignTaskForDevice(
 		}
 	}
 	return keystoneServices.DCPlanSuppliedTask{}, status.Error(codes.Aborted, "could not reserve a pending task")
+}
+
+// autoAssignedTaskMetadata marks a task as owned by an automatic upload and
+// records its capture ID in the existing task snapshot metadata. The marker is
+// what allows the reclaim path to distinguish data-gateway uploads from other
+// plan tasks without a schema change.
+func (s *gatewayService) autoAssignedTaskMetadata(ctx context.Context, taskPK int64, captureID string) (string, error) {
+	var raw sql.NullString
+	if err := s.db.GetContext(ctx, &raw, `
+		SELECT metadata FROM tasks WHERE id = ? AND deleted_at IS NULL
+	`, taskPK); err != nil {
+		return "", fmt.Errorf("load task metadata: %w", err)
+	}
+	metadata := map[string]any{}
+	if raw.Valid && strings.TrimSpace(raw.String) != "" {
+		if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
+			return "", fmt.Errorf("parse task metadata: %w", err)
+		}
+	}
+	metadata[autoAssignedUploadMetadataKey] = true
+	if captureID = strings.TrimSpace(captureID); captureID != "" {
+		metadata["capture_id"] = captureID
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return "", fmt.Errorf("encode task metadata: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func (s *gatewayService) hasUploadingPlanTasks(ctx context.Context, planID int64) (bool, error) {
+	var count int64
+	if err := s.db.GetContext(ctx, &count, `
+		SELECT COUNT(*)
+		FROM tasks
+		WHERE dc_plan_id = ?
+			AND status = 'uploading'
+			AND episode_id IS NULL
+			AND deleted_at IS NULL
+	`, planID); err != nil {
+		return false, fmt.Errorf("count uploading plan tasks: %w", err)
+	}
+	return count > 0, nil
+}
+
+func isAutoAssignedUploadMetadata(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return false
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return false
+	}
+	marked, _ := metadata[autoAssignedUploadMetadataKey].(bool)
+	return marked
+}
+
+// reclaimStaleAutoAssignedTasks releases auto-assigned uploads that never
+// produced an episode. Without this, a failed or abandoned upload keeps a
+// task in uploading forever, and loadTaskSupplyCounts permanently counts it
+// against the plan target budget.
+func (s *gatewayService) reclaimStaleAutoAssignedTasks(ctx context.Context, planID int64, now time.Time) (int64, error) {
+	if s == nil || s.db == nil || planID <= 0 {
+		return 0, nil
+	}
+	type staleTask struct {
+		ID       int64          `db:"id"`
+		TaskID   string         `db:"task_id"`
+		Metadata sql.NullString `db:"metadata"`
+	}
+	rows := []staleTask{}
+	if err := s.db.SelectContext(ctx, &rows, `
+		SELECT id, task_id, metadata
+		FROM tasks
+		WHERE dc_plan_id = ?
+			AND status = 'uploading'
+			AND episode_id IS NULL
+			AND deleted_at IS NULL
+			AND updated_at < ?
+		ORDER BY id
+	`, planID, now.Add(-autoAssignedUploadOrphanGrace)); err != nil {
+		return 0, fmt.Errorf("query stale auto-assigned tasks: %w", err)
+	}
+	liveTasks := map[int64]struct{}{}
+	if s.sessions != nil {
+		liveTasks = s.sessions.liveTaskPKs(now, autoAssignedUploadSessionExpiryGrace)
+	}
+	var reclaimed int64
+	for _, row := range rows {
+		if _, live := liveTasks[row.ID]; live {
+			continue
+		}
+		if !isAutoAssignedUploadMetadata(row.Metadata.String) {
+			continue
+		}
+		result, err := s.db.ExecContext(ctx, `
+			UPDATE tasks
+			SET status = 'failed',
+				completed_at = COALESCE(completed_at, ?),
+				error_message = ?,
+				updated_at = ?
+			WHERE id = ? AND status = 'uploading' AND episode_id IS NULL AND deleted_at IS NULL
+		`, now, autoAssignedUploadOrphanReason, now, row.ID)
+		if err != nil {
+			return reclaimed, fmt.Errorf("reclaim stale auto-assigned task %d: %w", row.ID, err)
+		}
+		if affected, _ := result.RowsAffected(); affected > 0 {
+			reclaimed++
+			logger.Printf("[DGW_COMPAT] reclaimed stale auto-assigned upload task_id=%s task_pk=%d plan_id=%d", row.TaskID, row.ID, planID)
+		}
+	}
+	return reclaimed, nil
 }
 
 func (s *gatewayService) releaseAutoAssignedTask(
