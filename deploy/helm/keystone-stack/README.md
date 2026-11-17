@@ -127,9 +127,12 @@ release names. MySQL PVCs remain release-specific.
 
 The `Deploy Keystone Stack` workflow provides the production manual deployment
 entry point on the repository default branch, `main-v2`. The deployment job runs
-on the `archebase-ci-runner` self-hosted runner and executes inside the
-configured deploy job container. Run it only after the matching Keystone image
-workflow has successfully pushed the selected Keystone commit SHA.
+on a GitHub-hosted `ubuntu-latest` runner and executes inside the configured
+deploy job container; the runner pulls that image from the ArcheBase container
+registry with the `VOLCENGINE_CR_*` credentials. Run it only after the matching
+Keystone image workflow has successfully pushed the selected Keystone commit
+SHA. The deployment job reaches the Volcengine Kubernetes API server with the
+kubeconfig from the `PROD_KUBECONFIG_B64` secret.
 The workflow enables Keystone sync for production by passing
 `keystone.syncEnabled=true` to the Helm release. The chart connects Keystone to
 Hilbert through the in-cluster backend Service at

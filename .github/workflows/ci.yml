@@ -27,9 +27,12 @@ jobs:
   # 1. gofmt check
   fmt:
     name: Format Check
-    runs-on: archebase-ci-runner
+    runs-on: ubuntu-latest
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      credentials:
+        username: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+        password: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       
@@ -47,9 +50,12 @@ jobs:
   # 2. REUSE license check
   license:
     name: License Compliance
-    runs-on: archebase-ci-runner
+    runs-on: ubuntu-latest
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      credentials:
+        username: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+        password: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
       options: --user 0
     steps:
       - uses: actions/checkout@v4
@@ -106,9 +112,12 @@ jobs:
   # 3. golangci-lint check
   lint:
     name: Lint
-    runs-on: archebase-ci-runner
+    runs-on: ubuntu-latest
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      credentials:
+        username: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+        password: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       
@@ -129,9 +138,12 @@ jobs:
   # 4. unit tests + coverage
   test:
     name: Unit Tests
-    runs-on: archebase-ci-runner
+    runs-on: ubuntu-latest
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/actions-runner:2.334.0-dev-deploy-shell-e2e-dpctl-aliyun' }}
+      credentials:
+        username: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+        password: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
