@@ -201,9 +201,10 @@ helm-lint:
 		--set synapse.image.tag=4f294f56bfb1 \
 		--set credentials.hilbertAccessKey=lint-ak \
 		--set credentials.hilbertSecretKey=lint-sk >/dev/null
-	helm install smoke deploy/helm/keystone-stack \
+	# `helm install --dry-run=client` still needs a reachable cluster; render the
+	# install path locally instead so the check works on any runner.
+	helm template smoke deploy/helm/keystone-stack \
 		--namespace archebase-system \
-		--dry-run=client \
 		--set ingress.grpc.annotations=null \
 		--set keystone.image.tag=e062c27a6617 \
 		--set synapse.image.tag=4f294f56bfb1 \
