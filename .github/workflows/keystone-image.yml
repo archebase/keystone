@@ -21,6 +21,11 @@ on:
           - e6-multimodal-conversion
           - calibration
           - all
+      allowNonMainV2Branch:
+        description: "Allow this workflow to run from a non-main-v2 branch (manual validation only)."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -45,7 +50,9 @@ jobs:
   build-and-push:
     name: Build and push selected images
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main-v2'
+    if: >-
+      github.ref == 'refs/heads/main-v2' ||
+      (github.event_name == 'workflow_dispatch' && inputs.allowNonMainV2Branch)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,6 +115,35 @@ jobs:
           umask 077
           printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$VOLCENGINE_CR_ENDPOINT" "$auth" > "$docker_config/config.json"
 
+      - name: Restore BuildKit cache
+        id: buildkit-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/buildkit-cache
+          key: buildx-v1-${{ runner.os }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum', 'jobs/**/Dockerfile', 'jobs/**/requirements.txt') }}
+          restore-keys: |
+            buildx-v1-${{ runner.os }}-
+
+      - name: Set up BuildKit builder
+        env:
+          CI_BUILDKIT_IMAGE: ${{ vars.CI_BUILDKIT_IMAGE }}
+        run: |
+          set -euo pipefail
+
+          builder="keystone-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cache_dir="${RUNNER_TEMP}/buildkit-cache"
+          mkdir -p "$cache_dir"
+
+          create_args=(--name "$builder" --driver docker-container --use)
+          if [[ -n "${CI_BUILDKIT_IMAGE:-}" ]]; then
+            create_args+=(--driver-opt "image=${CI_BUILDKIT_IMAGE}")
+          fi
+          docker buildx create "${create_args[@]}" --bootstrap
+          docker buildx inspect "$builder"
+
+          echo "BUILDX_BUILDER=${builder}" >> "$GITHUB_ENV"
+          echo "BUILDX_CACHE_DIR=${cache_dir}" >> "$GITHUB_ENV"
+
       - name: Set image metadata
         run: |
           echo "IMAGE=${VOLCENGINE_CR_ENDPOINT}/${IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_ENV"
@@ -124,6 +160,8 @@ jobs:
             --build-arg VERSION="$GITHUB_SHA" \
             --build-arg BUILD_TIME="$BUILD_TIME" \
             --tag "$IMAGE" \
+            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=keystone" \
+            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=keystone,mode=min,ignore-error=true" \
             --push \
             .
 
@@ -138,6 +176,8 @@ jobs:
             --platform linux/amd64 \
             --file jobs/stereo-split/Dockerfile \
             --tag "$STEREO_SPLIT_IMAGE" \
+            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=stereo-split" \
+            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=stereo-split,mode=min,ignore-error=true" \
             --push \
             .
 
@@ -158,6 +198,8 @@ jobs:
             --build-arg DEBIAN_SECURITY_MIRROR=http://mirrors.ustc.edu.cn/debian-security \
             --build-arg PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
             --tag "$E2_MULTIMODAL_CONVERSION_IMAGE" \
+            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=e2-multimodal-conversion" \
+            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=e2-multimodal-conversion,mode=min,ignore-error=true" \
             --metadata-file "$metadata_file" \
             --push \
             .
@@ -192,6 +234,8 @@ jobs:
             --build-arg DEBIAN_SECURITY_MIRROR=http://mirrors.ustc.edu.cn/debian-security \
             --build-arg PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
             --tag "$E6_MULTIMODAL_CONVERSION_IMAGE" \
+            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=e6-multimodal-conversion" \
+            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=e6-multimodal-conversion,mode=min,ignore-error=true" \
             --metadata-file "$metadata_file" \
             --push \
             .
@@ -276,6 +320,8 @@ jobs:
             --build-arg "BUILD_JOBS=$CALIBRATION_BUILD_JOBS" \
             --file jobs/calibration/Dockerfile \
             --tag "$calibration_image" \
+            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=calibration" \
+            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=calibration,mode=min,ignore-error=true" \
             --metadata-file "$metadata_file" \
             --push \
             .
@@ -300,4 +346,12 @@ jobs:
       - name: Inspect pushed calibration image
         if: steps.images.outputs.calibration == 'true'
         run: docker buildx imagetools inspect "${{ steps.calibration_image.outputs.image }}"
+
+      - name: Remove BuildKit builder
+        if: always()
+        run: |
+          set +e
+          if [[ -n "${BUILDX_BUILDER:-}" ]]; then
+            docker buildx rm "$BUILDX_BUILDER"
+          fi
 
