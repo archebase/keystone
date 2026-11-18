@@ -198,6 +198,7 @@ jobs:
               app.kubernetes.io/managed-by: keystone-ci
           spec:
             restartPolicy: Never
+            terminationGracePeriodSeconds: 60
             imagePullSecrets:
               - name: cr-pull
             containers:
@@ -482,6 +483,6 @@ jobs:
 
           if [[ -n "${BUILDKIT_NAMESPACE:-}" ]] && command -v kubectl >/dev/null 2>&1; then
             kubectl -n "$BUILDKIT_NAMESPACE" delete pod buildkit \
-              --ignore-not-found --force --grace-period=0 --wait=false >/dev/null 2>&1
+              --ignore-not-found --wait=false >/dev/null 2>&1
           fi
 
