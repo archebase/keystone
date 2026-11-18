@@ -132,8 +132,11 @@ jobs:
           kubeconfig="${RUNNER_TEMP}/staging-kubeconfig"
           printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$kubeconfig"
           chmod 600 "$kubeconfig"
-          echo "KUBECONFIG=${kubeconfig}" >> "$GITHUB_ENV"
-          echo "BUILDKIT_NAMESPACE=keystone-image-build" >> "$GITHUB_ENV"
+          export KUBECONFIG="$kubeconfig"
+          {
+            echo "KUBECONFIG=${kubeconfig}"
+            echo "BUILDKIT_NAMESPACE=keystone-image-build"
+          } >> "$GITHUB_ENV"
           kubectl version --client=true
           kubectl config current-context
 
