@@ -6,6 +6,9 @@ name: CR speed test
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/github-hosted-runners]
+    paths: [.github/workflows/ci-cr-speedtest.yml]
 
 permissions:
   contents: read
