@@ -30,6 +30,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: keystone-image
+  cancel-in-progress: false
+
 defaults:
   run:
     shell: bash
@@ -50,6 +54,7 @@ jobs:
   build-and-push:
     name: Build and push selected images
     runs-on: ubuntu-latest
+    environment: staging
     if: >-
       github.ref == 'refs/heads/main-v2' ||
       (github.event_name == 'workflow_dispatch' && inputs.allowNonMainV2Branch)
@@ -98,6 +103,8 @@ jobs:
 
           command -v docker >/dev/null 2>&1 || (echo "docker client is required" >&2; exit 1)
           docker buildx version
+          command -v kubectl >/dev/null 2>&1 || (echo "kubectl is required" >&2; exit 1)
+          kubectl version --client=true
           command -v jq >/dev/null 2>&1 || (echo "jq is required" >&2; exit 1)
 
       - name: Configure registry auth
@@ -115,34 +122,138 @@ jobs:
           umask 077
           printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$VOLCENGINE_CR_ENDPOINT" "$auth" > "$docker_config/config.json"
 
-      - name: Restore BuildKit cache
-        id: buildkit-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/buildkit-cache
-          key: buildx-v1-${{ runner.os }}-${{ hashFiles('Dockerfile', 'go.mod', 'go.sum', 'jobs/**/Dockerfile', 'jobs/**/requirements.txt') }}
-          restore-keys: |
-            buildx-v1-${{ runner.os }}-
-
-      - name: Set up BuildKit builder
+      - name: Configure staging kubeconfig
         env:
-          CI_BUILDKIT_IMAGE: ${{ vars.CI_BUILDKIT_IMAGE }}
+          STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+
+          test -n "$STAGING_KUBECONFIG_B64" || (echo "STAGING_KUBECONFIG_B64 secret is required" >&2; exit 1)
+          kubeconfig="${RUNNER_TEMP}/staging-kubeconfig"
+          printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$kubeconfig"
+          chmod 600 "$kubeconfig"
+          echo "KUBECONFIG=${kubeconfig}" >> "$GITHUB_ENV"
+          echo "BUILDKIT_NAMESPACE=keystone-image-build" >> "$GITHUB_ENV"
+          kubectl version --client=true
+          kubectl config current-context
+
+      - name: Prepare in-cluster BuildKit cache
+        env:
+          VOLCENGINE_CR_USERNAME: ${{ secrets.VOLCENGINE_CR_USERNAME }}
+          VOLCENGINE_CR_PASSWORD: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          ns="$BUILDKIT_NAMESPACE"
+          kubectl get namespace "$ns" >/dev/null 2>&1 || kubectl create namespace "$ns"
+
+          kubectl -n "$ns" create secret docker-registry cr-pull \
+            --docker-server="$VOLCENGINE_CR_ENDPOINT" \
+            --docker-username="$VOLCENGINE_CR_USERNAME" \
+            --docker-password="$VOLCENGINE_CR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+          if ! kubectl -n "$ns" get pvc buildkit-cache >/dev/null 2>&1; then
+            kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: buildkit-cache
+            namespace: $ns
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: ebs-ssd
+            resources:
+              requests:
+                storage: 40Gi
+          EOF
+          fi
+
+      - name: Start in-cluster BuildKit and port-forward
+        env:
+          CI_BUILDKIT_IMAGE: ${{ vars.CI_BUILDKIT_IMAGE || 'archebase-cr-cn-beijing.cr.volces.com/upstream/buildkit:buildx-stable-1' }}
+        run: |
+          set -euo pipefail
+
+          ns="$BUILDKIT_NAMESPACE"
+          kubectl -n "$ns" delete pod buildkit --ignore-not-found --force --grace-period=0 --wait=false >/dev/null 2>&1 || true
+
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: buildkit
+            namespace: $ns
+            labels:
+              app.kubernetes.io/name: buildkit
+              app.kubernetes.io/managed-by: keystone-ci
+          spec:
+            restartPolicy: Never
+            imagePullSecrets:
+              - name: cr-pull
+            containers:
+              - name: buildkitd
+                image: $CI_BUILDKIT_IMAGE
+                args:
+                  - --addr=tcp://0.0.0.0:1234
+                  - --allow-insecure-entitlement=network.host
+                securityContext:
+                  privileged: true
+                ports:
+                  - name: buildkit
+                    containerPort: 1234
+                readinessProbe:
+                  exec:
+                    command: ["buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                resources:
+                  requests:
+                    cpu: "2"
+                    memory: 4Gi
+                  limits:
+                    cpu: "4"
+                    memory: 8Gi
+                volumeMounts:
+                  - name: cache
+                    mountPath: /var/lib/buildkit
+            volumes:
+              - name: cache
+                persistentVolumeClaim:
+                  claimName: buildkit-cache
+          EOF
+
+          kubectl -n "$ns" wait --for=condition=Ready pod/buildkit --timeout=10m
+
+          nohup kubectl -n "$ns" port-forward pod/buildkit 1234:1234 \
+            > "${RUNNER_TEMP}/port-forward.log" 2>&1 &
+          echo "$!" > "${RUNNER_TEMP}/port-forward.pid"
+
+          port_ready=false
+          for attempt in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/1234) 2>/dev/null; then
+              exec 3>&-
+              port_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$port_ready" != true ]; then
+            echo "port-forward did not become ready after ${attempt} attempts" >&2
+            cat "${RUNNER_TEMP}/port-forward.log" >&2
+            exit 1
+          fi
+
+      - name: Register remote BuildKit builder
         run: |
           set -euo pipefail
 
           builder="keystone-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          cache_dir="${RUNNER_TEMP}/buildkit-cache"
-          mkdir -p "$cache_dir"
-
-          create_args=(--name "$builder" --driver docker-container --use)
-          if [[ -n "${CI_BUILDKIT_IMAGE:-}" ]]; then
-            create_args+=(--driver-opt "image=${CI_BUILDKIT_IMAGE}")
-          fi
-          docker buildx create "${create_args[@]}" --bootstrap
-          docker buildx inspect "$builder"
-
+          docker buildx create --name "$builder" --driver remote tcp://127.0.0.1:1234 --use
+          docker buildx inspect "$builder" --bootstrap
           echo "BUILDX_BUILDER=${builder}" >> "$GITHUB_ENV"
-          echo "BUILDX_CACHE_DIR=${cache_dir}" >> "$GITHUB_ENV"
 
       - name: Set image metadata
         run: |
@@ -160,8 +271,6 @@ jobs:
             --build-arg VERSION="$GITHUB_SHA" \
             --build-arg BUILD_TIME="$BUILD_TIME" \
             --tag "$IMAGE" \
-            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=keystone" \
-            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=keystone,mode=min,ignore-error=true" \
             --push \
             .
 
@@ -176,8 +285,6 @@ jobs:
             --platform linux/amd64 \
             --file jobs/stereo-split/Dockerfile \
             --tag "$STEREO_SPLIT_IMAGE" \
-            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=stereo-split" \
-            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=stereo-split,mode=min,ignore-error=true" \
             --push \
             .
 
@@ -198,8 +305,6 @@ jobs:
             --build-arg DEBIAN_SECURITY_MIRROR=http://mirrors.ustc.edu.cn/debian-security \
             --build-arg PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
             --tag "$E2_MULTIMODAL_CONVERSION_IMAGE" \
-            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=e2-multimodal-conversion" \
-            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=e2-multimodal-conversion,mode=min,ignore-error=true" \
             --metadata-file "$metadata_file" \
             --push \
             .
@@ -234,8 +339,6 @@ jobs:
             --build-arg DEBIAN_SECURITY_MIRROR=http://mirrors.ustc.edu.cn/debian-security \
             --build-arg PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
             --tag "$E6_MULTIMODAL_CONVERSION_IMAGE" \
-            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=e6-multimodal-conversion" \
-            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=e6-multimodal-conversion,mode=min,ignore-error=true" \
             --metadata-file "$metadata_file" \
             --push \
             .
@@ -320,8 +423,6 @@ jobs:
             --build-arg "BUILD_JOBS=$CALIBRATION_BUILD_JOBS" \
             --file jobs/calibration/Dockerfile \
             --tag "$calibration_image" \
-            --cache-from "type=local,src=${BUILDX_CACHE_DIR},tag=calibration" \
-            --cache-to "type=local,dest=${BUILDX_CACHE_DIR},tag=calibration,mode=min,ignore-error=true" \
             --metadata-file "$metadata_file" \
             --push \
             .
@@ -347,11 +448,32 @@ jobs:
         if: steps.images.outputs.calibration == 'true'
         run: docker buildx imagetools inspect "${{ steps.calibration_image.outputs.image }}"
 
-      - name: Remove BuildKit builder
+      - name: Diagnose in-cluster BuildKit
+        if: failure()
+        run: |
+          set +e
+
+          ns="${BUILDKIT_NAMESPACE:-keystone-image-build}"
+          kubectl -n "$ns" get pod buildkit -o wide
+          kubectl -n "$ns" describe pod buildkit
+          kubectl -n "$ns" logs buildkit --tail=200
+
+      - name: Clean up in-cluster BuildKit
         if: always()
         run: |
           set +e
+
+          if [[ -f "${RUNNER_TEMP}/port-forward.pid" ]]; then
+            kill "$(cat "${RUNNER_TEMP}/port-forward.pid")" >/dev/null 2>&1
+          fi
+          pkill -f "kubectl -n .* port-forward pod/buildkit" >/dev/null 2>&1
+
           if [[ -n "${BUILDX_BUILDER:-}" ]]; then
-            docker buildx rm "$BUILDX_BUILDER"
+            docker buildx rm "$BUILDX_BUILDER" >/dev/null 2>&1
+          fi
+
+          if [[ -n "${BUILDKIT_NAMESPACE:-}" ]] && command -v kubectl >/dev/null 2>&1; then
+            kubectl -n "$BUILDKIT_NAMESPACE" delete pod buildkit \
+              --ignore-not-found --force --grace-period=0 --wait=false >/dev/null 2>&1
           fi
 
