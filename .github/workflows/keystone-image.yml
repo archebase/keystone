@@ -59,6 +59,11 @@ jobs:
       github.ref == 'refs/heads/main-v2' ||
       (github.event_name == 'workflow_dispatch' && inputs.allowNonMainV2Branch)
     steps:
+      # The image build runs on a short-lived BuildKit pod inside the staging
+      # cluster. Pushing image layers to the Volcengine CR from a GitHub-hosted
+      # runner crosses the China border at ~19KB/s, while the cluster sits in
+      # the same region as the registry. The runner only uploads the ~9MB build
+      # context through a kubectl port-forward.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
