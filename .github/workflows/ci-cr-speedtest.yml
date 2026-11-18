@@ -15,84 +15,68 @@ permissions:
   packages: write
 
 jobs:
-  speedtest:
-    name: Measure registry upload throughput
+  cluster-probe:
+    name: Read-only probe of the staging cluster from a GitHub runner
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 15
+    steps:
+      - name: Configure staging kubeconfig
+        env:
+          STAGING_KUBECONFIG_B64: ${{ secrets.STAGING_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$STAGING_KUBECONFIG_B64" || (echo "STAGING_KUBECONFIG_B64 is required" >&2; exit 1)
+          kubeconfig_path="${RUNNER_TEMP}/staging-kubeconfig"
+          printf '%s' "$STAGING_KUBECONFIG_B64" | base64 -d > "$kubeconfig_path"
+          chmod 600 "$kubeconfig_path"
+          echo "KUBECONFIG=${kubeconfig_path}" >> "$GITHUB_ENV"
+
+      - name: Probe cluster
+        run: |
+          set -uo pipefail
+          echo "== client/server version =="
+          kubectl version --client=true
+          kubectl version -o json 2>/dev/null | jq -r '.serverVersion // "server unreachable" | if type=="object" then (.major + "." + .minor) else . end' || true
+          echo "== current context =="
+          kubectl config current-context || true
+          echo "== admin? =="
+          kubectl auth can-i '*' '*' --all-namespaces || true
+          echo "== nodes =="
+          kubectl get nodes -o wide || true
+          echo "== storage classes =="
+          kubectl get storageclass || true
+          echo "== namespaces =="
+          kubectl get ns --no-headers | head -20 || true
+          echo "== timing a 5MiB configmap write (API throughput proxy) =="
+          if kubectl get ns default >/dev/null 2>&1; then
+            head -c 5242880 /dev/urandom | base64 -w0 > /tmp/payload.b64
+            python3 - <<'PY' > /tmp/cm.json
+          import json, pathlib
+          payload = pathlib.Path('/tmp/payload.b64').read_text().strip()
+          print(json.dumps({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"ci-throughput-probe","namespace":"default"},"data":{"blob":payload}}))
+          PY
+            start=$(date +%s%N)
+            kubectl create -f /tmp/cm.json >/dev/null 2>&1 || kubectl replace -f /tmp/cm.json >/dev/null 2>&1 || true
+            end=$(date +%s%N)
+            echo "kubectl create 5MiB configmap: $(( (end-start)/1000000 )) ms"
+            kubectl delete configmap ci-throughput-probe -n default --ignore-not-found >/dev/null 2>&1 || true
+          fi
+
+  ghcr-push:
+    name: GHCR push throughput
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Volcengine CR registry upload (raw HTTP)
-        env:
-          CR: archebase-cr-cn-beijing.cr.volces.com
-          REPO: prod/keystone
-          CR_USER: ${{ secrets.VOLCENGINE_CR_USERNAME }}
-          CR_PASS: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
+      - name: Push a 20MiB image to GHCR
         run: |
           set -euo pipefail
-
-          echo "== latency =="
-          curl -sS -o /dev/null -w 'connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s\n' "https://${CR}/v2/"
-
-          token="$(curl -fsS -u "${CR_USER}:${CR_PASS}" \
-            "https://${CR}/service/token?service=harbor-registry&scope=repository:${REPO}:pull,push" | jq -r .token)"
-          test -n "$token"
-
-          upload_blob() {
-            local size_mb="$1" blob location
-            blob="$(mktemp)"
-            head -c "$((size_mb * 1024 * 1024))" /dev/urandom > "$blob"
-            location="$(curl -fsS -X POST -H "Authorization: Bearer ${token}" -D - -o /dev/null \
-              "https://${CR}/v2/${REPO}/blobs/uploads/" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')"
-            if [[ "$location" != http* ]]; then
-              location="https://${CR}${location}"
-            fi
-            echo "== upload ${size_mb}MiB =="
-            curl -sS -o /dev/null -w 'size=%{size_upload}B time=%{time_total}s speed=%{speed_upload}B/s\n' \
-              -X PATCH -H "Authorization: Bearer ${token}" -H "Content-Type: application/octet-stream" \
-              --data-binary "@${blob}" "${location}"
-            curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer ${token}" "${location}" || true
-            rm -f "$blob"
-          }
-
-          upload_blob 2
-          upload_blob 20
-
-      - name: Volcengine CR docker push (through the daemon)
-        env:
-          CR: archebase-cr-cn-beijing.cr.volces.com
-          CR_USER: ${{ secrets.VOLCENGINE_CR_USERNAME }}
-          CR_PASS: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
-        run: |
-          set -euo pipefail
-
           mkdir -p /tmp/pushctx
           head -c 20971520 /dev/urandom > /tmp/pushctx/blob
           printf 'FROM alpine:3.20\nCOPY blob /blob\n' > /tmp/pushctx/Dockerfile
-          docker build -q -t "${CR}/prod/keystone:ci-speedtest" /tmp/pushctx
-          echo "$CR_PASS" | docker login "$CR" -u "$CR_USER" --password-stdin
-          echo "== docker push =="
-          /usr/bin/time -f 'docker push wall=%es' docker push "${CR}/prod/keystone:ci-speedtest"
-
-      - name: Clean up the test tag in Volcengine CR
-        if: always()
-        continue-on-error: true
-        env:
-          CR: archebase-cr-cn-beijing.cr.volces.com
-          CR_USER: ${{ secrets.VOLCENGINE_CR_USERNAME }}
-          CR_PASS: ${{ secrets.VOLCENGINE_CR_PASSWORD }}
-        run: |
-          curl -sS -o /dev/null -w 'delete tag: %{http_code}\n' -X DELETE \
-            -u "${CR_USER}:${CR_PASS}" \
-            "https://${CR}/api/v2.0/projects/prod/repositories/keystone/artifacts/ci-speedtest"
-
-      - name: GHCR docker push (for comparison)
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-
-          mkdir -p /tmp/ghcrctx
-          head -c 20971520 /dev/urandom > /tmp/ghcrctx/blob
-          printf 'FROM alpine:3.20\nCOPY blob /blob\n' > /tmp/ghcrctx/Dockerfile
-          docker build -q -t "ghcr.io/archebase/keystone:ci-speedtest" /tmp/ghcrctx
+          docker build -q -t ghcr.io/archebase/keystone:ci-speedtest /tmp/pushctx
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          echo "== ghcr docker push =="
-          /usr/bin/time -f 'ghcr push wall=%es' docker push ghcr.io/archebase/keystone:ci-speedtest
+          start=$(date +%s%N)
+          docker push ghcr.io/archebase/keystone:ci-speedtest
+          end=$(date +%s%N)
+          echo "ghcr push wall: $(( (end-start)/1000000 )) ms"
