@@ -1,0 +1,149 @@
+# SPDX-FileCopyrightText: 2026 ArcheBase
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+#
+# Temporary operational helper: inspect (and optionally clean) stale
+# auto-assigned upload tasks in the production keystone database.
+
+name: Prod DB diagnose
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/github-hosted-runners]
+    paths: [.github/workflows/prod-db-diagnose.yml]
+
+permissions:
+  contents: read
+
+env:
+  DB_MODE: query
+  DB_NAMESPACE: archebase-system
+  MYSQL_POD: mercury-mysql-0
+  MYSQL_DATABASE: keystone
+  MYSQL_USER: keystone
+  CREDENTIALS_SECRET: mercury-credentials
+
+jobs:
+  diagnose:
+    name: Stale upload task diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure production kubeconfig
+        env:
+          PROD_KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+
+          test -n "$PROD_KUBECONFIG_B64" || (echo "PROD_KUBECONFIG_B64 is required" >&2; exit 1)
+          kubeconfig="${RUNNER_TEMP}/prod-kubeconfig"
+          printf '%s' "$PROD_KUBECONFIG_B64" | base64 -d > "$kubeconfig"
+          chmod 600 "$kubeconfig"
+          echo "KUBECONFIG=${kubeconfig}" >> "$GITHUB_ENV"
+          kubectl config current-context
+          kubectl -n "$DB_NAMESPACE" get pod "$MYSQL_POD" -o wide
+
+      - name: Run SQL
+        run: |
+          set -euo pipefail
+
+          password="$(kubectl -n "$DB_NAMESPACE" get secret "$CREDENTIALS_SECRET" \
+            -o jsonpath='{.data.mysql-password}' | base64 -d)"
+          test -n "$password"
+
+          mysql_exec() {
+            kubectl -n "$DB_NAMESPACE" exec -i "$MYSQL_POD" -- \
+              env MYSQL_PWD="$password" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" --table
+          }
+
+          run_sql() {
+            local title="$1" sql="$2"
+            echo
+            echo "### ${title}"
+            printf '%s\n' "$sql" | mysql_exec
+          }
+
+          run_sql "tasks status counts" "
+          SELECT status, COUNT(*) AS n
+          FROM tasks
+          WHERE deleted_at IS NULL
+          GROUP BY status
+          ORDER BY n DESC;
+          "
+
+          run_sql "tasks table columns" "SHOW COLUMNS FROM tasks;"
+          run_sql "dc_plan table columns" "SHOW COLUMNS FROM dc_plan;"
+
+          run_sql "stuck uploading tasks by plan (no episode)" "
+          SELECT t.dc_plan_id,
+                 COUNT(*) AS stuck,
+                 SUM(t.updated_at < NOW() - INTERVAL 2 HOUR)  AS older_2h,
+                 SUM(t.updated_at < NOW() - INTERVAL 24 HOUR) AS older_24h,
+                 SUM(t.metadata LIKE '%\"auto_assigned_upload\"%') AS marked_auto,
+                 MIN(t.updated_at) AS oldest,
+                 MAX(t.updated_at) AS newest
+          FROM tasks t
+          WHERE t.status = 'uploading'
+            AND t.episode_id IS NULL
+            AND t.deleted_at IS NULL
+          GROUP BY t.dc_plan_id
+          ORDER BY stuck DESC;
+          "
+
+          run_sql "affected plans" "
+          SELECT p.id, p.name, p.status, p.target_count, p.cur_count, p.updated_at
+          FROM dc_plan p
+          WHERE p.id IN (
+            SELECT DISTINCT dc_plan_id
+            FROM tasks
+            WHERE status = 'uploading' AND episode_id IS NULL AND deleted_at IS NULL
+          )
+          ORDER BY p.id;
+          "
+
+          run_sql "stuck task details (oldest 60)" "
+          SELECT id, task_id, dc_plan_id, status, updated_at, episode_id,
+                 LEFT(COALESCE(metadata, ''), 180) AS metadata
+          FROM tasks
+          WHERE status = 'uploading'
+            AND episode_id IS NULL
+            AND deleted_at IS NULL
+          ORDER BY updated_at ASC
+          LIMIT 60;
+          "
+
+      - name: Clean up stale tasks
+        if: env.DB_MODE == 'cleanup'
+        run: |
+          set -euo pipefail
+
+          password="$(kubectl -n "$DB_NAMESPACE" get secret "$CREDENTIALS_SECRET" \
+            -o jsonpath='{.data.mysql-password}' | base64 -d)"
+          mysql_exec() {
+            kubectl -n "$DB_NAMESPACE" exec -i "$MYSQL_POD" -- \
+              env MYSQL_PWD="$password" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" --table
+          }
+
+          echo "### releasing stale uploading tasks older than 24h"
+          mysql_exec <<'SQL'
+          UPDATE tasks
+          SET status = 'failed',
+              completed_at = COALESCE(completed_at, NOW()),
+              error_message = 'manual cleanup: legacy stale auto-assigned upload',
+              updated_at = NOW()
+          WHERE status = 'uploading'
+            AND episode_id IS NULL
+            AND deleted_at IS NULL
+            AND updated_at < NOW() - INTERVAL 24 HOUR;
+          SELECT ROW_COUNT() AS released_rows;
+          SQL
+
+          echo "### remaining stuck uploading tasks"
+          mysql_exec <<'SQL'
+          SELECT dc_plan_id, COUNT(*) AS stuck
+          FROM tasks
+          WHERE status = 'uploading' AND episode_id IS NULL AND deleted_at IS NULL
+          GROUP BY dc_plan_id
+          ORDER BY stuck DESC;
+          SQL
