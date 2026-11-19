@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 #
-# Temporary operational helper: run read-only diagnostics against the
-# production keystone MySQL through a one-off client pod, and publish the
-# output into a ConfigMap that can be read with the read-only kubeconfig.
+# Temporary operational helper: inspect (and optionally clean) stale
+# auto-assigned upload tasks in the production keystone database.
+# Runs a one-off MySQL client pod and publishes the output to a ConfigMap
+# that can be read with the read-only kubeconfig.
 
 name: Prod DB diagnose
 
@@ -18,6 +19,8 @@ permissions:
   contents: read
 
 env:
+  DB_MODE: query            # query | cleanup
+  RETAIN_HOURS: "24"
   DB_NAMESPACE: archebase-system
   REPORT_CONFIGMAP: prod-db-diag-report
 
@@ -32,7 +35,6 @@ jobs:
           PROD_KUBECONFIG_B64: ${{ secrets.PROD_KUBECONFIG_B64 }}
         run: |
           set -euo pipefail
-
           test -n "$PROD_KUBECONFIG_B64"
           kubeconfig="${RUNNER_TEMP}/prod-kubeconfig"
           printf '%s' "$PROD_KUBECONFIG_B64" | base64 -d > "$kubeconfig"
@@ -48,7 +50,23 @@ jobs:
 
           kubectl -n "$DB_NAMESPACE" delete pod db-diag --ignore-not-found --wait=false >/dev/null 2>&1 || true
 
-          kubectl apply -f - <<'POD'
+          mode_sql=""
+          if [ "$DB_MODE" = "cleanup" ]; then
+            mode_sql="
+            SELECT 'release stale uploading tasks' AS section;
+            UPDATE tasks
+            SET status = 'failed',
+                completed_at = COALESCE(completed_at, NOW()),
+                error_message = 'manual cleanup: legacy stale auto-assigned upload',
+                updated_at = NOW()
+            WHERE status = 'uploading'
+              AND episode_id IS NULL
+              AND deleted_at IS NULL
+              AND updated_at < NOW() - INTERVAL ${RETAIN_HOURS} HOUR;
+            SELECT ROW_COUNT() AS released_rows;"
+          fi
+
+          kubectl apply -f - <<POD
           apiVersion: v1
           kind: Pod
           metadata:
@@ -58,7 +76,7 @@ jobs:
               app.kubernetes.io/name: keystone-db-diag
           spec:
             restartPolicy: Never
-            activeDeadlineSeconds: 300
+            activeDeadlineSeconds: 600
             imagePullSecrets:
               - name: keystone-production-registry
             containers:
@@ -74,58 +92,58 @@ jobs:
                 args:
                   - |
                     set -x
-                    mysql --version
                     mysql -h mercury-mysql -P 3306 -u keystone keystone --table <<'SQL'
-                    SELECT 'tasks status counts' AS section;
-                    SELECT status, COUNT(*) AS n FROM tasks WHERE deleted_at IS NULL GROUP BY status ORDER BY n DESC;
-                    SELECT 'tasks columns' AS section;
-                    SHOW COLUMNS FROM tasks;
-                    SELECT 'dc_plan columns' AS section;
-                    SHOW COLUMNS FROM dc_plan;
-                    SELECT 'stuck uploading tasks by plan' AS section;
-                    SELECT t.dc_plan_id,
+                    SELECT 'overall stuck aggregate' AS section;
+                    SELECT COUNT(DISTINCT dc_plan_id) AS plans,
                            COUNT(*) AS stuck,
-                           SUM(t.updated_at < NOW() - INTERVAL 2 HOUR)  AS older_2h,
-                           SUM(t.updated_at < NOW() - INTERVAL 24 HOUR) AS older_24h,
-                           SUM(t.metadata LIKE '%"auto_assigned_upload"%') AS marked_auto,
-                           MIN(t.updated_at) AS oldest,
-                           MAX(t.updated_at) AS newest
-                    FROM tasks t
-                    WHERE t.status = 'uploading' AND t.episode_id IS NULL AND t.deleted_at IS NULL
-                    GROUP BY t.dc_plan_id
-                    ORDER BY stuck DESC;
-                    SELECT 'affected plans' AS section;
-                    SELECT p.id, p.name, p.status, p.target_count, p.cur_count, p.updated_at
-                    FROM dc_plan p
-                    WHERE p.id IN (
-                      SELECT DISTINCT dc_plan_id FROM tasks
-                      WHERE status = 'uploading' AND episode_id IS NULL AND deleted_at IS NULL
-                    )
-                    ORDER BY p.id;
-                    SELECT 'stuck task details (oldest 80)' AS section;
-                    SELECT id, task_id, dc_plan_id, status, updated_at, episode_id,
-                           LEFT(COALESCE(metadata, ''), 200) AS metadata
+                           SUM(updated_at < NOW() - INTERVAL ${RETAIN_HOURS} HOUR) AS older_retain,
+                           SUM(metadata LIKE '%"auto_assigned_upload"%') AS marked_auto,
+                           MIN(updated_at) AS oldest,
+                           MAX(updated_at) AS newest
+                    FROM tasks
+                    WHERE status = 'uploading' AND episode_id IS NULL AND deleted_at IS NULL;
+                    SELECT 'stuck tasks by month' AS section;
+                    SELECT DATE_FORMAT(updated_at, '%Y-%m') AS ym, COUNT(*) AS n,
+                           COUNT(DISTINCT dc_plan_id) AS plans
                     FROM tasks
                     WHERE status = 'uploading' AND episode_id IS NULL AND deleted_at IS NULL
-                    ORDER BY updated_at ASC
-                    LIMIT 80;
+                    GROUP BY ym ORDER BY ym;
+                    SELECT 'stuck tasks by plan status' AS section;
+                    SELECT p.status, COUNT(*) AS stuck, COUNT(DISTINCT t.dc_plan_id) AS plans
+                    FROM tasks t JOIN dc_plan p ON p.id = t.dc_plan_id
+                    WHERE t.status = 'uploading' AND t.episode_id IS NULL AND t.deleted_at IS NULL
+                    GROUP BY p.status ORDER BY stuck DESC;
+                    SELECT 'affected plans (top 60)' AS section;
+                    SELECT p.id, p.status, p.target_count, p.cur_count,
+                           (SELECT COUNT(*) FROM tasks t WHERE t.dc_plan_id = p.id AND t.status = 'uploading' AND t.episode_id IS NULL AND t.deleted_at IS NULL) AS stuck,
+                           (SELECT COUNT(*) FROM tasks t WHERE t.dc_plan_id = p.id AND t.status = 'uploading' AND t.episode_id IS NULL AND t.deleted_at IS NULL AND t.updated_at < NOW() - INTERVAL ${RETAIN_HOURS} HOUR) AS stuck_retain,
+                           (SELECT COUNT(*) FROM episodes e WHERE e.dc_plan_id = p.id AND e.deleted_at IS NULL) AS episodes
+                    FROM dc_plan p
+                    WHERE EXISTS (SELECT 1 FROM tasks t WHERE t.dc_plan_id = p.id AND t.status = 'uploading' AND t.episode_id IS NULL AND t.deleted_at IS NULL)
+                    ORDER BY stuck DESC LIMIT 60;
+                    ${mode_sql}
+                    SELECT 'remaining stuck after run' AS section;
+                    SELECT COUNT(*) AS stuck, COUNT(DISTINCT dc_plan_id) AS plans,
+                           MIN(updated_at) AS oldest, MAX(updated_at) AS newest
+                    FROM tasks
+                    WHERE status = 'uploading' AND episode_id IS NULL AND deleted_at IS NULL;
                     SQL
           POD
 
           echo "waiting for db-diag pod..."
           phase=""
-          for _ in $(seq 1 90); do
+          for _ in $(seq 1 180); do
             phase="$(kubectl -n "$DB_NAMESPACE" get pod db-diag -o jsonpath='{.status.phase}' 2>/dev/null || true)"
             case "$phase" in Succeeded|Failed) break ;; esac
             sleep 2
           done
           echo "pod phase: ${phase:-unknown}"
-
           kubectl -n "$DB_NAMESPACE" get pod db-diag -o wide || true
           report="$(kubectl -n "$DB_NAMESPACE" logs db-diag 2>&1 || true)"
           printf '%s\n' "$report"
 
           kubectl -n "$DB_NAMESPACE" create configmap "$REPORT_CONFIGMAP" \
+            --from-literal=mode="$DB_MODE" \
             --from-literal=phase="${phase:-unknown}" \
             --from-literal=report="$report" \
             --dry-run=client -o yaml | kubectl apply -f -
