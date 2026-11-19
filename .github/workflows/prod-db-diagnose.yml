@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  DB_MODE: query            # query | cleanup
+  DB_MODE: cleanup          # query | cleanup
   RETAIN_HOURS: "24"
   DB_NAMESPACE: archebase-system
   REPORT_CONFIGMAP: prod-db-diag-report
@@ -53,6 +53,15 @@ jobs:
           mode_sql=""
           if [ "$DB_MODE" = "cleanup" ]; then
             mode_sql="
+            SELECT 'back up stale tasks' AS section;
+            CREATE TABLE IF NOT EXISTS tasks_stale_upload_backup_20261119 AS
+            SELECT id, task_id, dc_plan_id, status, episode_id, updated_at, completed_at, error_message, metadata
+            FROM tasks
+            WHERE status = 'uploading'
+              AND episode_id IS NULL
+              AND deleted_at IS NULL
+              AND updated_at < NOW() - INTERVAL ${RETAIN_HOURS} HOUR;
+            SELECT COUNT(*) AS backup_rows FROM tasks_stale_upload_backup_20261119;
             SELECT 'release stale uploading tasks' AS section;
             UPDATE tasks
             SET status = 'failed',
@@ -63,7 +72,16 @@ jobs:
               AND episode_id IS NULL
               AND deleted_at IS NULL
               AND updated_at < NOW() - INTERVAL ${RETAIN_HOURS} HOUR;
-            SELECT ROW_COUNT() AS released_rows;"
+            SELECT ROW_COUNT() AS released_rows;
+            SELECT 'collecting plans that were blocked by stale tasks' AS section;
+            SELECT p.id, p.status, p.target_count, p.cur_count,
+                   (SELECT COUNT(*) FROM tasks_stale_upload_backup_20261119 b WHERE b.dc_plan_id = p.id) AS released,
+                   p.cur_count + (SELECT COUNT(*) FROM tasks_stale_upload_backup_20261119 b WHERE b.dc_plan_id = p.id) AS cur_plus_released
+            FROM dc_plan p
+            WHERE p.status = 'collecting'
+              AND EXISTS (SELECT 1 FROM tasks_stale_upload_backup_20261119 b WHERE b.dc_plan_id = p.id)
+              AND p.cur_count + (SELECT COUNT(*) FROM tasks_stale_upload_backup_20261119 b WHERE b.dc_plan_id = p.id) >= p.target_count
+            ORDER BY released DESC LIMIT 40;"
           fi
 
           kubectl apply -f - <<POD
